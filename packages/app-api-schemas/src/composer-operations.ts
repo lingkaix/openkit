@@ -40,6 +40,7 @@ export const ComposerTranscribeOutputSchema = z
 /** Composer dictation. Admission reuses llm.gateway.use and optional Thread audience. */
 export const COMPOSER_OPERATION_DEFINITIONS = {
   'composer.transcribe': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

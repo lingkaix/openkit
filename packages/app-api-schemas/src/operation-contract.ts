@@ -144,9 +144,13 @@ export interface OperationInsertionPoints {
   readonly gateFailures: readonly ('error' | 'escalate-to-human')[];
 }
 
+/** Declared operation promise; metadata never grants invocation or authority. */
+export type OperationStability = 'settled' | 'release-coupled' | 'experimental';
+
 /** Core-mediated native contracts have no implicit HTTP, CLI or model projection. */
 export interface NativeOperationDefinition extends OperationInsertionPoints {
   readonly binding: 'native';
+  readonly stability: OperationStability;
   readonly description: string;
   /** Native variants may select between closed object forms without adding a public route. */
   readonly inputSchema: z.ZodObject | z.ZodUnion;
@@ -156,6 +160,7 @@ export interface NativeOperationDefinition extends OperationInsertionPoints {
 
 /** Browser-safe declaration vocabulary; no live dependencies or authority facts. */
 export interface OperationDefinition extends OperationProjectionFacts {
+  readonly stability: OperationStability;
   /** Existing Policy-owned stage semantics, when implemented by this operation's native owner. */
   readonly insertionPoints?: OperationInsertionPoints;
   readonly description: string;

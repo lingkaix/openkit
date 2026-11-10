@@ -14,6 +14,7 @@ const credentials = [
 /** Worker declarations reuse native payloads and closed admission strategies. */
 export const WORKER_OPERATION_DEFINITIONS = {
   'worker.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

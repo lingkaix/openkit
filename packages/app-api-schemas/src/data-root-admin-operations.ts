@@ -10,6 +10,7 @@ import {
 /** Release-authored data root admin contracts; execution and current administrator authority stay in NanoCore. */
 export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
   'backup.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -24,6 +25,7 @@ export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'backup.verify': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -37,6 +39,7 @@ export const DATA_ROOT_ADMIN_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'storage.layout-report': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

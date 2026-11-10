@@ -1,0 +1,1433 @@
+{
+  "schemaVersion": 1,
+  "operations": {
+    "administration.cleanup-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.configuration-apply": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.conversation-submit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.mcp-discovery-preview": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-remove": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-select-version": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-stage-version": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "administration.server-mcp-update-binding": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "agent.health-refresh": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "agent.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "agent.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "app-update.preflight": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "app-update.prepare": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "app-update.start": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "app-update.status": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "app.search": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "approval.respond": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.download": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.folder-extract": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.folder-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.import": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.introduce": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.review-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.review.decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.review.select": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.version-commit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.version-file-commit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.version-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "artifact.version-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "attention.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "audit.server-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "audit.workspace-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "automation.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "automation.delete": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "automation.event-admit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "automation.history": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "automation.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "automation.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "backup.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "backup.verify": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "bootstrap.consume": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "caller.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-export": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-history-import": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-import": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-pin": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.light-app-select": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.mcp-binding": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.mcp-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.mcp-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.mcp-remove": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.mcp-select": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.mcp-stage-version": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.plugin-import": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.plugin-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.shared-mcp-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.shared-mcp-set-disabled": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-candidate-decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-candidate-submit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-candidate-withdraw": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-content-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-diff": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-import": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-pin": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-purge": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-remove": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-select": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-update-check": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-version-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "catalog.skill-version-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "channel.discord.pair": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "channel.discord.revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "channel.discord.status": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "composer.transcribe": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "conversation.navigation": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "conversation.submit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "conversation.targets": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "diagnostics.app": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "diagnostics.setup": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "environment.snapshot-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "environment.snapshot-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evaluation.candidate-set-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evaluation.candidate-set-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evaluation.candidate-set-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evaluation.candidate-set-select": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evaluation.judgement-add": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evidence.bundle-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "evidence.runtime-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "generative-ui.action": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "generative-ui.get": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "generative-ui.publish": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "generative-ui.refresh": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "generative-ui.resource": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.cancel": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.card.cancel": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.card.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.card.edit": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.completion.accept": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.intent.revise": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.plan.approve": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.plan.propose": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "goal.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.apps.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.apps.get": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.apps.instantiate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.apps.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.apps.retire": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.format.upgrade": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.records.batch": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.records.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.records.get": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.records.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.records.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.schema.activate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.schema.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.snapshots.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "kernel.snapshots.rollback": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.answer": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.ask": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.context.prepare": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.health.check": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.indexes": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.maintain": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.delete": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.diff": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.history": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.restore": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.notebook.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.package.export": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.package.import": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.proposal.decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.proposal.draft": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.proposal.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.proposal.reverse": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.repair.suggest": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.retrieval": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.schema.apply": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.schema.preview": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.server.maintain": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.server.proposal.decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.server.proposal.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.server.tell": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.source.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.source.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.source.register": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "knowledge.tell": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "local-ai.disable": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "local-ai.enable": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "local-ai.status": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.bind": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.exclude": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.range-correct": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.restore": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.revision-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.revision-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.revision-save": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.thread-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "material.unbind": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "mcp.call-tool": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.ask": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.forget": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.forget.prepare": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.maintain": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.notebook.diff": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.notebook.history": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.notebook.restore": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.proposal.decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.proposal.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.search": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.source.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.source.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.source.register": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.tell": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "memory.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.decommission": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.enroll": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.runtime-target": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.token-issue": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.token-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.token-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.token-rotate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "nanohost.token-rotation-abort": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "notification.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "notification.send": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "pending-request.withdraw": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "permission.server-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "permission.workspace-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "policy.write": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-auto-topup": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-delete": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-logout": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-quota": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-status": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.account-use-reset": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.codex-settings": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.login-cancel": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.login-start": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "provider-subscription.provider-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "question.answer": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "recovery.checkpoint-retry": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "recovery.worker-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.agent-environment-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.agent-environment-update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.file-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.file-delete": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.file-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.file-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.file-update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.reload": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.schemas": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "runtime.validate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "scheduler.cancel": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "scheduler.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "scheduler.retry": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "storage.layout-report": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.apply-plan-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.apply-result-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.apply-result-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.backend-handle-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.change-set-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.input-snapshot-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.materialization-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.output-manifest-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.quarantine-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.reconciliation-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.recovery-decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.review-decide": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.review-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.review-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "sync.staged-review-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "task.start": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "task.steer": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.archive": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.dashboard": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.item-body": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.items": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.mark-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.read-state": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.server.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.server.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.timeline": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "thread.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "token.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "token.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "token.my-admin-default": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "token.my-admin-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "token.revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "token.rotate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "turn.feedback": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "turn.interrupt": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "turn.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "turn.server.interrupt": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "turn.start": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "usage.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "user.disable": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.binding-deliver": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.binding-replace": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.binding-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.bootstrap-codex-auth": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-issue": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-narrow": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-request": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-request-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.grant-withdraw": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.injection-plan-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.injection-receipt-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.lock": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.login-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.login-quarantine": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.login-release": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.provider-api-key-set": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.reference-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.reference-rebind": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.secret-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.secret-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.secret-rotate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-grant-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-grant-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-grant-narrow": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-grant-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-injection-plan-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-injection-receipt-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-reference-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-secret-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-secret-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-mcp-secret-rotate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.server-use-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.status": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.unlock": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "vault.use-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.activate": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.prepare": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.purge": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.recover": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.select": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker-environment.status": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "worker.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.access-recover": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.access-recovery-read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.archive-download": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.backup-capture": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.backup-download": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.backup-restore": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.backup-verify": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.dashboard": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.delete": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.deleted-recover": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.export": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.invitation-create": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.invitation-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.invitation-revoke": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.leave": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.member-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.member-remove": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.my-invitation-accept": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.my-invitation-decline": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.my-invitation-list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.ownership-transfer": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.read": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.recovery-abandon": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.recovery-finish": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.recovery-inspect": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.resource-access-apply": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.resource-access-request": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.resources": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.retire-quarantined": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "workspace.update": {
+      "stability": "release-coupled",
+      "state": "active"
+    }
+  }
+}

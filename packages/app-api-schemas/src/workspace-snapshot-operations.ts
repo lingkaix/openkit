@@ -134,6 +134,7 @@ const administration = {
  */
 export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
   'workspace.backup-capture': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: true,
@@ -142,6 +143,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.backup-verify': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: false,
@@ -150,6 +152,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.backup-download': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'streaming',
     mutating: false,
@@ -159,6 +162,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: z.unknown(),
   },
   'workspace.backup-restore': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: true,
@@ -172,6 +176,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.move-out': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: true,
@@ -180,6 +185,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.move-in': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'streaming',
     mutating: true,
@@ -200,6 +206,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.recovery-inspect': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: false,
@@ -208,6 +215,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.recovery-finish': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: true,
@@ -217,6 +225,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.recovery-abandon': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: true,
@@ -226,6 +235,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.move-reactivate': {
+    stability: 'release-coupled',
     ...administration,
     binding: 'json',
     mutating: true,

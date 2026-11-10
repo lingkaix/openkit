@@ -1784,7 +1784,9 @@ test('catalog search is concise and describe returns one machine-readable input 
   const { describeOperation, searchOperations } = await operations();
   const results = searchOperations('workspace');
   assert.ok(results.some((entry) => entry.id === 'workspace.list'));
-  assert.ok(results.every((entry) => Object.keys(entry).sort().join(',') === 'id,summary'));
+  assert.ok(
+    results.every((entry) => Object.keys(entry).sort().join(',') === 'id,stability,summary')
+  );
   assert.equal(
     searchOperations('connection').some((entry) => entry.id === 'connection.meta'),
     false
@@ -1870,7 +1872,7 @@ for (const [label, executable] of [
     const results = JSON.parse(search.stdout).data;
     assert.ok(results.some((entry) => entry.id === 'workspace.list'));
     for (const entry of results) {
-      assert.deepEqual(Object.keys(entry).sort(), ['id', 'summary']);
+      assert.deepEqual(Object.keys(entry).sort(), ['id', 'stability', 'summary']);
       assert.equal(typeof entry.summary, 'string');
       assert.doesNotMatch(entry.summary, /[\r\n]/);
     }
@@ -2118,7 +2120,7 @@ for (const [label, executable] of [
         );
       for (const entry of entries) {
         assert.ok(Object.hasOwn(appSchemas.OPERATION_DEFINITIONS, entry.id));
-        assert.deepEqual(Object.keys(entry).sort(), ['id', 'summary']);
+        assert.deepEqual(Object.keys(entry).sort(), ['id', 'stability', 'summary']);
       }
     }
     const aliasCall = await runCli(
@@ -4433,4 +4435,16 @@ test('automation deletion derives strict CLI input and maps the bodyless HTTP su
   assert.equal(await operation.handler({ client }, input), null);
   assert.equal(new URL(requests[0].url).pathname, '/api/app/operations/automation.delete');
   assert.deepEqual(await requests[0].json(), input);
+});
+
+test('API CLI catalog, search and describe carry the declared stability marker', async () => {
+  const { operationCatalog, searchOperations, describeOperation } = await operations();
+  for (const entry of operationCatalog.filter((entry) => entry.source === 'app-api')) {
+    assert.equal(entry.stability, 'release-coupled');
+    assert.equal(describeOperation(entry.id).stability, 'release-coupled');
+    assert.equal(
+      searchOperations(entry.id).find((item) => item.id === entry.id).stability,
+      'release-coupled'
+    );
+  }
 });

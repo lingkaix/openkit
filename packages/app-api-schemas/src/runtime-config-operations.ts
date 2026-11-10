@@ -18,6 +18,7 @@ import {
 /** Deployment administrator configuration commands retain their native CAS and reload owners. */
 export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
   'runtime.agent-environment-read': {
+    stability: 'release-coupled',
     description:
       'Read admitted Agent environment defaults, overrides and native application status.',
     inputSchema: z.object({ fileId: z.string().min(1) }).strict(),
@@ -32,6 +33,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.agent-environment-update': {
+    stability: 'release-coupled',
     description: 'Edit Agent environment overrides against exact file and image evidence.',
     inputSchema: UpdateAgentNativeEnvironmentRequestSchema,
     outputSchema: AgentNativeEnvironmentResponseSchema,
@@ -45,6 +47,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.reload': {
+    stability: 'release-coupled',
     description: 'Reload supported runtime configuration.',
     inputSchema: RuntimeConfigReloadRequestSchema,
     outputSchema: RuntimeConfigReloadResponseSchema,
@@ -58,6 +61,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-list': {
+    stability: 'release-coupled',
     description: 'List editable runtime configuration files.',
     inputSchema: z.object({}).strict(),
     outputSchema: RuntimeConfigFileListResponseSchema,
@@ -71,6 +75,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-read': {
+    stability: 'release-coupled',
     description: 'Read one runtime configuration file.',
     inputSchema: z.object({ id: z.string().min(1) }).strict(),
     outputSchema: RuntimeConfigFileReadResponseSchema,
@@ -85,6 +90,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     invalidInputCode: 'missing_config_file_id',
   },
   'runtime.file-create': {
+    stability: 'release-coupled',
     description: 'Create one supported runtime configuration file.',
     inputSchema: RuntimeConfigFileWriteRequestSchema,
     outputSchema: RuntimeConfigFileWriteResponseSchema,
@@ -98,6 +104,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-update': {
+    stability: 'release-coupled',
     description: 'Update one runtime configuration file with exact revision protection.',
     inputSchema: RuntimeConfigFileWriteRequestSchema,
     outputSchema: RuntimeConfigFileWriteResponseSchema,
@@ -111,6 +118,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-delete': {
+    stability: 'release-coupled',
     description: 'Delete one exact Provider profile and revoke its key reference.',
     inputSchema: RuntimeConfigFileDeleteRequestSchema,
     outputSchema: z.null(),
@@ -124,6 +132,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 204,
   },
   'runtime.schemas': {
+    stability: 'release-coupled',
     description: 'Read runtime configuration schemas.',
     inputSchema: z.object({}).strict(),
     outputSchema: RuntimeConfigSchemaCatalogResponseSchema,
@@ -137,6 +146,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.validate': {
+    stability: 'release-coupled',
     description: 'Validate runtime configuration without writing it.',
     inputSchema: RuntimeConfigValidationRequestSchema,
     outputSchema: RuntimeConfigValidationResponseSchema,

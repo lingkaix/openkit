@@ -9,6 +9,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Release-authored family facts; authority, replay and effects remain with their native owners. */
 export const ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS = {
   'administration.configuration-apply': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -22,6 +23,7 @@ export const ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'administration.conversation-submit': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

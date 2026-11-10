@@ -26,6 +26,7 @@ const child = {
 /** Definition-derived public projection of durable Workspace schedules. */
 export const AUTOMATION_OPERATION_DEFINITIONS = {
   'automation.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -39,6 +40,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'automation.history': {
+    stability: 'release-coupled',
     ...child,
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -50,6 +52,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'automation.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Create one paused automation definition.',
@@ -63,6 +66,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'automation.update': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -74,6 +78,7 @@ export const AUTOMATION_OPERATION_DEFINITIONS = {
     outputSchema: AutomationRecordSchema,
   },
   'automation.delete': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     ...child,

@@ -65,6 +65,7 @@ const personalLoginInterception = {
 /** Complete Vault contracts expose redacted metadata and request-only sensitive material. */
 export const VAULT_OPERATION_DEFINITIONS = {
   'vault.login-list': {
+    stability: 'release-coupled',
     ...personalLoginContract,
     description:
       'Inspect your own explicit harness subscription Logins; observations remain unknown until acquired.',
@@ -74,6 +75,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'disclosure'] },
   },
   'vault.login-quarantine': {
+    stability: 'release-coupled',
     ...personalLoginContract,
     description: 'Restrict an owned active harness Login without revoking its material or grants.',
     inputSchema: VaultLoginReferenceRequestSchema,
@@ -82,6 +84,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'mutation'] },
   },
   'vault.login-release': {
+    stability: 'release-coupled',
     ...personalLoginContract,
     description:
       'Clear Login quarantine only; this does not prove health, repair refresh, grant use or activate it.',
@@ -91,6 +94,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     insertionPoints: { ...personalLoginInterception, crossings: ['admission', 'mutation'] },
   },
   'vault.binding-deliver': {
+    stability: 'release-coupled',
     description:
       'Deliver one already admitted credential file binding and inspect its realized protection.',
     binding: 'json',
@@ -129,6 +133,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.binding-replace': {
+    stability: 'release-coupled',
     description:
       'Replace one live credential file binding with a current authorized Vault material version.',
     binding: 'json',
@@ -167,6 +172,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.binding-revoke': {
+    stability: 'release-coupled',
     description:
       'Close one credential binding through its execution owner while preserving unrelated grant authority.',
     binding: 'json',
@@ -211,6 +217,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.server-mcp-injection-plan-list': {
+    stability: 'release-coupled',
     description: 'List redacted Server shared-MCP planned credential delivery evidence.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -224,6 +231,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.server-mcp-injection-receipt-list': {
+    stability: 'release-coupled',
     description: 'List redacted Server shared-MCP completed credential delivery evidence.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -237,6 +245,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.grant-request': {
+    stability: 'release-coupled',
     description: 'Request exact supported credential-use authority without issuing a grant.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -256,6 +265,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.grant-request-list': {
+    stability: 'release-coupled',
     description: 'Review supported grant requests on one visible Thread.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -275,6 +285,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.grant-issue': {
+    stability: 'release-coupled',
     description: 'Issue one grant from an approved exact request after current-authority checks.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -296,6 +307,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.status': {
+    stability: 'release-coupled',
     description: 'Read redacted vault administration status.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -309,6 +321,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.unlock': {
+    stability: 'release-coupled',
     description: 'Unlock the configured vault backend.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -322,6 +335,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.lock': {
+    stability: 'release-coupled',
     description: 'Lock the configured vault backend.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -335,6 +349,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.bootstrap-codex-auth': {
+    stability: 'release-coupled',
     ...personalLoginContract,
     description: 'Acquire a Codex harness Login owned by the actual human User.',
     inputSchema: VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -345,6 +360,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
   },
   // The native owner validates the profile id with ProviderApiKeyProfileIdSchema so its exact typed refusal and audited no-write outcome stay reachable.
   'vault.provider-api-key-set': {
+    stability: 'release-coupled',
     description: 'Store or replace one provider profile API key in the unlocked vault.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -361,6 +377,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     inputSensitivity: 'secret stdin',
   },
   'vault.secret-create': {
+    stability: 'release-coupled',
     description: 'Create a Workspace Vault reference from request-only material.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -377,6 +394,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     inputSensitivity: 'secret stdin',
   },
   'vault.secret-rotate': {
+    stability: 'release-coupled',
     description: 'Rotate Workspace secret material while preserving its reference identity.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -394,6 +412,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     inputSensitivity: 'secret stdin',
   },
   'vault.secret-revoke': {
+    stability: 'release-coupled',
     description:
       'Revoke Workspace secret material and its dependent grants and injection projections.',
     binding: 'json',
@@ -410,6 +429,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.grant-create': {
+    stability: 'release-coupled',
     description:
       'Create a workspace-lifetime grant for a supported sink with optional exact target restrictions.',
     binding: 'json',
@@ -426,6 +446,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.grant-narrow': {
+    stability: 'release-coupled',
     description:
       'Revoke a workspace grant and issue a strictly narrower replacement; bindings require an explicit update.',
     binding: 'json',
@@ -443,6 +464,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.grant-withdraw': {
+    stability: 'release-coupled',
     description:
       'Withdraw a Workspace grant on a personal Vault reference without requiring Workspace membership.',
     binding: 'json',
@@ -466,6 +488,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.grant-revoke': {
+    stability: 'release-coupled',
     description: 'Revoke a Workspace grant and its dependent injection projections.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -479,6 +502,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.reference-rebind': {
+    stability: 'release-coupled',
     description: 'Rebind one imported workspace vault reference.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -496,6 +520,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     inputSensitivity: 'secret stdin',
   },
   'vault.reference-list': {
+    stability: 'release-coupled',
     description: 'List redacted vault references for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -509,6 +534,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.grant-list': {
+    stability: 'release-coupled',
     description: 'List non-secret vault grants for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -522,6 +548,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.injection-plan-list': {
+    stability: 'release-coupled',
     description: 'List non-secret vault injection plans for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -550,6 +577,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.injection-receipt-list': {
+    stability: 'release-coupled',
     description: 'List non-secret vault injection receipts for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -578,6 +606,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.use-list': {
+    stability: 'release-coupled',
     description: 'List redacted vault use records for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -591,6 +620,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.server-use-list': {
+    stability: 'release-coupled',
     description: 'List redacted server vault use records.',
     binding: 'json',
     returnsOneTimeSecret: false,

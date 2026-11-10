@@ -16,6 +16,7 @@ const credentials = [
 /** Recovery projection retains the original attempt and exact request identity. */
 export const RECOVERY_OPERATION_DEFINITIONS = {
   'recovery.worker-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -29,6 +30,7 @@ export const RECOVERY_OPERATION_DEFINITIONS = {
     outputSchema: ListInterruptedWorkerStatesResponseSchema,
   },
   'recovery.checkpoint-retry': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

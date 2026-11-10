@@ -26,6 +26,7 @@ const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 /** Turn commands, feedback and detail retain the lifecycle, product projection and Context Package evidence owners. */
 export const TURN_OPERATION_DEFINITIONS = {
   'turn.start': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description:
@@ -40,6 +41,7 @@ export const TURN_OPERATION_DEFINITIONS = {
     successStatus: 202,
   },
   'turn.interrupt': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -59,6 +61,7 @@ export const TURN_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'turn.feedback': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -74,6 +77,7 @@ export const TURN_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'turn.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

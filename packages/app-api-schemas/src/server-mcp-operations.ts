@@ -84,6 +84,7 @@ function serverOperation<const I extends z.ZodObject, const O extends z.ZodType>
   sensitive = false
 ) {
   return {
+    stability: 'release-coupled',
     description,
     inputSchema,
     outputSchema,
@@ -257,6 +258,7 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
     true
   ),
   'catalog.shared-mcp-list': {
+    stability: 'release-coupled',
     description: 'List redacted shared MCP supply and local collisions.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -277,6 +279,7 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.shared-mcp-set-disabled': {
+    stability: 'release-coupled',
     description: 'Disable or restore shared MCP supply in the selected Workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,

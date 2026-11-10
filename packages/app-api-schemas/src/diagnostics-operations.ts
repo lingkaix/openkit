@@ -5,6 +5,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Product diagnostics retain current administrator admission; support probes stay outside this table. */
 export const DIAGNOSTICS_OPERATION_DEFINITIONS = {
   'diagnostics.app': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -18,6 +19,7 @@ export const DIAGNOSTICS_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'diagnostics.setup': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

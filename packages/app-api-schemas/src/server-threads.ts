@@ -104,6 +104,7 @@ const common = {
 /** Additive entries in the existing operation catalog; no tool aliases or separate registry. */
 export const SERVER_THREAD_OPERATION_DEFINITIONS = {
   'knowledge.server.maintain': {
+    stability: 'release-coupled',
     ...common,
     description: 'Request one bounded Server Knowledge maintenance run.',
     inputSchema: ServerKnowledgeMaintainRequestSchema,
@@ -112,6 +113,7 @@ export const SERVER_THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.server.tell': {
+    stability: 'release-coupled',
     ...common,
     description: 'Give explicit information to the Server Knowledge Manager.',
     inputSchema: ServerKnowledgeTellRequestSchema,
@@ -120,6 +122,7 @@ export const SERVER_THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.server.list': {
+    stability: 'release-coupled',
     ...common,
     description: 'List Server-owned work visible to current Server administrators.',
     inputSchema: z.object({}).strict(),
@@ -128,6 +131,7 @@ export const SERVER_THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.server.read': {
+    stability: 'release-coupled',
     ...common,
     description: 'Read one Server-owned Thread and its retained work.',
     inputSchema: ReadServerThreadRequestSchema,
@@ -136,6 +140,7 @@ export const SERVER_THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'turn.server.interrupt': {
+    stability: 'release-coupled',
     ...common,
     description: 'Stop one active Server Knowledge Manager Turn.',
     inputSchema: InterruptServerTurnRequestSchema,
@@ -144,6 +149,7 @@ export const SERVER_THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.server.proposal.read': {
+    stability: 'release-coupled',
     ...common,
     description: 'Read the exact Server notebook candidate and its review diff.',
     inputSchema: ReadServerKnowledgeProposalRequestSchema,
@@ -152,6 +158,7 @@ export const SERVER_THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.server.proposal.decide': {
+    stability: 'release-coupled',
     ...common,
     description: 'Review the exact fixed-base Server notebook candidate.',
     inputSchema: DecideServerKnowledgeProposalRequestSchema,

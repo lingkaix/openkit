@@ -44,6 +44,7 @@ const paging = { page: revision.optional(), perPage: revision.max(100).optional(
 /** Release-authored definitions for the existing remaining Kernel operations; effects remain with NanoCore owners. */
 export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
   'kernel.apps.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -57,6 +58,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'kernel.apps.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Create one Light App from a file-authored schema.',
@@ -73,6 +75,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'kernel.schema.update': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -86,6 +89,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.apps.retire': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -99,6 +103,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.records.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -121,6 +126,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'kernel.records.get': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -136,6 +142,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'kernel.records.update': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -152,6 +159,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.records.batch': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -169,6 +177,7 @@ export const KERNEL_REMAINING_OPERATION_DEFINITIONS = {
 /** Release-authored definitions for the existing Generative UI operations; effects remain with NanoCore owners. */
 export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
   'generative-ui.publish': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Publish one admitted native Generative UI presentation.',
@@ -185,6 +194,7 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'generative-ui.get': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -198,6 +208,7 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'generative-ui.resource': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -211,6 +222,7 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'generative-ui.refresh': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -224,6 +236,7 @@ export const GENERATIVE_UI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'generative-ui.action': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

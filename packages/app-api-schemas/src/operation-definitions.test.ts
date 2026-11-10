@@ -363,3 +363,9 @@ it('publishes the named-resource request and distinct confirmed apply contracts'
     OPERATION_DEFINITIONS['workspace.resource-access-apply'].inputSchema.shape
   ).not.toHaveProperty('requestId');
 });
+
+// F5 is mechanism only: classification awaits the human-owned launch inventory.
+it('marks every API and native operation release-coupled until classification', () => {
+  for (const [id, definition] of Object.entries(OPERATION_REGISTRY))
+    expect(definition.stability, id).toBe('release-coupled');
+});

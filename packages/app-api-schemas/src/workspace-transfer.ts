@@ -12,6 +12,7 @@ const canonicalUserCredentials = [
 /** Server-managed JSON portability handles; binary archive bindings retain their own owner. */
 export const WORKSPACE_TRANSFER_OPERATION_DEFINITIONS = {
   'workspace.export': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

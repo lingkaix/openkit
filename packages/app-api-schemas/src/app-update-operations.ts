@@ -11,6 +11,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Release-authored family facts; authority, replay and effects remain with their native owners. */
 export const APP_UPDATE_OPERATION_DEFINITIONS = {
   'app-update.preflight': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -25,6 +26,7 @@ export const APP_UPDATE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'app-update.prepare': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -38,6 +40,7 @@ export const APP_UPDATE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'app-update.start': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -51,6 +54,7 @@ export const APP_UPDATE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'app-update.status': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

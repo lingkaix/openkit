@@ -165,6 +165,7 @@ const self = {
 /** Explicit self Memory and literal Source management; no Worker, automatic capture or caller-selected owner is admitted. */
 export const MEMORY_OPERATION_DEFINITIONS = {
   'memory.ask': {
+    stability: 'release-coupled',
     ...self,
     description: 'Ask the current User Memory Knowledge Manager from a private Assistant Timeline.',
     inputSchema: KnowledgeAskRequestSchema,
@@ -172,6 +173,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.tell': {
+    stability: 'release-coupled',
     ...self,
     description: 'Send explicit personal information to one bounded User Memory maintenance run.',
     inputSchema: KnowledgeTellRequestSchema,
@@ -179,6 +181,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.maintain': {
+    stability: 'release-coupled',
     ...self,
     description:
       'Request bounded maintenance of current self Memory without learning from other Workspaces.',
@@ -187,6 +190,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.proposal.read': {
+    stability: 'release-coupled',
     ...self,
     description:
       'Inspect the exact current self Memory candidate and its bounded diff before Review.',
@@ -205,6 +209,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.proposal.decide': {
+    stability: 'release-coupled',
     ...self,
     description: 'Record the current User decision on an exact fixed-base Memory candidate.',
     inputSchema: SubmitKnowledgeProposalDecisionRequestSchema.extend({
@@ -214,6 +219,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.search': {
+    stability: 'release-coupled',
     ...self,
     description:
       'Search current self Memory with a separate budget in the existing private Timeline.',
@@ -222,6 +228,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.source.register': {
+    stability: 'release-coupled',
     ...self,
     description: 'Capture one exact literal document in the authenticated User Source scope.',
     inputSchema: RegisterUserMemorySourceRequestSchema,
@@ -229,6 +236,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.source.list': {
+    stability: 'release-coupled',
     ...self,
     description: 'List explicit User Source metadata under current self authority.',
     inputSchema: z.object({}).strict(),
@@ -236,6 +244,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.source.read': {
+    stability: 'release-coupled',
     ...self,
     description: 'Read the exact captured bytes of one currently authorized User Source.',
     inputSchema: z.object({ sourceId: KnowledgeSourceIdSchema }).strict(),
@@ -245,6 +254,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.list': {
+    stability: 'release-coupled',
     ...self,
     description: 'List current admitted Memory without disclosing suppressed entries.',
     inputSchema: z.object({}).strict(),
@@ -255,6 +265,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.read': {
+    stability: 'release-coupled',
     ...self,
     description: 'Read one current admitted Memory page.',
     inputSchema: z.object({ pageId: PageIdSchema }).strict(),
@@ -267,6 +278,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.create': {
+    stability: 'release-coupled',
     ...self,
     description: 'Save exact personally authored Memory under a new page identity.',
     inputSchema: CreateMemoryPageRequestSchema,
@@ -274,6 +286,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.update': {
+    stability: 'release-coupled',
     ...self,
     description: 'Edit exact personally authored Memory at its current notebook base.',
     inputSchema: ChangeMemoryPageRequestSchema,
@@ -281,6 +294,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.notebook.history': {
+    stability: 'release-coupled',
     ...self,
     description: 'Inspect currently authorized Memory history with forgotten details unavailable.',
     inputSchema: KnowledgeNotebookHistoryRequestSchema,
@@ -288,6 +302,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.notebook.diff': {
+    stability: 'release-coupled',
     ...self,
     description: 'Compare admitted Memory revisions without exposing suppressed content.',
     inputSchema: KnowledgeNotebookDiffRequestSchema,
@@ -295,6 +310,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.notebook.restore': {
+    stability: 'release-coupled',
     ...self,
     description:
       'Restore admitted Memory content as a new fixed-base revision without deleting pages.',
@@ -303,6 +319,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.forget.prepare': {
+    stability: 'release-coupled',
     ...self,
     mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
     description:
@@ -322,6 +339,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.forget': {
+    stability: 'release-coupled',
     ...self,
     mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
     description:

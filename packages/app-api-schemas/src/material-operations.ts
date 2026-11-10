@@ -37,6 +37,7 @@ const credentials = [
 /** Material definitions preserve metadata, exact revisions and singular Thread binding commands. */
 export const MATERIAL_OPERATION_DEFINITIONS = {
   'material.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -50,6 +51,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -63,6 +65,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -76,6 +79,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.revision-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -89,6 +93,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.revision-save': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -105,6 +110,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.revision-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -120,6 +126,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.thread-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -133,6 +140,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.bind': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -150,6 +158,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.unbind': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -167,6 +176,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.exclude': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -184,6 +194,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.restore': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

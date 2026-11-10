@@ -16,6 +16,7 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 /** Action Center remains the single projection of human attention. */
 export const ATTENTION_OPERATION_DEFINITIONS = {
   'attention.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

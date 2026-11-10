@@ -29,6 +29,7 @@ import {
 /** Canonical Workspace lifecycle contracts; Core receipts, authority and deletion phases retain their existing owners. */
 export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
   'workspace.member-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -42,6 +43,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.invitation-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -55,6 +57,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.invitation-create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Invite an existing canonical user to the Workspace.',
@@ -71,6 +74,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'workspace.my-invitation-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -84,6 +88,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.my-invitation-accept': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -100,6 +105,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'invitation-workspace', field: 'invitationId' },
   },
   'workspace.my-invitation-decline': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -116,6 +122,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'invitation-workspace', field: 'invitationId' },
   },
   'workspace.invitation-revoke': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -132,6 +139,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.member-remove': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -148,6 +156,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.leave': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -162,6 +171,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
   },
   'workspace.ownership-transfer': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -177,6 +187,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.access-recovery-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -190,6 +201,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.access-recover': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -204,6 +216,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutationTarget: { kind: 'body-workspace', field: 'workspaceId' },
   },
   'user.disable': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -217,6 +230,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.retire-quarantined': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -231,6 +245,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.delete': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -244,6 +259,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.deleted-recover': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

@@ -96,6 +96,7 @@ export type {
   OperationParticipationMode,
   OperationProjectionFacts,
   OperationScope,
+  OperationStability,
   OperationStage,
   OperationTarget,
 } from './operation-contract.js';
@@ -263,6 +264,7 @@ export const GoalTaskPolicyWriteOutputSchema = z
 /** Named native declarations keep exact registry types within declaration-emission limits. */
 const NATIVE_OPERATION_DEFINITIONS = {
   'policy.write': {
+    stability: 'release-coupled',
     binding: 'native',
     description:
       'Apply an exact human-confirmed Policy candidate or a bounded Goal Coordinator Task grant through the existing configuration owner.',
@@ -277,6 +279,7 @@ const NATIVE_OPERATION_DEFINITIONS = {
     gateFailures: [],
   } satisfies NativeOperationDefinition,
   'mcp.call-tool': {
+    stability: 'release-coupled',
     binding: 'native',
     description: 'Dispatch one admitted Worker MCP Tool call through its existing native owner.',
     inputSchema: z

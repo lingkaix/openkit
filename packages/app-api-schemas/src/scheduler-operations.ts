@@ -26,6 +26,7 @@ const mutation = {
 /** Public scheduler admission views and actions; queue lifecycle remains with NanoCore. */
 export const SCHEDULER_OPERATION_DEFINITIONS = {
   'scheduler.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -39,6 +40,7 @@ export const SCHEDULER_OPERATION_DEFINITIONS = {
     outputSchema: ListSchedulerAdmissionsResponseSchema,
   },
   'scheduler.retry': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -47,6 +49,7 @@ export const SCHEDULER_OPERATION_DEFINITIONS = {
     outputSchema: RetrySchedulerAdmissionResponseSchema,
   },
   'scheduler.cancel': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

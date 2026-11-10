@@ -5,6 +5,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Current administrator-only observations; source owners retain all cleanup authority. */
 export const ADMINISTRATOR_CLEANUP_OPERATION_DEFINITIONS = {
   'administration.cleanup-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

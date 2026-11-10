@@ -26,6 +26,7 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 /** Workspace commands, viewer reads and candidate-first discovery retain their existing owners. */
 export const WORKSPACE_OPERATION_DEFINITIONS = {
   'workspace.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Create one actor-owned Workspace with exact command replay.',
@@ -39,6 +40,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'workspace.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -52,6 +54,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.update': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -65,6 +68,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.dashboard': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -78,6 +82,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -91,6 +96,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.resources': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

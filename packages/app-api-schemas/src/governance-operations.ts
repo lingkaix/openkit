@@ -22,6 +22,7 @@ const publicCredentials = [
 /** Complete logical inputs and retained redacted outputs for the governance reads. */
 export const GOVERNANCE_OPERATION_DEFINITIONS = {
   'usage.read': {
+    stability: 'release-coupled',
     description: 'Read capability-call and usage evidence for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -41,6 +42,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'audit.workspace-list': {
+    stability: 'release-coupled',
     description: 'List audit events for one workspace in descending position order.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -60,6 +62,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'audit.server-list': {
+    stability: 'release-coupled',
     description: 'List server audit events.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -78,6 +81,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'evidence.bundle-list': {
+    stability: 'release-coupled',
     description: 'List evidence bundles for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -91,6 +95,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'evidence.runtime-list': {
+    stability: 'release-coupled',
     description: 'List runtime evidence for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -104,6 +109,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'permission.workspace-list': {
+    stability: 'release-coupled',
     description: 'List permission decisions for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -123,6 +129,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'permission.server-list': {
+    stability: 'release-coupled',
     description: 'List server permission decisions.',
     binding: 'json',
     returnsOneTimeSecret: false,

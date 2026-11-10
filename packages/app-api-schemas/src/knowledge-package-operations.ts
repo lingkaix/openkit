@@ -19,6 +19,7 @@ const credentials = [
 /** Packages carry exact original streams; neither operation accepts file content in JSON or model input. */
 export const KNOWLEDGE_PACKAGE_OPERATION_DEFINITIONS = {
   'knowledge.package.export': {
+    stability: 'release-coupled',
     binding: 'streaming',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -32,6 +33,7 @@ export const KNOWLEDGE_PACKAGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.package.import': {
+    stability: 'release-coupled',
     binding: 'streaming',
     returnsOneTimeSecret: false,
     successStatus: 200,

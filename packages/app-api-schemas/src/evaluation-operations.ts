@@ -50,6 +50,7 @@ export type SelectCandidateSetRequest = z.infer<typeof SelectCandidateSetRequest
 /** Candidate membership and human selection use the ordinary Workspace JSON family. */
 export const EVALUATION_OPERATION_DEFINITIONS = {
   'evaluation.candidate-set-create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -63,6 +64,7 @@ export const EVALUATION_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'evaluation.candidate-set-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -76,6 +78,7 @@ export const EVALUATION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'evaluation.candidate-set-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -89,6 +92,7 @@ export const EVALUATION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'evaluation.candidate-set-select': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

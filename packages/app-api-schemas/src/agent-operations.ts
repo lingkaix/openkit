@@ -15,6 +15,7 @@ const credentials = [
 /** Agent declarations reuse native payloads and closed admission strategies. */
 export const AGENT_OPERATION_DEFINITIONS = {
   'agent.health-refresh': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -28,6 +29,7 @@ export const AGENT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'agent.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -41,6 +43,7 @@ export const AGENT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'agent.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

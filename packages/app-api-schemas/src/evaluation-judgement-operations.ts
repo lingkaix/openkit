@@ -59,6 +59,7 @@ const credentials = [
 /** Exact human judgements and the existing Material correction effect use ordinary Workspace admission. */
 export const EVALUATION_JUDGEMENT_OPERATION_DEFINITIONS = {
   'evaluation.judgement-add': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -72,6 +73,7 @@ export const EVALUATION_JUDGEMENT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.range-correct': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,

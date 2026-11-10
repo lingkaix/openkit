@@ -5,6 +5,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Archive bytes belong only to the retained streaming bindings, never to a JSON operation input or result. */
 export const WORKSPACE_ARCHIVE_OPERATION_DEFINITIONS = {
   'workspace.archive-download': {
+    stability: 'release-coupled',
     binding: 'streaming',
     returnsOneTimeSecret: false,
     successStatus: 200,

@@ -77,6 +77,7 @@ const serverAdmin = {
 /** Server-admin lifecycle for the built-in local backends. */
 export const LOCAL_AI_OPERATION_DEFINITIONS = {
   'local-ai.status': {
+    stability: 'release-coupled',
     ...serverAdmin,
     description: 'Read local speech and local LLM backend status.',
     inputSchema: z.object({}).strict(),
@@ -84,6 +85,7 @@ export const LOCAL_AI_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'local-ai.enable': {
+    stability: 'release-coupled',
     ...serverAdmin,
     description:
       'Accept the model license, download missing speech artifacts, and start the backend.',
@@ -92,6 +94,7 @@ export const LOCAL_AI_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'local-ai.disable': {
+    stability: 'release-coupled',
     ...serverAdmin,
     description: 'Stop one local backend and drop its published endpoint.',
     inputSchema: LocalAiDisableInputSchema,

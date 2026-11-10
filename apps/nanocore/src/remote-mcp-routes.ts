@@ -56,6 +56,7 @@ function descriptor(id: string, definition: (typeof OPERATION_DEFINITIONS)[Opera
   return {
     id,
     description: definition.description,
+    stability: definition.stability,
     mutating: definition.mutating,
     credentials: definition.credentials,
     annotations: { readOnlyHint: !definition.mutating, destructiveHint: definition.mutating },
@@ -86,6 +87,7 @@ function search(query: string) {
       return {
         id,
         description: definition.description,
+        stability: definition.stability,
         mutating: definition.mutating,
         // An exact id must remain reachable even when many descriptions share its terms.
         score:

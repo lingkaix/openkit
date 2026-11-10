@@ -23,6 +23,7 @@ const codexPairSelector = { ...pairSelector, subscriptionProviderId: z.literal('
 /** Generic provider-slot operations join the existing subscription account and observation owners. */
 export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
   'provider-subscription.provider-list': {
+    stability: 'release-coupled',
     description: 'List supported provider subscriptions.',
     inputSchema: z.object({}).strict(),
     outputSchema: ProviderSubscriptionsResponseSchema,
@@ -36,6 +37,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-list': {
+    stability: 'release-coupled',
     description: 'List provider-subscription account slots.',
     inputSchema: z.object(providerSelector).strict(),
     outputSchema: ProviderSubscriptionAccountsResponseSchema,
@@ -49,6 +51,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-create': {
+    stability: 'release-coupled',
     description: 'Create one provider-subscription account slot.',
     inputSchema: CreateProviderSubscriptionAccountRequestSchema.extend(providerSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -62,6 +65,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-update': {
+    stability: 'release-coupled',
     description: 'Update one provider-subscription account slot.',
     inputSchema: UpdateProviderSubscriptionAccountRequestSchema.extend(pairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -75,6 +79,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.codex-settings': {
+    stability: 'release-coupled',
     description: 'Update one Codex subscription account’s reset and credit settings.',
     inputSchema: UpdateProviderSubscriptionCodexSettingsRequestSchema.extend(codexPairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -88,6 +93,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-use-reset': {
+    stability: 'release-coupled',
     description: 'Use one available Codex reset with an explicit request identity.',
     inputSchema: UseProviderSubscriptionResetRequestSchema.extend(codexPairSelector),
     outputSchema: ProviderSubscriptionResetResponseSchema,
@@ -101,6 +107,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-delete': {
+    stability: 'release-coupled',
     description: 'Delete one provider-subscription account slot.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: z.null(),
@@ -114,6 +121,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 204,
   },
   'provider-subscription.account-status': {
+    stability: 'release-coupled',
     description: 'Read the sanitized status of one provider-subscription account.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -127,6 +135,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.login-start': {
+    stability: 'release-coupled',
     description: 'Start device-code login for one provider-subscription account.',
     inputSchema: StartProviderSubscriptionAccountLoginRequestSchema.extend(pairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -140,6 +149,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.login-cancel': {
+    stability: 'release-coupled',
     description: 'Cancel one exact provider-subscription login interaction.',
     inputSchema: CancelProviderSubscriptionAccountLoginRequestSchema.extend(pairSelector),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -153,6 +163,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-logout': {
+    stability: 'release-coupled',
     description: 'Log out one provider-subscription account.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: ProviderSubscriptionAccountSchema,
@@ -166,6 +177,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-quota': {
+    stability: 'release-coupled',
     description: 'Read bounded provider-subscription quota observations.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: ProviderSubscriptionQuotaSchema,
@@ -179,6 +191,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-auto-topup': {
+    stability: 'release-coupled',
     description: 'Read the supported provider-subscription auto-top-up observation.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: ProviderSubscriptionAutoTopupSchema,

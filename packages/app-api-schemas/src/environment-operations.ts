@@ -17,6 +17,7 @@ const publicCredentials = [
 /** Complete logical inputs and retained redacted outputs for the environment reads. */
 export const ENVIRONMENT_OPERATION_DEFINITIONS = {
   'environment.snapshot-list': {
+    stability: 'release-coupled',
     description: 'List durable Agent Environment Package snapshots.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -30,6 +31,7 @@ export const ENVIRONMENT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'environment.snapshot-read': {
+    stability: 'release-coupled',
     description: 'Read one Agent Environment Package snapshot.',
     binding: 'json',
     returnsOneTimeSecret: false,

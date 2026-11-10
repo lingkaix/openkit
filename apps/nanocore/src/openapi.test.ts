@@ -2538,3 +2538,15 @@ it('omits support bindings and prevents parallel JSON archive operations', () =>
   ])
     expect(document.paths).not.toHaveProperty(`/api/app/operations/${id}`);
 });
+
+// F5 adds metadata without exposing native operations as HTTP routes.
+it('projects API and native stability without adding native routes', () => {
+  const document = createAppOpenApiDocument();
+  expect(document['x-openkit-operation-stability']['policy.write']).toBe('release-coupled');
+  expect(document['x-openkit-operation-stability']['mcp.call-tool']).toBe('release-coupled');
+  expect(
+    document.paths['/api/app/operations/storage.layout-report'].post['x-openkit-stability']
+  ).toBe('release-coupled');
+  expect(document.paths).not.toHaveProperty('/api/app/operations/policy.write');
+  expect(document.paths).not.toHaveProperty('/api/app/operations/mcp.call-tool');
+});

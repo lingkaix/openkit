@@ -37,6 +37,7 @@ export const ThreadReadStateResponseSchema = z.object({
 /** Thread commands and audience-scoped reads retain the protocol, closeout and dashboard owners. */
 export const THREAD_OPERATION_DEFINITIONS = {
   'thread.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -50,6 +51,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.update': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -63,6 +65,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.archive': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -76,6 +79,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -90,6 +94,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -103,6 +108,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.timeline': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -117,6 +123,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.item-body': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -133,6 +140,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.items': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -159,6 +167,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.read-state': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -172,6 +181,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'thread.mark-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -191,6 +201,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.dashboard': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

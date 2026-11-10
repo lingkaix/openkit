@@ -7,6 +7,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** A scheduled Worker may request one isolated ordinary admission for a stable source event. */
 export const EXTERNAL_TRIGGER_OPERATION_DEFINITIONS = {
   'automation.event-admit': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 202,

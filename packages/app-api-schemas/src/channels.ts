@@ -56,6 +56,7 @@ const userBoundary = {
 /** First-channel settings and conditional delivery commands use existing native operation projections. */
 export const CHANNEL_OPERATION_DEFINITIONS = {
   'channel.discord.status': {
+    stability: 'release-coupled',
     ...userBoundary,
     description: 'Read your Discord binding and deployment availability.',
     inputSchema: z.object({}).strict(),
@@ -64,6 +65,7 @@ export const CHANNEL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
   },
   'channel.discord.pair': {
+    stability: 'release-coupled',
     ...userBoundary,
     description: 'Start a short-lived one-use Discord account pairing challenge.',
     inputSchema: z.object({}).strict(),
@@ -72,6 +74,7 @@ export const CHANNEL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: true,
   },
   'channel.discord.revoke': {
+    stability: 'release-coupled',
     ...userBoundary,
     description: 'Revoke your Discord account binding and outstanding pairing challenges.',
     inputSchema: z.object({}).strict(),
@@ -80,6 +83,7 @@ export const CHANNEL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
   },
   'notification.list': {
+    stability: 'release-coupled',
     ...userBoundary,
     description: 'List your currently authorized Pending Request delivery observations.',
     inputSchema: z
@@ -96,6 +100,7 @@ export const CHANNEL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
   },
   'notification.send': {
+    stability: 'release-coupled',
     ...userBoundary,
     description:
       'Send one attention link, or explicitly retry a proved no-send attempt using its exact identity.',

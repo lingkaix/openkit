@@ -30,6 +30,7 @@ const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 /** Conversation discovery and submission preserve their existing bounded domain owners. */
 export const CONVERSATION_OPERATION_DEFINITIONS = {
   'conversation.targets': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -43,6 +44,7 @@ export const CONVERSATION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'conversation.navigation': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -62,6 +64,7 @@ export const CONVERSATION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'conversation.submit': {
+    stability: 'release-coupled',
     binding: 'json',
     binaryRequestBody: {
       mediaType: CONVERSATION_FILE_MEDIA_TYPE,
@@ -85,6 +88,7 @@ export const CONVERSATION_OPERATION_DEFINITIONS = {
 /** Ordinary bounded Task admission and replay, without a new Task lifecycle. */
 export const TASK_OPERATION_DEFINITIONS = {
   'task.steer': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Submit text for native processing during one exact running Task Turn.',
@@ -98,6 +102,7 @@ export const TASK_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'task.start': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Start one bounded Task Mode delegation.',

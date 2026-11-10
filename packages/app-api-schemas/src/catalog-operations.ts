@@ -58,6 +58,7 @@ const candidateInput = SubmitSkillCandidateRequestSchema.omit({ tree: true })
 /** Catalog declarations reuse native payloads and closed admission strategies. */
 export const CATALOG_OPERATION_DEFINITIONS = {
   'catalog.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -71,6 +72,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -84,6 +86,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-import': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -97,6 +100,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-version-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -110,6 +114,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-update-check': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -141,6 +146,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-version-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -160,6 +166,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-content-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -180,6 +187,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-diff': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -200,6 +208,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-remove': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -216,6 +225,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-purge': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -233,6 +243,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-candidate-submit': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -246,6 +257,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-candidate-decide': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -262,6 +274,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-candidate-withdraw': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -278,6 +291,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-select': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -295,6 +309,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-pin': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -311,6 +326,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -324,6 +340,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.mcp-create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -339,6 +356,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-stage-version': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -357,6 +375,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-remove': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -373,6 +392,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-select': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -389,6 +409,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-binding': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -405,6 +426,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.plugin-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -418,6 +440,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.plugin-import': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,

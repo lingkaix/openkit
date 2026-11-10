@@ -41,6 +41,7 @@ const ADMIN_RECOVERY_CREDENTIAL = strictScope({
   token: OPENKIT_ACCESS_TOKEN,
 });
 const STANDARD = Object.freeze({
+  stability: 'release-coupled',
   inputSensitivity: 'standard',
   outputSensitivity: 'redacted public response',
   requiredAccess: 'authenticated user',
@@ -561,6 +562,7 @@ export const operationCatalog = [
       id,
       source: 'app-api',
       appOperationId: id,
+      stability: definition.stability,
       clientMethod: `operations.${id}`,
       group: id.split('.')[0],
       summary: definition.description,
@@ -639,6 +641,7 @@ export function searchOperations(query, { schema = false } = {}) {
     )
     .map((operation) => ({
       id: operation.id,
+      stability: operation.stability,
       summary: operation.summary.replace(/\s+/g, ' ').trim(),
       ...(schema
         ? {

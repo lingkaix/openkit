@@ -31,6 +31,7 @@ const credentials = [
 /** Sole public contract for the existing non-Git synchronization operations. Decision identities keep the owner's nonempty string schema so retained non-UUID receipts remain replayable. */
 export const SYNC_OPERATION_DEFINITIONS = {
   'sync.review-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -44,6 +45,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.review-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -57,6 +59,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.review-decide': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -74,6 +77,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'sync.input-snapshot-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -87,6 +91,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.materialization-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -100,6 +105,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.backend-handle-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -113,6 +119,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.output-manifest-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -126,6 +133,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.change-set-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -139,6 +147,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.staged-review-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -152,6 +161,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.apply-result-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -165,6 +175,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.apply-plan-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -178,6 +189,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.reconciliation-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -191,6 +203,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.recovery-decide': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -208,6 +221,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'sync.quarantine-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -221,6 +235,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.apply-result-read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

@@ -544,7 +544,7 @@ const unchangedJobBaseline = {
   'smoke-app-native': 'c8227908f12cac49e1a59ab6808c2e7c66411aafc0cc1086182d37dd7d21889e',
   'publish-app-image': '71341c9400ad0b0182f31bc01f0c6f83c283d6ca66c6c6f8caf74d8e18813bca',
   'test-image': '840078dfe3583f8b1533beb65927bb8aa12d523d10747257672f56f97dfd6cf8',
-  'pr-check': '223920c6494e62625e544a9191942605ac2e6612a3f860b663029bf530b2126f',
+  'pr-check': 'bc4573c1a92ff1625337c60bf5361d6b4ccda10409333b3a6e635ef190464284',
   'nanohost-installer': '6cfb4c55855e54e82de9b7eda157eb5b4d5869174691920802024408d74d290a',
   'release-preflight': 'd159359da1aa40b57094045783a0f7a417109137e77aa9fd34937fc1fb02f709',
   'web-e2e': '8cfbff6a1ee272bbfd5b559150645111f2bad7040955098f6d64397a45c798ca',
@@ -568,7 +568,7 @@ const candidateJobBaseline = {
 const shardJobBaseline = {
   'l0-l2-plan': '1d4fc67c13b8cce81b9e8601ecf27393779dda994ced0c74219e9954bd11153a',
   'l0-l2-build': '36a0a2e65087a09a85cb2fcd0e0bfae79a0c98d14ceb37c345dae30fc0c842dd',
-  'l0-l2-shards': '18eeaf9c223336183a3c3cb725ccaa2ad187f601476e54c7b981c1ae1ade7b35',
+  'l0-l2-shards': '7efd8041cf293d1cfaa080b4e21fdd9c6f8a3551728f91bef6721e0b08d06d30',
   'l0-l2-coverage': 'fd9d261565d206838b1cf490a3102aaab77d5eecc91796f58e116aff3925ced4',
   'l0-l2': '9252d93fb6699a3de22ee1c0227887ad06c6180a1c436fc425ebff0cfc2a0df2',
 };
@@ -1427,5 +1427,14 @@ test('exact-job reuse restores attempt-bound reports instead of manufacturing su
   assert.equal(
     step(workflow.jobs['l0-l2'], 'Download complete shard observations').with.pattern,
     `l0-l2-*-attempt-${actionExpression('github.run_attempt')}`
+  );
+});
+
+// F5 compares committed settled promises, so these checks require complete history.
+test('only repository-check owners fetch full operation-contract history', () => {
+  assert.equal(step(workflow.jobs['pr-check'], 'Checkout').with['fetch-depth'], 0);
+  assert.equal(
+    step(workflow.jobs['l0-l2-shards'], 'Checkout').with['fetch-depth'],
+    "${{ matrix.id == 'static' && '0' || '1' }}"
   );
 });

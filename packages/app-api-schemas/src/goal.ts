@@ -261,6 +261,7 @@ const write = {
 /** Sole declarative contract for the ten Goal operations; all executable behavior stays with NanoCore. */
 export const GOAL_OPERATION_DEFINITIONS = {
   'goal.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -278,6 +279,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.intent.revise': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -286,6 +288,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
     inputSchema: z.object({ ...command, expectedRevision: revision, intent: text }).strict(),
   },
   'goal.card.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -296,6 +299,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.card.edit': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -312,6 +316,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.card.cancel': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -322,6 +327,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.plan.propose': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -337,6 +343,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.plan.approve': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -348,6 +355,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.cancel': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -357,6 +365,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
     inputSchema: z.object({ ...command, expectedRevision: revision, reason: text }).strict(),
   },
   'goal.completion.accept': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -373,6 +382,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

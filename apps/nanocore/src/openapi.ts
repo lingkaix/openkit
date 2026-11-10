@@ -17,7 +17,9 @@ import {
   ListWorkspaceInvitationsResponseSchema,
   ListWorkspaceMembersResponseSchema,
   OPERATION_DEFINITIONS,
+  OPERATION_REGISTRY,
   type OperationProjectionFacts,
+  type OperationStability,
   operationHttpPath,
   operationModelInput,
   operationUsesBootstrapSecret,
@@ -63,6 +65,7 @@ export type JsonValue =
 
 /** Minimal OpenAPI document shape emitted by NanoCore. */
 interface AppOpenApiDocument {
+  'x-openkit-operation-stability': Record<string, OperationStability>;
   openapi: '3.1.0';
   info: {
     title: string;
@@ -134,6 +137,12 @@ function appJsonOperation<const OperationId extends string>(input: {
 }) {
   return {
     operationId: input.operationId,
+    ...(Object.hasOwn(OPERATION_REGISTRY, input.operationId)
+      ? {
+          'x-openkit-stability':
+            OPERATION_REGISTRY[input.operationId as keyof typeof OPERATION_REGISTRY].stability,
+        }
+      : {}),
     tags: [input.tag],
     summary: input.summary,
     security: input.security ?? [{ bearerAuth: [] }, { sessionCookie: [] }],
@@ -383,6 +392,7 @@ function knowledgePackageOperation<
 >(id: Id) {
   return {
     operationId: id,
+    'x-openkit-stability': OPERATION_DEFINITIONS[id].stability,
     tags: ['knowledge'],
     summary: OPERATION_DEFINITIONS[id].description,
     security: DEPLOYMENT_ADMIN_SECURITY,
@@ -643,6 +653,10 @@ export function createAppOpenApiDocument() {
         'Generated projection from OpenKit Zod schemas. Zod schemas in shared packages remain the source of truth.',
     },
     'x-openkit-protocol-version': PROTOCOL_VERSION,
+    // Includes native metadata only; this extension creates no route or MCP capability.
+    'x-openkit-operation-stability': Object.fromEntries(
+      Object.entries(OPERATION_REGISTRY).map(([id, definition]) => [id, definition.stability])
+    ),
     paths: appApiPaths(),
     components: {
       securitySchemes: {
@@ -756,6 +770,7 @@ function digestOpenApiSource(
         openapi: document.openapi,
         paths: document.paths,
         protocolVersion: document['x-openkit-protocol-version'],
+        operationStability: document['x-openkit-operation-stability'],
       })
     )
     .digest('hex')}`;

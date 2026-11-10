@@ -18,6 +18,7 @@ const publicCredentials = [
 /** Decisions join the shared Pending Request owner; CLI semantic ids stay unchanged. */
 export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
   'approval.respond': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -36,6 +37,7 @@ export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'question.answer': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -49,6 +51,7 @@ export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'pending-request.withdraw': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

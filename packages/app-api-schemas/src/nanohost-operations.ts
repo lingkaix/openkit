@@ -18,6 +18,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Release-authored nanohost contracts; execution and current administrator authority stay in NanoCore. */
 export const NANOHOST_OPERATION_DEFINITIONS = {
   'nanohost.enroll': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Enroll the configured NanoHost through an exclusive named-slot credential write.',
@@ -31,6 +32,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'nanohost.runtime-target': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -45,6 +47,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'nanohost.token-list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -58,6 +61,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'nanohost.token-issue': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Issue a NanoHost transport Token through a proved configured-slot write.',
@@ -71,6 +75,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'nanohost.token-revoke': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -84,6 +89,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'nanohost.token-rotate': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -99,6 +105,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'nanohost.token-rotation-abort': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -112,6 +119,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'nanohost.decommission': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

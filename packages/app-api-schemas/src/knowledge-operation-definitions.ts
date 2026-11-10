@@ -72,6 +72,7 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 /** Sole public contracts for the governed Knowledge family, including its request-scoped Manager views. */
 export const KNOWLEDGE_OPERATION_DEFINITIONS = {
   'knowledge.ask': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -86,6 +87,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.tell': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -100,6 +102,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.maintain': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -113,6 +116,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.answer': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -126,6 +130,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.source.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -139,6 +144,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.source.register': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -152,6 +158,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.source.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -165,6 +172,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.indexes': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -178,6 +186,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.retrieval': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -192,6 +201,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.context.prepare': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -208,6 +218,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.proposal.draft': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -223,6 +234,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.repair.suggest': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -238,6 +250,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.health.check': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -251,6 +264,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.proposal.read': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -265,6 +279,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.proposal.decide': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -281,6 +296,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.proposal.reverse': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -301,6 +317,7 @@ export const KNOWLEDGE_OPERATION_DEFINITIONS = {
 /** One public Notebook page lifecycle; all mutations use the existing publisher. */
 export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
   'knowledge.schema.apply': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -315,6 +332,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.schema.preview': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -329,6 +347,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.notebook.history': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -342,6 +361,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.notebook.diff': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -356,6 +376,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.notebook.restore': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -371,6 +392,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
   },
 
   'knowledge.notebook.update': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -384,6 +406,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.notebook.list': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -403,6 +426,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'knowledge.notebook.create': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -416,6 +440,7 @@ export const KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'knowledge.notebook.delete': {
+    stability: 'release-coupled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
