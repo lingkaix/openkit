@@ -7,17 +7,16 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { DISCONTINUOUS_FILE_CORPUS_FAMILIES } from './upgrade-from-previous-corpus.mjs';
 
 const execute = promisify(execFile);
 
 const REGISTER = 'docs/specs/20261017-retained_format_register.md';
 export const EXTERNAL_FAMILIES = Object.freeze([
-  'Host storage identity',
-  'Worker volume and native resume slots',
-  'Execution image content and provenance',
-  'App update helper settings and receipts',
-  'Component update outcomes',
+  'Host storage identity', // Execution-host identity, outside the NanoCore Data Root.
+  'Worker volume and native resume slots', // Retained execution-host volumes and native files.
+  'Execution image content and provenance', // Execution-host private OCI store.
+  'App update helper settings and receipts', // Separately installed operator helper state.
+  'Component update outcomes', // Operator-selected external update evidence directory.
 ]);
 
 const OPERATOR_FIXTURE = `
@@ -111,13 +110,19 @@ export function retainedFamilies(markdown) {
   const start = markdown.indexOf('### Canonical Files And Retained Evidence');
   const end = markdown.indexOf('### Rebuildable And Disposable Boundary', start);
   assert(start >= 0 && end > start, 'Retained register sections are missing.');
-  const names = markdown
-    .slice(start, end)
-    .split('\n')
-    .filter(
-      (line) => line.startsWith('| ') && !line.startsWith('| Family') && !line.startsWith('| ---')
-    )
-    .map((line) => line.split('|')[1].trim());
+  const names = [];
+  let familyTable = false;
+  for (const line of markdown.slice(start, end).split('\n')) {
+    if (line.startsWith('| Family |')) {
+      familyTable = true;
+      continue;
+    }
+    if (!line.startsWith('| ')) {
+      familyTable = false;
+      continue;
+    }
+    if (familyTable && !line.startsWith('| ---')) names.push(line.split('|')[1].trim());
+  }
   assert(
     names.length > 0 && new Set(names).size === names.length,
     'Retained register is empty or duplicated.'
@@ -140,20 +145,9 @@ export function canonical(value) {
 
 /** Keeps only a digest of reader results; fixture data and protected inputs stay private. */
 export function summarizeFamilies(families, required) {
-  const discontinuous = new Set(DISCONTINUOUS_FILE_CORPUS_FAMILIES);
   const result = {};
   for (const family of required) {
     const sample = families[family];
-    // The retained register still names these families. The corpus helper records
-    // the accepted discontinuity, so the join accounts for them without a sample.
-    if (discontinuous.has(family)) {
-      assert(
-        sample === undefined,
-        `${family}: discontinuous family presented a current reader sample.`
-      );
-      result[family] = { discontinuous: true };
-      continue;
-    }
     assert(
       sample && Array.isArray(sample.values) && sample.values.length > 0,
       `${family}: no reader result.`

@@ -32,6 +32,12 @@ test('inventory follows all canonical and SQL rows but excludes disposable deriv
   );
 });
 
+test('inventory excludes format-window dispositions from retained family tables', () => {
+  const register =
+    '### Canonical Files And Retained Evidence\n| Family | Location |\n| --- | --- |\n| Files | a |\n\n### SQLite Authority Families\n| Family | Location |\n| --- | --- |\n| SQL | b |\n\n### Format-Window Gaps\n| Item | Family | Baseline evidence and remaining gap |\n| --- | --- | --- |\n| F1 (FA03) | Files | Pending marker |\n\n### Rebuildable And Disposable Boundary\n| Family | Location |\n| --- | --- |\n| Cache | c |';
+  assert.deepEqual(retainedFamilies(register), ['Files', 'SQL']);
+});
+
 test('readback refuses a dropped family or changed retained value even when boot passed', () => {
   const before = summarizeFamilies({ Files: sample }, ['Files']);
   assert.deepEqual(compareFamilies(before, { Files: sample }, ['Files']), before);

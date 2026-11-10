@@ -76,6 +76,41 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
   assert.ok(first['Conversation original file inputs'].values[0].length > 0);
   assert.equal(first['Immutable Artifact versions']?.values.length, 2);
   assert.equal(first['Artifact original payload']?.bytes.length, 2);
+  assert.equal(first['Thread and Turn records'].values.length, 2);
+  assert.deepEqual(
+    first['Local AI enablement, selected model and license settings'].values[0].backends[
+      'llama-cpp'
+    ],
+    {
+      enabled: false,
+      selectedModelId: 'continuity',
+      threads: 1,
+      licenseAcceptedAt: '2026-10-18T00:00:00.000Z',
+    }
+  );
+  assert.equal(
+    first['Provider subscription account metadata'].values[0].accountSlotId,
+    'continuity'
+  );
+  assert.equal(first['Vault reference state'].values[0].referenceId, selectors.vaultReferenceId);
+  assert.equal(
+    first['Knowledge package manifest and archive closure'].values[0].contentInventory[0].path,
+    'raw/original.bin'
+  );
+  assert.equal(
+    first['Workspace backup and MOVE bundle'].values[0].manifest.backupId,
+    selectors.workspaceBackupId
+  );
+  assert.equal(
+    first['Workspace deletion closure'].values[0].closureId,
+    selectors.closure.closureId
+  );
+  assert.equal(first['Offline storage-layout migration report'].values[0].outcome, 'succeeded');
+  assert.ok(
+    first['Scope-owned immutable work bodies and schema content'].bytes.some(
+      (entry) => entry.byteLength > 65536
+    )
+  );
   const capture = first['Unaccepted Workspace capture source'];
   const sourceRoot = `workspaces/${selectors.workspaceId}/evidence/backend/workspace-capture/${selectors.rawCaptureIdentity.collectionId}`;
   const candidate = Buffer.from('00ffc328800a', 'hex');
@@ -115,19 +150,21 @@ test('old producers seed a nonempty B01 file corpus that old readers reopen exac
   for (const [family, observed] of Object.entries(first)) {
     assert.ok(observed.values.length > 0, `${family}: no native reader result`);
     // Native Review rows are domain records, not the four mutable metadata snapshot envelopes.
-    if (NATIVE_METADATA_FAMILIES.includes(family) && family !== 'Knowledge Proposal Review') {
+    if (NATIVE_METADATA_FAMILIES.includes(family)) {
       for (const snapshot of observed.values) {
         assert.deepEqual(snapshot.owner, { kind: 'workspace', workspaceId: selectors.workspaceId });
         assert.ok(Number.isSafeInteger(snapshot.revision) && snapshot.revision > 0);
-        const expected = {
-          'Workspace record': [selectors.workspaceId, 'active'],
-          'Thread record': [selectors.threadId, 'active'],
-          'Turn record': [selectors.turnId, 'completed'],
-          AgentSession: [selectors.agentSessionId, 'closed'],
-        }[family];
+        const expected =
+          snapshot.record.id === selectors.turnId
+            ? [selectors.turnId, 'completed']
+            : {
+                'Workspace metadata': [selectors.workspaceId, 'active'],
+                'Thread and Turn records': [selectors.threadId, 'active'],
+                'AgentSession product records': [selectors.agentSessionId, 'closed'],
+              }[family];
         assert.equal(snapshot.record.id, expected[0]);
         assert.equal(snapshot.record.status, expected[1]);
-        if (family === 'Turn record') {
+        if (snapshot.record.id === selectors.turnId) {
           assert.ok(snapshot.record.startedAt);
           assert.ok(snapshot.record.completedAt);
         } else {
@@ -197,7 +234,7 @@ test('file reader fails on retained history corruption instead of accepting a bo
     (await readRawWorkspaceCapture(input.dataRoot, selectors.rawCaptureIdentity)).candidate,
     candidate
   );
-  const selected = before['Item revision log'].bytes[0];
+  const selected = before['Item revisions and stream events'].bytes[0];
   const path = join(input.dataRoot, selected.path.slice('data/'.length));
   chmodSync(path, 0o644);
   const bytes = readFileSync(path);
@@ -228,7 +265,7 @@ process.stdout.write(JSON.stringify(await readFileCorpus(input)));`,
   const recovered = JSON.parse(child.stdout);
   assert.deepEqual(Object.keys(recovered).sort(), [...FILE_CORPUS_FAMILIES].sort());
   assert.deepEqual(recovered, before);
-  assert.ok(recovered['Item revision log'].values.length);
+  assert.ok(recovered['Item revisions and stream events'].values.length);
 });
 
 test('seeding refuses a second corpus instead of changing an existing baseline', async (t) => {

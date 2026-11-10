@@ -15,14 +15,14 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'Core bootstrap and default-access settings',
   'Core permission decisions',
   'Core Audit, boot Audit and Vault Audit',
-  'Core Vault metadata, grants, injection and use',
+  'Vault reference metadata, injection plans/receipts, use and administrative Audit',
   'Scheduler queue, attempts, recurring history and external event joins',
-  'Runtime targets and binding/control graph',
+  'Worker runtime bindings, backend sessions, storage contributors, image settlements and control records',
   'Core command receipts',
   'User command and Thread read receipts',
   'User Audit and notebook admission',
   'Workspace permission, Audit and Vault use',
-  'Workspace capability calls and Usage',
+  'Capability calls and Usage',
   'Pending Requests, Workspace receipts and Worker checkpoints',
   'Material content, revisions and Thread bindings',
   'Artifact Review decisions, range feedback, choices as judgements and apply lineage',
@@ -39,12 +39,20 @@ export const SQL_CORPUS_FAMILIES = Object.freeze([
   'AEP snapshot',
   'Context Package trace',
   'Context Package files',
-  'Work observation log',
+  'Work observations',
   'Runtime provenance and admitted raw streams',
   'Notification attention and delivery attempts',
   'Discord bindings, pairing, disclosures and inbound receipts',
   'Human judgement records',
   'Candidate sets and selections',
+  'Vault grants',
+  'Vault Login quota observations',
+  'NanoHost runtime targets',
+  'NanoHost integration identities and transport metadata',
+  'User permission decisions',
+  'Execution roots and ordered step journals',
+  'Workspace recovery admissions and proofs',
+  'Workspace capture protection',
 ]);
 
 /** Loads product code only from the explicit previous or candidate package root. */
@@ -284,7 +292,10 @@ function fileBytes(dataRoot, path) {
 
 /** Selects durable target identity while boot owns generation, readiness and observation time. */
 function retainedRuntimeTarget(target) {
-  required(target, 'Runtime targets and binding/control graph');
+  required(
+    target,
+    'Worker runtime bindings, backend sessions, storage contributors, image settlements and control records'
+  );
   return {
     targetId: target.targetId,
     identityId: target.identityId,
@@ -470,13 +481,18 @@ export async function seedSqlCorpus({
     o.tokens.setDefaultServerAdminTokenId(core, userId, token.tokenId);
     sql.serverDecisionId = id('pd', 'server-decision');
     sql.workspaceDecisionId = id('pd', 'workspace-decision');
-    for (const ownerScope of ['server', 'workspace']) {
+    sql.userDecisionId = id('pd', 'user-decision');
+    for (const ownerScope of ['server', 'workspace', 'user']) {
       await o.decisions.recordProductPermissionDecision({
-        coreDb: core,
-        workspaceDb: workspace,
+        ...(ownerScope === 'user' ? { userDb: user } : { coreDb: core, workspaceDb: workspace }),
         ownerScope,
         ...(ownerScope === 'workspace' ? { workspaceId } : {}),
-        decisionId: ownerScope === 'server' ? sql.serverDecisionId : sql.workspaceDecisionId,
+        decisionId:
+          ownerScope === 'server'
+            ? sql.serverDecisionId
+            : ownerScope === 'user'
+              ? sql.userDecisionId
+              : sql.workspaceDecisionId,
         policyEngineVersion: 'upgrade-corpus:v1',
         policySnapshotId: 'upgrade-corpus',
         subjectSummary: actor,
@@ -1083,6 +1099,35 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
       workspace = o.db.openWorkspaceDb(dataRoot, workspaceId);
       return { core, workspace, store: new o.store.FsStore({ dataRoot }), stopped };
     });
+    const transport = await o.load('auth/nanohost-transport-token-store');
+    const accessSecrets = await o.load('auth/nanohost-transport-token');
+    const issued = await transport.enrollNanoHostTransportIdentity(core, {
+      tokenId: id('nhtok', 'transport-token'),
+      secret: accessSecrets.createOpenKitAccessTokenSecret(),
+      ownerNanoHostIdentityId: 'upgrade-corpus-integration',
+      deploymentId: 'upgrade-corpus-transport',
+      responsibleServerAdminActorId: userId,
+      expiresAt: EXPIRES,
+      now: new Date(NOW),
+    });
+    sql.transportTokenId = issued.tokenId;
+    const captures = await o.load('storage/workspace-capture-protection');
+    sql.captureId = 'upgrade-corpus-capture';
+    captures.protectCapture(workspace, workspaceId, sql.captureId);
+    captures.abandonCapture(workspace, workspaceId, sql.captureId);
+    sql.executionId = required(
+      workspace.sqlite
+        .prepare('SELECT id FROM control_executions WHERE work_id=? ORDER BY id')
+        .pluck()
+        .get(sql.contextTurnId),
+      'Execution journal'
+    );
+    await seedLoginObservation(o, core, workspace, store, sql);
+    await (await o.load('storage/control-store-worker-client')).shutdownControlStoreWorkerClient();
+    workspace.sqlite.close();
+    user.sqlite.close();
+    core.sqlite.close();
+    await seedRecoveryAdmission(o, dataRoot, retainedRoot, sql);
     return { sql };
   } finally {
     const { shutdownControlStoreWorkerClient } = await o.load(
@@ -1093,6 +1138,393 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
     if (user.sqlite.open) user.sqlite.close();
     if (core.sqlite.open) core.sqlite.close();
   }
+}
+
+/** Produces quota JSON only after the real native binding, package, grant, delivery and Use owners admit it. */
+async function seedLoginObservation(o, core, workspace, store, sql) {
+  const [packages, snapshots, harness, preparation, vaultBackend, vaultUse, controlWorker] =
+    await Promise.all(
+      [
+        'runtime/agent-environment',
+        'runtime/aep-snapshot-ledger',
+        'runtime/nanohost-harness',
+        'runtime/nanohost-attempt-records',
+        'vault/vault-encrypted-file-backend',
+        'vault/vault-use-audited-backend',
+        'storage/control-store-worker-client',
+      ].map(o.load)
+    );
+  const now = new Date().toISOString();
+  const actor = { kind: 'user', id: sql.userId };
+  const thread = await store.createThread(
+    workspace.workspaceId,
+    'Synthetic retained Login observation'
+  );
+  const turn = await store.createTurn(
+    workspace.workspaceId,
+    thread.id,
+    'Retain native quota metadata.',
+    actor
+  );
+  await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+  const sessionId = id('as', 'login-session');
+  await store.createAgentSession({
+    id: sessionId,
+    agentId: 'agent_codex_host',
+    workspaceId: workspace.workspaceId,
+    threadId: thread.id,
+    status: 'ready',
+    message: null,
+    createdAt: now,
+    updatedAt: now,
+  });
+  const bindingId = 'upgrade-corpus-login-binding';
+  const sandboxBindingRef = 'upgrade-corpus-login-sandbox-binding';
+  const snapshotId = `aepsnap_${turn.id}_${sessionId}`;
+  const entry = o.scheduler.createSchedulerAdmissionEntry(core, {
+    backendId: 'nanohost',
+    queueEntryId: 'upgrade-corpus-login-queue',
+    requestId: randomUUID(),
+    workspaceId: workspace.workspaceId,
+    threadId: thread.id,
+    turnId: turn.id,
+    turnInput: 'Retain native quota metadata.',
+    requestedAgentId: 'agent_codex_host',
+    triggerActor: actor,
+    now: () => now,
+  });
+  const attemptId = id('attempt', 'login-attempt');
+  o.attempts.createSchedulerExecutionAttempt(core, {
+    entry,
+    attemptId,
+    preparationInput: { admission: entry },
+    now: () => now,
+  });
+  o.attempts.bindSchedulerExecutionAttemptSession(core, {
+    attemptId,
+    agentSessionId: sessionId,
+    now: () => now,
+  });
+  preparation.bindNanoHostAttemptPreparation(core, {
+    attemptId,
+    agentSessionId: sessionId,
+    inputRef: snapshotId,
+    bindingRef: sandboxBindingRef,
+    sessionCompatibilityKey: 'b'.repeat(64),
+    now: () => now,
+  });
+  o.attempts.recordSchedulerExecutionOperation(core, {
+    attemptId,
+    operationId: 'upgrade-corpus-login-submit',
+    submission: true,
+    now: () => now,
+  });
+  const backend = vaultBackend.createEncryptedFileVaultBackend({
+    storeDir: join(core.dataRoot, 'server', 'files', 'upgrade-login-fixture'),
+    masterKey: randomBytes(32),
+    now: () => now,
+  });
+  sql.loginReferenceId = id('vault', 'login-observation');
+  backend.store({
+    referenceId: sql.loginReferenceId,
+    material: randomBytes(48),
+    metadata: { ownerScope: 'user', userId: sql.userId },
+  });
+  const reference = await o.references.createVaultReference(core, {
+    referenceId: sql.loginReferenceId,
+    ownerScope: 'user',
+    userId: sql.userId,
+    displayName: 'Synthetic retained Login',
+    secretKind: 'codex-auth-json',
+    backendKind: 'encrypted-file',
+    login: { provider: 'codex', accountId: 'continuity-account', quarantined: false },
+    now: () => now,
+  });
+  const grant = await o.grants.createVaultGrant(core, {
+    grantId: id('grant', 'login-observation'),
+    vaultReferenceId: reference.referenceId,
+    ownerScope: 'workspace',
+    workspaceId: workspace.workspaceId,
+    allowedInjectionPaths: ['runtime-token'],
+    lifetime: 'workspace',
+    now: () => now,
+  });
+  const setup = syntheticAgentSetup();
+  setup.logicalModels.allowed[0].modelParameters = {
+    contextWindow: 128000,
+    maxOutputTokens: 16000,
+    inputModalities: ['text'],
+    reasoning: true,
+  };
+  setup.manifest.sandbox.backend.requiredCapabilities = ['backend-local-inference'];
+  setup.manifest.sandbox.credentialDeclarations = [
+    {
+      id: 'login',
+      requirementId: 'login',
+      vaultGrantId: grant.grantId,
+      visibility: 'runtime-token',
+      consumer: 'codex-login',
+    },
+  ];
+  const environmentPackage = await packages.resolveAgentEnvironmentPackage({
+    coreDb: core,
+    agentSetup: setup,
+    agentSessionId: sessionId,
+    backend: { kind: 'openshell' },
+    captureCoverage: { scope: 'server', value: 'off' },
+    turn: store.getTurnById(turn.id),
+    triggerActor: actor,
+    workspaceRoots: [],
+    vaultBackend: () => backend,
+    requestId: entry.requestId,
+    now: () => now,
+    createdAt: now,
+  });
+  snapshots.recordAgentEnvironmentPackageSnapshot(workspace, {
+    environmentPackage,
+    createdAt: now,
+  });
+  const previousTarget = o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId);
+  const target = await o.targets.allocateNanoHostRuntimeTargetConnectionGeneration(core, {
+    targetId: previousTarget.targetId,
+    identityId: previousTarget.identityId,
+    deploymentId: previousTarget.deploymentId,
+    observedAt: now,
+  });
+  const physicalEpoch = 'e'.repeat(64);
+  await o.targets.upsertNanoHostRuntimeTarget(core, {
+    ...target,
+    freshEmpty: true,
+    predecessorFenced: true,
+    ready: true,
+    physicalEpoch,
+    observedAt: now,
+  });
+  const harnessInstanceId = 'upgrade-corpus-login-harness';
+  const integrationRef = 'upgrade-corpus-login-integration';
+  await harness.createNanoHostHarnessRuntime(core, {
+    adapterId: 'codex',
+    adapterVersion: 'synthetic',
+    harnessBindingRef: 'upgrade-corpus-login-harness-binding',
+    harnessCompatibilityKey: 'd'.repeat(64),
+    harnessInstanceId,
+    imageDigest: `sha256:${'a'.repeat(64)}`,
+    originPhysicalEpoch: physicalEpoch,
+    sandboxBindingRef,
+    sandboxCompatibilityKey: 'a'.repeat(64),
+    sandboxIntegrationBindingRef: integrationRef,
+    sandboxRuntimeId: 'upgrade-corpus-login-sandbox',
+    runtimeTargetId: target.targetId,
+    timestamp: now,
+  });
+  await harness.openNanoHostAgentSessionBinding(core, {
+    agentSessionCompatibilityKey: 'b'.repeat(64),
+    agentSessionId: sessionId,
+    agentSessionRuntimeBindingId: bindingId,
+    effectiveSetupGeneration: 1,
+    harnessInstanceId,
+    workspaceId: workspace.workspaceId,
+    threadId: thread.id,
+    timestamp: now,
+  });
+  const context = {
+    workspaceId: workspace.workspaceId,
+    threadId: thread.id,
+    turnId: turn.id,
+    agentSessionId: sessionId,
+    agentSessionRuntimeBindingId: bindingId,
+    packageSnapshotId: snapshotId,
+    leaseId: attemptId,
+    turnSequence: 0,
+    runtimeTargetId: target.targetId,
+    physicalEpoch,
+    connectionGeneration: target.connectionGeneration,
+  };
+  const {
+    runtimeTargetId: _target,
+    physicalEpoch: _epoch,
+    connectionGeneration: _generation,
+    ...lineage
+  } = context;
+  const body = {
+    ...lineage,
+    aepRef: 'fixture:aep',
+    contextRef: 'fixture:context',
+    contextPackageId: 'upgrade-corpus-login-context',
+    deadline: o.attempts.requireSchedulerExecutionAttempt(core, attemptId).deadline,
+  };
+  const prepared = harness.prepareNanoHostHarnessOperation(core, {
+    body,
+    harnessInstanceId,
+    operation: 'turn.start',
+    timestamp: now,
+  });
+  await harness.queueNanoHostHarnessOperation(core, {
+    body,
+    prepared,
+    harnessInstanceId,
+    operation: 'turn.start',
+    timestamp: now,
+  });
+  await harness.dispatchNanoHostHarnessOperation(core, {
+    sandboxIntegrationBindingRef: integrationRef,
+    now: () => now,
+  });
+  const planId = `plan_${snapshotId}_login`,
+    receiptId = `receipt_${snapshotId}_login`;
+  required(o.plans.getVaultInjectionPlan(core, planId), 'Login injection plan');
+  const audited = vaultUse.createVaultUseAuditedBackend({
+    backend,
+    db: workspace,
+    ownerScope: 'workspace',
+    workspaceId: workspace.workspaceId,
+    actor,
+    resolvingPath: 'grant',
+    grantId: grant.grantId,
+    planId,
+    receiptId,
+    agentSessionId: sessionId,
+    now: () => now,
+  });
+  const material = await audited.resolve({ referenceId: reference.referenceId });
+  if (typeof material !== 'string') material.fill(0);
+  const requester = {
+    kind: 'public',
+    actor: { kind: 'local', userId: sql.userId },
+    actorRef: actor,
+  };
+  const { readVaultRequesterAuthority } = await o.load('runtime/worker-credential-authority');
+  const { policyDigest } = await o.load('policy/statements');
+  const loginBinding = {
+    binding: {
+      consumer: {
+        scope: environmentPackage.scope,
+        snapshotId,
+        agent: { agentId: environmentPackage.agent.agentId },
+      },
+      declaration: environmentPackage.credentials.declarations[0],
+      materialVersion: 1,
+    },
+    requester: {
+      workspaceId: workspace.workspaceId,
+      requester,
+      revision: policyDigest(
+        readVaultRequesterAuthority(core, workspace.workspaceId, requester, 'vault.use', true)
+      ),
+    },
+    attemptId,
+    planId,
+    receiptId,
+    reference,
+  };
+  await controlWorker.getControlStoreWorkerClient().vault(core, 'receipt-create', {
+    receiptId,
+    planId,
+    grantId: grant.grantId,
+    agentSessionId: sessionId,
+    backendSummary: 'Synthetic native metadata fixture.',
+    injectedAt: now,
+    revocationStatus: 'active',
+    expiresAt: grant.expiresAt,
+    loginBinding,
+  });
+
+  await controlWorker.getControlStoreWorkerClient().vault(core, 'reference-login-observe', {
+    context,
+    referenceId: reference.referenceId,
+    grantId: grant.grantId,
+    planId,
+    receiptId,
+    materialGeneration: 1,
+    accountId: 'continuity-account',
+    now: () => now,
+    observations: {
+      state: 'available',
+      windows: [{ kind: 'primary', usedPercent: 12, durationMinutes: 60, resetsAt: null }],
+      source: 'native-read',
+      observedAt: now,
+      bindingId,
+      materialGeneration: 1,
+    },
+  });
+  // Stop only the synthetic prepared consumer; retained quota data survives the ordinary fence.
+  await harness.fenceNanoHostSandboxRuntime(core, { sandboxBindingRef, timestamp: now });
+  o.attempts.closeSchedulerExecutionAttemptWithoutEffects(core, {
+    attemptId,
+    noOutstandingEffects: true,
+    cause: 'synthetic-corpus',
+    now: () => now,
+  });
+  await o.targets.recordNanoHostRuntimeTargetConnectionClose(core, {
+    targetId: target.targetId,
+    closedGeneration: target.connectionGeneration,
+    authoritativeGeneration: null,
+    observedAt: now,
+  });
+  await store.updateTurn(turn.id, { status: 'cancelled', completedAt: now, durationMs: 0 });
+  await store.updateAgentSession(sessionId, { status: 'closed', updatedAt: now });
+}
+
+/** Captures a real prepared MOVE proof, then explicitly abandons only its fixture admission. */
+async function seedRecoveryAdmission(o, dataRoot, retainedRoot, sql) {
+  const [backups, fileAdmission, admissions] = await Promise.all(
+    [
+      'storage/workspace-backup',
+      'storage/artifacts/file-admission',
+      'storage/workspace-recovery-admissions',
+    ].map(o.load)
+  );
+  const root = join(retainedRoot, 'sql-recovery');
+  mkdirSync(root, { recursive: true });
+  sql.recoveryAdmissionId = id('wsbak', 'recovery-admission');
+  const sourceStore = new o.store.FsStore({ dataRoot });
+  const recoveryWorkspace = await sourceStore.createWorkspace('Synthetic retained recovery', {
+    requestId: randomUUID(),
+    producer: { kind: 'user', id: sql.userId },
+    instructionReference: 'fixture:upgrade-recovery',
+  });
+  const sourceCore = o.db.openCoreDb(dataRoot);
+  try {
+    o.membership.recordWorkspaceOwnerMembership({
+      coreDb: sourceCore,
+      workspaceId: recoveryWorkspace.id,
+      ownerUserId: sql.userId,
+    });
+  } finally {
+    sourceCore.sqlite.close();
+  }
+  await (await o.load('storage/control-store-worker-client')).shutdownControlStoreWorkerClient();
+  sql.recoveryWorkspaceId = recoveryWorkspace.id;
+  const sourceDeploymentId = (await o.load('storage/fs-layout')).readDataRootLayoutMarker(
+    dataRoot
+  ).deploymentId;
+  const input = {
+    source: { kind: 'stopped-data-root', dataRoot },
+    workspaceId: recoveryWorkspace.id,
+    expectedSourceDeploymentId: sourceDeploymentId,
+    backupId: sql.recoveryAdmissionId,
+    purpose: 'move',
+    bundleRoot: join(root, 'bundle'),
+    stagingParent: root,
+    admission: new fileAdmission.FileStorageAdmission(dataRoot, () => 0n),
+    expectedRelease: { version: 'upgrade-corpus', buildId: 'upgrade-corpus' },
+    supportedDatabaseFormats: backups.WORKSPACE_BACKUP_DATABASE_FORMATS,
+  };
+  await backups.createWorkspaceBackup(input);
+  await admissions.withRecoveryRoot(dataRoot, async (core) => {
+    required(
+      admissions.readRecoveryAdmission(core, sql.recoveryAdmissionId),
+      'Owner-produced MOVE admission'
+    );
+    admissions.endRecoveryAdmission(core, sql.recoveryAdmissionId, 'abandoned');
+    const captures = await o.load('storage/workspace-capture-protection');
+    const captureDb = o.db.openWorkspaceDb(dataRoot, recoveryWorkspace.id);
+    try {
+      captures.abandonCapture(captureDb, recoveryWorkspace.id, sql.recoveryAdmissionId);
+    } finally {
+      captureDb.sqlite.close();
+    }
+  });
 }
 
 /** Runs native Task closeout against an external model, then stops before Task envelope recovery. */
@@ -2634,6 +3066,25 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors, corpusProduc
         throw new Error('Native migration journals: selected retained entry is missing.');
       }
     }
+    const transport = await o.load('auth/nanohost-transport-token-store');
+    const captures = await o.load('storage/workspace-capture-protection');
+    const admissions = await o.load('storage/workspace-recovery-admissions');
+    const executions = await o.load('runtime/execution-journal');
+    const executionRef = {
+      owner: { kind: 'workspace', workspaceId },
+      executionId: sql.executionId,
+    };
+    const executionReader = executions.createExecutionStepJournalReader(
+      workspace,
+      executionRef.owner
+    );
+    const execution = await executionReader.readExecution(executionRef);
+    const steps = await executionReader.readEndedSteps(executionRef);
+    required(steps, 'Execution step journal');
+    const recovery = required(
+      admissions.readRecoveryAdmission(core, sql.recoveryAdmissionId),
+      'Recovery admission'
+    );
     // These private channel rows have no exported record reader. Select only the native owner's known columns.
     const discordReceipt =
       core.sqlite.prepare(`SELECT event_id,payload_digest,request_id,state,created_at,
@@ -2850,7 +3301,7 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors, corpusProduc
       [SQL_CORPUS_FAMILIES[28]]: one(
         SQL_CORPUS_FAMILIES[28],
         // Compare the selected reader's complete decoded rows; byte digests cover the original ledger.
-        [required(linked.workObservations, 'Work observation log')],
+        [required(linked.workObservations, 'Work observations')],
         linked.observationBytes
       ),
       [SQL_CORPUS_FAMILIES[29]]: one(
@@ -2902,6 +3353,52 @@ export async function readSqlCorpus({ appRoot, dataRoot, selectors, corpusProduc
           ];
         })
       ),
+      'Vault grants': one('Vault grants', [o.grants.getVaultGrant(core, sql.vaultGrantId)]),
+      'Vault Login quota observations': one('Vault Login quota observations', [
+        o.references.getVaultReference(core, sql.loginReferenceId)?.login?.observations,
+      ]),
+      'NanoHost runtime targets': one('NanoHost runtime targets', [
+        retainedRuntimeTarget(o.targets.getNanoHostRuntimeTarget(core, sql.runtimeTargetId)),
+      ]),
+      'NanoHost integration identities and transport metadata': one(
+        'NanoHost integration identities and transport metadata',
+        [
+          transport.getNanoHostTransportTokenRecord(core, sql.transportTokenId),
+          // This scalar identity family exposes only a lifecycle predicate; retain its known native columns too.
+          core.sqlite
+            .prepare(
+              'SELECT identity_id, deployment_id, status, created_at, decommissioned_at FROM nanohost_integration_identities WHERE identity_id=?'
+            )
+            .get('upgrade-corpus-integration'),
+          {
+            active: transport.isNanoHostTransportIdentityActive(
+              core,
+              'upgrade-corpus-integration',
+              'upgrade-corpus-transport'
+            ),
+          },
+        ]
+      ),
+      'User permission decisions': one('User permission decisions', [
+        o.decisions
+          .listUserPermissionDecisions(user)
+          .find((row) => row.decisionId === sql.userDecisionId),
+      ]),
+      'Execution roots and ordered step journals': one(
+        'Execution roots and ordered step journals',
+        [JSON.parse(executions.encodeExecutionJournalValue({ execution, steps }))]
+      ),
+      'Workspace recovery admissions and proofs': one('Workspace recovery admissions and proofs', [
+        {
+          admissionId: recovery.admission_id,
+          state: recovery.state,
+          revision: recovery.revision,
+          retainedDigest: digest(JSON.stringify(recovery)),
+        },
+      ]),
+      'Workspace capture protection': one('Workspace capture protection', [
+        captures.inspectCapture(workspace, workspaceId, sql.captureId),
+      ]),
     };
   } finally {
     app?.sqlite.close();

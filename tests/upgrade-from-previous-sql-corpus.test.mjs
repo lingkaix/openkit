@@ -12,10 +12,7 @@ import {
   retainedFamilies,
   summarizeFamilies,
 } from '../scripts/upgrade-from-previous.mjs';
-import {
-  DISCONTINUOUS_FILE_CORPUS_FAMILIES,
-  FILE_CORPUS_FAMILIES,
-} from '../scripts/upgrade-from-previous-corpus.mjs';
+import { FILE_CORPUS_FAMILIES } from '../scripts/upgrade-from-previous-corpus.mjs';
 import {
   captureIdleNativeBinding,
   checkIdleNativeBinding,
@@ -146,23 +143,19 @@ test('covers every current registered SQLite authority family', () => {
     join(repositoryRoot, 'docs/specs/20261017-retained_format_register.md'),
     'utf8'
   );
-  const sqlSection = register
-    .split('### SQLite Authority Families')[1]
-    .split('### Rebuildable And Disposable Boundary')[0];
+  const sqlSection = register.split('### SQLite Authority Families')[1].split(/\n### /)[0];
   const families = [...sqlSection.matchAll(/^\| ([^|]+) \|/gm)]
     .map((match) => match[1].trim())
     .filter((family) => family !== 'Family' && !family.startsWith('---'));
   assert.ok(families.length > 0);
   for (const family of families) {
-    assert.ok(SQL_CORPUS_FAMILIES.includes(family), `${family} has native corpus coverage`);
+    assert.ok(
+      SQL_CORPUS_FAMILIES.includes(family) || FILE_CORPUS_FAMILIES.includes(family),
+      `${family} has native corpus coverage`
+    );
   }
   assert.deepEqual(
-    [
-      ...FILE_CORPUS_FAMILIES,
-      ...DISCONTINUOUS_FILE_CORPUS_FAMILIES,
-      ...SQL_CORPUS_FAMILIES,
-      ...EXTERNAL_FAMILIES,
-    ].sort(),
+    [...FILE_CORPUS_FAMILIES, ...SQL_CORPUS_FAMILIES, ...EXTERNAL_FAMILIES].sort(),
     retainedFamilies(register).sort()
   );
 });
@@ -171,6 +164,14 @@ test('reopens every SQL family and its linked file owners with exact readback', 
   const input = await fixture(t, true);
   const original = await readSqlCorpus(input);
   assert.deepEqual(Object.keys(original).sort(), [...SQL_CORPUS_FAMILIES].sort());
+  const quota = original['Vault Login quota observations'].values[0];
+  assert.equal(quota.state, 'available');
+  assert.equal(quota.windows[0].usedPercent, 12);
+  assert.equal(quota.source, 'native-read');
+  assert.equal(original['User permission decisions'].values[0].ownerScope, 'user');
+  assert.ok(original['Execution roots and ordered step journals'].values[0].steps.length > 0);
+  assert.equal(original['Workspace recovery admissions and proofs'].values[0].state, 'abandoned');
+  assert.equal(original['Workspace capture protection'].values[0].state, 'abandoned');
   const candidateSet = original['Candidate sets and selections'].values[0];
   assert.equal(candidateSet.candidates.length, 2);
   assert.equal(candidateSet.judgements.at(-1)?.kind, 'select');

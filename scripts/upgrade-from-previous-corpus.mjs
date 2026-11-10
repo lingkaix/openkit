@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmdirSync,
   writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -16,25 +17,22 @@ import { pathToFileURL } from 'node:url';
 /** File-family inventory; SQL-correlated files and external Host storage have separate producers. */
 export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Layout marker',
-  'Workspace record',
-  'Thread record',
-  'Turn record',
-  'Item revision log',
-  'Stream event log',
+  'Workspace metadata',
+  'Thread and Turn records',
+  'Item revisions and stream events',
   'Artifact current-head record',
   'Immutable Artifact versions',
   'Artifact original payload',
   'Conversation original file inputs',
   'Notebook content and history',
   'Notebook scope schema',
-  'Knowledge Proposal',
-  'Knowledge Proposal Review',
+  'Workspace Knowledge published heads, Proposals and ordered Reviews',
   'Workspace Source identity',
   'Workspace captured Source text',
   'User Source identity',
   'User captured Source text',
   'Memory suppression',
-  'AgentSession',
+  'AgentSession product records',
   'Resource catalog',
   'Immutable Skill and Plugin packages',
   'Mutable MCP process data',
@@ -45,18 +43,21 @@ export const FILE_CORPUS_FAMILIES = Object.freeze([
   'Turn human feedback',
   'Query-owned retrieval traces',
   'Unaccepted Workspace capture source',
+  'Scope-owned immutable work bodies and schema content',
+  'Local AI enablement, selected model and license settings',
+  'Vault reference state',
+  'Provider subscription account metadata',
+  'Workspace backup and MOVE bundle',
+  'Knowledge package manifest and archive closure',
+  'Offline storage-layout migration report',
+  'Workspace deletion closure',
 ]);
-
-/** Registered retained families intentionally excluded by an accepted pre-stable discontinuity. */
-export const DISCONTINUOUS_FILE_CORPUS_FAMILIES = Object.freeze(['Workspace deletion closure']);
 
 /** Mutable metadata compared through native snapshots rather than disposable file projections. */
 export const NATIVE_METADATA_FAMILIES = Object.freeze([
-  'Workspace record',
-  'Thread record',
-  'Turn record',
-  'AgentSession',
-  'Knowledge Proposal Review',
+  'Workspace metadata',
+  'Thread and Turn records',
+  'AgentSession product records',
 ]);
 
 const FIXTURE = Object.freeze({
@@ -114,6 +115,14 @@ async function owners(appRoot) {
     snapshotChain: 'runtime/workspace-snapshot-chain.js',
     jsonc: 'config/jsonc.js',
     tokens: 'auth/access-token-store.js',
+    localAi: 'local-ai/store.js',
+    vaultBackend: 'vault/vault-encrypted-file-backend.js',
+    subscriptions: 'llm/provider-subscription-accounts.js',
+    workspaceBackup: 'storage/workspace-backup.js',
+    backupBundle: 'storage/workspace-backup-bundle.js',
+    knowledgePackage: 'storage/knowledge-package/format.js',
+    layoutMigration: 'storage/workspace-storage-migration.js',
+    deletion: 'workspace-deletion-evidence.js',
   };
   const loaded = Object.fromEntries(
     await Promise.all(Object.entries(modules).map(async ([name, path]) => [name, await load(path)]))
@@ -256,10 +265,27 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
   const r = roots(dataRoot, retainedRoot),
     o = await owners(appRoot);
   if (existsSync(r.corpus)) throw new Error('File corpus already exists; retain this attempt.');
+  mkdirSync(r.corpus, { recursive: true, mode: 0o700 });
+  // An empty predecessor is a fixture input; only the production migration writes its report.
+  await o.controlWorker.shutdownControlStoreWorkerClient();
+  const predecessorRoot = join(r.corpus, 'layout-predecessor');
+  const predecessorDb = o.db.openCoreDb(predecessorRoot);
+  o.migrate.applyMigrations(predecessorDb);
+  predecessorDb.sqlite.close();
+  const marker = o.layout.readDataRootLayoutMarker(predecessorRoot);
+  rmdirSync(join(predecessorRoot, 'workspaces'));
+  writeFileSync(
+    join(predecessorRoot, 'server', 'layout.json'),
+    JSON.stringify({ ...marker, layoutVersion: 1 })
+  );
+  await o.layoutMigration.migrateWorkspaceStorage({
+    dataRoot: predecessorRoot,
+    backupRoot: join(r.corpus, 'layout-predecessor-backup'),
+    now: () => FIXTURE.at,
+  });
   const ctx = context(o, r.data, userId, true),
     selectors = { userId };
   try {
-    mkdirSync(r.corpus, { recursive: true, mode: 0o700 });
     const producer = { kind: 'user', id: userId };
     const workspace = await ctx.store.createWorkspace('B01 upgrade continuity', {
       requestId: randomUUID(),
@@ -727,7 +753,27 @@ export async function seedFileCorpus({ appRoot, dataRoot, retainedRoot, userId }
     startedAt: FIXTURE.at,
     completedAt: new Date().toISOString(),
   });
+  const bundle = await o.workspaceBackup.createWorkspaceBackup({
+    source: { kind: 'stopped-data-root', dataRoot: r.data },
+    workspaceId: selectors.workspaceId,
+    expectedSourceDeploymentId: o.layout.readDataRootLayoutMarker(r.data).deploymentId,
+    backupId: o.protocol.allocateEntityId('wsbak'),
+    purpose: 'backup',
+    ...bundleInput(o, r),
+  });
+  selectors.workspaceBackupId = bundle.manifest.backupId;
   return selectors;
+}
+
+/** Uses the installed native formats and an inert exact release identity for the fixture bundle. */
+function bundleInput(o, r) {
+  return {
+    bundleRoot: join(r.corpus, 'workspace-backup'),
+    stagingParent: r.corpus,
+    admission: new o.fileAdmission.FileStorageAdmission(r.data, () => 0n),
+    expectedRelease: { version: 'upgrade-corpus', buildId: 'upgrade-corpus' },
+    supportedDatabaseFormats: o.workspaceBackup.WORKSPACE_BACKUP_DATABASE_FORMATS,
+  };
 }
 
 /** Produces catalog, encrypted fixture, export and closure bytes without any external execution. */
@@ -768,20 +814,77 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
     key = randomBytes(32);
   writeFileSync(join(r.corpus, 'vault-key.bin'), key, { flag: 'wx', mode: 0o600 });
   try {
-    o.vault.initializeOrVerifyEncryptedFileVaultStore({ storeDir: vaultRoot, masterKey: key });
-    selectors.vaultReferenceId = o.protocol.allocateEntityId('vault');
-    o.vault.sealEncryptedFileVaultEntry({
+    const backend = o.vaultBackend.createEncryptedFileVaultBackend({
       storeDir: vaultRoot,
+      masterKey: key,
+      now: () => FIXTURE.at,
+    });
+    selectors.vaultReferenceId = o.protocol.allocateEntityId('vault');
+    backend.store({
       referenceId: selectors.vaultReferenceId,
-      version: 1,
       metadata: { ownerScope: 'workspace', workspaceId: selectors.workspaceId },
       material: FIXTURE.text,
-      masterKey: key,
-      createdAt: FIXTURE.at,
+    });
+    const accounts = new o.subscriptions.ProviderSubscriptionAccountManager({
+      coreDb: ctx.coreDb,
+      vaultBackend: () => backend,
+      now: () => FIXTURE.at,
+      onReferenceRevoked: async () => {
+        throw new Error('The unbound fixture has no material to revoke.');
+      },
+    });
+    await accounts.createAccount({
+      subscriptionProviderId: 'openai-codex',
+      accountSlotId: 'continuity',
+      displayName: 'Synthetic retained account',
     });
   } finally {
     key.fill(0);
   }
+
+  o.localAi.writeLocalAiState(r.data, {
+    schemaVersion: 1,
+    backends: {
+      'llama-cpp': {
+        enabled: false,
+        selectedModelId: 'continuity',
+        threads: 1,
+        licenseAcceptedAt: FIXTURE.at,
+      },
+    },
+  });
+  const knowledgeBaseId = o.knowledgeBase.readDefaultKnowledgeBaseId({
+    dataRoot: r.data,
+    scope: { kind: 'workspace', workspaceId: selectors.workspaceId },
+  });
+  await o.knowledgePackage.writeKnowledgePackageFormat({
+    directory: join(r.corpus, 'knowledge-package'),
+    metadata: {
+      ownerScope: { kind: 'workspace', workspaceId: selectors.workspaceId },
+      knowledgeBaseId,
+      notebookRevision: selectors.notebooks.find(({ scope }) => scope === 'workspace').revision,
+      requiredFeatures: ['openkit.knowledge-git-notebook.v1', 'openkit.knowledge-owner-scope.v1'],
+      mounts: [{ name: 'raw', backend: 'local', root: 'raw/', default: true }],
+    },
+    files: [
+      {
+        path: 'raw/original.bin',
+        sourcePath: join(
+          workspaceRoot,
+          'threads',
+          selectors.threadId,
+          'turns',
+          selectors.turnId,
+          'inputs',
+          '0',
+          'payload'
+        ),
+        byteLength: FIXTURE.original.length,
+        contentDigest: `sha256:${sha256(FIXTURE.original)}`,
+      },
+    ],
+    limits: { maxEntries: 32, maxBytes: 1024 * 1024 },
+  });
 
   const lineage = {
     workspaceId: selectors.workspaceId,
@@ -836,6 +939,25 @@ async function seedRemainingFiles(o, ctx, r, selectors, producer, workspaceRoot)
     workspaceId: selectors.workspaceId,
   });
   selectors.exportId = exported.response.exportId;
+  selectors.closure = {
+    workspaceId: selectors.workspaceId,
+    requestId: randomUUID(),
+    originalOwnerUserId: selectors.userId,
+    sourceRegistryRevision: ctx.coreDb.sqlite
+      .prepare('SELECT revision FROM workspace_registry WHERE workspace_id=?')
+      .pluck()
+      .get(selectors.workspaceId),
+    closureId: `wsclose_${randomUUID()}`,
+    cutoffTimestamp: FIXTURE.at,
+    recoveryBackupId: o.protocol.allocateEntityId('wsbak'),
+    recoveryBackupManifestDigest: `sha256:${sha256('synthetic recovery identity')}`,
+  };
+  o.deletion.createWorkspaceDeletionClosure({
+    ...selectors.closure,
+    coreDb: ctx.coreDb,
+    dataRoot: r.data,
+    repositoryWorkspaceDb,
+  });
 }
 
 /** Reads every implemented family through native readers and measures originals by digest. This returns corpus evidence, never a release qualification verdict. */
@@ -891,17 +1013,22 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       kind: 'workspace',
       workspaceId: selectors.workspaceId,
     });
-    const nativeRecord = (family, kind, id) => {
+    const nativeRecord = (kind, id) => {
       const snapshot = o.records.readNativeProduct(scope, kind, id);
-      if (!snapshot) throw new Error(`${family}: no native reader result.`);
-      record(family, [{ owner: scope.owner, ...snapshot }], []);
+      if (!snapshot) throw new Error(`${kind}: no native reader result.`);
+      return { owner: scope.owner, ...snapshot };
     };
-    nativeRecord('Workspace record', 'workspace', selectors.workspaceId);
-    nativeRecord('Thread record', 'thread', selectors.threadId);
-    nativeRecord('Turn record', 'turn', selectors.turnId);
+    record('Workspace metadata', [nativeRecord('workspace', selectors.workspaceId)], []);
+    record(
+      'Thread and Turn records',
+      [nativeRecord('thread', selectors.threadId), nativeRecord('turn', selectors.turnId)],
+      []
+    );
     // Ordered native entries retain their exact immutable payload bytes and revision facts.
-    const nativeEntries = (family, kind) => {
+    const immutablePaths = [];
+    const nativeEntries = (kind) => {
       const values = o.records.readNativeProductEntries(scope, selectors.turnId, kind);
+      if (!values.length) throw new Error(`${kind}: no native reader result.`);
       const reader = o.products.openControlStoreProductReadHandle(scope.path, scope.owner);
       const paths = [];
       try {
@@ -910,16 +1037,21 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
           const page = reader.entries(selectors.turnId, kind, after);
           if (!page.length) break;
           for (const entry of page) {
-            paths.push(
-              relative(r.data, join(scope.contentMount.root, entry.content.reference.locator.path))
-            );
+            if (entry.content.reference.representation !== 'inline')
+              paths.push(
+                relative(
+                  r.data,
+                  join(scope.contentMount.root, entry.content.reference.locator.path)
+                )
+              );
             after = entry.sequence;
           }
         }
       } finally {
         reader.close();
       }
-      record(family, values, paths);
+      immutablePaths.push(...paths);
+      return values;
     };
     const fileTurn = ctx.store.getTurnById(selectors.turnId);
     o.records.verifyTurnFileInputs(workspaceRoot, fileTurn);
@@ -928,14 +1060,21 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       [fileTurn.fileInputs],
       [`${turnPath}/inputs/0/payload`]
     );
-    nativeEntries('Item revision log', 'item');
-    nativeEntries('Stream event log', 'event');
+    record(
+      'Item revisions and stream events',
+      [...nativeEntries('item'), ...nativeEntries('event')],
+      immutablePaths
+    );
     record(
       'Turn human feedback',
       [o.feedback.readTurnFeedback(ctx.store, selectors.turnId)],
       [`${turnPath}/feedback.json`]
     );
-    nativeRecord('AgentSession', 'agent-session', selectors.agentSessionId);
+    record(
+      'AgentSession product records',
+      [nativeRecord('agent-session', selectors.agentSessionId)],
+      []
+    );
     const inline = ctx.store.getArtifact(selectors.workspaceId, selectors.inlineArtifactId);
     const original = ctx.store.getArtifact(selectors.workspaceId, selectors.fileArtifactId);
     const versions = [inline, original].map((artifact) =>
@@ -966,6 +1105,7 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
           `${workspacePath}/artifacts/${artifact.id}/versions/${artifact.version}/payload`
       )
     );
+    const knowledgeHeads = [];
     const notebookValues = [],
       notebookPaths = [],
       schemaValues = [],
@@ -998,6 +1138,7 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       notebookValues.push({ scope, ...revision });
       notebookPaths.push(`${path}/notebook.git`);
       if (selected) {
+        knowledgeHeads.push(selected.head);
         schemaValues.push({ scope, schema: selected.scopeSchema });
         schemaPaths.push(
           `${workspacePath}/knowledge/content/${selected.head.schemaContent.reference.locator.path}`
@@ -1015,14 +1156,28 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
     record('Notebook content and history', notebookValues, notebookPaths);
     record('Notebook scope schema', schemaValues, schemaPaths);
     record(
-      'Knowledge Proposal',
-      [ctx.store.getKnowledgeProposal(selectors.proposalId)],
+      'Workspace Knowledge published heads, Proposals and ordered Reviews',
+      [
+        ...knowledgeHeads,
+        ctx.store.getKnowledgeProposal(selectors.proposalId),
+        ...ctx.store.listKnowledgeProposalReviewDecisions(
+          selectors.workspaceId,
+          selectors.proposalId
+        ),
+      ],
       [selectors.proposalPath]
     );
     record(
-      'Knowledge Proposal Review',
-      ctx.store.listKnowledgeProposalReviewDecisions(selectors.workspaceId, selectors.proposalId),
-      []
+      'Scope-owned immutable work bodies and schema content',
+      [
+        {
+          decodedBodiesDigest: sha256(
+            JSON.stringify(result['Item revisions and stream events'].values)
+          ),
+        },
+        ...schemaValues,
+      ],
+      [...immutablePaths, ...schemaPaths]
     );
     const sourceOwner = {
       dataRoot: r.data,
@@ -1120,11 +1275,35 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       )
     );
     record('Authored settings and Policy', [config], [`${workspacePath}/config/workspace.jsonc`]);
+    record(
+      'Local AI enablement, selected model and license settings',
+      [o.localAi.readLocalAiState(r.data)],
+      ['server/files/local-ai/state.json']
+    );
     const vaultRoot = join(r.corpus, 'vault-store'),
       key = readFileSync(join(r.corpus, 'vault-key.bin'));
     let material;
     try {
       o.vault.initializeOrVerifyEncryptedFileVaultStore({ storeDir: vaultRoot, masterKey: key });
+      const backend = o.vaultBackend.createEncryptedFileVaultBackend({
+        storeDir: vaultRoot,
+        masterKey: key,
+        now: () => FIXTURE.at,
+      });
+      record('Vault reference state', backend.listReferences(), [], ['file-corpus/vault-store']);
+      const accounts = new o.subscriptions.ProviderSubscriptionAccountManager({
+        coreDb: ctx.coreDb,
+        vaultBackend: () => backend,
+        now: () => FIXTURE.at,
+        onReferenceRevoked: async () => {
+          throw new Error('The unbound fixture has no material to revoke.');
+        },
+      });
+      record(
+        'Provider subscription account metadata',
+        await accounts.listAccounts('openai-codex'),
+        ['server/files/provider-subscriptions/openai-codex/accounts/continuity/account.json']
+      );
       material = o.vault.openEncryptedFileVaultEntry({
         storeDir: vaultRoot,
         referenceId: selectors.vaultReferenceId,
@@ -1152,6 +1331,48 @@ export async function readFileCorpus({ appRoot, dataRoot, retainedRoot, selector
       backupRoot: join(r.corpus, 'data-root-backup'),
     });
     record('Data Root backup', [backup.manifest], [], ['file-corpus/data-root-backup']);
+    const bundle = await o.backupBundle.withVerifiedWorkspaceBackupBundle(
+      bundleInput(o, r),
+      async ({ manifest, seal }) => ({ manifest, seal })
+    );
+    record('Workspace backup and MOVE bundle', [bundle], [], ['file-corpus/workspace-backup']);
+    record(
+      'Knowledge package manifest and archive closure',
+      [
+        await o.knowledgePackage.verifyKnowledgePackageFormat({
+          directory: join(r.corpus, 'knowledge-package'),
+          limits: { maxEntries: 32, maxBytes: 1024 * 1024 },
+        }),
+      ],
+      [],
+      ['file-corpus/knowledge-package']
+    );
+    const migrationText = o.records.readCanonicalTextFile(
+      join(r.corpus, 'layout-predecessor/server/migrations/workspace-storage-v1-to-v2.json')
+    );
+    const migration = o.protocol.readRetainedV1(JSON.parse(migrationText), (value) => value);
+    record(
+      'Offline storage-layout migration report',
+      [
+        {
+          recordType: migration.recordType,
+          outcome: migration.outcome,
+          reportDigest: sha256(migrationText),
+        },
+      ],
+      [],
+      ['file-corpus/layout-predecessor/server/migrations/workspace-storage-v1-to-v2.json']
+    );
+    const closureRoot = o.deletion.existingWorkspaceDeletionClosureRoot(
+      r.data,
+      selectors.workspaceId,
+      selectors.closure.closureId
+    );
+    const closure = o.deletion.verifyWorkspaceDeletionClosure({
+      ...selectors.closure,
+      closureRoot,
+    });
+    record('Workspace deletion closure', [closure], [relative(r.data, closureRoot)]);
     record(
       'Query-owned retrieval traces',
       [
