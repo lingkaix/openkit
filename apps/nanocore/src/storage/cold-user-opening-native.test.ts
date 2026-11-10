@@ -16,6 +16,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -156,8 +157,8 @@ vi.mock('node:worker_threads', async (load) => {
           });
           const prepare = Original.prototype.prepare;
           Original.prototype.prepare = function (...args) {
-            // The owner's first prepare is assertSavepointSafeSchema, after the real constructor and before migration SQL.
-            if (selectedPaths.has(this.name) && !seen.has(this)) {
+            // Count and hold the real writable User owner before migration SQL, not its readonly preflight.
+            if (selectedPaths.has(this.name) && this.readonly === false && !seen.has(this)) {
               seen.add(this);
               parentPort.postMessage({ coldUserFixture: 'opened' });
               if (Atomics.compareExchange(gate, 0, 1, 2) === 1) {
@@ -781,7 +782,13 @@ it('keeps original unsupported predecessor-ledger refusal when native User journ
   }
   fault.fence = true;
   expect((await f.call('thread.read-state', f.owner)).status).toBe(500);
-  const reader = openUserReadDb(f.dataRoot, f.userId);
+  // Inspect the deliberate retained-format fault without invoking ordinary serving admission again.
+  const reader = {
+    scope: 'user' as const,
+    dataRoot: f.dataRoot,
+    userId: f.userId,
+    sqlite: new Database(fault.userPath, { readonly: true, fileMustExist: true }),
+  };
   try {
     expect(listAppliedNativeMigrationIds(reader.sqlite, 'user')).toEqual(before);
     expect(

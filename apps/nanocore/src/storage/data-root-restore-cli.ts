@@ -51,10 +51,10 @@ export function parseDataRootRestoreArgs(argv: readonly string[]): DataRootResto
  * @returns Operator-safe restore summary.
  * @throws Error when arguments are invalid, NanoCore appears active, or restore fails.
  */
-export function runDataRootRestoreCli(
+export async function runDataRootRestoreCli(
   argv: readonly string[],
   write: (line: string) => void = (line) => process.stdout.write(line)
-): DataRootRestoreCliSummary {
+): Promise<DataRootRestoreCliSummary> {
   const args = parseDataRootRestoreArgs(argv);
   const lockPath = resolveDataRootPath(args.dataRoot, 'server', 'runtime', 'nanocore.lock');
 
@@ -62,7 +62,7 @@ export function runDataRootRestoreCli(
     throw new Error(`Refusing to restore while NanoCore appears to be running: ${lockPath}`);
   }
 
-  const restored = restoreDataRootBackup(args);
+  const restored = await restoreDataRootBackup(args);
   const summary: DataRootRestoreCliSummary = {
     backupId: restored.manifest.id,
     backupMode: restored.manifest.backupMode,

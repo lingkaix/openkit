@@ -21,10 +21,18 @@ import {
 } from '@openkit/config-schema';
 import { compareCodeUnits, DataRootBackupIdSchema, DeploymentIdSchema } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import { copyBackupTree, copyMissingBackupDefinitions } from '@openkit/storage';
+import {
+  copyBackupTree,
+  copyMissingBackupDefinitions,
+  copyVerifiedFile,
+  createPrivateTree,
+  removePrivateTree,
+} from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { writeFileAtomic } from './canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
+import { openSupportedScopeReadOnlySqlite } from './db.js';
+import type { StorageMigrationScope } from './migrate.js';
 
 /** File name for the data-root backup manifest. */
 export const DATA_ROOT_BACKUP_MANIFEST_FILE = 'openkit-data-root-backup.json';
@@ -336,6 +344,8 @@ interface WriteDataRootBackupManifestInput extends WriteColdDataRootBackupManife
 function writeDataRootBackupManifest(
   input: WriteDataRootBackupManifestInput
 ): VerifiedDataRootBackupManifest {
+  // Complete SQLite-backed definition inspection before sealing its derived sidecars in the inventory.
+  assertLightAppDefinitionCoverage(input.backupRoot);
   const contentInventory = inventoryRegularFiles(input.backupRoot).filter(
     (entry) => entry.path !== DATA_ROOT_BACKUP_MANIFEST_FILE
   );
@@ -362,7 +372,7 @@ function writeDataRootBackupManifest(
   };
 
   writeJson(join(input.backupRoot, DATA_ROOT_BACKUP_MANIFEST_FILE), manifest);
-  return verifyDataRootBackupManifest({ backupRoot: input.backupRoot });
+  return verifyDataRootBackupInventory({ backupRoot: input.backupRoot });
 }
 
 /**
@@ -373,6 +383,15 @@ function writeDataRootBackupManifest(
  * @throws Error when the manifest, inventory, digest, bytes, or file set is invalid.
  */
 export function verifyDataRootBackupManifest(
+  input: VerifyDataRootBackupManifestInput
+): VerifiedDataRootBackupManifest {
+  const verified = verifyDataRootBackupInventory(input);
+  assertLightAppDefinitionCoverage(input.backupRoot);
+  return verified;
+}
+
+/** Verifies source bytes without opening SQLite or creating WAL caches in a sealed backup. */
+function verifyDataRootBackupInventory(
   input: VerifyDataRootBackupManifestInput
 ): VerifiedDataRootBackupManifest {
   const manifest = parseDataRootBackupManifest(
@@ -404,8 +423,6 @@ export function verifyDataRootBackupManifest(
       throw new Error(`Digest mismatch for backup file ${entry.path}`);
     }
   }
-  assertLightAppDefinitionCoverage(input.backupRoot);
-
   return { manifest, checkedFiles: manifest.contentInventory.map((entry) => entry.path).sort() };
 }
 
@@ -416,10 +433,10 @@ export function verifyDataRootBackupManifest(
  * @returns Parsed backup manifest plus checked inventory paths.
  * @throws Error when backup verification or staged replacement fails.
  */
-export function restoreDataRootBackup(
+export async function restoreDataRootBackup(
   input: RestoreDataRootBackupInput
-): VerifiedDataRootBackupManifest {
-  const verified = verifyDataRootBackupManifest({ backupRoot: input.backupRoot });
+): Promise<VerifiedDataRootBackupManifest> {
+  const verified = verifyDataRootBackupInventory({ backupRoot: input.backupRoot });
   const stagingRoot = input.stagingRoot ?? `${input.dataRoot}.restore-staging`;
   const previousRoot = `${input.dataRoot}.restore-previous`;
 
@@ -450,6 +467,7 @@ export function restoreDataRootBackup(
   copyBackupTree(input.backupRoot, stagingRoot);
 
   try {
+    await assertSupportedRestoreDatabases(stagingRoot, verified.manifest.contentInventory);
     closeWorkspaceProductReadHandles(input.dataRoot);
     if (existsSync(input.dataRoot)) {
       renameSync(input.dataRoot, previousRoot);
@@ -595,19 +613,89 @@ function assertLightAppDefinitionCoverage(root: string): void {
       const row = sqlite
         .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
         .get() as { schemaDigest: string } | undefined;
-      if (!row?.schemaDigest?.startsWith('sha256:')) {
-        throw new Error(`Captured Light App is missing schema digest: ${appPath}`);
-      }
-      const hex = row.schemaDigest.slice('sha256:'.length);
-      const definitionPath = join(root, appPath, 'definitions', `${hex}.json`);
-      if (!existsSync(definitionPath)) {
-        throw new Error(`Captured Light App is missing definition bytes: ${appPath}`);
-      }
-      if (digestFile(definitionPath) !== row.schemaDigest) {
-        throw new Error(`Captured Light App definition digest mismatch: ${appPath}`);
-      }
+      assertCapturedAppDefinition(root, appPath, row);
     } finally {
       sqlite.close();
+    }
+  }
+}
+
+/** Checks the same retained definition bytes for standalone verification and private restore inspection. */
+function assertCapturedAppDefinition(
+  root: string,
+  appPath: string,
+  row: { schemaDigest: string } | undefined
+): void {
+  if (!row?.schemaDigest?.startsWith('sha256:')) {
+    throw new Error(`Captured Light App is missing schema digest: ${appPath}`);
+  }
+  const hex = row.schemaDigest.slice('sha256:'.length);
+  const definitionPath = join(root, appPath, 'definitions', `${hex}.json`);
+  if (!existsSync(definitionPath)) {
+    throw new Error(`Captured Light App is missing definition bytes: ${appPath}`);
+  }
+  if (digestFile(definitionPath) !== row.schemaDigest) {
+    throw new Error(`Captured Light App definition digest mismatch: ${appPath}`);
+  }
+}
+
+/**
+ * Admits restored journals and current App definitions through bounded private database-and-WAL copies.
+ * Immutable App snapshots receive journal admission only; their recovery owner retains lineage checks.
+ * SQLite may create WAL sidecars even on read-only opens. Existing Storage helpers copy
+ * one database and its committed WAL at a time beside the unpublished candidate and
+ * remove that scratch before placement. The admitted staging parent stays writable even
+ * when a copied candidate preserves a read-only root mode. Verified source sizes and digests bound each copy.
+ *
+ * @param root Backup or staged data-root copy.
+ * @param inventory Exact verified source inventory; opaque content is never opened as a scope.
+ * @throws When an owned ledger is unsupported or App definition bytes are missing or mismatched.
+ */
+async function assertSupportedRestoreDatabases(
+  root: string,
+  inventory: DataRootBackupManifest['contentInventory']
+): Promise<void> {
+  const entries = new Map(inventory.map((entry) => [entry.path, entry]));
+  for (const { path } of inventory) {
+    let scope: StorageMigrationScope;
+    if (path === 'server/db/core.sqlite') scope = 'core';
+    else if (/^users\/[^/]+\/db\/user\.sqlite$/.test(path)) scope = 'user';
+    else if (/^workspaces\/[^/]+\/db\/workspace\.sqlite$/.test(path)) scope = 'workspace';
+    else if (
+      /^workspaces\/[^/]+\/light-apps\/[^/]+\/(?:data\.sqlite|snapshots\/[^/]+\.sqlite)$/.test(path)
+    )
+      scope = 'app';
+    else continue;
+    const inspectionRoot = await createPrivateTree(dirname(root), '.ledger-admission-');
+    const dbPath = join(inspectionRoot, basename(path));
+    let sqlite: Database.Database | undefined;
+    try {
+      // SHM is disposable cache. The committed WAL remains part of the inspected authority.
+      for (const suffix of ['', '-wal']) {
+        const entry = entries.get(`${path}${suffix}`);
+        if (!entry) continue;
+        await copyVerifiedFile({
+          sourcePath: join(root, entry.path),
+          destinationPath: `${dbPath}${suffix}`,
+          expectedBytes: entry.bytes,
+          expectedSha256: entry.digest,
+          maxBytes: entry.bytes,
+          mode: 0o600,
+        });
+      }
+      sqlite = openSupportedScopeReadOnlySqlite(dbPath, scope);
+      if (scope !== 'app' || !path.endsWith('/data.sqlite')) continue;
+      const appPath = dirname(path);
+      const row = sqlite
+        .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
+        .get() as { schemaDigest: string } | undefined;
+      assertCapturedAppDefinition(root, appPath, row);
+    } finally {
+      try {
+        sqlite?.close();
+      } finally {
+        await removePrivateTree(inspectionRoot);
+      }
     }
   }
 }

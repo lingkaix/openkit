@@ -85,6 +85,8 @@ it('reads a native Workspace receipt and global inventory while a writer holds t
     readonly: boolean;
     operation: 'global inventory' | 'lookup';
     queryOnly: unknown;
+    admission: boolean;
+    receipt: boolean;
   }> = [];
   const observer = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
     this: Database.Database,
@@ -95,6 +97,10 @@ it('reads a native Workspace receipt and global inventory while a writer holds t
         operation: activeRead,
         readonly: this.readonly,
         queryOnly: this.pragma('query_only', { simple: true }),
+        admission:
+          sql === "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?" ||
+          sql === 'SELECT created_at FROM __drizzle_migrations',
+        receipt: /\bFROM idempotency_requests\b/i.test(sql),
       });
     }
     return prepare.call(this, sql) as Database.Statement;
@@ -125,13 +131,19 @@ it('reads a native Workspace receipt and global inventory while a writer holds t
   expect(new Set(observedReads.map(({ operation }) => operation))).toEqual(
     new Set(['lookup', 'global inventory'])
   );
+  // Ledger admission is physically read-only before the owner configures its serving reader.
+  expect(observedReads.every(({ readonly }) => readonly)).toBe(true);
+  const servingReads = observedReads.filter(({ admission }) => !admission);
   expect(
-    observedReads.map(({ operation, readonly, queryOnly }) => ({
+    servingReads.map(({ operation, readonly, queryOnly }) => ({
       operation,
       readonly,
       queryOnly,
     }))
-  ).toEqual(observedReads.map(({ operation }) => ({ operation, readonly: true, queryOnly: 1 })));
+  ).toEqual(servingReads.map(({ operation }) => ({ operation, readonly: true, queryOnly: 1 })));
+  expect(
+    new Set(observedReads.filter(({ receipt }) => receipt).map(({ operation }) => operation))
+  ).toEqual(new Set(['lookup', 'global inventory']));
   expect(blocker.sqlite.inTransaction).toBe(true);
   expect({
     bytes: readFileSync(path),

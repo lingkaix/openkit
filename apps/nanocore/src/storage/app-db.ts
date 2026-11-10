@@ -13,8 +13,10 @@ import { dirname, join } from 'node:path';
 import { LIGHT_APP_KERNEL_FORMAT_VERSION } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 
+import { BootConfigError } from '../config/mode.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
 import { resolveDataRootPath } from './fs-layout.js';
+import { assertSupportedNativeLedger } from './migrate.js';
 
 /** Open app-scoped SQLite handle collocating Kernel data, receipts, and audit. */
 export interface AppDb {
@@ -208,6 +210,7 @@ export function openAppDbReadOnly(path: string): Database.Database {
       fileMustExist: true,
       timeout: APP_BUSY_TIMEOUT_MS,
     });
+    assertSupportedNativeLedger(sqlite, 'app');
     sqlite.pragma('query_only = ON');
     const result = sqlite.prepare('PRAGMA quick_check').pluck().get();
     if (result !== 'ok') {
@@ -216,7 +219,7 @@ export function openAppDbReadOnly(path: string): Database.Database {
     return sqlite;
   } catch (error) {
     sqlite?.close();
-    if (error instanceof KernelCommandError) {
+    if (error instanceof KernelCommandError || error instanceof BootConfigError) {
       throw error;
     }
     throw new KernelCommandError('unavailable', 'App database failed integrity check.');

@@ -18,6 +18,7 @@ import {
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
+import { assertSupportedNativeLedger, type StorageMigrationScope } from './migrate.js';
 import * as schema from './schema/index.js';
 
 /**
@@ -106,12 +107,26 @@ let singleton: CoreDb | undefined;
 // Remove with https://github.com/lingkaix/openkit/issues/616; this is lock waiting, never retry.
 const CORE_BUSY_TIMEOUT_MS = 5000;
 
+/** Opens one connection; scoped admission and pure integrity inspection retain their separate policies. */
+function openSqliteConnection(
+  path: string,
+  options: { fileMustExist?: boolean; readonly?: boolean }
+): Database.Database {
+  return new Database(path, { ...options, timeout: 5 });
+}
+
+/** Tests the same owned file presence for initialization and integrity admission. */
+function sqlitePathExists(path: string): boolean {
+  return existsSync(path);
+}
+
 /**
  * Opens owned authority and reapplies its connection-local read or durability policy.
  *
  * Read-only handles stay query-only and never configure WAL or schema. Writable handles require FULL synchronization on every open because that setting does not persist in the file. Close failed opens locally.
  *
  * @param path Owned database path.
+ * @param scope Exact physical journal scope.
  * @param options Existing-file and read-only policy.
  * @param busyTimeoutMs Scope-owned lock wait, applied before writable configuration.
  * @returns Configured owned SQLite connection.
@@ -119,13 +134,26 @@ const CORE_BUSY_TIMEOUT_MS = 5000;
  */
 function openOwnedSqlite(
   path: string,
+  scope: StorageMigrationScope,
   options: { fileMustExist?: boolean; readonly?: boolean } = {},
   busyTimeoutMs = 5
 ): Database.Database {
-  const sqlite = new Database(path, { ...options, timeout: 5 });
+  // Even closing a writable connection can checkpoint a retained WAL. Admit existing
+  // history through a read-only handle before any mutable connection can be constructed.
+  if (!options.readonly && sqlitePathExists(path)) {
+    const inspection = openOwnedSqlite(
+      path,
+      scope,
+      { fileMustExist: true, readonly: true },
+      busyTimeoutMs
+    );
+    inspection.close();
+  }
+  const sqlite = openSqliteConnection(path, options);
   try {
-    // Apply the scope policy before WAL configuration; keep one physical connection.
     if (busyTimeoutMs !== 5) sqlite.pragma(`busy_timeout = ${busyTimeoutMs}`);
+    assertSupportedNativeLedger(sqlite, scope);
+    // Apply durability only after the exact retained journal is supported.
     if (options.readonly) sqlite.pragma('query_only = ON');
     else configureOwnedSqlite(sqlite);
     return sqlite;
@@ -133,6 +161,22 @@ function openOwnedSqlite(
     sqlite.close();
     throw error;
   }
+}
+
+/**
+ * Opens existing scope history or its private restore copy through the read-only admission owner.
+ * The caller owns path admission and lifetime; this neither creates storage nor applies SQL.
+ * @param path Existing admitted database path.
+ * @param scope Exact journal scope supplied by the physical or restore owner.
+ * @param busyTimeoutMs Existing owner lock-wait policy.
+ * @returns Read-only, query-only connection after supported-ledger admission.
+ */
+export function openSupportedScopeReadOnlySqlite(
+  path: string,
+  scope: StorageMigrationScope,
+  busyTimeoutMs = 5
+): Database.Database {
+  return openOwnedSqlite(path, scope, { fileMustExist: true, readonly: true }, busyTimeoutMs);
 }
 
 /**
@@ -151,7 +195,7 @@ export function openCoreDb(
     (options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot));
   ensureLayoutDirectories(dataRoot);
 
-  const sqlite = openOwnedSqlite(coreDbPath(dataRoot), {}, CORE_BUSY_TIMEOUT_MS);
+  const sqlite = openOwnedSqlite(coreDbPath(dataRoot), 'core', {}, CORE_BUSY_TIMEOUT_MS);
 
   return bindCoreSqlite(sqlite, dataRoot, canInitializeLocalUser);
 }
@@ -191,7 +235,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   readDataRootLayoutMarker(dataRoot);
   const path = coreDbPath(dataRoot);
   assertSqliteIntegrity(path);
-  const sqlite = openOwnedSqlite(path, { fileMustExist: true }, CORE_BUSY_TIMEOUT_MS);
+  const sqlite = openOwnedSqlite(path, 'core', { fileMustExist: true }, CORE_BUSY_TIMEOUT_MS);
 
   return bindCoreSqlite(sqlite, dataRoot);
 }
@@ -222,7 +266,7 @@ export function listExistingWorkspaceDatabaseScopes(
 export function openUserDb(dataRoot: string, userId: string): UserDb {
   ensureUserLayout(dataRoot, userId);
 
-  const sqlite = openOwnedSqlite(userDbPath(dataRoot, userId));
+  const sqlite = openOwnedSqlite(userDbPath(dataRoot, userId), 'user');
 
   return { scope: 'user', sqlite, dataRoot, userId };
 }
@@ -238,7 +282,7 @@ export function openUserReadDb(dataRoot: string, userId: string): UserDb {
   const path = userDbPath(dataRoot, userId);
   if (!lstatSync(path).isFile() || realpathSync(dirname(path)) !== dirname(path))
     throw new Error('User database path is not canonical.');
-  const sqlite = openOwnedSqlite(path, {
+  const sqlite = openOwnedSqlite(path, 'user', {
     readonly: true,
     fileMustExist: true,
   });
@@ -255,7 +299,7 @@ export function openUserReadDb(dataRoot: string, userId: string): UserDb {
 export function openWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
   ensureWorkspaceLayout(dataRoot, workspaceId);
 
-  const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId));
+  const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId), 'workspace');
 
   return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
 }
@@ -284,7 +328,9 @@ export function openAdmittedWorkspaceReadDb(dataRoot: string, workspaceId: strin
 /** Opens an existing Workspace database after the current boot already verified its layout. */
 export function openBootVerifiedWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
   assertScopeAdmitted(dataRoot, 'workspace', workspaceId);
-  const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId), { fileMustExist: true });
+  const sqlite = openOwnedSqlite(workspaceDbPath(dataRoot, workspaceId), 'workspace', {
+    fileMustExist: true,
+  });
 
   return bindWorkspaceSqlite(sqlite, dataRoot, workspaceId);
 }
@@ -302,7 +348,7 @@ export function openWorkspaceDbAtRoot(input: {
 }): WorkspaceDb {
   ensureWorkspaceLayoutRoot(input.workspaceRoot);
 
-  const sqlite = openOwnedSqlite(join(input.workspaceRoot, 'db', 'workspace.sqlite'));
+  const sqlite = openOwnedSqlite(join(input.workspaceRoot, 'db', 'workspace.sqlite'), 'workspace');
 
   return bindWorkspaceSqlite(sqlite, input.dataRoot, input.workspaceId);
 }
@@ -328,7 +374,7 @@ export function getCoreDb(env: NodeJS.ProcessEnv = process.env): CoreDb {
  * @throws When SQLite cannot open or validate the existing file.
  */
 export function assertSqliteIntegrity(path: string): void {
-  if (!existsSync(path)) {
+  if (!sqlitePathExists(path)) {
     return;
   }
 
@@ -376,7 +422,9 @@ function checkSqliteIntegrity(path: string): { ok: true } | { ok: false; detail:
   let sqlite: Database.Database | undefined;
 
   try {
-    sqlite = new Database(path, { fileMustExist: true });
+    sqlite = openSqliteConnection(path, { fileMustExist: true, readonly: true });
+    // Preserve the integrity reader's original driver-default wait without granting write access.
+    sqlite.pragma('busy_timeout = 5000');
     const result = sqlite.prepare('PRAGMA quick_check').pluck().get();
 
     return result === 'ok' ? { ok: true } : { ok: false, detail: String(result) };

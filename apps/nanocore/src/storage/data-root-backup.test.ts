@@ -173,7 +173,7 @@ describe('data-root backup manifest', () => {
         expect(statSync(join(backupRoot, 'server', 'sticky')).mode & 0o7777).toBe(0o1777);
       }
 
-      restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+      await restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
 
       expect(statSync(join(restoredRoot, 'server', 'vault')).mode & 0o777).toBe(0o700);
       expect(statSync(join(restoredRoot, 'server', 'vault', 'secret.bin')).mode & 0o777).toBe(
@@ -532,7 +532,7 @@ describe('data-root backup manifest', () => {
       'crash-consistent'
     );
 
-    restoreDataRootBackup({ backupRoot, dataRoot: restoredDataRoot });
+    await restoreDataRootBackup({ backupRoot, dataRoot: restoredDataRoot });
     const restoredDb = new Database(join(restoredDataRoot, 'server', 'db', 'core.sqlite'), {
       readonly: true,
     });
@@ -567,7 +567,7 @@ describe('data-root backup manifest', () => {
     }
   });
 
-  it('restores a verified backup by replacing the target data root', () => {
+  it('restores a verified backup by replacing the target data root', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-backup-'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-target-'));
     mkdirSync(join(backupRoot, 'server'), { recursive: true });
@@ -581,7 +581,7 @@ describe('data-root backup manifest', () => {
       completedAt: timestamp,
     });
 
-    const restored = restoreDataRootBackup({ backupRoot, dataRoot });
+    const restored = await restoreDataRootBackup({ backupRoot, dataRoot });
 
     expect(restored.manifest.id).toBe(testEntityId('drb', 'drbak_restore'));
     expect(existsSync(join(dataRoot, 'stale.txt'))).toBe(false);
@@ -591,7 +591,7 @@ describe('data-root backup manifest', () => {
     expect(existsSync(join(dataRoot, DATA_ROOT_BACKUP_MANIFEST_FILE))).toBe(true);
   });
 
-  it('rejects restore from a backup that does not verify', () => {
+  it('rejects restore from a backup that does not verify', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-bad-backup-'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-target-'));
     mkdirSync(join(backupRoot, 'server'), { recursive: true });
@@ -606,13 +606,13 @@ describe('data-root backup manifest', () => {
     });
     writeFileSync(join(backupRoot, 'server', 'layout.json'), '{"layoutVersion":2}\n');
 
-    expect(() => restoreDataRootBackup({ backupRoot, dataRoot })).toThrow(
-      'Digest mismatch for backup file server/layout.json'
-    );
+    await expect(
+      Promise.resolve().then(() => restoreDataRootBackup({ backupRoot, dataRoot }))
+    ).rejects.toThrow('Digest mismatch for backup file server/layout.json');
     expect(readFileSync(join(dataRoot, 'kept.txt'), 'utf8')).toBe('kept\n');
   });
 
-  it('rejects restore staging inside the backup root', () => {
+  it('rejects restore staging inside the backup root', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-backup-'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-data-root-restore-target-'));
     mkdirSync(join(backupRoot, 'server'), { recursive: true });
@@ -625,13 +625,15 @@ describe('data-root backup manifest', () => {
       completedAt: timestamp,
     });
 
-    expect(() =>
-      restoreDataRootBackup({
-        backupRoot,
-        dataRoot,
-        stagingRoot: join(backupRoot, '.restore-staging'),
-      })
-    ).toThrow('Restore staging root must be outside the backup root.');
+    await expect(
+      Promise.resolve().then(() =>
+        restoreDataRootBackup({
+          backupRoot,
+          dataRoot,
+          stagingRoot: join(backupRoot, '.restore-staging'),
+        })
+      )
+    ).rejects.toThrow('Restore staging root must be outside the backup root.');
   });
 
   it('preserves immutable Light App snapshots through hot backup and restore', async () => {
@@ -700,7 +702,7 @@ describe('data-root backup manifest', () => {
       startedAt: timestamp,
       completedAt: timestamp,
     });
-    restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+    await restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
     const restoredContext = {
       ...context,
       dataRoot: restoredRoot,

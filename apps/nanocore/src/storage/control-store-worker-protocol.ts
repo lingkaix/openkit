@@ -1042,6 +1042,10 @@ export const CONTROL_WORKER_FAILURE_CODES = [
   'commit-unknown',
   'migration_missing',
   'migration_failed',
+  'migration_unsupported_core',
+  'migration_unsupported_user',
+  'migration_unsupported_workspace',
+  'migration_unsupported_app',
   'integrity',
 ] as const;
 

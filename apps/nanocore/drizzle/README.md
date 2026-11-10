@@ -4,6 +4,8 @@ This directory owns NanoCore's native Drizzle Kit journals. Each of `core`, `use
 
 Before the first release, an explicitly authorized reset-bound schema correction may edit an existing SQL file while preserving its journal entry and tag. Do not squash or rename journals as part of such a correction. After release, each schema-changing release adds one SQL file per affected scope.
 
+Runtime admission inspects all retained native ledger timestamps against the exact packaged scope journal before migration or ordinary use. Unknown or future identities receive a typed scope-specific refusal. Supported sparse histories remain valid; this check does not impose a universal prefix or compare informational SQL hashes. Restore uses the same read-only admission before root replacement.
+
 ## Create SQL for one scope
 
 Use the per-scope Kit configs with `--custom`. `drizzle.config.ts` re-exports the Core config. From `apps/nanocore`:

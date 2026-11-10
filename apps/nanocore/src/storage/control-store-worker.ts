@@ -231,7 +231,13 @@ import {
 import { CoreJournalRefusal } from './core-journal-codecs.js';
 import { applyControlCoreJournal } from './core-journal-native.js';
 import { workspaceRecoveryCandidateDigest } from './data-root-backup.js';
-import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import {
+  bindCoreSqlite,
+  bindWorkspaceSqlite,
+  type CoreDb,
+  openSupportedScopeReadOnlySqlite,
+  type WorkspaceDb,
+} from './db.js';
 import { EvaluationCandidateCommandError } from './evaluation-candidate-codecs.js';
 import { applyControlEvaluationCandidate } from './evaluation-candidate-native.js';
 import { ExecutionAttemptRefusal } from './execution-attempt-codecs.js';
@@ -243,7 +249,11 @@ import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { HarnessLifecycleRefusal } from './harness-lifecycle-codecs.js';
 import { applyControlHarnessLifecycle } from './harness-lifecycle-native.js';
 import { prepareRetainedProductJson } from './immutable-content.js';
-import { applyAppMigrations, applyNativeScopeMigrations } from './migrate.js';
+import {
+  applyAppMigrations,
+  applyNativeScopeMigrations,
+  assertSupportedNativeLedger,
+} from './migrate.js';
 import { PrivateWorkspaceMessageSchema } from './private-workspace-codecs.js';
 import { applyControlPrivateWorkspaceInDb } from './private-workspace-native.js';
 import {
@@ -1146,7 +1156,15 @@ function failureCode(
   const code =
     failure !== null && typeof failure === 'object' && 'code' in failure ? failure.code : null;
   if (code === 'ENOSPC' || code === 'SQLITE_FULL') return 'no-space';
-  if (code === 'migration_missing' || code === 'migration_failed') return code;
+  if (
+    code === 'migration_missing' ||
+    code === 'migration_failed' ||
+    code === 'migration_unsupported_core' ||
+    code === 'migration_unsupported_user' ||
+    code === 'migration_unsupported_workspace' ||
+    code === 'migration_unsupported_app'
+  )
+    return code;
   if (code === 'SQLITE_NOTADB' || (typeof code === 'string' && code.startsWith('SQLITE_CORRUPT')))
     return 'integrity';
   if (typeof code === 'string' && code.startsWith('SQLITE_CONSTRAINT')) return 'constraint';
@@ -3575,11 +3593,37 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     reply(failure(request.id, 'invalid-request'));
     return;
   }
+  const migrationScope = request.physicalScope
+    ? 'app'
+    : (request.initialize ??
+      (request.productOwner?.kind === 'server'
+        ? 'core'
+        : request.productOwner?.kind === 'workspace'
+          ? 'workspace'
+          : undefined));
+  // A writable last close may checkpoint WAL even when no command body ran.
+  // Refuse unsupported existing history through a real read-only handle first.
+  if (existing && migrationScope !== undefined) {
+    try {
+      const inspection = openSupportedScopeReadOnlySqlite(
+        path,
+        migrationScope,
+        request.physicalScope ? 1000 : 5000
+      );
+      inspection.close();
+    } catch (error) {
+      const code = failureCode(error, [request.id]);
+      if (code !== `migration_unsupported_${migrationScope}`) throw error;
+      reply(failure(request.id, code, 'not-committed'));
+      return;
+    }
+  }
   const sqlite = new Database(path, {
     fileMustExist: !request.create,
     ...(request.physicalScope ? { timeout: 1000 } : {}),
   });
   try {
+    if (migrationScope !== undefined) assertSupportedNativeLedger(sqlite, migrationScope);
     assertSavepointSafeSchema(sqlite);
     if (request.physicalScope) {
       sqlite.pragma('busy_timeout = 1000');

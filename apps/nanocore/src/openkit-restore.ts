@@ -13,7 +13,7 @@ if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h')) {
 } else {
   try {
     if (argv[0] === 'workspace') await runWorkspaceRecoveryCli(argv.slice(1));
-    else runDataRootRestoreCli(argv);
+    else await runDataRootRestoreCli(argv);
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;

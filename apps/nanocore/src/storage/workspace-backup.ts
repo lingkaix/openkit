@@ -66,6 +66,7 @@ import { acquireDataRootLock, type DataRootLock, DataRootLockError } from '../bo
 import { isScopeAdmitted, refuseScope, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
+import { BootConfigError } from '../config/mode.js';
 import {
   collectionTableName,
   fieldColumnName,
@@ -868,6 +869,15 @@ function failure(error: unknown, fallback: WorkspaceRecoveryErrorCode): never {
   if (error instanceof WorkspaceRecoveryError) throw error;
   if (error instanceof WorkspaceBackupBundleError) refuse(error.code);
   if (error instanceof FileAdmissionError) refuse('capacity-exceeded');
+  // Early scope admission preserves the existing unsupported backup-format refusal.
+  if (
+    error instanceof BootConfigError &&
+    (error.code === 'migration_unsupported_core' ||
+      error.code === 'migration_unsupported_user' ||
+      error.code === 'migration_unsupported_workspace' ||
+      error.code === 'migration_unsupported_app')
+  )
+    refuse('unsupported-format');
   refuse(fallback);
 }
 

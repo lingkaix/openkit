@@ -64,6 +64,8 @@ The concrete path tree is defined in the server config and data layout spec, not
 
 Core DatabaseOwner and the user-data Storage Service MUST share durable atomic-write, verified-copy, publication, hold-aware deletion, digest, path-safety and temporary-root primitives. Immutable blobs MUST have separate Server, User and Workspace namespaces, with no cross-scope deduplication. DatabaseOwner owns SQLite lifecycle and transactions; Storage Service owns user-data locations, backends and Policy leases. Neither depends on the other's backend or transaction abstraction. Each physical database MUST have one off-Main writer and bounded snapshot readers; close MUST drain writes, release readers, checkpoint/truncate and close without WAL/SHM at rest. Production access outside these physical owners MUST shrink to zero. This supersedes the mixed-writer and unmeasured-cold-family allowance.
 
+A future or unsupported migration ledger MUST cause a typed refusal before DatabaseOwner admission or database writes. The base database bytes, definitions, snapshots and existing committed WAL MUST remain unchanged. Under the [accepted refused-open exception](../decisions/20261110-refused_ledger_sidecar_residue.md), a newly created WAL MUST contain zero bytes and a derived SHM index MAY remain until a supported binary performs a normal open and close. Accepted and normal database lifecycles retain the no-WAL/SHM-at-rest requirement.
+
 One Core server may use multiple SQLite databases.
 
 A server-level database belongs to one Core server installation and may hold global indexes, known users, workspace registry data, server metadata, and migration metadata.

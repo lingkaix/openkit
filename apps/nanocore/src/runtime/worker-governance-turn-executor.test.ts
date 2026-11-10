@@ -8384,24 +8384,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       prepare: typeof setupDb.sqlite.prepare;
     };
     setupDb.sqlite.close();
-    const originalPrepare = sqlitePrototype.prepare;
-    // Workspace creation already applied the journal. Fail its next ledger read without changing retained schema.
-    const prepareSpy = vi.spyOn(sqlitePrototype, 'prepare').mockImplementation(function (
-      this: { name?: string },
-      sql: string,
-      ...rest: unknown[]
-    ) {
-      const filename = typeof this.name === 'string' ? this.name : '';
-      if (
-        filename.endsWith('workspace.sqlite') &&
-        sql.includes('__drizzle_migrations') &&
-        /^\s*select\b/i.test(sql)
-      ) {
-        throw new Error('injected workspace migration failure');
-      }
-      return originalPrepare.call(this, sql, ...rest);
-    });
-
     const turn = await createAssignedTurn(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
@@ -8426,6 +8408,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
       environmentBackend: {
         kind: 'openshell',
       },
+    });
+
+    const originalPrepare = sqlitePrototype.prepare;
+    // Fail only the writable migration owner after fixture admission and readonly ledger checks.
+    const prepareSpy = vi.spyOn(sqlitePrototype, 'prepare').mockImplementation(function (
+      this: { name?: string; readonly?: boolean },
+      sql: string,
+      ...rest: unknown[]
+    ) {
+      const filename = typeof this.name === 'string' ? this.name : '';
+      if (
+        filename.endsWith('workspace.sqlite') &&
+        this.readonly === false &&
+        sql === 'SELECT created_at FROM __drizzle_migrations ORDER BY created_at DESC LIMIT 1'
+      ) {
+        throw new Error('injected workspace migration failure');
+      }
+      return originalPrepare.call(this, sql, ...rest);
     });
 
     try {

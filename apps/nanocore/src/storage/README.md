@@ -85,6 +85,8 @@ Knowledge retrieval records exact metadata selector mismatches as `selector_mism
 
 This directory owns NanoCore's physical data-root layout, ownership-scoped SQLite databases, canonical workspace file records, migrations, integrity validation, derived indexes, backup, export, and operational restore mechanics.
 
+`migrate.ts` checks every actual native ledger timestamp against the binary's exact scope journal before apply or ordinary opens. Unsupported history has a closed scope-specific `migration_unsupported_*` refusal; supported sparse histories and existing scope-local activation checks remain. This admission is read-only and keeps recorded SQL hashes informational. Existing files are checked through a genuine read-only handle before any mutable open, including the boot integrity reader, so refusal cannot checkpoint retained WAL into the base. Typed unsupported-history refusal may leave only a new empty WAL and derived SHM under the accepted Core Storage exception; [issue #709](https://github.com/lingkaix/openkit/issues/709) tracks later cleanup. Stopped Data Root restore checks inventoried canonical databases and App recovery snapshots before swapping roots. Existing asynchronous Storage helpers inspect one digest-verified database-and-WAL copy at a time beside the private candidate on its staging filesystem, then remove scratch before placement. Cold backup definition inspection finishes before inventory sealing, so its SQLite sidecars cannot invalidate the returned manifest. Opaque Source or Artifact SQLite content is not a scope database.
+
 ## Source Of Truth
 
 | Scope or record family | Durable owner |

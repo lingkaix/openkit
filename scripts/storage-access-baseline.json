@@ -88,7 +88,6 @@
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:writeFileSync\t1a207c94425719d1d5142cd5643a18f984c6423166e101fbbffceae6742c3e01": 1,
     "apps/nanocore/src/storage/data-root-backup.ts\tsqlite\t86f9b110181849f24f4b431166719a75e872fce6827b8c0382e00c93df647360": 1,
     "apps/nanocore/src/storage/db.ts\tsqlite\ta00178b2829ee8e80056cb3b1a285366efe9cea5a9549084d5c137f0f186acbd": 1,
-    "apps/nanocore/src/storage/db.ts\tsqlite\tbe6ed39b018986d3ecc241d736b373e9fd24702b78be8ec7c667f4be4742e312": 1,
     "apps/nanocore/src/storage/fs-layout.ts\tfs:copyFileSync\tc7672923e2db56c8ebbfc4c956691441347613a2bfa96a8b2784d7954cf7b7c2": 1,
     "apps/nanocore/src/storage/fs-layout.ts\tfs:mkdirSync\t48b490e3bde588cc7f967fb66fb8c79293f8ebe2f339cc0877916fc3d3b42310": 1,
     "apps/nanocore/src/storage/fs-layout.ts\tfs:writeFileSync\t1a207c94425719d1d5142cd5643a18f984c6423166e101fbbffceae6742c3e01": 1,

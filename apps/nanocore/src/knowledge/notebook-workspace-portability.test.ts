@@ -272,7 +272,7 @@ describe('canonical Notebook Workspace portability', () => {
       startedAt: timestamp,
       completedAt: timestamp,
     });
-    restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
+    await restoreDataRootBackup({ backupRoot, dataRoot: restoredRoot });
     const restoredDbForSelection = openWorkspaceDb(restoredRoot, f.workspace.id);
     const restoredRootPath = join(restoredRoot, 'workspaces', f.workspace.id);
     const restoredSelection = readWorkspaceNotebookSelection({

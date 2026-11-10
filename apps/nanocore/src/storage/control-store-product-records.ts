@@ -13,6 +13,7 @@ import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { assertWorkspaceWorkOwner } from './fs-layout.js';
+import { assertSupportedNativeLedger } from './migrate.js';
 import {
   NATIVE_THREAD_LOGIN_FEATURE,
   NativeThreadRequiredFeaturesSchema,
@@ -770,13 +771,19 @@ export function openControlStoreProductReadHandle(
     throw new ControlProductPreconditionError();
   if (borrowed && (!borrowed.open || resolve(borrowed.name) !== resolve(path)))
     throw new ControlProductPreconditionError();
-  if (
-    borrowed &&
-    owner.kind === 'workspace' &&
-    !readProduct(borrowed, owner, 'workspace', owner.workspaceId)
-  )
-    throw new ControlProductPreconditionError();
   const sqlite = borrowed ?? new Database(path, { readonly: true, fileMustExist: true });
+  try {
+    assertSupportedNativeLedger(sqlite, owner.kind === 'server' ? 'core' : 'workspace');
+    if (
+      borrowed &&
+      owner.kind === 'workspace' &&
+      !readProduct(borrowed, owner, 'workspace', owner.workspaceId)
+    )
+      throw new ControlProductPreconditionError();
+  } catch (error) {
+    if (!borrowed) sqlite.close();
+    throw error;
+  }
   // Only known metadata and entry queries are prepared; no canonical row survives a read.
   const prepared: ProductReadStatements = new Map();
   let closed = false;

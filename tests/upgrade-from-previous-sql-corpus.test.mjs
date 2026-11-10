@@ -205,9 +205,8 @@ test('reopens every SQL family and its linked file owners with exact readback', 
       predecessorFenced: true,
       observedAt: '2026-10-19T00:00:02.000Z',
     });
-    runtimeDb.sqlite
-      .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
-      .run('synthetic-candidate-additive-migration', 9999999999999);
+    // Candidate migrations must come from their supported packaged journal; this current-image
+    // fixture must not invent a future ledger identity to model additive migration continuity.
   } finally {
     runtimeDb.sqlite.close();
   }

@@ -27,19 +27,21 @@ describe('data-root restore operator cli', () => {
     });
   });
 
-  it('refuses to restore while a NanoCore lock file is present', () => {
+  it('refuses to restore while a NanoCore lock file is present', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-backup-'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-target-'));
 
     mkdirSync(join(dataRoot, 'server', 'runtime'), { recursive: true });
     writeFileSync(join(dataRoot, 'server', 'runtime', 'nanocore.lock'), '{"bootId":"boot_1"}\n');
 
-    expect(() =>
-      runDataRootRestoreCli(['--backup-root', backupRoot, '--data-root', dataRoot])
-    ).toThrow('Refusing to restore while NanoCore appears to be running');
+    await expect(
+      Promise.resolve().then(() =>
+        runDataRootRestoreCli(['--backup-root', backupRoot, '--data-root', dataRoot])
+      )
+    ).rejects.toThrow('Refusing to restore while NanoCore appears to be running');
   });
 
-  it('restores one verified backup and prints a redacted summary', () => {
+  it('restores one verified backup and prints a redacted summary', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-backup-'));
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-target-'));
     const stdout: string[] = [];
@@ -55,7 +57,7 @@ describe('data-root restore operator cli', () => {
       completedAt: timestamp,
     });
 
-    const summary = runDataRootRestoreCli(
+    const summary = await runDataRootRestoreCli(
       ['--backup-root', backupRoot, '--data-root', dataRoot],
       (line) => stdout.push(line)
     );
@@ -76,7 +78,7 @@ describe('data-root restore operator cli', () => {
     expect(JSON.stringify(summary)).not.toContain(backupRoot);
   });
 
-  it('restores into an absent child of a writable parent', () => {
+  it('restores into an absent child of a writable parent', async () => {
     const backupRoot = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-backup-'));
     const parent = mkdtempSync(join(tmpdir(), 'openkit-restore-cli-parent-'));
     const dataRoot = join(parent, 'data');
@@ -94,7 +96,7 @@ describe('data-root restore operator cli', () => {
 
     expect(existsSync(dataRoot)).toBe(false);
 
-    const summary = runDataRootRestoreCli(
+    const summary = await runDataRootRestoreCli(
       ['--backup-root', backupRoot, '--data-root', dataRoot],
       (line) => stdout.push(line)
     );

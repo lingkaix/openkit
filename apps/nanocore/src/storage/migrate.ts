@@ -74,9 +74,51 @@ export function applyAppMigrations(
   applyNativeScopeMigrations(sqlite, 'app', findMigrationsFolder('app'));
 }
 
+/**
+ * Refuses unsupported retained journal identities before migration or ordinary scope use.
+ *
+ * Every actual row must name a timestamp in this binary's exact scope journal. Supported
+ * sparse histories remain valid; the recorded SQL hash is informational, as in Drizzle.
+ * This read-only admission neither creates a ledger nor upgrades or repairs its contents.
+ *
+ * @param sqlite Existing or genuinely fresh scope connection.
+ * @param scope Exact physical ownership scope supplied by its opening owner.
+ * @param migrationsFolder Optional scope journal folder for explicit setup callers.
+ * @throws BootConfigError when the journal is missing, a predecessor ledger exists, or a retained identity is unsupported.
+ */
+export function assertSupportedNativeLedger(
+  sqlite: SetupDb['sqlite'],
+  scope: StorageMigrationScope,
+  migrationsFolder = findMigrationsFolder(scope)
+): void {
+  const journal = readJournal(migrationsFolder);
+  if (hasSqliteTable(sqlite, 'schema_migrations')) {
+    throw new BootConfigError(
+      'migration_failed',
+      `Predecessor ${scope} migration ledger requires offline handling.`
+    );
+  }
+  if (!hasSqliteTable(sqlite, NATIVE_LEDGER_TABLE)) return;
+  const supported = new Set(journal.entries.map((entry) => entry.when));
+  const rows = sqlite
+    .prepare(`SELECT created_at FROM ${NATIVE_LEDGER_TABLE}`)
+    .iterate() as Iterable<{
+    created_at: number | string | null;
+  }>;
+  for (const row of rows) {
+    if (!supported.has(Number(row.created_at))) {
+      throw new BootConfigError(
+        `migration_unsupported_${scope}`,
+        `Unsupported ${scope} native Drizzle ledger identity.`
+      );
+    }
+  }
+}
+
 /** Reads the existing App journal before its recovery copy and native DDL are prepared. */
 export function hasPendingAppMigrations(sqlite: SetupDb['sqlite']): boolean {
   const migrationsFolder = findMigrationsFolder('app');
+  assertSupportedNativeLedger(sqlite, 'app', migrationsFolder);
   const journal = readJournal(migrationsFolder);
   const applied = listAppliedNativeMigrationIds(sqlite, 'app', migrationsFolder);
   return journal.entries.some((entry) => !applied.includes(`app_${entry.tag}`));
@@ -92,7 +134,7 @@ export function hasPendingUserMigrations(sqlite: SetupDb['sqlite']): boolean {
       throw new BootConfigError('migration_failed', failure);
     }
     const migrationsFolder = findMigrationsFolder('user');
-    readJournal(migrationsFolder);
+    assertSupportedNativeLedger(sqlite, 'user', migrationsFolder);
     const migrations = readMigrationFiles({ migrationsFolder });
     const latest = hasSqliteTable(sqlite, NATIVE_LEDGER_TABLE)
       ? (sqlite
@@ -103,6 +145,8 @@ export function hasPendingUserMigrations(sqlite: SetupDb['sqlite']): boolean {
       (migration) => !latest || Number(latest.created_at) < migration.folderMillis
     );
   } catch (error) {
+    if (error instanceof BootConfigError && error.code === 'migration_unsupported_user')
+      throw error;
     const message = error instanceof Error ? error.message : '';
     if (
       (error instanceof BootConfigError && error.code === 'migration_missing') ||
@@ -151,6 +195,7 @@ export function applyNativeScopeMigrations(
         'schema_migrations already exists; refuse native startup apply and handle the predecessor ledger offline.';
       throw new BootConfigError('migration_failed', failure);
     }
+    assertSupportedNativeLedger(sqlite, scope, migrationsFolder);
     configureOwnedSqlite(sqlite);
     const config = { migrationsFolder };
     const journal = readJournal(migrationsFolder);
@@ -302,6 +347,8 @@ export function applyNativeScopeMigrations(
     }
     if (scope === 'core') removeGoalSandboxPin(sqlite);
   } catch (error) {
+    if (error instanceof BootConfigError && error.code === `migration_unsupported_${scope}`)
+      throw error;
     const message = error instanceof Error ? error.message : '';
     if (
       (error instanceof BootConfigError && error.code === 'migration_missing') ||

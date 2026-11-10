@@ -55,6 +55,7 @@ vi.mock('node:worker_threads', async (load) => {
             return result;
           };
           Database.prototype.close = function() {
+            if (this.readonly) return originalClose.call(this);
             if (workerData.point === 'reject-close') {
               Atomics.add(workerData.gate, 0, 1);
               throw new Error('injected native close failure');
