@@ -14,9 +14,11 @@ import { z } from 'zod';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { assertWorkspaceWorkOwner } from './fs-layout.js';
 import {
-  StoredThreadSnapshotV1Schema,
-  ThreadRequiredFeaturesV1Schema,
-} from './retained-work-events-v1.js';
+  NATIVE_THREAD_LOGIN_FEATURE,
+  NativeThreadRequiredFeaturesSchema,
+  StoredNativeThreadSnapshotV1Schema,
+} from './native-thread-login.js';
+import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
 import {
   StoredAgentSessionV1Schema,
   StoredTurnV1Schema,
@@ -209,16 +211,28 @@ export function decode(
   value: unknown,
   owner: ControlProductOwner
 ): Record<string, unknown> {
-  const record = readRetainedV1(value, () => schemas[kind].parse(value)) as Record<string, unknown>;
+  if (!value || typeof value !== 'object' || Array.isArray(value))
+    throw new ControlProductPreconditionError();
   const raw = value as Record<string, unknown>;
+  const privateThread = kind === 'thread' && Object.hasOwn(raw, 'login');
   if (
     raw.requiredFeatures !== undefined &&
     kind !== 'turn' &&
     (kind === 'thread'
-      ? !ThreadRequiredFeaturesV1Schema.safeParse(raw.requiredFeatures).success
+      ? !NativeThreadRequiredFeaturesSchema.safeParse(raw.requiredFeatures).success
       : !Array.isArray(raw.requiredFeatures) || raw.requiredFeatures.length > 0)
   )
     throw new ControlProductPreconditionError();
+  if (
+    kind === 'thread' &&
+    privateThread !==
+      (Array.isArray(raw.requiredFeatures) &&
+        raw.requiredFeatures.includes(NATIVE_THREAD_LOGIN_FEATURE))
+  )
+    throw new ControlProductPreconditionError();
+  const record = readRetainedV1(value, () =>
+    privateThread ? StoredNativeThreadSnapshotV1Schema.parse(value) : schemas[kind].parse(value)
+  ) as Record<string, unknown>;
   if (isMainThread && kind === 'agent-session' && owner.kind === 'workspace')
     assertWorkspaceWorkOwner(
       { owner: { kind: 'workspace', workspaceId: record.workspaceId } },

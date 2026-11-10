@@ -680,6 +680,7 @@ export const AgentEnvironmentCredentialVisibilitySchema = z.enum([
   'sandbox-provider',
   'runtime-file',
   'runtime-env',
+  'runtime-token',
 ]);
 
 /**
@@ -732,6 +733,14 @@ export const AgentEnvironmentCredentialDeclarationSchema = z.discriminatedUnion(
       targetEnvVarName: z.string().regex(WORKER_CREDENTIAL_ENV_NAME_PATTERN),
     })
     .strict(),
+  z
+    .object({
+      ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
+      requirementId: z.string().min(1),
+      visibility: z.literal('runtime-token'),
+      consumer: z.literal('codex-login'),
+    })
+    .strict(),
 ]);
 
 /** Reusable authored credential requirement resolved by one Workspace binding. */
@@ -755,6 +764,13 @@ export const AgentEnvironmentCredentialRequirementSchema = z.discriminatedUnion(
       ...CREDENTIAL_REQUIREMENT_BASE,
       visibility: z.literal('runtime-env'),
       targetEnvVarName: z.string().regex(WORKER_CREDENTIAL_ENV_NAME_PATTERN),
+    })
+    .strict(),
+  z
+    .object({
+      ...CREDENTIAL_REQUIREMENT_BASE,
+      visibility: z.literal('runtime-token'),
+      consumer: z.literal('codex-login'),
     })
     .strict(),
 ]);
@@ -1017,7 +1033,7 @@ export const AgentEnvironmentLlmRouteSchema = z
     providerInstanceId: z.string().min(1),
     model: z.string().min(1),
     endpoint: AgentEnvironmentLlmEndpointSchema,
-    credentialVisibility: z.literal('placeholder'),
+    credentialVisibility: z.enum(['placeholder', 'runtime-token']),
     modelParameters: AgentEnvironmentLlmModelParametersSchema.optional(),
     /** Resolver-advertised controls; empty and absent have distinct meaning. */
     reasoningEffortLevels: z.array(ReasoningEffortSchema).optional(),
@@ -1029,7 +1045,7 @@ export const AgentEnvironmentLlmRouteSchema = z
  */
 export const AgentEnvironmentLlmSchema = z
   .object({
-    mode: z.literal('gateway'),
+    mode: z.enum(['gateway', 'harness']),
     /** Exact admitted Turn preference, never a live Agent default. */
     reasoningEffort: ReasoningEffortSchema.optional(),
     preferredLogicalModelId: z.string().min(1),
@@ -1041,10 +1057,16 @@ export const AgentEnvironmentLlmSchema = z
 
     for (const [index, route] of value.routes.entries()) {
       if (
-        route.credentialVisibility !== expected[0] ||
-        route.endpoint.kind !== expected[1] ||
-        route.endpoint.upstream?.kind !== expected[2] ||
-        Boolean(route.endpoint.workerBaseUrl) !== expected[3]
+        value.mode === 'gateway'
+          ? route.credentialVisibility !== expected[0] ||
+            route.endpoint.kind !== expected[1] ||
+            route.endpoint.upstream?.kind !== expected[2] ||
+            Boolean(route.endpoint.workerBaseUrl) !== expected[3]
+          : route.credentialVisibility !== 'runtime-token' ||
+            route.endpoint.kind !== 'openai-compatible' ||
+            route.endpoint.upstream !== undefined ||
+            route.endpoint.workerBaseUrl !== 'https://chatgpt.com/backend-api' ||
+            route.modelParameters === undefined
       ) {
         ctx.addIssue({
           code: 'custom',
@@ -1053,7 +1075,12 @@ export const AgentEnvironmentLlmSchema = z
         });
       }
     }
-    if (!value.routes.some((route) => route.model === value.preferredLogicalModelId)) {
+    if (
+      !value.routes.some(
+        (route) =>
+          (value.mode === 'harness' ? route.id : route.model) === value.preferredLogicalModelId
+      )
+    ) {
       ctx.addIssue({
         code: 'custom',
         message: 'The preferred logical model must be present in the LLM routes.',
@@ -1271,6 +1298,44 @@ export const AgentEnvironmentPackageSchema = z
       });
     }
 
+    const loginDeclarations = value.credentials.declarations.filter(
+      (declaration) => declaration.visibility === 'runtime-token'
+    );
+    if (value.llm.mode === 'harness') {
+      if (value.agent.runtimeKind !== 'codex' || value.control.adapter?.targetRuntime !== 'codex') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Harness Login mode requires the Codex runtime and adapter.',
+          path: ['control', 'adapter'],
+        });
+      }
+      if (loginDeclarations.length === 0 || !value.scope.workspaceId) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Harness Login mode requires a Workspace-bound codex-login declaration.',
+          path: ['credentials', 'declarations'],
+        });
+      }
+      for (const declaration of loginDeclarations) {
+        if (!value.vault.grants.some((grant) => grant.id === declaration.vaultGrantId)) {
+          ctx.addIssue({
+            code: 'custom',
+            message: 'Harness Login declarations require their exact grant reference.',
+            path: ['credentials', 'declarations'],
+          });
+        }
+      }
+      // The closed mode is the AEP semantic gate. A supported relay capability
+      // does not select Gateway inference or supply its credentials to this mode.
+      return;
+    }
+    if (loginDeclarations.length > 0) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Codex Login declarations require explicit harness mode.',
+        path: ['llm', 'mode'],
+      });
+    }
     if (!value.backend.requiredCapabilities.includes(TRUSTED_WORKER_INFERENCE_RELAY_CAPABILITY)) {
       return;
     }
@@ -1566,11 +1631,13 @@ function addDuplicateCredentialTargets(
       continue;
     }
 
-    addDuplicateValueIssue(targetEnvVarNames, declaration.targetEnvVarName, ctx, [
-      'declarations',
-      index,
-      'targetEnvVarName',
-    ]);
+    if (declaration.visibility === 'runtime-env') {
+      addDuplicateValueIssue(targetEnvVarNames, declaration.targetEnvVarName, ctx, [
+        'declarations',
+        index,
+        'targetEnvVarName',
+      ]);
+    }
   }
 }
 

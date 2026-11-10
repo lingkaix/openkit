@@ -67,6 +67,14 @@ const StoredSetupCredentialMetadataV1Schema = z.discriminatedUnion('visibility',
     targetEnvVarName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
     visibility: z.literal('runtime-env'),
   }),
+  z
+    .object({
+      visibility: z.literal('runtime-token'),
+      requirementId: z.string().min(1),
+      vaultGrantId: VaultGrantIdSchema,
+      consumer: z.literal('codex-login'),
+    })
+    .strict(),
 ]);
 
 const networkMetadata = {
@@ -105,30 +113,45 @@ const StoredSetupNetworkMetadataV1Schema = z.union([
 ]);
 
 /** Fixed whitelisted v1 evidence; decoding supplies no live launch, credential or network authority. */
-export const StoredResolvedAgentSetupV1Schema = z.object({
-  manifest: z.object({
-    id: z.string().min(1),
-    requiredFeatures: StoredSetupRequiredFeaturesV1Schema,
-    runtime: z.object({
-      adapter: z.string().min(1),
-      binaries: z.array(z.object({ id: z.string().min(1), path: z.string().min(1) })),
-      image: StoredSetupImageV1Schema,
-      kind: z.string().min(1),
-      version: z.string().min(1).optional(),
+export const StoredResolvedAgentSetupV1Schema = z
+  .object({
+    manifest: z.object({
+      id: z.string().min(1),
+      requiredFeatures: StoredSetupRequiredFeaturesV1Schema,
+      runtime: z.object({
+        adapter: z.string().min(1),
+        binaries: z.array(z.object({ id: z.string().min(1), path: z.string().min(1) })),
+        image: StoredSetupImageV1Schema,
+        kind: z.string().min(1),
+        version: z.string().min(1).optional(),
+      }),
+      sandbox: z.object({
+        credentialDeclarations: z.array(StoredSetupCredentialMetadataV1Schema),
+        network: z.array(StoredSetupNetworkMetadataV1Schema),
+      }),
     }),
-    sandbox: z.object({
-      credentialDeclarations: z.array(StoredSetupCredentialMetadataV1Schema),
-      network: z.array(StoredSetupNetworkMetadataV1Schema),
+    logicalModels: z.object({
+      preferredLogicalModelId: z.string().min(1),
+      allowed: z.array(
+        z.object({
+          id: z.string().min(1),
+          capabilities: z.array(z.string()),
+          modelFamilyId: z.string().nullable(),
+        })
+      ),
     }),
-  }),
-  logicalModels: z.object({
-    preferredLogicalModelId: z.string().min(1),
-    allowed: z.array(
-      z.object({
-        id: z.string().min(1),
-        capabilities: z.array(z.string()),
-        modelFamilyId: z.string().nullable(),
-      })
-    ),
-  }),
-});
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.manifest.sandbox.credentialDeclarations.some(
+        (declaration) => declaration.visibility === 'runtime-token'
+      ) &&
+      !value.manifest.requiredFeatures.includes('worker.harness-login.v1')
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Retained Codex Login requirements need worker.harness-login.v1.',
+        path: ['manifest', 'requiredFeatures'],
+      });
+    }
+  });

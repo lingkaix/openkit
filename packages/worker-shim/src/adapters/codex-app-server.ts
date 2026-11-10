@@ -150,6 +150,18 @@ const KNOWN_PERMISSION_METHODS = new Set([
   'mcpServer/elicitation/request',
 ]);
 
+/** One transient native refresh answer; no refresh credential or durable response is carried. */
+export interface CodexAuthTokensRefreshReply {
+  /** Exact pinned native response, prepared only after current private delivery authority. */
+  readonly result: {
+    readonly accessToken: string;
+    readonly chatgptAccountId: string;
+    readonly chatgptPlanType: string | null;
+  };
+  /** Completes the original private delivery only after this response reached the live pipe. */
+  readonly complete: () => Promise<void>;
+}
+
 /** Stdio JSON-RPC session for one `codex app-server` process. */
 export class CodexAppServer {
   readonly permissionRecords: CodexPermissionRecord[] = [];
@@ -168,6 +180,7 @@ export class CodexAppServer {
   /** RPC unavailability does not discard buffered stdout behind process exit. */
   private stdoutBroken = false;
   private stdoutEnded = false;
+  private refreshingAuthTokens = false;
 
   /**
    * @param child Supervised App Server process with piped stdio.
@@ -180,7 +193,8 @@ export class CodexAppServer {
     private readonly secrets: readonly string[],
     private readonly onNotification: (method: string, params: unknown) => void,
     private readonly onBroken: (reason: string) => void,
-    private readonly controlTimeoutMs: number = LIFECYCLE_DEFAULTS.nativeRequestMs
+    private readonly controlTimeoutMs: number = LIFECYCLE_DEFAULTS.nativeRequestMs,
+    private readonly refreshAuthTokens?: (params: unknown) => Promise<CodexAuthTokensRefreshReply>
   ) {
     child.stdout.on('data', (chunk: Buffer) => this.onStdout(chunk));
     child.stdout.on('end', () => this.endStdout());
@@ -204,7 +218,7 @@ export class CodexAppServer {
   private endStderr(): void {
     if (this.stderrEnded) return;
     this.stderrEnded = true;
-    this.stderrText = redactDiagnostic(this.stderrText + this.stderrDecoder.decode(), this.secrets);
+    this.appendStderr(this.stderrDecoder.decode());
   }
 
   /** Starts the addressed Turn's bounded prefix, excluding earlier and idle output. */
@@ -216,7 +230,26 @@ export class CodexAppServer {
 
   /** Bounded stderr prefix for a failed Turn. Protocol stdout is never a diagnostic. */
   stderrDiagnostic(): string {
-    return redactDiagnostic(this.stderrText, this.secrets);
+    let text = this.stderrText;
+    for (const secret of this.secrets) {
+      if (!secret) continue;
+      text = text.split(secret).join('[redacted]');
+      // Withhold an unfinished known value as well; truncation cannot turn it into safe text.
+      const prefix = new Int32Array(secret.length);
+      for (let i = 1, matched = 0; i < secret.length; i += 1) {
+        while (matched > 0 && secret[i] !== secret[matched]) matched = prefix[matched - 1]!;
+        if (secret[i] === secret[matched]) matched += 1;
+        prefix[i] = matched;
+      }
+      let matched = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        while (matched > 0 && text[i] !== secret[matched]) matched = prefix[matched - 1]!;
+        if (text[i] === secret[matched]) matched += 1;
+        if (matched === secret.length) matched = prefix[matched - 1]!;
+      }
+      if (matched > 0) text = `${text.slice(0, -matched)}[redacted]`;
+    }
+    return redactDiagnostic(text, this.secrets);
   }
 
   /** Sends one request and resolves its result. The error text is redacted and not a thread id. */
@@ -374,6 +407,10 @@ export class CodexAppServer {
 
   private answerRequest(message: RpcMessage): void {
     const method = message.method ?? 'unknown';
+    if (method === 'account/chatgptAuthTokens/refresh' && this.refreshAuthTokens) {
+      void this.answerAuthTokensRefresh(message);
+      return;
+    }
     const decision = codexPermissionResponse(method, message.params);
     if (this.permissionRecords.length === 16) this.permissionRecords.shift();
     this.permissionRecords.push({
@@ -393,11 +430,49 @@ export class CodexAppServer {
     );
   }
 
+  /** Handles only the pin's native refresh request; permission decisions remain unchanged. */
+  private async answerAuthTokensRefresh(message: RpcMessage): Promise<void> {
+    if (this.refreshingAuthTokens || !this.refreshAuthTokens) {
+      this.fail('Codex native authentication refresh is unavailable.');
+      return;
+    }
+    this.refreshingAuthTokens = true;
+    const abort = new AbortController();
+    const timer = setTimeout(() => {
+      abort.abort();
+      this.fail('Codex native authentication refresh deadline expired.');
+    }, this.controlTimeoutMs);
+    try {
+      const reply = await this.refreshAuthTokens(message.params);
+      if (this.broken || abort.signal.aborted)
+        throw new Error('Codex native authentication refresh was abandoned.');
+      await this.send({ id: message.id, result: reply.result }, abort.signal);
+      if (this.broken || abort.signal.aborted)
+        throw new Error('Codex native authentication refresh delivery is unproved.');
+      await reply.complete();
+    } catch {
+      // Private callback/native payloads cannot become a surfaced error or diagnostic.
+      this.fail('Codex native authentication refresh failed.');
+    } finally {
+      clearTimeout(timer);
+      abort.abort();
+      this.refreshingAuthTokens = false;
+    }
+  }
+
   private onStderr(chunk: Buffer): void {
-    this.stderrText = redactDiagnostic(
-      this.stderrText + this.stderrDecoder.decode(chunk, { stream: true }),
-      this.secrets
-    );
+    this.appendStderr(this.stderrDecoder.decode(chunk, { stream: true }));
+  }
+
+  /** Holds only the visible prefix plus one current secret, so a split value can be excluded first. */
+  private appendStderr(text: string): void {
+    const limit =
+      CODEX_DIAGNOSTIC_MAX_BYTES +
+      Math.max(0, ...this.secrets.map((value) => Buffer.byteLength(value)));
+    const bytes = Buffer.from(this.stderrText + text, 'utf8');
+    let end = Math.min(bytes.length, limit);
+    while (end < bytes.length && end > 0 && (bytes[end]! & 0xc0) === 0x80) end -= 1;
+    this.stderrText = bytes.subarray(0, end).toString('utf8');
   }
 
   private send(payload: unknown, signal?: AbortSignal): Promise<void> {

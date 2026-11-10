@@ -40,6 +40,7 @@ import {
   removeNanoHostSandboxRuntimeForHarness,
   settleNanoHostHarnessOperation,
 } from './nanohost-harness.js';
+import { requireNanoHostLoginRemoval } from './nanohost-harness-records.js';
 import {
   allocateNanoHostRuntimeTargetConnectionGeneration,
   upsertNanoHostRuntimeTarget,
@@ -4077,3 +4078,146 @@ async function consumeFixtureWorkspaceResult(coreDb: ReturnType<typeof openCoreD
   });
   return readFixtureWorkspaceConsumption(coreDb);
 }
+
+describe('private Login removal Core receipt boundary', () => {
+  // Synthetic protocol ACK and the existing external consumer double prove Core bookkeeping only.
+  it('requires the consumed original close, deleted binding and original ACK clock', async () => {
+    const coreDb = await openActiveTurnDb('openkit-harness-login-removal-consumed-');
+    onTestFinished(() => rmSync(coreDb.dataRoot, { recursive: true, force: true }));
+    try {
+      recordFinalStatus(coreDb, 'failed', 'error');
+      await queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.close',
+        timestamp: now,
+      });
+      const command = await dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      if (!command) throw new Error('Expected the canonical close command.');
+      const result = {
+        body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+        disposition: 'succeeded',
+        harnessInstanceId: 'harness-1',
+        operationId: command.operationId,
+        schemaVersion: 2,
+        sequence: command.sequence,
+      } as const;
+      const settlement = {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result,
+        timestamp: now,
+      };
+      expect(await settleNanoHostHarnessOperation(coreDb, settlement)).toBe('settled');
+      const removal = {
+        workspaceId: testEntityId('ws', 'workspace-1'),
+        threadId: testEntityId('th', 'thread-1'),
+        agentSessionId: testEntityId('as', 'agent-session-1'),
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        harnessInstanceId: 'harness-1',
+        operationId: command.operationId,
+        sequence: command.sequence,
+        completedAt: settlement.timestamp,
+      };
+      expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)).toBeNull();
+      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(false);
+      expect(() => requireNanoHostLoginRemoval(coreDb, removal)).toThrow();
+      await consumeFixtureWorkspaceResult(coreDb);
+      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(true);
+      expect(requireNanoHostLoginRemoval(coreDb, removal)).toBe(settlement.timestamp);
+      expect(() =>
+        requireNanoHostLoginRemoval(coreDb, {
+          ...removal,
+          workspaceId: testEntityId('ws', 'workspace-2'),
+        })
+      ).toThrow();
+      expect(() =>
+        requireNanoHostLoginRemoval(coreDb, {
+          ...removal,
+          threadId: testEntityId('th', 'thread-2'),
+        })
+      ).toThrow();
+      expect(() =>
+        requireNanoHostLoginRemoval(coreDb, {
+          ...removal,
+          sequence: command.sequence + 1,
+        })
+      ).toThrow();
+      await drainNanoHostHarnessAdmission(coreDb, {
+        harnessBindingRef: 'harness-binding-1',
+        timestamp: '2098-08-21T00:00:01.000Z',
+      });
+      expect(() => requireNanoHostLoginRemoval(coreDb, removal)).toThrow();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('refuses an old consumed close after a successor binds the same Workspace Thread', async () => {
+    const coreDb = await openOpeningBindingDb('openkit-harness-login-removal-aba-');
+    try {
+      await queueNanoHostHarnessOperation(coreDb, {
+        body: {
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        },
+        harnessInstanceId: 'harness-1',
+        operation: 'session.close',
+        timestamp: now,
+      });
+      const command = await dispatchNanoHostHarnessOperation(coreDb, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      if (!command) throw new Error('Expected the canonical close command.');
+      const result = {
+        body: { childState: 'absent', privateState: 'absent', state: 'closed' },
+        disposition: 'succeeded',
+        harnessInstanceId: 'harness-1',
+        operationId: command.operationId,
+        schemaVersion: 2,
+        sequence: command.sequence,
+      } as const;
+      const settlement = {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result,
+        timestamp: now,
+      };
+      expect(await settleNanoHostHarnessOperation(coreDb, settlement)).toBe('settled');
+      const removal = {
+        workspaceId: testEntityId('ws', 'workspace-1'),
+        threadId: testEntityId('th', 'thread-1'),
+        agentSessionId: testEntityId('as', 'agent-session-1'),
+        agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        harnessInstanceId: 'harness-1',
+        operationId: command.operationId,
+        sequence: command.sequence,
+        completedAt: settlement.timestamp,
+      };
+      expect(hasConsumedNanoHostHarnessResult(coreDb, result)).toBe(true);
+      expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)).toBeNull();
+      expect(requireNanoHostLoginRemoval(coreDb, removal)).toBe(settlement.timestamp);
+      await openNanoHostAgentSessionBinding(coreDb, {
+        agentSessionCompatibilityKey: 'b'.repeat(64),
+        agentSessionId: testEntityId('as', 'agent-session-2'),
+        agentSessionRuntimeBindingId: 'agent-session-binding-2',
+        effectiveSetupGeneration: 1,
+        harnessInstanceId: 'harness-1',
+        threadId: removal.threadId,
+        timestamp: settlement.timestamp,
+        workspaceId: removal.workspaceId,
+      });
+      expect(readNanoHostThreadAgentSessionBinding(coreDb, removal)?.agentSessionId).toBe(
+        testEntityId('as', 'agent-session-2')
+      );
+      expect(() => requireNanoHostLoginRemoval(coreDb, removal)).toThrow();
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+});

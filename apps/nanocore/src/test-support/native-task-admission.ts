@@ -20,7 +20,10 @@ import {
   dispatchNanoHostHarnessOperation,
   settleNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness.js';
-import type { NanoHostSessionEffectRequest } from '../runtime/nanohost-session-dispatch.js';
+import type {
+  NanoHostSessionDispatch,
+  NanoHostSessionEffectRequest,
+} from '../runtime/nanohost-session-dispatch.js';
 import { runSchedulerDispatchLoop } from '../runtime/scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import type { TurnExecutor } from '../runtime/types.js';
@@ -53,6 +56,21 @@ export async function createNativeTaskAdmissionFixture(
   > & {
     /** Outside checkout HEAD/tree; Core verifies its commit against the admitted source pin. */
     workspaceGitBaseline?: { commit: string; tree: string };
+    /**
+     * Optional real Worker consumer for a component fixture. Image/transport facts
+     * remain the explicit outside peer; Harness results and file bytes do not.
+     */
+    actualWorker?: {
+      /** Delivers the real admitted command and returns only its actual Harness result. */
+      handle(
+        command: harnessOwner.NanoHostHarnessCommand,
+        integrationBindingRef: string
+      ): Promise<import('../runtime/nanohost-harness.js').NanoHostHarnessResult>;
+      /** Owns the conditional outside peer and actual bridge, file and Git effects. */
+      effect(request: NanoHostSessionEffectRequest): Promise<unknown>;
+      /** Calls the actual Core transport admission owner on its native H2 connection. */
+      route: NanoHostSessionDispatch['route'];
+    };
   } = {},
   outside = {
     bindings: new Map<string, Map<string, { state: string; turnId: string | null }>>(),
@@ -163,6 +181,21 @@ export async function createNativeTaskAdmissionFixture(
         if (stopped) throw new Error('Native peer is stopped.');
         const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
         effects.push(request);
+        if (options.actualWorker) {
+          const result = await options.actualWorker.effect(request);
+          // Command polling needs the Core-selected bridge locator, even when
+          // a real component owns connection establishment and its result.
+          if (request.kind === 'bridge.open') {
+            const ref = request.input.sandboxIntegrationBindingRef;
+            if (typeof ref !== 'string' || !ref)
+              throw new Error('Actual bridge lacks its Core-selected Integration binding.');
+            outside.integrationBindingRef = ref;
+            available.resolve();
+          } else if (request.kind === 'bridge.close' || request.kind === 'sandbox.delete') {
+            outside.integrationBindingRef = undefined;
+          }
+          return result;
+        }
         if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
         if (request.kind === 'image.inspect')
           return {
@@ -272,7 +305,7 @@ export async function createNativeTaskAdmissionFixture(
       },
       poll: async () => null,
       async result() {},
-      route: unsupported,
+      route: options.actualWorker?.route ?? unsupported,
       fileExportResult: unsupported,
       workspaceCollectResult: unsupported,
       imageBuildInput: unsupported,
@@ -422,6 +455,38 @@ export async function createNativeTaskAdmissionFixture(
             const agentSessionId = command.body.agentSessionId;
             if (typeof agentSessionId !== 'string')
               throw new Error('Native command lacks Session.');
+            if (options.actualWorker) {
+              turn = executions.get(String(command.body.turnId));
+              const result = await options.actualWorker.handle(wire, integrationRef);
+              await settleNanoHostHarnessOperation(coreDb, {
+                result,
+                sandboxIntegrationBindingRef: integrationRef,
+                timestamp: new Date().toISOString(),
+              });
+              commandSettled = true;
+              await runtime.acceptNanoHostHarnessResult(result);
+              if (command.operation === 'turn.start' && result.disposition === 'succeeded') {
+                if (!turn?.started || !turn.ownerStore || turn.acceptedStart)
+                  throw new Error('Actual Worker start lacks its unique entered Core execution.');
+                const product = turn.ownerStore.getTurnById(String(command.body.turnId));
+                turn.lineage = {
+                  agentSessionId,
+                  packageSnapshotId: String(command.body.packageSnapshotId),
+                  requestId: turn.context?.requestId ?? null,
+                  workspaceId: workspaceIdForOwner(product.owner),
+                  threadId: product.threadId,
+                  turnId: product.id,
+                };
+                turn.acceptedStart = true;
+                executor.nativeLineage = turn.lineage;
+                executor.capabilityToken = String(wire.body.capabilityToken);
+                turn.observed.resolve(turn.execution!);
+                turn.launched.resolve();
+              }
+              // Actual Worker control publishes its terminal. Do not synthesize
+              // ready handles, success, final status, receipts or transcripts.
+              continue;
+            }
             let harness = bindings.get(command.harnessInstanceId);
             if (!harness) {
               harness = new Map();

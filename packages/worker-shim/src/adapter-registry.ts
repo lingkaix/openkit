@@ -11,7 +11,7 @@ import type { TurnLifecycleRecorder } from './turn-timeline.js';
 /** One Shim-selected worker LLM route passed unchanged to an adapter. */
 export interface WorkerAdapterLlmRoute {
   /** Credential visibility selected by NanoCore. */
-  readonly credentialVisibility: 'none' | 'placeholder' | 'environment';
+  readonly credentialVisibility: 'none' | 'placeholder' | 'environment' | 'runtime-token';
   /** Worker-visible route endpoint. */
   readonly endpoint: {
     /** Endpoint compatibility family. */
@@ -112,6 +112,57 @@ export interface WorkerResidentLoopback {
   readonly inferenceCredential: string;
 }
 
+/** Exact private delivery identity; only the Core owner supplies its current generation. */
+export interface WorkerHostManagedLoginReceipt {
+  /** Existing canonical delivery receipt identity, bounded to 512 characters. */
+  readonly receiptId: string;
+  /** Current material generation, a positive safe integer. */
+  readonly materialGeneration: number;
+}
+
+/** Access-only native delivery. Refresh material never crosses this private boundary. */
+export interface WorkerHostManagedLoginAccess extends WorkerHostManagedLoginReceipt {
+  /** Nonempty access token, at most 65536 UTF-8 bytes and without NUL. */
+  readonly accessToken: string;
+  /** Exact verified account equality key, at most 256 characters and without NUL/CR/LF. */
+  readonly accountId: string;
+  /** Stock provider plan, bounded to 64 characters, or unknown. */
+  readonly planType: string | null;
+}
+
+/** Bounded native facts only; the trusted owner supplies binding identity and observation time. */
+export interface WorkerHostManagedLoginObservation {
+  /** Account-validated ordinary usage evidence, never a permission or availability inference. */
+  readonly state: 'unknown' | 'available' | 'exhausted';
+  /** At most two distinct native account windows. Reset clocks never prove recovery. */
+  readonly windows: readonly {
+    /** Exact account window identity. */
+    readonly kind: 'primary' | 'secondary';
+    /** Native nonnegative int32 percentage. */
+    readonly usedPercent: number;
+    /** Positive native window minutes bounded to 525600, or unknown. */
+    readonly durationMinutes: number | null;
+    /** Canonical UTC reset hint, or unknown. */
+    readonly resetsAt: string | null;
+  }[];
+  /** Notifications trigger a bounded read; they are not observation authority. */
+  readonly source: 'native-read';
+}
+
+/** Trusted Harness closure for an explicitly admitted Codex harness-Login binding. */
+export interface WorkerHostManagedLogin {
+  /** Requests fresh current access only after an actual Turn has bound its control authority. */
+  readonly acquire: (reason: 'activate' | 'refresh') => Promise<WorkerHostManagedLoginAccess>;
+  /** Acknowledges actual native activation or refresh-pipe delivery, not preparation. */
+  readonly complete: (receipt: WorkerHostManagedLoginReceipt) => Promise<void>;
+  /** Reports bounded native facts; it cannot select a reference, grant, account or clock. */
+  readonly observe: (
+    value: WorkerHostManagedLoginReceipt & {
+      readonly observation: WorkerHostManagedLoginObservation;
+    }
+  ) => Promise<void>;
+}
+
 /** Input to open one resident native binding for one AgentSession. */
 export interface WorkerResidentOpenInput {
   /** Exact Core AgentSession identity. */
@@ -125,6 +176,8 @@ export interface WorkerResidentOpenInput {
   readonly environment: Readonly<Record<string, string>>;
   /** Loopback endpoints and session credentials. */
   readonly loopback: WorkerResidentLoopback;
+  /** Private native consumer closure; only explicit harness/codex-login admission installs it. */
+  readonly hostManagedLogin?: WorkerHostManagedLogin;
   /**
    * Predecessor reference bytes whose SHA-256 the Harness already matched against the carried
    * digest, or null for a new conversation. The adapter validates the native result before work.

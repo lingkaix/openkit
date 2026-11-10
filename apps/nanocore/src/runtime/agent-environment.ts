@@ -488,7 +488,24 @@ function resolveOpenShellAgentEnvironmentPackage(
     WORKER_RUNTIME_PROVENANCE_FEATURE
   );
 
-  const llmMode = 'gateway' as const;
+  const llmMode = sandboxAccess.credentialDeclarations.some(
+    (declaration) => declaration.visibility === 'runtime-token'
+  )
+    ? ('harness' as const)
+    : ('gateway' as const);
+  const nativeModels = new Map(
+    llmMode === 'harness'
+      ? logicalModels.allowed.map((logicalModel) => {
+          const models = new Set(logicalModel.routes.map((route) => route.providerModel));
+          const model = models.values().next().value;
+          if (llmMode === 'harness' && (models.size !== 1 || !model))
+            throw new DeterministicAgentPreparationError(
+              'Logical model has no exact native Login mapping.'
+            );
+          return [logicalModel.id, model] as const;
+        })
+      : []
+  );
 
   const turnInput = input.turnInput?.trim() || 'Continue the assigned OpenKit turn.';
   const backendAllowedKinds = backendRequirements?.allowedKinds ?? ['openshell'];
@@ -836,16 +853,23 @@ function resolveOpenShellAgentEnvironmentPackage(
           : {}),
         preferredLogicalModelId: logicalModels.preferredLogicalModelId,
         routes: logicalModels.allowed.map((logicalModel) => ({
-          credentialVisibility: 'placeholder' as const,
-          endpoint: {
-            kind: 'openai-compatible' as const,
-            upstream: {
-              baseUrlRef: workerProviderId,
-              kind: 'nanocore-gateway' as const,
-            },
-          },
+          credentialVisibility:
+            llmMode === 'harness' ? ('runtime-token' as const) : ('placeholder' as const),
+          endpoint:
+            llmMode === 'harness'
+              ? {
+                  kind: 'openai-compatible' as const,
+                  workerBaseUrl: 'https://chatgpt.com/backend-api',
+                }
+              : {
+                  kind: 'openai-compatible' as const,
+                  upstream: {
+                    baseUrlRef: workerProviderId,
+                    kind: 'nanocore-gateway' as const,
+                  },
+                },
           id: logicalModel.id,
-          model: logicalModel.id,
+          model: llmMode === 'harness' ? nativeModels.get(logicalModel.id)! : logicalModel.id,
           // The resolver owns the complete coherent contract; unequal members retain these inputs.
           ...(logicalModel.modelParameters
             ? { modelParameters: logicalModel.modelParameters }
@@ -853,7 +877,7 @@ function resolveOpenShellAgentEnvironmentPackage(
           ...(logicalModel.reasoningEffortLevels !== undefined
             ? { reasoningEffortLevels: logicalModel.reasoningEffortLevels }
             : {}),
-          providerInstanceId: workerProviderId,
+          providerInstanceId: llmMode === 'harness' ? 'codex-native' : workerProviderId,
         })),
       },
       resources: {},
@@ -1465,6 +1489,21 @@ function resolveWorkerCredentialDeclarations(
         assertCredentialBackendMatchesReference(requireVaultBackend(input), fresh.reference);
       };
       recheck();
+      if (declaration.visibility === 'runtime-token') {
+        // Preparation publishes only a plan and the original redacted requirement. Native
+        // delivery, fresh Use/Audit and its receipt belong to authenticated active-Turn calls.
+        appendCredentialDeclarationArtifacts({
+          artifacts,
+          declaration,
+          grant,
+          input,
+          material: null,
+          planId,
+          receiptId,
+          reference,
+        });
+        return;
+      }
       const ownerScope = vaultUseOwnerScope(grant);
       const material =
         declaration.visibility === 'runtime-file'
@@ -1553,6 +1592,8 @@ function assertCredentialSinkAvailable(
       'The backend does not support the credential visibility.'
     );
   }
+  // runtime-token has no preparation sink: only its redacted plan is materialized here.
+  // The existing authenticated Integration owner releases access during an active Turn.
 }
 
 /** Non-secret injection target metadata derived from one credential declaration. */
@@ -1562,7 +1603,7 @@ interface CredentialDeclarationInjectionTarget {
   /** Product-safe receipt backend summary. */
   readonly backendSummary: string;
   /** Durable injection visibility class. */
-  readonly visibility: 'backend-provider' | 'runtime-env' | 'runtime-file';
+  readonly visibility: 'backend-provider' | 'runtime-env' | 'runtime-file' | 'runtime-token';
   /** Revocation behavior summary. */
   readonly revocationBehavior: string;
   /** Runtime environment variable target when applicable. */
@@ -1580,6 +1621,14 @@ interface CredentialDeclarationInjectionTarget {
 function declarationInjectionTarget(
   declaration: AgentEnvironmentCredentialDeclaration
 ): CredentialDeclarationInjectionTarget {
+  if (declaration.visibility === 'runtime-token') {
+    return {
+      backendCapabilityRequirement: 'runtime-token:codex-login',
+      backendSummary: 'codex-login:native-completion-required',
+      revocationBehavior: 'fence-native-login',
+      visibility: 'runtime-token',
+    };
+  }
   if (declaration.visibility === 'sandbox-provider') {
     return {
       backendCapabilityRequirement: `sandbox-provider:${declaration.provider.type}`,
@@ -1686,6 +1735,7 @@ function appendCredentialDeclarationArtifacts(
     return;
   }
 
+  if (declaration.visibility === 'runtime-token') return;
   if (input.material === null) return;
   input.input.runtimeEnvCredentialSink?.({
     grantId: grant.grantId,

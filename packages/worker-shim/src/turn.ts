@@ -1,7 +1,12 @@
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { digestOpenKitTree, OPENKIT_TREE_DIGEST_FORMAT } from '@openkit/config-schema';
+import {
+  AgentEnvironmentLlmSchema,
+  AgentEnvironmentPackageSchema,
+  digestOpenKitTree,
+  OPENKIT_TREE_DIGEST_FORMAT,
+} from '@openkit/config-schema';
 import { isRecord, type ReasoningEffort, ReasoningEffortSchema } from '@openkit/protocol';
 import {
   CaptureCoverageBindingSchema,
@@ -60,6 +65,8 @@ export interface ResidentTurnRouteTokens {
 export interface ResidentTurnOptions {
   /** Adapter fixed by the owning Harness. */
   readonly adapterId: string;
+  /** Session-static native holder selected from the original admitted current-v4 package. */
+  readonly hostManagedLogin?: boolean;
   /** Exact session credential values excluded from diagnostics, output, and publication. */
   readonly credentialValues: readonly string[];
   /** Harness environment, checked only for retired overrides. */
@@ -176,6 +183,8 @@ async function runResidentTurnImplementation(
   timeline: TurnTimeline
 ): Promise<ResidentTurnResult> {
   const packageManifest = await readWorkerShimPackage(options.packagePath);
+  if (isNativeLoginPackage(packageManifest) !== (options.hostManagedLogin ?? false))
+    throw new Error('Worker Login holder disagrees with the current package.');
 
   if (packageManifest.control?.mode !== 'sandbox-integration') {
     throw new Error('Worker shim requires control.mode to be sandbox-integration.');
@@ -978,6 +987,41 @@ async function waitForWorkerControlReadiness<T>(
   }
 }
 
+/** Validates the complete native holder contract; old Gateway projections acquire no Login capability. */
+function isNativeLoginPackage(manifest: WorkerShimPackageManifest): boolean {
+  const record: unknown = manifest;
+  const declarations =
+    isRecord(record) &&
+    isRecord(record.credentials) &&
+    Array.isArray(record.credentials.declarations)
+      ? record.credentials.declarations
+      : [];
+  if (
+    manifest.llm?.mode !== 'harness' &&
+    !declarations.some((value) => isRecord(value) && value.visibility === 'runtime-token')
+  )
+    return false;
+  const parsed = AgentEnvironmentPackageSchema.parse(manifest);
+  if (parsed.llm.mode !== 'harness')
+    throw new Error('Native Login requires explicit harness mode.');
+  return true;
+}
+
+/** Reads the actual fixed package and its session lineage before installing a private native holder. */
+export async function readWorkerSessionHostManagedLogin(
+  packagePath: string,
+  identity: { agentSessionId: string; threadId: string; workspaceId: string; adapterId: string }
+): Promise<boolean> {
+  const manifest = await readWorkerShimPackage(packagePath);
+  for (const key of ['agentSessionId', 'threadId', 'workspaceId'] as const)
+    if (manifest.scope?.[key] !== identity[key])
+      throw new Error('Native Login package lineage disagrees.');
+  const enabled = isNativeLoginPackage(manifest);
+  if (enabled && identity.adapterId !== 'codex')
+    throw new Error('Native Login requires the Codex binding.');
+  return enabled;
+}
+
 /** Initializes the admitted session workspace and reports a new Git checkout before the resident runtime opens. */
 export async function initializeSessionWorkspace(
   packagePath: string,
@@ -985,6 +1029,7 @@ export async function initializeSessionWorkspace(
   identity: { agentSessionId: string; threadId: string; workspaceId: string }
 ): Promise<{ commit: string; tree: string } | null> {
   const manifest = await readWorkerShimPackage(packagePath);
+  isNativeLoginPackage(manifest);
   for (const key of ['agentSessionId', 'threadId', 'workspaceId'] as const) {
     if (manifest.scope?.[key] !== identity[key])
       throw new Error('Initial workspace package lineage disagrees.');
@@ -1327,6 +1372,17 @@ function resolveWorkerLlmRoutes(packageManifest: WorkerShimPackageManifest): {
   const mode = packageManifest.llm?.mode;
   const preferredLogicalModelId = packageManifest.llm?.preferredLogicalModelId;
   const routes = packageManifest.llm?.routes;
+  if (mode === 'harness') {
+    const native = AgentEnvironmentLlmSchema.parse(packageManifest.llm);
+    const allowedLlmRoutes = native.routes.map(projectWorkerLlmRoute);
+    const llmRoute = allowedLlmRoutes.find((route) => route.id === native.preferredLogicalModelId);
+    if (!llmRoute) throw new Error('Native Login preferred route is unavailable.');
+    return {
+      ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+      llmRoute,
+      allowedLlmRoutes,
+    };
+  }
 
   if (mode !== 'gateway' && mode !== 'backend-local' && mode !== 'direct-external') {
     throw new Error('Worker shim requires a supported LLM routing mode.');

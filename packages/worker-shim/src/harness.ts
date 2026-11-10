@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { isEntityId } from '@openkit/protocol';
+import { isEntityId, isRecord } from '@openkit/protocol';
 
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
@@ -29,6 +29,7 @@ import {
 } from '@openkit/worker-protocol';
 import {
   WORKER_ADAPTERS,
+  type WorkerHostManagedLoginAccess,
   type WorkerNativeHandle,
   type WorkerResidentAdapter,
   type WorkerResidentSession,
@@ -46,6 +47,7 @@ import {
   describeWorkerStartupFailure,
   initializeSessionWorkspace,
   isNativeSettlementUnknown,
+  readWorkerSessionHostManagedLogin,
   runResidentTurn,
   type WorkerShimEnvironment,
 } from './turn.js';
@@ -88,6 +90,8 @@ const SAFE_RESIDENT_ENVIRONMENT_KEYS = [
   'no_proxy',
 ] as const;
 interface ActiveTurn {
+  /** Current upstream authority, retained only while this exact Turn occupies the resident. */
+  readonly workerControlToken: string;
   readonly packageSnapshotId: string;
   readonly turnSequence: number;
   nativeTurn?: WorkerResidentTurn;
@@ -106,6 +110,7 @@ interface HarnessSession {
   activeTurn: ActiveTurn | null;
   readonly agentSessionId: string;
   readonly bindingId: string;
+  readonly hostManagedLogin: boolean;
   cleanupState: 'clean' | 'pending' | 'unknown';
   closing: boolean;
   readonly credentialValues: readonly string[];
@@ -141,6 +146,40 @@ interface HarnessSession {
  * Thread, so a second current binding for one Thread is rejected across Harness instances.
  */
 const LIVE_THREAD_BINDINGS = new Map<string, string>();
+
+/** Checks the existing access-only callback contract without retaining or publishing private response bytes. */
+function readNativeLoginAccess(value: unknown): WorkerHostManagedLoginAccess {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 5 ||
+    typeof value.accessToken !== 'string' ||
+    !value.accessToken ||
+    value.accessToken.includes('\0') ||
+    Buffer.byteLength(value.accessToken) > 65_536 ||
+    typeof value.accountId !== 'string' ||
+    !value.accountId ||
+    value.accountId.length > 256 ||
+    value.accountId.includes('\0') ||
+    value.accountId.includes('\r') ||
+    value.accountId.includes('\n') ||
+    (value.planType !== null &&
+      (typeof value.planType !== 'string' || !value.planType || value.planType.length > 64)) ||
+    typeof value.receiptId !== 'string' ||
+    !value.receiptId ||
+    value.receiptId.length > 512 ||
+    typeof value.materialGeneration !== 'number' ||
+    !Number.isSafeInteger(value.materialGeneration) ||
+    value.materialGeneration < 1
+  )
+    throw new Error('Native Login returned an invalid access reply.');
+  return {
+    accessToken: value.accessToken,
+    accountId: value.accountId,
+    planType: value.planType,
+    receiptId: value.receiptId,
+    materialGeneration: value.materialGeneration,
+  };
+}
 
 /** Options for one Harness instance. */
 export interface WorkerHarnessOptions {
@@ -346,6 +385,10 @@ export class WorkerHarness {
           startupFailure: describeWorkerStartupFailure('workspace_materialization', error),
         });
       }
+      const hostManagedLogin = await readWorkerSessionHostManagedLogin(
+        this.mapSandboxPath(inputPaths.packagePath),
+        body
+      );
       // The adapter contract owns the no-live-effect guarantee. A resident that still exists when
       // close fails keeps the Thread reserved and drains this Harness.
       resident = await adapter
@@ -364,6 +407,28 @@ export class WorkerHarness {
             inferenceBaseUrl: SANDBOX_NATIVE_INFERENCE_BASE_URL,
             inferenceCredential: body.inferenceLoopbackCredential,
           },
+          ...(hostManagedLogin
+            ? {
+                hostManagedLogin: {
+                  acquire: async (reason) =>
+                    readNativeLoginAccess(
+                      await this.loginExchange(body.agentSessionRuntimeBindingId, 'acquire', {
+                        reason,
+                      })
+                    ),
+                  complete: async (receipt) => {
+                    await this.loginExchange(body.agentSessionRuntimeBindingId, 'complete', {
+                      ...receipt,
+                    });
+                  },
+                  observe: async (value) => {
+                    await this.loginExchange(body.agentSessionRuntimeBindingId, 'observe', {
+                      ...value,
+                    });
+                  },
+                },
+              }
+            : {}),
           resumeReference,
           stateRoot,
         })
@@ -374,6 +439,7 @@ export class WorkerHarness {
         activeTurn: null,
         agentSessionId: body.agentSessionId,
         bindingId: body.agentSessionRuntimeBindingId,
+        hostManagedLogin,
         cleanupState: 'clean',
         closing: false,
         credentialValues: [
@@ -525,6 +591,7 @@ export class WorkerHarness {
       return runResidentTurn({
         adapterId: this.adapterId as string,
         credentialValues: session.credentialValues,
+        hostManagedLogin: session.hostManagedLogin,
         environment: this.environment,
         integration: this.integration,
         lineage: {
@@ -589,6 +656,7 @@ export class WorkerHarness {
         }
       });
     session.activeTurn = {
+      workerControlToken: body.workerControlToken,
       packageSnapshotId: body.packageSnapshotId,
       turnSequence: body.turnSequence,
       abort,
@@ -817,6 +885,58 @@ export class WorkerHarness {
       session.cleanupState = 'clean';
     } catch {
       this.fenceSession(session);
+    }
+  }
+
+  /** Exchanges private Login facts only under the same currently active Turn's upstream authority. */
+  private async loginExchange(
+    bindingId: string,
+    kind: 'acquire' | 'complete' | 'observe',
+    fields: Readonly<Record<string, unknown>>
+  ): Promise<unknown> {
+    const session = this.sessions.get(bindingId);
+    const active = session?.activeTurn;
+    const current = () =>
+      Boolean(
+        session &&
+          active &&
+          session.hostManagedLogin &&
+          !session.failed &&
+          !session.closing &&
+          session.activeTurn === active &&
+          !active.barrierReached &&
+          !active.abort.signal.aborted
+      );
+    if (!session || !active || !current())
+      throw new Error('Native Login requires the current active Turn.');
+    try {
+      const response = await this.integration.workerControlFetch('/worker-control/harness/login', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${active.workerControlToken}`,
+          'Content-Type': 'application/json',
+        },
+        signal: active.abort.signal,
+        body: JSON.stringify({
+          ...fields,
+          kind,
+          agentSessionId: session.agentSessionId,
+          agentSessionRuntimeBindingId: session.bindingId,
+          workspaceId: session.workspaceId,
+          threadId: session.threadId,
+          turnId: active.turnId,
+          leaseId: active.leaseId,
+          packageSnapshotId: active.packageSnapshotId,
+          turnSequence: active.turnSequence,
+        }),
+      });
+      if (!response.ok || !current()) throw new Error('Native Login exchange failed.');
+      if (kind !== 'acquire') return;
+      const value: unknown = JSON.parse(await response.text());
+      if (!current()) throw new Error('Native Login exchange lost its Turn.');
+      return value;
+    } catch {
+      throw new Error('Native Login exchange failed.');
     }
   }
 

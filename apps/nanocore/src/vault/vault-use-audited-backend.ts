@@ -1,6 +1,20 @@
+import { isDeepStrictEqual } from 'node:util';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import { type ActorRef, allocateEntityId } from '@openkit/protocol';
-import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
+import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
+import { bindCoreSqlite, type CoreDb, type WorkspaceDb } from '../storage/db.js';
+import { coreDbPath } from '../storage/fs-layout.js';
 import type { VaultUseOwnerScope, VaultUseResolvingPath } from '../storage/schema/index.js';
+import {
+  getVaultGrant,
+  getVaultInjectionPlan,
+  getVaultReference,
+} from '../storage/vault-native-codecs.js';
+import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { recordVaultAuditEvent } from './vault-admin-audit-events.js';
 import {
   type VaultBackend,
@@ -106,7 +120,7 @@ class VaultUseAuditedBackend implements AuditedVaultBackend {
     let version: number;
     let material: VaultSecretMaterial;
     try {
-      const entry = this.assertResolutionScope(resolveInput.referenceId);
+      const entry = this.assertResolutionScope(resolveInput.referenceId, resolveInput.version);
       version = resolveInput.version ?? entry.currentVersion;
       material = this.input.backend.resolve({ ...resolveInput, version });
     } catch (error) {
@@ -118,7 +132,7 @@ class VaultUseAuditedBackend implements AuditedVaultBackend {
     await this.recordUse(resolveInput, 'succeeded', null, version);
     // Native evidence waits cannot retain authority to a locked, revoked or expired generation.
     // The synchronous backend owns that validation; do not recurse through audited resolution.
-    const current = this.assertResolutionScope(resolveInput.referenceId);
+    const current = this.assertResolutionScope(resolveInput.referenceId, resolveInput.version);
     if (resolveInput.version === undefined && current.currentVersion !== version)
       throw new VaultBackendError('version-expired', 'Vault material generation changed.');
     this.input.backend.assertResolutionCurrent({ ...resolveInput, version });
@@ -127,7 +141,7 @@ class VaultUseAuditedBackend implements AuditedVaultBackend {
 
   /** Revalidates this wrapper's addressed scope and backend version without resolving material. */
   public assertResolutionCurrent(resolveInput: VaultResolveInput): void {
-    this.assertResolutionScope(resolveInput.referenceId);
+    this.assertResolutionScope(resolveInput.referenceId, resolveInput.version);
     this.input.backend.assertResolutionCurrent(resolveInput);
   }
 
@@ -178,7 +192,10 @@ class VaultUseAuditedBackend implements AuditedVaultBackend {
    * @returns Authenticated addressed inventory for the exact admitted scope.
    * @throws VaultBackendError when the stored owner scope does not match this wrapper scope.
    */
-  private assertResolutionScope(referenceId: string): VaultReferenceInventoryEntry {
+  private assertResolutionScope(
+    referenceId: string,
+    requestedVersion?: number
+  ): VaultReferenceInventoryEntry {
     const entry = this.input.backend
       .listReferences({ referenceId })
       .find((candidate) => candidate.referenceId === referenceId);
@@ -192,12 +209,121 @@ class VaultUseAuditedBackend implements AuditedVaultBackend {
       (entry.ownerScope !== 'workspace' || entry.workspaceId === this.input.workspaceId);
 
     if (!matches) {
+      this.assertUserLoginUse(entry, requestedVersion);
+    }
+    return entry;
+  }
+
+  /** Validates the one reviewed cross-scope Login join; a grant id or ownership alone is never authority. */
+  private assertUserLoginUse(entry: VaultReferenceInventoryEntry, requestedVersion?: number): void {
+    const input = this.input;
+    const refuse: () => never = () => {
       throw new VaultBackendError(
         'backend-unavailable',
         'Vault reference scope does not match resolution scope.'
       );
+    };
+    if (
+      entry.ownerScope !== 'user' ||
+      input.ownerScope !== 'workspace' ||
+      input.db.scope !== 'workspace' ||
+      input.workspaceId !== input.db.workspaceId ||
+      !input.actor ||
+      !input.grantId
+    )
+      refuse();
+
+    // Borrow no writable initializer or ambient singleton. The existing physical reader
+    // checks the exact Core file under the consuming database's admitted data root.
+    const reader = openControlStoreProductReadHandle(coreDbPath(input.db.dataRoot), {
+      kind: 'server',
+    });
+    try {
+      const coreDb = bindCoreSqlite(reader.sqlite, input.db.dataRoot);
+      const grant = getVaultGrant(coreDb, input.grantId);
+      const reference = getVaultReference(coreDb, entry.referenceId);
+      const effectAuthority =
+        grant?.issuance === 'target' &&
+        (grant.approvalId === null ||
+          (isTargetIssuedEffectAuthority(grant.approvalId) && grant.policyDecisionId !== null));
+      if (
+        !grant ||
+        !reference ||
+        !effectAuthority ||
+        grant.ownerScope !== 'workspace' ||
+        grant.workspaceId !== input.workspaceId ||
+        grant.vaultReferenceId !== entry.referenceId ||
+        grant.status !== 'active' ||
+        !grant.allowedInjectionPaths.includes('runtime-token') ||
+        (grant.expiresAt !== null &&
+          grant.expiresAt <= (input.now ?? (() => new Date().toISOString()))()) ||
+        reference.ownerScope !== 'user' ||
+        reference.userId !== entry.userId ||
+        reference.userId === null ||
+        !isCanonicalUserActive(coreDb, reference.userId) ||
+        reference.status !== 'active' ||
+        reference.login?.provider !== 'codex' ||
+        reference.login.quarantined ||
+        reference.currentVersion !== entry.currentVersion ||
+        !currentWorkspaceAuthority(
+          coreDb,
+          input.workspaceId,
+          input.actor,
+          'vault.use',
+          true,
+          undefined,
+          { dependencyFailure: 'throw' }
+        )
+      )
+        refuse();
+      if (requestedVersion !== undefined && requestedVersion !== entry.currentVersion)
+        throw new VaultBackendError('version-expired', 'Vault material generation changed.');
+
+      // Restricted Worker grants require their actual immutable consumer, not caller
+      // hints. The existing AEP owner repeats target and current lineage predicates.
+      if (
+        input.planId !== undefined ||
+        grant.targetAgentId !== null ||
+        grant.targetAgentSessionId !== null ||
+        grant.targetCapabilityId !== null ||
+        grant.lifetime !== 'workspace'
+      ) {
+        const plan = input.planId ? getVaultInjectionPlan(coreDb, input.planId) : null;
+        if (
+          !plan ||
+          plan.status !== 'active' ||
+          plan.grantId !== grant.grantId ||
+          plan.injectionVisibility !== 'runtime-token' ||
+          !plan.packageSnapshotId
+        )
+          refuse();
+        const snapshot = AgentEnvironmentPackageSchema.parse(
+          requireAgentEnvironmentPackageSnapshot(
+            input.db,
+            input.workspaceId,
+            plan.packageSnapshotId
+          ).snapshot
+        );
+        if (
+          snapshot.scope.agentSessionId !== input.agentSessionId ||
+          snapshot.scope.workspaceId !== input.workspaceId ||
+          !isDeepStrictEqual(snapshot.scope.triggerActor, input.actor)
+        )
+          refuse();
+        const declaration = snapshot.credentials.declarations.find(
+          (value) => value.vaultGrantId === grant.grantId
+        );
+        if (!declaration) refuse();
+        assertCurrentWorkerCredentialAuthority(
+          coreDb,
+          snapshot,
+          input.now ?? (() => new Date().toISOString()),
+          declaration
+        );
+      }
+    } finally {
+      reader.close();
     }
-    return entry;
   }
 
   /**

@@ -2,6 +2,12 @@
 import { cpSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  allocateEntityId,
+  ThreadCreatedEventSchema,
+  ThreadSchema,
+  ThreadUpdatedEventSchema,
+} from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
@@ -11,9 +17,15 @@ import {
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
+import { StoredThreadSnapshotV1Schema } from './retained-work-events-v1.js';
+import { readControlWorkObservationTurnBinding } from './work-observations.js';
+import { nativeProductScope, readNativeProduct } from './workspace-file-records.js';
 
 /** Seeds the recorded User for current private Thread authority checks. */
 function createOwnerBoundStore(dataRoot: string): FsStore {
@@ -423,4 +435,220 @@ it('preserves current administration entry and validates its envelope without re
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   }
+});
+
+/** Creates acknowledged ordinary records; retained Login bytes are seeded only by the existing fixture. */
+async function retainedLoginThreadFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-thread-login-envelope-'));
+  onTestFinished(async () => {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  });
+  const store = createTestStore({ dataRoot });
+  const workspace = await store.createWorkspace('Private Login retained meaning');
+  const thread = await store.createThread(workspace.id, 'Ordinary public Thread');
+  const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId: workspace.id });
+  return {
+    dataRoot,
+    store,
+    workspace,
+    thread,
+    scope,
+    persisted: threadRecord(dataRoot, workspace.id, thread.id),
+  };
+}
+
+describe('private retained Thread Login meaning, not activation authority', () => {
+  const publicFeatures = ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'];
+  const privateFeatures = [...publicFeatures, 'openkit.thread-login.v1'];
+  const leftAt = '2026-11-09T00:00:00.000Z';
+  const makeLogin = (count: number) => {
+    const references = Array.from({ length: count }, () => allocateEntityId('vault'));
+    return {
+      referenceId: references[0] ?? null,
+      lastLeftAt: Object.fromEntries(references.map((referenceId) => [referenceId, leftAt])),
+    };
+  };
+
+  it('decodes 256 canonical departure entries privately while every public Thread snapshot omits Login', async () => {
+    const f = await retainedLoginThreadFixture();
+    const login = makeLogin(256);
+    // This post-ACK retained fixture establishes representation only, never an activation or receipt.
+    await f.persisted.write({ ...f.persisted.value, requiredFeatures: privateFeatures, login });
+    const native = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    expect(native.record.login).toEqual(login);
+    expect(Object.keys(login.lastLeftAt)).toHaveLength(256);
+    expect(ThreadSchema.parse(native.record)).not.toHaveProperty('login');
+    expect(StoredThreadSnapshotV1Schema.parse(native.record)).not.toHaveProperty('login');
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).not.toHaveProperty('login');
+    expect(
+      ThreadCreatedEventSchema.parse({ type: 'thread-created', thread: native.record }).thread
+    ).not.toHaveProperty('login');
+    expect(
+      ThreadUpdatedEventSchema.parse({ type: 'thread-updated', thread: native.record }).thread
+    ).not.toHaveProperty('login');
+  });
+
+  it('preserves exact private affinity and its marker through real ordinary title and archive writes', async () => {
+    const f = await retainedLoginThreadFixture();
+    const login = makeLogin(2);
+    await f.persisted.write({ ...f.persisted.value, requiredFeatures: privateFeatures, login });
+    await f.store.updateThread(f.workspace.id, f.thread.id, { name: 'Public title change' });
+    let native = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    expect(native.record.name).toBe('Public title change');
+    expect(native.record.login).toEqual(login);
+    expect(native.record.requiredFeatures).toEqual(expect.arrayContaining(privateFeatures));
+    await f.store.updateThread(f.workspace.id, f.thread.id, { status: 'archived' });
+    native = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    expect(native.record.status).toBe('archived');
+    expect(native.record.login).toEqual(login);
+    expect(native.record.requiredFeatures).toEqual(expect.arrayContaining(privateFeatures));
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).not.toHaveProperty('login');
+  });
+
+  it('rejects malformed reference identities, an oversized departure map and noncanonical clocks', async () => {
+    const f = await retainedLoginThreadFixture();
+    const login = makeLogin(1);
+    const malformed = [
+      { ...login, referenceId: 'not-a-canonical-vault-reference' },
+      { ...login, lastLeftAt: { 'not-a-canonical-vault-reference': leftAt } },
+      makeLogin(257),
+      { ...login, lastLeftAt: { [login.referenceId!]: '2026-11-09T00:00:00Z' } },
+      { ...login, lastLeftAt: { [login.referenceId!]: '2026-99-99T00:00:00.000Z' } },
+    ];
+    for (const value of malformed) {
+      await f.persisted.write({
+        ...f.persisted.value,
+        requiredFeatures: privateFeatures,
+        login: value,
+      });
+      const before = f.persisted.read();
+      expect(() => readNativeProduct(f.scope, 'thread', f.thread.id)).toThrow();
+      expect(f.persisted.read()).toBe(before);
+    }
+  });
+
+  it('keeps ordinary retained Threads usable but refuses private meaning before an absent or unknown marker is stripped', async () => {
+    const f = await retainedLoginThreadFixture();
+    const login = makeLogin(1);
+    expect(readNativeProduct(f.scope, 'thread', f.thread.id)!.record).not.toHaveProperty('login');
+    expect(f.persisted.value.requiredFeatures).toEqual(publicFeatures);
+    await f.persisted.write({ ...f.persisted.value, requiredFeatures: publicFeatures, login });
+    expect(() => readNativeProduct(f.scope, 'thread', f.thread.id)).toThrow();
+    await f.persisted.write({
+      ...f.persisted.value,
+      requiredFeatures: [...publicFeatures, 'openkit.thread-login.v2'],
+      login,
+    });
+    expect(() => readNativeProduct(f.scope, 'thread', f.thread.id)).toThrow();
+    await f.persisted.write({
+      ...f.persisted.value,
+      requiredFeatures: privateFeatures,
+      login: { referenceId: null, lastLeftAt: {} },
+    });
+    expect(readNativeProduct(f.scope, 'thread', f.thread.id)!.record.login).toEqual({
+      referenceId: null,
+      lastLeftAt: {},
+    });
+  });
+
+  it('rejects private injection or clearing through the ordinary native products API without changing retained bytes', async () => {
+    const f = await retainedLoginThreadFixture();
+    await f.store.updateThread(f.workspace.id, f.thread.id, { name: 'Acknowledged control' });
+    const login = makeLogin(1);
+    const database = `workspace:${f.scope.path}`;
+    const publish = async (replacement: Record<string, unknown>, expectedRevision: number) => {
+      const client = getControlStoreWorkerClient();
+      await client.open({
+        database,
+        path: f.scope.path,
+        dataRoot: f.dataRoot,
+        create: false,
+        initialize: 'workspace',
+        productOwner: f.scope.owner,
+        contentMount: f.scope.contentMount,
+      });
+      return client.products(database, {
+        products: [{ kind: 'thread', expectedRevision, record: replacement }],
+        entries: [],
+      });
+    };
+    let native = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    let before = f.persisted.read();
+    await expect(
+      publish({ ...native.record, requiredFeatures: privateFeatures, login }, native.revision)
+    ).rejects.toThrow();
+    expect(f.persisted.read()).toBe(before);
+    // Seed historical private meaning, not a fake successful native activation.
+    await f.persisted.write({ ...f.persisted.value, requiredFeatures: privateFeatures, login });
+    native = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    before = f.persisted.read();
+    await expect(
+      publish({ ...native.record, login: { referenceId: null, lastLeftAt: {} } }, native.revision)
+    ).rejects.toThrow();
+    expect(f.persisted.read()).toBe(before);
+    expect(readNativeProduct(f.scope, 'thread', f.thread.id)!.record.login).toEqual(login);
+  });
+
+  it('preserves private affinity through Turn creation, local completion and separate native archive', async () => {
+    const f = await retainedLoginThreadFixture();
+    const login = makeLogin(2);
+    await f.persisted.write({ ...f.persisted.value, requiredFeatures: privateFeatures, login });
+    const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
+    const turn = await f.store.createTurn(
+      f.workspace.id,
+      f.thread.id,
+      'Continue the acknowledged local Thread',
+      actor
+    );
+    expect(turn.threadId).toBe(f.thread.id);
+    expect(readNativeProduct(f.scope, 'thread', f.thread.id)!.record.login).toEqual(login);
+    // Native observation binding must understand the same canonical private Thread before reap.
+    const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
+    try {
+      expect(
+        readControlWorkObservationTurnBinding(workspaceDb.sqlite, f.scope.owner, {
+          threadId: f.thread.id,
+          turnId: turn.id,
+        })
+      ).toMatchObject({ turn: { id: turn.id, threadId: f.thread.id } });
+    } finally {
+      workspaceDb.sqlite.close();
+    }
+    // Complete this Core-local Turn through its existing owner, without a pending service command.
+    const completedAt = new Date().toISOString();
+    const completed = await f.store.completeTurn(turn.id, { status: 'completed', completedAt });
+    // A separate ordinary native product write carries the exact canonical private data through.
+    // This is not a pending service receipt, atomic terminal archive, or native Login effect.
+    const previous = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${f.scope.path}`;
+    await client.open({
+      database,
+      path: f.scope.path,
+      dataRoot: f.dataRoot,
+      create: false,
+      initialize: 'workspace',
+      productOwner: f.scope.owner,
+      contentMount: f.scope.contentMount,
+    });
+    await client.products(database, {
+      products: [
+        {
+          kind: 'thread',
+          expectedRevision: previous.revision,
+          record: { ...previous.record, status: 'archived', updatedAt: completedAt },
+        },
+      ],
+      entries: [],
+    });
+    expect(completed.id).toBe(turn.id);
+    expect(completed.status).toBe('completed');
+    const native = readNativeProduct(f.scope, 'thread', f.thread.id)!;
+    expect(native.record.status).toBe('archived');
+    expect(native.record.login).toEqual(login);
+    expect(native.record.requiredFeatures).toEqual(expect.arrayContaining(privateFeatures));
+    expect(f.store.getThread(f.workspace.id, f.thread.id)).not.toHaveProperty('login');
+    expect(f.store.getTurnById(turn.id).status).toBe('completed');
+  });
 });

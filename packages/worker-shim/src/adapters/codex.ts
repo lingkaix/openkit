@@ -1,6 +1,7 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, stat } from 'node:fs/promises';
+import { isRecord } from '@openkit/protocol';
 import {
   isProtectedNativeEnvironmentName,
   WorkerErrorEnvelopeSchema,
@@ -8,6 +9,7 @@ import {
 import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
+  WorkerHostManagedLoginAccess,
   WorkerNativeEvidence,
   WorkerNativeHandle,
   WorkerResidentAdapter,
@@ -92,7 +94,36 @@ export function codexChildEnvironment(
  * The pin checks its process provider against the thread provider at turn/start. Declare the
  * same non-secret provider here; its endpoint and credential stay in thread-local memory.
  */
-export function codexLaunchArguments(): readonly string[] {
+function nativeLoginBases(testBase?: string): {
+  openai_base_url: string;
+  chatgpt_base_url: string;
+} {
+  if (testBase !== undefined) {
+    const parsed = new URL(testBase);
+    if (
+      parsed.protocol !== 'http:' ||
+      parsed.hostname !== '127.0.0.1' ||
+      !parsed.port ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== '/' ||
+      parsed.search ||
+      parsed.hash
+    )
+      throw new Error('Codex test Login transport must be an explicit plain loopback origin.');
+    return { openai_base_url: parsed.origin, chatgpt_base_url: parsed.origin };
+  }
+  return {
+    openai_base_url: 'https://chatgpt.com/backend-api/codex',
+    chatgpt_base_url: 'https://chatgpt.com/backend-api',
+  };
+}
+
+/** Native Login endpoint overrides are private test transport only; ordinary launch stays unchanged. */
+export function codexLaunchArguments(
+  hostManagedLogin = false,
+  nativeLoginTransportBaseUrl?: string
+): readonly string[] {
   return [
     'app-server',
     '-c',
@@ -102,9 +133,18 @@ export function codexLaunchArguments(): readonly string[] {
     '-c',
     'cli_auth_credentials_store="ephemeral"',
     '-c',
-    `model_provider="${CODEX_PROVIDER_ID}"`,
-    '-c',
-    `model_providers.${CODEX_PROVIDER_ID}={name="OpenKit worker inference",wire_api="responses",requires_openai_auth=false}`,
+    ...(hostManagedLogin
+      ? [
+          'model_provider="openai"',
+          ...Object.entries(nativeLoginBases(nativeLoginTransportBaseUrl)).flatMap(
+            ([key, value]) => ['-c', `${key}=${JSON.stringify(value)}`]
+          ),
+        ]
+      : [
+          `model_provider="${CODEX_PROVIDER_ID}"`,
+          '-c',
+          `model_providers.${CODEX_PROVIDER_ID}={name="OpenKit worker inference",wire_api="responses",requires_openai_auth=false}`,
+        ]),
   ];
 }
 
@@ -155,6 +195,14 @@ export function normalizeCodexAssistant(
 
 /** Rejects routes the pinned App Server cannot represent before a native Turn is admitted. */
 function assertRelayRoute(route: WorkerAdapterLlmRoute): void {
+  if (
+    route.credentialVisibility === 'runtime-token' &&
+    route.endpoint.kind === 'openai-compatible' &&
+    route.endpoint.workerBaseUrl === 'https://chatgpt.com/backend-api' &&
+    route.endpoint.upstream === undefined &&
+    route.modelParameters !== undefined
+  )
+    return;
   if (
     route.credentialVisibility !== 'placeholder' ||
     route.endpoint.kind !== 'openai-compatible' ||
@@ -232,7 +280,8 @@ function assertLaunchEnvironment(
 function sessionConfig(
   input: WorkerResidentOpenInput,
   mcpServerIds: readonly string[],
-  idleMcpServerIds: readonly string[] = []
+  idleMcpServerIds: readonly string[] = [],
+  nativeLoginTransportBaseUrl?: string
 ): Record<string, unknown> {
   const servers: Record<string, unknown> = Object.fromEntries(
     idleMcpServerIds.map((id) => [id, { enabled: false }])
@@ -248,17 +297,21 @@ function sessionConfig(
     };
   }
   return {
-    model_provider: CODEX_PROVIDER_ID,
+    model_provider: input.hostManagedLogin ? 'openai' : CODEX_PROVIDER_ID,
     web_search: 'disabled',
-    model_providers: {
-      [CODEX_PROVIDER_ID]: {
-        name: 'OpenKit worker inference',
-        base_url: input.loopback.inferenceBaseUrl.replace(/\/$/, ''),
-        wire_api: 'responses',
-        requires_openai_auth: false,
-        experimental_bearer_token: input.loopback.inferenceCredential,
-      },
-    },
+    ...(!input.hostManagedLogin
+      ? {
+          model_providers: {
+            [CODEX_PROVIDER_ID]: {
+              name: 'OpenKit worker inference',
+              base_url: input.loopback.inferenceBaseUrl.replace(/\/$/, ''),
+              wire_api: 'responses',
+              requires_openai_auth: false,
+              experimental_bearer_token: input.loopback.inferenceCredential,
+            },
+          },
+        }
+      : nativeLoginBases(nativeLoginTransportBaseUrl)),
     mcp_servers: servers,
   };
 }
@@ -330,7 +383,9 @@ interface TurnBody {
 class CodexResidentSession implements WorkerResidentSession {
   readonly exited: Promise<void>;
   private readonly rpc: CodexAppServer;
-  private readonly secrets: readonly string[];
+  private readonly secrets: string[];
+  private captureSecrets: string[] = [];
+  private loginAccountId: string | null = null;
   private readonly resolveExited: () => void;
   private threadId: string | null = null;
   private rolloutPath: string | null = null;
@@ -428,7 +483,33 @@ class CodexResidentSession implements WorkerResidentSession {
         this.closeEvidenceLost = true;
         void this.invalidateTurn('malformed-result').catch(() => undefined);
       },
-      launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs
+      launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs,
+      open.hostManagedLogin
+        ? async (params) => {
+            if (
+              !this.active ||
+              !isRecord(params) ||
+              params.reason !== 'unauthorized' ||
+              (params.previousAccountId !== undefined &&
+                params.previousAccountId !== null &&
+                params.previousAccountId !== this.loginAccountId)
+            )
+              throw new Error('Codex refresh account correlation failed.');
+            const access = await this.acquireLogin('refresh');
+            return {
+              result: {
+                accessToken: access.accessToken,
+                chatgptAccountId: access.accountId,
+                chatgptPlanType: access.planType,
+              },
+              complete: () =>
+                open.hostManagedLogin!.complete({
+                  receiptId: access.receiptId,
+                  materialGeneration: access.materialGeneration,
+                }),
+            };
+          }
+        : undefined
     );
     child.stdout.once('end', () => {
       this.stdoutEnded = true;
@@ -599,6 +680,7 @@ class CodexResidentSession implements WorkerResidentSession {
       'initialize',
       {
         clientInfo: { name: 'openkit-worker', title: 'OpenKit', version: CODEX_ADAPTER_VERSION },
+        ...(this.open.hostManagedLogin ? { capabilities: { experimentalApi: true } } : {}),
       },
       deadline.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
     );
@@ -633,8 +715,13 @@ class CodexResidentSession implements WorkerResidentSession {
       {
         approvalPolicy: CODEX_APPROVAL_POLICY,
         sandbox: CODEX_SANDBOX,
-        modelProvider: CODEX_PROVIDER_ID,
-        config: sessionConfig(this.open, [], idleMcpServerIds),
+        modelProvider: this.open.hostManagedLogin ? 'openai' : CODEX_PROVIDER_ID,
+        config: sessionConfig(
+          this.open,
+          [],
+          idleMcpServerIds,
+          this.launch.nativeLoginTransportBaseUrl
+        ),
         threadId: resumeThreadId,
         cwd,
       },
@@ -653,7 +740,7 @@ class CodexResidentSession implements WorkerResidentSession {
       { includeLayers: false, cwd },
       deadline?.remainingMs(this.launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs)
     )) as {
-      config?: { mcp_servers?: Record<string, unknown> };
+      config?: { mcp_servers?: Record<string, unknown>; model_providers?: unknown };
     };
     if (
       !effective ||
@@ -662,6 +749,17 @@ class CodexResidentSession implements WorkerResidentSession {
       typeof effective.config !== 'object'
     )
       throw new Error('Codex effective native configuration is unproved.');
+    if (this.open.hostManagedLogin && isRecord(effective.config.model_providers)) {
+      const provider = effective.config.model_providers.openai;
+      if (
+        isRecord(provider) &&
+        provider.model_catalog_url !== undefined &&
+        provider.model_catalog_url !== null
+      )
+        throw new Error(
+          'Codex retained model catalog cannot replace the protected Login destination.'
+        );
+    }
     const servers = effective.config.mcp_servers ?? {};
     if (!servers || typeof servers !== 'object' || Array.isArray(servers))
       throw new Error('Codex effective native MCP configuration is malformed.');
@@ -679,6 +777,114 @@ class CodexResidentSession implements WorkerResidentSession {
    * written, or the process was confirmed
    * exited. Otherwise the returned Turn is one the Harness cannot settle and therefore fences.
    */
+  /** Consumes only current private access, registering exclusions before any native disclosure. */
+  private async acquireLogin(
+    reason: 'activate' | 'refresh'
+  ): Promise<WorkerHostManagedLoginAccess> {
+    const callbacks = this.open.hostManagedLogin;
+    if (!callbacks || !this.active || this.closing || this.unusable || this.phase !== 'running')
+      throw new Error('Codex private Login is unavailable.');
+    const value: unknown = await callbacks.acquire(reason);
+    if (
+      !this.active ||
+      this.closing ||
+      this.unusable ||
+      this.phase !== 'running' ||
+      !isRecord(value) ||
+      Object.keys(value).some(
+        (key) =>
+          !['accessToken', 'accountId', 'planType', 'receiptId', 'materialGeneration'].includes(key)
+      ) ||
+      typeof value.accessToken !== 'string' ||
+      !value.accessToken ||
+      Buffer.byteLength(value.accessToken) > 65536 ||
+      value.accessToken.includes('\u0000') ||
+      typeof value.accountId !== 'string' ||
+      !value.accountId ||
+      value.accountId.length > 256 ||
+      value.accountId.includes('\0') ||
+      value.accountId.includes('\r') ||
+      value.accountId.includes('\n') ||
+      (value.planType !== null &&
+        (typeof value.planType !== 'string' ||
+          !value.planType ||
+          value.planType.length > 64 ||
+          value.planType.includes('\0') ||
+          value.planType.includes('\r') ||
+          value.planType.includes('\n'))) ||
+      typeof value.receiptId !== 'string' ||
+      !value.receiptId ||
+      value.receiptId.length > 512 ||
+      value.receiptId.includes('\0') ||
+      value.receiptId.includes('\r') ||
+      value.receiptId.includes('\n') ||
+      typeof value.materialGeneration !== 'number' ||
+      !Number.isSafeInteger(value.materialGeneration) ||
+      value.materialGeneration < 1 ||
+      (this.loginAccountId !== null && value.accountId !== this.loginAccountId)
+    )
+      throw new Error('Codex private Login delivery is invalid or belongs to another account.');
+    for (const secret of [value.accessToken, value.accountId]) {
+      if (!this.secrets.includes(secret)) this.secrets.push(secret);
+      if (!this.captureSecrets.includes(secret)) this.captureSecrets.push(secret);
+    }
+    return {
+      accessToken: value.accessToken,
+      accountId: value.accountId,
+      planType: value.planType,
+      receiptId: value.receiptId,
+      materialGeneration: value.materialGeneration,
+    };
+  }
+
+  /** Native account acceptance and canonical receipt completion precede thread/model work. */
+  private async activateLogin(native: {
+    outstanding: boolean;
+    deadline: LifecycleDeadline;
+  }): Promise<void> {
+    const callbacks = this.open.hostManagedLogin;
+    if (!callbacks) throw new Error('Codex private Login is unavailable.');
+    const access = await controlDeadline(
+      this.acquireLogin('activate'),
+      native.deadline.remainingMs()
+    );
+    if (this.threadId && this.loginAccountId === null) {
+      const current = await this.nativeRequest('account/read', { refreshToken: false }, native);
+      if (
+        !isRecord(current) ||
+        !isRecord(current.account) ||
+        current.account.type !== 'chatgpt' ||
+        current.account.id !== access.accountId
+      )
+        throw new Error('Codex resumed account continuity is unproved.');
+    }
+    try {
+      const result = await this.nativeRequest(
+        'account/login/start',
+        {
+          type: 'chatgptAuthTokens',
+          accessToken: access.accessToken,
+          chatgptAccountId: access.accountId,
+          chatgptPlanType: access.planType,
+        },
+        native
+      );
+      if (!isRecord(result) || result.type !== 'chatgptAuthTokens')
+        throw new Error('Codex native Login acceptance is unproved.');
+      this.loginAccountId = access.accountId;
+      await controlDeadline(
+        callbacks.complete({
+          receiptId: access.receiptId,
+          materialGeneration: access.materialGeneration,
+        }),
+        native.deadline.remainingMs()
+      );
+    } catch {
+      this.unusable = true;
+      throw new Error('Codex native Login completion is unproved.');
+    }
+  }
+
   async startTurn(input: WorkerResidentTurnInput): Promise<WorkerResidentTurn> {
     this.recordLifecycleFact = containTurnLifecycleRecorder(input.recordLifecycleFact);
     const effort = validateTurnReasoningEffort(input);
@@ -686,6 +892,14 @@ class CodexResidentSession implements WorkerResidentSession {
     if (this.exitUnproved && this.processIsLive()) {
       return this.surfaceLive(new Error('Codex runtime is unavailable.'));
     }
+    const nativeLogin = input.llmRoute.credentialVisibility === 'runtime-token';
+    if (
+      nativeLogin !== Boolean(this.open.hostManagedLogin) ||
+      input.allowedLlmRoutes.some(
+        (route) => (route.credentialVisibility === 'runtime-token') !== nativeLogin
+      )
+    )
+      throw new Error('Codex Login delivery does not match the admitted route family.');
     const preferred = routeKey(input.llmRoute);
     if (!Array.isArray(input.allowedLlmRoutes) || input.allowedLlmRoutes.length === 0)
       throw new Error('Codex requires the admitted route set.');
@@ -716,10 +930,12 @@ class CodexResidentSession implements WorkerResidentSession {
     this.lastTerminal = null;
     this.rpc.permissionRecords.length = 0;
     this.rpc.resetTurnDiagnostics();
-    this.nativeLogs = new NativeRuntimeCapture({
-      ...input.runtimeCapture,
-      credentialValues: [...input.runtimeCapture.credentialValues, ...this.secrets],
-    });
+    for (const value of input.runtimeCapture.credentialValues) {
+      if (value && !this.secrets.includes(value)) this.secrets.push(value);
+    }
+    this.captureSecrets = [...input.runtimeCapture.credentialValues, ...this.secrets];
+    const runtimeCapture = { ...input.runtimeCapture, credentialValues: this.captureSecrets };
+    this.nativeLogs = new NativeRuntimeCapture(runtimeCapture);
     this.nativeLogSource = runtimeRef(
       'rts',
       input.runtimeCapture.packageSnapshotId,
@@ -735,11 +951,12 @@ class CodexResidentSession implements WorkerResidentSession {
     };
     try {
       const setup = async (): Promise<TurnBody> => {
+        if (nativeLogin) await this.activateLogin(native);
         await this.bindSupply(input, native);
         const threadId = this.threadId;
         if (!threadId) throw new Error('Codex binding has no thread.');
         capture = await CodexRuntimeCapture.create(
-          input.runtimeCapture,
+          runtimeCapture,
           this.open.stateRoot,
           CODEX_ADAPTER_VERSION
         );
@@ -947,7 +1164,12 @@ class CodexResidentSession implements WorkerResidentSession {
         : null;
       // Omit idle overrides so native directory layers restore authored enabled/disabled state.
       // Only current supplied identities receive the authenticated Gateway projection.
-      const config = sessionConfig(this.open, input.mcpServerIds);
+      const config = sessionConfig(
+        this.open,
+        input.mcpServerIds,
+        [],
+        this.launch.nativeLoginTransportBaseUrl
+      );
       if (this.threadId) await this.applyResumedSupply(input, config, native);
       else await this.startNativeThread(input, config, native);
       this.boundSupply = key;
@@ -967,7 +1189,7 @@ class CodexResidentSession implements WorkerResidentSession {
         approvalPolicy: CODEX_APPROVAL_POLICY,
         sandbox: CODEX_SANDBOX,
         model: input.llmRoute.model,
-        modelProvider: CODEX_PROVIDER_ID,
+        modelProvider: this.open.hostManagedLogin ? 'openai' : CODEX_PROVIDER_ID,
         cwd: input.workingDirectory,
         ephemeral: false,
         config,
@@ -995,7 +1217,7 @@ class CodexResidentSession implements WorkerResidentSession {
           approvalPolicy: CODEX_APPROVAL_POLICY,
           sandbox: CODEX_SANDBOX,
           model: input.llmRoute.model,
-          modelProvider: CODEX_PROVIDER_ID,
+          modelProvider: this.open.hostManagedLogin ? 'openai' : CODEX_PROVIDER_ID,
           config,
         },
         native
@@ -1136,6 +1358,12 @@ class CodexResidentSession implements WorkerResidentSession {
           outcome.interruptRequested,
           outcome.codexErrorInfo
         );
+        if (
+          result.assistantText &&
+          this.secrets.some((secret) => secret && result.assistantText!.includes(secret))
+        ) {
+          result = { assistantText: null, status: 'failed', stopReason: 'credential-excluded' };
+        }
         // Contradictory terminal evidence cannot keep a reusable resident binding.
         if (
           result.stopReason === 'malformed-result' &&
@@ -1569,6 +1797,8 @@ export function surfaceUnprovedCodexTurn(
 export interface CodexResidentLaunch {
   /** Injects the pinned npm vendor binary for tests; production uses the immutable image path. */
   readonly binaryPath?: string;
+  /** Named external protocol fixture only: plain 127.0.0.1 origin; absent in production. */
+  readonly nativeLoginTransportBaseUrl?: string;
   /** Replaces the vendor binary. The returned process must use piped stdio. */
   readonly spawnProcess?: (
     binaryPath: string,
@@ -1615,10 +1845,14 @@ export async function openCodexResidentSession(
           ...options,
           stdio: ['pipe', 'pipe', 'pipe'],
         }) as ChildProcessWithoutNullStreams)
-    )(launch?.binaryPath ?? CODEX_PRODUCTION_BINARY, codexLaunchArguments(), {
-      cwd: input.stateRoot,
-      env: codexChildEnvironment(input.environment, input.stateRoot),
-    });
+    )(
+      launch?.binaryPath ?? CODEX_PRODUCTION_BINARY,
+      codexLaunchArguments(Boolean(input.hostManagedLogin), launch?.nativeLoginTransportBaseUrl),
+      {
+        cwd: input.stateRoot,
+        env: codexChildEnvironment(input.environment, input.stateRoot),
+      }
+    );
     const session = new CodexResidentSession(
       input,
       child,
@@ -1648,6 +1882,8 @@ export const codexResidentAdapter: WorkerResidentAdapter = {
 /** Test factory for the exact npm vendor binary; the registry uses the production adapter. */
 export function createCodexResidentAdapter(options: {
   readonly binaryPath: string;
+  /** Explicit loopback fixture transport, never selected by the production registry. */
+  readonly nativeLoginTransportBaseUrl?: string;
 }): WorkerResidentAdapter {
   return {
     inferenceRuntimeHintMapping: codexInferenceRuntimeHintMapping,

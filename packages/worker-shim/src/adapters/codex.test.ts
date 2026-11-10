@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs, {
   chmod,
@@ -18,8 +18,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PassThrough } from 'node:stream';
+import { type Duplex, PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { AgentEnvironmentLlmSchema } from '@openkit/config-schema';
 import type { ReasoningEffort } from '@openkit/protocol';
 import { WorkerErrorEnvelopeSchema, workerTurnCapturePaths } from '@openkit/worker-protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -92,6 +93,215 @@ afterEach(async () => {
 });
 
 describe('Codex App Server adapter', () => {
+  // Owner: Host-Managed Subscription Login. These callbacks are only the adapter's
+  // caller-side protocol fixture; real Core consent/authorization is a separate subject.
+  it('activates and answers a real native refresh without an auth-file write-back', async () => {
+    const roots = await tempRoots();
+    closers.push(() => rm(roots.base, { recursive: true, force: true }));
+    const accountId = 'synthetic-host-managed-account';
+    const token = () =>
+      [
+        Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url'),
+        Buffer.from(
+          JSON.stringify({
+            sub: 'synthetic-host-managed-user',
+            exp: 4_102_444_800,
+            'https://api.openai.com/auth': {
+              chatgpt_account_id: accountId,
+              chatgpt_user_id: 'synthetic-host-managed-user',
+              chatgpt_plan_type: 'plus',
+            },
+            nonce: randomBytes(16).toString('hex'),
+          })
+        ).toString('base64url'),
+        'synthetic-signature',
+      ].join('.');
+    const access = [token(), token()];
+    const reasons: string[] = [];
+    const completed: Array<{ receiptId: string; materialGeneration: number }> = [];
+    let requestsBeforeCompletion = 0;
+    let oldTokenRequests = 0;
+    let currentTokenRequests = 0;
+    let matchedAccount = true;
+    const upgradedSockets = new Set<Duplex>();
+    const peer = createServer(async (request, response) => {
+      if (request.method === 'POST' && request.url?.includes('responses')) {
+        await readBody(request);
+        if (completed.length === 0) requestsBeforeCompletion += 1;
+        matchedAccount &&= request.headers['chatgpt-account-id'] === accountId;
+        if (request.headers.authorization === `Bearer ${access[0]}`) {
+          oldTokenRequests += 1;
+          response.writeHead(401, { 'content-type': 'application/json' });
+          response.end(
+            JSON.stringify({ error: { code: 'token_expired', message: 'Synthetic token expiry.' } })
+          );
+          return;
+        }
+        if (request.headers.authorization !== `Bearer ${access[1]}`) {
+          response.writeHead(403);
+          response.end();
+          return;
+        }
+        currentTokenRequests += 1;
+        const item = {
+          id: 'msg_host_managed',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [
+            { type: 'output_text', text: 'Synthetic native Login reply.', annotations: [] },
+          ],
+        };
+        const payload = {
+          id: 'resp_host_managed',
+          status: 'completed',
+          output: [item],
+          usage: { input_tokens: 100, output_tokens: 10, total_tokens: 110 },
+        };
+        const events = [
+          {
+            type: 'response.created',
+            response: { id: payload.id, status: 'in_progress', output: [] },
+          },
+          { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
+          {
+            type: 'response.output_text.delta',
+            output_index: 0,
+            content_index: 0,
+            delta: 'Synthetic native Login reply.',
+          },
+          { type: 'response.output_item.done', output_index: 0, item },
+          { type: 'response.completed', response: payload },
+        ];
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(
+          events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join('')
+        );
+        return;
+      }
+      // This external peer never supplies a fake native RPC or an account quota fact.
+      response.writeHead(404, { 'content-type': 'application/json' });
+      response.end('{}');
+    });
+    // The pin owns the HTTP fallback after this real WebSocket transport refusal.
+    peer.on('upgrade', (_request, socket) => {
+      upgradedSockets.add(socket);
+      socket.once('error', () => socket.destroy());
+      socket.once('close', () => upgradedSockets.delete(socket));
+      socket.end('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    });
+    await new Promise<void>((resolve) => peer.listen(0, '127.0.0.1', resolve));
+    closers.push(async () => {
+      await Promise.all(
+        [...upgradedSockets].map(
+          (socket) =>
+            new Promise<void>((resolve, reject) => {
+              const timeout = setTimeout(
+                () => reject(new Error('Synthetic Upgrade socket did not close.')),
+                1_000
+              );
+              socket.once('close', () => {
+                clearTimeout(timeout);
+                resolve();
+              });
+              socket.destroy();
+            })
+        )
+      );
+      await new Promise<void>((resolve, reject) => {
+        peer.closeAllConnections();
+        peer.close((error) => (error ? reject(error) : resolve()));
+      });
+    });
+    const address = peer.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Synthetic native peer did not bind.');
+    // Retained bytes are preserved; the explicit factory override owns fixture transport.
+    const config = `chatgpt_base_url = "http://127.0.0.1:${address.port}"\n[features]\nresponses_websockets = false\nresponses_websockets_v2 = false\n`;
+    await writeFile(join(roots.state, 'config.toml'), config);
+    const retainedAuth = JSON.stringify({ OPENAI_API_KEY: 'synthetic-unrelated-retained-auth' });
+    await writeFile(join(roots.state, 'auth.json'), retainedAuth);
+    const observations: unknown[] = [];
+    const callbacks = {
+      acquire: async (reason: 'activate' | 'refresh') => {
+        reasons.push(reason);
+        const index = reason === 'activate' ? 0 : 1;
+        return {
+          accessToken: access[index]!,
+          accountId,
+          planType: 'plus' as const,
+          receiptId: `synthetic-existing-binding-receipt-${index + 1}`,
+          materialGeneration: index + 1,
+        };
+      },
+      complete: async (value: { receiptId: string; materialGeneration: number }) => {
+        completed.push({ ...value });
+      },
+      observe: async (_value: unknown) => {},
+    };
+    const opened = { ...openInput(roots), hostManagedLogin: callbacks };
+    const loginAdapter = createCodexResidentAdapter({
+      binaryPath: vendorBinary,
+      nativeLoginTransportBaseUrl: `http://127.0.0.1:${address.port}`,
+    });
+    const native = await loginAdapter.openSession(opened);
+    sessions.push(native);
+    expect(reasons).toEqual([]);
+    // The existing typed boundary has not yet admitted the coordinated closed enum.
+    // Keep the exact runtime-token intent; do not substitute an older visibility.
+    const [nativeRoute] = AgentEnvironmentLlmSchema.parse({
+      mode: 'harness',
+      preferredLogicalModelId: 'subscription-reasoning',
+      routes: [
+        {
+          id: 'subscription-reasoning',
+          model: 'gpt-5.1-codex',
+          providerInstanceId: 'codex-native-metadata',
+          credentialVisibility: 'runtime-token',
+          endpoint: {
+            kind: 'openai-compatible',
+            workerBaseUrl: 'https://chatgpt.com/backend-api',
+          },
+          modelParameters: {
+            contextWindow: 128_000,
+            maxOutputTokens: 16_000,
+            inputModalities: ['text', 'image'],
+            reasoning: true,
+          },
+        },
+      ],
+    }).routes;
+    if (!nativeRoute) throw new Error('The harness Login fixture requires its existing route.');
+    const input = {
+      ...turnInput(roots, [], 'Reply using the synthetic host-managed Login.', observations),
+      llmRoute: nativeRoute,
+      allowedLlmRoutes: [nativeRoute],
+    };
+    // Normalize any native error before assertion output; it can contain private protocol data.
+    const status = await native
+      .startTurn(input)
+      .then(
+        async (turn) => (await turn.settled).status,
+        () => 'start-refused'
+      )
+      .catch(() => 'settlement-refused');
+    expect(status).toBe('completed');
+    expect(reasons).toEqual(['activate', 'refresh']);
+    expect(completed).toEqual([
+      { receiptId: 'synthetic-existing-binding-receipt-1', materialGeneration: 1 },
+      { receiptId: 'synthetic-existing-binding-receipt-2', materialGeneration: 2 },
+    ]);
+    expect(oldTokenRequests).toBeGreaterThan(0);
+    expect(currentTokenRequests).toBeGreaterThan(0);
+    expect(matchedAccount).toBe(true);
+    expect(requestsBeforeCompletion).toBe(0);
+    expect(await readFile(join(roots.state, 'auth.json'), 'utf8')).toBe(retainedAuth);
+    expect(await readFile(join(roots.state, 'config.toml'), 'utf8')).toBe(config);
+    const evidence = JSON.stringify(observations);
+    expect(access.some((value) => evidence.includes(value))).toBe(false);
+    expect(evidence.includes(accountId)).toBe(false);
+  }, 60_000);
+
   it.each([false, true])(
     'continues pinned tool history through real Gateway native compaction; failSummary=%s',
     async (failSummary) => {

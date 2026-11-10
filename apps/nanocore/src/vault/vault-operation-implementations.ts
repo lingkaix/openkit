@@ -1,5 +1,4 @@
 import { Buffer } from 'node:buffer';
-import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import type {
   OperationOutput,
   VaultAdminWorkspaceReference,
@@ -64,6 +63,7 @@ import {
   listExportableVaultInjectionReceipts,
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
+import { refreshCodexLoginMaterial } from './codex-login-refresh.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
 import {
   prepareVaultAdminAudit,
@@ -1900,47 +1900,12 @@ export function createVaultOperationImplementations(
           let material: string;
           let accountId: string;
           try {
-            const decoded = z
-              .object({
-                tokens: z
-                  .object({
-                    access_token: z.string().min(1),
-                    refresh_token: z.string().min(1),
-                    account_id: z.string().min(1),
-                  })
-                  .passthrough(),
-              })
-              .passthrough()
-              .parse(JSON.parse(Buffer.from(input.authJsonBase64, 'base64').toString('utf8')));
-            const refreshed = await openaiCodexProvider().auth.oauth!.refresh(
-              {
-                type: 'oauth',
-                access: decoded.tokens.access_token,
-                refresh: decoded.tokens.refresh_token,
-                expires: 0,
-                accountId: decoded.tokens.account_id,
-              },
+            const refreshed = await refreshCodexLoginMaterial(
+              Buffer.from(input.authJsonBase64, 'base64').toString('utf8'),
               c.signal ?? new AbortController().signal
             );
-            if (
-              typeof refreshed.accountId !== 'string' ||
-              !refreshed.accountId ||
-              refreshed.accountId !== decoded.tokens.account_id ||
-              !refreshed.access ||
-              !refreshed.refresh
-            )
-              throw new Error('Codex account verification failed.');
             accountId = refreshed.accountId;
-            material = JSON.stringify({
-              ...decoded,
-              tokens: {
-                ...decoded.tokens,
-                access_token: refreshed.access,
-                refresh_token: refreshed.refresh,
-                account_id: accountId,
-              },
-              last_refresh: new Date().toISOString(),
-            });
+            material = refreshed.material;
           } catch {
             return vaultFailure(
               'Codex auth JSON bootstrap failed.',
@@ -1973,7 +1938,7 @@ export function createVaultOperationImplementations(
               displayName: 'Codex harness Login',
               secretKind: 'codex-auth-json',
               backendKind: backend.kind,
-              backendLocator: `${backend.kind}://server/vault/${referenceId}`,
+              backendLocator: `${backend.kind}://user/${actor.userId}/vault/${referenceId}`,
               login: { provider: 'codex', accountId, quarantined: false },
               publicMutation: { actor },
             },

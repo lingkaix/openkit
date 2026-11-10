@@ -689,3 +689,225 @@ it('refuses unknown Agent and selected-profile effort through setup diagnostics'
     );
   }
 });
+
+/** Authored intent only; setup composition neither creates nor authorizes this grant. */
+function authoredCodexLogin(allowed: 'all' | string[] = ['reasoning']) {
+  const base = agentConfig();
+  const parsed = AuthoredAgentConfigSchema.safeParse({
+    ...base,
+    runtime: { ...base.runtime, adapter: 'codex', version: '0.166.0' },
+    models: { preferredLogicalModelId: 'reasoning', allowedLogicalModelIds: allowed },
+    sandbox: {
+      credentialDeclarations: [
+        {
+          id: 'codex-subscription',
+          requirementId: 'codex-subscription',
+          purpose: 'Use the explicitly reviewed Workspace Codex Login.',
+          required: true,
+          visibility: 'runtime-token',
+          consumer: 'codex-login',
+        },
+      ],
+      filesystem: [],
+      network: [],
+    },
+  });
+  expect(parsed.success).toBe(true);
+  if (!parsed.success) throw new Error('The explicit authored Codex Login form was refused.');
+  return parsed.data;
+}
+
+/** Supplies public configuration references, without simulating a canonical grant or use authority. */
+function codexLoginComposition() {
+  const nativeModel = 'gpt-5.1-codex';
+  const providers = new ProviderRegistry([
+    {
+      id: 'codex-native-metadata',
+      displayName: 'Codex native metadata',
+      kind: 'oauth',
+      vendor: 'openai-codex',
+      models: [nativeModel, 'gpt-5.1-codex-mini'],
+      modelMetadata: Object.fromEntries(
+        [nativeModel, 'gpt-5.1-codex-mini'].map((model) => [
+          model,
+          {
+            family: 'codex-metadata-fixture',
+            limit: { context: 128_000, output: 16_000 },
+            modalities: { input: ['text', 'image'], output: ['text'] },
+            reasoning: true,
+            tool_call: true,
+          },
+        ])
+      ),
+    },
+  ]);
+  const gateway: GatewayConfig = {
+    ...gatewayConfig(),
+    logicalModels: [
+      {
+        ...gatewayConfig().logicalModels[0]!,
+        routes: [
+          { id: 'native', providerProfileId: 'codex-native-metadata', providerModel: nativeModel },
+        ],
+      },
+    ],
+  };
+  const workspace: WorkspaceConfig = {
+    schemaVersion: 1,
+    workspace: {
+      name: 'Codex composition fixture',
+      agents: [
+        {
+          agentId: 'agent_codex_host',
+          credentialBindings: [
+            {
+              requirementId: 'codex-subscription',
+              vaultGrantId: 'grant_00000000-0000-7f83-847d-ca64a2c18901',
+            },
+          ],
+          skills: [],
+          mcp: [],
+        },
+      ],
+      internalRoles: [],
+      roots: [],
+      assistant: { repositoryInspection: { enabled: true, excludedPaths: [] } },
+    },
+  };
+  const accountCheck = vi.fn(() => {
+    throw new Error('Server account readiness must not be consulted.');
+  });
+  const keyCheck = vi.fn(() => {
+    throw new Error('Server key readiness must not be consulted.');
+  });
+  return {
+    nativeModel,
+    gateway,
+    workspace,
+    providers,
+    accountCheck,
+    keyCheck,
+    dependencies: {
+      gatewayConfig: gateway,
+      providerRegistry: providers,
+      workspaceConfig: workspace,
+      subscriptionAccounts: { gatewayUnavailableReason: accountCheck },
+      providerCredentialConfigured: keyCheck,
+    },
+  };
+}
+
+// Owners: Vault Harness Subscription Logins and coordinated current4 harness package form.
+describe('explicit Codex Login setup metadata', () => {
+  // Agent Manifest And AEP Resolution: unsupported composed requirements fail closed (440, 483).
+  it.each(['absent', 'empty'] as const)(
+    'refuses a Login without an authored feature marker when serving support is %s',
+    (support) => {
+      const f = codexLoginComposition();
+      const manifest = authoredCodexLogin();
+      expect(manifest.requiredFeatures ?? []).not.toContain('worker.harness-login.v1');
+      const result = resolveAgentSetup(manifest, {
+        ...f.dependencies,
+        ...(support === 'empty' ? { supportedRequiredFeatures: [] } : {}),
+      });
+      expect(result.setup).toBeNull();
+      expect(result.diagnostics).toContainEqual({
+        agentId: manifest.id,
+        code: 'agent_setup.unsupported_required_feature',
+        message: `Agent ${manifest.id} requires unsupported feature: worker.harness-login.v1.`,
+        severity: 'error',
+      });
+      expect(f.accountCheck).not.toHaveBeenCalled();
+      expect(f.keyCheck).not.toHaveBeenCalled();
+    }
+  );
+
+  it('composes exact native metadata without reading Server Gateway credentials', () => {
+    const f = codexLoginComposition();
+    const manifest = authoredCodexLogin();
+    const original = structuredClone(manifest);
+    const result = resolveAgentSetup(manifest, {
+      ...f.dependencies,
+      supportedRequiredFeatures: ['worker.harness-login.v1'],
+    });
+    expect(result.diagnostics).toEqual([]);
+    expect(result.setup?.logicalModels.allowed).toEqual([
+      expect.objectContaining({
+        id: 'reasoning',
+        modelParameters: {
+          contextWindow: 128_000,
+          maxOutputTokens: 16_000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
+        routes: [expect.objectContaining({ providerModel: f.nativeModel })],
+      }),
+    ]);
+    expect(result.setup?.manifest.sandbox?.credentialDeclarations).toEqual([
+      {
+        id: 'codex-subscription',
+        requirementId: 'codex-subscription',
+        vaultGrantId: f.workspace.workspace.agents[0]!.credentialBindings[0]!.vaultGrantId,
+        visibility: 'runtime-token',
+        consumer: 'codex-login',
+      },
+    ]);
+    expect(f.accountCheck).not.toHaveBeenCalled();
+    expect(f.keyCheck).not.toHaveBeenCalled();
+    expect(manifest).toEqual(original);
+  });
+
+  it('refuses ambiguous native identities rather than choosing the first route', () => {
+    const f = codexLoginComposition();
+    f.gateway.logicalModels[0]!.routes.push({
+      id: 'other',
+      providerProfileId: 'codex-native-metadata',
+      providerModel: 'gpt-5.1-codex-mini',
+    });
+    const result = resolveAgentSetup(authoredCodexLogin(), f.dependencies);
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+    expect(f.accountCheck).not.toHaveBeenCalled();
+    expect(f.keyCheck).not.toHaveBeenCalled();
+  });
+
+  it('refuses the entire all expansion when one model is not representable for Codex', () => {
+    const f = codexLoginComposition();
+    f.gateway.logicalModels.push({
+      ...gatewayConfig().logicalModels[0]!,
+      id: 'foreign-model',
+      routes: [
+        { id: 'foreign', providerProfileId: 'foreign-provider', providerModel: 'foreign-native' },
+      ],
+    });
+    const providers = new ProviderRegistry([
+      ...f.providers.list(),
+      {
+        id: 'foreign-provider',
+        displayName: 'Foreign metadata',
+        kind: 'custom',
+        models: ['foreign-native'],
+      },
+    ]);
+    const result = resolveAgentSetup(authoredCodexLogin('all'), {
+      ...f.dependencies,
+      providerRegistry: providers,
+    });
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+    expect(f.accountCheck).not.toHaveBeenCalled();
+    expect(f.keyCheck).not.toHaveBeenCalled();
+  });
+
+  it('requires the existing Workspace credential binding before an executable setup', () => {
+    const f = codexLoginComposition();
+    f.workspace.workspace.agents[0]!.credentialBindings = [];
+    const result = resolveAgentSetup(authoredCodexLogin(), f.dependencies);
+    expect(result.setup).toBeNull();
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'agent_setup.missing_credential_binding',
+      })
+    );
+  });
+});

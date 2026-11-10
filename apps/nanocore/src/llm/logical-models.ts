@@ -77,7 +77,7 @@ interface ModelsDevProvider {
 
 const catalog = modelsDevCatalog as Readonly<Record<string, ModelsDevProvider>>;
 
-/** Private route member resolved against current Server Provider supply. */
+/** Private route metadata; Gateway supply eligibility never grants native Login authority. */
 export interface ResolvedLogicalModelRoute {
   readonly id: string;
   readonly providerProfileId: string;
@@ -123,11 +123,71 @@ export function resolveLogicalModelCatalog(
   subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>,
   providerCredentialConfigured?: ProviderCredentialConfigured
 ): ResolvedLogicalModel[] {
-  if (!config.enabled) {
+  return resolveLogicalModelCatalogForConnection(
+    'gateway',
+    config,
+    providers,
+    subscriptionAccounts,
+    providerCredentialConfigured
+  );
+}
+
+/**
+ * Resolves exact authored Codex native mappings without consulting Server Gateway credentials.
+ * Explicit sets resolve only their IDs; `all` must represent every authored logical model.
+ * Returned routes remain unavailable to Gateway selection: current Login authority is a separate owner.
+ */
+export function resolveHarnessLogicalModelCatalog(
+  config: GatewayConfig,
+  providers: ProviderRegistry,
+  logicalModelIds: 'all' | readonly string[]
+): ResolvedLogicalModel[] {
+  return resolveLogicalModelCatalogForConnection(
+    'harness',
+    {
+      ...config,
+      logicalModels:
+        logicalModelIds === 'all'
+          ? config.logicalModels
+          : config.logicalModels.filter((model) => logicalModelIds.includes(model.id)),
+    },
+    providers
+  );
+}
+
+/** Shares static contract admission while keeping the two connection holders' supply criteria separate. */
+function resolveLogicalModelCatalogForConnection(
+  mode: 'gateway' | 'harness',
+  config: GatewayConfig,
+  providers: ProviderRegistry,
+  subscriptionAccounts?: Pick<ProviderSubscriptionAccountManager, 'gatewayUnavailableReason'>,
+  providerCredentialConfigured?: ProviderCredentialConfigured
+): ResolvedLogicalModel[] {
+  if (mode === 'gateway' && !config.enabled) {
     return [];
   }
 
   return config.logicalModels.map((logicalModel) => {
+    if (mode === 'harness') {
+      const nativeIds = new Set<string>();
+      for (const route of logicalModel.routes) {
+        const profile = providers.get(route.providerProfileId);
+        if (
+          !profile ||
+          profile.kind !== 'oauth' ||
+          resolveSubscriptionFamily(profile) !== 'openai-codex' ||
+          !profile.models.includes(route.providerModel)
+        ) {
+          throw new Error(
+            `Logical model has no admitted Codex native mapping: ${logicalModel.id}.`
+          );
+        }
+        nativeIds.add(route.providerModel);
+      }
+      if (nativeIds.size !== 1) {
+        throw new Error(`Logical model has an ambiguous Codex native mapping: ${logicalModel.id}.`);
+      }
+    }
     const authoredContracts = logicalModel.routes.map((route) => {
       const profile = providers.get(route.providerProfileId);
       return profile?.models.includes(route.providerModel)
@@ -164,7 +224,13 @@ export function resolveLogicalModelCatalog(
       inputModalities,
       reasoning: contracts.length > 0 && contracts.every((contract) => contract.reasoning === true),
     });
+    if (mode === 'harness' && !modelParameters.success) {
+      throw new Error(`Logical model has incomplete Codex native metadata: ${logicalModel.id}.`);
+    }
     const routes = logicalModel.routes.map((route) => {
+      if (mode === 'harness') {
+        return { ...route, available: false, unavailableReason: 'harness_login_authority_pending' };
+      }
       const profile = providers.get(route.providerProfileId);
       const unavailableReason =
         profile === null
@@ -184,7 +250,7 @@ export function resolveLogicalModelCatalog(
     });
     const availableContracts = authoredContracts.filter(
       (contract, index): contract is NonNullable<typeof contract> =>
-        contract !== null && routes[index]!.available
+        contract !== null && (mode === 'harness' || routes[index]!.available)
     );
     const reasoningEffortLevels =
       availableContracts.length > 0 && availableContracts.every((contract) => contract.reasoning)

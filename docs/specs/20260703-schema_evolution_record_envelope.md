@@ -252,6 +252,7 @@ The implementation includes package tests for unknown optional field tolerance, 
 | --- | --- | --- |
 | `runtime.evidence.v1` | active | Runtime evidence retains execution outcomes, backend summaries, and evidence bundle linkage. |
 | `worker.runtime-provenance.v1` | active | Worker runtime provenance links admitted Agent Environment Packages to retained transcript evidence. |
+| `worker.harness-login.v1` | active | Workspace-bound Codex Login requirements and harness Login execution require explicit reader support. |
 | `evidence.bundle.v1` | active | Evidence bundles retain exact lineage, content digests, retention, sensitivity, and import disposition. |
 | `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across verified export. Ordinary portable Workspace import is absent and does not carry them. |
 | `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
@@ -271,6 +272,8 @@ The implementation includes package tests for unknown optional field tolerance, 
 | `workspace.recurring-history.v1` | active | Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history. |
 | `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
 | `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
+
+The `worker.harness-login.v1` marker gates the closed Workspace-bound `runtime-token`/`codex-login` requirement and the corresponding current-version harness Login semantics. Retained setup evidence preserves only its visibility discriminator, requirement identity, grant identity and fixed consumer; it carries no credential material or live declaration identifier. Unknown captured feature names remain evidence, not current launch support. Registering this marker neither enables a Worker capability nor certifies native activation.
 
 The `session.concurrent-turns` identifier describes a Harness capability and never authorizes more than one active Turn in one AgentSession or Thread. The current scheduler does not grant this capability.
 

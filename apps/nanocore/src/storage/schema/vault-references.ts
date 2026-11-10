@@ -41,6 +41,8 @@ export const vaultReferences = sqliteTable(
     loginAccountId: text('login_account_id'),
     /** Selection restriction on this User-owned refresh family; not revocation or health. */
     loginQuarantined: integer('login_quarantined', { mode: 'boolean' }),
+    /** Bounded correlated native quota evidence; NULL means unknown, never permission. */
+    loginObservationsJson: text('login_observations_json'),
     /** ISO timestamp for reference creation. */
     createdAt: text('created_at').notNull(),
     /** ISO timestamp for latest metadata update. */

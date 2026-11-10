@@ -9,6 +9,7 @@ import {
   currentWorkspaceAuthority,
   type WorkspaceAuthorityEvaluation,
 } from '../auth/operation-authorizer.js';
+import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { TurnStartValidationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import type { CoreDb } from '../storage/db.js';
 import type { VaultBindingRequester } from '../storage/vault-native-codecs.js';
@@ -91,16 +92,31 @@ export function assertCredentialGrantMatchesDeclaration(
   reference: VaultReferenceRecord
 ): void {
   const requiredInjectionPath = declarationRequiredInjectionPath(declaration);
+  const reviewedUserLogin = declaration.visibility === 'runtime-token';
+  if (
+    reviewedUserLogin &&
+    (declaration.consumer !== 'codex-login' ||
+      grant.ownerScope !== 'workspace' ||
+      reference.ownerScope !== 'user' ||
+      !reference.userId ||
+      reference.secretKind !== 'codex-auth-json' ||
+      reference.login?.provider !== 'codex' ||
+      reference.login.quarantined)
+  )
+    throw new TurnStartValidationError(
+      'credential_declaration_invalid',
+      'Credential declaration does not match a current User Login.'
+    );
 
   if (
     grant.vaultReferenceId !== reference.referenceId ||
     (grant.targetAgentSessionId !== null && grant.targetAgentSessionId !== input.agentSessionId) ||
-    grant.ownerScope !== reference.ownerScope ||
+    (!reviewedUserLogin && grant.ownerScope !== reference.ownerScope) ||
     (declaration.requirementId !== undefined
       ? grant.ownerScope !== 'workspace' || grant.workspaceId !== input.workspaceId
       : grant.ownerScope !== 'server') ||
-    grant.workspaceId !== reference.workspaceId ||
-    grant.userId !== reference.userId ||
+    (!reviewedUserLogin && grant.workspaceId !== reference.workspaceId) ||
+    (!reviewedUserLogin && grant.userId !== reference.userId) ||
     (grant.ownerScope === 'user' &&
       (grant.userId === null || grant.userId !== input.responsibleUserId)) ||
     (grant.workspaceId !== null && grant.workspaceId !== input.workspaceId) ||
@@ -168,6 +184,14 @@ export function assertCurrentWorkerCredentialAuthority(
     const scope = environmentPackage.scope;
     const grant = requireDeclarationGrant(coreDb, declaration);
     const reference = requireDeclarationReference(coreDb, grant);
+    if (
+      declaration.visibility === 'runtime-token' &&
+      (!reference.userId || !isCanonicalUserActive(coreDb, reference.userId))
+    )
+      throw new TurnStartValidationError(
+        'credential_declaration_invalid',
+        'Credential User authority is unavailable.'
+      );
     aepVaultGrantScope(grant);
     assertCredentialGrantMatchesDeclaration(
       {
@@ -212,7 +236,7 @@ export function assertCurrentWorkerCredentialAuthority(
  */
 function declarationRequiredInjectionPath(
   declaration: AgentEnvironmentCredentialDeclaration
-): 'backend-provider' | 'runtime-env' | 'runtime-file' {
+): 'backend-provider' | 'runtime-env' | 'runtime-file' | 'runtime-token' {
   if (declaration.visibility === 'sandbox-provider') {
     return 'backend-provider';
   }

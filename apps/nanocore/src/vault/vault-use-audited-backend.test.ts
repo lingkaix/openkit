@@ -1,17 +1,32 @@
-import { randomBytes } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import type { OperationId } from '@openkit/app-api-schemas';
+import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
+import { createBetterAuth } from '../auth/better-auth.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import { FsStore } from '../lib/store.js';
+import { PolicyInterception } from '../policy/interception.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import { createApp } from '../test-support/app.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { operationRequest } from '../test-support/operation-request.js';
 import { createLockedVaultBackend, VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
-import { createVaultGrant, revokeVaultGrant } from './vault-grants.js';
+import { createVaultGrant, getVaultGrant, revokeVaultGrant } from './vault-grants.js';
 import { advanceActiveVaultReferenceVersion, createVaultReference } from './vault-references.js';
+import { createVaultUnlockState } from './vault-unlock-state.js';
 import { createVaultUseAuditedBackend } from './vault-use-audited-backend.js';
 import { listVaultUseRecords } from './vault-use-records.js';
 
@@ -557,4 +572,441 @@ describe('vault use audited backend', () => {
       }
     }
   );
+});
+
+/** Creates a real reviewed cross-scope grant; material and account fixtures never leave this root. */
+async function reviewedLoginUseFixture() {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-login-use-'));
+  const coreDb = openCoreDb(dataRoot);
+  applyMigrations(coreDb);
+  const ownerId = ensureLocalUser(coreDb);
+  const store = new FsStore({ dataRoot });
+  const vaultUnlockState = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(dataRoot, 'server', 'vault'),
+  });
+  vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 43) });
+  mkdirSync(join(dataRoot, 'config'), { recursive: true });
+  writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+  const runtimeConfigManager = createRuntimeConfigManager({ dataRoot });
+  const options = {
+    coreDb,
+    dataRoot,
+    store,
+    vaultUnlockState,
+    runtimeConfigManager,
+    policyInterception: new PolicyInterception(),
+  };
+  const ownerApp = createApp(options);
+  const auth = createBetterAuth(coreDb, { env: {} });
+  const memberApp = createApp({ ...options, mode: 'server', auth });
+  const workspaceHandles: WorkspaceDb[] = [];
+  const close = async () => {
+    await shutdownControlStoreWorkerClient();
+    vaultUnlockState.lock();
+    for (const db of workspaceHandles) db.sqlite.close();
+    coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  };
+  try {
+    /** Uses the real HTTP operation and reports only its status if valid fixture setup fails. */
+    const call = async <T>(id: OperationId, input: Record<string, unknown>, cookie?: string) => {
+      const response = await (cookie ? memberApp : ownerApp).request(
+        ...operationRequest(
+          id,
+          {},
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}) },
+            body: JSON.stringify(input),
+          }
+        )
+      );
+      if (response.status >= 400)
+        throw new Error(`Login-use fixture ${id} refused with status ${response.status}.`);
+      return response.json() as Promise<T>;
+    };
+    /** Signup supplies a real Session; no authentication response or admission decision is replaced. */
+    const signup = async (name: string) => {
+      const response = await auth.api.signUpEmail({
+        body: { name, email: `${randomUUID()}@example.invalid`, password: randomUUID() },
+        asResponse: true,
+      });
+      if (response.status !== 200) throw new Error('Login-use fixture signup refused.');
+      const result = (await response.json()) as { user: { id: string; email: string } };
+      const cookie = response.headers
+        .getSetCookie()
+        .map((value) => value.split(';')[0])
+        .join('; ');
+      if (!cookie) throw new Error('Login-use fixture signup supplied no Session cookie.');
+      return { ...result.user, cookie };
+    };
+    const member = await signup('Shared Login consumer');
+    const outsider = await signup('Unadmitted Login consumer');
+    const workspace = await call<{ id: string }>('workspace.create', {
+      name: 'Reviewed Login use',
+      requestId: randomUUID(),
+    });
+    const invitation = await call<{ invitation: { invitationId: string; revision: number } }>(
+      'workspace.invitation-create',
+      { workspaceId: workspace.id, inviteeEmail: member.email, requestId: randomUUID() }
+    );
+    await call(
+      'workspace.my-invitation-accept',
+      {
+        invitationId: invitation.invitation.invitationId,
+        expectedRevision: invitation.invitation.revision,
+        requestId: randomUUID(),
+      },
+      member.cookie
+    );
+    const thread = await call<{ id: string }>('thread.create', {
+      workspaceId: workspace.id,
+      name: 'Explicit Login consent',
+      visibility: 'workspace',
+      requestId: randomUUID(),
+    });
+    const referenceId = allocateEntityId('vault');
+    const material = randomBytes(32).toString('base64url');
+    const backend = vaultUnlockState.backend();
+    backend.store({ referenceId, material, metadata: { ownerScope: 'user', userId: ownerId } });
+    await createVaultReference(coreDb, {
+      referenceId,
+      ownerScope: 'user',
+      userId: ownerId,
+      displayName: 'Synthetic reviewed Login',
+      secretKind: 'codex-auth-json',
+      backendKind: backend.kind,
+      login: { provider: 'codex', accountId: 'synthetic-audited-account', quarantined: false },
+    });
+    const expiresAt = '2099-01-01T00:00:00.000Z';
+    const request = await call<{
+      workspaceId: string;
+      threadId: string;
+      raisingTurnId: string;
+      approvalRequestId: string;
+    }>('vault.grant-request', {
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      requestId: randomUUID(),
+      terms: {
+        referenceId,
+        ownerScope: 'workspace',
+        lifetime: 'workspace',
+        injectionPath: 'runtime-token',
+        expiresAt,
+      },
+    });
+    await call('approval.respond', {
+      workspaceId: request.workspaceId,
+      threadId: request.threadId,
+      turnId: request.raisingTurnId,
+      approvalRequestId: request.approvalRequestId,
+      decision: 'granted',
+      requestId: randomUUID(),
+    });
+    const issued = await call<{ grantId: string }>('vault.grant-issue', {
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      approvalRequestId: request.approvalRequestId,
+    });
+    const grant = getVaultGrant(coreDb, issued.grantId);
+    expect(grant).toMatchObject({
+      issuance: 'target',
+      ownerScope: 'workspace',
+      workspaceId: workspace.id,
+      vaultReferenceId: referenceId,
+      allowedInjectionPaths: ['runtime-token'],
+      status: 'active',
+    });
+    const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
+    workspaceHandles.push(workspaceDb);
+    const otherWorkspace = await call<{ id: string }>('workspace.create', {
+      name: 'Unselected consumer scope',
+      requestId: randomUUID(),
+    });
+    const otherDb = openWorkspaceDb(dataRoot, otherWorkspace.id);
+    workspaceHandles.push(otherDb);
+    let time = new Date().toISOString();
+    return {
+      coreDb,
+      workspaceDb,
+      otherDb,
+      dataRoot,
+      ownerId,
+      memberId: member.id,
+      outsiderId: outsider.id,
+      referenceId,
+      grantId: issued.grantId,
+      backend,
+      material,
+      call,
+      close,
+      setTime: (value: string) => {
+        time = value;
+      },
+      resolve: (userId = ownerId, db = workspaceDb, grantId: string | undefined = issued.grantId) =>
+        createVaultUseAuditedBackend({
+          backend,
+          db,
+          ownerScope: 'workspace',
+          workspaceId: db.workspaceId,
+          actor: { kind: 'user', id: userId },
+          resolvingPath: 'grant',
+          ...(grantId ? { grantId } : {}),
+          now: () => time,
+        }).resolve({ referenceId }),
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+/** Immediately reduces private resolution to safe facts; assertions never print material or raw errors. */
+function loginUseOutcome(work: Promise<unknown>, material: string) {
+  return work.then(
+    (value) => ({
+      ok: true,
+      matches: Buffer.from(value as Uint8Array).equals(Buffer.from(material)),
+    }),
+    () => ({ ok: false, matches: false })
+  );
+}
+
+// Owner: Core Vault / Authority And Projection Boundaries; Vault And Secret Injection /
+// Ownership Scopes, Reviewed User Login Sharing, Selection And Activation, Lifecycle And Failure Rules.
+describe('reviewed Workspace grant to User Login material boundary', () => {
+  it.each(['owner', 'shared-member'] as const)(
+    'releases to the %s only under the real reviewed cross-scope grant with Workspace evidence',
+    async (consumer) => {
+      const f = await reviewedLoginUseFixture();
+      try {
+        expect(
+          await loginUseOutcome(
+            f.resolve(consumer === 'owner' ? f.ownerId : f.memberId),
+            f.material
+          )
+        ).toEqual({ ok: true, matches: true });
+        const uses = listVaultUseRecords(f.workspaceDb);
+        expect(uses).toHaveLength(1);
+        expect(uses[0]).toMatchObject({
+          ownerScope: 'workspace',
+          workspaceId: f.workspaceDb.workspaceId,
+          grantId: f.grantId,
+          vaultReferenceId: f.referenceId,
+          materialVersion: 1,
+          outcome: 'succeeded',
+        });
+        expect(listVaultUseRecords(f.coreDb)).toEqual([]);
+        const audits = listWorkspaceAuditEvents(f.workspaceDb, f.workspaceDb.workspaceId).filter(
+          (event) => event.action === 'vault.resolve'
+        );
+        expect(audits).toHaveLength(1);
+        expect(audits[0]).toMatchObject({
+          id: uses[0]!.auditEventId,
+          outcome: 'succeeded',
+          actor: { kind: 'user', id: consumer === 'owner' ? f.ownerId : f.memberId },
+        });
+        expect(JSON.stringify({ uses, audits }).includes(f.material)).toBe(false);
+      } finally {
+        await f.close();
+      }
+    }
+  );
+
+  it.each(['absent', 'wrong-workspace', 'nonmember', 'expired'] as const)(
+    'refuses %s authority without releasing material or publishing a successful Use',
+    async (scenario) => {
+      const f = await reviewedLoginUseFixture();
+      try {
+        if (scenario === 'expired') f.setTime('2099-01-01T00:00:00.001Z');
+        const db = scenario === 'wrong-workspace' ? f.otherDb : f.workspaceDb;
+        const work =
+          scenario === 'absent'
+            ? createVaultUseAuditedBackend({
+                backend: f.backend,
+                db,
+                ownerScope: 'workspace',
+                workspaceId: db.workspaceId,
+                actor: { kind: 'user', id: f.ownerId },
+                resolvingPath: 'grant',
+              }).resolve({ referenceId: f.referenceId })
+            : f.resolve(scenario === 'nonmember' ? f.outsiderId : f.ownerId, db);
+        expect(await loginUseOutcome(work, f.material)).toEqual({ ok: false, matches: false });
+        const uses = listVaultUseRecords(db);
+        expect(uses.some((use) => use.outcome === 'succeeded')).toBe(false);
+        expect(JSON.stringify(uses).includes(f.material)).toBe(false);
+      } finally {
+        await f.close();
+      }
+    }
+  );
+
+  it.each(['unchanged', 'revoked', 'quarantined', 'generation', 'member-left'] as const)(
+    'waits for actual Use and Audit acknowledgements and rechecks %s facts before material release',
+    async (scenario) => {
+      const f = await reviewedLoginUseFixture();
+      const originalEmit = Worker.prototype.emit;
+      const useReached = Promise.withResolvers<void>();
+      const auditReached = Promise.withResolvers<void>();
+      let pending: (() => void) | undefined;
+      let active = true;
+      let useHeld = false;
+      let auditHeld = false;
+      let settled = false;
+      let outcome: ReturnType<typeof loginUseOutcome> | undefined;
+      const prepared = vi.spyOn(f.backend, 'resolve');
+      const release = () => {
+        const value = pending;
+        pending = undefined;
+        value?.();
+      };
+      const hold = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+        this: Worker,
+        event: string | symbol,
+        ...args: unknown[]
+      ) {
+        const reply = args[0] as
+          | {
+              operation?: string;
+              status?: string;
+              result?: {
+                kind?: string;
+                value?: { vaultReferenceId?: string; resource?: string; workspaceId?: string };
+              };
+            }
+          | undefined;
+        const result = reply?.result;
+        if (
+          active &&
+          event === 'message' &&
+          reply?.operation === 'vault' &&
+          reply.status === 'ok' &&
+          result?.value?.workspaceId === f.workspaceDb.workspaceId &&
+          ((!useHeld &&
+            result.kind === 'use-create' &&
+            result.value.vaultReferenceId === f.referenceId) ||
+            (!auditHeld &&
+              result.kind === 'audit-insert' &&
+              result.value.resource === `vault:${f.referenceId}`))
+        ) {
+          pending = () => originalEmit.call(this, event, ...args);
+          if (result.kind === 'use-create') {
+            useHeld = true;
+            useReached.resolve();
+          } else {
+            auditHeld = true;
+            auditReached.resolve();
+          }
+          return true;
+        }
+        return originalEmit.call(this, event, ...args);
+      });
+      try {
+        outcome = loginUseOutcome(
+          f.resolve(scenario === 'member-left' ? f.memberId : f.ownerId),
+          f.material
+        ).then((value) => {
+          settled = true;
+          return value;
+        });
+        const earlySettlement = () =>
+          outcome!.then(() => {
+            throw new Error('Login resolution settled before its actual evidence acknowledgement.');
+          });
+        await Promise.race([useReached.promise, earlySettlement()]);
+        expect(settled).toBe(false);
+        // The existing private backend may prepare once; only disclosure waits for evidence.
+        expect(prepared).toHaveBeenCalledOnce();
+        expect(listVaultUseRecords(f.workspaceDb).some((use) => use.outcome === 'succeeded')).toBe(
+          true
+        );
+        release();
+        await Promise.race([auditReached.promise, earlySettlement()]);
+        expect(settled).toBe(false);
+        if (scenario === 'revoked') await revokeVaultGrant(f.coreDb, { grantId: f.grantId });
+        if (scenario === 'quarantined')
+          await f.call('vault.login-quarantine', { referenceId: f.referenceId });
+        if (scenario === 'generation') {
+          const rotated = f.backend.rotate({
+            referenceId: f.referenceId,
+            material: randomBytes(32).toString('base64url'),
+          });
+          await advanceActiveVaultReferenceVersion(f.coreDb, {
+            referenceId: f.referenceId,
+            currentVersion: rotated.currentVersion,
+          });
+        }
+        if (scenario === 'member-left') {
+          const members = await f.call<{ items: Array<{ userId: string; revision: number }> }>(
+            'workspace.member-list',
+            { workspaceId: f.workspaceDb.workspaceId }
+          );
+          const member = members.items.find((value) => value.userId === f.memberId);
+          if (!member) throw new Error('The ordinary consumer membership is missing.');
+          await f.call('workspace.member-remove', {
+            workspaceId: f.workspaceDb.workspaceId,
+            targetUserId: f.memberId,
+            expectedRevision: member.revision,
+            requestId: randomUUID(),
+          });
+        }
+        release();
+        expect(await outcome).toEqual({
+          ok: scenario === 'unchanged',
+          matches: scenario === 'unchanged',
+        });
+        expect(listVaultUseRecords(f.workspaceDb)).toHaveLength(1);
+      } finally {
+        active = false;
+        release();
+        await outcome;
+        hold.mockRestore();
+        prepared.mockRestore();
+        await f.close();
+      }
+    }
+  );
+
+  it('withholds material when the actual Workspace Use publication scope cannot open', async () => {
+    const f = await reviewedLoginUseFixture();
+    const dbPath = workspaceDbPath(f.dataRoot, f.workspaceDb.workspaceId);
+    const dbDirectory = join(dbPath, '..');
+    const heldDirectory = `${dbDirectory}.use-publication-fault`;
+    let obstructed = false;
+    const prepared = vi.spyOn(f.backend, 'resolve');
+    let restorePublication = () => {};
+    try {
+      await shutdownControlStoreWorkerClient();
+      const use = vi.spyOn(getControlStoreWorkerClient(), 'vault');
+      restorePublication = () => use.mockRestore();
+      // Deliberate private-fixture filesystem fault after valid consent; no SQL or writer reply is replaced.
+      renameSync(dbDirectory, heldDirectory);
+      obstructed = true;
+      mkdirSync(dbPath, { recursive: true });
+      expect(await loginUseOutcome(f.resolve(), f.material)).toEqual({ ok: false, matches: false });
+      expect(prepared).toHaveBeenCalledOnce();
+      expect(
+        use.mock.calls.some(
+          ([db, kind, input]) =>
+            db === f.workspaceDb &&
+            kind === 'use-create' &&
+            (input as { outcome?: unknown }).outcome === 'succeeded'
+        )
+      ).toBe(true);
+      expect(listVaultUseRecords(f.workspaceDb).some((use) => use.outcome === 'succeeded')).toBe(
+        false
+      );
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      restorePublication();
+      prepared.mockRestore();
+      if (obstructed) {
+        rmSync(dbDirectory, { recursive: true, force: true });
+        renameSync(heldDirectory, dbDirectory);
+      }
+      await f.close();
+    }
+  });
 });

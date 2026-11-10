@@ -51,6 +51,7 @@ import {
 import { prepareControlReadMetadata } from './control-store-read-metadata.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 import { userDbPath } from './fs-layout.js';
+import { NATIVE_THREAD_LOGIN_FEATURE } from './native-thread-login.js';
 import { StoredServerEventV1Schema } from './retained-server-work-v1.js';
 import {
   StoredEventV1Schema,
@@ -313,6 +314,13 @@ function applyProducts(
           .get(record.privateOwnerUserId as string)
       )
         throw new ControlProductPreconditionError();
+      if (
+        kind === 'thread' &&
+        Object.hasOwn(input.record, 'login') &&
+        (previous?.record.login === undefined ||
+          !isDeepStrictEqual(input.record.login, previous.record.login))
+      )
+        throw new ControlProductPreconditionError();
       checkReplacement(kind, previous?.record, record, terminalTurnId);
       const retained = previous
         ? (sqlite.prepare(`SELECT record_json FROM ${tables[kind]} WHERE id=?`).get(id) as {
@@ -331,7 +339,13 @@ function applyProducts(
         previous.record.requiredFeatures !== undefined
       )
         replacement.requiredFeatures = previous.record.requiredFeatures;
-      if (kind === 'thread') replacement.requiredFeatures = [...THREAD_REQUIRED_FEATURES];
+      if (kind === 'thread') {
+        if (previous?.record.login !== undefined) replacement.login = previous.record.login;
+        replacement.requiredFeatures = [
+          ...THREAD_REQUIRED_FEATURES,
+          ...(previous?.record.login === undefined ? [] : [NATIVE_THREAD_LOGIN_FEATURE]),
+        ];
+      }
       decode(kind, replacement, owner);
       const columns: Record<string, string | number | null> = {
         id,

@@ -221,6 +221,13 @@ export const AuthoredAgentBackendRequirementsSchema = z
 export const AuthoredAgentCredentialDeclarationSchema = z
   .union([AgentEnvironmentCredentialDeclarationSchema, AgentEnvironmentCredentialRequirementSchema])
   .superRefine((value, ctx) => {
+    if (value.visibility === 'runtime-token' && 'vaultGrantId' in value) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Codex Login requirements must use an explicit Workspace credential binding.',
+        path: ['vaultGrantId'],
+      });
+    }
     if ('vaultGrantId' in value && value.requirementId !== undefined) {
       ctx.addIssue({
         code: 'custom',
@@ -318,6 +325,13 @@ export const AuthoredAgentConfigSchema = z
     const credentialIds = new Set<string>();
     const requirementIds = new Set<string>();
     for (const [index, declaration] of (value.sandbox?.credentialDeclarations ?? []).entries()) {
+      if (declaration.visibility === 'runtime-token' && value.runtime.adapter !== 'codex') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'The codex-login consumer requires the Codex runtime adapter.',
+          path: ['sandbox', 'credentialDeclarations', index, 'consumer'],
+        });
+      }
       if (credentialIds.has(declaration.id)) {
         ctx.addIssue({
           code: 'custom',

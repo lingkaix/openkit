@@ -14,7 +14,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { allocateEntityId } from '@openkit/protocol';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import { allocateEntityId, isRecord } from '@openkit/protocol';
 
 import {
   HarnessSuccessBodySchemas,
@@ -5556,4 +5557,444 @@ describe('Harness same-Turn live steer', () => {
       }
     }
   );
+});
+
+/**
+ * Builds current-v4 wire metadata for an isolated Worker plumbing test. The Vault entries below
+ * are syntax-only package projections, not Core grants, Policy evidence or permission proofs.
+ * Only the resident and the external Integration response are scripted; Harness and Turn owners run.
+ */
+function nativeLoginHolderFixture(mode: 'harness' | 'gateway' = 'harness') {
+  const f = harnessFixture();
+  const agentSessionId = allocateEntityId('as');
+  const turnId = allocateEntityId('tu');
+  const threadId = f.startBody(agentSessionId, turnId).threadId;
+  const workspaceId = f.startBody(agentSessionId, turnId).workspaceId;
+  const vaultId = allocateEntityId('vault');
+  const grantId = allocateEntityId('grant');
+  const residents = f.fake;
+  const harness = new WorkerHarness({
+    adapters: { codex: residents.adapter },
+    environment: {},
+    integration: f.integration.client,
+    threadRootDirectory: f.nativeRoot,
+    rootDirectory: f.privateRoot,
+    sandboxRoot: f.sandboxRoot,
+  });
+  let sequence = 0;
+  const send = (
+    operation: Parameters<WorkerHarness['handle']>[0]['operation'],
+    body: Readonly<Record<string, unknown>>
+  ) =>
+    harness.handle({
+      body,
+      harnessInstanceId: 'native-holder',
+      operation,
+      operationId: sha256(`${f.root}:native-holder:${sequence}`),
+      schemaVersion: 2,
+      sequence: sequence++,
+    });
+  const writePackage = (currentTurnId = turnId) => {
+    const transcriptRoot = `/openkit/threads/${threadId}/codex/capture/${currentTurnId}`;
+    const routes = ['logical-first', 'logical-preferred'].map((id) =>
+      mode === 'harness'
+        ? {
+            id,
+            model: 'gpt-5.1-codex',
+            providerInstanceId: 'native-metadata',
+            credentialVisibility: 'runtime-token',
+            endpoint: {
+              kind: 'openai-compatible',
+              workerBaseUrl: 'https://chatgpt.com/backend-api',
+            },
+            modelParameters: {
+              contextWindow: 128_000,
+              maxOutputTokens: 16_000,
+              inputModalities: ['text', 'image'],
+              reasoning: true,
+            },
+          }
+        : {
+            id: `gateway-${id}`,
+            model: id,
+            providerInstanceId: 'gateway-metadata',
+            credentialVisibility: 'placeholder',
+            endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+          }
+    );
+    const value = AgentEnvironmentPackageSchema.parse({
+      schemaVersion: 4,
+      packageId: 'aepkg_native_holder',
+      snapshotId: `package-${currentTurnId}`,
+      createdAt: '2026-11-09T00:00:00.000Z',
+      scope: {
+        workspaceId,
+        threadId,
+        turnId: currentTurnId,
+        agentSessionId,
+        triggerActor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
+        requestId: `request-${currentTurnId}`,
+      },
+      agent: {
+        agentId: 'codex-holder',
+        profileId: null,
+        displayName: 'Codex holder',
+        runtimeKind: 'codex',
+        runtimeVersion: '0.166.0',
+        instructions: [],
+        capabilityRequests: [],
+      },
+      runtime: {
+        image: { kind: 'reference', ref: `fixture@sha256:${DIGEST}`, pullPolicy: 'never' },
+        binaries: [
+          { id: 'node', path: '/usr/local/bin/node' },
+          { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+          { id: 'codex-native', path: '/usr/local/lib/codex/bin/codex' },
+        ],
+        command: {
+          argv: ['openkit-worker-shim'],
+          workingDirectory: f.sandboxRoot,
+          stdin: 'ignore',
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+        process: { user: 'openkit-worker', group: 'openkit-worker', umask: '0022' },
+        session: { reuse: 'never', resumeHandleRef: null },
+      },
+      workspace: { root: f.sandboxRoot, inputs: [], generatedFiles: [], outputs: [] },
+      supply: { skills: [], mcpServers: [], services: [] },
+      control: {
+        protocol: 'openkit-worker-control-v1',
+        mode: 'sandbox-integration',
+        bindings: {
+          capabilities: {
+            pathPrefix: '/capabilities/',
+            tokenRef: 'runtime://openkit/capability-token',
+          },
+          inference: { pathPrefix: '/inference/', tokenRef: 'runtime://openkit/inference-token' },
+          workerControl: {
+            pathPrefix: '/worker-control/',
+            tokenRef: 'runtime://openkit/worker-control-token',
+          },
+        },
+        transcript: {
+          root: transcriptRoot,
+          eventsPath: `${transcriptRoot}/events.jsonl`,
+          itemsPath: `${transcriptRoot}/items.jsonl`,
+          flush: 'line',
+          import: 'turn-end',
+          required: true,
+        },
+        channels: { events: 'batch', artifacts: 'batch', heartbeats: true, logs: 'summary-only' },
+        events: ['worker.ready', 'turn.started', 'turn.completed'],
+        adapter: { kind: 'openkit-worker-shim', targetRuntime: 'codex' },
+      },
+      capabilities: { protocol: 'openkit-worker-capability-v1', mode: 'disabled', routes: [] },
+      credentials: {
+        declarations:
+          mode === 'harness'
+            ? [
+                {
+                  id: 'login',
+                  requirementId: 'login',
+                  vaultGrantId: grantId,
+                  visibility: 'runtime-token',
+                  consumer: 'codex-login',
+                },
+              ]
+            : [],
+      },
+      vault: {
+        references: mode === 'harness' ? [{ id: vaultId, kind: 'runtime-ref' }] : [],
+        grants:
+          mode === 'harness' ? [{ id: grantId, vaultRefId: vaultId, scope: 'agent-session' }] : [],
+      },
+      policy: {
+        snapshotId: 'isolated-holder',
+        filesystem: { default: 'deny', rules: [] },
+        network: { default: 'deny', rules: [] },
+        process: { default: 'deny', rules: [] },
+        inference: { allowedProviderInstanceIds: ['native-metadata', 'gateway-metadata'] },
+        secrets: { visibility: 'placeholder-only' },
+        artifacts: { outputsMustBeDeclared: true },
+      },
+      llm: { mode, preferredLogicalModelId: 'logical-preferred', routes },
+      resources: {},
+      observability: {
+        captureCoverage: { scope: 'server', value: 'off' },
+        audit: { required: true, formats: { preferred: 'ocsf-json' } },
+        evidence: { collectBackendLogs: false, collectSessionFiles: false },
+      },
+      backend: {
+        preferred: 'openshell',
+        allowedKinds: ['openshell'],
+        requiredCapabilities: [],
+        degrade: { allowHostMode: false, allowMissingAudit: false },
+      },
+      extensions: {
+        openkit: {
+          turnInput: 'Exercise isolated native Login holder plumbing.',
+          sessionWorkspace: {
+            layout: {
+              slots: [
+                {
+                  kind: 'worktree',
+                  access: 'read-write',
+                  path: join(f.sandboxRoot, 'worktree'),
+                },
+              ],
+            },
+          },
+        },
+      },
+    });
+    mkdirSync(join(f.sandboxRoot, 'sessions', agentSessionId, 'config'), { recursive: true });
+    writeFileSync(f.packagePath(agentSessionId), JSON.stringify(value));
+    return value;
+  };
+  const open = () =>
+    send('session.open', {
+      ...f.selector(agentSessionId),
+      adapterId: 'codex',
+      agentSessionCompatibilityKey: DIGEST,
+      capabilityLoopbackCredential: credential(`capability-${agentSessionId}`),
+      inferenceLoopbackCredential: credential(`inference-${agentSessionId}`),
+      effectiveSetupGeneration: 1,
+      resume: null,
+      threadId,
+      workspaceId,
+    });
+  const settle = async () => {
+    await vi.waitFor(
+      async () => {
+        const inspected = await send('session.inspect', f.selector(agentSessionId));
+        expect(inspected.body.state).not.toBe('active');
+      },
+      { interval: 10, timeout: 5_000 }
+    );
+  };
+  return {
+    ...f,
+    agentSessionId,
+    turnId,
+    threadId,
+    workspaceId,
+    harness,
+    send,
+    writePackage,
+    open,
+    settle,
+    close: () => send('session.close', f.selector(agentSessionId)),
+  };
+}
+
+describe('current-v4 native Login holder plumbing (isolated, not Core authorization)', () => {
+  it('joins logical IDs to the preferred native route and permits one native model for two logical IDs', async () => {
+    const f = nativeLoginHolderFixture();
+    f.writePackage();
+    try {
+      expect((await f.open()).disposition).toBe('succeeded');
+      const started = await f.send('turn.start', f.startBody(f.agentSessionId, f.turnId));
+      expect(started.disposition).toBe('succeeded');
+      await f.settle();
+      const turn = f.fake.residents[0]?.turns[0];
+      expect(turn?.llmRoute.id).toBe('logical-preferred');
+      expect(turn?.llmRoute.model).toBe('gpt-5.1-codex');
+      expect(turn?.allowedLlmRoutes.map((route) => [route.id, route.model])).toEqual([
+        ['logical-first', 'gpt-5.1-codex'],
+        ['logical-preferred', 'gpt-5.1-codex'],
+      ]);
+      expect(turn?.llmRoute.endpoint).toEqual({
+        kind: 'openai-compatible',
+        workerBaseUrl: 'https://chatgpt.com/backend-api',
+      });
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('installs an idle native holder and uses only the active Turn control token for private login exchanges', async () => {
+    const f = nativeLoginHolderFixture();
+    f.writePackage();
+    const privateAccess = {
+      accessToken: 'synthetic-private-holder-access',
+      accountId: 'synthetic-private-holder-account',
+      planType: 'plus',
+      receiptId: 'synthetic-holder-delivery',
+      materialGeneration: 1,
+    };
+    const exchanges: Array<{
+      kind: unknown;
+      method: string;
+      authenticated: boolean;
+      currentContext: boolean;
+    }> = [];
+    let currentTurnId = f.turnId;
+    const original = f.integration.client.workerControlFetch;
+    vi.spyOn(f.integration.client, 'workerControlFetch').mockImplementation(async (url, init) => {
+      if (url !== '/worker-control/harness/login') return original(url, init);
+      const body: unknown = JSON.parse(init.body);
+      const token = f.startBody(f.agentSessionId, currentTurnId).workerControlToken;
+      // Check the existing context values without inventing a new wire nesting or grant DTO.
+      const contextValues = [
+        f.agentSessionId,
+        `binding-${f.agentSessionId}`,
+        currentTurnId,
+        `lease-${currentTurnId}`,
+        `package-${currentTurnId}`,
+        f.threadId,
+        f.workspaceId,
+      ];
+      exchanges.push({
+        kind: isRecord(body) ? body.kind : null,
+        method: init.method,
+        authenticated:
+          init.headers.Authorization === `Bearer ${token}` ||
+          init.headers.authorization === `Bearer ${token}`,
+        currentContext: contextValues.every((value) => init.body.includes(JSON.stringify(value))),
+      });
+      return {
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify(isRecord(body) && body.kind === 'acquire' ? privateAccess : {}),
+      };
+    });
+    try {
+      expect((await f.open()).disposition).toBe('succeeded');
+      const resident = f.fake.residents[0];
+      if (!resident) throw new Error('Isolated resident was not opened.');
+      const holder = resident.input.hostManagedLogin;
+      expect(holder !== undefined).toBe(true);
+      if (!holder) throw new Error('Native holder was not installed.');
+      expect(exchanges.length).toBe(0);
+      expect(
+        await holder.acquire('activate').then(
+          () => false,
+          () => true
+        )
+      ).toBe(true);
+      expect(
+        await holder
+          .complete({
+            receiptId: privateAccess.receiptId,
+            materialGeneration: privateAccess.materialGeneration,
+          })
+          .then(
+            () => false,
+            () => true
+          )
+      ).toBe(true);
+      expect(
+        await holder
+          .observe({
+            receiptId: privateAccess.receiptId,
+            materialGeneration: privateAccess.materialGeneration,
+            observation: { state: 'unknown', windows: [], source: 'native-read' },
+          })
+          .then(
+            () => false,
+            () => true
+          )
+      ).toBe(true);
+      expect(exchanges.length).toBe(0);
+      for (const reason of ['activate', 'refresh'] as const) {
+        if (reason === 'refresh') {
+          currentTurnId = allocateEntityId('tu');
+          f.writePackage(currentTurnId);
+        }
+        f.fake.script.push({ kind: 'hold' });
+        expect(
+          (await f.send('turn.start', f.startBody(f.agentSessionId, currentTurnId))).disposition
+        ).toBe('succeeded');
+        await vi.waitFor(() => expect(resident.turns.length).toBe(reason === 'activate' ? 1 : 2));
+        const access = await holder.acquire(reason);
+        expect(
+          access.accessToken === privateAccess.accessToken &&
+            access.accountId === privateAccess.accountId
+        ).toBe(true);
+        await holder.complete({
+          receiptId: access.receiptId,
+          materialGeneration: access.materialGeneration,
+        });
+        await holder.observe({
+          receiptId: access.receiptId,
+          materialGeneration: access.materialGeneration,
+          observation: { state: 'unknown', windows: [], source: 'native-read' },
+        });
+        resident.finish('Isolated holder exchange finished.');
+        await f.settle();
+        expect(
+          await holder.acquire('refresh').then(
+            () => false,
+            () => true
+          )
+        ).toBe(true);
+      }
+      expect(exchanges.map((entry) => entry.kind)).toEqual([
+        'acquire',
+        'complete',
+        'observe',
+        'acquire',
+        'complete',
+        'observe',
+      ]);
+      expect(
+        exchanges.every(
+          (entry) => entry.method === 'POST' && entry.authenticated && entry.currentContext
+        )
+      ).toBe(true);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('keeps the Gateway Codex binding free of a native Login holder and preserves its route', async () => {
+    const f = nativeLoginHolderFixture('gateway');
+    f.writePackage();
+    try {
+      expect((await f.open()).disposition).toBe('succeeded');
+      expect(f.fake.residents[0]?.input.hostManagedLogin === undefined).toBe(true);
+      expect(
+        (await f.send('turn.start', f.startBody(f.agentSessionId, f.turnId))).disposition
+      ).toBe('succeeded');
+      await f.settle();
+      expect(f.fake.residents[0]?.turns[0]?.llmRoute.model).toBe('logical-preferred');
+      expect(f.fake.residents[0]?.turns[0]?.llmRoute.credentialVisibility).toBe('placeholder');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('refuses changed version, root gate, adapter or Gateway fallback intent before native holder effects', async () => {
+    for (const corrupt of [
+      (pkg: ReturnType<ReturnType<typeof nativeLoginHolderFixture>['writePackage']>) => ({
+        ...pkg,
+        schemaVersion: 5,
+      }),
+      (pkg: ReturnType<ReturnType<typeof nativeLoginHolderFixture>['writePackage']>) => ({
+        ...pkg,
+        requiredFeatures: ['worker.harness-login.v1'],
+      }),
+      (pkg: ReturnType<ReturnType<typeof nativeLoginHolderFixture>['writePackage']>) => ({
+        ...pkg,
+        agent: { ...pkg.agent, runtimeKind: 'pi' },
+        control: { ...pkg.control, adapter: { ...pkg.control.adapter, targetRuntime: 'pi' } },
+      }),
+      (pkg: ReturnType<ReturnType<typeof nativeLoginHolderFixture>['writePackage']>) => ({
+        ...pkg,
+        llm: { ...pkg.llm, mode: 'gateway' },
+      }),
+    ]) {
+      const f = nativeLoginHolderFixture();
+      const value = corrupt(f.writePackage());
+      writeFileSync(f.packagePath(f.agentSessionId), JSON.stringify(value));
+      try {
+        expect((await f.open()).disposition).toBe('refused');
+        expect(f.fake.residents.length).toBe(0);
+      } finally {
+        await f.close();
+      }
+    }
+  });
 });

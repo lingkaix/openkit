@@ -381,6 +381,7 @@ describe('database setup', () => {
         '0022_thread_turn_reads.sql',
         '0023_timeline_windows.sql',
         '0024_thread_dashboard.sql',
+        '0025_harness_login_observations.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -414,6 +415,7 @@ describe('database setup', () => {
         'core_0022_thread_turn_reads',
         'core_0023_timeline_windows',
         'core_0024_thread_dashboard',
+        'core_0025_harness_login_observations',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -2088,6 +2090,8 @@ describe('retained VaultReference Login metadata migration', () => {
     // Exercise this fixed historical transition independently of later additive migrations.
     const predecessor = historicalFolder(20);
     const loginMigration = historicalFolder(21);
+    const observationsPredecessor = historicalFolder(24);
+    const observationsMigration = historicalFolder(25);
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
     const userId = testEntityId('usr', 'login-migration-scoped-user');
@@ -2196,11 +2200,6 @@ describe('retained VaultReference Login metadata migration', () => {
       expect(
         coreDb.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
       ).toEqual(migrated);
-      for (const row of retained) {
-        const reference = getVaultReference(coreDb, row.reference_id);
-        expect(reference).not.toBeNull();
-        expect(reference).not.toHaveProperty('login');
-      }
       expect(listMigrationIds(coreDb, 'core')).toEqual([
         ...beforeIds,
         'core_0021_harness_login_metadata',
@@ -2227,11 +2226,80 @@ describe('retained VaultReference Login metadata migration', () => {
       ).toEqual(migrated);
       expect(userDb.sqlite.serialize().equals(userBytes)).toBe(true);
       expect(workspaceDb.sqlite.serialize().equals(workspaceBytes)).toBe(true);
+
+      // Keep the exact 0020 -> 0021 checks above; the current reader requires Core0025.
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', observationsPredecessor);
+      const beforeObservationsColumns = listColumnNames(coreDb, 'vault_references');
+      expect(beforeObservationsColumns).not.toContain('login_observations_json');
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
+      ).toEqual(migrated);
+      const beforeObservationsTables = listTableNames(coreDb);
+      const beforeObservationsIds = listMigrationIds(coreDb, 'core', observationsPredecessor);
+      const beforeObservationsLedger = coreDb.sqlite
+        .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+        .all();
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', observationsMigration);
+      const observationColumns = (
+        coreDb.sqlite.prepare('PRAGMA table_info(vault_references)').all() as Array<{
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: unknown;
+          pk: number;
+        }>
+      ).filter((column) => !beforeObservationsColumns.includes(column.name));
+      expect(observationColumns).toHaveLength(1);
+      expect(observationColumns[0]).toMatchObject({
+        name: 'login_observations_json',
+        notnull: 0,
+        dflt_value: null,
+        pk: 0,
+      });
+      expect(observationColumns[0]!.type.toUpperCase()).toBe('TEXT');
+      expect(listTableNames(coreDb)).toEqual(beforeObservationsTables);
+      const withUnknownObservations = migrated.map((row) => ({
+        ...row,
+        login_observations_json: null,
+      }));
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
+      ).toEqual(withUnknownObservations);
+      for (const row of retained) {
+        const reference = getVaultReference(coreDb, row.reference_id);
+        expect(reference).not.toBeNull();
+        expect(reference).not.toHaveProperty('login');
+      }
+      expect(listMigrationIds(coreDb, 'core')).toEqual([
+        ...beforeObservationsIds,
+        'core_0025_harness_login_observations',
+      ]);
+      const observationsLedger = coreDb.sqlite
+        .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
+        .all();
+      expect(observationsLedger).toHaveLength(beforeObservationsLedger.length + 1);
+      expect(observationsLedger.slice(0, -1)).toEqual(beforeObservationsLedger);
+      const observationsBytes = coreDb.sqlite.serialize();
+      applyNativeScopeMigrations(coreDb.sqlite, 'core', observationsMigration);
+      expect(coreDb.sqlite.serialize().equals(observationsBytes)).toBe(true);
+      expect(coreDb.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+        observationsLedger
+      );
+      expect(
+        coreDb.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
+      ).toEqual(withUnknownObservations);
+      expect(listMigrationIds(userDb, 'user')).toEqual(userIds);
+      expect(listMigrationIds(workspaceDb, 'workspace')).toEqual(workspaceIds);
+      expect(userDb.sqlite.serialize().equals(userBytes)).toBe(true);
+      expect(workspaceDb.sqlite.serialize().equals(workspaceBytes)).toBe(true);
+      expect(coreDb.sqlite.pragma('foreign_key_check')).toEqual([]);
     } finally {
       workspaceDb.sqlite.close();
       userDb.sqlite.close();
       coreDb.sqlite.close();
       rmSync(predecessor, { recursive: true, force: true });
+      rmSync(observationsPredecessor, { recursive: true, force: true });
+      rmSync(observationsMigration, { recursive: true, force: true });
       rmSync(dataRoot, { recursive: true, force: true });
     }
   });

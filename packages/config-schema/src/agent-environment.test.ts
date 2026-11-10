@@ -2338,3 +2338,227 @@ describe('RET-2 immutable native log authority', () => {
     }
   });
 });
+
+/** Creates the closed Codex native route; its ID remains the OpenKit logical model. */
+function harnessLoginLlmFixture() {
+  return {
+    mode: 'harness',
+    preferredLogicalModelId: 'subscription-reasoning',
+    routes: [
+      {
+        id: 'subscription-reasoning',
+        providerInstanceId: 'codex-native-metadata',
+        model: 'gpt-5.1-codex',
+        endpoint: {
+          kind: 'openai-compatible',
+          workerBaseUrl: 'https://chatgpt.com/backend-api',
+        },
+        credentialVisibility: 'runtime-token',
+        modelParameters: {
+          contextWindow: 128_000,
+          maxOutputTokens: 16_000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
+      },
+    ],
+  };
+}
+
+/** Projects schema-only grant references; this fixture does not establish Core authorization. */
+function harnessLoginPackageFixture() {
+  const base = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
+  const grant = base.vault.grants[0];
+  if (!grant) throw new Error('The existing package fixture must contain a grant reference.');
+  return {
+    ...base,
+    llm: harnessLoginLlmFixture(),
+    policy: { snapshotId: base.policy.snapshotId },
+    credentials: {
+      declarations: [
+        {
+          id: 'codex-subscription',
+          requirementId: 'codex-subscription',
+          vaultGrantId: grant.id,
+          visibility: 'runtime-token',
+          consumer: 'codex-login',
+        },
+      ],
+    },
+    vault: {
+      references: [{ id: grant.vaultRefId, kind: 'grant-ref' }],
+      grants: [{ ...grant, scope: 'workspace', expiresAt: '2099-01-01T00:00:00.000Z' }],
+    },
+  };
+}
+
+describe('AEP4 explicit Codex harness Login schema', () => {
+  // The accepted #604 ruling adds only the closed harness mode to current AEP4.
+  // worker.harness-login.v1 belongs to the resolved manifest and stored setup, not AEP roots.
+  it('accepts the native endpoint while keeping logical and native model identities distinct', () => {
+    const fixture = harnessLoginLlmFixture();
+    const parsed = AgentEnvironmentLlmSchema.safeParse(fixture);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw parsed.error;
+    expect(parsed.data).toEqual(fixture);
+    expect(parsed.data.preferredLogicalModelId).toBe('subscription-reasoning');
+    expect(parsed.data.routes[0]).toMatchObject({
+      id: 'subscription-reasoning',
+      model: 'gpt-5.1-codex',
+      credentialVisibility: 'runtime-token',
+      endpoint: {
+        kind: 'openai-compatible',
+        workerBaseUrl: 'https://chatgpt.com/backend-api',
+      },
+    });
+    expect(parsed.data.routes[0]?.endpoint).not.toHaveProperty('upstream');
+  });
+
+  it('accepts current version four with a Workspace grant reference and fixed Codex consumer', () => {
+    const fixture = harnessLoginPackageFixture();
+    const parsed = AgentEnvironmentPackageSchema.safeParse(fixture);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) throw parsed.error;
+    expect(parsed.data.schemaVersion).toBe(4);
+    expect(parsed.data.llm).toEqual(fixture.llm);
+    expect(parsed.data.credentials).toEqual(fixture.credentials);
+    expect(parsed.data.vault).toEqual(fixture.vault);
+    expect(parsed.data.agent.runtimeKind).toBe('codex');
+    expect(parsed.data.control.adapter.targetRuntime).toBe('codex');
+    expect(parsed.data).not.toHaveProperty('requiredFeatures');
+    expect(parsed.data.backend.requiredCapabilities).not.toContain('worker.harness-login.v1');
+  });
+
+  it('requires the exact harness mode instead of inferring it from native route metadata', () => {
+    const fixture = harnessLoginLlmFixture();
+    for (const mode of [
+      undefined,
+      null,
+      'harness-subscription',
+      'direct-external',
+      'backend-local',
+    ]) {
+      expect(AgentEnvironmentLlmSchema.safeParse({ ...fixture, mode }).success).toBe(false);
+    }
+    const { mode: _mode, ...withoutMode } = fixture;
+    expect(AgentEnvironmentLlmSchema.safeParse(withoutMode).success).toBe(false);
+  });
+
+  it('rejects incompatible endpoints, visibility, upstreams and private native fields', () => {
+    const fixture = harnessLoginLlmFixture();
+    const route = fixture.routes[0];
+    if (!route) throw new Error('The native route fixture must be present.');
+    for (const invalid of [
+      { ...route, credentialVisibility: 'none' },
+      { ...route, credentialVisibility: 'placeholder' },
+      { ...route, credentialVisibility: 'environment' },
+      {
+        ...route,
+        endpoint: { kind: 'provider-compatible', workerBaseUrl: route.endpoint.workerBaseUrl },
+      },
+      { ...route, endpoint: { kind: 'backend-local' } },
+      { ...route, endpoint: { kind: 'openai-compatible' } },
+      { ...route, endpoint: { ...route.endpoint, workerBaseUrl: 'https://unrelated.invalid' } },
+      { ...route, endpoint: { ...route.endpoint, upstream: { kind: 'nanocore-gateway' } } },
+      { ...route, endpoint: { ...route.endpoint, upstream: { kind: 'direct-provider' } } },
+      { ...route, endpoint: { ...route.endpoint, baseUrl: route.endpoint.workerBaseUrl } },
+      { ...route, nativeModel: route.model },
+      { ...route, accessToken: 'synthetic-forbidden-value' },
+      { ...route, refreshToken: 'synthetic-forbidden-value' },
+      { ...route, accountId: 'synthetic-forbidden-account' },
+    ]) {
+      expect(AgentEnvironmentLlmSchema.safeParse({ ...fixture, routes: [invalid] }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it('joins harness preferences to unique logical route IDs rather than native model strings', () => {
+    const fixture = harnessLoginLlmFixture();
+    const route = fixture.routes[0];
+    if (!route) throw new Error('The native route fixture must be present.');
+    expect(AgentEnvironmentLlmSchema.safeParse(fixture).success).toBe(true);
+    for (const invalid of [
+      { ...fixture, preferredLogicalModelId: route.model },
+      { ...fixture, preferredLogicalModelId: 'missing-logical-model' },
+      { ...fixture, routes: [] },
+      { ...fixture, routes: [route, { ...route, model: 'another-native-model' }] },
+    ]) {
+      expect(AgentEnvironmentLlmSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('requires matching Codex runtime, adapter and closed runtime-token declarations', () => {
+    const fixture = harnessLoginPackageFixture();
+    const declaration = fixture.credentials.declarations[0];
+    if (!declaration) throw new Error('The Login declaration fixture must be present.');
+    for (const invalid of [
+      { ...fixture, agent: { ...fixture.agent, runtimeKind: 'pi' } },
+      {
+        ...fixture,
+        control: {
+          ...fixture.control,
+          adapter: { ...fixture.control.adapter, targetRuntime: 'pi' },
+        },
+      },
+      { ...fixture, credentials: { declarations: [] } },
+      ...[
+        { ...declaration, consumer: 'another-consumer' },
+        { ...declaration, consumer: undefined },
+        { ...declaration, requirementId: undefined },
+        { ...declaration, requirementId: '' },
+        { ...declaration, vaultGrantId: undefined },
+        { ...declaration, vaultGrantId: 'not-a-canonical-grant-id' },
+        { ...declaration, targetPath: '/sandbox/auth.json' },
+        { ...declaration, env: 'CODEX_ACCESS_TOKEN' },
+      ].map((entry) => ({ ...fixture, credentials: { declarations: [entry] } })),
+    ]) {
+      expect(AgentEnvironmentPackageSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('keeps the setup feature marker out of AEP roots and backend capability declarations', () => {
+    const harness = harnessLoginPackageFixture();
+    const gateway = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
+    for (const fixture of [harness, gateway]) {
+      for (const requiredFeatures of [[], ['worker.harness-login.v1']]) {
+        expect(
+          AgentEnvironmentPackageSchema.safeParse({ ...fixture, requiredFeatures }).success
+        ).toBe(false);
+      }
+      expect(
+        AgentEnvironmentPackageSchema.safeParse({
+          ...fixture,
+          backend: {
+            ...fixture.backend,
+            requiredCapabilities: [
+              ...fixture.backend.requiredCapabilities,
+              'worker.harness-login.v1',
+            ],
+          },
+        }).success
+      ).toBe(false);
+    }
+  });
+
+  it('preserves Gateway model preference and exact placeholder route bytes without native fallback', () => {
+    const gateway = AgentEnvironmentPackageSchema.parse(openshellPackageFixture());
+    const bytes = JSON.stringify(gateway.llm);
+    const parsed = AgentEnvironmentLlmSchema.parse(gateway.llm);
+    expect(JSON.stringify(parsed)).toBe(bytes);
+    expect(parsed.mode).toBe('gateway');
+    expect(parsed.preferredLogicalModelId).toBe('gpt-5');
+    expect(parsed.routes[0]).toMatchObject({
+      id: 'default-openai',
+      model: 'gpt-5',
+      credentialVisibility: 'placeholder',
+      endpoint: { kind: 'openai-compatible', upstream: { kind: 'nanocore-gateway' } },
+    });
+    expect(parsed.routes[0]?.endpoint).not.toHaveProperty('workerBaseUrl');
+    const native = harnessLoginLlmFixture();
+    expect(AgentEnvironmentLlmSchema.safeParse({ ...native, mode: 'gateway' }).success).toBe(false);
+    expect(AgentEnvironmentLlmSchema.safeParse({ ...gateway.llm, mode: 'harness' }).success).toBe(
+      false
+    );
+  });
+});

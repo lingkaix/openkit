@@ -2965,3 +2965,234 @@ describe('authoritative NanoHost session dispatch', () => {
     }
   });
 });
+
+/** Real H2/readiness composition for private routing only; the installed handler always denies. */
+async function privateLoginDispatchFixture() {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-private-login-dispatch-'));
+  const coreDb = openCoreDb(root);
+  const authority = createNanoHostTransportSessionAuthority();
+  const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+  const target = {
+    deploymentId: 'private-login',
+    identityId: 'private-login',
+    targetId: 'private-login',
+  };
+  const epoch = 'a'.repeat(64);
+  const app = new Hono<{ Variables: AuthVariables }>();
+  let forwarded = 0;
+  app.post('/api/worker-control/harness/login', (c) => {
+    forwarded++;
+    return c.body(null, 418);
+  });
+  registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+  const listener = getRequestListener(app.fetch);
+  let physicalConnection: object | undefined;
+  const server = createHttp2Server((request, response) => {
+    if (!physicalConnection) {
+      physicalConnection = readNanoHostPhysicalConnectionContext(request);
+      if (!physicalConnection) throw new Error('Native fixture H2 identity is missing.');
+      authority.admit({
+        connectionGeneration: 1,
+        identityId: target.identityId,
+        physicalConnection,
+      });
+    }
+    void listener(request, response);
+  });
+  let client: ReturnType<typeof connectHttp2> | undefined;
+  let closing: Promise<void> | undefined;
+  const close = () => {
+    closing ??= (async () => {
+      client?.destroy();
+      try {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      } finally {
+        coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      }
+    })();
+    return closing;
+  };
+  try {
+    applyMigrations(coreDb);
+    await allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+      ...target,
+      observedAt: new Date().toISOString(),
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing H2 fixture address.');
+    client = connectHttp2(`http://127.0.0.1:${address.port}`);
+    const post = async (path: string, body: string) => {
+      if (!client) throw new Error('Private Login fixture client is unavailable.');
+      const stream = client.request({
+        ':method': 'POST',
+        ':path': path,
+        authorization: 'Bearer synthetic-dispatch-denial',
+        'content-type': 'application/json',
+        'x-private-fixture': 'request-preserved',
+      });
+      const response = once(stream, 'response');
+      stream.end(body);
+      const [headers] = await response;
+      for await (const _chunk of stream) {
+        // Drain only; this fixture does not retain response bodies or credential material.
+      }
+      return headers;
+    };
+    const readiness = await post(
+      '/api/nanohost/transport/session/readiness',
+      JSON.stringify({ physicalEpoch: epoch })
+    );
+    if (readiness[':status'] !== 204) throw new Error('Actual fixture readiness was refused.');
+    return {
+      authority,
+      close,
+      dispatch,
+      epoch,
+      forwarded: () => forwarded,
+      physical: () => {
+        if (!physicalConnection) throw new Error('Native H2 identity is unavailable.');
+        return physicalConnection;
+      },
+      post,
+      target,
+      advanceGeneration: () =>
+        allocateNanoHostRuntimeTargetConnectionGeneration(coreDb, {
+          ...target,
+          observedAt: new Date().toISOString(),
+        }),
+    };
+  } catch (error) {
+    await close();
+    throw error;
+  }
+}
+
+describe('private native Login dispatch plumbing, not Core permission', () => {
+  const path = '/worker-control/harness/login';
+
+  it('refuses an unbound private handler and never forwards the path into public App routes', async () => {
+    const f = await privateLoginDispatchFixture();
+    try {
+      expect((await f.post(path, '{"kind":"acquire"}'))[':status']).toBe(503);
+      expect(f.forwarded()).toBe(0);
+      await expect(
+        f.dispatch.route(f.physical(), {
+          body: Buffer.from('{"kind":"acquire"}'),
+          credentialClass: 'worker-control',
+          family: 'worker-control',
+          path,
+        })
+      ).rejects.toThrow();
+      expect(f.forwarded()).toBe(0);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('binds a fixed-deny handler once and rejects changed database or fenced physical authority across its await', async () => {
+    // Independent real fixtures distinguish the durable-current check from process-local fencing.
+    for (const invalidation of ['database-generation', 'physical-fence']) {
+      const f = await privateLoginDispatchFixture();
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let held = false;
+      let calls = 0;
+      let assertSnapshotCurrent: (() => void) | undefined;
+      let pending: ReturnType<typeof f.post> | undefined;
+      try {
+        if (!f.dispatch.bindHarnessLogin || !f.dispatch.harnessLogin) {
+          throw new Error('Private Login dispatch binding is not implemented.');
+        }
+        const deny = async (
+          request: Request,
+          physical: {
+            readonly runtimeTargetId: string;
+            readonly physicalEpoch: string;
+            readonly connectionGeneration: number;
+            readonly assertCurrent: () => void;
+          }
+        ) => {
+          calls++;
+          expect(request.method).toBe('POST');
+          expect(new URL(request.url).pathname).toBe(path);
+          expect(request.headers.get('authorization') === 'Bearer synthetic-dispatch-denial').toBe(
+            true
+          );
+          expect(request.headers.get('x-private-fixture')).toBe('request-preserved');
+          expect(request.headers.get('content-type')).toBe('application/json');
+          expect((await request.text()) === '{"kind":"acquire"}').toBe(true);
+          expect(physical.runtimeTargetId).toBe(f.target.targetId);
+          expect(physical.physicalEpoch).toBe(f.epoch);
+          expect(physical.connectionGeneration).toBe(1);
+          expect(Object.keys(physical).sort()).toEqual([
+            'assertCurrent',
+            'connectionGeneration',
+            'physicalEpoch',
+            'runtimeTargetId',
+          ]);
+          physical.assertCurrent();
+          assertSnapshotCurrent = () => physical.assertCurrent();
+          if (held) {
+            entered.resolve();
+            await release.promise;
+          }
+          // This handler attests no Core permission or Login result, including after the hold.
+          return new Response(null, { status: 401, headers: { 'x-private-fixture': 'denied' } });
+        };
+        f.dispatch.bindHarnessLogin(deny);
+        expect(() =>
+          f.dispatch.bindHarnessLogin!(async () => new Response(null, { status: 401 }))
+        ).toThrow();
+        await expect(
+          f.dispatch.harnessLogin(
+            {},
+            new Request(`http://fixture.invalid${path}`, { method: 'POST', body: '{}' })
+          )
+        ).rejects.toThrow();
+        expect(calls).toBe(0);
+        const denied = await f.post(path, '{"kind":"acquire"}');
+        expect(denied[':status']).toBe(401);
+        expect(denied['x-private-fixture']).toBe('denied');
+        expect(calls).toBe(1);
+        expect(f.forwarded()).toBe(0);
+        held = true;
+        pending = f.post(path, '{"kind":"acquire"}');
+        // Observe promptly without extending the enclosing original 30-second test budget.
+        const deadline = setTimeout(
+          () => entered.reject(new Error('Private handler was not entered.')),
+          3_000
+        );
+        try {
+          await entered.promise;
+        } finally {
+          clearTimeout(deadline);
+        }
+        try {
+          if (invalidation === 'database-generation') {
+            await f.advanceGeneration();
+            expect(f.authority.mayCarryWork(f.physical())).toBe(true);
+          } else {
+            f.authority.fencePredecessor(f.target.identityId, 1);
+            expect(f.authority.mayCarryWork(f.physical())).toBe(false);
+          }
+          expect(() => assertSnapshotCurrent?.()).toThrow();
+          release.resolve();
+          expect((await pending)[':status']).toBe(409);
+          expect(calls).toBe(2);
+          expect((await f.post(path, '{"kind":"acquire"}'))[':status']).toBe(409);
+          expect(calls).toBe(2);
+          expect(f.forwarded()).toBe(0);
+        } finally {
+          release.resolve();
+        }
+      } finally {
+        release.resolve();
+        await f.close();
+        await pending?.catch(() => undefined);
+      }
+    }
+  });
+});

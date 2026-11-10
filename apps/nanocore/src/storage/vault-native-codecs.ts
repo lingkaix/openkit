@@ -36,7 +36,12 @@ export interface HarnessLoginMetadata {
   readonly accountId: string;
   /** Selection restriction only, independent of lifecycle status and material version. */
   readonly quarantined: boolean;
+  /** Bounded native evidence; absent/null is unknown and never a grant. */
+  readonly observations?: HarnessLoginObservations | null | undefined;
 }
+
+/** Canonical private quota facts, stamped by the existing native reference owner. */
+export type HarnessLoginObservations = z.infer<typeof HarnessLoginObservationsSchema>;
 
 /** Durable non-secret vault reference record. */
 export interface VaultReferenceRecord {
@@ -83,6 +88,7 @@ export interface VaultReferenceRow {
   readonly login_provider: string | null;
   readonly login_account_id: string | null;
   readonly login_quarantined: number | null;
+  readonly login_observations_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -312,6 +318,7 @@ export function vaultReferenceSelectSql(): string {
     login_provider,
     login_account_id,
     login_quarantined,
+    login_observations_json,
     created_at,
     updated_at
     FROM vault_references`;
@@ -328,6 +335,8 @@ export function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceReco
     throw new Error('Invalid canonical Vault reference identity.');
   const ordinary =
     row.login_provider === null && row.login_account_id === null && row.login_quarantined === null;
+  if (ordinary && row.login_observations_json != null)
+    throw new Error('Ordinary Vault references cannot carry Login observations.');
   if (!ordinary && row.login_quarantined !== 0 && row.login_quarantined !== 1)
     throw new Error('Invalid retained harness Login metadata.');
   const login = ordinary
@@ -336,6 +345,13 @@ export function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceReco
         provider: row.login_provider,
         accountId: row.login_account_id,
         quarantined: row.login_quarantined === 1,
+        ...(row.login_observations_json == null
+          ? {}
+          : {
+              observations: HarnessLoginObservationsSchema.parse(
+                JSON.parse(row.login_observations_json)
+              ),
+            }),
       });
   if (
     login &&
@@ -1397,14 +1413,58 @@ export const nullableString = z.string().nullable();
 export const optionalString = nullableString.optional();
 export const clock = z.string().optional();
 export const ownerScope = z.enum(['server', 'workspace', 'user']);
-/** Strict non-material harness subtype, shared by the retained and private-wire projections. */
-export const HarnessLoginMetadataSchema = z
+const canonicalLoginTime = z.iso
+  .datetime({ precision: 3 })
+  .refine(
+    (value) =>
+      value.length === 24 &&
+      Number.isFinite(Date.parse(value)) &&
+      new Date(value).toISOString() === value
+  );
+const boundedLoginIdentity = (maximum: number) =>
+  z
+    .string()
+    .min(1)
+    .max(maximum)
+    .refine((value) => !value.includes('\0') && !value.includes('\r') && !value.includes('\n'));
+
+/** Exact non-material quota fields; no provider payload, account duplicate or notification authority. */
+export const HarnessLoginObservationsSchema = z
+  .object({
+    state: z.enum(['unknown', 'available', 'exhausted']),
+    windows: z
+      .array(
+        z
+          .object({
+            kind: z.enum(['primary', 'secondary']),
+            usedPercent: z.number().int().min(0).max(2_147_483_647),
+            durationMinutes: z.number().int().min(1).max(525_600).nullable(),
+            resetsAt: canonicalLoginTime.nullable(),
+          })
+          .strict()
+      )
+      .max(2)
+      .refine((windows) => new Set(windows.map((window) => window.kind)).size === windows.length),
+    source: z.literal('native-read'),
+    observedAt: canonicalLoginTime,
+    bindingId: boundedLoginIdentity(512),
+    materialGeneration: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+
+/** Creation admits identity only; neither creation nor public quarantine authors quota evidence. */
+export const HarnessLoginIdentitySchema = z
   .object({
     provider: z.literal('codex'),
-    accountId: z.string().min(1),
+    accountId: boundedLoginIdentity(256),
     quarantined: z.boolean(),
   })
   .strict();
+
+/** Canonical retained Login metadata; public mutations may carry it only as exact previous evidence. */
+export const HarnessLoginMetadataSchema = HarnessLoginIdentitySchema.extend({
+  observations: HarnessLoginObservationsSchema.nullable().optional(),
+}).strict();
 export const referenceFields = {
   referenceId: z.string(),
   ownerScope,
@@ -1414,7 +1474,7 @@ export const referenceFields = {
   secretKind: z.string(),
   backendKind: z.literal('encrypted-file'),
   backendLocator: optionalString,
-  login: HarnessLoginMetadataSchema.optional(),
+  login: HarnessLoginIdentitySchema.optional(),
   now: clock,
 };
 export const grantFields = {
@@ -1497,6 +1557,7 @@ export const useFields = {
 export const VaultReferenceRecordSchema = z
   .object({
     ...referenceFields,
+    login: HarnessLoginMetadataSchema.optional(),
     workspaceId: nullableString,
     userId: nullableString,
     backendLocator: nullableString,
@@ -1733,8 +1794,82 @@ export const VaultBindingCoreAuthoritySchema = z
   .strict();
 export type VaultBindingCoreAuthority = z.infer<typeof VaultBindingCoreAuthoritySchema>;
 
+/** Original canonical execution coordinates; no header, token, material or carried allow decision. */
+export const HarnessLoginContextSchema = z
+  .object({
+    workspaceId: z.string().min(1).max(512),
+    threadId: z.string().min(1).max(512),
+    agentSessionId: z.string().min(1).max(512),
+    agentSessionRuntimeBindingId: z.string().min(1).max(512),
+    packageSnapshotId: z.string().min(1).max(512),
+    turnId: z.string().min(1).max(512),
+    leaseId: z.string().min(1).max(512),
+    turnSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    runtimeTargetId: z.string().min(1).max(512),
+    physicalEpoch: z.string().regex(/^[0-9a-f]{64}$/),
+    connectionGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+/** Exact original access delivery lineage, repeated by the deciding native owner. */
+export const HarnessLoginNativeEffectSchema = z
+  .object({
+    context: HarnessLoginContextSchema,
+    referenceId: z.string().refine((value) => isEntityId('vault', value)),
+    grantId: z.string().min(1).max(512),
+    planId: z.string().min(1).max(512),
+    receiptId: z.string().min(1).max(512),
+    materialGeneration: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    accountId: z
+      .string()
+      .min(1)
+      .max(256)
+      .refine((value) => !/[\0\r\n]/.test(value)),
+    now: z.iso
+      .datetime({ precision: 3 })
+      .refine((value) => value.length === 24 && new Date(value).toISOString() === value),
+  })
+  .strict();
+/** Original consumed native close coordinates and the Core close-ACK clock captured by that lifecycle callback. */
+export const HarnessLoginRemovalSchema = z
+  .object({
+    workspaceId: z.string().min(1).max(512),
+    threadId: z.string().min(1).max(512),
+    agentSessionId: z.string().min(1).max(512),
+    agentSessionRuntimeBindingId: z.string().min(1).max(512),
+    harnessInstanceId: z.string().min(1).max(512),
+    operationId: z.string().regex(/^[0-9a-f]{64}$/),
+    sequence: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    completedAt: z.iso
+      .datetime({ precision: 3 })
+      .refine((value) => value.length === 24 && new Date(value).toISOString() === value),
+    expectedReferenceId: z
+      .string()
+      .refine((value) => isEntityId('vault', value))
+      .nullable(),
+  })
+  .strict();
 /** Closed original Vault stages. Clock callbacks and material never cross this private wire. */
 export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('thread-login-remove'), record: HarnessLoginRemovalSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('reference-login-observe'),
+      record: HarnessLoginNativeEffectSchema.extend({
+        observations: HarnessLoginObservationsSchema,
+      }),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('thread-login-activate'),
+      record: HarnessLoginNativeEffectSchema.extend({
+        expectedReferenceId: z
+          .string()
+          .refine((value) => isEntityId('vault', value))
+          .nullable(),
+      }),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('mcp-receipts-complete'),
@@ -1956,6 +2091,11 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
 export type ControlVaultInput = z.infer<typeof ControlVaultInputSchema>;
 /** Full original rows only after the covering native FULL acknowledgement. */
 export const ControlVaultResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('thread-login-remove'), value: z.null() }).strict(),
+  z
+    .object({ kind: z.literal('reference-login-observe'), value: VaultReferenceRecordSchema })
+    .strict(),
+  z.object({ kind: z.literal('thread-login-activate'), value: z.null() }).strict(),
   z.object({ kind: z.literal('mcp-receipts-complete'), value: z.null() }).strict(),
   z.object({ kind: z.literal('binding-revoke-withdraw'), value: z.null() }).strict(),
   z.object({ kind: z.literal('binding-revoke-receipts-complete'), value: z.null() }).strict(),
@@ -2016,6 +2156,9 @@ export const ControlVaultResultSchema = z.discriminatedUnion('kind', [
 export type ControlVaultResult = z.infer<typeof ControlVaultResultSchema>;
 /** The original result selected by each closed stage. */
 export interface ControlVaultResultMap {
+  'thread-login-remove': null;
+  'reference-login-observe': VaultReferenceRecord;
+  'thread-login-activate': null;
   'mcp-receipts-complete': null;
   'binding-revoke-withdraw': null;
   'binding-revoke-receipts-complete': null;
@@ -2043,6 +2186,15 @@ export interface ControlVaultResultMap {
 
 /** Existing Main call inputs; their optional clock callbacks are evaluated before private-wire admission. */
 export interface ControlVaultMainInputMap {
+  'thread-login-remove': Extract<ControlVaultInput, { kind: 'thread-login-remove' }>['record'];
+  'reference-login-observe': Omit<
+    Extract<ControlVaultInput, { kind: 'reference-login-observe' }>['record'],
+    'now'
+  > & { readonly now: () => string };
+  'thread-login-activate': Omit<
+    Extract<ControlVaultInput, { kind: 'thread-login-activate' }>['record'],
+    'now'
+  > & { readonly now: () => string };
   'mcp-receipts-complete': Extract<ControlVaultInput, { kind: 'mcp-receipts-complete' }>['record'];
   'binding-revoke-withdraw': Extract<
     ControlVaultInput,

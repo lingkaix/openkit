@@ -7,7 +7,11 @@ import type {
 } from '@openkit/config-schema';
 import { ReasoningEffortSchema } from '@openkit/protocol';
 import { planLogicalModel } from '../llm/gateway-execution.js';
-import { type ResolvedLogicalModel, resolveLogicalModelCatalog } from '../llm/logical-models.js';
+import {
+  type ResolvedLogicalModel,
+  resolveHarnessLogicalModelCatalog,
+  resolveLogicalModelCatalog,
+} from '../llm/logical-models.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
 import type { AgentManifest } from './manifest.js';
@@ -164,17 +168,37 @@ export function resolveAgentSetup(
     });
   }
 
+  const allowedDeclaration =
+    workspaceBinding?.allowedLogicalModelIds ??
+    profile?.allowedLogicalModelIds ??
+    config.models.allowedLogicalModelIds;
+  const harnessLoginDeclared =
+    config.sandbox?.credentialDeclarations.some(
+      (declaration) =>
+        declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
+    ) ?? false;
   let catalog: ResolvedLogicalModel[] = [];
   try {
-    catalog = resolveLogicalModelCatalog(
-      dependencies.gatewayConfig,
-      dependencies.providerRegistry,
-      dependencies.subscriptionAccounts,
-      dependencies.providerCredentialConfigured
-    ).filter((model) =>
-      // Setup adds no capability requirement, but dormant backups cannot establish readiness.
-      planLogicalModel(model, [], () => true).some((selection) => selection.selected)
-    );
+    if (harnessLoginDeclared) {
+      if (config.runtime.adapter !== 'codex') {
+        throw new Error('The codex-login consumer requires the Codex runtime adapter.');
+      }
+      catalog = resolveHarnessLogicalModelCatalog(
+        dependencies.gatewayConfig,
+        dependencies.providerRegistry,
+        allowedDeclaration
+      );
+    } else {
+      catalog = resolveLogicalModelCatalog(
+        dependencies.gatewayConfig,
+        dependencies.providerRegistry,
+        dependencies.subscriptionAccounts,
+        dependencies.providerCredentialConfigured
+      ).filter((model) =>
+        // Gateway setup still requires live Server supply; native metadata grants no such readiness.
+        planLogicalModel(model, [], () => true).some((selection) => selection.selected)
+      );
+    }
   } catch {
     diagnostics.push({
       agentId: config.id,
@@ -184,10 +208,6 @@ export function resolveAgentSetup(
     });
   }
 
-  const allowedDeclaration =
-    workspaceBinding?.allowedLogicalModelIds ??
-    profile?.allowedLogicalModelIds ??
-    config.models.allowedLogicalModelIds;
   const allowed =
     allowedDeclaration === 'all'
       ? catalog
@@ -261,6 +281,14 @@ export function resolveAgentSetup(
     allowed,
     credentialDeclarations
   );
+  // Composition can infer execution requirements from resolved credential declarations.
+  rejectUnsupportedRequiredFeatures(
+    config.id,
+    manifest.requiredFeatures ?? [],
+    dependencies,
+    diagnostics
+  );
+  if (diagnostics.length > 0) return { diagnostics, setup: null };
   manifest.skills = (manifest.skills ?? []).map((skill) => {
     const digest = exactSkillVersions.get(skill.id);
     return digest === undefined ? skill : { ...skill, digest };
@@ -287,6 +315,9 @@ function composeManifest(
   const reasoningEffort = profile?.reasoningEffort ?? config.models.reasoningEffort;
   const composed = {
     ...base,
+    ...(credentialDeclarations.some((declaration) => declaration.visibility === 'runtime-token')
+      ? { requiredFeatures: [...new Set([...base.requiredFeatures, 'worker.harness-login.v1'])] }
+      : {}),
     ...(profileId ? { defaultProfileId: profileId } : {}),
     mcp: mergeById(config.mcp ?? [], profile?.mcp ?? [], workspaceBinding?.mcp ?? []),
     models: {

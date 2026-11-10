@@ -115,6 +115,7 @@ const FILE_DATA_HEADERS = {
 const INTEGRATION_BINDING_HEADER = 'x-openkit-integration-binding';
 const HARNESS_POLL_PATH = '/worker-control/harness/poll';
 const HARNESS_RESULT_PATH = '/worker-control/harness/result';
+const HARNESS_LOGIN_PATH = '/worker-control/harness/login';
 /** One serial poll interval plus one response-header bound; never the result deadline. */
 const HARNESS_DELIVERY_PROOF_MS = 1_250;
 
@@ -346,8 +347,29 @@ interface NanoHostPhysicalReadiness {
   readonly runtimeTarget: NanoHostReadinessRuntimeTarget;
 }
 
+/** Physical facts created only inside the authoritative native dispatch closure. */
+export interface NanoHostHarnessLoginPhysical {
+  readonly runtimeTargetId: string;
+  readonly physicalEpoch: string;
+  readonly connectionGeneration: number;
+  /** Repeats both process-local fencing and the actual durable physical generation. */
+  readonly assertCurrent: () => void;
+}
+
+/** Closed private lifecycle hook; its Core owner still authenticates tokens and canonical consumer binding. */
+export type NanoHostHarnessLoginHandler = (
+  request: Request,
+  physical: NanoHostHarnessLoginPhysical
+) => Promise<Response>;
+
 /** Authoritative NanoHost route and effect dispatcher. */
 export interface NanoHostSessionDispatch {
+  /** Installs the one Core lifecycle dependency after construction; never an ambient service registry. */
+  bindHarnessLogin?(handler: NanoHostHarnessLoginHandler): void;
+  /** Truthful serving support only after the closed lifecycle dependency is actually installed. */
+  supportsHarnessLogin?(): boolean;
+  /** Handles only the native private path, before ordinary public App forwarding. */
+  harnessLogin?(physicalConnection: object, request: Request): Promise<Response>;
   /** Queues one fixed NanoHost effect for the authoritative client to poll. */
   effect(request: NanoHostSessionEffectRequest): Promise<unknown>;
   /** Dispatches one already-carried effect after checking the physical connection. */
@@ -585,8 +607,54 @@ export function createNanoHostSessionDispatch(
   // A completed poll distinguishes a live connection from a poll-first successor.
   const completedEffectPollConnections = new WeakSet<object>();
   let currentReadiness: NanoHostPhysicalReadiness | null = null;
+  let harnessLoginHandler: NanoHostHarnessLoginHandler | undefined;
 
   return {
+    supportsHarnessLogin: () => harnessLoginHandler !== undefined,
+    bindHarnessLogin(handler) {
+      if (harnessLoginHandler || typeof handler !== 'function')
+        throw new Error('Native Login lifecycle is already bound or unavailable.');
+      harnessLoginHandler = handler;
+    },
+    async harnessLogin(physicalConnection, request) {
+      const readiness = readyPhysicalConnections.get(physicalConnection);
+      const assertCurrent = () => {
+        try {
+          requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+          if (!readiness || readyPhysicalConnections.get(physicalConnection) !== readiness)
+            throw new Error('Physical readiness changed.');
+          requireCurrentReadiness(readiness);
+        } catch {
+          throw effectTransportError(409, 'Native Login physical authority is unavailable.');
+        }
+      };
+      assertCurrent();
+      if (request.method !== 'POST' || new URL(request.url).pathname !== HARNESS_LOGIN_PATH)
+        throw effectTransportError(400, 'Native Login route does not match its private boundary.');
+      const handler = harnessLoginHandler;
+      if (!handler)
+        return asApiError(
+          'Native Login lifecycle is unavailable.',
+          'worker_login_unavailable',
+          503
+        );
+      if (!readiness)
+        throw effectTransportError(409, 'Native Login physical authority is unavailable.');
+      let response: Response;
+      try {
+        response = await handler(request, {
+          runtimeTargetId: readiness.runtimeTarget.targetId,
+          physicalEpoch: readiness.physicalEpoch,
+          connectionGeneration: readiness.connectionGeneration,
+          assertCurrent,
+        });
+      } catch {
+        assertCurrent();
+        throw effectTransportError(503, 'Native Login lifecycle failed.');
+      }
+      assertCurrent();
+      return response;
+    },
     effect(
       requestOrConnection: object | NanoHostSessionEffectRequest,
       carriedRequest?: NanoHostSessionEffectRequest
@@ -1253,6 +1321,8 @@ export function createNanoHostSessionDispatch(
 
     async route(physicalConnection, request) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      if (request.path === HARNESS_LOGIN_PATH)
+        throw effectTransportError(409, 'Native Login requires its private physical route.');
       const isHarnessRoute =
         request.path === HARNESS_POLL_PATH || request.path === HARNESS_RESULT_PATH;
       if (isHarnessRoute) {
@@ -2268,6 +2338,24 @@ export function registerNanoHostSessionSemanticRoutes(
           /* Diagnostic sink failure has no execution authority. */
         }
         return context.body(null, 204);
+      }
+      if (path === HARNESS_LOGIN_PATH) {
+        if (family !== 'worker-control')
+          throw effectTransportError(409, 'Native Login requires worker-control authority.');
+        if (!input.dispatch.harnessLogin)
+          return asApiError(
+            'Native Login lifecycle is unavailable.',
+            'worker_login_unavailable',
+            503
+          );
+        return await input.dispatch.harnessLogin(
+          requirePhysicalConnection(context.env),
+          new Request(request.url, {
+            body: bodyBuffer,
+            headers: request.headers,
+            method: 'POST',
+          })
+        );
       }
       await input.dispatch.route(requirePhysicalConnection(context.env), {
         body,
@@ -3691,7 +3779,8 @@ function privateEffectError(error: unknown): Response {
     explicitStatus === 400 ||
     explicitStatus === 409 ||
     explicitStatus === 413 ||
-    explicitStatus === 500
+    explicitStatus === 500 ||
+    explicitStatus === 503
       ? explicitStatus
       : message.includes('exceeds its bound')
         ? 413

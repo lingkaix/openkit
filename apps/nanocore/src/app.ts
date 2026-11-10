@@ -809,6 +809,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       : null);
   const setupProviderSupply = {
     providerCredentialConfigured,
+    // A marker is not readiness: advertise only the actually installed private lifecycle.
+    supportedRequiredFeatures: options.nanoHostSessionDispatch?.supportsHarnessLogin?.()
+      ? ['worker.harness-login.v1']
+      : [],
     ...(providerSubscriptionAccountManager
       ? { subscriptionAccounts: providerSubscriptionAccountManager }
       : {}),

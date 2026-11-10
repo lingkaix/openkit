@@ -11,7 +11,9 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { listExportableResolvedAgentSetups, requireResolvedAgentSetup } from './setup-ledger.js';
+import { redactResolvedAgentSetup } from './setup-ledger-records.js';
 import type { ResolvedAgentSetup } from './setup-resolver.js';
+import { StoredResolvedAgentSetupV1Schema } from './setup-retained-v1.js';
 
 /**
  * Creates a migrated workspace database for setup ledger tests.
@@ -417,5 +419,121 @@ describe('resolved agent setup ledger', () => {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
     }
+  });
+});
+
+// Owners: Contract Evolution required-feature admission and the coordinated
+// closed Workspace codex-login retained projection. Captured features remain
+// evidence; this schema is not current Worker launch or credential authority.
+describe('retained Codex Login requirement evidence', () => {
+  const feature = 'worker.harness-login.v1';
+  const declaration = {
+    requirementId: 'codex-subscription',
+    vaultGrantId: 'grant_00000000-0000-7fa7-82fe-c356c64344cc',
+    visibility: 'runtime-token',
+    consumer: 'codex-login',
+  };
+
+  /** Supplies valid old evidence siblings without deriving the new expected arm from its producer. */
+  const retained = (value: unknown = declaration, requiredFeatures = [feature]) => {
+    const base = redactResolvedAgentSetup(resolvedSetup());
+    return {
+      ...base,
+      manifest: {
+        ...base.manifest,
+        requiredFeatures,
+        sandbox: { ...base.manifest.sandbox, credentialDeclarations: [value] },
+      },
+    };
+  };
+
+  it('redacts the gated live requirement to exactly four non-secret retained fields', () => {
+    const base = createTestAgentSetup({
+      credentialDeclarations: [
+        {
+          ...declaration,
+          visibility: 'runtime-token',
+          consumer: 'codex-login',
+          id: 'live-only-declaration-id',
+        },
+      ],
+    });
+    const setup = { ...base, manifest: { ...base.manifest, requiredFeatures: [feature] } };
+    const result = redactResolvedAgentSetup(setup);
+    expect(result.manifest.sandbox.credentialDeclarations).toEqual([declaration]);
+    expect(result.manifest.requiredFeatures).toEqual([feature]);
+    expect(StoredResolvedAgentSetupV1Schema.safeParse(result).success).toBe(true);
+    expect(JSON.stringify(result).includes('live-only-declaration-id')).toBe(false);
+  });
+
+  it('reads the exact gated arm and preserves unknown captured feature evidence', () => {
+    const input = retained(declaration, [feature, 'future.captured-feature.v1']);
+    const result = StoredResolvedAgentSetupV1Schema.safeParse(input);
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.manifest.sandbox.credentialDeclarations).toEqual([declaration]);
+    expect(result.data.manifest.requiredFeatures).toEqual([feature, 'future.captured-feature.v1']);
+    expect(redactResolvedAgentSetup(result.data)).toEqual(input);
+  });
+
+  it('refuses the new arm without its exact required feature', () => {
+    for (const requiredFeatures of [
+      [],
+      ['worker.harness-login.v2'],
+      ['future.captured-feature.v1'],
+    ]) {
+      expect(
+        StoredResolvedAgentSetupV1Schema.safeParse(retained(declaration, requiredFeatures)).success
+      ).toBe(false);
+    }
+  });
+
+  it('refuses missing or empty required identities and consumer fields', () => {
+    for (const key of ['requirementId', 'vaultGrantId', 'consumer', 'visibility']) {
+      const missing = Object.fromEntries(
+        Object.entries(declaration).filter(([name]) => name !== key)
+      );
+      expect(StoredResolvedAgentSetupV1Schema.safeParse(retained(missing)).success).toBe(false);
+      expect(
+        StoredResolvedAgentSetupV1Schema.safeParse(retained({ ...declaration, [key]: '' })).success
+      ).toBe(false);
+    }
+  });
+
+  it('refuses every extra field instead of silently discarding private or descriptive content', () => {
+    for (const [key, value] of Object.entries({
+      id: 'live-only-id',
+      purpose: 'Live-only descriptive purpose.',
+      accessToken: 'synthetic-access',
+      refreshToken: 'synthetic-refresh',
+      accountId: 'synthetic-account',
+      material: 'synthetic-private-material',
+      sql: 'synthetic-private-field',
+      annotation: 'Synthetic free text.',
+      targetPath: '/synthetic/path',
+      targetEnvVarName: 'SYNTHETIC_TOKEN',
+    })) {
+      expect(
+        StoredResolvedAgentSetupV1Schema.safeParse(retained({ ...declaration, [key]: value }))
+          .success
+      ).toBe(false);
+    }
+  });
+
+  it('refuses foreign consumers and unknown core values while old evidence stays readable', () => {
+    for (const consumer of ['pi-login', 'codex', null, 1]) {
+      expect(
+        StoredResolvedAgentSetupV1Schema.safeParse(retained({ ...declaration, consumer })).success
+      ).toBe(false);
+    }
+    for (const visibility of ['unknown-runtime-token', null, 1]) {
+      expect(
+        StoredResolvedAgentSetupV1Schema.safeParse(retained({ ...declaration, visibility })).success
+      ).toBe(false);
+    }
+    const old = redactResolvedAgentSetup(resolvedSetup());
+    old.manifest.requiredFeatures.push('future.captured-feature.v1');
+    expect(StoredResolvedAgentSetupV1Schema.safeParse(old).success).toBe(true);
+    expect(redactResolvedAgentSetup(old)).toEqual(old);
   });
 });

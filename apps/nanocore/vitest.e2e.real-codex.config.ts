@@ -2,12 +2,12 @@ import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
 
 /**
- * Host gate for the real Codex smoke.
+ * Opt-in host gate for the real Codex smoke and synthetic native Login component.
  *
- * It is separated from `vitest.e2e.config.ts` because it needs a Codex CLI and
- * a provider credential on the machine that runs it. The test execution image
- * carries no worker runtime, so this suite runs under
- * `scripts/test-env.sh host` alongside the other real-runtime gates.
+ * The smoke needs a Codex CLI and a provider credential. The separately selected
+ * Login component instead uses only synthetic material and an explicit local
+ * immutable Worker image, with no account or physical-placement qualification.
+ * Both stay outside ordinary image/unit gates and use `scripts/test-env.sh host`.
  */
 export default defineConfig({
   test: {
@@ -17,7 +17,7 @@ export default defineConfig({
       fileURLToPath(new URL('../../tests/support/vitest-global-setup.mjs', import.meta.url)),
       fileURLToPath(new URL('./vitest-worker-setup.mjs', import.meta.url)),
     ],
-    include: ['e2e/codex-smoke.spec.ts'],
+    include: ['e2e/codex-smoke.spec.ts', 'e2e/codex-login-activation.spec.ts'],
     pool: 'forks',
     testTimeout: 140_000,
     hookTimeout: 30_000,

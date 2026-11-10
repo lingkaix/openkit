@@ -254,8 +254,10 @@ pnpm --filter @openkit/nanocore dev
 The real Codex smoke e2e is a host gate. Run it only after `codex` is installed, `codex login` has completed, and a credential marker is present:
 
 ```bash
-OPENKIT_E2E_REAL_CODEX=1 OPENKIT_E2E_REAL_CODEX_CREDENTIAL=1 pnpm -w test:e2e:real-codex
+OPENKIT_E2E_REAL_CODEX=1 OPENKIT_E2E_REAL_CODEX_CREDENTIAL=1 OPENKIT_L6_TASK_WORKER_IMAGE_REF='sha256:<local-worker-image-digest>' pnpm -w test:e2e:real-codex
 ```
+
+The existing host leaf selects both configured real Codex specs. Its synthetic Login component also requires an explicitly selected local immutable Worker image; it uses no real account and does not qualify physical placement or the dormant Core Login lifecycle.
 
 Without `OPENKIT_E2E_REAL_CODEX=1`, the gate skips cleanly. After explicit opt-in, if `codex` is absent from `PATH` or no credential marker is set, it fails with the missing prerequisite named. It is excluded from `test:e2e` and refuses to run inside the test execution image, which carries no worker runtime. See the Test Execution Environment decision in `docs/toolchain.md`.
 

@@ -22,7 +22,7 @@
     "openapi:check": "pnpm run openapi:generate && pnpm run openapi:validate && git diff --exit-code -- openapi/app-api.openapi.json",
     "test:e2e": "pnpm run build && vitest run --config vitest.e2e.config.ts",
     "test:e2e:smoke": "pnpm run build && vitest run --config vitest.e2e.smoke.config.ts",
-    "test:e2e:real-codex": "pnpm run build && vitest run --config vitest.e2e.real-codex.config.ts",
+    "test:e2e:real-codex": "pnpm run build && cd ../.. && node apps/nanocore/node_modules/vitest/vitest.mjs run --root apps/nanocore --config vitest.e2e.real-codex.config.ts",
     "test": "vitest run --reporter=tap-flat",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc --noEmit",

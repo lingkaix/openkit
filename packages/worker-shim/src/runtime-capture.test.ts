@@ -9,6 +9,7 @@ import {
 import { expect, it } from 'vitest';
 import {
   emitRuntimeFact,
+  type NativeCaptureSource,
   NativeRuntimeCapture,
   ParentRuntimeCapture,
   RUNTIME_FRAME_MAX_BYTES,
@@ -703,3 +704,41 @@ it('RET E r2 REVIEW R2 keeps a limit-only native hold labelled as a limit throug
     )
   ).toBe(false);
 }, 30_000);
+
+// Work Data Retention: known injected material stays excluded across escaped carrier boundaries.
+it.each([false, true])(
+  'withholds an escaped credential registered after construction; late=%s',
+  async (late) => {
+    const credential = 'a'.repeat(22_000) + 'Z';
+    const values: string[] = late ? [] : [credential];
+    let publishedBytes = 0;
+    let excluded = false;
+    const capture = new NativeRuntimeCapture({
+      packageSnapshotId: 'live-credential-admission',
+      captureCoverage: { scope: 'task', value: 'on' },
+      nativeLogMaxBytes: RUNTIME_FRAME_MAX_BYTES,
+      authoredVersion: '0.166.0',
+      credentialValues: values,
+      emit: async (record, body) => {
+        publishedBytes += body?.byteLength ?? 0;
+        excluded ||=
+          record.content.state === 'unavailable' && record.content.reason === 'credential-excluded';
+      },
+    });
+    if (late) values.push(credential);
+    const source: NativeCaptureSource = {
+      harness: 'codex',
+      format: 'application/octet-stream',
+      runtimeOriginRef: null,
+      logSource: 'stderr',
+    };
+    const escaped = String.raw`\u0061`.repeat(22_000) + String.raw`\u005a`;
+    await capture.write('live-escaped-log', Buffer.from(escaped.slice(0, -1)), source);
+    await capture.write('live-escaped-log', Buffer.from(escaped.slice(-1)), source);
+    capture.end('live-escaped-log');
+    await capture.finish();
+    // Boolean-only failure output; do not print material or admitted body fragments.
+    expect(publishedBytes === 0).toBe(true);
+    expect(excluded).toBe(true);
+  }
+);

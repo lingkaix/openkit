@@ -2018,6 +2018,75 @@ function requireConsumedHarnessResult(harness: HarnessRow): HarnessResultConsump
   return consumption as unknown as HarnessResultConsumption;
 }
 
+/**
+ * Reads the original successful, consumed native removal effect for the private Thread owner.
+ * Revocation is not a reason to retain an already removed native account; this is effect evidence,
+ * never credential-use permission. A successor operation or an unknown receipt refuses.
+ * The caller supplies the original close callback's Core ACK clock, never a later row-read clock.
+ * A changed generic Harness updated_at refuses rather than extending the departure timestamp.
+ * @returns That exact original Core close-ACK timestamp.
+ */
+export function requireNanoHostLoginRemoval(
+  coreDb: CoreDb,
+  input: {
+    readonly workspaceId: string;
+    readonly threadId: string;
+    readonly agentSessionId: string;
+    readonly agentSessionRuntimeBindingId: string;
+    readonly harnessInstanceId: string;
+    readonly operationId: string;
+    readonly sequence: number;
+    readonly completedAt: string;
+  }
+): string {
+  const harness = requireHarness(coreDb, input.harnessInstanceId);
+  const receipt = readHarnessResultReceipt(harness);
+  if (
+    !receipt ||
+    harness.operation !== 'session.close' ||
+    harness.operation_state !== 'settled' ||
+    harness.operation_id !== input.operationId ||
+    harness.operation_sequence !== input.sequence ||
+    receipt.result.operationId !== input.operationId ||
+    receipt.result.sequence !== input.sequence ||
+    harness.updated_at !== input.completedAt ||
+    !harness.command_body_json ||
+    sha256Hex(harness.command_body_json) !== harness.command_fingerprint
+  )
+    throw new Error('Native Login removal receipt is unavailable.');
+  const result = requireHarnessResult('session.close', receipt.result, harness.max_active_turns);
+  if (
+    result.disposition === 'refused' ||
+    result.body.state !== 'closed' ||
+    result.body.privateState !== 'absent'
+  )
+    throw new Error('Native Login removal is not confirmed.');
+  const command = readJsonObject(harness.command_body_json);
+  requireDurableHarnessBody('session.close', command);
+  // Successful close deletes the binding. Its receiver-owned scope was captured before that deletion.
+  const context = receipt.retained.consumerContext;
+  if (
+    command.agentSessionId !== input.agentSessionId ||
+    command.agentSessionRuntimeBindingId !== input.agentSessionRuntimeBindingId ||
+    !context ||
+    typeof context !== 'object' ||
+    Array.isArray(context) ||
+    Object.keys(context).sort().join(',') !== 'threadId,workspaceId' ||
+    Reflect.get(context, 'workspaceId') !== input.workspaceId ||
+    Reflect.get(context, 'threadId') !== input.threadId ||
+    !requireConsumedHarnessResult(harness)
+  )
+    throw new Error('Native Login removal owner conflicts.');
+  // Reference equality alone cannot distinguish old A -> new A: a successor makes late removal ambiguous.
+  const successor = coreDb.sqlite
+    .prepare(
+      `SELECT 1 FROM agent_session_runtime_bindings WHERE workspace_id=? AND thread_id=? LIMIT 1`
+    )
+    .get(input.workspaceId, input.threadId);
+  if (successor) throw new Error('Native Login removal has a successor consumer.');
+  return input.completedAt;
+}
+
 /** Confirms an exact already-acknowledged replay after its live Workspace consumer has left. */
 export function hasConsumedNanoHostHarnessResult(
   coreDb: CoreDb,

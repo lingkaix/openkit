@@ -46,6 +46,7 @@ import {
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { importUnboundWorkspaceVaultReference } from './test-support/vault-retained-fixtures.js';
+import { ControlVaultInputSchema, HarnessLoginMetadataSchema } from './vault-native-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
@@ -1835,5 +1836,171 @@ describe('User Login reference creation authority fences', () => {
     expect(Atomics.load(f.gate, 4)).toBe(2);
     expect(f.commits()).toBe(beforeCommits + 1);
     expect(f.submissions() - beforeSubmissions).toBe(1);
+  });
+});
+
+describe('retained Login quota metadata codec boundary', () => {
+  // The approved private projections extend retained metadata, not creation or quarantine authority.
+  // These checks prove codec meaning only; they do not attest a native observation or a use grant.
+  const login = {
+    provider: 'codex',
+    accountId: 'synthetic-codec-account',
+    quarantined: false,
+  };
+  const observedAt = '2026-11-09T00:00:00.000Z';
+  const observations = {
+    state: 'available',
+    windows: [
+      {
+        kind: 'primary',
+        usedPercent: 2_147_483_647,
+        durationMinutes: 525_600,
+        resetsAt: observedAt,
+      },
+      { kind: 'secondary', usedPercent: 0, durationMinutes: null, resetsAt: null },
+    ],
+    source: 'native-read',
+    observedAt,
+    bindingId: 'b'.repeat(512),
+    materialGeneration: Number.MAX_SAFE_INTEGER,
+  };
+
+  it('keeps a legacy Login without observations usable', () => {
+    expect(HarnessLoginMetadataSchema.safeParse(login).success).toBe(true);
+  });
+
+  it.each(['unknown', 'available', 'exhausted'])(
+    'admits the retained %s state with its exact bounded private fields',
+    (state) => {
+      // State comes from ordinaryUsageAllowed, independently of window percentages or reset hints.
+      expect(
+        HarnessLoginMetadataSchema.safeParse({
+          ...login,
+          observations: {
+            ...observations,
+            state,
+            windows: state === 'unknown' ? [] : observations.windows,
+          },
+        }).success
+      ).toBe(true);
+    }
+  );
+
+  it('refuses quota fields outside the approved numeric, text and window bounds', () => {
+    const primary = observations.windows[0];
+    const invalid = [
+      { ...observations, windows: [{ ...primary, usedPercent: -1 }] },
+      { ...observations, windows: [{ ...primary, usedPercent: 2_147_483_648 }] },
+      { ...observations, windows: [{ ...primary, usedPercent: 0.5 }] },
+      { ...observations, windows: [{ ...primary, durationMinutes: 0 }] },
+      { ...observations, windows: [{ ...primary, durationMinutes: 525_601 }] },
+      { ...observations, windows: [{ ...primary, durationMinutes: 1.5 }] },
+      { ...observations, windows: [{ ...primary, resetsAt: '2026-11-09T00:00:00Z' }] },
+      { ...observations, observedAt: '2026-11-09T00:00:00Z' },
+      { ...observations, bindingId: '' },
+      { ...observations, bindingId: 'b'.repeat(513) },
+      { ...observations, bindingId: 'binding\n' },
+      { ...observations, bindingId: 'binding\r' },
+      { ...observations, bindingId: 'binding\0' },
+      { ...observations, materialGeneration: 0 },
+      { ...observations, materialGeneration: Number.MAX_SAFE_INTEGER + 1 },
+      { ...observations, materialGeneration: 1.5 },
+      { ...observations, windows: [...observations.windows, primary] },
+      { ...observations, windows: [primary, primary] },
+    ];
+    for (const value of invalid) {
+      expect(HarnessLoginMetadataSchema.safeParse({ ...login, observations: value }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it('refuses unknown meanings and secret or provider payload fields before stripping', () => {
+    const invalid = [
+      { ...observations, state: 'healthy' },
+      { ...observations, source: 'notification' },
+      { ...observations, windows: [{ ...observations.windows[0], kind: 'other' }] },
+      { ...observations, accessToken: 'synthetic-not-material' },
+      { ...observations, accountId: login.accountId },
+      { ...observations, windows: [{ ...observations.windows[0], limitName: 'untrusted' }] },
+      { ...observations, observedAt: undefined },
+      { ...observations, bindingId: undefined },
+      { ...observations, materialGeneration: undefined },
+    ];
+    for (const value of invalid) {
+      expect(HarnessLoginMetadataSchema.safeParse({ ...login, observations: value }).success).toBe(
+        false
+      );
+    }
+  });
+
+  it('does not let reference creation submit retained observations', async () => {
+    const f = await nativeLoginFixture();
+    const record = {
+      referenceId: f.login.referenceId,
+      ownerScope: f.login.ownerScope,
+      userId: f.login.userId,
+      workspaceId: f.login.workspaceId,
+      displayName: f.login.displayName,
+      secretKind: f.login.secretKind,
+      backendKind: f.login.backendKind,
+      backendLocator: f.login.backendLocator,
+      login: f.login.login,
+      publicMutation: { actor: f.actor },
+    };
+    expect(ControlVaultInputSchema.safeParse({ kind: 'reference-create', record }).success).toBe(
+      true
+    );
+    expect(
+      ControlVaultInputSchema.safeParse({
+        kind: 'reference-create',
+        record: { ...record, login: { ...f.login.login, observations } },
+      }).success
+    ).toBe(false);
+    expect(
+      ControlVaultInputSchema.safeParse({
+        kind: 'reference-create',
+        record: { ...record, observations },
+      }).success
+    ).toBe(false);
+  });
+
+  it('keeps quarantine authority separate from observations in its retained reference snapshot', async () => {
+    const f = await nativeLoginFixture();
+    const record = {
+      referenceId: f.login.referenceId,
+      quarantined: true,
+      publicMutation: { actor: f.actor, reference: f.login },
+    };
+    expect(
+      ControlVaultInputSchema.safeParse({ kind: 'reference-login-state', record }).success
+    ).toBe(true);
+    expect(
+      ControlVaultInputSchema.safeParse({
+        kind: 'reference-login-state',
+        record: { ...record, observations },
+      }).success
+    ).toBe(false);
+    expect(
+      ControlVaultInputSchema.safeParse({
+        kind: 'reference-login-state',
+        record: {
+          ...record,
+          publicMutation: { ...record.publicMutation, observations },
+        },
+      }).success
+    ).toBe(false);
+    expect(
+      ControlVaultInputSchema.safeParse({
+        kind: 'reference-login-state',
+        record: {
+          ...record,
+          publicMutation: {
+            ...record.publicMutation,
+            reference: { ...f.login, login: { ...f.login.login, observations } },
+          },
+        },
+      }).success
+    ).toBe(true);
   });
 });

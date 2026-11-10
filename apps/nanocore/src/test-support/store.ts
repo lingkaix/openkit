@@ -92,10 +92,17 @@ export function initializeTestCore(dataRoot: string): void {
   }
 }
 
-/** Opens a migrated private Core fixture through its storage owner; the caller owns root removal. */
+/** Opens a migrated private Core fixture on the original handle, preserving its owner's fresh-initialization proof. */
 export function createTestCoreDb(dataRoot: string): CoreDb {
-  initializeTestCore(dataRoot);
-  return openCoreDb(dataRoot);
+  const exists = existsSync(coreDbPath(dataRoot));
+  const coreDb = openCoreDb(dataRoot);
+  try {
+    if (!exists) applyMigrations(coreDb);
+    return coreDb;
+  } catch (error) {
+    coreDb.sqlite.close();
+    throw error;
+  }
 }
 
 /** Opens only an already initialized Workspace fixture; creates no records or authority. */

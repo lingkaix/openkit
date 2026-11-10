@@ -221,6 +221,14 @@ export function redactResolvedAgentSetup(
                 visibility: declaration.visibility,
               };
             }
+            if (declaration.visibility === 'runtime-token') {
+              return {
+                visibility: declaration.visibility,
+                requirementId: declaration.requirementId,
+                vaultGrantId: declaration.vaultGrantId,
+                consumer: declaration.consumer,
+              };
+            }
             return {
               id: declaration.id,
               ...(declaration.requirementId ? { requirementId: declaration.requirementId } : {}),

@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
   type ActorRef,
   isEntityId,
@@ -15,15 +16,29 @@ import {
 } from '../auth/operation-authorizer.js';
 import { OperationError } from '../operation-error.js';
 import { policyDigest } from '../policy/statements.js';
+import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import { requireHarnessLoginBinding } from '../runtime/harness-login-authority.js';
+import { requireNanoHostLoginRemoval } from '../runtime/nanohost-harness-records.js';
 import {
   assertCurrentWorkerCredentialAuthority,
   readVaultRequesterAuthority,
 } from '../runtime/worker-credential-authority.js';
 import { isServerMcpGrant, isServerMcpReference } from '../vault/server-mcp-authority.js';
 import { recordControlCommandRequestRecordInDb } from './command-request-records.js';
-import { ControlProductPreconditionError } from './control-store-product-records.js';
+import {
+  ControlProductPreconditionError,
+  decode,
+  openControlStoreProductReadHandle,
+  readProduct,
+} from './control-store-product-records.js';
 import { assertControlProductWriter } from './control-store-products.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
+import { bindCoreSqlite, bindWorkspaceSqlite, type CoreDb, type WorkspaceDb } from './db.js';
+import {
+  NATIVE_THREAD_LOGIN_FEATURE,
+  NativeThreadLoginSchema,
+  nextNativeThreadLogin,
+} from './native-thread-login.js';
+import { THREAD_REQUIRED_FEATURES } from './retained-work-events-v1.js';
 import {
   type AdvanceActiveVaultReferenceVersionInput,
   assertAllowedInjectionPaths,
@@ -46,6 +61,7 @@ import {
   type CreateVaultUseRecordInput,
   getVaultGrant,
   getVaultInjectionPlan,
+  getVaultInjectionReceipt,
   getVaultReference,
   getWithdrawableUserVaultGrant,
   listVaultInjectionReceipts,
@@ -67,6 +83,7 @@ import {
   type VaultUseDb,
   type VaultUseRecord,
 } from './vault-native-codecs.js';
+import { nativeProductScope } from './workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from './workspace-import-authority.js';
 
 /**
@@ -689,7 +706,13 @@ export function applyControlVault(
 ): ControlVaultResult {
   assertControlProductWriter(db.sqlite);
   const request = ControlVaultInputSchema.parse(input);
-  if (request.kind !== 'use-create' && request.kind !== 'audit-insert' && db.scope !== 'core')
+  if (
+    request.kind !== 'use-create' &&
+    request.kind !== 'audit-insert' &&
+    request.kind !== 'thread-login-activate' &&
+    request.kind !== 'thread-login-remove' &&
+    db.scope !== 'core'
+  )
     throw new ControlProductPreconditionError();
   let result: ControlVaultResult;
   if (request.kind === 'audit-insert') {
@@ -708,6 +731,16 @@ export function applyControlVault(
     result = { kind: request.kind, value: request.record };
   } else if (request.kind === 'use-create') {
     result = { kind: request.kind, value: createVaultUseRecord(db, definedFields(request.record)) };
+  } else if (request.kind === 'thread-login-remove') {
+    applyHarnessLoginRemoval(db, request);
+    result = { kind: request.kind, value: null };
+  } else if (request.kind === 'thread-login-activate') {
+    applyHarnessLoginNativeEffect(db, request);
+    result = { kind: request.kind, value: null };
+  } else if (request.kind === 'reference-login-observe') {
+    const value = applyHarnessLoginNativeEffect(db, request);
+    if (!value) throw new ControlProductPreconditionError();
+    result = { kind: request.kind, value };
   } else {
     if (db.scope !== 'core') throw new ControlProductPreconditionError();
     assertServerMcpEffectAuthority(db, request);
@@ -1199,4 +1232,223 @@ function assertBindingRequester(
     true
   );
   if (policyDigest(current) !== authority.revision) throw new ControlProductPreconditionError();
+}
+
+type Effect = Extract<
+  ControlVaultInput,
+  { kind: 'reference-login-observe' | 'thread-login-activate' }
+>;
+
+/**
+ * Clears only an exact current affinity after the original successful consumed session.close.
+ * Its Core close ACK clock is authoritative even after grant/User revocation; no material is released.
+ * @returns Null after the Workspace FULL-covered replacement, or an exact already-cleared replay.
+ */
+function applyHarnessLoginRemoval(
+  db: CoreDb | WorkspaceDb,
+  input: Extract<ControlVaultInput, { kind: 'thread-login-remove' }>
+): null {
+  if (db.scope !== 'workspace' || db.workspaceId !== input.record.workspaceId)
+    throw new Error('Native Login removal scope conflicts.');
+  const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  try {
+    const coreDb = bindCoreSqlite(reader.sqlite, db.dataRoot);
+    const now = requireNanoHostLoginRemoval(coreDb, input.record);
+    const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+    const thread = readProduct(db.sqlite, owner, 'thread', input.record.threadId);
+    if (!thread) throw new Error('Native Login removal Thread is unavailable.');
+    const previous =
+      thread.record.login === undefined
+        ? undefined
+        : NativeThreadLoginSchema.parse(thread.record.login);
+    if ((previous?.referenceId ?? null) !== input.record.expectedReferenceId)
+      throw new Error('Native Login removal affinity changed.');
+    if (!previous?.referenceId) return null;
+    const raw = db.sqlite
+      .prepare('SELECT record_json FROM control_threads WHERE id=? AND revision=?')
+      .get(input.record.threadId, thread.revision) as { record_json: string } | undefined;
+    if (!raw) throw new Error('Native Login removal revision changed.');
+    const replacement = {
+      ...JSON.parse(raw.record_json),
+      login: nextNativeThreadLogin(previous, null, now),
+      requiredFeatures: [...THREAD_REQUIRED_FEATURES, NATIVE_THREAD_LOGIN_FEATURE],
+    };
+    decode('thread', replacement, owner);
+    const changed = db.sqlite
+      .prepare(
+        'UPDATE control_threads SET revision=revision+1,record_json=? WHERE id=? AND revision=?'
+      )
+      .run(JSON.stringify(replacement), input.record.threadId, thread.revision);
+    if (changed.changes !== 1) throw new Error('Native Login removal revision changed.');
+    return null;
+  } finally {
+    reader.close();
+  }
+}
+
+/**
+ * Applies only approved private facts after original native completion and its own receipt lineage.
+ * It never resolves credentials, advances generations, creates a permission, or fabricates a receipt.
+ * @returns Updated Login reference for observation, or null after the native Thread replacement.
+ */
+function applyHarnessLoginNativeEffect(
+  db: CoreDb | WorkspaceDb,
+  input: Effect
+): VaultReferenceRecord | null {
+  const record = input.record;
+  const context = record.context;
+  const otherScope =
+    db.scope === 'core'
+      ? { kind: 'workspace' as const, workspaceId: context.workspaceId }
+      : { kind: 'server' as const };
+  const scope = nativeProductScope(db.dataRoot, otherScope);
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  try {
+    const coreDb = db.scope === 'core' ? db : bindCoreSqlite(reader.sqlite, db.dataRoot);
+    const workspaceDb =
+      db.scope === 'workspace'
+        ? db
+        : bindWorkspaceSqlite(reader.sqlite, db.dataRoot, context.workspaceId);
+    const refuse = (): never => {
+      throw new Error('Native Login effect lineage is unavailable.');
+    };
+    if (
+      workspaceDb.workspaceId !== context.workspaceId ||
+      (input.kind === 'reference-login-observe' ? db.scope !== 'core' : db.scope !== 'workspace')
+    )
+      return refuse();
+    const admissionNow = new Date().toISOString();
+    if (record.now > admissionNow) return refuse();
+    requireHarnessLoginBinding(coreDb, context, admissionNow);
+    const snapshot = AgentEnvironmentPackageSchema.parse(
+      requireAgentEnvironmentPackageSnapshot(
+        workspaceDb,
+        context.workspaceId,
+        context.packageSnapshotId
+      ).snapshot
+    );
+    const original = snapshot.scope;
+    if (
+      original.workspaceId !== context.workspaceId ||
+      original.threadId !== context.threadId ||
+      original.agentSessionId !== context.agentSessionId ||
+      original.turnId !== context.turnId ||
+      snapshot.llm.mode !== 'harness'
+    )
+      return refuse();
+    const declarations = snapshot.credentials.declarations.filter(
+      (declaration) => declaration.visibility === 'runtime-token'
+    );
+    if (declarations.length !== 1) return refuse();
+    const declaration = declarations[0]!;
+    if (declaration.vaultGrantId !== record.grantId) return refuse();
+    const { grant, reference } = assertCurrentWorkerCredentialAuthority(
+      coreDb,
+      snapshot,
+      () => admissionNow,
+      declaration
+    );
+    if (
+      grant.grantId !== record.grantId ||
+      reference.referenceId !== record.referenceId ||
+      reference.currentVersion !== record.materialGeneration ||
+      reference.status !== 'active' ||
+      !reference.login ||
+      reference.login.quarantined ||
+      reference.login.accountId !== record.accountId
+    )
+      return refuse();
+    const plan = getVaultInjectionPlan(coreDb, record.planId);
+    const receipt = getVaultInjectionReceipt(coreDb, record.receiptId);
+    if (
+      !plan ||
+      plan.status !== 'active' ||
+      plan.grantId !== grant.grantId ||
+      plan.packageSnapshotId !== snapshot.snapshotId ||
+      plan.injectionVisibility !== 'runtime-token' ||
+      !receipt ||
+      receipt.planId !== plan.planId ||
+      receipt.grantId !== grant.grantId ||
+      receipt.agentSessionId !== context.agentSessionId ||
+      receipt.revocationStatus !== 'active' ||
+      (receipt.expiresAt !== null && receipt.expiresAt <= admissionNow)
+    )
+      return refuse();
+    const use = workspaceDb.sqlite
+      .prepare(`SELECT 1 FROM vault_use_records u JOIN audit_events a ON a.audit_event_id=u.audit_event_id
+      WHERE u.owner_scope='workspace' AND u.workspace_id=? AND u.vault_reference_id=? AND u.material_version=?
+      AND u.grant_id=? AND u.plan_id=? AND u.receipt_id=? AND u.agent_session_id=? AND u.outcome='succeeded'
+      AND a.workspace_id=? AND a.action='vault.resolve' AND a.outcome='succeeded' LIMIT 1`)
+      .get(
+        context.workspaceId,
+        reference.referenceId,
+        record.materialGeneration,
+        grant.grantId,
+        plan.planId,
+        receipt.receiptId,
+        context.agentSessionId,
+        context.workspaceId
+      );
+    if (!use) return refuse();
+    if (input.kind === 'reference-login-observe') {
+      const observation = input.record.observations;
+      if (
+        observation.bindingId !== context.agentSessionRuntimeBindingId ||
+        observation.materialGeneration !== record.materialGeneration ||
+        observation.observedAt !== record.now ||
+        observation.source !== 'native-read'
+      )
+        return refuse();
+      const previous = reference.login.observations;
+      if (previous && observation.observedAt <= previous.observedAt) {
+        if (isDeepStrictEqual(observation, previous)) return reference;
+        return refuse();
+      }
+      // Sparse/unknown evidence cannot erase a valid exhaustion observation.
+      if (previous?.state === 'exhausted' && observation.state === 'unknown') return reference;
+      const result = coreDb.sqlite
+        .prepare(`UPDATE vault_references SET login_observations_json=?,updated_at=?
+        WHERE reference_id=? AND current_version=? AND login_account_id=? AND login_quarantined=0 AND status='active'`)
+        .run(
+          JSON.stringify(observation),
+          record.now,
+          reference.referenceId,
+          record.materialGeneration,
+          record.accountId
+        );
+      if (result.changes !== 1) return refuse();
+      return getVaultReference(coreDb, reference.referenceId) ?? refuse();
+    }
+    const owner = { kind: 'workspace' as const, workspaceId: context.workspaceId };
+    const thread = readProduct(workspaceDb.sqlite, owner, 'thread', context.threadId);
+    if (!thread) return refuse();
+    const previous =
+      thread.record.login === undefined
+        ? undefined
+        : NativeThreadLoginSchema.parse(thread.record.login);
+    if ((previous?.referenceId ?? null) !== input.record.expectedReferenceId) return refuse();
+    if (previous?.referenceId === reference.referenceId) return null; // A same-family refresh is not a departure.
+    const left = previous?.lastLeftAt[reference.referenceId];
+    if (left && Date.parse(record.now) - Date.parse(left) < 60_000) return refuse();
+    const raw = workspaceDb.sqlite
+      .prepare('SELECT record_json FROM control_threads WHERE id=? AND revision=?')
+      .get(context.threadId, thread.revision) as { record_json: string } | undefined;
+    if (!raw) return refuse();
+    const replacement = {
+      ...JSON.parse(raw.record_json),
+      login: nextNativeThreadLogin(previous, reference.referenceId, record.now),
+      requiredFeatures: [...THREAD_REQUIRED_FEATURES, NATIVE_THREAD_LOGIN_FEATURE],
+    };
+    decode('thread', replacement, owner);
+    const result = workspaceDb.sqlite
+      .prepare(
+        'UPDATE control_threads SET revision=revision+1,record_json=? WHERE id=? AND revision=?'
+      )
+      .run(JSON.stringify(replacement), context.threadId, thread.revision);
+    if (result.changes !== 1) return refuse();
+    return null;
+  } finally {
+    reader.close();
+  }
 }

@@ -26,12 +26,8 @@ import {
   workObservationBodyBundleId,
 } from '../evidence-bundles.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
-import type { ControlProductOwner } from './control-store-product-records.js';
+import { type ControlProductOwner, decode } from './control-store-product-records.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
-import {
-  StoredThreadSnapshotV1Schema,
-  ThreadRequiredFeaturesV1Schema,
-} from './retained-work-events-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 
@@ -627,15 +623,10 @@ export function readControlWorkObservationTurnBinding(
     turnRow.revision < 1
   )
     throw new Error('recovery_required: missing or invalid native observation owner');
-  const threadRaw = JSON.parse(threadRow.record_json) as Record<string, unknown>;
-  const thread = readRetainedV1(threadRaw, () => StoredThreadSnapshotV1Schema.parse(threadRaw));
+  // Canonical native Threads may retain private Login meaning that public snapshots exclude.
+  const thread = decode('thread', JSON.parse(threadRow.record_json), owner);
   const raw = JSON.parse(turnRow.record_json) as Record<string, unknown>;
   const turn = readRetainedV1(raw, () => StoredTurnV1Schema.parse(raw));
-  if (
-    threadRaw.requiredFeatures !== undefined &&
-    !ThreadRequiredFeaturesV1Schema.safeParse(threadRaw.requiredFeatures).success
-  )
-    throw new Error('recovery_required: unsupported required Thread semantics');
   if (
     thread.id !== input.threadId ||
     turn.id !== input.turnId ||

@@ -13,11 +13,11 @@ export default defineConfig({
       fileURLToPath(new URL('./vitest-worker-setup.mjs', import.meta.url)),
     ],
     include: ['e2e/**/*.spec.ts'],
-    // The real Codex smoke drives a worker runtime the test execution image
-    // does not carry, so it is a host gate with its own config rather than a
-    // member of this deterministic suite. See docs/toolchain.md Test Execution
-    // Environment.
-    exclude: ['e2e/codex-smoke.spec.ts'],
+    // Codex native consumers need a host runtime or a local Docker namespace.
+    // The synthetic Login component and real-account smoke stay in the existing
+    // opt-in host config, never the ordinary deterministic image/unit gate.
+    // See docs/toolchain.md Test Execution Environment.
+    exclude: ['e2e/codex-smoke.spec.ts', 'e2e/codex-login-activation.spec.ts'],
     pool: 'forks',
     testTimeout: 60_000,
     ...(slotWorkers > 0 ? { maxWorkers: slotWorkers } : {}),

@@ -733,15 +733,19 @@ export class NativeRuntimeCapture {
   private abandoned = false;
   private finishing: Promise<void> | undefined;
   private readonly ended = new Set<string>();
-  private readonly lookbehind: number;
-  private readonly unboundedSecret: boolean;
+  private lookbehind = 64 * 1024;
+  private unboundedSecret = false;
   private queuedBytes = 0;
   private overflow: Error | undefined;
-  /** Shares the adapter's immutable admission and existing publication sink. */
+  /** Shares immutable capture admission and the adapter's live private exclusion inventory. */
   public constructor(private readonly input: RuntimeCaptureInput) {
+    this.refreshCredentialWindow();
+  }
+  /** Register-before-use refresh credentials must enlarge the hold before any new bytes enter. */
+  private refreshCredentialWindow(): void {
     const required = Math.max(
       64 * 1024,
-      ...input.credentialValues.map((value) => Buffer.byteLength(value) * 6 + 64)
+      ...this.input.credentialValues.map((value) => Buffer.byteLength(value) * 6 + 64)
     );
     this.unboundedSecret = required > RUNTIME_FRAME_MAX_BYTES;
     this.lookbehind = Math.min(RUNTIME_FRAME_MAX_BYTES, required);
@@ -754,6 +758,7 @@ export class NativeRuntimeCapture {
   public write(sourceRef: string, bytes: Uint8Array, source: NativeCaptureSource): Promise<void> {
     if (this.stopped) return Promise.reject(this.failure ?? new Error('Native capture stopped.'));
     if (this.overflow) return Promise.reject(this.overflow);
+    this.refreshCredentialWindow();
     const retaining =
       this.input.captureCoverage.value === 'on' &&
       Number.isSafeInteger(this.input.nativeLogMaxBytes) &&

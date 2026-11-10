@@ -40,6 +40,12 @@ export const REQUIRED_FEATURE_REGISTRY = {
     description:
       'Runtime evidence retains execution outcomes, backend summaries, and evidence bundle linkage.',
   },
+  'worker.harness-login.v1': {
+    id: 'worker.harness-login.v1',
+    status: 'active',
+    description:
+      'Workspace-bound Codex Login requirements and harness Login execution require explicit reader support.',
+  },
   'worker.runtime-provenance.v1': {
     id: 'worker.runtime-provenance.v1',
     status: 'active',
