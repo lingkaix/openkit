@@ -25,7 +25,7 @@ function page(id: string, body = 'A stable note.', extra = ''): string {
 type: KnowledgePage
 title: ${id}
 schema_version: openkit-scope-knowledge-schema-v4
-requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
 scope: ${JSON.stringify(ownerScope)}
@@ -229,7 +229,10 @@ function registerProcedureOwnedBySkillsTests() {
         title: 'Reusable context',
         schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA.schemaVersion,
         scope: ownerScope,
-        requiredFeatures: ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'],
+        required_features: [
+          'openkit.knowledge-owner-scope.v1',
+          'openkit.knowledge-git-notebook.v1',
+        ],
         openkit_status: 'active',
         source_refs: [],
         review_state: 'delegated',

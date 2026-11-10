@@ -60,7 +60,7 @@ function page(id: string, body: string, source: string): string {
     'type: KnowledgePage',
     `title: ${JSON.stringify(id)}`,
     'schema_version: openkit-scope-knowledge-schema-v4',
-    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+    'required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_status: active',
     'status: stable',
     `scope: {kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID}}`,

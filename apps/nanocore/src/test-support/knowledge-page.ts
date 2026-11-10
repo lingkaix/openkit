@@ -31,7 +31,7 @@ export function serializeKnowledgePageFixture(
     'openkit_status: "active"',
     'status: "stable"',
     `scope: ${JSON.stringify(scope)}`,
-    `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+    `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
     `source_refs: ${JSON.stringify(input.sourceReferences ?? [])}`,
     'review_state: "user-authored"',
     'sensitivity: "normal"',

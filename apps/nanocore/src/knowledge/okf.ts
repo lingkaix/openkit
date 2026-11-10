@@ -29,7 +29,7 @@ const REQUIRED_PROFILE_FIELDS = [
   'schema_version',
   'openkit_status',
   'scope',
-  'requiredFeatures',
+  'required_features',
   'source_refs',
   'review_state',
   'sensitivity',
@@ -424,7 +424,14 @@ export function validateOpenKitKnowledgeProfile(
   }
 
   validateOwnerScope(document.frontmatter.scope, expectedOwnerScope, errors);
-  validateRequiredFeatures(document.frontmatter.requiredFeatures, errors, 'profile', true);
+  validateRequiredFeatures(document.frontmatter.required_features, errors, 'profile', true);
+  if (Object.hasOwn(document.frontmatter, 'requiredFeatures')) {
+    errors.push({
+      code: 'profile.obsolete_authority_field',
+      field: 'requiredFeatures',
+      message: 'OKF frontmatter uses required_features for required semantics.',
+    });
+  }
   for (const field of ['owner_scope', 'openkit_revision']) {
     if (Object.hasOwn(document.frontmatter, field)) {
       errors.push({
@@ -1017,10 +1024,11 @@ function validateRequiredFeatures(
   prefix: 'profile' | 'scope_schema',
   requireScopedFeatures: boolean
 ): void {
+  const field = prefix === 'profile' ? 'required_features' : 'requiredFeatures';
   if (!Array.isArray(value) || !value.every(nonEmptyString)) {
     errors.push({
       code: `${prefix}.invalid_required_features`,
-      field: 'requiredFeatures',
+      field,
       message: 'Required features must be a string array of non-empty feature identifiers.',
     });
     return;
@@ -1030,7 +1038,7 @@ function validateRequiredFeatures(
   ) {
     errors.push({
       code: `${prefix}.unsupported_required_feature`,
-      field: 'requiredFeatures',
+      field,
       message: 'Required semantics are not supported by this knowledge reader.',
     });
   }
@@ -1040,7 +1048,7 @@ function validateRequiredFeatures(
   ) {
     errors.push({
       code: `${prefix}.missing_required_feature`,
-      field: 'requiredFeatures',
+      field,
       message: 'Profile v4 requires scoped ownership and Git notebook semantics.',
     });
   }

@@ -62,7 +62,7 @@ function fixture() {
       schema_version: 'openkit-scope-knowledge-schema-v4',
       openkit_status: 'active',
       scope: ownerScope,
-      requiredFeatures: ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'],
+      required_features: ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'],
       source_refs: [],
       review_state: 'user-authored',
       sensitivity: 'internal',

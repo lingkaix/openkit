@@ -25,7 +25,7 @@ describe('Knowledge OKF page editing', () => {
       'type: KnowledgePage',
       'title: Original title',
       'schema_version: openkit-scope-knowledge-schema-v4',
-      'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+      'required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
       'openkit_status: active',
       'status: stable',
       `scope: {kind: workspace, workspaceId: ${WORKSPACE_ID}}`,
@@ -67,6 +67,8 @@ describe('Knowledge OKF page editing', () => {
       body: 'Prefer short replies.',
       timestamp: '2026-10-16T00:00:00.000Z',
     });
+    expect(frontmatterLine(content, 'required_features')).toBe('');
+    expect(frontmatterLine(content, 'requiredFeatures')).toBeUndefined();
     expect(readKnowledgePageDisplay(PATH, content)).toEqual({
       title: 'Write in English; keep answers concise',
       body: 'Prefer short replies.',

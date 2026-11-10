@@ -45,7 +45,7 @@ it('projects an admitted Server citation through the existing answer operation w
 type: KnowledgePage
 title: Shared release rule
 schema_version: openkit-scope-knowledge-schema-v4
-requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
 scope: {kind: server}

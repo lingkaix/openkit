@@ -17,7 +17,7 @@ const page = `---
 type: KnowledgePage
 title: Evidence
 schema_version: openkit-scope-knowledge-schema-v4
-requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
 scope: ${JSON.stringify(ownerScope)}

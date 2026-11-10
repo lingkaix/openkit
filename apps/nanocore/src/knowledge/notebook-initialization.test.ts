@@ -280,7 +280,7 @@ describe('Fresh Workspace notebook admission inside native staging', () => {
 type: KnowledgePage
 title: Authored note
 schema_version: openkit-scope-knowledge-schema-v4
-requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
 scope: {kind: workspace, workspaceId: ${workspaceId}}
@@ -375,7 +375,7 @@ User-authored note.
 type: KnowledgePage
 title: ${title}
 schema_version: openkit-scope-knowledge-schema-v4
-requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
 openkit_status: active
 status: stable
 scope: {kind: workspace, workspaceId: ${workspace.id}}

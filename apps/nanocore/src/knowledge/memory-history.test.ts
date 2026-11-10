@@ -356,8 +356,8 @@ describe('native self Memory history', () => {
     retained(
       f,
       request.content.replace(
-        'requiredFeatures: [',
-        'requiredFeatures: ["openkit.unknown-history.v1",'
+        'required_features: [',
+        'required_features: ["openkit.unknown-history.v1",'
       )
     );
     expect(() => readMemoryHistory(f.input, {})).toThrowError(

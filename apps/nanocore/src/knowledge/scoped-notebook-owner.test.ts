@@ -85,7 +85,7 @@ function fixture() {
 
 /** Governed v4 content uses the exact trusted owner mapping, separate from Git revision and page digest. */
 function page(ownerScope: KnowledgeOwnerScope, body = 'Exact first bytes.\r\n'): string {
-  return `---\ntype: KnowledgePage\ntitle: Personal note\nschema_version: openkit-scope-knowledge-schema-v4\nrequiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]\nopenkit_status: active\nstatus: stable\nscope: ${JSON.stringify(ownerScope)}\nsource_refs: []\nreview_state: user-authored\nsensitivity: normal\nfreshness: current\ncreated_at: "2026-10-16T00:00:00.000Z"\nupdated_at: "2026-10-16T00:00:00.000Z"\n---\n${body}`;
+  return `---\ntype: KnowledgePage\ntitle: Personal note\nschema_version: openkit-scope-knowledge-schema-v4\nrequired_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]\nopenkit_status: active\nstatus: stable\nscope: ${JSON.stringify(ownerScope)}\nsource_refs: []\nreview_state: user-authored\nsensitivity: normal\nfreshness: current\ncreated_at: "2026-10-16T00:00:00.000Z"\nupdated_at: "2026-10-16T00:00:00.000Z"\n---\n${body}`;
 }
 
 /** Low-level Git publisher represents later native lifecycle integration; it supplies no scope or disclosure grant. */

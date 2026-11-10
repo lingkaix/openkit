@@ -268,7 +268,7 @@ describe('exact governed Knowledge meaning receiver', () => {
     for (const updates of [
       { type: 'Procedure' },
       { review_state: 'delegated' },
-      { requiredFeatures: ['openkit.unknown.v1'] },
+      { required_features: ['openkit.unknown.v1'] },
     ]) {
       const invalid = updateOkfFrontmatter({ path: 'domain.md', content, updates });
       const corruptRevision = await publish(f, f.notebook, invalid, true);

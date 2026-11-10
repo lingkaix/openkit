@@ -520,7 +520,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify(workspace)}`,
-        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+        `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -560,7 +560,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify(workspace)}`,
-        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+        `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -735,7 +735,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify(workspace)}`,
-        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+        `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -771,7 +771,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify(workspace)}`,
-        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+        `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -821,7 +821,7 @@ describe('validateOpenKitKnowledgeProfile', () => {
         'openkit_status: "active"',
         'status: "stable"',
         `scope: ${JSON.stringify(workspace)}`,
-        `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+        `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
         'source_refs: []',
         'review_state: "accepted"',
         'sensitivity: "normal"',
@@ -864,7 +864,7 @@ function governedPage(input: {
       `openkit_status: ${JSON.stringify(input.openkitStatus ?? 'active')}`,
       ...(input.status ? [`status: ${JSON.stringify(input.status)}`] : []),
       `scope: ${JSON.stringify(workspace)}`,
-      `requiredFeatures: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
+      `required_features: ${JSON.stringify(REQUIRED_SCOPED_KNOWLEDGE_FEATURES)}`,
       `source_refs: ${input.sourceRefsYaml ?? '[]'}`,
       'review_state: "accepted"',
       'sensitivity: "normal"',
@@ -963,7 +963,7 @@ describe('direct human page bytes at the scoped profile boundary', () => {
       const parsed = parseOkfDocument({ path: 'human-note.md', content });
       expect(parsed.ok).toBe(true);
       expect(parsed.document?.frontmatter.scope).toEqual(ownerScope);
-      expect(parsed.document?.frontmatter.requiredFeatures).toEqual(
+      expect(parsed.document?.frontmatter.required_features).toEqual(
         REQUIRED_SCOPED_KNOWLEDGE_FEATURES
       );
       expect(parsed.document?.frontmatter).not.toHaveProperty('openkit_entry_kind');
@@ -996,7 +996,7 @@ function page(type: 'Claim' | 'Observation', fields: Record<string, unknown> = {
     type,
     title: 'Reusable release understanding',
     schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
-    requiredFeatures: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
+    required_features: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
     scope: owner,
     openkit_status: type === 'Observation' ? 'draft' : 'active',
     status: type === 'Observation' ? 'draft' : 'stable',
@@ -1190,7 +1190,7 @@ function registerOkfScopedProfileTests() {
       schema_version: 'openkit-scope-knowledge-schema-v4',
       openkit_status: 'active',
       scope: workspace,
-      requiredFeatures: features,
+      required_features: features,
       source_refs: [],
       review_state: 'delegated',
       sensitivity: 'normal',
@@ -1255,8 +1255,9 @@ function registerOkfScopedProfileTests() {
       'rejects missing or malformed required features %j',
       (requiredFeatures) => {
         expect(
-          validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
-        ).toContainEqual(expect.objectContaining({ field: 'requiredFeatures' }));
+          validateOpenKitKnowledgeProfile(parsedPage({ required_features: requiredFeatures }))
+            .errors
+        ).toContainEqual(expect.objectContaining({ field: 'required_features' }));
       }
     );
 
@@ -1264,18 +1265,36 @@ function registerOkfScopedProfileTests() {
       'rejects an omitted v4 semantic %j',
       (requiredFeatures) => {
         expect(
-          validateOpenKitKnowledgeProfile(parsedPage({ requiredFeatures })).errors
+          validateOpenKitKnowledgeProfile(parsedPage({ required_features: requiredFeatures }))
+            .errors
         ).toContainEqual(
           expect.objectContaining({
             code: 'profile.missing_required_feature',
-            field: 'requiredFeatures',
+            field: 'required_features',
           })
         );
       }
     );
 
+    it.each([
+      ['absent', undefined],
+      ['present', features],
+    ] as const)('refuses the old key when the canonical key is %s', (_case, canonical) => {
+      const document = parsedPage({
+        required_features: canonical,
+        requiredFeatures: ['openkit.future.v1'],
+      });
+      expect(validateOpenKitKnowledgeProfile(document).errors).toContainEqual(
+        expect.objectContaining({
+          code: 'profile.obsolete_authority_field',
+          field: 'requiredFeatures',
+        })
+      );
+      expect(isActiveOpenKitKnowledgePage(document)).toBe(false);
+    });
+
     it('refuses unknown required semantics without rejecting the external OKF envelope', () => {
-      const document = parsedPage({ requiredFeatures: [...features, 'openkit.future.v1'] });
+      const document = parsedPage({ required_features: [...features, 'openkit.future.v1'] });
       expect(validateOpenKitKnowledgeProfile(document)).toMatchObject({
         conformance: 'OKF-compatible',
         errors: [expect.objectContaining({ code: 'profile.unsupported_required_feature' })],
@@ -1366,7 +1385,7 @@ function registerOkfScopedProfileTests() {
       });
       expect(
         validateOpenKitKnowledgeProfile(
-          parsedPage({ scope: 'workspace', requiredFeatures: undefined })
+          parsedPage({ scope: 'workspace', required_features: undefined })
         ).conformance
       ).toBe('OKF-compatible');
     });

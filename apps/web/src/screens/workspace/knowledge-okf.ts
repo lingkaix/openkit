@@ -133,7 +133,7 @@ export function composeUserAuthoredKnowledgePage(input: {
     type: 'KnowledgePage',
     title: input.title,
     schema_version: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_VERSION,
-    requiredFeatures: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
+    required_features: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
     openkit_status: state,
     status: STANDARD_STATUS_BY_PAGE_STATE[state],
     scope: { kind: 'workspace', workspaceId: input.workspaceId },

@@ -49,7 +49,7 @@ App API, Core Client and the agent-facing interface reuse the existing page/sour
 
 Page/source/candidate reads, writes, exports and derived retrieval require current scope authority. User Memory read and mutation eligibility follows [Core Policy](../core/policy.md), while ownership remains with the original User. Ordinary users cannot read another user's Memory. Workspace Knowledge requires active membership and existing operation checks. Server Knowledge requires deployment administration. Restricted source evidence adds its own current read/disclosure conditions. The Notebook UI labels User pages Memory and Workspace/Server pages Knowledge, shows source and applicable scope, and offers saved entries and pending changes separately.
 
-The envelope owner must register `openkit.knowledge-owner-scope.v1` and `openkit.knowledge-git-notebook.v1` before this extension becomes writable/importable. Emit them in `requiredFeatures` on scoped pages, governed mutation records and export manifests carrying these semantics. Unsupported readers reject before retrieval, mutation or import; an omitted capability cannot downgrade User ownership or discard a replacement base assertion.
+The envelope owner must register `openkit.knowledge-owner-scope.v1` and `openkit.knowledge-git-notebook.v1` before this extension becomes writable/importable. Emit them in `required_features` on scoped Page frontmatter and in `requiredFeatures` on governed JSON mutation records and export manifests carrying these semantics. Unsupported readers reject before retrieval, mutation or import; an omitted capability cannot downgrade User ownership or discard a replacement base assertion.
 
 ### History, explicit saving and personalization
 

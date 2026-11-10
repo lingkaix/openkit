@@ -62,7 +62,7 @@ openkit_status: active
 scope:
   kind: user
   userId: "${userId}"
-requiredFeatures:
+required_features:
   - "openkit.knowledge-owner-scope.v1"
   - "openkit.knowledge-git-notebook.v1"
 source_refs:
@@ -89,7 +89,7 @@ openkit_status: active
 scope:
   kind: user
   userId: "${userId}"
-requiredFeatures:
+required_features:
   - "openkit.knowledge-owner-scope.v1"
   - "openkit.knowledge-git-notebook.v1"
 source_refs:
@@ -118,7 +118,7 @@ openkit_status: active
 scope:
   kind: user
   userId: "${userId}"
-requiredFeatures:
+required_features:
   - "openkit.knowledge-owner-scope.v1"
   - "openkit.knowledge-git-notebook.v1"
 source_refs:

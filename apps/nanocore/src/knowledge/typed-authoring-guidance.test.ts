@@ -453,7 +453,7 @@ describe('bounded typed Knowledge authoring guidance', () => {
         'openkit_status',
         'status',
         'scope',
-        'requiredFeatures',
+        'required_features',
         'source_refs',
         'review_state',
         'sensitivity',

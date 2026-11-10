@@ -147,7 +147,7 @@ async function fixture(
     );
     expect(payload.sources[0].content).toContain('The project uses green labels.');
     const ref = payload.sources[0].reference;
-    const page = `---\ntype: KnowledgePage\ntitle: Labels\nschema_version: openkit-scope-knowledge-schema-v4\nrequiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]\nopenkit_status: active\nstatus: stable\nscope: {kind: workspace, workspaceId: ${workspace.id}}\nsource_refs: [${JSON.stringify(ref)}]\nreview_state: user-authored\nsensitivity: normal\nfreshness: current\ncreated_at: "2026-10-17T00:00:00.000Z"\nupdated_at: "2026-10-17T00:00:00.000Z"\n---\nThe project uses green labels.\n`;
+    const page = `---\ntype: KnowledgePage\ntitle: Labels\nschema_version: openkit-scope-knowledge-schema-v4\nrequired_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]\nopenkit_status: active\nstatus: stable\nscope: {kind: workspace, workspaceId: ${workspace.id}}\nsource_refs: [${JSON.stringify(ref)}]\nreview_state: user-authored\nsensitivity: normal\nfreshness: current\ncreated_at: "2026-10-17T00:00:00.000Z"\nupdated_at: "2026-10-17T00:00:00.000Z"\n---\nThe project uses green labels.\n`;
     const execute = async (name: string, args: unknown) =>
       input.tools
         .find((tool) => tool.name === name)!
@@ -556,7 +556,7 @@ describe('Workspace Knowledge Manager maintenance admission', () => {
  type: KnowledgePage
  title: Removed lesson
  schema_version: openkit-scope-knowledge-schema-v4
- requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
+ required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]
  openkit_status: active
  status: stable
  scope: {kind: workspace, workspaceId: ${workspaceId}}

@@ -171,7 +171,7 @@ describe('explicit native User Source intake', () => {
       created_at: source.createdAt,
       updated_at: source.updatedAt,
       sensitivity: 'confidential',
-      requiredFeatures: ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'],
+      required_features: ['openkit.knowledge-owner-scope.v1', 'openkit.knowledge-git-notebook.v1'],
       uri: null,
       originatingThreadId: null,
       originatingTurnId: null,
@@ -438,8 +438,8 @@ describe('explicit native User Source intake', () => {
       { schema_version: 'unsupported-scope-schema' },
       { type: 'UnknownSource' },
       {
-        requiredFeatures: [
-          ...(original.requiredFeatures as string[]),
+        required_features: [
+          ...(original.required_features as string[]),
           'openkit.memory-suppression.v1',
         ],
       },

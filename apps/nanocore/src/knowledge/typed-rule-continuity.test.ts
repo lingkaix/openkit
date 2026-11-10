@@ -85,7 +85,7 @@ function rulePage(
     `openkit_status: ${state}`,
     `status: ${state === 'active' ? 'stable' : 'deprecated'}`,
     `scope: ${JSON.stringify({ kind: 'workspace', workspaceId })}`,
-    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+    'required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     `source_refs: ${JSON.stringify(sources)}`,
     'review_state: delegated',
     'sensitivity: normal',

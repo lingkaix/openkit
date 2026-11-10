@@ -169,7 +169,7 @@ export function serializeSourcePointer(input: {
     schema_version: schema.schema.schemaVersion,
     openkit_status: 'active',
     scope: input.owner.ownerScope,
-    requiredFeatures: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
+    required_features: [...REQUIRED_SCOPED_KNOWLEDGE_FEATURES],
     source_refs: [],
     review_state: 'user-authored',
     sensitivity: input.owner.ownerScope.kind === 'user' ? 'confidential' : 'internal',

@@ -194,7 +194,7 @@ function proposalPageBytes(
     'openkit_status: "active"',
     'status: "stable"',
     `scope: {kind: workspace, workspaceId: ${DEMO_WORKSPACE_ID}}`,
-    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+    'required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     `openkit_entry_id: ${JSON.stringify(knowledgePageId)}`,
     `source_refs: ${JSON.stringify([sourceReference])}`,
     'review_state: "accepted"',

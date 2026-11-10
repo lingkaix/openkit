@@ -205,7 +205,7 @@ function proposalInput(source: { id: string; contentDigest: string }, baseRevisi
     'openkit_status: "active"',
     'status: "stable"',
     'scope: {kind: workspace, workspaceId: ws_00000000-0000-7000-8000-000000000001}',
-    'requiredFeatures: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
+    'required_features: [openkit.knowledge-owner-scope.v1, openkit.knowledge-git-notebook.v1]',
     'openkit_entry_id: "cutover-lesson"',
     `source_refs: ${JSON.stringify(sourceReferences)}`,
     'review_state: "accepted"',
