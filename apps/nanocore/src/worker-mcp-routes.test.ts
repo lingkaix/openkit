@@ -7995,10 +7995,9 @@ describe('MCP native admission and original closeout', () => {
     }
   );
 
-  it('commits the admitted terminal Item behind eight same-Turn pending publications', async () => {
+  it('commits exact admitted MCP closeout behind eight explicit same-Turn progress offers', async () => {
+    const RETAINED_PROGRESS_PUBLICATION = 'progress' as const; // Independent expected producer token, OLD-compatible.
     const f = await createMcpCommitFixture();
-    const client = getControlStoreWorkerClient();
-    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
     const turnId = f.environmentPackage.scope.turnId;
     const itemId = deriveEntityId('it', [
       'mcp',
@@ -8009,7 +8008,53 @@ describe('MCP native admission and original closeout', () => {
     ]);
     const entered = Promise.withResolvers<void>();
     const effect = Promise.withResolvers<void>();
-    const pressure = Promise.withResolvers<void>();
+    const firstAck = Promise.withResolvers<void>();
+    let heldForward: (() => boolean) | undefined;
+    let selectedProgress: number | undefined;
+    const interception = mcpNativeInterception.current!;
+    const posted = interception.posted.bind(interception);
+    const reply = interception.reply.bind(interception);
+    const stamp = new Date().toISOString();
+    const progress = Array.from({ length: 8 }, (_, index) => ({
+      id: allocateEntityId('it'),
+      owner: { kind: 'workspace' as const, workspaceId: f.workspaceId },
+      threadId: f.environmentPackage.scope.threadId,
+      turnId,
+      type: 'status' as const,
+      level: 'info' as const,
+      title: 'Observed product progress',
+      status: 'completed' as const,
+      createdAt: stamp,
+      completedAt: stamp,
+      summary: `${index}:${'p'.repeat(1024)}`,
+    }));
+    interception.posted = (value) => {
+      posted(value);
+      const request = value as Extract<ControlWorkerRequest, { operation: 'item' }>;
+      if (request.operation === 'item' && request.input.item.id === progress[0]!.id)
+        selectedProgress = request.id;
+    };
+    interception.reply = (value, forward) => {
+      const result = value as ControlWorkerReply;
+      if (
+        selectedProgress !== undefined &&
+        result?.id === selectedProgress &&
+        result.status === 'ok' &&
+        result.operation === 'item'
+      ) {
+        expect(result.status).toBe('ok');
+        expect(heldForward).toBeUndefined();
+        heldForward = forward;
+        firstAck.resolve();
+        return true;
+      }
+      return reply(value, forward);
+    };
+    const releaseProgress = () => {
+      const forward = heldForward;
+      heldForward = undefined;
+      forward?.();
+    };
     const publicationEntered = Promise.withResolvers<void>();
     const publicationErrors: unknown[] = [];
     const createItem = f.store.createItem.bind(f.store);
@@ -8022,7 +8067,113 @@ describe('MCP native admission and original closeout', () => {
         throw error;
       }
     });
-    const pending: Promise<unknown>[] = [];
+    const client = getControlStoreWorkerClient();
+    const state = client as unknown as {
+      backing: Map<string, { inputBytes: number }>;
+      progressCopyBytes?: Map<string, number>;
+      outstanding: Map<string, number>;
+      turnTails: Map<string, { pending: number }>;
+      pending: Map<number, unknown>;
+      pendingTurnPublications(key: string): number;
+    };
+    const progressCopyBytes = state.progressCopyBytes ?? new Map<string, number>(); // Passive OLD observation only.
+    let peakAggregateBytes = 0,
+      peakCount = 0,
+      peakTurn = 0,
+      observerErrors = 0,
+      observations = 0;
+    const acceptedProgressIds = new Set<string>(),
+      acceptedProgressBytes: number[] = [];
+    const restore: Array<() => void> = [];
+    const aggregate = (database: string) =>
+      (state.backing.get(database)?.inputBytes ?? 0) + (progressCopyBytes.get(database) ?? 0);
+    const sample = () => {
+      try {
+        observations++;
+        const databases = new Set([...state.backing.keys(), ...progressCopyBytes.keys()]);
+        peakAggregateBytes = Math.max(peakAggregateBytes, 0, ...[...databases].map(aggregate));
+        peakCount = Math.max(peakCount, 0, ...state.outstanding.values());
+        peakTurn = Math.max(
+          peakTurn,
+          0,
+          ...[...state.turnTails.keys()].map((key) => state.pendingTurnPublications(key))
+        );
+        if (
+          [...progressCopyBytes.values()].some((value) => !Number.isSafeInteger(value) || value < 0)
+        )
+          observerErrors++;
+      } catch {
+        observerErrors++;
+      }
+    };
+    const originalPublication = client.runTurnPublication;
+    const progressAdmission = vi
+      .spyOn(client, 'runTurnPublication')
+      .mockImplementation((...args) => {
+        const before = state.outstanding.get(args[0]) ?? 0;
+        const result = Reflect.apply(originalPublication, client, args);
+        try {
+          const preview = args[5];
+          const owned = args[2] as unknown;
+          const caller =
+            Array.isArray(owned) && owned[2] === RETAINED_PROGRESS_PUBLICATION
+              ? (owned[0] as (typeof progress)[number])
+              : undefined;
+          const selected = preview
+            ? preview.opening.database === args[0]
+              ? preview.input.item
+              : undefined
+            : caller;
+          if (
+            selected?.turnId === turnId &&
+            progress.some((item) => item.id === selected.id) &&
+            (state.outstanding.get(args[0]) ?? 0) > before
+          ) {
+            acceptedProgressIds.add(selected.id);
+            acceptedProgressBytes.push(aggregate(args[0]));
+          }
+        } catch {
+          observerErrors++;
+        }
+        return result;
+      });
+    restore.push(() => progressAdmission.mockRestore());
+    for (const map of [
+      state.backing,
+      progressCopyBytes,
+      state.outstanding,
+      state.turnTails,
+      state.pending,
+    ]) {
+      for (const method of ['set', 'delete'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(map, method),
+          original = map[method];
+        Object.defineProperty(map, method, {
+          configurable: true,
+          writable: true,
+          value: function (...args: unknown[]) {
+            const value = Reflect.apply(original, this, args);
+            sample();
+            return value;
+          },
+        });
+        restore.push(() => {
+          if (descriptor) Object.defineProperty(map, method, descriptor);
+          else Reflect.deleteProperty(map, method);
+        });
+      }
+    }
+    const pending: Array<
+      Promise<
+        | { status: 'ok'; value: Awaited<ReturnType<typeof createItem>> }
+        | { status: 'error'; error: unknown }
+      >
+    > = [];
+    const offer = (item: (typeof progress)[number]) =>
+      createItem(item, undefined, RETAINED_PROGRESS_PUBLICATION).then(
+        (value) => ({ status: 'ok' as const, value }),
+        (error) => ({ status: 'error' as const, error })
+      );
     let original: ReturnType<typeof f.call> | undefined;
     try {
       f.tool(async () => {
@@ -8032,10 +8183,26 @@ describe('MCP native admission and original closeout', () => {
       original = f.call(9300);
       await entered.promise;
       // COORD01:57Z: eight bounds new admissions; this exact admitted effect still owns closeout.
-      for (let index = 0; index < 8; index += 1)
-        pending.push(client.runTurnPublication(database, [turnId], {}, () => pressure.promise));
+      const first = offer(progress[0]!);
+      pending.push(first);
+      void first.catch(() => undefined);
+      await Promise.race([
+        firstAck.promise,
+        first.then(() => {
+          throw new Error('Progress settled before real ACK hold.');
+        }),
+      ]);
+      for (const item of progress.slice(1)) {
+        const producer = offer(item);
+        pending.push(producer);
+        void producer.catch(() => undefined);
+      }
       await expect(
-        client.runTurnPublication(database, [turnId], {}, async () => undefined)
+        createItem(
+          { ...progress[0]!, id: allocateEntityId('it') },
+          undefined,
+          RETAINED_PROGRESS_PUBLICATION
+        )
       ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
       effect.resolve();
       await publicationEntered.promise;
@@ -8049,7 +8216,7 @@ describe('MCP native admission and original closeout', () => {
           format('Original terminal Item publication exceptions: %o', publicationErrors)
         )
         .toBe('held');
-      pressure.resolve();
+      releaseProgress();
       expect(await original).toHaveProperty('result');
       expect(
         f.store.listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
@@ -8057,12 +8224,291 @@ describe('MCP native admission and original closeout', () => {
         expect.objectContaining({ id: itemId, type: 'tool-call', status: 'completed' })
       );
       expect(f.contacts()).toBe(1);
+      const progressResults = await Promise.all(pending);
+      expect(progressResults).toHaveLength(8);
+      expect(progressResults.some((result) => result.status === 'error')).toBe(true);
+      const admitted = progress.filter((_, index) => progressResults[index]!.status === 'ok');
+      for (const [index, result] of progressResults.entries()) {
+        if (result.status === 'ok') expect(result.value).toEqual(progress[index]);
+        else {
+          expect(acceptedProgressIds.has(progress[index]!.id)).toBe(false);
+          expect(result.error).toBeInstanceOf(ControlStoreWorkerError);
+          expect(result.error).toMatchObject({ code: 'busy', commit: 'not-committed' });
+        }
+      }
+      expect(publicationErrors).toEqual([]);
+      expect([...acceptedProgressIds].sort()).toEqual(admitted.map((item) => item.id).sort());
+      expect(acceptedProgressBytes.length).toBeGreaterThan(0);
+      expect(acceptedProgressBytes.every((bytes) => bytes <= 31 * 1024 * 1024)).toBe(true);
+      expect(state.progressCopyBytes).toBeInstanceOf(Map);
+      expect(observations).toBeGreaterThan(0);
+      expect(observerErrors).toBe(0);
+      // This bounded positive fixture stays below64MiB; README370's existing exact-closeout exemption is not generalized.
+      expect(peakAggregateBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+      expect(peakCount).toBeLessThanOrEqual(1024);
+      expect(peakTurn).toBeLessThanOrEqual(8);
+      expect([...progressCopyBytes.values()].every((bytes) => bytes === 0)).toBe(true);
+      const retained = f.store.listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId);
+      expect(
+        retained.filter((item) => progress.some((selected) => selected.id === item.id))
+      ).toEqual(admitted);
+      const terminal = retained.find((item) => item.id === itemId)!;
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+        expect.objectContaining({ id: terminal.causationId, status: 'succeeded', turnId })
+      );
+      const cold = await f.reopen();
+      try {
+        expect(
+          new FsStore({ dataRoot: f.dataRoot }).listThreadItems(
+            f.workspaceId,
+            f.environmentPackage.scope.threadId
+          )
+        ).toEqual(retained);
+      } finally {
+        cold.sqlite.close();
+      }
     } finally {
       effect.resolve();
-      pressure.resolve();
+      releaseProgress();
       await original;
       await Promise.allSettled(pending);
       publication.mockRestore();
+      for (const reset of restore.reverse()) reset();
+      interception.posted = posted;
+      interception.reply = reply;
+      await f.close();
+    }
+  });
+
+  it('admits one real MCP effect while1024 genuine progress offers saturate the Workspace count', async () => {
+    const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
+    const f = await createMcpCommitFixture();
+    const client = getControlStoreWorkerClient();
+    const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
+    const turns: Array<Awaited<ReturnType<FsStore['createTurn']>>> = [];
+    const actor = f.environmentPackage.scope.triggerActor;
+    for (let index = 0; index < 147; index++) {
+      const thread = await f.store.createThread(f.workspaceId, `Real global pressure ${index}`);
+      turns.push(
+        await f.store.createTurn(f.workspaceId, thread.id, 'Genuine bounded progress', actor)
+      );
+    }
+    const stamp = new Date().toISOString();
+    const progress = Array.from({ length: 1024 }, (_, index) => {
+      const turn = turns[Math.floor(index / 7)]!;
+      return {
+        id: allocateEntityId('it'),
+        owner: turn.owner,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'status' as const,
+        level: 'info' as const,
+        title: 'Genuine explicitly classified progress',
+        status: 'completed' as const,
+        createdAt: stamp,
+        completedAt: stamp,
+        summary: `${index}:${'p'.repeat(1024)}`,
+      };
+    });
+    const itemIds = new Set<string>(progress.map((item) => item.id)),
+      requestIds = new Set<number>();
+    const interception = mcpNativeInterception.current!;
+    const posted = interception.posted.bind(interception),
+      reply = interception.reply.bind(interception);
+    const firstAck = Promise.withResolvers<void>();
+    const held: Array<() => boolean> = [];
+    let holding = true;
+    interception.posted = (value) => {
+      posted(value);
+      const request = value as Extract<ControlWorkerRequest, { operation: 'item' }>;
+      if (request.operation === 'item' && itemIds.has(request.input.item.id))
+        requestIds.add(request.id);
+    };
+    interception.reply = (value, forward) => {
+      const response = value as ControlWorkerReply;
+      if (
+        holding &&
+        response.status === 'ok' &&
+        response.operation === 'item' &&
+        requestIds.has(response.id)
+      ) {
+        held.push(forward);
+        firstAck.resolve();
+        return true;
+      }
+      return reply(value, forward);
+    };
+    const release = () => {
+      holding = false;
+      for (const forward of held.splice(0)) forward();
+    };
+    const offer = (item: (typeof progress)[number]) =>
+      f.store.createItem(item, undefined, RETAINED_PROGRESS_PUBLICATION).then(
+        (value) => ({ status: 'ok' as const, value }),
+        (error) => ({ status: 'error' as const, error })
+      );
+    const state = client as unknown as {
+      outstanding: Map<string, number>;
+      backing: Map<string, { inputBytes: number }>;
+      progressCopyBytes?: Map<string, number>;
+      turnTails: Map<string, { pending: number }>;
+    };
+    const future = state.progressCopyBytes ?? new Map<string, number>();
+    let peakCount = 0,
+      peakTurn = 0,
+      peakBytes = 0,
+      observerErrors = 0;
+    const restore: Array<() => void> = [];
+    for (const map of [state.outstanding, state.backing, future, state.turnTails]) {
+      for (const method of ['set', 'delete'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(map, method),
+          original = map[method];
+        Object.defineProperty(map, method, {
+          configurable: true,
+          writable: true,
+          value: function (...args: unknown[]) {
+            const value = Reflect.apply(original, this, args);
+            try {
+              peakCount = Math.max(peakCount, 0, ...state.outstanding.values());
+              peakTurn = Math.max(
+                peakTurn,
+                0,
+                ...[...state.turnTails.values()].map((entry) => entry.pending)
+              );
+              const databases = new Set([...state.backing.keys(), ...future.keys()]);
+              peakBytes = Math.max(
+                peakBytes,
+                0,
+                ...[...databases].map(
+                  (key) => (state.backing.get(key)?.inputBytes ?? 0) + (future.get(key) ?? 0)
+                )
+              );
+            } catch {
+              observerErrors++;
+            }
+            return value;
+          },
+        });
+        restore.push(() => {
+          if (descriptor) Object.defineProperty(map, method, descriptor);
+          else Reflect.deleteProperty(map, method);
+        });
+      }
+    }
+    const producers: Array<ReturnType<typeof offer>> = [];
+    let original: ReturnType<typeof f.call> | undefined;
+    try {
+      f.tool(async () => {}); // Existing external Tool seam; Core admission, ledgers, SQL and ACKs stay real.
+      producers.push(offer(progress[0]!));
+      await Promise.race([
+        firstAck.promise,
+        producers[0]!.then(() => {
+          throw new Error('First real progress ACK was not held');
+        }),
+      ]);
+      for (const item of progress.slice(1)) producers.push(offer(item));
+      const beforeMcp = (client as unknown as { outstanding: Map<string, number> }).outstanding.get(
+        database
+      );
+      original = f.call(9340);
+      // Deciding OLD criterion precedes new partition-count assertions: actual effect admission must succeed.
+      const response = await original;
+      const field = (value: unknown, key: string): unknown =>
+        typeof value === 'object' && value !== null ? Reflect.get(value, key) : undefined;
+      const scalar = (value: unknown) =>
+        typeof value === 'string' || typeof value === 'number' ? value : undefined;
+      const error = field(response, 'error'),
+        data = field(error, 'data');
+      console.info('Global progress real MCP disposition', {
+        code: scalar(field(error, 'code')),
+        dataCode: scalar(field(data, 'code')),
+        commit: scalar(field(data, 'commit')),
+        contacts: f.contacts(),
+      });
+      expect(response).toHaveProperty('result');
+      expect(f.contacts()).toBe(1);
+      expect(beforeMcp).toBe(1021); // Original1024 total minus real closeout/open/start allowance3.
+      const terminalId = deriveEntityId('it', [
+        'mcp',
+        f.environmentPackage.snapshotId,
+        'echo',
+        'echo',
+        9340,
+      ]);
+      const callId = deriveEntityId('cap', [
+        'mcp',
+        f.environmentPackage.snapshotId,
+        'echo',
+        'mcp.call-tool',
+        9340,
+      ]);
+      expect(
+        f.store.listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
+      ).toContainEqual(
+        expect.objectContaining({
+          id: terminalId,
+          type: 'tool-call',
+          status: 'completed',
+          causationId: callId,
+        })
+      );
+      expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId)).toContainEqual(
+        expect.objectContaining({
+          id: callId,
+          status: 'succeeded',
+          turnId: f.environmentPackage.scope.turnId,
+        })
+      );
+      release();
+      const results = await Promise.all(producers);
+      expect(results.filter((result) => result.status === 'ok')).toHaveLength(1021);
+      expect(results.filter((result) => result.status === 'error')).toHaveLength(3);
+      for (const [index, result] of results.entries()) {
+        if (result.status === 'ok') expect(result.value).toEqual(progress[index]);
+        else {
+          expect(result.error).toBeInstanceOf(ControlStoreWorkerError);
+          expect(result.error).toMatchObject({ code: 'busy', commit: 'not-committed' });
+        }
+      }
+      expect(state.progressCopyBytes).toBeInstanceOf(Map);
+      expect(observerErrors).toBe(0);
+      expect(peakCount).toBeLessThanOrEqual(1024);
+      expect(peakTurn).toBeLessThanOrEqual(8);
+      expect(peakBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+      expect([...future.values()].every((bytes) => bytes === 0)).toBe(true);
+      const expected = turns.map((turn) => f.store.listThreadItems(f.workspaceId, turn.threadId));
+      for (const [index, turn] of turns.entries())
+        expect(expected[index]).toEqual(
+          progress.filter(
+            (item, ordinal) => item.turnId === turn.id && results[ordinal]!.status === 'ok'
+          )
+        );
+      const cold = await f.reopen();
+      try {
+        const reopened = new FsStore({ dataRoot: f.dataRoot });
+        expect(turns.map((turn) => reopened.listThreadItems(f.workspaceId, turn.threadId))).toEqual(
+          expected
+        );
+        expect(
+          reopened.listThreadItems(f.workspaceId, f.environmentPackage.scope.threadId)
+        ).toContainEqual(
+          expect.objectContaining({
+            id: terminalId,
+            type: 'tool-call',
+            status: 'completed',
+            causationId: callId,
+          })
+        );
+      } finally {
+        cold.sqlite.close();
+      }
+    } finally {
+      release();
+      await original;
+      await Promise.allSettled(producers);
+      for (const reset of restore.reverse()) reset();
+      interception.posted = posted;
+      interception.reply = reply;
       await f.close();
     }
   });

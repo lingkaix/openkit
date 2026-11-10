@@ -1223,6 +1223,8 @@ describe('database setup', () => {
       // The canonical User reader fixture uses a private physical-database marker.
       .filter((path) => path !== join(sourceRoot, 'storage', 'db.test.ts'))
       // These exact tests inject SQL faults into private databases; they own no production schema.
+      // The cold User reader fixture injects only an unsupported predecessor ledger after private setup.
+      .filter((path) => path !== join(sourceRoot, 'storage', 'cold-user-opening-native.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'workspace-retirement.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'operation-error.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'server-thread-operation-projections.test.ts'))

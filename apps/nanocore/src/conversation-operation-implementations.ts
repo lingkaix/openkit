@@ -50,6 +50,7 @@ export function createTaskConversationOperationImplementations(
       try {
         return await readConversationNavigation({
           ...input,
+          recheckAdmission: context.recheckAdmission,
           store,
           actor: publicOperationActor(context),
           coreDb: dependencies.coreDb,

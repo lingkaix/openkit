@@ -20,7 +20,10 @@ import {
 import { z } from 'zod';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
-import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
 import { type RuntimeConfigManager, resolveDefaultAgentId } from './config/runtime-config.js';
 import type { FsStore } from './lib/store.js';
@@ -29,8 +32,8 @@ import { OperationError } from './operation-error.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
 import { listGoalsForThread } from './runtime/goal-owner.js';
-import { type CoreDb, openUserDb, type UserDb, type WorkspaceDb } from './storage/db.js';
-import { applyScopedMigrations } from './storage/migrate.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
 import { readThreadReadReceipt } from './storage/thread-read-receipts.js';
 import { readBoundedThreadDashboard } from './thread-dashboard.js';
 import { receiptMessageItemIds } from './thread-read-state.js';
@@ -529,7 +532,7 @@ function decodeConversationNavigationCursor(
 }
 
 /** Reads current conversation activity after native Workspace admission, admitting each audience before dependent reads. */
-export function readConversationNavigation({
+export async function readConversationNavigation({
   store,
   workspaceId,
   limit,
@@ -539,6 +542,7 @@ export function readConversationNavigation({
   runtimeConfigManager,
   repositoryWorkspaceDb,
   administratorEligible = false,
+  recheckAdmission,
 }: {
   store: FsStore;
   workspaceId: string;
@@ -549,18 +553,26 @@ export function readConversationNavigation({
   runtimeConfigManager: RuntimeConfigManager;
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   administratorEligible?: boolean | undefined;
-}): ConversationNavigationResponse {
+  recheckAdmission?: (() => Promise<void>) | undefined;
+}): Promise<ConversationNavigationResponse> {
   let workspaceDb: WorkspaceDb | undefined;
   let userDb: UserDb | undefined;
   try {
     store.getWorkspace(workspaceId);
     const position = decodeConversationNavigationCursor(cursor, workspaceId);
+    if (coreDb) {
+      userDb = await getControlStoreWorkerClient().openInitializedUserReadDb(
+        coreDb.dataRoot,
+        actor.userId
+      );
+      await recheckAdmission?.();
+      store.getWorkspace(workspaceId);
+    }
     const agents = runtimeConfigManager.current().agentManifests;
     workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
-    if (coreDb) {
-      userDb = openUserDb(coreDb.dataRoot, actor.userId);
-      applyScopedMigrations(userDb);
-    }
+    const currentAdministratorEligible =
+      administratorEligible &&
+      (coreDb === undefined || isCurrentDeploymentAdministrator(coreDb, actor));
     const authorized = (policyOperation: 'approval.respond' | 'turn.run' | 'review.apply') =>
       coreDb === undefined ||
       isWorkspaceOperationAuthorized(coreDb, actor, workspaceId, {
@@ -571,7 +583,9 @@ export function readConversationNavigation({
     const turnAllowed = authorized('turn.run');
     const visibleThreads = store
       .listThreads(workspaceId)
-      .filter((thread) => isThreadVisible(store, thread, actor?.userId, administratorEligible));
+      .filter((thread) =>
+        isThreadVisible(store, thread, actor?.userId, currentAdministratorEligible)
+      );
     const rows: ConversationNavigationResponse['items'] = visibleThreads
       .filter((thread) => thread.status === 'active')
       .map((thread) => {

@@ -65,10 +65,9 @@ import { OperationError } from './operation-error.js';
 import { admitUserMemoryCaller, admitUserMemoryRetrieval } from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-request-error.js';
-import { openUserDb } from './storage/db.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
-import { applyScopedMigrations } from './storage/migrate.js';
 
 /** First explicit save retains its default KB before Notebook publication; existing or lost notebooks are never initialized again. */
 function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.create'>) {
@@ -232,9 +231,13 @@ export function createMemoryOperationImplementations(
     } catch (error) {
       return memoryFailure(error);
     }
-    const userDb = openUserDb(coreDb.dataRoot, actor.userId);
+    const userDb = await getControlStoreWorkerClient().openInitializedUserReadDb(
+      coreDb.dataRoot,
+      actor.userId
+    );
     try {
-      applyScopedMigrations(userDb);
+      await context.recheckAdmission?.();
+      resolveScopedNotebookOwner({ coreDb, actor, target });
       const writer = { coreDb, userDb, actor, store, runtimeConfigManager, inflightCommands };
       if (initialize === 'query') {
         const owner = admitMemoryContext(writer);

@@ -1,19 +1,22 @@
+import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
-import { allocateEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
+import { allocateEntityId, type Item, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import type { WorkerArtifactCapture } from '../runtime/worker-governance-backend.js';
+import { importWorkerTranscript } from '../runtime/worker-transcript.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
@@ -23,11 +26,29 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createTestStore } from '../test-support/store.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
+import {
+  ALREADY_DECIDED_PUBLICATION_ADMISSION,
+  DISPLAY_PROJECTION_REFRESH_ADMISSION,
+  FsStore,
+} from './store.js';
+
+// Independent trusted-producer token; old createItem accepts the extra runtime argument without this feature.
+const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
 
 const transport = vi.hoisted(() => ({
   workers: [] as NativeWorker[],
-  hold: undefined as { operation: string; entered: () => void; deliver?: () => void } | undefined,
+  postedItemIds: [] as string[],
+  postedItemRpcIds: new Map<number, string>(),
+  beforeExit: undefined as undefined | ((worker: NativeWorker) => void),
+  hold: undefined as
+    | {
+        operation: string;
+        entered: () => void;
+        deliver?: () => void;
+        itemIds?: ReadonlySet<string>;
+        worker?: NativeWorker;
+      }
+    | undefined,
 }));
 // Hold only a real post-COMMIT transport reply. Native preparation, SQL and replies stay unchanged.
 vi.mock('node:worker_threads', async (load) => {
@@ -39,7 +60,21 @@ vi.mock('node:worker_threads', async (load) => {
         super(filename, options);
         transport.workers.push(this);
       }
+      override postMessage(...args: Parameters<NativeWorker['postMessage']>): void {
+        const request = args[0] as {
+          id?: number;
+          operation?: string;
+          input?: { item?: { id?: string } };
+        };
+        if (request.operation === 'item' && request.input?.item?.id) {
+          transport.postedItemIds.push(request.input.item.id);
+          if (request.id !== undefined)
+            transport.postedItemRpcIds.set(request.id, request.input.item.id);
+        }
+        super.postMessage(...args);
+      }
       override emit(event: string | symbol, ...args: unknown[]): boolean {
+        if (event === 'exit') transport.beforeExit?.(this);
         const reply = args[0],
           hold = transport.hold;
         if (
@@ -49,8 +84,13 @@ vi.mock('node:worker_threads', async (load) => {
           typeof reply === 'object' &&
           reply !== null &&
           'operation' in reply &&
-          reply.operation === hold.operation
+          reply.operation === hold.operation &&
+          (!hold.itemIds ||
+            ('id' in reply &&
+              typeof reply.id === 'number' &&
+              hold.itemIds.has(transport.postedItemRpcIds.get(reply.id) ?? '')))
         ) {
+          hold.worker = this;
           hold.deliver = () => super.emit(event, ...args);
           hold.entered();
           return true;
@@ -82,9 +122,13 @@ function barrier() {
   return { reached, release };
 }
 /** Arms one acknowledgement barrier; release and loss both detach the held reply. */
-function holdReply(operation: string) {
+function holdReply(operation: string, itemIds?: ReadonlySet<string>) {
   const { reached, release: entered } = barrier();
-  const hold: NonNullable<typeof transport.hold> = { operation, entered };
+  const hold: NonNullable<typeof transport.hold> = {
+    operation,
+    entered,
+    ...(itemIds ? { itemIds } : {}),
+  };
   transport.hold = hold;
   return {
     reached,
@@ -179,7 +223,7 @@ async function fixture() {
         mediaType: 'text/markdown',
       }
     );
-  return { root, store, workspace, turn, peer, workspaceDb, submit };
+  return { root, store, workspace, turn, peer, workspaceDb, submit, environmentPackage };
 }
 /** Builds a valid candidate Item; its durable identity and revisions remain Store-owned. */
 function message(turn: ReturnType<FsStore['getTurnById']>, text: string) {
@@ -199,6 +243,9 @@ function message(turn: ReturnType<FsStore['getTurnById']>, text: string) {
 afterEach(async () => {
   const held = transport.hold;
   transport.hold = undefined;
+  transport.postedItemIds.length = 0;
+  transport.postedItemRpcIds.clear();
+  transport.beforeExit = undefined;
   held?.deliver?.();
   try {
     await Promise.allSettled(pending.splice(0));
@@ -570,4 +617,581 @@ describe('Store same-Turn publication order through the real native worker', () 
       agentProfileId: 'retained-profile',
     });
   });
+});
+
+// Progress Durability Consent: progress may refuse first; durable final responses must not starve.
+// The class is a trusted producer annotation, separate from the existing post-terminal category.
+for (const pressure of [
+  'same-Turn-count',
+  'same-database-bytes',
+  'nested-progress-bytes',
+  'same-Turn-refused-predecessor',
+  'same-Turn-later-byte-pressure',
+  'same-Turn-unmarked-status',
+] as const) {
+  it(`retains ${pressure === 'same-Turn-unmarked-status' ? 'unmarked durable status' : 'the final transcript'} while eight explicit progress offers exert ${pressure} pressure`, async () => {
+    const f = await fixture();
+    const bytePressure = pressure === 'same-database-bytes';
+    const nestedProgress = pressure === 'nested-progress-bytes';
+    const refusedPredecessor = pressure === 'same-Turn-refused-predecessor';
+    const laterBytePressure = pressure === 'same-Turn-later-byte-pressure';
+    const unmarkedStatus = pressure === 'same-Turn-unmarked-status';
+    const progressTurn = bytePressure || nestedProgress ? f.peer : f.turn;
+    expect(f.store.getTurnById(f.turn.id).status).toBe('running');
+    const stamp = new Date().toISOString();
+    const progress = Array.from({ length: 8 }, (_, index) =>
+      ItemSchema.parse({
+        id: allocateEntityId('it'),
+        owner: progressTurn.owner,
+        threadId: progressTurn.threadId,
+        turnId: progressTurn.id,
+        type: 'status',
+        level: 'info',
+        title: 'Observed product progress',
+        status: 'completed',
+        createdAt: stamp,
+        completedAt: stamp,
+        summary: `${index}:${'p'.repeat((nestedProgress || refusedPredecessor) && index === 0 ? 30 * 1024 * 1024 : bytePressure && index === 0 ? 14 * 1024 * 1024 : 1024)}`,
+      })
+    );
+    // 31 MiB is below the original immutable-body bound; both outer/inner clones must still fit 64 MiB.
+    // The peer Turn prevents ordinary same-Turn FIFO from concealing database-wide byte starvation.
+    const text =
+      bytePressure || nestedProgress || refusedPredecessor || laterBytePressure
+        ? 'Final durable response. '.repeat(
+            Math.floor(((bytePressure ? 31 : 4) * 1024 * 1024) / 24)
+          )
+        : 'Exact final transcript response.';
+    const hash = (bytes: string | Buffer) => createHash('sha256').update(bytes).digest('hex');
+    const payload = {
+      credentialCheckValues: {
+        sensitiveValues: [],
+        loopbackDigests: [hash('a'.repeat(43)), hash('b'.repeat(43))] as [string, string],
+        routeTokenHashes: {
+          workerControl: hash(Buffer.alloc(32, 17)),
+          inference: hash(Buffer.alloc(32, 34)),
+          capability: hash(Buffer.alloc(32, 51)),
+        },
+      },
+      itemsJsonl: JSON.stringify({
+        schemaVersion: 1,
+        kind: 'item',
+        sequence: 1,
+        lineage: {
+          agentSessionId: f.environmentPackage.scope.agentSessionId,
+          packageSnapshotId: f.environmentPackage.snapshotId,
+          requestId: f.environmentPackage.scope.requestId,
+          threadId: f.turn.threadId,
+          turnId: f.turn.id,
+          workspaceId: f.workspace.id,
+        },
+        item: { type: 'assistant-message', status: 'completed', text },
+      }),
+    };
+    const client = getControlStoreWorkerClient();
+    const state = client as unknown as {
+      backing: Map<string, { inputBytes: number }>;
+      progressCopyBytes?: Map<string, number>;
+      outstanding: Map<string, number>;
+      turnTails: Map<string, { pending: number }>;
+      pending: Map<number, unknown>;
+      pendingTurnPublications(key: string): number;
+    };
+    let peakBytes = 0,
+      peakAggregateBytes = 0,
+      peakCount = 0,
+      peakTurn = 0,
+      observations = 0,
+      observerErrors = 0;
+    const progressCopyBytes = state.progressCopyBytes ?? new Map<string, number>(); // Passive OLD observation: no future credit feature exists.
+    const acceptedProgressBytes: number[] = [];
+    const acceptedProgressIds = new Set<string>();
+    const restore: Array<() => void> = [];
+    const aggregate = (database: string) =>
+      (state.backing.get(database)?.inputBytes ?? 0) + (progressCopyBytes.get(database) ?? 0);
+    const sample = () => {
+      try {
+        observations++;
+        peakBytes = Math.max(
+          peakBytes,
+          0,
+          ...[...state.backing.values()].map((value) => value.inputBytes)
+        );
+        const databases = new Set([...state.backing.keys(), ...progressCopyBytes.keys()]);
+        peakAggregateBytes = Math.max(peakAggregateBytes, 0, ...[...databases].map(aggregate));
+        if (
+          [...progressCopyBytes.values()].some((value) => !Number.isSafeInteger(value) || value < 0)
+        )
+          observerErrors++;
+        peakCount = Math.max(peakCount, 0, ...state.outstanding.values());
+        peakTurn = Math.max(
+          peakTurn,
+          0,
+          ...[...state.turnTails.keys()].map((key) => state.pendingTurnPublications(key))
+        );
+      } catch {
+        observerErrors++;
+      }
+    };
+    const originalPublication = client.runTurnPublication;
+    const publication = vi.spyOn(client, 'runTurnPublication').mockImplementation((...args) => {
+      const before = state.outstanding.get(args[0]) ?? 0;
+      const result = Reflect.apply(originalPublication, client, args);
+      // Reservation and tail installation are synchronous before first preparation await.
+      try {
+        const preview = args[5];
+        const owned = args[2] as unknown;
+        const caller =
+          Array.isArray(owned) && owned[2] === RETAINED_PROGRESS_PUBLICATION
+            ? (owned[0] as Item)
+            : undefined;
+        const selected = preview
+          ? preview.opening.database === args[0]
+            ? preview.input.item
+            : undefined
+          : caller;
+        if (
+          selected?.turnId === progressTurn.id &&
+          progress.some((item) => item.id === selected.id) &&
+          (state.outstanding.get(args[0]) ?? 0) > before
+        ) {
+          acceptedProgressBytes.push(aggregate(args[0]));
+          acceptedProgressIds.add(selected.id);
+        }
+      } catch {
+        observerErrors++;
+      }
+      return result;
+    });
+    restore.push(() => publication.mockRestore());
+    // Observe actual original accounting mutations, forwarding each exactly once; no admission/result override.
+    for (const map of [
+      state.backing,
+      progressCopyBytes,
+      state.outstanding,
+      state.turnTails,
+      state.pending,
+    ]) {
+      for (const method of ['set', 'delete'] as const) {
+        const descriptor = Object.getOwnPropertyDescriptor(map, method);
+        const original = map[method];
+        Object.defineProperty(map, method, {
+          configurable: true,
+          writable: true,
+          value: function (...args: unknown[]) {
+            const result = Reflect.apply(original, this, args);
+            sample();
+            return result;
+          },
+        });
+        restore.push(() => {
+          if (descriptor) Object.defineProperty(map, method, descriptor);
+          else Reflect.deleteProperty(map, method);
+        });
+      }
+    }
+    const durableStatus = { ...progress[0]!, id: allocateEntityId('it') };
+    const gate = holdReply('item', new Set(progress.map((item) => item.id)));
+    const offers = [
+      observe(
+        f.store.createItem(
+          progress[0]!,
+          DISPLAY_PROJECTION_REFRESH_ADMISSION,
+          RETAINED_PROGRESS_PUBLICATION
+        )
+      ),
+    ];
+    const terminal = vi.spyOn(f.store, 'createItem');
+    let final:
+      | Promise<
+          | { status: 'ok'; value: { diagnostics: unknown[]; itemIds: string[] } }
+          | { status: 'error'; error: unknown }
+        >
+      | undefined;
+    let calls: Array<Parameters<FsStore['createItem']>> = [];
+    const laterDurable = laterBytePressure
+      ? ItemSchema.parse({
+          ...progress[0]!,
+          id: allocateEntityId('it'),
+          owner: f.peer.owner,
+          threadId: f.peer.threadId,
+          turnId: f.peer.id,
+          summary: 'd'.repeat(Math.floor(27.25 * 1024 * 1024)),
+        })
+      : undefined;
+    let competing:
+      | Promise<{ status: 'ok'; value: Item } | { status: 'error'; error: unknown }>
+      | undefined;
+    try {
+      if (refusedPredecessor || laterBytePressure) {
+        // Offer both genuine caller continuations before the progress inner-copy refusal can settle.
+        for (const item of progress.slice(1))
+          offers.push(
+            observe(
+              f.store.createItem(
+                item,
+                DISPLAY_PROJECTION_REFRESH_ADMISSION,
+                RETAINED_PROGRESS_PUBLICATION
+              )
+            )
+          );
+        final = observe(
+          importWorkerTranscript(f.store, f.environmentPackage, payload, { recordedAt: stamp })
+        );
+        if (laterBytePressure) competing = observe(f.store.createItem(laterDurable!));
+        const entered = await Promise.race([
+          gate.reached.then(() => ({ status: 'held' as const })),
+          final,
+        ]);
+        if (entered.status === 'held') expect(await beforeRelease(final)).toBe('pending');
+        else
+          expect(entered).toMatchObject({
+            status: 'ok',
+            value: { diagnostics: [], itemIds: [expect.any(String)] },
+          });
+      } else {
+        const first = await Promise.race([
+          gate.reached.then(() => ({ status: 'held' as const })),
+          offers[0]!,
+        ]);
+        const held = first.status === 'held';
+        if (nestedProgress) {
+          expect(first).toMatchObject({
+            status: 'error',
+            error: { code: 'busy', commit: 'not-committed' },
+          });
+          expect(transport.postedItemIds).not.toContain(progress[0]!.id);
+        }
+        if (!held) {
+          // Oversized progress may be the first explicit resource refusal; it never grants a loss window.
+          expect(nestedProgress).toBe(true);
+          expect(first).toMatchObject({
+            status: 'error',
+            error: { code: 'busy', commit: 'not-committed' },
+          });
+          gate.release();
+        }
+        for (const item of progress.slice(1))
+          offers.push(
+            observe(
+              f.store.createItem(
+                item,
+                DISPLAY_PROJECTION_REFRESH_ADMISSION,
+                RETAINED_PROGRESS_PUBLICATION
+              )
+            )
+          );
+        final = observe(
+          unmarkedStatus
+            ? f.store
+                .createItem(durableStatus, DISPLAY_PROJECTION_REFRESH_ADMISSION)
+                .then((item) => ({ diagnostics: [], itemIds: [item.id] }))
+            : importWorkerTranscript(f.store, f.environmentPackage, payload, { recordedAt: stamp })
+        );
+        // A genuine predecessor ACK is held; admission success cannot become an early durable ACK.
+        if (held) {
+          // Deciding OLD criterion first: the original real transcript must admit, not refuse busy.
+          expect(await beforeRelease(final)).toBe('pending');
+        }
+        // All eight caller offers remain genuine; refusal is explicit, definite and has no retained Item.
+        const excess = await beforeRelease(offers[held ? 7 : 0]!);
+        expect(excess).toMatchObject({
+          status: 'error',
+          error: { code: 'busy', commit: 'not-committed' },
+        });
+        if (excess === 'pending' || excess.status !== 'error')
+          throw new Error('Excess progress did not refuse explicitly.');
+        expect(excess.error).toBeInstanceOf(ControlStoreWorkerError);
+      }
+    } finally {
+      gate.release();
+      await Promise.all(offers);
+      await final;
+      await competing;
+      calls = terminal.mock.calls
+        .filter(([item]) =>
+          unmarkedStatus ? item.id === durableStatus.id : item.type === 'assistant-message'
+        )
+        .map((args) => [...args]);
+      terminal.mockRestore();
+      for (const reset of restore.reverse()) reset();
+    }
+    const results = await Promise.all(offers);
+    if (refusedPredecessor) {
+      expect(results[0]).toMatchObject({
+        status: 'error',
+        error: { code: 'busy', commit: 'not-committed' },
+      });
+      expect(transport.postedItemIds).not.toContain(progress[0]!.id);
+    }
+    expect(results).toHaveLength(8);
+    const admitted = progress.filter((_, index) => results[index]!.status === 'ok');
+    const refused = progress.filter((_, index) => results[index]!.status === 'error');
+    if (!laterBytePressure) expect(admitted.length).toBeGreaterThan(0);
+    expect(refused.length).toBeGreaterThan(0);
+    expect([...acceptedProgressIds].sort()).toEqual(admitted.map((item) => item.id).sort());
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'ok') expect(result.value).toEqual(progress[index]);
+      else {
+        expect(acceptedProgressIds.has(progress[index]!.id)).toBe(false);
+        expect(transport.postedItemIds).not.toContain(progress[index]!.id);
+        expect(result.error).toBeInstanceOf(ControlStoreWorkerError);
+        expect(result.error).toMatchObject({ code: 'busy', commit: 'not-committed' });
+      }
+    }
+    expect(await final).toMatchObject({
+      status: 'ok',
+      value: { diagnostics: [], itemIds: [expect.any(String)] },
+    });
+    const outcome = await final!;
+    if (outcome.status !== 'ok') throw new Error('The original final transcript failed.');
+    expect(calls).toHaveLength(1); // No hidden owner retry substitutes for guaranteed admission.
+    expect(calls[0]![1]).toEqual(
+      unmarkedStatus ? DISPLAY_PROJECTION_REFRESH_ADMISSION : ALREADY_DECIDED_PUBLICATION_ADMISSION
+    );
+    expect(calls[0]![2]).toBeUndefined(); // Generic status/terminal category must not imply progress.
+    if (laterBytePressure) expect(await competing).toEqual({ status: 'ok', value: laterDurable });
+    expect(state.progressCopyBytes).toBeInstanceOf(Map);
+    expect(observations).toBeGreaterThan(0);
+    expect(observerErrors).toBe(0);
+    expect(acceptedProgressBytes.length).toBeGreaterThan(0);
+    expect(acceptedProgressBytes.every((bytes) => bytes <= 31 * 1024 * 1024)).toBe(true);
+    expect(peakAggregateBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect([...progressCopyBytes.values()].every((bytes) => bytes === 0)).toBe(true);
+    expect(peakBytes).toBeLessThanOrEqual(64 * 1024 * 1024);
+    expect(peakCount).toBeLessThanOrEqual(1024);
+    expect(peakTurn).toBeLessThanOrEqual(8);
+    const expected = f.store.getTurnById(f.turn.id).items;
+    if (unmarkedStatus)
+      expect(expected.find((item) => item.id === durableStatus.id)).toEqual(durableStatus);
+    else
+      expect(expected.filter((item) => item.type === 'assistant-message')).toEqual([
+        expect.objectContaining({ id: outcome.value.itemIds[0], type: 'assistant-message', text }),
+      ]);
+    expect(
+      f.store
+        .getTurnById(progressTurn.id)
+        .items.filter((item) => progress.some((selected) => selected.id === item.id))
+    ).toEqual(admitted);
+    for (const item of refused)
+      expect(
+        f.store.getTurnById(progressTurn.id).items.some((retained) => retained.id === item.id)
+      ).toBe(false);
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(f.root);
+    const cold = new FsStore({ dataRoot: f.root });
+    expect(cold.getTurnById(f.turn.id).items).toEqual(expected);
+    if (laterBytePressure) expect(cold.getTurnById(f.peer.id).items).toEqual([laterDurable]);
+    expect(
+      cold
+        .getTurnById(progressTurn.id)
+        .items.filter((item) => progress.some((selected) => selected.id === item.id))
+    ).toEqual(admitted);
+  });
+}
+
+it('does not wait for progress queued behind its own durable predecessor under cross-Turn byte pressure', async () => {
+  // A genuinely cyclic candidate cannot drain via shutdown. Isolate only this finite owner scenario
+  // in a child; on test failure terminate/join only that child before removing its private root.
+  const root = mkdtempSync(join(tmpdir(), 'durable-progress-cycle-'));
+  const script = `
+    import { createRequire } from 'node:module';
+    import { Worker } from 'node:worker_threads';
+    const { FsStore } = await import(${JSON.stringify(new URL('../../dist/lib/store.js', import.meta.url).href)});
+    const RETAINED_PROGRESS_PUBLICATION = 'progress';
+    const { openCoreDb } = await import(${JSON.stringify(new URL('../../dist/storage/db.js', import.meta.url).href)});
+    const { applyMigrations } = await import(${JSON.stringify(new URL('../../dist/storage/migrate.js', import.meta.url).href)});
+    const { shutdownControlStoreWorkerClient } = await import(${JSON.stringify(new URL('../../dist/storage/control-store-worker-client.js', import.meta.url).href)});
+    const { closeWorkspaceProductReadHandles } = await import(${JSON.stringify(new URL('../../dist/storage/control-store-product-records.js', import.meta.url).href)});
+    const { allocateEntityId, ItemSchema } = createRequire(${JSON.stringify(new URL('../../package.json', import.meta.url).href)})('@openkit/protocol');
+    const root = ${JSON.stringify(root)};
+    const db = openCoreDb(root); applyMigrations(db); db.sqlite.close();
+    const store = new FsStore({ dataRoot: root });
+    const workspace = await store.createWorkspace('Dependency-safe byte reservation');
+    const turns = [];
+    for (const name of ['Native predecessor', 'Durable then progress', 'Large durable']) {
+      const thread = await store.createThread(workspace.id, name);
+      turns.push(await store.createTurn(workspace.id, thread.id, name,
+        { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }));
+    }
+    const status = (turn, bytes, title) => ItemSchema.parse({
+      id: allocateEntityId('it'), owner: turn.owner, threadId: turn.threadId, turnId: turn.id,
+      type: 'status', level: 'info', status: 'completed', title, summary: 'd'.repeat(bytes),
+      createdAt: turn.startedAt, completedAt: turn.startedAt,
+    });
+    const p0 = status(turns[0], 8 * 1024 * 1024, 'Actual held progress');
+    const d1 = status(turns[1], 14 * 1024 * 1024, 'Unmarked durable status');
+    const p1 = status(turns[1], 1024, 'Actual later progress');
+    const d2 = status(turns[2], 31 * 1024 * 1024, 'Unmarked large durable status');
+    const originalPost = Worker.prototype.postMessage, originalEmit = Worker.prototype.emit;
+    let selected, release;
+    let entered;
+    const held = new Promise(resolve => { entered = resolve; });
+    Worker.prototype.postMessage = function (...args) {
+      const request = args[0];
+      if (request?.operation === 'item' && request.input.item.id === p0.id) selected = request.id;
+      return Reflect.apply(originalPost, this, args);
+    };
+    Worker.prototype.emit = function (event, ...args) {
+      const reply = args[0];
+      if (event === 'message' && reply?.id === selected && reply.operation === 'item' && reply.status === 'ok') {
+        release = () => Reflect.apply(originalEmit, this, [event, ...args]);
+        entered(); return true;
+      }
+      return Reflect.apply(originalEmit, this, [event, ...args]);
+    };
+    const observe = promise => promise.then(value => ({ status: 'ok', value }),
+      error => ({ status: 'error', code: error.code, commit: error.commit }));
+    const first = observe(store.createItem(p0, undefined, RETAINED_PROGRESS_PUBLICATION));
+    await held;
+    // No await between these three authentic caller admissions: later large input is owned before D1 prepares.
+    const middle = observe(store.createItem(d1));
+    const laterProgress = observe(store.createItem(p1, undefined, RETAINED_PROGRESS_PUBLICATION));
+    const large = observe(store.createItem(d2));
+    process.send({ phase: 'three-public-offers-after-real-progress-ACK' });
+    // Later progress must refuse BEFORE it can become a byte-drain dependency of its predecessor.
+    const beforeRelease = await Promise.race([laterProgress, new Promise(resolve => setImmediate(() => resolve({ status: 'pending' })))]);
+    if (beforeRelease.status !== 'error' || beforeRelease.code !== 'busy' || beforeRelease.commit !== 'not-committed') throw new Error('Later progress was admitted behind an unsettled durable predecessor');
+    release();
+    const results = await Promise.all([first, middle, laterProgress, large]);
+    for (const [index, item] of [p0, d1].entries()) {
+      if (results[index].status !== 'ok' || JSON.stringify(results[index].value) !== JSON.stringify(item)) throw new Error('Original progress/durable ACK or bytes changed');
+    }
+    // These two durable copies contend with each other under the ORIGINAL64MiB bound; no new queue is authorized.
+    if (results[3].status !== 'error' || results[3].code !== 'busy' || results[3].commit !== 'not-committed') throw new Error('Original durable-vs-durable bounded refusal changed');
+    const expected = turns.map(turn => store.getTurnById(turn.id).items);
+    if (JSON.stringify(expected) !== JSON.stringify([[p0], [d1], []])) throw new Error('Refused progress/durable input acquired retained authority');
+    await shutdownControlStoreWorkerClient(); closeWorkspaceProductReadHandles(root);
+    const cold = new FsStore({ dataRoot: root });
+    if (JSON.stringify(turns.map(turn => cold.getTurnById(turn.id).items)) !== JSON.stringify(expected)) throw new Error('Cold retained tuple changed');
+    process.send({ phase: 'all-ACKed-and-cold-exact', count: 2 });
+    await shutdownControlStoreWorkerClient();
+    process.disconnect();
+  `;
+  const scriptPath = join(root, 'durable-progress-cycle.mjs');
+  writeFileSync(scriptPath, script);
+  // File Workers inherit execArgv; an eval parent's --input-type would reject the genuine native file entry.
+  const child = spawn(process.execPath, [scriptPath], { stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
+  let armed = false,
+    finished = false,
+    stderr = '';
+  child.stderr!.setEncoding('utf8');
+  child.stderr!.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  child.on('message', (message) => {
+    if (typeof message !== 'object' || message === null) return;
+    if ('phase' in message && message.phase === 'three-public-offers-after-real-progress-ACK')
+      armed = true;
+    if (
+      'phase' in message &&
+      message.phase === 'all-ACKed-and-cold-exact' &&
+      'count' in message &&
+      message.count === 2
+    )
+      finished = true;
+  });
+  const exited = new Promise<number | null>((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', resolve);
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const deadline = new Promise<'deadline'>((resolve) => {
+      timer = setTimeout(() => resolve('deadline'), 20_000);
+    });
+    const exit = await Promise.race([exited, deadline]);
+    expect(armed, stderr).toBe(true);
+    expect(exit, stderr).toBe(0);
+    expect(finished, stderr).toBe(true);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it('releases only unallocated progress booking after a genuine lost Item ACK and retains the original unknown outcome', async () => {
+  const f = await fixture();
+  const stamp = new Date().toISOString();
+  const item = ItemSchema.parse({
+    id: allocateEntityId('it'),
+    owner: f.turn.owner,
+    threadId: f.turn.threadId,
+    turnId: f.turn.id,
+    type: 'status',
+    level: 'info',
+    title: 'Genuine progress before host loss',
+    summary: 'p'.repeat(1024),
+    status: 'completed',
+    createdAt: stamp,
+    completedAt: stamp,
+  });
+  const database = `workspace:${join(f.root, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite')}`;
+  const client = getControlStoreWorkerClient();
+  const state = client as unknown as {
+    backing: Map<string, { inputBytes: number }>;
+    progressCopyBytes?: Map<string, number>;
+  };
+  const gate = holdReply('item', new Set([item.id]));
+  const original = observe(
+    f.store.createItem(item, DISPLAY_PROJECTION_REFRESH_ADMISSION, RETAINED_PROGRESS_PUBLICATION)
+  );
+  let settled = false;
+  void original.then(() => {
+    settled = true;
+  });
+  const exitSnapshots: Array<{ inputBytes: number; settled: boolean }> = [];
+  let observationErrors = 0;
+  try {
+    await Promise.race([
+      gate.reached,
+      original.then(() => {
+        throw new Error('Actual progress Item ACK was not held');
+      }),
+    ]);
+    const worker = transport.hold!.worker;
+    expect(worker).toBeDefined();
+    expect(state.progressCopyBytes).toBeInstanceOf(Map);
+    expect(transport.postedItemIds.filter((id) => id === item.id)).toHaveLength(1);
+    transport.beforeExit = (current) => {
+      if (current !== worker) return;
+      try {
+        exitSnapshots.push({ inputBytes: state.backing.get(database)?.inputBytes ?? 0, settled });
+      } catch {
+        observationErrors++;
+      }
+    };
+    // Only the original real post-COMMIT reply is lost; the original native host actually exits.
+    await worker!.terminate();
+    gate.release(false);
+    const result = await original;
+    expect(result).toMatchObject({
+      status: 'error',
+      error: { code: 'unavailable', commit: 'unknown' },
+    });
+    if (result.status !== 'error') throw new Error('Lost original ACK must remain unknown.');
+    expect(result.error).toBeInstanceOf(ControlStoreWorkerError);
+    expect(observationErrors).toBe(0);
+    expect(exitSnapshots).toHaveLength(1);
+    expect(exitSnapshots[0]!.settled).toBe(false);
+    expect(exitSnapshots[0]!.inputBytes).toBeGreaterThan(0); // Actual request backing survived until real exit processing.
+    expect(state.backing.get(database)?.inputBytes ?? 0).toBe(0);
+    expect([...state.progressCopyBytes!.values()].every((bytes) => bytes === 0)).toBe(true);
+    const dependent = message(f.turn, 'No automatic writer replacement');
+    expect(await observe(f.store.createItem(dependent))).toMatchObject({
+      status: 'error',
+      error: { code: 'unavailable', commit: 'not-committed' },
+    });
+    expect(transport.postedItemIds.filter((id) => id === item.id)).toHaveLength(1);
+    expect(transport.postedItemIds).not.toContain(dependent.id);
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(f.root);
+    expect(new FsStore({ dataRoot: f.root }).getTurnById(f.turn.id).items).toEqual([item]);
+  } finally {
+    gate.release(false);
+    transport.beforeExit = undefined;
+    await original;
+  }
 });

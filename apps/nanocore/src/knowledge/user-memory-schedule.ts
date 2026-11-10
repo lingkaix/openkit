@@ -4,8 +4,8 @@ import { isCanonicalUserOperationAuthorized } from '../auth/operation-authorizer
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { type CoreDb, openUserDb, type UserDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import type { CoreDb, UserDb } from '../storage/db.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge-maintenance-schedule.js';
@@ -79,8 +79,12 @@ export async function scanUserMemoryMaintenance(input: {
         if (!actor || !isCanonicalUserOperationAuthorized(coreDb, actor, 'knowledge.write'))
           throw new Error('Current User maintenance authority is unavailable.');
         await ensureUserQuickChatWorkspace({ coreDb, store, userId });
-        userDb = openUserDb(coreDb.dataRoot, userId);
-        applyScopedMigrations(userDb);
+        userDb = await getControlStoreWorkerClient().openInitializedUserReadDb(
+          coreDb.dataRoot,
+          userId
+        );
+        if (!isCanonicalUserOperationAuthorized(coreDb, actor, 'knowledge.write'))
+          throw new Error('Current User maintenance authority is unavailable.');
         const ownedDb = userDb;
         admissionAttempted = true;
         const prepared = await prepareUserMemoryMaintenance(input.dependencies(ownedDb), {

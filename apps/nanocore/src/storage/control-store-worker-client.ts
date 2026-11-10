@@ -200,10 +200,11 @@ import {
   controlCapabilityText,
   prepareControlCapabilityTransfer,
 } from './control-store-capability.js';
-import { frameControlScalarText } from './control-store-input.js';
+import { commandInputHash, frameControlScalarText } from './control-store-input.js';
 import type { ControlPendingTransition } from './control-store-pending.js';
 import type { ControlProductTransition } from './control-store-product-records.js';
 import {
+  CONTROL_PRODUCT_LIMITS,
   type ControlProductEntry,
   closeWorkspaceProductReadHandles,
 } from './control-store-product-records.js';
@@ -250,7 +251,7 @@ import {
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
 import type { ControlCoreJournalInput } from './core-journal-codecs.js';
-import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
+import { type CoreDb, openUserReadDb, type UserDb, type WorkspaceDb } from './db.js';
 import type { ControlEvaluationCandidate } from './evaluation-candidate-codecs.js';
 import type {
   ControlExecutionAttemptCommand,
@@ -261,6 +262,7 @@ import type {
   ControlHarnessLifecycleInput,
   ControlHarnessLifecycleResult,
 } from './harness-lifecycle-codecs.js';
+import { hasPendingUserMigrations } from './migrate.js';
 import type { ControlRemoteMcpAudit } from './remote-mcp-audit-codecs.js';
 import type {
   ControlRuntimeTargetInput,
@@ -316,6 +318,12 @@ import type {
   ControlWorkspaceReviewFinish,
 } from './workspace-review-codecs.js';
 import type { ControlCoreSharing, ControlCoreSharingResult } from './workspace-sharing-codecs.js';
+
+/** Exact trusted progress create; it retains the original native FULL acknowledgement. */
+export interface ControlProgressPublication {
+  readonly input: ControlItemAppend;
+  readonly opening: Omit<OpenCommand, 'operation'>;
+}
 
 /** Definite refusal of new work by this host lifetime; no command was admitted. */
 export class ControlStoreWorkerShutdownError extends ControlStoreWorkerError {
@@ -452,6 +460,20 @@ interface CapabilityCloseoutCredit {
   borrowing: boolean;
 }
 
+/** Books the serial open/Item clone before the producer installs any Turn ordering edge. */
+interface ProgressCopyCredit {
+  readonly database: string;
+  readonly itemId: string;
+  readonly turnId: string;
+  readonly category: ControlItemAppend['category'];
+  readonly openingHash: string;
+  active: boolean;
+  remainingBytes: number;
+  borrowing: boolean;
+  openUsed: boolean;
+  itemUsed: boolean;
+}
+
 /** One finite in-flight message, not persisted work or an execution attempt. */
 interface Pending {
   readonly counted: boolean;
@@ -475,6 +497,7 @@ interface Pending {
     readonly capture: () => ControlSchemaApplicationFacts;
   };
   readonly closeout?: CapabilityCloseoutCredit | undefined;
+  readonly progressCopy?: { readonly credit: ProgressCopyCredit; readonly bytes: number };
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
   readonly reject: (
@@ -625,10 +648,18 @@ class ControlStoreWorkerClient {
     })
   );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
-  private readonly turnTails = new Map<string, { tail: Promise<unknown>; pending: number }>();
+  private readonly turnTails = new Map<
+    string,
+    { tail: Promise<unknown>; pending: number; durablePending: number }
+  >();
+  /** Settlement notifications only for existing accepted progress producers; no extra input queue. */
+  private readonly progressSettlements = new Map<Promise<void>, string>();
+  /** Unallocated clone bookings, already charged against the same per-database input bound. */
+  private readonly progressCopyBytes = new Map<string, number>();
   private readonly operationContext = new AsyncLocalStorage<{
     active: boolean;
     publication: ControlPublicationIdentity | undefined;
+    progressCopy: ProgressCopyCredit | undefined;
     reservation: string | undefined;
     closeout: CapabilityCloseoutCredit | undefined;
   }>();
@@ -875,7 +906,8 @@ class ControlStoreWorkerClient {
     reservation?:
       | string
       | { readonly database: string; readonly closeout: CapabilityCloseoutCredit },
-    closeout?: { readonly database: string; readonly callId: string }
+    closeout?: { readonly database: string; readonly callId: string },
+    progressCopy?: ProgressCopyCredit
   ): Promise<T> {
     this.assertAccepting();
     if (
@@ -889,6 +921,7 @@ class ControlStoreWorkerClient {
     const context = {
       active: true,
       publication,
+      progressCopy,
       reservation: typeof reservation === 'string' ? reservation : reservation?.database,
       closeout: credit ?? (typeof reservation === 'object' ? reservation.closeout : undefined),
     };
@@ -933,12 +966,14 @@ class ControlStoreWorkerClient {
     turns: readonly string[],
     input: I,
     prepare: (owned: I) => Promise<T>,
-    closeoutCallId?: string
+    closeoutCallId?: string,
+    progressPublication?: ControlProgressPublication
   ): Promise<T> {
     this.assertAccepting();
     const context = this.operationContext.getStore();
     const credit = context?.closeout;
     const closeout =
+      !progressPublication &&
       context?.active &&
       credit?.active &&
       !credit.borrowing &&
@@ -946,12 +981,53 @@ class ControlStoreWorkerClient {
       credit.callId === closeoutCallId
         ? credit
         : undefined;
+    // Leave the existing closeout/open/admission counts for one cold MCP producer,
+    // and one Turn slot plus a bounded body/envelope share for durable publication.
+    const progress = progressPublication !== undefined;
+    const countLimit = CONTROL_WORKER_LIMITS.pendingTransitions - (progress ? 3 : 0);
+    const turnLimit = CONTROL_WORKER_LIMITS.pendingTurnTransitions - (progress ? 1 : 0);
+    const byteLimit = progress
+      ? CONTROL_WORKER_LIMITS.pendingBytes -
+        CONTROL_PRODUCT_LIMITS.immutableBodyBytes -
+        CONTROL_PRODUCT_LIMITS.payloadBytes
+      : CONTROL_WORKER_LIMITS.pendingBytes;
     const json = JSON.stringify(input);
     const bytes = Buffer.byteLength(json) + 64;
+    // These are the two real serial native frames. Reserve their larger copy now, so
+    // a later durable offer cannot make accepted progress fail after installing its tail.
+    const copyBytes = progressPublication
+      ? Math.max(
+          controlWorkerInputBytes({
+            operation: 'item',
+            database,
+            input: progressPublication.input,
+            version: CONTROL_WORKER_VERSION,
+            id: Number.MAX_SAFE_INTEGER,
+          }),
+          controlWorkerInputBytes({
+            ...progressPublication.opening,
+            operation: 'open',
+            version: CONTROL_WORKER_VERSION,
+            id: Number.MAX_SAFE_INTEGER,
+          })
+        ) + 64
+      : 0;
+    const progressCopy: ProgressCopyCredit | undefined = progressPublication && {
+      database,
+      itemId: progressPublication.input.item.id,
+      turnId: progressPublication.input.item.turnId,
+      category: progressPublication.input.category,
+      openingHash: commandInputHash(progressPublication.opening),
+      active: true,
+      remainingBytes: copyBytes,
+      borrowing: false,
+      openUsed: false,
+      itemUsed: false,
+    };
     if (
       !closeout &&
-      ((this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions ||
-        bytes > CONTROL_WORKER_LIMITS.pendingBytes - (this.backing.get(database)?.inputBytes ?? 0))
+      ((this.outstanding.get(database) ?? 0) >= countLimit ||
+        bytes + copyBytes > byteLimit - this.reservedInputBytes(database))
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     const physical = realpathSync(database.slice(database.indexOf(':') + 1));
@@ -960,11 +1036,21 @@ class ControlStoreWorkerClient {
     if (
       !closeout &&
       keys.some(
-        (key) => this.pendingTurnPublications(key) >= CONTROL_WORKER_LIMITS.pendingTurnTransitions
+        (key) =>
+          this.pendingTurnPublications(key) >= turnLimit ||
+          (progress && (this.turnTails.get(key)?.durablePending ?? 0) > 0)
       )
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     const predecessors = keys.map((key) => this.turnTails.get(key)?.tail);
+    let settleProgress: (() => void) | undefined;
+    const progressSettled = progress
+      ? new Promise<void>((resolve) => {
+          settleProgress = resolve;
+        })
+      : undefined;
+    if (progressSettled) this.progressSettlements.set(progressSettled, database);
+    if (progressCopy) this.adjustProgressCopyBytes(database, copyBytes);
     this.adjustBacking(database, bytes, 0);
     if (closeout) closeout.borrowing = true;
     else this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
@@ -975,29 +1061,77 @@ class ControlStoreWorkerClient {
         } catch {
           throw new ControlStoreWorkerError('precondition', 'not-committed');
         }
+        // The outer owned JSON and inner native clone are both charged. A large durable
+        // producer waits for already accepted progress ACKs before making that second copy.
+        if (!progress && this.progressSettlements.size > 0)
+          await this.waitForProgressBacking(database, bytes);
         return prepare(JSON.parse(json) as I);
       },
       undefined,
-      closeout ? { database, closeout } : database
+      closeout ? { database, closeout } : database,
+      undefined,
+      progressCopy
     );
     for (const key of keys)
       this.turnTails.set(key, {
         tail: result,
         pending: (this.turnTails.get(key)?.pending ?? 0) + 1,
+        // Progress may not queue behind a durable body that can need its ACK byte capacity.
+        durablePending: (this.turnTails.get(key)?.durablePending ?? 0) + (progress ? 0 : 1),
       });
     try {
       return await result;
     } finally {
       this.adjustBacking(database, -bytes, 0);
+      if (progressCopy) {
+        progressCopy.active = false;
+        this.adjustProgressCopyBytes(database, -progressCopy.remainingBytes);
+        progressCopy.remainingBytes = 0;
+      }
       if (closeout) {
         closeout.borrowing = false;
         if (!closeout.active) this.releaseOutstanding(database);
       } else this.releaseOutstanding(database);
       for (const key of keys) {
         const entry = this.turnTails.get(key)!;
+        if (!progress) entry.durablePending--;
         if (--entry.pending === 0) this.turnTails.delete(key);
       }
+      if (progressSettled) {
+        this.progressSettlements.delete(progressSettled);
+        settleProgress!();
+      }
     }
+  }
+
+  /** Frees no bytes early and posts no retry: the existing admitted producer awaits finite progress ACKs. */
+  private async waitForProgressBacking(database: string, bytes: number): Promise<void> {
+    while (
+      this.reservedInputBytes(database) + bytes + CONTROL_PRODUCT_LIMITS.payloadBytes >
+      CONTROL_WORKER_LIMITS.pendingBytes
+    ) {
+      const progress = [...this.progressSettlements]
+        .filter(([, scope]) => scope === database)
+        .map(([settled]) => settled);
+      if (progress.length === 0) return;
+      await Promise.all(progress);
+      this.assertAccepting();
+    }
+  }
+
+  /** Future progress clones compete with actual input against the original hard bound. */
+  private reservedInputBytes(database: string | undefined): number {
+    return (
+      (this.backing.get(database)?.inputBytes ?? 0) +
+      (database === undefined ? 0 : (this.progressCopyBytes.get(database) ?? 0))
+    );
+  }
+
+  /** Transfers one original booking to/from actual request backing without another input queue. */
+  private adjustProgressCopyBytes(database: string, bytes: number): void {
+    const remaining = (this.progressCopyBytes.get(database) ?? 0) + bytes;
+    if (remaining === 0) this.progressCopyBytes.delete(database);
+    else this.progressCopyBytes.set(database, remaining);
   }
 
   /** Releases one admitted producer or independently counted native request. */
@@ -1602,7 +1736,7 @@ class ControlStoreWorkerClient {
     if (
       (this.outstanding.get(database) ?? 0) + requests.length >
         CONTROL_WORKER_LIMITS.pendingTransitions ||
-      (this.backing.get(database)?.inputBytes ?? 0) + bytes > CONTROL_WORKER_LIMITS.pendingBytes
+      this.reservedInputBytes(database) + bytes > CONTROL_WORKER_LIMITS.pendingBytes
     )
       throw new ControlStoreWorkerError('busy', 'not-committed');
     // No await or post occurs between the complete admission check and reservation of all slots.
@@ -2719,6 +2853,63 @@ class ControlStoreWorkerClient {
     if (failed) throw failure;
     if (!result) throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return result;
+  }
+
+  /** Native format setup precedes the owned readonly User handle; ACKed/current reads need no healthy writer. */
+  async openInitializedUserReadDb(dataRoot: string, userId: string): Promise<UserDb> {
+    ensureUserLayout(dataRoot, userId);
+    const path = userDbPath(dataRoot, userId);
+    const database = `user:${path}`;
+    const opening = this.openings.get(database);
+    if (opening) {
+      if (
+        !isDeepStrictEqual(opening.command, {
+          database,
+          path,
+          create: opening.command.create,
+          initialize: 'user',
+        })
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      // Never infer first-create readiness from the file or repair an unknown original opening.
+      if (!opening.acknowledged) await opening.promise;
+      try {
+        const current = statSync(path);
+        if (
+          realpathSync(path) !== opening.path ||
+          `${current.dev}:${current.ino}` !== opening.identity
+        )
+          throw new Error('User database binding changed.');
+      } catch {
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
+    }
+    if (statSync(path, { throwIfNoEntry: false })) {
+      const reader = openUserReadDb(dataRoot, userId);
+      try {
+        if (!hasPendingUserMigrations(reader.sqlite)) return reader;
+      } catch (error) {
+        reader.sqlite.close();
+        throw error;
+      }
+      reader.sqlite.close();
+      if (opening) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    }
+    await this.open({
+      database,
+      path,
+      create: !statSync(path, { throwIfNoEntry: false }),
+      initialize: 'user',
+    });
+    const reader = openUserReadDb(dataRoot, userId);
+    try {
+      if (hasPendingUserMigrations(reader.sqlite))
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      return reader;
+    } catch (error) {
+      reader.sqlite.close();
+      throw error;
+    }
   }
 
   /** Joins only pending User initialization before the original synchronous Workspace-create receipt lookup.
@@ -4252,6 +4443,24 @@ class ControlStoreWorkerClient {
     }
     const database = 'database' in command ? command.database : undefined;
     const context = this.operationContext.getStore();
+    const progressCopy =
+      context?.active && context.reservation === database ? context.progressCopy : undefined;
+    const fundsProgress =
+      progressCopy?.active &&
+      !progressCopy.borrowing &&
+      ((command.operation === 'open' &&
+        !progressCopy.openUsed &&
+        commandInputHash({ ...command, operation: undefined }) === progressCopy.openingHash) ||
+        (command.operation === 'item' &&
+          !progressCopy.itemUsed &&
+          command.input.item.type === 'status' &&
+          command.input.item.id === progressCopy.itemId &&
+          command.input.item.turnId === progressCopy.turnId &&
+          command.input.category === progressCopy.category))
+        ? progressCopy
+        : undefined;
+    if (progressCopy && !fundsProgress)
+      return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
     const closeout =
       command.operation === 'capability'
         ? this.closeoutCredit(command.database, command.input)
@@ -4261,6 +4470,7 @@ class ControlStoreWorkerClient {
       (database !== undefined && context?.active && context.reservation === database);
     // The exact Item's preparation owns this serial borrow until its covering native ACK.
     const creditedPublication =
+      !progressCopy &&
       context?.active &&
       context.reservation === database &&
       context.closeout?.borrowing &&
@@ -4318,13 +4528,16 @@ class ControlStoreWorkerClient {
     } catch {
       return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
     }
-    // One fixed shutdown message per owned host must still drain accepted work at saturation.
+    // A funded clone substitutes equal already-booked bytes. It cannot acquire a new
+    // aggregate refusal, including when an original exact MCP closeout uses its exemption.
+    // One fixed shutdown message per owned host still drains accepted work at saturation.
     if (
       command.operation !== 'shutdown' &&
       !closeout &&
       !creditedPublication &&
-      (this.backing.get(database)?.inputBytes ?? 0) + inputBytes >
-        CONTROL_WORKER_LIMITS.pendingBytes
+      (fundsProgress
+        ? inputBytes > fundsProgress.remainingBytes
+        : this.reservedInputBytes(database) + inputBytes > CONTROL_WORKER_LIMITS.pendingBytes)
     )
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     let materialBytes = 0;
@@ -4466,6 +4679,13 @@ class ControlStoreWorkerClient {
     }
     const id = this.nextId++;
     const result = new Promise<Success>((resolve, reject) => {
+      if (fundsProgress) {
+        fundsProgress.borrowing = true;
+        fundsProgress.remainingBytes -= inputBytes;
+        this.adjustProgressCopyBytes(fundsProgress.database, -inputBytes);
+        if (command.operation === 'open') fundsProgress.openUsed = true;
+        else fundsProgress.itemUsed = true;
+      }
       this.adjustBacking(database, inputBytes, materialBytes, host);
       host.pending += 1;
       for (const reservation of capacity) host.capacity.add(reservation);
@@ -4482,6 +4702,7 @@ class ControlStoreWorkerClient {
         inputBytes,
         capacity: [...capacity],
         closeout,
+        ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
         ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
         resolve,
         reject,
@@ -4647,6 +4868,14 @@ class ControlStoreWorkerClient {
       for (const reservation of entry.capacity) {
         reservation.release();
         entry.host.capacity.delete(reservation);
+      }
+    }
+    if (entry.progressCopy) {
+      const { credit, bytes } = entry.progressCopy;
+      credit.borrowing = false;
+      if (releaseMaterialBytes && credit.active) {
+        credit.remainingBytes += bytes;
+        this.adjustProgressCopyBytes(credit.database, bytes);
       }
     }
     entry.host.pending -= 1;

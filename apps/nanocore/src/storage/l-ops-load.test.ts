@@ -8,7 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import { allocateEntityId } from '@openkit/protocol';
 import { it } from 'vitest';
-import { FsStore } from '../lib/store.js';
+import { FsStore, RETAINED_PROGRESS_PUBLICATION } from '../lib/store.js';
 import { createMeasurementEffectFixture } from '../test-support/load-effect.fixture.js';
 import {
   diagnosticContext,
@@ -210,19 +210,23 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
           diagnosticStage(row.effect ? 'call' : 'producer entry');
           return row.effect
             ? fixture!.call(actor.turnId, row.ordinal)
-            : store.createItem({
-                id: allocateEntityId('it'),
-                owner: { kind: 'workspace', workspaceId: actor.workspaceId },
-                threadId: actor.threadId,
-                turnId: actor.turnId,
-                type: 'status',
-                level: 'info',
-                title: 'native progress',
-                status: 'completed',
-                createdAt: stamp,
-                completedAt: stamp,
-                summary: `Progress ${row.ordinal} ${'x'.repeat(256)}`,
-              } as any);
+            : store.createItem(
+                {
+                  id: allocateEntityId('it'),
+                  owner: { kind: 'workspace', workspaceId: actor.workspaceId },
+                  threadId: actor.threadId,
+                  turnId: actor.turnId,
+                  type: 'status',
+                  level: 'info',
+                  title: 'native progress',
+                  status: 'completed',
+                  createdAt: stamp,
+                  completedAt: stamp,
+                  summary: `Progress ${row.ordinal} ${'x'.repeat(256)}`,
+                } as any,
+                undefined,
+                RETAINED_PROGRESS_PUBLICATION
+              );
         });
       } catch (e) {
         call = Promise.reject(e);

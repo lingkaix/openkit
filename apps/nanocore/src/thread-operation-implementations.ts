@@ -160,10 +160,11 @@ export function createThreadOperationImplementations(
         throw error;
       }
     },
-    'thread.read-state': (input, context) => {
+    'thread.read-state': async (input, context) => {
       try {
-        return readThreadReadState({
+        return await readThreadReadState({
           ...input,
+          recheckAdmission: context.recheckAdmission,
           store: dependencies.store!,
           coreDb: dependencies.coreDb!,
           userId: publicOperationActor(context).userId,

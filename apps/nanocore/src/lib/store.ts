@@ -212,6 +212,7 @@ import {
   openControlStoreProductReadHandle,
 } from '../storage/control-store-product-records.js';
 import {
+  type ControlItemAppend,
   type ControlTerminalTransition,
   checkControlItemAppend,
   eventAgreesWithSealedTurnOutcome,
@@ -877,6 +878,9 @@ export interface TurnAdmissionHooks {
 export const ALREADY_DECIDED_PUBLICATION_ADMISSION = {
   category: 'already-decided-publication',
 } as const;
+
+/** Explicit trusted progress status producer; this grants no post-terminal authority or weaker ACK. */
+export const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
 
 /** Item fields admitted by the named post-terminal display-projection refresh. */
 export const DISPLAY_PROJECTION_REFRESH_FIELDS = ['level', 'title', 'summary'] as const;
@@ -3215,7 +3219,8 @@ export class FsStore {
     turns: readonly string[],
     input: I,
     prepare: (owned: I) => Promise<T>,
-    closeoutCallId?: string
+    closeoutCallId?: string,
+    progressItem?: ControlItemAppend
   ): Promise<T> {
     if (!this.dataRoot) return prepare(input);
     const scope = this.nativeScope(owner);
@@ -3229,7 +3234,21 @@ export class FsStore {
         turns,
         input,
         prepare,
-        closeoutCallId
+        closeoutCallId,
+        progressItem
+          ? {
+              input: progressItem,
+              opening: {
+                database: `workspace:${scope.path}`,
+                path: scope.path,
+                dataRoot: this.dataRoot,
+                create: false,
+                initialize: 'workspace',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              },
+            }
+          : undefined
       )
       .finally(release);
   }
@@ -5721,6 +5740,11 @@ export class FsStore {
         (owned) => this.createItemPublication(...owned),
         args[0].type === 'tool-call' && args[0].status !== 'in_progress'
           ? (args[0].causationId ?? undefined)
+          : undefined,
+        args[2] === RETAINED_PROGRESS_PUBLICATION &&
+          args[0].type === 'status' &&
+          args[0].owner.kind === 'workspace'
+          ? { item: args[0], ...(args[1] && { category: args[1].category }) }
           : undefined
       );
     return this.dataRoot &&
@@ -5733,7 +5757,8 @@ export class FsStore {
   /** Applies the original checks inside the admitted same-Turn boundary. */
   private async createItemPublication(
     input: Item,
-    admission?: TerminalTurnWriteAdmission
+    admission?: TerminalTurnWriteAdmission,
+    _progress?: typeof RETAINED_PROGRESS_PUBLICATION
   ): Promise<Item> {
     const item = ItemSchema.parse(input);
     if (item.owner.kind !== 'workspace')

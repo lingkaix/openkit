@@ -82,6 +82,40 @@ export function hasPendingAppMigrations(sqlite: SetupDb['sqlite']): boolean {
   return journal.entries.some((entry) => !applied.includes(`app_${entry.tag}`));
 }
 
+/** Reads User readiness with the same artifact, predecessor-ledger and latest-row rules as native apply. */
+export function hasPendingUserMigrations(sqlite: SetupDb['sqlite']): boolean {
+  let failure: string | undefined;
+  try {
+    if (hasSqliteTable(sqlite, 'schema_migrations')) {
+      failure =
+        'schema_migrations already exists; refuse native startup apply and handle the predecessor ledger offline.';
+      throw new BootConfigError('migration_failed', failure);
+    }
+    const migrationsFolder = findMigrationsFolder('user');
+    readJournal(migrationsFolder);
+    const migrations = readMigrationFiles({ migrationsFolder });
+    const latest = hasSqliteTable(sqlite, NATIVE_LEDGER_TABLE)
+      ? (sqlite
+          .prepare(`SELECT created_at FROM ${NATIVE_LEDGER_TABLE} ORDER BY created_at DESC LIMIT 1`)
+          .get() as { created_at: number | string } | undefined)
+      : undefined;
+    return migrations.some(
+      (migration) => !latest || Number(latest.created_at) < migration.folderMillis
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '';
+    if (
+      (error instanceof BootConfigError && error.code === 'migration_missing') ||
+      isMissingNativeSqlError(message)
+    )
+      throw new BootConfigError('migration_missing', 'Missing user native Drizzle SQL.');
+    throw new BootConfigError(
+      'migration_failed',
+      `Failed to apply user native Drizzle migrations: ${failure ?? `sqlite_code=${migrationSqliteCode(error)}; migration=unavailable; statement_index=unavailable`}`
+    );
+  }
+}
+
 /**
  * Lists applied Core migration ids as `core_<tag>` names from exact native ledger matches.
  *

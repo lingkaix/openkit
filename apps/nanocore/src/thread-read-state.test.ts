@@ -107,7 +107,7 @@ describe('User-owned Thread read receipts', () => {
       400
     );
     expect(await state()).toEqual({ readItemIds: [SECOND], unreadItemIds: [FIRST] });
-    expect(readThreadReadState({ ...owner, store, coreDb, userId: OTHER_USER })).toEqual({
+    expect(await readThreadReadState({ ...owner, store, coreDb, userId: OTHER_USER })).toEqual({
       readItemIds: [],
       unreadItemIds: [FIRST, SECOND, OWN],
     });
