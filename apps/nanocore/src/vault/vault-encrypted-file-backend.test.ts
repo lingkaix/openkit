@@ -15,8 +15,10 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { testEntityId } from '../test-support/entity-ids.js';
 
+import * as vaultBackend from './vault-backend.js';
 import { VaultBackendError } from './vault-backend.js';
 import { createEncryptedFileVaultBackend } from './vault-encrypted-file-backend.js';
+import * as encryptedFileStore from './vault-encrypted-file-store.js';
 import { sealEncryptedFileVaultEntry } from './vault-encrypted-file-store.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
@@ -1333,6 +1335,185 @@ describe('encrypted-file vault backend', () => {
       expect(resolve).not.toHaveBeenCalled();
     } finally {
       resolve.mockRestore();
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// Freeze F1: a reference state's format is admitted before its family fields or material.
+describe('encrypted-file reference-state retained format', () => {
+  it('writes current-v1 state through store, rotation and revoke and reopens it without rewriting', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-state-format-'));
+    const referenceId = testEntityId('vault', 'state_format_lifecycle');
+    const masterKey = Buffer.alloc(32, 9);
+    const now = () => '2026-07-05T01:00:00.000Z';
+    const statePath = join(storeDir, 'entries', referenceId, 'state.json');
+    const backend = createEncryptedFileVaultBackend({ masterKey, now, storeDir });
+    try {
+      const stored = backend.store({
+        referenceId,
+        material: 'synthetic_format_first_material',
+        metadata: { ownerScope: 'server' },
+      });
+      const initialBytes = readFileSync(statePath);
+      expect(JSON.parse(initialBytes.toString('utf8')).schemaVersion).toBe(1);
+      expect(JSON.parse(initialBytes.toString('utf8'))).not.toHaveProperty('formatVersion');
+      expect(stored).not.toHaveProperty('schemaVersion');
+      const reopened = createEncryptedFileVaultBackend({ masterKey, now, storeDir });
+      expect(reopened.listReferences({ referenceId })).toEqual([stored]);
+      expect(
+        Buffer.from(reopened.resolve({ referenceId })).equals(
+          Buffer.from('synthetic_format_first_material')
+        )
+      ).toBe(true);
+      expect(readFileSync(statePath).equals(initialBytes)).toBe(true);
+      expect(
+        reopened.rotate({ referenceId, material: 'synthetic_format_second_material' })
+      ).toMatchObject({ referenceId, currentVersion: 2, revoked: false });
+      expect(JSON.parse(readFileSync(statePath, 'utf8')).schemaVersion).toBe(1);
+      expect(
+        Buffer.from(reopened.resolve({ referenceId })).equals(
+          Buffer.from('synthetic_format_second_material')
+        )
+      ).toBe(true);
+      const tombstone = reopened.revoke({ referenceId });
+      const finalBytes = readFileSync(statePath);
+      expect(JSON.parse(finalBytes.toString('utf8')).schemaVersion).toBe(1);
+      expect(tombstone).toMatchObject({ referenceId, currentVersion: 2, revoked: true });
+      expect(tombstone).not.toHaveProperty('schemaVersion');
+      expect(readdirSync(join(storeDir, 'entries', referenceId))).toEqual(['state.json']);
+      const afterRevoke = createEncryptedFileVaultBackend({ masterKey, now, storeDir });
+      expect(afterRevoke.listReferences({ referenceId })).toEqual([tombstone]);
+      expect(() => afterRevoke.resolve({ referenceId })).toThrow('reference-revoked');
+      expect(readFileSync(statePath).equals(finalBytes)).toBe(true);
+    } finally {
+      rmSync(storeDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['missing', 'future', 'text', 'null', 'boolean', 'future-invalid-fields'] as const)(
+    'refuses %s state format before entry reads, family decoding or destructive recovery',
+    (marker) => {
+      const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-state-format-'));
+      const referenceId = testEntityId('vault', `state_format_${marker}`);
+      const backend = createEncryptedFileVaultBackend({
+        masterKey: Buffer.alloc(32, 9),
+        now: () => '2026-07-05T01:00:00.000Z',
+        storeDir,
+      });
+      const referenceDir = join(storeDir, 'entries', referenceId);
+      const statePath = join(referenceDir, 'state.json');
+      const material = 'synthetic_format_preserved_material';
+      const spies: Array<{
+        mock: { calls: unknown[] };
+        mockClear(): unknown;
+        mockRestore(): void;
+      }> = [];
+      try {
+        backend.store({ referenceId, material, metadata: { ownerScope: 'server' } });
+        // Fault only the real owner's completed state. Current family fields otherwise stay valid.
+        const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+        delete state.schemaVersion;
+        if (marker === 'future' || marker === 'future-invalid-fields') state.schemaVersion = 2;
+        else if (marker === 'text') state.schemaVersion = '1';
+        else if (marker === 'null') state.schemaVersion = null;
+        else if (marker === 'boolean') state.schemaVersion = true;
+        if (marker === 'future-invalid-fields') {
+          state.currentVersion = -1;
+          state.metadata = null;
+        }
+        writeFileSync(statePath, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+        const names = readdirSync(referenceDir).sort();
+        const before = names.map((name) => ({
+          name,
+          bytes: readFileSync(join(referenceDir, name)),
+        }));
+        const headerBytes = readFileSync(join(storeDir, 'header.json'));
+        // All spies pass through the real family/material decoders and writers.
+        spies.push(
+          vi.spyOn(vaultBackend, 'assertVaultEntryMetadata'),
+          vi.spyOn(encryptedFileStore, 'readEncryptedFileVaultEntry'),
+          vi.spyOn(encryptedFileStore, 'openEncryptedFileVaultEntry'),
+          vi.spyOn(encryptedFileStore, 'sealEncryptedFileVaultEntry'),
+          vi.spyOn(encryptedFileStore, 'writeEncryptedFileVaultJsonAtomically')
+        );
+        for (const operation of [
+          () => backend.resolve({ referenceId }),
+          () => backend.assertResolutionCurrent({ referenceId }),
+          () => backend.listReferences({ referenceId }),
+          () => backend.rotate({ referenceId, material: 'synthetic_format_replacement' }),
+          () => backend.revoke({ referenceId }),
+        ]) {
+          for (const spy of spies) spy.mockClear();
+          let failure: unknown;
+          try {
+            operation();
+          } catch (error) {
+            failure = error;
+          }
+          // Backend typed failures stay redacted; format admission still precedes family recovery.
+          expect.soft(failure instanceof VaultBackendError).toBe(true);
+          expect
+            .soft(failure instanceof VaultBackendError && failure.code === 'backend-unavailable')
+            .toBe(true);
+          expect.soft(spies.every((spy) => spy.mock.calls.length === 0)).toBe(true);
+          expect.soft(readdirSync(referenceDir).sort()).toEqual(names);
+          expect
+            .soft(
+              before.every(
+                ({ name, bytes }) =>
+                  existsSync(join(referenceDir, name)) &&
+                  readFileSync(join(referenceDir, name)).equals(bytes)
+              )
+            )
+            .toBe(true);
+          expect.soft(readFileSync(join(storeDir, 'header.json')).equals(headerBytes)).toBe(true);
+          expect
+            .soft(!String(failure).includes(material) && !String(failure).includes(storeDir))
+            .toBe(true);
+        }
+      } finally {
+        for (const spy of spies) spy.mockRestore();
+        rmSync(storeDir, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it('retains explicit revoke recovery for malformed semantics in admitted v1 state', () => {
+    const storeDir = mkdtempSync(join(tmpdir(), 'openkit-vault-state-format-'));
+    const referenceId = testEntityId('vault', 'malformed_current_state_revoke');
+    const backend = createEncryptedFileVaultBackend({
+      masterKey: Buffer.alloc(32, 9),
+      now: () => '2026-07-05T01:00:00.000Z',
+      storeDir,
+    });
+    const referenceDir = join(storeDir, 'entries', referenceId);
+    const statePath = join(referenceDir, 'state.json');
+    try {
+      backend.store({
+        referenceId,
+        material: 'synthetic_attributable_current_material',
+        metadata: { ownerScope: 'server' },
+      });
+      const state = JSON.parse(readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+      // This is an admitted format with damaged family fields, not an unknown format.
+      writeFileSync(
+        statePath,
+        `${JSON.stringify({ ...state, schemaVersion: 1, currentVersion: 0 })}\n`,
+        {
+          mode: 0o600,
+        }
+      );
+      expect(() => backend.resolve({ referenceId })).toThrow('backend-unavailable');
+      expect(backend.revoke({ referenceId })).toMatchObject({
+        referenceId,
+        currentVersion: 1,
+        revoked: true,
+      });
+      expect(readdirSync(referenceDir)).toEqual(['state.json']);
+      expect(JSON.parse(readFileSync(statePath, 'utf8')).schemaVersion).toBe(1);
+      expect(() => backend.resolve({ referenceId })).toThrow('reference-revoked');
+    } finally {
       rmSync(storeDir, { recursive: true, force: true });
     }
   });

@@ -102,6 +102,8 @@ The stopped SQL corpus keeps `corpusProducer` as invocation metadata for the sel
 
 The SQL channel corpus awaits pairing and Attention enqueue before it reads their results. Fresh synthetic channel evidence needs no startup reconciliation. Its stopped synthetic owner retains the fixed fixture clock; the deliberately failed model terminal sample remains unchanged. Storage cuts run `node --test tests/upgrade-from-previous*.test.mjs` after the NanoCore build, in addition to affected owner/caller tests and repository checks. Root Node tests are separate from Vitest related selection.
 
+The current Login observation sample obtains its own mediated Vault use decision from the existing Policy and Kernel owners and explicitly binds actual loaded Policy to the native Core opening. It publishes a synthetic backend successor and fresh successor Use/Audit before its native receipt and observation. This module fixture proves retained metadata construction and readback; provider refresh, runtime access delivery and physical activation remain outside its scope.
+
 ## Main synchronous API ratchet
 
 `validate-main-sync-apis.mjs`, run by `check:repo`, follows runtime imports from NanoCore `src/index.ts`, including literal dynamic imports, local `require` aliases and declared workspace runtime exports. It checks new and untracked reachable source files. Erased type-only imports and Worker URL entrypoints do not add Main edges; a Worker module also imported by Main is inspected.

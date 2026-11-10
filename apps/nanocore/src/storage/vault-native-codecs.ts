@@ -352,9 +352,13 @@ export function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceReco
         ...(row.login_observations_json == null
           ? {}
           : {
-              observations: HarnessLoginObservationsSchema.parse(
-                JSON.parse(row.login_observations_json)
-              ),
+              observations: readRetainedV1(JSON.parse(row.login_observations_json), (record) => {
+                const { schemaVersion: _schemaVersion, ...observations } = record as Record<
+                  string,
+                  unknown
+                >;
+                return HarnessLoginObservationsSchema.parse(observations);
+              }),
             }),
       });
   if (

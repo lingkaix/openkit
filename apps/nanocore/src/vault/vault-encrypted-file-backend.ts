@@ -1,6 +1,6 @@
 import { lstatSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { compareCodeUnits } from '@openkit/protocol';
+import { compareCodeUnits, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 
 import {
   assertVaultEntryMetadata,
@@ -50,6 +50,8 @@ interface CreateEncryptedFileVaultBackendInput {
 
 /** Exact durable encrypted-file reference state. */
 interface EncryptedFileReferenceState {
+  /** Retained reference-state format selected before field decoding. */
+  readonly schemaVersion: 1;
   /** Current material version. */
   readonly currentVersion: number;
   /** Exact non-secret owner metadata. */
@@ -64,6 +66,14 @@ interface EncryptedFileReferenceState {
   readonly versionCount: number;
   /** Canonical timestamp for the latest state change. */
   readonly updatedAt: string;
+}
+
+/** Unsupported reference-state formats cannot enter admitted-v1 revocation recovery. */
+class UnsupportedReferenceStateFormatError extends VaultBackendError {
+  /** Creates a typed redacted format-admission refusal. */
+  public constructor() {
+    super('backend-unavailable', 'Encrypted-file vault state format is unsupported.');
+  }
 }
 
 /** Authenticated ordinary-operation snapshot. */
@@ -243,15 +253,18 @@ class EncryptedFileVaultBackend implements VaultBackend {
         version: 1,
         versionExpirations: {},
       });
-      this.writeReferenceState(input.referenceId, {
-        currentVersion: 1,
-        metadata,
-        referenceId: input.referenceId,
-        revoked: false,
-        updatedAt: createdAt,
-        versionCount: 1,
-        versionExpirations: {},
-      });
+      this.writeReferenceState(
+        input.referenceId,
+        writeRetainedV1({
+          currentVersion: 1,
+          metadata,
+          referenceId: input.referenceId,
+          revoked: false,
+          updatedAt: createdAt,
+          versionCount: 1,
+          versionExpirations: {},
+        })
+      );
     } catch (error) {
       if (error instanceof VaultBackendError) {
         throw error;
@@ -296,15 +309,18 @@ class EncryptedFileVaultBackend implements VaultBackend {
         version: nextVersion,
         versionExpirations,
       });
-      this.writeReferenceState(input.referenceId, {
-        currentVersion: nextVersion,
-        metadata: snapshot.state.metadata,
-        referenceId: input.referenceId,
-        revoked: false,
-        updatedAt,
-        versionCount: nextVersion,
-        versionExpirations,
-      });
+      this.writeReferenceState(
+        input.referenceId,
+        writeRetainedV1({
+          currentVersion: nextVersion,
+          metadata: snapshot.state.metadata,
+          referenceId: input.referenceId,
+          revoked: false,
+          updatedAt,
+          versionCount: nextVersion,
+          versionExpirations,
+        })
+      );
     } catch (error) {
       if (error instanceof VaultBackendError) {
         throw error;
@@ -329,7 +345,11 @@ class EncryptedFileVaultBackend implements VaultBackend {
     try {
       state = this.readReferenceState(input.referenceId);
     } catch (error) {
-      if (!(error instanceof VaultBackendError) || artifacts.entries.length === 0) {
+      if (
+        error instanceof UnsupportedReferenceStateFormatError ||
+        !(error instanceof VaultBackendError) ||
+        artifacts.entries.length === 0
+      ) {
         throw error;
       }
     }
@@ -375,7 +395,7 @@ class EncryptedFileVaultBackend implements VaultBackend {
       updatedAt,
       artifacts.entries.length
     );
-    const tombstone: EncryptedFileReferenceState = {
+    const tombstone: EncryptedFileReferenceState = writeRetainedV1({
       currentVersion,
       metadata,
       referenceId: input.referenceId,
@@ -383,7 +403,7 @@ class EncryptedFileVaultBackend implements VaultBackend {
       updatedAt,
       versionCount: currentVersion,
       versionExpirations,
-    };
+    });
     this.writeReferenceState(input.referenceId, tombstone);
     for (const artifact of artifacts.entries) {
       this.destroyArtifact(artifact.path);
@@ -552,7 +572,7 @@ class EncryptedFileVaultBackend implements VaultBackend {
    *
    * @param referenceId Stable reference id.
    * @returns Validated state, or undefined when no state file exists.
-   * @throws VaultBackendError when the state is malformed or contradicts its path.
+   * @throws VaultBackendError when the format is unsupported or admitted v1 state is invalid.
    */
   private readReferenceState(referenceId: string): EncryptedFileReferenceState | undefined {
     const path = statePath(this.storeDir, referenceId);
@@ -567,9 +587,16 @@ class EncryptedFileVaultBackend implements VaultBackend {
     } catch {
       throw unavailable('Encrypted-file vault state is invalid.');
     }
+    // Unsupported formats must not enter malformed-v1 revocation recovery.
+    try {
+      readRetainedV1(value, () => undefined);
+    } catch {
+      throw new UnsupportedReferenceStateFormatError();
+    }
     if (
       !isRecord(value) ||
       !hasExactKeys(value, [
+        'schemaVersion',
         'currentVersion',
         'metadata',
         'referenceId',

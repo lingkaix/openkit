@@ -77,6 +77,8 @@ Vault Grant JSON injection-path lists use the shared retained SQL v1 marker. Nat
 
 Encrypted header and entry envelopes use the shared retained-v1 `schemaVersion` codec. Header verification binds that marker with the existing purpose, key kind and creation time. Missing, unsupported or predecessor-only markers refuse before family decoding with a redacted backend failure; no legacy reader or credential conversion is included.
 
+Encrypted reference state independently requires `schemaVersion: 1`. Store, rotation and revocation write that marker. A parsed state with a missing or unsupported marker returns typed `backend-unavailable` before field decoding, material access or destructive recovery. Other malformed-state recovery retains its existing authenticated-artifact checks. This pre-reset boundary has no legacy reader.
+
 The audited resolver requires its scope and Workspace identity to match the reference even when a grant id is present. Existing Gateway and Worker consumers own canonical grant admission; the wrapper never treats the id string as cross-scope authority.
 
 Administrator unlock accepts only an empty request and reloads the configured external key file through the same bounded loader used at boot. Missing or invalid sources and failed header authentication keep existing redacted failure, Audit and rate-limit behavior; the operation zeros its temporary buffer in `finally`.

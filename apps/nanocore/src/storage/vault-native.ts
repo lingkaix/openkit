@@ -1555,7 +1555,7 @@ function applyHarnessLoginNativeEffect(
         .prepare(`UPDATE vault_references SET login_observations_json=?,updated_at=?
         WHERE reference_id=? AND current_version=? AND login_account_id=? AND login_quarantined=0 AND status='active'`)
         .run(
-          JSON.stringify(observation),
+          JSON.stringify(writeRetainedV1(observation)),
           record.now,
           reference.referenceId,
           record.materialGeneration,

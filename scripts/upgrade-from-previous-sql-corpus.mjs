@@ -1142,18 +1142,41 @@ process.stdout.write('SQL_CORPUS_COLD_BOOT ' + JSON.stringify(result));
 
 /** Produces quota JSON only after the real native binding, package, grant, delivery and Use owners admit it. */
 async function seedLoginObservation(o, core, workspace, store, sql) {
-  const [packages, snapshots, harness, preparation, vaultBackend, vaultUse, controlWorker] =
-    await Promise.all(
-      [
-        'runtime/agent-environment',
-        'runtime/aep-snapshot-ledger',
-        'runtime/nanohost-harness',
-        'runtime/nanohost-attempt-records',
-        'vault/vault-encrypted-file-backend',
-        'vault/vault-use-audited-backend',
-        'storage/control-store-worker-client',
-      ].map(o.load)
-    );
+  const [
+    packages,
+    snapshots,
+    harness,
+    preparation,
+    vaultBackend,
+    vaultUse,
+    controlWorker,
+    runtimeConfig,
+    policy,
+    policyStatements,
+    policyConfiguration,
+    authorizer,
+    vaultCodecs,
+  ] = await Promise.all(
+    [
+      'runtime/agent-environment',
+      'runtime/aep-snapshot-ledger',
+      'runtime/nanohost-harness',
+      'runtime/nanohost-attempt-records',
+      'vault/vault-encrypted-file-backend',
+      'vault/vault-use-audited-backend',
+      'storage/control-store-worker-client',
+      'config/runtime-config',
+      'policy/interception',
+      'policy/statements',
+      'policy/configuration',
+      'auth/operation-authorizer',
+      'storage/vault-native-codecs',
+    ].map(o.load)
+  );
+  const [protocol, { VAULT_OPERATION_DEFINITIONS }] = await Promise.all([
+    o.loadPackage('@openkit/protocol'),
+    o.loadPackage('@openkit/app-api-schemas'),
+  ]);
   const now = new Date().toISOString();
   const actor = { kind: 'user', id: sql.userId };
   const thread = await store.createThread(
@@ -1373,6 +1396,205 @@ async function seedLoginObservation(o, core, workspace, store, sql) {
   const planId = `plan_${snapshotId}_login`,
     receiptId = `receipt_${snapshotId}_login`;
   required(o.plans.getVaultInjectionPlan(core, planId), 'Login injection plan');
+  // Module fixture only: real Policy/native admission and opaque backend generations,
+  // without stock provider refresh, Core access delivery or physical completion claims.
+  const requester = {
+    kind: 'public',
+    actor: { kind: 'local', userId: sql.userId },
+    actorRef: actor,
+  };
+  const manager = runtimeConfig.createRuntimeConfigManager({ dataRoot: core.dataRoot });
+  await manager.bindNativePolicyPublication(core);
+  const { policyDigest } = policyStatements;
+  const readDocument = () =>
+    policyConfiguration.readAdmittedPolicyDocument(
+      core,
+      manager.current().openKitConfig.policy?.mediation
+    );
+  const readWorkspaceDocument = () =>
+    authorizer.readCurrentWorkspacePolicy({
+      coreDb: core,
+      workspaceId: workspace.workspaceId,
+      policy: store.getWorkspaceResourceAccess(workspace.workspaceId),
+    });
+  const document = readDocument();
+  const workspaceDocument = readWorkspaceDocument();
+  const definition = VAULT_OPERATION_DEFINITIONS['vault.binding-deliver'];
+  const subject = protocol.PolicySubjectV1Schema.parse({
+    principal: { kind: 'human', id: sql.userId },
+    onBehalfOf: null,
+    actor,
+    process: null,
+    credentialKind: requester.actor.kind,
+    responsibleHumanId: sql.userId,
+  });
+  const resource = {
+    kind: 'container',
+    container: {
+      owner: { kind: 'workspace', workspaceId: workspace.workspaceId },
+      kind: 'workspace',
+      id: workspace.workspaceId,
+    },
+  };
+  let acceptedSuccessor;
+  const readFacts = () => {
+    const currentReference = o.references.getVaultReference(core, reference.referenceId);
+    return {
+      plan: o.plans.getVaultInjectionPlan(core, planId),
+      grant: o.grants.getVaultGrant(core, grant.grantId),
+      target: null,
+      // Only this original call's FULL-acknowledged exact successor preserves its selection.
+      reference:
+        acceptedSuccessor && policyDigest(currentReference) === policyDigest(acceptedSuccessor)
+          ? reference
+          : currentReference,
+      receipt: o.receipts.getVaultInjectionReceipt(core, receiptId),
+    };
+  };
+  const currentAuthority = () =>
+    policy.PolicyInterception.readVaultAuthority({
+      coreDb: core,
+      workspaceDb: workspace,
+      workspaceId: workspace.workspaceId,
+      requester,
+      coordinator: null,
+      worker: null,
+      subject,
+      resource,
+      operation: definition.policyOperation,
+      mutating: definition.mutating,
+      taskPolicy: null,
+    });
+  const initialAuthority = currentAuthority();
+  const selectionDigest = policyDigest(readFacts());
+  const requestId = randomUUID();
+  const proposal = {
+    operation: 'vault.binding-deliver',
+    workspaceId: workspace.workspaceId,
+    resource,
+    capabilityCallId: null,
+    subject,
+    inputReferences: {
+      planId,
+      grantId: grant.grantId,
+      receiptId,
+      requestId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      targetDigest: null,
+      selectionDigest,
+    },
+    inputAttributes: {
+      contract: protocol.POLICY_OPERATION_REFERENCE_INPUT_V1,
+      materialVersion: reference.currentVersion,
+      format: 'chatgptAuthTokens',
+      access: 'access-token-only',
+      ephemeral: true,
+      outsideRetainedStorage: true,
+      excludedFromCapture: true,
+      excludedFromExport: true,
+    },
+  };
+  const authorCurrent = (userId) =>
+    !!authorizer.currentWorkspaceAuthority(
+      core,
+      workspace.workspaceId,
+      { kind: 'user', id: userId },
+      definition.policyOperation,
+      true,
+      undefined,
+      { retainedPolicyAuthor: true, dependencyFailure: 'throw', mutating: definition.mutating }
+    );
+  const stillCurrent = () => {
+    const current = currentAuthority();
+    return (
+      current.kernel.effect === 'allow' &&
+      current.revision === initialAuthority.revision &&
+      policyDigest(readDocument()) === policyDigest(document) &&
+      policyDigest(readWorkspaceDocument()) === policyDigest(workspaceDocument) &&
+      policyDigest(readFacts()) === selectionDigest
+    );
+  };
+  const assertCurrent = () => assert(stillCurrent(), 'Login corpus original authority changed.');
+  // No participant is installed. Actual loaded Policy and the mandatory current Kernel decide;
+  // an unavailable configured gate refuses instead of being replaced by an empty document or allow.
+  const decision = await new policy.PolicyInterception().decide({
+    workspaceDb: workspace,
+    document,
+    proposal,
+    authorizationRevision: initialAuthority.revision,
+    authorizationUses: initialAuthority.authorizationUses,
+    resourceSummary: { selectionDigest },
+    contextSummary: { requestId },
+    authorCurrent,
+    anchorCurrent(anchor) {
+      if (anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== workspace.workspaceId)
+        return false;
+      if (anchor.kind === 'workspace') return anchor.id === workspace.workspaceId;
+      return (
+        anchor.kind === 'turn' &&
+        !protocol.isSealedTurnTerminal(store.getTurnById(anchor.id).status)
+      );
+    },
+    participantAuthorized: (binding) =>
+      binding.participant.kind === 'deterministic' &&
+      binding.author.kind === 'human' &&
+      authorCurrent(binding.author.id),
+    stillCurrent,
+    finalKernel: () => currentAuthority().kernel,
+  });
+  assert.equal(decision.result, 'allow', 'Login corpus original Policy refused.');
+  const retainedDecision = required(
+    o.decisions
+      .listExportableWorkspacePermissionDecisions(workspace, workspace.workspaceId)
+      .find((value) => value.decisionId === decision.decisionId),
+    'Login original governed decision'
+  );
+  assert.equal(retainedDecision.enforcementPoint, 'vault.binding-deliver@decide');
+  assert.equal(retainedDecision.mediation?.role, 'final');
+  assert.equal(retainedDecision.mediation?.kernel?.effect, 'allow');
+  const decisionAudit = required(
+    o.audit
+      .listWorkspaceAuditEvents(workspace, workspace.workspaceId, core)
+      .find((value) => value.id === retainedDecision.auditEventId),
+    'Login original decision Audit'
+  );
+  assert.equal(decisionAudit.permissionDecisionId, decision.decisionId);
+  assert.equal(decisionAudit.action, 'permission.decision');
+  assert.equal(decisionAudit.outcome, 'succeeded');
+  assertCurrent();
+  const policyProof = vaultCodecs.VaultBindingPolicyProofSchema.parse({
+    proposal,
+    decision: {
+      decisionId: decision.decisionId,
+      proposalDigest: decision.proposalDigest,
+      policyRevision: decision.policyRevision,
+      authorizationRevision: decision.authorizationRevision,
+    },
+    document,
+    workspaceDocument,
+    caller: requester,
+  });
+  const loginBinding = {
+    binding: {
+      consumer: {
+        scope: environmentPackage.scope,
+        snapshotId,
+        agent: { agentId: environmentPackage.agent.agentId },
+      },
+      declaration: environmentPackage.credentials.declarations[0],
+      materialVersion: reference.currentVersion,
+    },
+    requester: {
+      workspaceId: workspace.workspaceId,
+      requester,
+      revision: initialAuthority.callerRevision,
+    },
+    attemptId,
+    planId,
+    receiptId,
+    reference,
+    policyProof,
+  };
   const audited = vaultUse.createVaultUseAuditedBackend({
     backend,
     db: workspace,
@@ -1386,48 +1608,53 @@ async function seedLoginObservation(o, core, workspace, store, sql) {
     agentSessionId: sessionId,
     now: () => now,
   });
-  const material = await audited.resolve({ referenceId: reference.referenceId });
-  if (typeof material !== 'string') material.fill(0);
-  const requester = {
-    kind: 'public',
-    actor: { kind: 'local', userId: sql.userId },
-    actorRef: actor,
-  };
-  const { readVaultRequesterAuthority } = await o.load('runtime/worker-credential-authority');
-  const { policyDigest } = await o.load('policy/statements');
-  const loginBinding = {
-    binding: {
-      consumer: {
-        scope: environmentPackage.scope,
-        snapshotId,
-        agent: { agentId: environmentPackage.agent.agentId },
-      },
-      declaration: environmentPackage.credentials.declarations[0],
-      materialVersion: 1,
-    },
-    requester: {
-      workspaceId: workspace.workspaceId,
-      requester,
-      revision: policyDigest(
-        readVaultRequesterAuthority(core, workspace.workspaceId, requester, 'vault.use', true)
-      ),
-    },
-    attemptId,
-    planId,
-    receiptId,
-    reference,
-  };
-  await controlWorker.getControlStoreWorkerClient().vault(core, 'receipt-create', {
-    receiptId,
-    planId,
-    grantId: grant.grantId,
-    agentSessionId: sessionId,
-    backendSummary: 'Synthetic native metadata fixture.',
-    injectedAt: now,
-    revocationStatus: 'active',
-    expiresAt: grant.expiresAt,
-    loginBinding,
+  const material = await audited.resolve({
+    referenceId: reference.referenceId,
+    version: reference.currentVersion,
   });
+  if (typeof material !== 'string') material.fill(0);
+  assertCurrent();
+  const rotated = backend.rotate({ referenceId: reference.referenceId, material: randomBytes(48) });
+  assert.equal(rotated.currentVersion, reference.currentVersion + 1);
+  const successor = await controlWorker.getControlStoreWorkerClient().vault(
+    core,
+    'reference-advance',
+    {
+      referenceId: reference.referenceId,
+      currentVersion: rotated.currentVersion,
+      loginBinding,
+      now: () => now,
+    },
+    assertCurrent
+  );
+  acceptedSuccessor = successor;
+  assertCurrent();
+  const successorMaterial = await audited.resolve({
+    referenceId: reference.referenceId,
+    version: successor.currentVersion,
+  });
+  if (typeof successorMaterial !== 'string') successorMaterial.fill(0);
+  assertCurrent();
+  await controlWorker.getControlStoreWorkerClient().vault(
+    core,
+    'receipt-create',
+    {
+      receiptId,
+      planId,
+      grantId: grant.grantId,
+      agentSessionId: sessionId,
+      backendSummary: 'Synthetic native metadata fixture.',
+      injectedAt: now,
+      revocationStatus: 'active',
+      expiresAt: grant.expiresAt,
+      loginBinding: {
+        ...loginBinding,
+        binding: { ...loginBinding.binding, materialVersion: successor.currentVersion },
+        reference: successor,
+      },
+    },
+    assertCurrent
+  );
 
   await controlWorker.getControlStoreWorkerClient().vault(core, 'reference-login-observe', {
     context,
@@ -1435,7 +1662,7 @@ async function seedLoginObservation(o, core, workspace, store, sql) {
     grantId: grant.grantId,
     planId,
     receiptId,
-    materialGeneration: 1,
+    materialGeneration: successor.currentVersion,
     accountId: 'continuity-account',
     now: () => now,
     observations: {
@@ -1444,7 +1671,7 @@ async function seedLoginObservation(o, core, workspace, store, sql) {
       source: 'native-read',
       observedAt: now,
       bindingId,
-      materialGeneration: 1,
+      materialGeneration: successor.currentVersion,
     },
   });
   // Stop only the synthetic prepared consumer; retained quota data survives the ordinary fence.

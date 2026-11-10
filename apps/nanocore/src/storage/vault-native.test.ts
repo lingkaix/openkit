@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import { isDeepStrictEqual } from 'node:util';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
@@ -47,7 +48,13 @@ import {
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { importUnboundWorkspaceVaultReference } from './test-support/vault-retained-fixtures.js';
-import { ControlVaultInputSchema, HarnessLoginMetadataSchema } from './vault-native-codecs.js';
+import {
+  ControlVaultInputSchema,
+  HarnessLoginMetadataSchema,
+  HarnessLoginObservationsSchema,
+  mapVaultReferenceRow,
+  type VaultReferenceRow,
+} from './vault-native-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
@@ -1865,6 +1872,66 @@ describe('retained Login quota metadata codec boundary', () => {
     bindingId: 'b'.repeat(512),
     materialGeneration: Number.MAX_SAFE_INTEGER,
   };
+
+  // Freeze F2: only retained JSON carries the format marker; SQL NULL still means unknown.
+  it('reads retained v1 observations without changing their semantic or public shape', async () => {
+    const f = await nativeLoginFixture();
+    const row = f
+      .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+      .get(f.login.referenceId) as VaultReferenceRow;
+    expect(row.login_observations_json).toBeNull();
+    expect(isDeepStrictEqual(mapVaultReferenceRow(row), f.login)).toBe(true);
+    expect(isDeepStrictEqual(getVaultReference(f.db, f.login.referenceId), f.login)).toBe(true);
+    const retained = JSON.stringify({ ...observations, schemaVersion: 1 });
+    // This owner-module input tests decoding only; it creates no native observation authority.
+    const decoded = mapVaultReferenceRow({ ...row, login_observations_json: retained });
+    expect(
+      isDeepStrictEqual(decoded, { ...f.login, login: { ...f.login.login, observations } })
+    ).toBe(true);
+    expect(decoded.login?.observations).not.toHaveProperty('schemaVersion');
+    expect(HarnessLoginObservationsSchema.safeParse(observations).success).toBe(true);
+    expect(
+      HarnessLoginObservationsSchema.safeParse({ ...observations, schemaVersion: 1 }).success
+    ).toBe(false);
+    expect(isDeepStrictEqual(getVaultReference(f.db, f.login.referenceId), f.login)).toBe(true);
+    expect(
+      f
+        .fixtureSql('SELECT login_observations_json FROM vault_references WHERE reference_id=?')
+        .get(f.login.referenceId)
+    ).toEqual({ login_observations_json: null });
+  });
+
+  it.each(['missing', 'future', 'text', 'null', 'boolean', 'future-invalid-fields'] as const)(
+    'refuses %s retained observation format before semantic decoding',
+    async (marker) => {
+      const f = await nativeLoginFixture();
+      const row = f
+        .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+        .get(f.login.referenceId) as VaultReferenceRow;
+      const retained: Record<string, unknown> = { ...observations };
+      if (marker === 'future' || marker === 'future-invalid-fields') retained.schemaVersion = 2;
+      else if (marker === 'text') retained.schemaVersion = '1';
+      else if (marker === 'null') retained.schemaVersion = null;
+      else if (marker === 'boolean') retained.schemaVersion = true;
+      if (marker === 'future-invalid-fields') retained.state = 'unsupported-state';
+      const text = JSON.stringify(retained);
+      let failure: unknown;
+      try {
+        mapVaultReferenceRow({ ...row, login_observations_json: text });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure instanceof TypeError).toBe(true);
+      expect(String(failure) === 'TypeError: Unsupported retained record format.').toBe(true);
+      expect(String(failure).includes(login.accountId)).toBe(false);
+      expect(isDeepStrictEqual(getVaultReference(f.db, f.login.referenceId), f.login)).toBe(true);
+      expect(
+        f
+          .fixtureSql('SELECT login_observations_json FROM vault_references WHERE reference_id=?')
+          .get(f.login.referenceId)
+      ).toEqual({ login_observations_json: null });
+    }
+  );
 
   it('keeps a legacy Login without observations usable', () => {
     expect(HarnessLoginMetadataSchema.safeParse(login).success).toBe(true);
