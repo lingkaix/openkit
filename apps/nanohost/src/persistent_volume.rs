@@ -36,6 +36,8 @@ const VERSION_LABEL: &str = "org.openkit.storage.version";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageStorageLayout {
     pub digest: String,
+    /// Immutable OCI build provenance, distinct from storage layout and its digest.
+    release_identity: Value,
     pub family: Option<String>,
     pub version: Option<String>,
     pub uid: u32,
@@ -91,6 +93,7 @@ impl ImageStorageLayout {
     pub fn result_json(&self) -> Value {
         json!({
             "digest": self.digest,
+            "releaseIdentity": self.release_identity,
             "environmentDefaults": {
                 "defaultsDigest": self.environment_defaults.defaults_digest,
                 "values": self.environment_defaults.values,
@@ -1099,8 +1102,32 @@ fn parse_image_inspect(
         .filter(|value| matches!(*value, "amd64" | "arm64"))
         .ok_or("image.inspect platform invalid")?
         .to_string();
+    // Source identity is exact and bounded; malformed provenance stays unknown for Core refusal.
+    let source_commit = label("org.opencontainers.image.revision").filter(|value| {
+        value.len() == 40
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    let release_tag_value =
+        labels.and_then(|labels| labels.get("org.opencontainers.image.version"));
+    let tag_shape_valid = release_tag_value.is_none_or(Value::is_string);
+    let release_tag = release_tag_value
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty());
+    let tag_valid = tag_shape_valid
+        && release_tag
+            .is_none_or(|value| value.len() <= 4000 && !value.chars().any(char::is_control));
+    let release_identity = match source_commit {
+        Some(source_commit) if tag_valid => json!({
+            "sourceCommit": source_commit,
+            "releaseTag": release_tag.map(|value| if value.starts_with('v') {value.to_string()} else {format!("v{value}")}),
+        }),
+        _ => Value::Null,
+    };
     Ok(ImageStorageLayout {
         digest,
+        release_identity,
         family: label(FAMILY_LABEL),
         version: label(VERSION_LABEL),
         uid,
@@ -2116,6 +2143,7 @@ pub(crate) mod tests {
         let uid = unsafe { libc::geteuid() };
         let gid = unsafe { libc::getegid() };
         let layout = ImageStorageLayout {
+            release_identity: Value::Null,
             digest: digest('a'),
             family: Some("openkit-worker".into()),
             version: Some("1".into()),
@@ -2334,6 +2362,56 @@ pub(crate) mod tests {
             defaults["defaultsDigest"],
             "sha256:e9da50d95e0b0d577121e89a67f0665120f72a7421cd304ce8407b35775c6467"
         );
+    }
+
+    #[test]
+    fn image_inspection_projects_immutable_build_labels_without_changing_layout() {
+        let image_digest = digest('a');
+        let mut fixture = json!({
+            "Id": image_digest, "Os": "linux", "Architecture": "amd64",
+            "Config": {"User": "1000:1000", "WorkingDir": "/tmp/bootstrap",
+                "Volumes": {"/workspace": {}}, "Labels": {}}
+        });
+        let inspect = |value: &Value| {
+            parse_image_inspect(&image_digest, &serde_json::to_vec(value).unwrap()).unwrap()
+        };
+        let initial = inspect(&fixture);
+        assert_eq!(initial.result_json()["releaseIdentity"], Value::Null);
+        fixture["Config"]["Labels"]["org.opencontainers.image.revision"] = json!("a".repeat(40));
+        let source = inspect(&fixture);
+        assert_eq!(
+            source.result_json()["releaseIdentity"],
+            json!({"sourceCommit": "a".repeat(40), "releaseTag": null})
+        );
+        for tag in ["0.1.0-rc.1", "v0.1.0-rc.1"] {
+            fixture["Config"]["Labels"]["org.opencontainers.image.version"] = json!(tag);
+            let tagged = inspect(&fixture);
+            assert_eq!(
+                tagged.result_json()["releaseIdentity"],
+                json!({"sourceCommit": "a".repeat(40), "releaseTag": "v0.1.0-rc.1"})
+            );
+            assert_eq!(tagged.layout_digest(), initial.layout_digest());
+        }
+        for bad_tag in [
+            json!(1),
+            Value::Null,
+            json!("x".repeat(4001)),
+            json!("bad\ntag"),
+        ] {
+            fixture["Config"]["Labels"]["org.opencontainers.image.version"] = bad_tag;
+            assert_eq!(
+                inspect(&fixture).result_json()["releaseIdentity"],
+                Value::Null
+            );
+        }
+        fixture["Config"]["Labels"]["org.opencontainers.image.version"] = json!("v0.1.0-rc.1");
+        for revision in ["A".repeat(40), "a".repeat(39), String::new()] {
+            fixture["Config"]["Labels"]["org.opencontainers.image.revision"] = json!(revision);
+            assert_eq!(
+                inspect(&fixture).result_json()["releaseIdentity"],
+                Value::Null
+            );
+        }
     }
 
     #[test]
@@ -2854,6 +2932,7 @@ pub(crate) mod tests {
         let mut reopened = test_store(&root);
         assert_eq!(reopened.read_metadata(&association).unwrap(), read);
         let layout = ImageStorageLayout {
+            release_identity: Value::Null,
             digest: digest('a'),
             family: read.family.clone(),
             version: read.version.clone(),
@@ -2989,6 +3068,7 @@ pub(crate) mod tests {
         );
 
         let layout = ImageStorageLayout {
+            release_identity: Value::Null,
             digest: digest('a'),
             family: expected.family.clone(),
             version: expected.version.clone(),
@@ -3057,6 +3137,7 @@ pub(crate) mod tests {
             owner_uid: foreign_uid,
         };
         let layout = ImageStorageLayout {
+            release_identity: Value::Null,
             digest: digest('a'),
             family: Some("openkit-worker".into()),
             version: Some("1".into()),

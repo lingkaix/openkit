@@ -114,6 +114,7 @@ import {
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { type VaultBackend, VaultBackendError } from '../vault/vault-backend.js';
 import { createVaultGrant, getVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
@@ -301,6 +302,7 @@ const factoryCoreDb = createFactoryCoreDb();
 /** Returns the fixed persistent-image facts used by NanoHost materialization fixtures. */
 function nanoHostImageInspection(request: NanoHostSessionEffectRequest) {
   return {
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     digest: request.input.imageDigest,
     environmentDefaults: {
       defaultsDigest: 'sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
@@ -1013,6 +1015,7 @@ async function failLivePartialSandboxActivation(
       environmentPackage.createdAt
     );
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     env: {},
     nanoHostSessionDispatch: sessionDispatch,
@@ -1145,6 +1148,7 @@ async function prepareNonmemberAdminWorkerStorage(label: string) {
     workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
   });
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     readRuntimeConfig: () => currentConfiguration,
     coreDb,
     env: {},
@@ -1203,6 +1207,7 @@ function createConfiguredWorkerLifecycleRuntime(
 describe('createConfiguredTurnExecutor', () => {
   it('exposes NanoHost as the sole production runtime selector', () => {
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
       env: {},
       workerControlGateway: new WorkerControlGateway(),
@@ -1217,6 +1222,7 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('projects OpenShell version 0.0.99 from the NanoHost backend capability observation', async () => {
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
       env: {},
       workerControlGateway: new WorkerControlGateway(),
@@ -1319,7 +1325,10 @@ describe('createConfiguredTurnExecutor', () => {
         digest: imageDigest,
         requestId: imageInspection.requestId,
       });
-      await expect(pendingInspection).resolves.toEqual({ digest: imageDigest });
+      await expect(pendingInspection).resolves.toEqual({
+        digest: imageDigest,
+        releaseIdentity: null,
+      });
 
       const sandboxCreate = createNanoHostEffectRequest(
         identity,
@@ -1413,6 +1422,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
 
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: dispatch,
@@ -1591,6 +1601,7 @@ describe('createConfiguredTurnExecutor', () => {
         sandboxBindingRef: 'sandbox-binding-epoch-race',
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -1667,6 +1678,7 @@ describe('createConfiguredTurnExecutor', () => {
       { agentId: 'agent_codex_host' }
     );
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       env: {},
       workerControlGateway: new WorkerControlGateway(),
@@ -1782,6 +1794,7 @@ describe('createConfiguredTurnExecutor', () => {
       workspaceDb.sqlite.close();
     }
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       env: {},
       workerControlGateway: new WorkerControlGateway(),
@@ -1877,6 +1890,7 @@ describe('createConfiguredTurnExecutor', () => {
           timestamp: '2026-08-21T00:00:00.000Z',
         });
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           workerControlGateway: new WorkerControlGateway(),
@@ -2011,6 +2025,7 @@ describe('createConfiguredTurnExecutor', () => {
       { agentId: 'agent_codex_host' }
     );
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       env: {},
       workerControlGateway: new WorkerControlGateway(),
@@ -2084,6 +2099,7 @@ describe('createConfiguredTurnExecutor', () => {
         });
       }
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         workerControlGateway: new WorkerControlGateway(),
@@ -2129,6 +2145,7 @@ describe('createConfiguredTurnExecutor', () => {
     const sessionCompatibilityKey = sessionCompatibilityDigest(environmentPackage);
     try {
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         workerControlGateway: new WorkerControlGateway(),
@@ -2387,6 +2404,7 @@ describe('createConfiguredTurnExecutor', () => {
         '2026-09-06T00:00:00.000Z'
       );
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
       ...(options.vaultBackend ? { vaultBackend: options.vaultBackend } : {}),
@@ -3038,6 +3056,7 @@ describe('createConfiguredTurnExecutor', () => {
               expect(listVaultInjectionReceipts(core).length).toBe(1);
               let coldExportCalls = 0;
               const restarted = createConfiguredWorkerLifecycleRuntime({
+                releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
                 coreDb: core,
                 env: {},
                 workspaceMutationAdmission: admission,
@@ -3134,6 +3153,7 @@ describe('createConfiguredTurnExecutor', () => {
         VALUES ('target_thread_root', 'identity_thread_root', 'deployment_thread_root', 1, 1, 1, 1, ?, ?, 1)`)
         .run('a'.repeat(64), new Date().toISOString());
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: dispatch,
@@ -3164,6 +3184,186 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 0 });
     } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
+  it.each([
+    {
+      label: 'missing image identity',
+      observed: undefined,
+      core: TEST_WORKER_RELEASE_IDENTITY,
+      expectedEffects: ['image.acquire', 'image.inspect'],
+    },
+    {
+      label: 'unknown image identity',
+      observed: null,
+      core: TEST_WORKER_RELEASE_IDENTITY,
+      expectedEffects: ['image.acquire', 'image.inspect'],
+    },
+    {
+      label: 'older image release',
+      observed: { sourceCommit: 'b'.repeat(40), releaseTag: null },
+      core: TEST_WORKER_RELEASE_IDENTITY,
+      expectedEffects: ['image.acquire', 'image.inspect'],
+    },
+    {
+      label: 'unknown Core build',
+      observed: TEST_WORKER_RELEASE_IDENTITY,
+      core: undefined,
+      expectedEffects: [],
+    },
+  ])(
+    'refuses $label before sandbox or storage effects',
+    async ({ observed, core, expectedEffects }) => {
+      const coreDb = createFactoryCoreDb();
+      const effects: NanoHostSessionEffectRequest[] = [];
+      const fixed = createFactoryNanoHostDispatch(effects);
+      const dispatch: NanoHostSessionDispatch = {
+        ...fixed,
+        async effect(requestOrConnection: object, carriedRequest?: NanoHostSessionEffectRequest) {
+          const request = carriedRequest ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          const result = await fixed.effect(request);
+          if (request.kind !== 'image.inspect') return result;
+          const facts = nanoHostImageInspection(request);
+          return { ...facts, releaseIdentity: observed };
+        },
+      };
+      try {
+        coreDb.sqlite
+          .prepare(`INSERT INTO nanohost_runtime_targets (target_id, identity_id, deployment_id,
+        connection_generation, predecessor_fenced, ready, fresh_empty, physical_epoch, observed_at, slot_count)
+        VALUES ('target_thread_root', 'identity_thread_root', 'deployment_thread_root', 1, 1, 1, 1, ?, ?, 1)`)
+          .run('a'.repeat(64), new Date().toISOString());
+        const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: core,
+          coreDb,
+          env: {},
+          nanoHostSessionDispatch: dispatch,
+          workerControlGateway: new WorkerControlGateway(),
+        });
+        const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+          .backend;
+        const environmentPackage = await completeNanoHostPackage({
+          scope: {},
+          snapshotId: 'snapshot_thread_root',
+        });
+        await authorizeNanoHostPackage(coreDb, environmentPackage);
+        bindNanoHostWorkerLineage(coreDb, environmentPackage, {
+          attemptId: testEntityId('attempt', 'lease_thread_root'),
+          sandboxBindingRef: 'binding_thread_root',
+        });
+        await anchorNanoHostMaterialization(coreDb, backend, environmentPackage);
+        await expect(
+          backend.materialize(environmentPackage, {
+            workspaceRoots: [],
+            sandboxBindingRef: 'binding_thread_root',
+          })
+        ).rejects.toThrow(expect.objectContaining({ code: 'worker_release_incompatible' }));
+        expect(effects.map((effect) => effect.kind)).toEqual(expectedEffects);
+        await backend.cleanupSession(backend.planSession(environmentPackage));
+        expect(effects.map((effect) => effect.kind)).toEqual(expectedEffects);
+        expect(
+          coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+        ).toEqual({ count: 0 });
+      } finally {
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it('rechecks an old resident immutable image after a Core release change before storage or material delivery', async () => {
+    const coreDb = createFactoryCoreDb();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const ownerUserId = ensureLocalUser(coreDb);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
+    const agentSetup = createTestAgentSetup({
+      imageRef: `sha256:${'a'.repeat(64)}`,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const manifest = agentSetup.manifest;
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...loadRuntimeConfig(coreDb.dataRoot),
+      agentManifests: [manifest],
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Release identity fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    let original: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+    try {
+      const agentSessionId = testEntityId('as', 'release_resident');
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'queue:release_resident',
+        requestId: testEntityId('tu', 'request_release_resident').slice(3),
+        requestedAgentId: manifest.id,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: DEMO_THREAD_ID,
+        turnId: testEntityId('tu', 'release_resident'),
+        turnInput: 'Complete the original resident Turn',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      original = await native.admitTurn(entry, {
+        attemptId: testEntityId('attempt', 'release_resident'),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      await original.complete();
+      expect(store.getTurnById(original.pkg.scope.turnId).status).toBe('completed');
+      await original.cleanup();
+      await native.restore();
+
+      const effects: NanoHostSessionEffectRequest[] = [];
+      const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: { sourceCommit: 'b'.repeat(40), releaseTag: null },
+        coreDb,
+        env: {},
+        nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects),
+        workerControlGateway: new WorkerControlGateway(),
+      });
+      const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+        .backend;
+      const incoming = await completeNanoHostPackage({
+        snapshotId: 'snapshot_release_resident_incoming',
+        agentSetup,
+        runtime: original.pkg.runtime,
+        scope: {
+          ...original.pkg.scope,
+          requestId: testEntityId('tu', 'request_release_resident_next').slice(3),
+          turnId: testEntityId('tu', 'release_resident_next'),
+          agentSessionId: testEntityId('as', 'release_resident_next'),
+        },
+      });
+      await authorizeNanoHostPackage(coreDb, incoming);
+      bindNanoHostWorkerLineage(coreDb, incoming, {
+        attemptId: testEntityId('attempt', 'release_resident_next'),
+        sandboxBindingRef: 'release_resident_next',
+      });
+      await anchorNanoHostMaterialization(coreDb, backend, incoming);
+      await expect(
+        backend.materialize(incoming, {
+          workspaceRoots: [],
+          sandboxBindingRef: 'release_resident_next',
+        })
+      ).rejects.toThrow(expect.objectContaining({ code: 'worker_release_incompatible' }));
+      expect(effects.map((effect) => effect.kind)).toEqual(['image.inspect']);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 1 });
+    } finally {
+      await original?.cleanup();
+      await native.restore();
+      await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
     }
   });
@@ -4101,32 +4301,35 @@ describe('createConfiguredTurnExecutor', () => {
       const storage = getWorkerStorageBinding(resident.coreDb, {
         storageRef: String((created.input.storage as Record<string, unknown>).storageRef),
       })!;
-      const preparation = createWorkerEnvironmentRuntimeEffects({
-        ...createFactoryNanoHostDispatch([]),
-        effect: (async (request: NanoHostSessionEffectRequest) => {
-          preparationRequests.push(request);
-          if (request.kind === 'image.acquire' || request.kind === 'image.build')
-            return { digest: `sha256:${'a'.repeat(64)}` };
-          if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
-          if (request.kind === 'storage.inspect')
-            return {
-              attachment: null,
-              capacity: { availableBytes: 2048, totalBytes: 4096 },
-              layoutDigest: storage.layoutDigest,
-              scopeDigest: storage.scopeDigest,
-              state: 'available',
-              storageRef: storage.storageRef,
-              targets: storage.targets.map(({ target, volumeRef, initialized }) => ({
-                target,
-                volumeRef,
-                initialized,
-              })),
-            };
-          if (request.kind === 'storage.purge')
-            return { state: 'purged', storageRef: storage.storageRef };
-          throw new Error(`Unexpected preparation effect ${request.kind}`);
-        }) as NanoHostSessionDispatch['effect'],
-      });
+      const preparation = createWorkerEnvironmentRuntimeEffects(
+        {
+          ...createFactoryNanoHostDispatch([]),
+          effect: (async (request: NanoHostSessionEffectRequest) => {
+            preparationRequests.push(request);
+            if (request.kind === 'image.acquire' || request.kind === 'image.build')
+              return { digest: `sha256:${'a'.repeat(64)}` };
+            if (request.kind === 'image.inspect') return nanoHostImageInspection(request);
+            if (request.kind === 'storage.inspect')
+              return {
+                attachment: null,
+                capacity: { availableBytes: 2048, totalBytes: 4096 },
+                layoutDigest: storage.layoutDigest,
+                scopeDigest: storage.scopeDigest,
+                state: 'available',
+                storageRef: storage.storageRef,
+                targets: storage.targets.map(({ target, volumeRef, initialized }) => ({
+                  target,
+                  volumeRef,
+                  initialized,
+                })),
+              };
+            if (request.kind === 'storage.purge')
+              return { state: 'purged', storageRef: storage.storageRef };
+            throw new Error(`Unexpected preparation effect ${request.kind}`);
+          }) as NanoHostSessionDispatch['effect'],
+        },
+        TEST_WORKER_RELEASE_IDENTITY
+      );
       const coreDb = openCoreDb(join(root, 'dispatch'));
       pinCoreDb = coreDb;
       applyMigrations(coreDb);
@@ -5358,6 +5561,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
       durableCore = openCoreDb(dataRoot);
       const durableOwner = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         ...options,
         coreDb: durableCore,
         store,
@@ -5430,6 +5634,7 @@ describe('createConfiguredTurnExecutor', () => {
       const receipts = db.sqlite.prepare('SELECT * FROM workspace_snapshot_collections').all();
       durableCore = openCoreDb(dataRoot);
       const durableOwner = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         ...options,
         coreDb: durableCore,
         store,
@@ -6101,6 +6306,7 @@ describe('createConfiguredTurnExecutor', () => {
           });
           expect(originalReceipt).toMatchObject({ revocationStatus: 'active', grantId });
           const restarted = createConfiguredWorkerLifecycleRuntime({
+            releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             coreDb,
             env: {},
             workspaceMutationAdmission: admission,
@@ -7697,6 +7903,7 @@ describe('createConfiguredTurnExecutor', () => {
         sandboxBindingRef: 'lease-binding:restart-same-epoch',
       });
       const firstRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -7878,6 +8085,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const slotBackend = (
         createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -7903,6 +8111,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
       const prepareBackend = (
         createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -7951,6 +8160,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
       const backend = (
         createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           workerControlGateway: new WorkerControlGateway(),
@@ -8324,6 +8534,7 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .run('2026-08-21T00:00:00.000Z');
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -8482,6 +8693,7 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .run('a'.repeat(64), timestamp);
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -8681,6 +8893,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run(failureAt);
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -8892,6 +9105,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('2026-08-21T00:00:00.000Z');
       const initialRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -9004,6 +9218,7 @@ describe('createConfiguredTurnExecutor', () => {
       });
 
       const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -9198,6 +9413,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         workerControlGateway: new WorkerControlGateway(),
@@ -9437,6 +9653,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         workerControlGateway: new WorkerControlGateway(),
@@ -10421,6 +10638,7 @@ describe('createConfiguredTurnExecutor', () => {
         now: () => '2026-08-12T00:00:00.000Z',
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         workerControlGateway,
@@ -10799,6 +11017,7 @@ describe('createConfiguredTurnExecutor', () => {
       environmentPackage.credentials = produced.credentials;
       environmentPackage.vault = produced.vault;
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         vaultBackend: () => vaultUnlockState.backend(),
         env: {},
@@ -11383,6 +11602,7 @@ describe('createConfiguredTurnExecutor', () => {
       const coreDb = createFactoryCoreDb();
       try {
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           workerControlGateway: new WorkerControlGateway(),
@@ -11486,6 +11706,7 @@ describe('createConfiguredTurnExecutor', () => {
     const coreDb = createFactoryCoreDb();
     try {
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         workerControlGateway: new WorkerControlGateway(),
@@ -11585,6 +11806,7 @@ describe('createConfiguredTurnExecutor', () => {
         '2026-08-10T00:00:00.000Z'
       );
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
       env: {},
       nanoHostSessionDispatch: sessionDispatch,
@@ -11684,6 +11906,7 @@ describe('createConfiguredTurnExecutor', () => {
         '2026-08-10T00:00:00.000Z'
       );
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
       env: {},
       nanoHostSessionDispatch: sessionDispatch,
@@ -11994,6 +12217,7 @@ describe('createConfiguredTurnExecutor', () => {
           target
         );
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: dispatch,
@@ -12167,6 +12391,7 @@ describe('createConfiguredTurnExecutor', () => {
       await publishFactoryAdmission(store, entry);
       let preparationObserved = false;
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         store,
         env: {},
@@ -12527,6 +12752,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-09-06T00:00:00.000Z');
       const createBackend = () => {
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -12698,6 +12924,7 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .run('2026-09-06T00:00:00.000Z');
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -12884,6 +13111,7 @@ describe('createConfiguredTurnExecutor', () => {
         .run('2026-09-06T00:00:00.000Z');
       const createBackend = () => {
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -14723,6 +14951,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('a'.repeat(64), '2026-09-06T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -15883,6 +16112,7 @@ describe('createConfiguredTurnExecutor', () => {
           )
           .run('2026-09-06T00:00:00.000Z');
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -16830,6 +17060,7 @@ describe('createConfiguredTurnExecutor', () => {
         },
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
+releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch:
@@ -17545,6 +17776,7 @@ describe('createConfiguredTurnExecutor', () => {
           },
         };
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -17765,6 +17997,7 @@ describe('createConfiguredTurnExecutor', () => {
           },
         };
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: sessionDispatch,
@@ -17861,6 +18094,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
       await authorizeNanoHostPackage(coreDb, firstPackage);
       const firstRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -17992,6 +18226,7 @@ describe('createConfiguredTurnExecutor', () => {
       );
 
       const recoveringRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -18020,6 +18255,7 @@ describe('createConfiguredTurnExecutor', () => {
       ).resolves.toBe('reusable');
 
       const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -18552,6 +18788,7 @@ describe('createConfiguredTurnExecutor', () => {
         )
         .run('2026-08-21T00:00:00.000Z');
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -18694,6 +18931,7 @@ describe('createConfiguredTurnExecutor', () => {
           '2026-08-10T00:00:00.000Z'
         );
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -19559,6 +19797,7 @@ describe('createConfiguredTurnExecutor', () => {
         ).toBe(true);
       });
       registerNanoHostSessionSemanticRoutes({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         app,
         coreDb: currentDb,
         dispatch,
@@ -19795,6 +20034,7 @@ describe('createConfiguredTurnExecutor', () => {
       currentDb = cold;
       dispatch = createNanoHostSessionDispatch({ coreDb: currentDb, sessionAuthority: authority });
       runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb: currentDb,
         store,
         ...options,
@@ -20005,6 +20245,7 @@ describe('createConfiguredTurnExecutor', () => {
           sessionAuthority: authority,
         });
         runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb: currentDb,
           store,
           ...options,
@@ -20145,6 +20386,7 @@ describe('createConfiguredTurnExecutor', () => {
       const reopened = createNanoHostSessionDispatch({ coreDb: cold, sessionAuthority: authority });
       dispatch = reopened;
       runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb: currentDb,
         store,
         ...options,
@@ -20757,6 +20999,7 @@ describe('createConfiguredTurnExecutor', () => {
       const anchor = getWorkerBackendSession(coreDb, attemptId)!;
       const target = getNanoHostRuntimeTarget(coreDb, anchor.runtimeTargetId)!;
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         ...options,
         coreDb,
         store,
@@ -20847,6 +21090,7 @@ describe('createConfiguredTurnExecutor', () => {
       const coldStore = new FsStore({ dataRoot });
       expect(coldStore.getTurnById(turnId)).toEqual(failed);
       const repeated = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         ...options,
         coreDb: cold,
         store: coldStore,
@@ -21099,6 +21343,7 @@ describe('createConfiguredTurnExecutor', () => {
         await authorizeNanoHostPackage(coreDb, next);
         // Model only the new Epoch's materialization effects after the old peer has stopped.
         const fresh = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb,
           env: {},
           nanoHostSessionDispatch: createFactoryNanoHostDispatch(f.effects),
@@ -21126,6 +21371,7 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('keeps the deterministic self-check executor override outside production selection', () => {
     const executor = createConfiguredTurnExecutor({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: factoryCoreDb,
       env: { OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1' },
       workerControlGateway: new WorkerControlGateway(),

@@ -73,6 +73,7 @@ import { notebookImportFixture } from '../test-support/notebook-import.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-double.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
@@ -3084,6 +3085,7 @@ describe('scheduler restart recovery', () => {
 
     const createRuntime = () =>
       createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         env: {},
         nanoHostSessionDispatch: sessionDispatch,
@@ -5974,6 +5976,7 @@ describe('minimal scheduler reconnect contract', () => {
         }
         if (request.kind === 'image.inspect') {
           return {
+            releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             digest: request.input.imageDigest,
             environmentDefaults: {
               defaultsDigest:
@@ -6057,6 +6060,7 @@ describe('minimal scheduler reconnect contract', () => {
       }
 
       const initialRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         store,
         readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
@@ -6198,6 +6202,7 @@ describe('minimal scheduler reconnect contract', () => {
       });
 
       const restartedRuntime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb,
         store,
         readRuntimeConfig: () => loadRuntimeConfig(coreDb.dataRoot),
@@ -7563,6 +7568,7 @@ async function createFinalReviewRecoveryFixture(
     });
   }
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     store,
     env: {},

@@ -20,6 +20,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
   ensureUserQuickChatWorkspace,
   publishWorkspaceOwnerMembership,
@@ -169,6 +170,7 @@ const agentId = 'agent_codex_host';
 const configurationFile = 'agents/codex.agent.jsonc';
 const imageDigest = `sha256:${'d'.repeat(64)}`;
 const imageInspection = {
+  releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   digest: imageDigest,
   platform: { architecture: 'arm64', os: 'linux' },
   storageLayout: {
@@ -276,6 +278,7 @@ async function fixture(kind: Kind) {
   };
   const makeApp = (selectedStore: FsStore) =>
     createAppWithLocalIdentity({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       dataRoot,
       mode: 'local',

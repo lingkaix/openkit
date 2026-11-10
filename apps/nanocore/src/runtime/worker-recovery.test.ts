@@ -55,6 +55,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
@@ -269,6 +270,7 @@ async function createCheckpointCloseoutFixture(
       return waitForFinalStatus(...args);
     });
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
     readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
     coreDb,
@@ -283,6 +285,7 @@ async function createCheckpointCloseoutFixture(
             return { digest: `sha256:${'a'.repeat(64)}` };
           case 'image.inspect':
             return {
+              releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               digest: request.input.imageDigest,
               environmentDefaults: {
                 defaultsDigest:

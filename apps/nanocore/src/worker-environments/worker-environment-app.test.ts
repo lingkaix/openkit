@@ -42,6 +42,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import {
   ensureUserQuickChatWorkspace,
   recordWorkspaceOwnerMembership,
@@ -229,6 +230,7 @@ describe('Worker environment App composition', () => {
           if (request.kind === 'image.inspect')
             return {
               ...IMAGE_INSPECTION,
+              releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               environmentDefaults: {
                 defaultsDigest,
                 values,
@@ -252,6 +254,7 @@ describe('Worker environment App composition', () => {
           return actualReload(input);
         });
         const app = createApp({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           runtimeConfigManager,
           auth: noSessionAuth(),
           coreDb,
@@ -678,6 +681,7 @@ describe('Worker environment App composition', () => {
         if (request.kind === 'image.inspect')
           return {
             ...IMAGE_INSPECTION,
+            releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             platform: { architecture: 'amd64', os: 'linux' },
             storageLayout: {
               ...IMAGE_INSPECTION.storageLayout,
@@ -726,6 +730,7 @@ describe('Worker environment App composition', () => {
         });
       restoreCollection = () => collection.mockRestore();
       const app = createApp({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         agentManifests: [agentSetup.manifest],
         auth: ownerSessionAuth(USER_ID),
         runtimeConfigManager,

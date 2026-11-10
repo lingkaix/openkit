@@ -37,6 +37,7 @@ import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   markSchedulerAttemptForTerminalTurn,
@@ -119,6 +120,7 @@ function operationDouble(
           return { digest: `sha256:${DIGEST}` };
         case 'image.inspect':
           return {
+            releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             digest: request.input.imageDigest,
             environmentDefaults: {
               defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,
@@ -228,6 +230,7 @@ async function faultFixture() {
   const effects: NanoHostSessionEffectRequest[] = [];
   const transcript = { events: '' };
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
     env: {},
@@ -246,6 +249,7 @@ async function faultFixture() {
   registerWorkerControlRoutes({ app, coreDb, workerControlGateway: gateway });
   const dispatchedCommands: { operationId: string; operation: string; sequence: number }[] = [];
   registerNanoHostSessionSemanticRoutes({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     app,
     coreDb,
     nanoHostConfig: target,
@@ -503,7 +507,11 @@ async function faultFixture() {
     ]);
   };
   const poll = (harnesses?: readonly { harnessInstanceId: string; nextSequence: number }[]) =>
-    post('/worker-control/harness/poll', { schemaVersion: 2, ...(harnesses ? { harnesses } : {}) });
+    post('/worker-control/harness/poll', {
+      schemaVersion: 2,
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      ...(harnesses ? { harnesses } : {}),
+    });
   const dispatch = async (operation: keyof typeof enqueued) => {
     await waitQueued(operation);
     const response = await poll();
@@ -1226,7 +1234,10 @@ describe('first-release worker faults (real Core crossings)', () => {
         },
       } as SandboxIntegrationClient;
       await f.waitQueued('session.open');
-      const loop = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      const loop = runWorkerHarness({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        signal: controller.signal,
+      }).catch((error: unknown) => error);
       try {
         await responseEntered;
         await vi.advanceTimersByTimeAsync(1_250);
@@ -1855,6 +1866,9 @@ describe('first-release worker faults (real Core crossings)', () => {
       const inspect = await f.dispatch('session.inspect');
       const accepted = getWorkerControlAcceptedFinalStatus(f.coreDb, lineage);
       expect(accepted).not.toBeNull();
+      const oldShim = await f.post('/worker-control/harness/poll', { schemaVersion: 2 });
+      expect(oldShim.status).toBe(409);
+      expect(JSON.parse(oldShim.body)).toMatchObject({ code: 'worker_release_incompatible' });
       expect(await f.poll()).toEqual({ status: 204, body: '' });
       await vi.advanceTimersByTimeAsync(299_999);
       expect(f.isSettled()).toBe(false);
@@ -1910,4 +1924,49 @@ describe('first-release worker faults (real Core crossings)', () => {
       vi.useRealTimers();
     }
   });
+});
+
+// G4: same-schema old/missing identity must never release the pending material-bearing command.
+it('refuses incompatible bound polls before readiness or session material, then admits the exact build', async () => {
+  const f = await faultFixture();
+  let released: NanoHostHarnessCommand | undefined;
+  try {
+    await f.waitQueued('session.open');
+    for (const releaseIdentity of [
+      undefined,
+      null,
+      { sourceCommit: null, releaseTag: null },
+      { sourceCommit: 'b'.repeat(40), releaseTag: null },
+      { sourceCommit: 'a'.repeat(40), releaseTag: 'private-value-canary' },
+    ]) {
+      const response = await f.post('/worker-control/harness/poll', {
+        schemaVersion: 2,
+        releaseIdentity,
+      });
+      if (response.status === 200) released = JSON.parse(response.body) as NanoHostHarnessCommand;
+      expect(response.status).toBe(409);
+      expect(JSON.parse(response.body)).toMatchObject({
+        code: 'worker_release_incompatible',
+      });
+      expect(response.body).not.toContain('private-value-canary');
+      expect(f.dispatchedCommands).toEqual([]);
+    }
+    const response = await f.poll();
+    expect(response.status, response.body).toBe(200);
+    released = JSON.parse(response.body) as NanoHostHarnessCommand;
+    expect(released.operation).toBe('session.open');
+    expect(f.dispatchedCommands).toHaveLength(1);
+  } finally {
+    if (!released) {
+      const response = await f.poll();
+      if (response.status === 200) released = JSON.parse(response.body) as NanoHostHarnessCommand;
+    }
+    if (released)
+      f.failHarnessDelivery(
+        released,
+        new Error('Release identity fixture abandoned its addressed open.')
+      );
+    await f.running.catch(() => undefined);
+    await f.close();
+  }
 });

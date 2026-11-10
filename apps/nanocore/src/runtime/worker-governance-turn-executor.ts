@@ -228,6 +228,7 @@ import {
   WorkerNativeProofValidationError,
   workerCredentialFileBinding,
 } from './worker-governance-backend.js';
+import { WorkerReleaseIncompatibleError } from './worker-release-identity.js';
 import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
   getWorkerStorageBinding,
@@ -5569,7 +5570,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       completedAt: this.currentTime(),
       errorCode: cancellationWon
         ? 'worker_governance_turn_cancelled'
-        : 'worker_governance_turn_failed',
+        : error === primaryError && primaryError instanceof WorkerReleaseIncompatibleError
+          ? 'worker_release_incompatible'
+          : 'worker_governance_turn_failed',
       ...(!cancellationWon && explanation.success ? { explanation: explanation.data } : {}),
       message: cancellationWon ? 'Worker execution was interrupted.' : message,
       outcome: cancellationWon ? 'interrupted' : 'failed',

@@ -9,6 +9,7 @@ import { FsStore } from '../lib/store.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { disposeTestStore } from '../test-support/store.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -38,6 +39,7 @@ const IMAGE = {
 } as const satisfies AgentEnvironmentPackage['runtime']['image'];
 const IMAGE_DIGEST = `sha256:${'d'.repeat(64)}`;
 const IMAGE_INSPECTION = {
+  releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
   digest: IMAGE_DIGEST,
   platform: { architecture: 'arm64', os: 'linux' },
   storageLayout: {
@@ -115,7 +117,7 @@ describe('Worker environment runtime effects', () => {
         return { kind: 'image.acquire', result: { digest: IMAGE_DIGEST } };
       }
     );
-    const effects = createWorkerEnvironmentRuntimeEffects(dispatch);
+    const effects = createWorkerEnvironmentRuntimeEffects(dispatch, TEST_WORKER_RELEASE_IDENTITY);
     const identity = workerEnvironmentPreparationIdentity(CANDIDATE, IMAGE);
 
     await expect(
@@ -225,7 +227,8 @@ describe('Worker environment runtime effects', () => {
       createDispatch(async (request) => {
         requests.push(request);
         return request.kind === 'image.acquire' ? { digest: IMAGE_DIGEST } : IMAGE_INSPECTION;
-      })
+      }),
+      TEST_WORKER_RELEASE_IDENTITY
     );
     const identity = workerEnvironmentPreparationIdentity(CANDIDATE, localImage);
 
@@ -263,7 +266,8 @@ describe('Worker environment runtime effects', () => {
       createDispatch(async (request) => {
         mismatchedRequests.push(request);
         return { digest: `sha256:${'e'.repeat(64)}` };
-      })
+      }),
+      TEST_WORKER_RELEASE_IDENTITY
     );
     await expect(
       mismatchedEffects.prepareImage({
@@ -281,7 +285,8 @@ describe('Worker environment runtime effects', () => {
       createDispatch(async (request) => {
         failedRequests.push(request);
         throw new Error('exact local image is unavailable');
-      })
+      }),
+      TEST_WORKER_RELEASE_IDENTITY
     );
     await expect(
       failingEffects.prepareImage({
@@ -344,7 +349,7 @@ describe('Worker environment runtime effects', () => {
         volumeRef,
       })),
     }));
-    const effects = createWorkerEnvironmentRuntimeEffects(dispatch);
+    const effects = createWorkerEnvironmentRuntimeEffects(dispatch, TEST_WORKER_RELEASE_IDENTITY);
 
     await expect(
       effects.inspectStorage({
@@ -378,7 +383,10 @@ describe('Worker environment runtime effects', () => {
       storageRef: binding.storageRef,
       note: 'ignored',
     };
-    const effects = createWorkerEnvironmentRuntimeEffects(createDispatch(async () => result));
+    const effects = createWorkerEnvironmentRuntimeEffects(
+      createDispatch(async () => result),
+      TEST_WORKER_RELEASE_IDENTITY
+    );
     const request = { authorize: () => true, binding, commandRequestId: 'purge_test' };
     await expect(effects.purgeStorage(request)).resolves.toEqual({
       state: 'purged',
@@ -416,7 +424,8 @@ describe('Worker environment runtime effects', () => {
       { ...core, targets: [{ target: '/workspace', volumeRef: 'wsv_test' }] },
     ]) {
       const effects = createWorkerEnvironmentRuntimeEffects(
-        createDispatch(async () => ({ ...result, note: 'ignored' }))
+        createDispatch(async () => ({ ...result, note: 'ignored' })),
+        TEST_WORKER_RELEASE_IDENTITY
       );
       await expect(
         effects.inspectStorage({ authorize: () => true, binding, commandRequestId: 'inspect_test' })
@@ -426,7 +435,10 @@ describe('Worker environment runtime effects', () => {
 
   it('requires current authorization before storage effects', async () => {
     const effect = vi.fn(async () => ({}));
-    const effects = createWorkerEnvironmentRuntimeEffects(createDispatch(effect));
+    const effects = createWorkerEnvironmentRuntimeEffects(
+      createDispatch(effect),
+      TEST_WORKER_RELEASE_IDENTITY
+    );
 
     await expect(
       effects.inspectStorage({

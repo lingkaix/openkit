@@ -18,6 +18,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
@@ -249,7 +250,12 @@ async function createFixture() {
   });
   const agentSetup = createTestAgentSetup({ requiredCapabilities: ['worker-control'] });
   admitTestNativeEnvironment(coreDb, agentSetup.manifest);
-  const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+    coreDb,
+    store,
+    env: {},
+  });
   if (!(runtime.turnExecutor instanceof WorkerGovernanceTurnExecutor))
     throw new Error('Expected the configured worker executor');
   const executor = runtime.turnExecutor;

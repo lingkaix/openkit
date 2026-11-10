@@ -18,6 +18,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
@@ -125,7 +126,13 @@ async function createFixture() {
       // Hold the real route response after admission so a physical close loses the acknowledgement.
       if (heldAcknowledgement) await heldAcknowledgement;
     });
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+    });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     listener = getRequestListener(app.fetch);
     client = connectHttp2(origin);

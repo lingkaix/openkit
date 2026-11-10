@@ -149,7 +149,7 @@ export function candidateMatrix(images) {
   };
 }
 
-/** Preserve all existing release OCI labels and deterministic App build arguments. */
+/** Preserve release OCI labels and supply the same immutable identity to App and Worker builds. */
 export function imageIdentity({ repository, sha, tag, created, image }) {
   requireFact(/^v\d+\.\d+\.\d+-[a-z0-9][a-z0-9.-]*$/.test(tag), 'prerelease identity');
   const labels = [
@@ -169,7 +169,9 @@ export function imageIdentity({ repository, sha, tag, created, image }) {
   return {
     image: `ghcr.io/${repository.split('/')[0].toLowerCase()}/${image.repository}`,
     labels: labels.join('\n'),
-    args: image.kind === 'app' ? `OPENKIT_RELEASE_TAG=${tag}\nOPENKIT_SOURCE_COMMIT=${sha}` : '',
+    args: ['app', 'worker'].includes(image.kind)
+      ? `OPENKIT_RELEASE_TAG=${tag}\nOPENKIT_SOURCE_COMMIT=${sha}`
+      : '',
   };
 }
 

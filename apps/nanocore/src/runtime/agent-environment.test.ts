@@ -53,6 +53,7 @@ import {
   admitTestNativeEnvironment,
   createTestNativeEnvironmentDb,
 } from '../test-support/native-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createVaultGrant, revokeVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -2872,6 +2873,7 @@ describe('public network AEP admission', () => {
       }),
     });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       store,
       env: {},

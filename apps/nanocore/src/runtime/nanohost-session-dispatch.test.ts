@@ -21,6 +21,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createHttpTelemetryMiddleware, shutdownTelemetry, startTelemetry } from '../telemetry.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
@@ -74,7 +75,13 @@ describe('authoritative NanoHost session dispatch', () => {
         });
         return c.body(null, 202);
       });
-      registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+      registerNanoHostSessionSemanticRoutes({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        app,
+        coreDb,
+        dispatch,
+        nanoHostConfig: target,
+      });
       registerNanoHostSessionEffectRoutes({ app, dispatch });
       const listener = getRequestListener(app.fetch);
       let admitted = false;
@@ -255,7 +262,13 @@ describe('authoritative NanoHost session dispatch', () => {
       observedAt: new Date().toISOString(),
     });
     const app = new Hono<{ Variables: AuthVariables }>();
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+    });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
     let physicalConnection: object | undefined;
@@ -454,7 +467,13 @@ describe('authoritative NanoHost session dispatch', () => {
       observedAt: '2026-10-17T00:00:00.000Z',
     });
     const app = new Hono<{ Variables: AuthVariables }>();
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+    });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
     let physical: object | undefined;
@@ -734,7 +753,12 @@ describe('authoritative NanoHost session dispatch', () => {
                   : kind === 'storage.purge'
                     ? { state: 'purged', storageRef: fixture.command.storageRef }
                     : kind === 'image.acquire' || kind === 'image.build' || kind === 'image.inspect'
-                      ? { digest: `sha256:${'d'.repeat(64)}` }
+                      ? {
+                          digest: `sha256:${'d'.repeat(64)}`,
+                          ...(kind === 'image.inspect'
+                            ? { releaseIdentity: TEST_WORKER_RELEASE_IDENTITY }
+                            : {}),
+                        }
                       : {
                           sandboxId: fixture.command.sandboxId,
                           state: kind === 'sandbox.create' ? 'created' : 'deleted',
@@ -927,7 +951,13 @@ describe('authoritative NanoHost session dispatch', () => {
       observedAt: new Date().toISOString(),
     });
     const app = new Hono<{ Variables: AuthVariables }>();
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+    });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
     let physicalConnection: object | undefined;
@@ -1194,7 +1224,13 @@ describe('authoritative NanoHost session dispatch', () => {
       observedAt: new Date().toISOString(),
     });
     const app = new Hono<{ Variables: AuthVariables }>();
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+    });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
     let admitted = false;
@@ -2392,7 +2428,10 @@ describe('authoritative NanoHost session dispatch', () => {
         digest: `sha256:${'a'.repeat(64)}`,
         requestId: freshInspectRequestId,
       });
-      await expect(freshInspect).resolves.toEqual({ digest: `sha256:${'a'.repeat(64)}` });
+      await expect(freshInspect).resolves.toEqual({
+        digest: `sha256:${'a'.repeat(64)}`,
+        releaseIdentity: null,
+      });
 
       const specialRequests = [
         {
@@ -2823,7 +2862,10 @@ describe('authoritative NanoHost session dispatch', () => {
         digest: `sha256:${'2'.repeat(64)}`,
         requestId: reconnectRequestId,
       });
-      await expect(reconnectOutcome).resolves.toEqual({ digest: `sha256:${'2'.repeat(64)}` });
+      await expect(reconnectOutcome).resolves.toEqual({
+        digest: `sha256:${'2'.repeat(64)}`,
+        releaseIdentity: null,
+      });
     } finally {
       for (const client of clients) client.destroy();
       server.close();
@@ -2855,7 +2897,13 @@ describe('authoritative NanoHost session dispatch', () => {
       observedAt: '2026-08-10T00:00:00.000Z',
     });
     const app = new Hono<{ Variables: AuthVariables }>();
-    registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+    registerNanoHostSessionSemanticRoutes({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      app,
+      coreDb,
+      dispatch,
+      nanoHostConfig: target,
+    });
     registerNanoHostSessionEffectRoutes({ app, dispatch });
     const listener = getRequestListener(app.fetch);
     let admitted = false;
@@ -2984,7 +3032,12 @@ async function privateLoginDispatchFixture() {
     forwarded++;
     return c.body(null, 418);
   });
-  registerNanoHostSessionSemanticRoutes({ app, coreDb, dispatch, nanoHostConfig: target });
+  registerNanoHostSessionSemanticRoutes({
+    app,
+    coreDb,
+    dispatch,
+    nanoHostConfig: target,
+  });
   const listener = getRequestListener(app.fetch);
   let physicalConnection: object | undefined;
   const server = createHttp2Server((request, response) => {

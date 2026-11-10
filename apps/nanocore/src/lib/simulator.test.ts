@@ -67,6 +67,7 @@ import { createAppWithLocalIdentity as createApp } from '../test-support/app.js'
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { SimulatedTurnExecutor } from './simulator.js';
@@ -404,6 +405,7 @@ describe('SimulatedTurnExecutor', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     const originalRuntime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
       store,
       env: { OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1' },
@@ -495,6 +497,7 @@ describe('SimulatedTurnExecutor', () => {
       try {
         const coldStore = new FsStore({ dataRoot: coreDb.dataRoot });
         const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
           coreDb: coldDb,
           store: coldStore,
           env: { OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1' },

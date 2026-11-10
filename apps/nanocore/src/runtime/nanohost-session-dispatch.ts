@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
+import type { ReleaseBuildIdentity } from '@openkit/app-api-schemas';
 import {
   AgentEnvironmentDockerfileInputSchema,
   DOCKERFILE_INPUT_MAX_BYTES,
@@ -30,7 +31,6 @@ import {
 import { OperationError } from '../operation-error.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import type { CoreDb } from '../storage/db.js';
-
 import {
   captureTelemetryContext,
   injectTelemetryContext,
@@ -84,6 +84,11 @@ import {
   WorkerImageSettlementSchema,
   writeWorkerImageSettlement,
 } from './worker-image-settlements.js';
+import {
+  projectWorkerReleaseIdentity,
+  requireMatchingWorkerReleaseIdentity,
+  WorkerReleaseIncompatibleError,
+} from './worker-release-identity.js';
 
 import {
   admitWorkspaceCollectJsonResult,
@@ -515,6 +520,8 @@ export interface RegisterNanoHostSessionEffectRoutesInput {
 
 /** Dependencies for readiness and semantic projections outside the public route inventory. */
 export interface RegisterNanoHostSessionSemanticRoutesInput {
+  /** Core boot identity; unknown is never compatible, even with another unknown peer. */
+  readonly releaseIdentity?: ReleaseBuildIdentity;
   /** Hono app receiving private native-session carriage. */
   readonly app: Hono<{ Variables: AuthVariables }>;
   /** Existing Core database that owns RuntimeTarget readiness. */
@@ -2170,6 +2177,7 @@ export function registerNanoHostSessionSemanticRoutes(
           if (value.schemaVersion !== 2) {
             throw new Error('NanoHost private Harness poll body is invalid.');
           }
+          requireMatchingWorkerReleaseIdentity(input.releaseIdentity, value.releaseIdentity);
           const incoming = (context.env as { incoming?: import('node:http2').Http2ServerRequest })
             ?.incoming;
           // No await separates this check from dispatch: known cancelled carriage grants no delivery.
@@ -3772,6 +3780,8 @@ function requirePhysicalConnection(environment: unknown): object {
 
 /** Returns a bounded private transport error without exposing runtime inputs. */
 function privateEffectError(error: unknown): Response {
+  if (error instanceof WorkerReleaseIncompatibleError)
+    return asApiError(error.message, error.code, error.status);
   if (error instanceof WorkerImageSettlementDeferred) return new Response(null, { status: 503 });
   const message = error instanceof Error ? error.message : 'NanoHost effect request failed.';
   const explicitStatus = (error as { readonly status?: unknown } | null)?.status;
@@ -3927,7 +3937,10 @@ function readNanoHostEffectResult(
         'platform',
         'storageLayout',
         'environmentDefaults',
+        'releaseIdentity',
       ]);
+      // Malformed provenance remains unknown, never a successful build claim.
+      core.releaseIdentity = projectWorkerReleaseIdentity(core.releaseIdentity);
       if (core.platform !== undefined)
         core.platform = resultFields(core.platform, ['architecture', 'os']);
       if (core.storageLayout !== undefined) {

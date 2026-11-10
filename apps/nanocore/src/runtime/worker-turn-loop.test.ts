@@ -28,6 +28,7 @@ import {
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -862,7 +863,12 @@ it.each(['authority-denial', 'restart-cleanup', 'incomplete-lease'] as const)(
       };
       expect(getWorkerControlAcceptedFinalStatus(coreDb, lineage)).toBeNull();
       if (failure !== 'authority-denial') {
-        const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
+        const runtime = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          coreDb,
+          store,
+          env: {},
+        });
         await runNanoHostAttemptRecoveryMaintenance(coreDb, {
           store,
           executionBackend: runtime.turnExecutor.executionBackend!,

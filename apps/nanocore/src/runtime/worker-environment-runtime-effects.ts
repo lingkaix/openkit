@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { WorkerEnvironmentCandidateRef } from '@openkit/app-api-schemas';
+import type {
+  PresentReleaseIdentity,
+  ReleaseBuildIdentity,
+  WorkerEnvironmentCandidateRef,
+} from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   EMPTY_BUILD_CONTEXT_DIGEST,
@@ -12,11 +16,17 @@ import {
 } from '@openkit/worker-protocol';
 import { commandInputHash } from './idempotent-command.js';
 import type { NanoHostSessionDispatch } from './nanohost-session-dispatch.js';
+import {
+  projectWorkerReleaseIdentity,
+  requireMatchingWorkerReleaseIdentity,
+} from './worker-release-identity.js';
 import type { WorkerStorageBinding, WorkerStorageLayout } from './worker-storage-bindings.js';
 import { workerStorageLayoutDigest } from './worker-storage-bindings.js';
 
 /** Exact prepared image fact returned by the existing NanoHost image owner. */
 export interface PreparedWorkerEnvironmentImage {
+  /** Immutable inspection only; unknown remains unadmitted until the Core release check. */
+  readonly releaseIdentity?: PresentReleaseIdentity | null;
   /** Unadmitted values remain transient until exact activation confirmation. */
   readonly environmentDefaults?: {
     readonly defaultsDigest: string;
@@ -95,11 +105,13 @@ export interface WorkerEnvironmentRuntimeEffects {
 
 /** Creates the narrow environment-operation adapter over the existing NanoHost dispatcher. */
 export function createWorkerEnvironmentRuntimeEffects(
-  dispatch: NanoHostSessionDispatch
+  dispatch: NanoHostSessionDispatch,
+  releaseIdentity?: ReleaseBuildIdentity
 ): WorkerEnvironmentRuntimeEffects {
   return {
     async prepareImage(input) {
       requireAuthorized(input.authorize);
+      requireMatchingWorkerReleaseIdentity(releaseIdentity, releaseIdentity);
       const image = input.image;
       const preparationId = workerEnvironmentPreparationIdentity(input.candidate, image);
       const localImageDigest =
@@ -164,11 +176,13 @@ export function createWorkerEnvironmentRuntimeEffects(
       if (inspection.imageDigest !== imageDigest) {
         throw new Error('NanoHost image inspection returned a different digest.');
       }
+      requireMatchingWorkerReleaseIdentity(releaseIdentity, inspection.releaseIdentity);
       return inspection;
     },
 
     async inspectImage(input) {
       requireAuthorized(input.authorize);
+      requireMatchingWorkerReleaseIdentity(releaseIdentity, releaseIdentity);
       const imageDigest = requiredDigest(input.imageDigest, 'image');
       const inspection = parseNanoHostImageInspection(
         await dispatch.effect({
@@ -179,6 +193,7 @@ export function createWorkerEnvironmentRuntimeEffects(
       );
       if (inspection.imageDigest !== imageDigest)
         throw new Error('NanoHost image inspection returned a different digest.');
+      requireMatchingWorkerReleaseIdentity(releaseIdentity, inspection.releaseIdentity);
       return inspection;
     },
 
@@ -299,6 +314,7 @@ export function parseNanoHostImageInspection(value: unknown): PreparedWorkerEnvi
     ...(record.environmentDefaults === undefined
       ? {}
       : { environmentDefaults: parseImageEnvironmentDefaults(record.environmentDefaults) }),
+    releaseIdentity: projectWorkerReleaseIdentity(record.releaseIdentity),
     imageDigest: requiredDigest(record.digest, 'image'),
     layout,
     layoutDigest: workerStorageLayoutDigest(layout),

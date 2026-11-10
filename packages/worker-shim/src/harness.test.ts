@@ -1,3 +1,5 @@
+const TEST_WORKER_RELEASE_IDENTITY = { sourceCommit: 'a'.repeat(40), releaseTag: null };
+
 // openkit-test-platform: posix
 import { createHash } from 'node:crypto';
 import {
@@ -1227,11 +1229,15 @@ describe('Worker Harness loop', () => {
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
 
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
-      'fixture-complete'
-    );
+    await expect(
+      runWorkerHarness({ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY, signal: controller.signal })
+    ).rejects.toThrow('fixture-complete');
     expect(loopFixture.events).toEqual(['listener', 'marker', 'poll', 'close']);
-    expect(pollBody).toEqual({ schemaVersion: 2, harnesses: [] });
+    expect(pollBody).toEqual({
+      schemaVersion: 2,
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      harnesses: [],
+    });
   });
 
   it('keeps empty private Harness polls between 250 and 1000 milliseconds', async () => {
@@ -1248,7 +1254,10 @@ describe('Worker Harness loop', () => {
       harnessControlFetch,
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
-    const run = runWorkerHarness({ signal: controller.signal });
+    const run = runWorkerHarness({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      signal: controller.signal,
+    });
     try {
       await expect(run).rejects.toThrow('cadence-complete');
       // Observe the poll-start sample before synchronous request preparation.
@@ -1301,9 +1310,9 @@ describe('Worker Harness loop', () => {
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
 
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
-      'fixture-complete'
-    );
+    await expect(
+      runWorkerHarness({ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY, signal: controller.signal })
+    ).rejects.toThrow('fixture-complete');
     expect(results).toEqual([
       {
         body: { activeTurns: 0, openSessions: 0, state: 'draining' },
@@ -1368,7 +1377,10 @@ describe('Worker Harness loop', () => {
           return { ok: true, status: 200, text };
         },
       } as SandboxIntegrationClient;
-      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      const run = runWorkerHarness({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        signal: controller.signal,
+      }).catch((error: unknown) => error);
       try {
         // Both response phases share the original allowance; expiry still abandons collected bytes.
         await clock.advance(300_000);
@@ -1383,7 +1395,11 @@ describe('Worker Harness loop', () => {
       expect(requests).toHaveLength(1);
       expect(requests[0]).toEqual({
         path: '/worker-control/harness/poll',
-        body: '{"schemaVersion":2,"harnesses":[]}',
+        body: JSON.stringify({
+          schemaVersion: 2,
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          harnesses: [],
+        }),
         method: 'POST',
         headers: { 'content-type': 'application/json' },
       });
@@ -1424,9 +1440,9 @@ describe('Worker Harness loop', () => {
     } as unknown as SandboxIntegrationClient;
 
     // Aborting during the second result response abandons that acknowledgment as well.
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
-      'fixture-complete'
-    );
+    await expect(
+      runWorkerHarness({ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY, signal: controller.signal })
+    ).rejects.toThrow('fixture-complete');
     expect(polls).toHaveLength(3);
     expect(results).toHaveLength(2);
     expect(results[1]).toBe(results[0]);
@@ -1480,7 +1496,10 @@ describe('Worker Harness loop', () => {
           };
         },
       } as SandboxIntegrationClient;
-      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      const run = runWorkerHarness({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        signal: controller.signal,
+      }).catch((error: unknown) => error);
       try {
         await bodyEntered.promise;
         await clock.advance(1_250);
@@ -1552,7 +1571,10 @@ describe('Worker Harness loop', () => {
         return { ok: true, status: 204, text: async () => '' };
       },
     } as SandboxIntegrationClient;
-    const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+    const run = runWorkerHarness({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      signal: controller.signal,
+    }).catch((error: unknown) => error);
     try {
       await executionEntered.promise;
       await clock.advance(1_250);
@@ -1570,8 +1592,12 @@ describe('Worker Harness loop', () => {
       await finalPoll.promise;
       expect(await run).toBeInstanceOf(Error);
       expect(polls).toEqual([
-        { schemaVersion: 2, harnesses: [] },
-        { schemaVersion: 2, harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }] },
+        { schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY, harnesses: [] },
+        {
+          schemaVersion: 2,
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }],
+        },
       ]);
     } finally {
       controller.abort(new Error('fixture-complete'));
@@ -1649,9 +1675,10 @@ describe('Worker Harness loop', () => {
             return { ok: true, status: 204, text: async () => '' };
           },
         } as SandboxIntegrationClient;
-        const run = runWorkerHarness({ signal: controller.signal }).catch(
-          (error: unknown) => error
-        );
+        const run = runWorkerHarness({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          signal: controller.signal,
+        }).catch((error: unknown) => error);
         try {
           await entered.promise;
           await clock.advance(1_500);
@@ -1671,9 +1698,10 @@ describe('Worker Harness loop', () => {
           releaseAcknowledgement.resolve();
           expect(await run).toEqual(new Error('Harness poll failed with HTTP 404.'));
           expect(polls).toEqual([
-            { schemaVersion: 2, harnesses: [] },
+            { schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY, harnesses: [] },
             {
               schemaVersion: 2,
+              releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               harnesses: [{ harnessInstanceId: 'harness-one', nextSequence: 1 }],
             },
           ]);
@@ -1729,7 +1757,10 @@ describe('Worker Harness loop', () => {
           };
         },
       } as SandboxIntegrationClient;
-      const run = runWorkerHarness({ signal: controller.signal }).catch((error: unknown) => error);
+      const run = runWorkerHarness({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        signal: controller.signal,
+      }).catch((error: unknown) => error);
       try {
         await entered.promise;
         await clock.advance(500);
@@ -1800,7 +1831,10 @@ describe('Worker Harness loop', () => {
             };
           },
         } as SandboxIntegrationClient;
-        const run = runWorkerHarness({ signal: controller.signal })
+        const run = runWorkerHarness({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          signal: controller.signal,
+        })
           .catch((error: unknown) => error)
           .finally(() => {
             finished = true;
@@ -1875,9 +1909,9 @@ describe('Worker Harness loop', () => {
       }),
       ready: Promise.resolve(),
     } as unknown as SandboxIntegrationClient;
-    await expect(runWorkerHarness({ signal: controller.signal })).rejects.toThrow(
-      /stale or future sequence/u
-    );
+    await expect(
+      runWorkerHarness({ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY, signal: controller.signal })
+    ).rejects.toThrow(/stale or future sequence/u);
   });
 });
 
@@ -5158,7 +5192,10 @@ describe('shared lifecycle evidence and deadlines', () => {
       },
     } as unknown as SandboxIntegrationClient;
     let finished = false;
-    const run = runWorkerHarness({ signal: controller.signal });
+    const run = runWorkerHarness({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      signal: controller.signal,
+    });
     const outcome = run
       .catch(() => undefined)
       .finally(() => {

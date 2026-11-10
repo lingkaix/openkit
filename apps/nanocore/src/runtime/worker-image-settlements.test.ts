@@ -19,6 +19,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import type { ExecutionStepControl } from './execution-step-journal.js';
 import { commandInputHash } from './idempotent-command.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
@@ -229,7 +230,7 @@ async function preparationFixture() {
       return dispatch;
     },
     get effects() {
-      return createWorkerEnvironmentRuntimeEffects(dispatch);
+      return createWorkerEnvironmentRuntimeEffects(dispatch, TEST_WORKER_RELEASE_IDENTITY);
     },
     async reopen() {
       await shutdownControlStoreWorkerClient();
@@ -367,6 +368,7 @@ describe('ordinary preparation adapter controls before journal wiring', () => {
       throw new Error('Native inspection was not delivered.');
     expect(f.db.sqlite.inTransaction).toBe(false);
     await f.dispatch.result(f.physical, 'image.inspect', {
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       requestId: inspect.requestId,
       digest: imageDigest,
       platform: { architecture: 'amd64', os: 'linux' },

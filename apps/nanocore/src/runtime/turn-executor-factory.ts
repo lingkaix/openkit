@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import type { ReleaseBuildIdentity } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentPackage,
   type AgentEnvironmentValidationDiagnostic,
@@ -229,6 +230,7 @@ import {
   hasCompletedWorkerTurnCollection,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
+import { requireMatchingWorkerReleaseIdentity } from './worker-release-identity.js';
 import {
   activateWorkerStorageAttachment,
   admitWorkerStorageContributor,
@@ -297,6 +299,8 @@ export interface TurnExecutorFactoryEnv {
 
 /** Options for creating the configured NanoCore turn executor. */
 export interface CreateConfiguredTurnExecutorOptions {
+  /** Immutable Core identity admitted by the boot owner; absence refuses real Worker admission. */
+  releaseIdentity?: ReleaseBuildIdentity | undefined;
   /** Existing app Goal/Task scope reader, consulted only for linked Tasks. */
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'];
   /** Deferred reference to the same app-owned operation interception instance. */
@@ -408,7 +412,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.readRuntimeConfig,
     options.fileAdmission,
     options.policyInterception,
-    options.goalTaskPolicy
+    options.goalTaskPolicy,
+    options.releaseIdentity
   );
 }
 
@@ -435,7 +440,8 @@ function createNanoHostWorkerLifecycleRuntime(
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined,
   fileAdmission?: FileStorageAdmission | undefined,
   policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined,
-  goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy']
+  goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'],
+  releaseIdentity?: ReleaseBuildIdentity
 ): ConfiguredWorkerLifecycleRuntime {
   let executionReconciler: ExecutionReconciler;
   const backend = new NanoHostWorkerGovernanceBackend(
@@ -460,7 +466,8 @@ function createNanoHostWorkerLifecycleRuntime(
     vaultBackend,
     readRuntimeConfig,
     sharedStore,
-    fileAdmission
+    fileAdmission,
+    releaseIdentity
   );
   executionReconciler = new ExecutionReconciler({
     coreDb,
@@ -870,7 +877,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly collectionVaultBackend?: () => VaultBackend,
     private readonly readRuntimeConfig?: () => PublicNetworkConfiguration,
     private readonly sharedStore?: FsStore,
-    private readonly fileAdmission?: FileStorageAdmission
+    private readonly fileAdmission?: FileStorageAdmission,
+    private readonly releaseIdentity?: ReleaseBuildIdentity
   ) {}
 
   /** Reads the authored aggregate bound; invalid current configuration fails closed. */
@@ -3775,6 +3783,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     let preparedImports: NanoHostContextPackageImport[];
     try {
+      requireMatchingWorkerReleaseIdentity(this.releaseIdentity, this.releaseIdentity);
       // Verify and retain the complete incoming collection before any resident eviction or Sandbox effect.
       preparedImports = await prepareNanoHostContextPackageImports(environmentPackage, context);
     } catch (error) {
@@ -3885,32 +3894,23 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       capacityPhysicalEpoch
     );
-    if (sharedSandbox && choice?.kind === 'selected' && replacementSelection) {
-      const admitted = await admitWorkerStorageContributor(this.coreDb, {
-        ...replacementSelection,
-        layout: sharedSandbox.workerStorageBinding.layout,
-      });
-      // The native acknowledgement yields; current audience must still authorize later effects.
-      if (!admitted.contributors.every(authorizeContributor)) {
-        throw new WorkerStorageBindingError(
-          'authorization_denied',
-          'Worker storage contributor audience is no longer authorized.'
-        );
-      }
-      sharedSandbox.workerStorageBinding = admitted;
-    }
-    if (!sharedSandbox) {
-      const localImageDigest =
-        environmentPackage.runtime.environment?.imageDigest ??
-        (image.kind === 'reference' &&
-        image.pullPolicy === 'never' &&
-        /^sha256:[0-9a-f]{64}$/.test(image.ref)
-          ? image.ref
-          : null);
-      let imageResult: Record<string, unknown>;
-      let imageDigest: string;
-      let imageInspection: ReturnType<typeof parseNanoHostImageInspection>;
-      try {
+    // Keep the native admission barrier intact; image proof precedes storage attachment and material.
+    const localImageDigest =
+      environmentPackage.runtime.environment?.imageDigest ??
+      (image.kind === 'reference' &&
+      image.pullPolicy === 'never' &&
+      /^sha256:[0-9a-f]{64}$/.test(image.ref)
+        ? image.ref
+        : null);
+    let imageResult: Record<string, unknown>;
+    let imageDigest: string;
+    let imageInspection: ReturnType<typeof parseNanoHostImageInspection>;
+    try {
+      const resident = sharedSandbox;
+      if (resident) {
+        imageDigest = resident.imageDigest;
+        imageResult = await this.effect(identity, attemptId, 'image.inspect', { imageDigest });
+      } else {
         imageResult = environmentPackage.runtime.environment
           ? await this.effect(identity, attemptId, 'image.acquire', {
               imageReference: environmentPackage.runtime.environment.imageDigest,
@@ -3932,28 +3932,46 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
                 timeLimitSeconds: image.timeLimitSeconds,
               });
         imageDigest = requireNanoHostResultString(imageResult, 'digest');
-        if (localImageDigest !== null && imageDigest !== localImageDigest) {
-          throw new Error('NanoHost local image acquisition returned a different digest.');
-        }
-        imageInspection = parseNanoHostImageInspection(
-          await this.effect(identity, attemptId, 'image.inspect', { imageDigest })
-        );
-        if (!imageInspection.layout.targets.some((target) => target.target === '/openkit/threads'))
-          throw new Error(
-            'NanoHost Worker image has no declared retained /openkit/threads target.'
-          );
-        if (
-          imageInspection.imageDigest !== imageDigest ||
-          (environmentPackage.runtime.environment &&
-            imageInspection.environmentDefaults?.defaultsDigest !==
-              environmentPackage.runtime.environment.defaultsDigest)
-        ) {
-          throw new Error('NanoHost image inspection returned a different digest.');
-        }
-      } catch (error) {
-        this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
-        throw error;
       }
+      if (localImageDigest !== null && imageDigest !== localImageDigest) {
+        throw new Error('NanoHost local image acquisition returned a different digest.');
+      }
+      imageInspection = parseNanoHostImageInspection(
+        resident
+          ? imageResult
+          : await this.effect(identity, attemptId, 'image.inspect', { imageDigest })
+      );
+      requireMatchingWorkerReleaseIdentity(this.releaseIdentity, imageInspection.releaseIdentity);
+      if (!imageInspection.layout.targets.some((target) => target.target === '/openkit/threads'))
+        throw new Error('NanoHost Worker image has no declared retained /openkit/threads target.');
+      if (
+        imageInspection.imageDigest !== imageDigest ||
+        (environmentPackage.runtime.environment &&
+          imageInspection.environmentDefaults?.defaultsDigest !==
+            environmentPackage.runtime.environment.defaultsDigest)
+      ) {
+        throw new Error('NanoHost image inspection returned a different digest.');
+      }
+    } catch (error) {
+      this.failedPreSandboxPreparations.add(identity.packageSnapshotId);
+      throw error;
+    }
+
+    if (sharedSandbox && choice?.kind === 'selected' && replacementSelection) {
+      const admitted = await admitWorkerStorageContributor(this.coreDb, {
+        ...replacementSelection,
+        layout: sharedSandbox.workerStorageBinding.layout,
+      });
+      // The native acknowledgement yields; current audience must still authorize later effects.
+      if (!admitted.contributors.every(authorizeContributor)) {
+        throw new WorkerStorageBindingError(
+          'authorization_denied',
+          'Worker storage contributor audience is no longer authorized.'
+        );
+      }
+      sharedSandbox.workerStorageBinding = admitted;
+    }
+    if (!sharedSandbox) {
       let storageBinding: WorkerStorageBinding;
       try {
         storageBinding =

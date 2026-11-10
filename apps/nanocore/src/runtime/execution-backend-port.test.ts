@@ -28,6 +28,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import * as attemptRecords from './execution-attempt-records.js';
 import { commandInputHash } from './idempotent-command.js';
@@ -355,6 +356,7 @@ describe('execution backend port through real Core coordination', () => {
       throw new Error('Controlled image refusal after acquisition entry.');
     });
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: f.db,
       store: f.store,
       env: {},

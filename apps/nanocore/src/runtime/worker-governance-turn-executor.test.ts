@@ -163,6 +163,7 @@ import {
 } from '../test-support/native-environment.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { closeTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
@@ -2279,6 +2280,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const observations: Array<() => void> = [];
     const effects: string[] = [];
     const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       fileAdmission: new FileStorageAdmission(f.coreDb.dataRoot, () => 0n),
       coreDb: f.coreDb,
       store: f.store,
@@ -12853,6 +12855,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         mode === 'fixture-runtime-file'
           ? null
           : createConfiguredWorkerLifecycleRuntime({
+              releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               coreDb,
               store,
               env: {},
@@ -15907,6 +15910,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
   const commit = 'e'.repeat(40);
   const effects: NanoHostSessionEffectRequest[] = [];
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     coreDb,
     store,
@@ -15922,6 +15926,7 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
             return { digest: `sha256:${'a'.repeat(64)}` };
           case 'image.inspect':
             return {
+              releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
               digest: request.input.imageDigest,
               environmentDefaults: {
                 defaultsDigest:

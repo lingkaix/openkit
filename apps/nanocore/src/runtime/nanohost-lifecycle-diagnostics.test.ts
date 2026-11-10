@@ -25,6 +25,7 @@ import {
   recordTestExecutionAttempt,
 } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createNanoHostHarnessRuntime,
@@ -272,6 +273,7 @@ describe('Harness delivery localization through real Core and shim owners', () =
       let rawTokens: string[] = [];
       let dispatchCount = 0;
       registerNanoHostSessionSemanticRoutes({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         app,
         coreDb,
         dispatch,
@@ -528,9 +530,14 @@ describe('Harness delivery localization through real Core and shim owners', () =
           },
         });
         if (sampledDelay) {
-          expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
-            200
-          );
+          expect(
+            (
+              await post(
+                '/worker-control/harness/poll',
+                JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+              )
+            ).status
+          ).toBe(200);
           await vi.waitFor(() =>
             expect(
               log.mock.calls
@@ -582,9 +589,14 @@ describe('Harness delivery localization through real Core and shim owners', () =
           // A sample in the old window can be cleared before the next response. Join both boundaries.
           expect(responseDelayResets).toHaveLength(1);
           await nextDelaySample(0, responseDelayResets[0]);
-          expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
-            200
-          );
+          expect(
+            (
+              await post(
+                '/worker-control/harness/poll',
+                JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+              )
+            ).status
+          ).toBe(200);
           await vi.waitFor(() =>
             expect(
               log.mock.calls
@@ -634,9 +646,17 @@ describe('Harness delivery localization through real Core and shim owners', () =
             });
             expect(responseDelayResets).toHaveLength(2);
             await nextDelaySample(0, responseDelayResets[1]);
-            expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
-              200
-            );
+            expect(
+              (
+                await post(
+                  '/worker-control/harness/poll',
+                  JSON.stringify({
+                    schemaVersion: 2,
+                    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+                  })
+                )
+              ).status
+            ).toBe(200);
             await vi.waitFor(() =>
               expect(
                 log.mock.calls
@@ -654,9 +674,14 @@ describe('Harness delivery localization through real Core and shim owners', () =
           return;
         }
         if (knownCancellation) {
-          expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
-            204
-          );
+          expect(
+            (
+              await post(
+                '/worker-control/harness/poll',
+                JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+              )
+            ).status
+          ).toBe(204);
           expect(dispatchCount).toBe(0);
           expect(
             coreDb.sqlite
@@ -674,15 +699,23 @@ describe('Harness delivery localization through real Core and shim owners', () =
             worker_inference_token_hash: null,
             worker_capability_token_hash: null,
           });
-          expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
-            200
-          );
+          expect(
+            (
+              await post(
+                '/worker-control/harness/poll',
+                JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+              )
+            ).status
+          ).toBe(200);
           expect(dispatchCount).toBe(1);
           return;
         }
         if (shape === 'cancel-before-dispatch') {
           await expect(
-            post('/worker-control/harness/poll', '{"schemaVersion":2}')
+            post(
+              '/worker-control/harness/poll',
+              JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+            )
           ).rejects.toThrow();
           await pollCompleted.promise;
           expect(failedRequest?.aborted).toBe(true);
@@ -699,7 +732,10 @@ describe('Harness delivery localization through real Core and shim owners', () =
               .prepare('SELECT worker_control_token_hash FROM scheduler_execution_attempts')
               .get()
           ).toEqual({ worker_control_token_hash: null });
-          const next = await post('/worker-control/harness/poll', '{"schemaVersion":2}');
+          const next = await post(
+            '/worker-control/harness/poll',
+            JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+          );
           expect(next.status).toBe(200);
           expect(JSON.parse(await next.text())).toMatchObject({
             operation: 'turn.start',
@@ -710,7 +746,10 @@ describe('Harness delivery localization through real Core and shim owners', () =
         }
         if (scenario === 'result-before-reset') {
           await expect(
-            post('/worker-control/harness/poll', '{"schemaVersion":2}')
+            post(
+              '/worker-control/harness/poll',
+              JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+            )
           ).rejects.toThrow();
           await responseFailed.promise;
           expect(failedRequest?.stream.rstCode).toBe(constants.NGHTTP2_CANCEL);
@@ -733,7 +772,10 @@ describe('Harness delivery localization through real Core and shim owners', () =
               error ? reject(error) : resolve()
             );
           });
-          const next = await post('/worker-control/harness/poll', '{"schemaVersion":2}');
+          const next = await post(
+            '/worker-control/harness/poll',
+            JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+          );
           expect(next.status).toBe(200);
           expect(JSON.parse(await next.text())).toMatchObject({
             operation: 'session.inspect',
@@ -761,7 +803,10 @@ describe('Harness delivery localization through real Core and shim owners', () =
             return response;
           },
         } as SandboxIntegrationClient;
-        const run = runWorkerHarness({ signal: stop.signal }).catch((error: unknown) => error);
+        const run = runWorkerHarness({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          signal: stop.signal,
+        }).catch((error: unknown) => error);
         if (shape !== 'withhold-result') {
           await responseFailed.promise;
           await retried.promise;
@@ -833,9 +878,14 @@ describe('Harness delivery localization through real Core and shim owners', () =
             .prepare('SELECT operation_state, drain_state FROM harness_instance_records')
             .get()
         ).toEqual({ operation_state: 'unknown', drain_state: 'draining' });
-        expect((await post('/worker-control/harness/poll', '{"schemaVersion":2}')).status).toBe(
-          204
-        );
+        expect(
+          (
+            await post(
+              '/worker-control/harness/poll',
+              JSON.stringify({ schemaVersion: 2, releaseIdentity: TEST_WORKER_RELEASE_IDENTITY })
+            )
+          ).status
+        ).toBe(204);
         const values = log.mock.calls.map(([line]) => String(line)).join('\n');
         for (const token of rawTokens) expect(values).not.toContain(token);
         expect(rawTokens).toHaveLength(3);

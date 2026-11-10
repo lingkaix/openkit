@@ -55,7 +55,7 @@ test('publication admission requires the complete exact-head gate including L4',
     assert.ok(candidateJobs.includes(workflow.jobs[id].name), id);
 });
 
-test('release identity build arguments belong only to candidate App builds', () => {
+test('release identity build arguments come from the exact candidate image owner', () => {
   const job = workflow.jobs['candidate-images'];
   const identity = step(job, 'Compute the exact-P intended image identity');
   const candidate = step(job, 'Build one native digest-only candidate');

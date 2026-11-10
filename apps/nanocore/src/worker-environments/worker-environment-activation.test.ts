@@ -32,6 +32,7 @@ import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   createWorkerEnvironmentActivation,
@@ -190,6 +191,7 @@ async function candidatePair(
     authoredCandidate,
     configuration: CONFIGURATION,
     image: {
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       digest: IMAGE_DIGEST,
       environmentDefaults: {
         defaultsDigest: DEFAULTS_DIGEST,

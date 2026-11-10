@@ -201,6 +201,13 @@ ENV TEMP="/tmp/openkit-bootstrap" \
     TMP="/tmp/openkit-bootstrap" \
     TMPDIR="/tmp/openkit-bootstrap"
 
+# Exact coordinated release provenance lives in root-owned image bytes, never runtime ENV.
+ARG OPENKIT_RELEASE_TAG
+ARG OPENKIT_SOURCE_COMMIT
+RUN node -e 'const fs=require("node:fs"); const sourceCommit=process.env.OPENKIT_SOURCE_COMMIT||null; const releaseTag=process.env.OPENKIT_RELEASE_TAG||null; if(sourceCommit!==null&&!/^[a-f0-9]{40}$/.test(sourceCommit)) throw new Error("Invalid Worker source identity"); fs.mkdirSync("/usr/local/lib/openkit",{recursive:true}); fs.writeFileSync("/usr/local/lib/openkit/release-identity.json",JSON.stringify({releaseTag,sourceCommit})+"\n",{mode:0o444});'
+LABEL org.opencontainers.image.revision="${OPENKIT_SOURCE_COMMIT}"
+LABEL org.opencontainers.image.version="${OPENKIT_RELEASE_TAG}"
+
 LABEL org.openkit.image="worker-common"
 LABEL org.openkit.smoke="/usr/local/bin/openkit-worker-common-base-smoke"
 LABEL org.openkit.storage.family="openkit-worker"

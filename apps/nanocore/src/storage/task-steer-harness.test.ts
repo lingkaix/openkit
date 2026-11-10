@@ -35,6 +35,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { createThreadOperationImplementations } from '../thread-operation-implementations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -191,6 +192,7 @@ describe('Task steer through the existing native Harness slot', () => {
     const f = await fixture();
     const before = f.store.getTurnById(f.input.turnId);
     const cold = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb: f.coreDb,
       store: f.store,
       workerControlGateway: f.native.workerControlGateway,

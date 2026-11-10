@@ -934,8 +934,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
       sessionAuthority: nanohostTransportSessionAuthority,
     });
-  const workerEnvironmentRuntimeEffects =
-    createWorkerEnvironmentRuntimeEffects(nanoHostSessionDispatch);
+  const releaseIdentity = options.releaseIdentity ?? {
+    releaseTag: null,
+    sourceCommit: null,
+  };
+  const workerEnvironmentRuntimeEffects = createWorkerEnvironmentRuntimeEffects(
+    nanoHostSessionDispatch,
+    releaseIdentity
+  );
   const workerEnvironmentOperations = options.coreDb
     ? createWorkerEnvironmentOperations({
         coreDb: options.coreDb,
@@ -1139,6 +1145,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           readRuntimeConfig: () => runtimeConfigManager.current(),
           policyInterception: () => policyInterception,
           goalTaskPolicy,
+          releaseIdentity,
           coreDb: options.coreDb,
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
           nanoHostSessionDispatch,
@@ -1149,6 +1156,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.turnExecutor ??
     configuredWorkerRuntime?.turnExecutor ??
     createConfiguredTurnExecutor({
+      releaseIdentity,
       fileAdmission,
       coreDb: options.coreDb,
       workerControlGateway,
@@ -1897,6 +1905,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerNanoHostSessionSemanticRoutes({
     app,
+    releaseIdentity,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     dispatch: nanoHostSessionDispatch,
     ...(configuredWorkerRuntime
@@ -1975,10 +1984,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     );
   });
 
-  const releaseIdentity = options.releaseIdentity ?? {
-    releaseTag: null,
-    sourceCommit: null,
-  };
   const diagnosticsServices = {
     runtimeConfig,
     runtimeConfigManager,

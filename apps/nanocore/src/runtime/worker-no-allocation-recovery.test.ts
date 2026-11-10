@@ -26,6 +26,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
@@ -216,7 +217,12 @@ async function stoppedOriginalWorker() {
   };
   /** Composes boot's real scheduler, native lifecycle and initiating Task checkpoint owners. */
   const recover = async (beforeCheckpoint?: () => Promise<void>) => {
-    const runtime = createConfiguredWorkerLifecycleRuntime({ env: {}, coreDb, store });
+    const runtime = createConfiguredWorkerLifecycleRuntime({
+      releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+      env: {},
+      coreDb,
+      store,
+    });
     const native = runtime.turnExecutor.executionBackend!;
     for (const method of ['submit', 'inspect', 'cancel', 'release'] as const)
       nativeCalls.push(vi.spyOn(native, method));

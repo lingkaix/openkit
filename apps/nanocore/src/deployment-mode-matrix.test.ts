@@ -13,6 +13,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from './test-support/release-identity.js';
 
 /** NanoCore product deployment mode used by the verification matrix. */
 type CoreDeploymentMode = 'local' | 'server';
@@ -84,6 +85,7 @@ describe('NanoCore deployment mode matrix', () => {
  */
 function createMatrixRuntime(coreDb: CoreDb) {
   return createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     env: {},
     workerControlGateway: new WorkerControlGateway(),

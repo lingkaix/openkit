@@ -4,7 +4,6 @@ import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isEntityId, isRecord } from '@openkit/protocol';
-
 import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   HarnessCommandBodySchemas,
@@ -43,6 +42,7 @@ import {
   type SandboxIntegrationClient,
 } from './integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
+import { readWorkerReleaseIdentity, type WorkerBuildIdentity } from './release-identity.js';
 import {
   describeWorkerStartupFailure,
   initializeSessionWorkspace,
@@ -971,8 +971,13 @@ export async function runWorkerHarness(
   options: {
     readonly environment?: WorkerShimEnvironment | undefined;
     readonly signal?: AbortSignal | undefined;
+    /** Explicit immutable identity for an embedding owner; the binary always reads its image file. */
+    readonly releaseIdentity?: WorkerBuildIdentity | null | undefined;
   } = {}
 ): Promise<void> {
+  const releaseIdentity = Object.hasOwn(options, 'releaseIdentity')
+    ? options.releaseIdentity
+    : await readWorkerReleaseIdentity();
   const integration = await openSandboxIntegration(
     options.signal ? { signal: options.signal } : undefined
   );
@@ -988,6 +993,7 @@ export async function runWorkerHarness(
         // This is one serial loop: a poll cannot overlap command execution or result acknowledgement.
         JSON.stringify({
           schemaVersion: 2,
+          releaseIdentity,
           harnesses: [...harnesses].map(([harnessInstanceId, owner]) => ({
             harnessInstanceId,
             nextSequence: owner.nextSequence,

@@ -89,7 +89,7 @@ test('candidate selection requires one committed unused prerelease input and tol
   );
 });
 
-test('only App candidate builds carry the embedded identity and all OCI metadata is deterministic', () => {
+test('App and Worker candidates embed the same exact release identity with deterministic OCI metadata', () => {
   const { context } = fixture();
   const input = { ...context, created: '2026-10-15T00:00:00Z' };
   const app = imageIdentity(input);
@@ -97,7 +97,10 @@ test('only App candidate builds carry the embedded identity and all OCI metadata
     app.args,
     `OPENKIT_RELEASE_TAG=${context.tag}\nOPENKIT_SOURCE_COMMIT=${context.sha}`
   );
-  assert.equal(imageIdentity({ ...input, image: { ...context.image, kind: 'worker' } }).args, '');
+  assert.equal(
+    imageIdentity({ ...input, image: { ...context.image, kind: 'worker' } }).args,
+    app.args
+  );
   assert.equal(app.labels, imageIdentity(input).labels);
   assert.match(app.labels, /org.opencontainers.image.created=2026-10-15T00:00:00Z/);
 });

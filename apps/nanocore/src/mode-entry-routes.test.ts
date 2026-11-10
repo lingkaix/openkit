@@ -85,6 +85,7 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from './test-support/release-identity.js';
 import {
   assertTaskDurableAdmissionResponse,
   mutateQuiescentCheckpoint,
@@ -1307,6 +1308,7 @@ describe('conversation.submit worker acceptance wait', () => {
         throw refusal;
       });
       const runtime = createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         fileAdmission,
         coreDb,
         store,

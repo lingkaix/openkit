@@ -41,6 +41,7 @@ import type {
   PreparedWorkerEnvironmentImage,
   WorkerEnvironmentRuntimeEffects,
 } from '../runtime/worker-environment-runtime-effects.js';
+import { WorkerReleaseIncompatibleError } from '../runtime/worker-release-identity.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 
 type ConfigFiles = Pick<RuntimeConfigFileService, 'readFile'>;
@@ -534,7 +535,11 @@ export function createWorkerEnvironmentPreparation(
         publicationTurn.id,
         true
       );
-      if (error instanceof WorkerEnvironmentOperationError) throw error;
+      if (
+        error instanceof WorkerEnvironmentOperationError ||
+        error instanceof WorkerReleaseIncompatibleError
+      )
+        throw error;
       throw new WorkerEnvironmentOperationError(
         'effect_failed',
         error instanceof Error ? error.message : 'Worker image preparation failed.'

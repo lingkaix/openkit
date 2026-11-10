@@ -34,12 +34,13 @@ import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { recordTestNativeRuntimeTarget } from './native-environment.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from './release-identity.js';
 
 /**
  * Models the peer; native owners fence delivery and release; interrupted finals follow real commands.
  * @param coreDb Caller-owned migrated Core database for this fixture lifetime.
  * @param store Caller-created Demo store sharing the same data root.
- * @param options Shared runtime configuration and optional outside peer Git checkout report.
+ * @param options Shared runtime configuration, optional Core build identity and outside peer Git checkout report.
  * @param outside Opaque outside peer facts retained across sequential stopped controllers.
  * @returns Outside facts, native executor, per-Turn gates, effects, runtime, admission, gateway and stop.
  */
@@ -49,6 +50,7 @@ export async function createNativeTaskAdmissionFixture(
   options: Pick<
     NonNullable<Parameters<typeof createConfiguredWorkerLifecycleRuntime>[0]>,
     | 'readRuntimeConfig'
+    | 'releaseIdentity'
     | 'vaultBackend'
     | 'workspaceMutationAdmission'
     | 'policyInterception'
@@ -158,6 +160,7 @@ export async function createNativeTaskAdmissionFixture(
   void launched.promise.catch(() => undefined);
   const unsupported = () => Promise.reject(new Error('Native peer operation is not admitted.'));
   const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: options.releaseIdentity ?? TEST_WORKER_RELEASE_IDENTITY,
     coreDb,
     store,
     fileAdmission,
@@ -199,6 +202,7 @@ export async function createNativeTaskAdmissionFixture(
         if (request.kind === 'image.acquire') return { digest: request.input.imageReference };
         if (request.kind === 'image.inspect')
           return {
+            releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             digest: request.input.imageDigest,
             environmentDefaults: {
               defaultsDigest: `sha256:${createHash('sha256').update('{}').digest('hex')}`,

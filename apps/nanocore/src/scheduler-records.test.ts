@@ -36,6 +36,7 @@ import { applyMigrations } from './storage/migrate';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { TEST_WORKER_RELEASE_IDENTITY } from './test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -897,8 +898,11 @@ describe('scheduler records', () => {
         apply(coreDb, suffix);
         const before = terminalAccountingSnapshot(coreDb, suffix);
 
-        const backend = createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
-          .executionBackend!;
+        const backend = createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          coreDb,
+          env: {},
+        }).turnExecutor.executionBackend!;
         await expect(
           backend.inspect(
             attemptActionOwners.schedulerExecutionCorrelation(
@@ -1087,8 +1091,11 @@ describe('scheduler records', () => {
       });
 
       await runSchedulerRecoveryMaintenance(coreDb, {
-        executionBackend: createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
-          .executionBackend!,
+        executionBackend: createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          coreDb,
+          env: {},
+        }).turnExecutor.executionBackend!,
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         now: () => '2026-07-05T00:05:11.000Z',
       });
@@ -1108,8 +1115,11 @@ describe('scheduler records', () => {
         toState: 'cleaned',
       });
       await runSchedulerRecoveryMaintenance(coreDb, {
-        executionBackend: createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
-          .executionBackend!,
+        executionBackend: createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          coreDb,
+          env: {},
+        }).turnExecutor.executionBackend!,
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         now: () => '2026-07-05T00:05:12.000Z',
       });
@@ -1411,8 +1421,11 @@ describe('scheduler records', () => {
         firstTerminalCause: 'worker-final-status',
       });
       await runSchedulerRecoveryMaintenance(coreDb, {
-        executionBackend: createConfiguredWorkerLifecycleRuntime({ coreDb, env: {} }).turnExecutor
-          .executionBackend!,
+        executionBackend: createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          coreDb,
+          env: {},
+        }).turnExecutor.executionBackend!,
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         now: () => '2026-07-05T00:26:00.000Z',
       });
@@ -1677,8 +1690,11 @@ async function closeOwnedExecutionAttempt(
     integrationDrain: true,
     routesRevoked: true,
   } as const;
-  const backend = createConfiguredWorkerLifecycleRuntime({ coreDb: db, env: {} }).turnExecutor
-    .executionBackend!;
+  const backend = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+    coreDb: db,
+    env: {},
+  }).turnExecutor.executionBackend!;
   const result = await backend.release({ ...correlation, proof });
   if (result.state === 'released')
     attemptActionOwners.closeSchedulerExecutionAttemptWithFence(db, {
