@@ -256,6 +256,36 @@ gh run view <run-id>
 Close the release change record only when the workflow is green, the GitHub Release is published with exactly the three archives, `openkit-release-<tag>.json` and `SHA256SUMS`, both downloaded NanoHost archives pass the shared contained staging verifier, and `worker-common` is anonymously inspectable by digest.
 
 
+### Data Root Upgrade Rehearsal (G5)
+
+Run this once in the end phase, after the reset RC is built. Use the exact reset RC App build and its verified Worker platform image as the predecessor. Use a separate disposable build of synthetic `v0.1.1` from that source. Do not publish either synthetic tag or image, and do not use deployed dev or its Data Root.
+
+1. In the synthetic build only, append one Core Drizzle journal entry. Copy the last entry's version and breakpoint fields, increment its index, choose a strictly greater `when`, and name the SQL `NNNN_g5_rehearsal_probe.sql`. Its complete contents, including the final newline, are:
+
+   ```sql
+   CREATE TABLE `openkit_rehearsal_probe` (`id` integer PRIMARY KEY NOT NULL);
+   ```
+
+   Build the App with release identity `v0.1.1` and its exact new source commit. Keep the old and new compiled App roots, their corresponding release identity JSON files, and the old platform image digest from the verified release. The script checks all four journal prefixes and original SQL files and rejects any other journal change.
+
+2. Write a private JSON input. Set `previous` and `candidate` to objects with `appRoot` (the built NanoCore directory containing `dist` and `drizzle`) and `identityFile` (the build's immutable release identity file). Set `previous.workerPlatformImage` to the exact old platform digest. Set `output` to a new directory under the disposable run's private scratch root. Run:
+
+   ```bash
+   node scripts/rehearse-v010-upgrade.mjs storage <private-input.json>
+   ```
+
+   The old build seeds the existing file and SQL upgrade corpus. The script takes and verifies a cold backup, opens the same Data Root with the candidate, verifies one new native ledger row and exact old-family readback, and repeats the open to prove idempotence. G1 uses the previous compiled Core opener and records its typed refusal and permitted sidecar residue; a supported reopen must remove any residue. G2 uses the previous compiled restore owner and checks that the verified future backup and existing destination are unchanged. Retain `storage-result.json`; only `awaiting-worker` permits the next step.
+
+3. In the prepared disposable guest network namespace, start the candidate App and its bound NanoHost. Import the previous Worker image by the pinned platform digest into that host without activating it. Provide an existing Administration Thread and the agent's authored file. Set `worker` in the same input to `origin` (candidate loopback URL), `expectedRuntime` (the enrolled `identityId` and `deploymentId`), `agentId`, `agentFileId`, and `administrationThreadId`. If the disposable App uses server mode, supply the fixture administrator token only as `OPENKIT_UPGRADE_ADMIN_TOKEN`. Run from the guest namespace:
+
+   ```bash
+   node scripts/rehearse-v010-upgrade.mjs worker <private-input.json>
+   ```
+
+   The script checks the running build and NanoHost binding, then makes one preparation request with the old image and `pullPolicy: never`. Only HTTP 409 with `worker_release_incompatible` passes. The old shim must be refused at image admission, before activation or launch; the authored config and idle state must be unchanged. Retain `worker-result.json`. Stop on any failure or incomplete receipt and inspect the owned fixture; do not replay a request.
+
+The two successful receipts qualify this rehearsal only. `node --test tests/rehearse-v010-upgrade.test.mjs` exercises the harness with a temporary compiled-build copy and a Worker response oracle. It does not replace the end-phase run against the exact release artifacts and live bound NanoHost.
+
 ### Synthetic Stable Promotion Rehearsal
 
 Use only the coordinator's [bounded exception](../decisions/20261016-bounded_stable_promotion_rehearsal.md). Select one unused synthetic stable version `v0.0.N` and a prerelease in that version, then prepare and publish the prerelease in `notrucked/openkit` through the actual candidate, manifest and download-verification path. A synthetic reviewed assessment belongs only to that fixture. Retain the production repository's releases, tags, image identities and Latest observations before and after the rehearsal and prove equality.
