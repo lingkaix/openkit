@@ -1158,6 +1158,8 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
       readonly planId: string;
       readonly receiptId: string;
       readonly expectedMaterialVersion: number;
+      readonly previousReceiptId?: string;
+      readonly refreshContext?: import('./harness-login-authority.js').HarnessLoginContext;
       readonly consumer: 'codex-login';
     },
     supply: () => Promise<{

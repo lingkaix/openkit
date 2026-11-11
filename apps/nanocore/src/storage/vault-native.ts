@@ -900,7 +900,7 @@ export function applyControlVault(
       case 'reference-advance':
         if (request.record.loginBinding) {
           const authority = request.record.loginBinding;
-          requireInitialLoginBinding(db, authority, initialWorkspace, initialPackage);
+          requireLoginAccessBinding(db, authority, initialWorkspace, initialPackage);
           if (
             request.record.referenceId !== authority.reference.referenceId ||
             request.record.currentVersion !== authority.binding.materialVersion + 1 ||
@@ -925,7 +925,7 @@ export function applyControlVault(
             getVaultInjectionReceipt(db, authority.binding.receiptId)
           )
             throw new ControlProductPreconditionError();
-          requireInitialLoginBinding(db, authority.binding, initialWorkspace, initialPackage);
+          requireLoginAccessBinding(db, authority.binding, initialWorkspace, initialPackage);
         }
         const reference = requireVaultReference(db, request.record.referenceId);
         if (reference.login!.quarantined !== request.record.quarantined)
@@ -974,7 +974,7 @@ export function applyControlVault(
           if (reference.login !== undefined || request.record.loginBinding) {
             const authority = request.record.loginBinding;
             if (!authority) throw new ControlProductPreconditionError();
-            const current = requireInitialLoginBinding(
+            const current = requireLoginAccessBinding(
               db,
               authority,
               initialWorkspace,
@@ -1004,6 +1004,15 @@ export function applyControlVault(
           kind: request.kind,
           value: createVaultInjectionReceipt(db, definedFields(request.record)),
         };
+        const previous = request.record.loginBinding?.previousReceiptId;
+        if (previous !== undefined) {
+          const changed = db.sqlite
+            .prepare(
+              "UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE receipt_id=? AND revocation_status='active'"
+            )
+            .run(previous);
+          if (changed.changes !== 1) throw new ControlProductPreconditionError();
+        }
         break;
       }
     }
@@ -1305,7 +1314,7 @@ function assertBindingRequester(
 }
 
 /** Repeats the initial token delivery's exact current facts inside the native savepoint, after FIFO predecessors. */
-function requireInitialLoginBinding(
+function requireLoginAccessBinding(
   db: CoreDb,
   authority: NonNullable<
     Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
@@ -1313,7 +1322,8 @@ function requireInitialLoginBinding(
   workspaceDb: WorkspaceDb | undefined,
   preparedPackage: PreparedControlVaultRead['consumerPackage'] | undefined
 ) {
-  const { binding, reference, requester, attemptId, planId, receiptId } = authority;
+  const { binding, reference, requester, attemptId, planId, receiptId, previousReceiptId } =
+    authority;
   const { consumer, declaration, materialVersion } = binding;
   const now = new Date().toISOString();
   assertBindingRequester(db, requester);
@@ -1342,7 +1352,9 @@ function requireInitialLoginBinding(
     plan.grantId !== current.grant.grantId ||
     plan.packageSnapshotId !== consumer.snapshotId ||
     planId !== `plan_${consumer.snapshotId}_${declaration.id}` ||
-    receiptId !== `receipt_${consumer.snapshotId}_${declaration.id}`
+    (previousReceiptId === undefined
+      ? receiptId !== `receipt_${consumer.snapshotId}_${declaration.id}`
+      : receiptId === previousReceiptId)
   )
     throw new ControlProductPreconditionError();
   if (
@@ -1357,6 +1369,33 @@ function requireInitialLoginBinding(
     )
   )
     throw new ControlProductPreconditionError();
+  if (previousReceiptId !== undefined) {
+    if (!authority.refreshContext) throw new ControlProductPreconditionError();
+    try {
+      requireHarnessLoginBinding(db, authority.refreshContext, now);
+    } catch {
+      throw new ControlProductPreconditionError();
+    }
+    const prior = getVaultInjectionReceipt(db, previousReceiptId);
+    const thread = readProduct(
+      workspaceDb.sqlite,
+      { kind: 'workspace', workspaceId: workspaceDb.workspaceId },
+      'thread',
+      consumer.scope.threadId
+    );
+    if (
+      !prior ||
+      prior.revocationStatus !== 'active' ||
+      prior.planId !== planId ||
+      prior.grantId !== current.grant.grantId ||
+      prior.agentSessionId !== consumer.scope.agentSessionId ||
+      (prior.expiresAt !== null && prior.expiresAt <= now) ||
+      !thread ||
+      NativeThreadLoginSchema.safeParse(thread.record.login).data?.referenceId !==
+        current.reference.referenceId
+    )
+      throw new ControlProductPreconditionError();
+  }
   const snapshot = AgentEnvironmentPackageSchema.parse(preparedPackage);
   if (
     snapshot.schemaVersion !== 4 ||

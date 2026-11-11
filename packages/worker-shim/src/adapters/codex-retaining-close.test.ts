@@ -1,6 +1,6 @@
 // openkit-test-platform: posix
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -393,4 +393,77 @@ describe('Codex retaining close context proof', () => {
     expect(await readCodexCloseRollout(path, THREAD)).toEqual(encode());
     await expect(readCodexCloseRollout(path, 'sibling')).rejects.toThrow(/identity/);
   });
+});
+
+describe('Codex 0.166.0 retaining close with native usage metadata', () => {
+  // One response in the first Turn has equal response, Turn and Thread usage totals.
+  const usage = {
+    input_tokens: 11,
+    cached_input_tokens: 3,
+    cache_write_input_tokens: 0,
+    output_tokens: 7,
+    reasoning_output_tokens: 2,
+    total_tokens: 18,
+  };
+  const usageRecord = {
+    timestamp: '2026-01-02T03:04:05.000Z',
+    type: 'token_usage_record',
+    payload: {
+      thread_id: THREAD,
+      turn_id: terminal.id,
+      session_id: 'bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb',
+      root_turn_id: terminal.id,
+      response_id: 'resp_synthetic_close_usage',
+      usage,
+      turn_token_usage: usage,
+      thread_token_usage: usage,
+    },
+  };
+  const laterTurn = 'tu_00000000-0000-72e4-a0d5-cdb28dd18a21';
+
+  it.each([
+    'exact root Turn',
+    'malformed usage counter',
+    'foreign Thread',
+    'foreign root Turn',
+    'missing raw terminal',
+    'later context',
+  ] as const)(
+    'reconciles a usage-bearing prefix only with proved text and terminal: %s',
+    async (mode) => {
+      let payload: unknown = usageRecord.payload;
+      if (mode === 'malformed usage counter')
+        payload = { ...usageRecord.payload, usage: { ...usage, input_tokens: '11' } };
+      if (mode === 'foreign Thread')
+        payload = { ...usageRecord.payload, thread_id: 'cccccccc-cccc-7ccc-8ccc-cccccccccccc' };
+      if (mode === 'foreign root Turn')
+        payload = { ...usageRecord.payload, root_turn_id: laterTurn };
+      const retained = [
+        ...frames.slice(0, -1),
+        { ...usageRecord, payload },
+        ...(mode === 'missing raw terminal' ? [] : [frames.at(-1)!]),
+        ...(mode === 'later context'
+          ? [{ type: 'turn_context', payload: { turn_id: laterTurn } }]
+          : []),
+      ];
+      const bytes = encode(retained.map((frame, ordinal) => ({ ...frame, ordinal })));
+      const root = await mkdtemp(join(tmpdir(), 'codex-close-proof-'));
+      roots.push(root);
+      const path = join(root, 'rollout.jsonl');
+      await writeFile(path, bytes);
+
+      if (mode === 'exact root Turn') {
+        const read = await readCodexCloseRollout(path, THREAD);
+        expect(read).toEqual(bytes);
+        expect(() => requireCodexCloseHistory(history, read, THREAD, terminal)).not.toThrow();
+      } else {
+        await expect(
+          readCodexCloseRollout(path, THREAD).then((read) =>
+            requireCodexCloseHistory(history, read, THREAD, terminal)
+          )
+        ).rejects.toThrow();
+      }
+      expect(await readFile(path)).toEqual(bytes);
+    }
+  );
 });

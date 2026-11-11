@@ -17,7 +17,7 @@ import fs, {
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { type Duplex, PassThrough } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { AgentEnvironmentLlmSchema } from '@openkit/config-schema';
@@ -33,6 +33,7 @@ import { LLMGatewayProviderDispatcher } from '../../../../apps/nanocore/src/llm/
 import type { ResolvedLLMProviderConfig } from '../../../../apps/nanocore/src/providers/llm-config.js';
 import type {
   WorkerAdapterLlmRoute,
+  WorkerHostManagedLogin,
   WorkerResidentOpenInput,
   WorkerResidentSession,
   WorkerResidentTurnInput,
@@ -56,6 +57,7 @@ import {
 } from './codex.js';
 import { CodexAppServer, codexPermissionResponse, redactDiagnostic } from './codex-app-server.js';
 import { codexInferenceRuntimeHintMapping } from './codex-inference-runtime-hint.js';
+import { readCodexCloseRollout } from './codex-retaining-close.js';
 
 const INFERENCE_SECRET = 'codex-test-inference-secret';
 const CAPABILITY_SECRET = 'codex-test-capability-secret';
@@ -300,7 +302,383 @@ describe('Codex App Server adapter', () => {
     const evidence = JSON.stringify(observations);
     expect(access.some((value) => evidence.includes(value))).toBe(false);
     expect(evidence.includes(accountId)).toBe(false);
+
+    // Capture the exact Thread handle while the resident is still live.
+    const handle = await native.nativeHandle();
+    await expect(native.close()).resolves.toBeUndefined();
+    expect(native.nativeEvidence?.()).toMatchObject({
+      nativeTerminal: true,
+      processExited: true,
+      pipesDrained: true,
+      persistencePreservingClose: true,
+    });
+
+    // Only the associated rollout in this fixture's fresh native home is eligible.
+    // Reuse the native byte bound and expose only whether the accounting frame exists.
+    const usageRetained = await (async () => {
+      if (handle.state !== 'ready') return false;
+      const threadId = new TextDecoder('utf-8', { fatal: true }).decode(handle.reference);
+      const sessionRoot = join(await realpath(roots.base), 'state', 'sessions');
+      if ((await realpath(sessionRoot)) !== sessionRoot) return false;
+      const [rollout, other] = (await walk(sessionRoot)).filter((path) => {
+        const name = basename(path);
+        return (
+          name.startsWith('rollout-') &&
+          name.endsWith('.jsonl') &&
+          (name.endsWith(`-${threadId}.jsonl`) || name.includes(`-${threadId}_`))
+        );
+      });
+      if (!rollout || other || !(await fs.lstat(rollout)).isFile()) return false;
+      const bytes = await readCodexCloseRollout(rollout, threadId);
+      return bytes
+        .toString('utf8')
+        .trimEnd()
+        .split('\n')
+        .some((line) => JSON.parse(line)?.type === 'token_usage_record');
+    })().catch(() => false);
+    expect(usageRetained, 'Exact retained native rollout has a usage accounting frame').toBe(true);
   }, 60_000);
+
+  // The peer models only native stdio. The real adapter owns activation and quota attribution.
+  it.each([
+    { account: 'matching', matchesAccount: true },
+    { account: 'foreign', matchesAccount: false },
+  ])(
+    'reads quota after private Login completion and admits only current account evidence: $account',
+    async ({ matchesAccount }) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      const accountId = 'synthetic-current-quota-account';
+      const receipt = { receiptId: 'synthetic-quota-receipt', materialGeneration: 7 };
+      const enteredCompletion = Promise.withResolvers<void>();
+      const releaseCompletion = Promise.withResolvers<void>();
+      const reasons: string[] = [];
+      const completions: Array<Parameters<WorkerHostManagedLogin['complete']>[0]> = [];
+      const observations: Array<Parameters<WorkerHostManagedLogin['observe']>[0]> = [];
+      let completionAcknowledged = false;
+      let observationsBeforeCompletion = 0;
+      const callbacks: WorkerHostManagedLogin = {
+        acquire: async (reason) => {
+          reasons.push(reason);
+          return { ...receipt, accountId, accessToken: 'synthetic-quota-access', planType: 'plus' };
+        },
+        complete: async (value) => {
+          completions.push(value);
+          enteredCompletion.resolve();
+          await releaseCompletion.promise;
+          completionAcknowledged = true;
+        },
+        observe: async (value) => {
+          if (!completionAcknowledged) observationsBeforeCompletion++;
+          observations.push(value);
+        },
+      };
+      const methods: string[] = [];
+      const readMethod = 'account/rateLimits/read';
+      const reads: Array<{ completionAcknowledged: boolean }> = [];
+      const rateLimits = {
+        limitId: 'codex',
+        primary: { usedPercent: 23, windowDurationMins: 300, resetsAt: null },
+      };
+      const child = controlledPeer(undefined, undefined, NATIVE_THREAD, {
+        answerRequest: (method) => {
+          methods.push(method);
+          if (method === 'account/login/start') return { type: 'chatgptAuthTokens' };
+          if (method === readMethod) {
+            reads.push({ completionAcknowledged });
+            // The foreign row injects a positive read from another account at the native boundary.
+            return {
+              accountId: matchesAccount ? accountId : 'synthetic-foreign-quota-account',
+              ordinaryUsageAllowed: true,
+              rateLimits,
+              rateLimitsByLimitId: { codex: rateLimits },
+            };
+          }
+          return undefined;
+        },
+      });
+      const nativeRoute: WorkerAdapterLlmRoute = {
+        ...route('gpt-5.1-codex'),
+        credentialVisibility: 'runtime-token',
+        endpoint: { kind: 'openai-compatible', workerBaseUrl: 'https://chatgpt.com/backend-api' },
+        modelParameters: {
+          contextWindow: 128_000,
+          maxOutputTokens: 16_000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
+      };
+
+      try {
+        const session = await openCodexResidentSession(
+          { ...openInput(roots), hostManagedLogin: callbacks },
+          { spawnProcess: () => child }
+        );
+        sessions.push(session);
+        const started = session
+          .startTurn({
+            ...turnInput(roots, []),
+            llmRoute: nativeRoute,
+            allowedLlmRoutes: [nativeRoute],
+          })
+          .catch(() => null);
+        const reachedCompletion = await Promise.race([
+          enteredCompletion.promise.then(() => true),
+          started.then(() => false),
+        ]);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        releaseCompletion.resolve();
+
+        const turn = await started;
+        if (!turn) throw new Error('The synthetic native Turn was refused.');
+        const status = turn.settled.then(
+          (result) => result.status,
+          () => 'settlement-refused'
+        );
+        // The controlled peer replies on the same pipe; let its continuations run while the Turn is live.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        const readsAtUse = [...reads];
+        const observationsAtUse = [...observations];
+        child.stdout.write(terminalFrame());
+
+        expect(await status).toBe('completed');
+        expect(reachedCompletion).toBe(true);
+        expect(reasons).toStrictEqual(['activate']);
+        expect(methods).toContain('account/login/start');
+        expect(completions).toStrictEqual([receipt]);
+        expect(methods).toContain('turn/start');
+        expect(observationsBeforeCompletion).toBe(0);
+        // The Vault owner calls for one bounded read at use, with no polling or update in this fixture.
+        expect(readsAtUse).toStrictEqual([{ completionAcknowledged: true }]);
+        expect(reads).toStrictEqual(readsAtUse);
+        expect(observations).toStrictEqual(observationsAtUse);
+        if (matchesAccount) {
+          expect(observationsAtUse).toStrictEqual([
+            {
+              ...receipt,
+              observation: {
+                state: 'available',
+                windows: [
+                  { kind: 'primary', usedPercent: 23, durationMinutes: 300, resetsAt: null },
+                ],
+                source: 'native-read',
+              },
+            },
+          ]);
+        } else {
+          // A foreign native response can include windows but cannot supply any current-account fact.
+          expect(observationsAtUse.length).toBeLessThanOrEqual(1);
+          for (const report of observationsAtUse) {
+            expect(report).toStrictEqual({
+              ...receipt,
+              observation: { state: 'unknown', windows: [], source: 'native-read' },
+            });
+          }
+        }
+      } finally {
+        releaseCompletion.resolve();
+        child.exitCode = 0;
+        child.emit('exit', 0, null);
+        child.stdout.end();
+        child.stderr.end();
+      }
+    }
+  );
+
+  it.each([
+    { control: 'explicit denial', permission: false, state: 'exhausted' },
+    { control: 'unknown permission', permission: null, state: 'unknown' },
+    { control: 'superseded receipt', permission: true, state: 'available' },
+  ] as const)(
+    'uses native quota updates only to trigger a current read: $control',
+    async ({ permission, state }) => {
+      const roots = await tempRoots();
+      closers.push(() => rm(roots.base, { recursive: true, force: true }));
+      const accountId = 'synthetic-quota-control-account';
+      const receipt = { receiptId: 'synthetic-quota-control-initial', materialGeneration: 7 };
+      const successor = { receiptId: 'synthetic-quota-control-successor', materialGeneration: 8 };
+      const refreshId = 'synthetic-native-quota-refresh';
+      const refreshAccess = 'synthetic-quota-control-refresh-access';
+      const reasons: string[] = [];
+      const completions: Array<Parameters<WorkerHostManagedLogin['complete']>[0]> = [];
+      const observations: Array<Parameters<WorkerHostManagedLogin['observe']>[0]> = [];
+      const refreshAnswers: boolean[] = [];
+      const nativeRequests: string[] = [];
+      const reads: Array<(result: unknown) => void> = [];
+      const callbacks: WorkerHostManagedLogin = {
+        acquire: async (reason) => {
+          reasons.push(reason);
+          return {
+            ...(reason === 'activate' ? receipt : successor),
+            accessToken: reason === 'activate' ? 'synthetic-quota-control-access' : refreshAccess,
+            accountId,
+            planType: 'plus',
+          };
+        },
+        complete: async (value) => {
+          completions.push(value);
+        },
+        observe: async (value) => {
+          observations.push(value);
+        },
+      };
+      const rateLimits = (usedPercent: number) => ({
+        limitId: 'codex',
+        primary: { usedPercent, windowDurationMins: 300, resetsAt: 1_577_836_800 },
+      });
+      const quotaReply = (allowed: boolean | null, usedPercent: number) => ({
+        accountId,
+        ordinaryUsageAllowed: allowed,
+        rateLimits: rateLimits(usedPercent),
+      });
+      const observation = (
+        expectedReceipt: Parameters<WorkerHostManagedLogin['complete']>[0],
+        state: 'available' | 'exhausted' | 'unknown',
+        usedPercent: number
+      ) => ({
+        ...expectedReceipt,
+        observation: {
+          state,
+          windows: [
+            {
+              kind: 'primary',
+              usedPercent,
+              durationMinutes: 300,
+              resetsAt: '2020-01-01T00:00:00.000Z',
+            },
+          ],
+          source: 'native-read',
+        },
+      });
+      const child = controlledPeer(undefined, undefined, NATIVE_THREAD, {
+        handleFrame: ({ id, method, result }, reply) => {
+          if (id === refreshId && method === undefined) {
+            // Prove the real native response crossed stdin before the private completion.
+            refreshAnswers.push(
+              completions.length === 1 &&
+                typeof result === 'object' &&
+                result !== null &&
+                'accessToken' in result &&
+                result.accessToken === refreshAccess &&
+                'chatgptAccountId' in result &&
+                result.chatgptAccountId === accountId &&
+                'chatgptPlanType' in result &&
+                result.chatgptPlanType === 'plus'
+            );
+            return true;
+          }
+          if (method === undefined) return false;
+          nativeRequests.push(method);
+          if (method === 'account/login/start') {
+            reply({ type: 'chatgptAuthTokens' });
+            return true;
+          }
+          if (method !== 'account/rateLimits/read') return false;
+          reads.push(reply);
+          if (reads.length === 1) reply(quotaReply(true, 23));
+          return true;
+        },
+      });
+      const nativeRoute: WorkerAdapterLlmRoute = {
+        ...route('gpt-5.1-codex'),
+        credentialVisibility: 'runtime-token',
+        endpoint: { kind: 'openai-compatible', workerBaseUrl: 'https://chatgpt.com/backend-api' },
+        modelParameters: {
+          contextWindow: 128_000,
+          maxOutputTokens: 16_000,
+          inputModalities: ['text', 'image'],
+          reasoning: true,
+        },
+      };
+      const writeFrame = (frame: unknown) => child.stdout.write(`${JSON.stringify(frame)}\n`);
+      const update = () =>
+        writeFrame({
+          method: 'account/rateLimits/updated',
+          params: { rateLimits: rateLimits(100) },
+        });
+      const drainPipe = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+      let fakeTimers = false;
+      try {
+        const session = await openCodexResidentSession(
+          { ...openInput(roots), hostManagedLogin: callbacks },
+          { spawnProcess: () => child }
+        );
+        sessions.push(session);
+        const turn = await session.startTurn({
+          ...turnInput(roots, []),
+          llmRoute: nativeRoute,
+          allowedLlmRoutes: [nativeRoute],
+        });
+        const status = turn.settled.then(
+          (result) => result.status,
+          () => 'settlement-refused'
+        );
+        await drainPipe();
+        const initial = observation(receipt, 'available', 23);
+        expect(nativeRequests).toContain('account/login/start');
+        expect(nativeRequests).toContain('turn/start');
+        expect(completions).toStrictEqual([receipt]);
+        expect(reads).toHaveLength(1);
+        expect(observations).toStrictEqual([initial]);
+
+        // Keep the original native request timer armed. Do not advance time while holding its reply.
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+        fakeTimers = true;
+        update();
+        await drainPipe();
+        expect(reads).toHaveLength(2);
+        expect(observations).toStrictEqual([initial]);
+        const replyToUpdate = reads[1];
+        if (!replyToUpdate) throw new Error('The update did not issue a native quota read.');
+
+        if (permission === true) {
+          writeFrame({
+            id: refreshId,
+            method: 'account/chatgptAuthTokens/refresh',
+            params: { reason: 'unauthorized', previousAccountId: accountId },
+          });
+          await drainPipe();
+          expect(reasons).toStrictEqual(['activate', 'refresh']);
+          expect(refreshAnswers).toStrictEqual([true]);
+          expect(completions).toStrictEqual([receipt, successor]);
+
+          // Same account and same live Turn, but the captured receipt/generation is superseded.
+          replyToUpdate(quotaReply(true, 11));
+          await drainPipe();
+          expect(observations).toStrictEqual([initial]);
+
+          // Allow either a read at refresh completion or a subsequent notification-triggered read.
+          if (reads.length === 2) {
+            update();
+            await drainPipe();
+          }
+          expect(reads).toHaveLength(3);
+          const currentReply = reads[2];
+          if (!currentReply) throw new Error('The successor did not issue a native quota read.');
+          currentReply(quotaReply(true, 37));
+          await drainPipe();
+          expect(observations).toStrictEqual([initial, observation(successor, 'available', 37)]);
+        } else {
+          // Low usage and an elapsed reset do not prove that ordinary usage is allowed.
+          replyToUpdate(quotaReply(permission, 1));
+          await drainPipe();
+          expect(reads).toHaveLength(2);
+          expect(completions).toStrictEqual([receipt]);
+          expect(observations).toStrictEqual([initial, observation(receipt, state, 1)]);
+        }
+
+        child.stdout.write(terminalFrame());
+        expect(await status).toBe('completed');
+      } finally {
+        child.exitCode = 0;
+        child.emit('exit', 0, null);
+        child.stdout.end();
+        child.stderr.end();
+        if (fakeTimers) vi.useRealTimers();
+      }
+    }
+  );
 
   it.each([false, true])(
     'continues pinned tool history through real Gateway native compaction; failSummary=%s',
@@ -4489,7 +4867,19 @@ function controlledPeer(
   rolloutPath?: string,
   turnResult?: unknown,
   threadId: unknown = NATIVE_THREAD,
-  responses: { threadRead?: unknown; withholdInterrupt?: boolean } = {}
+  responses: {
+    threadRead?: unknown;
+    withholdInterrupt?: boolean;
+    answerRequest?: (method: string) => unknown;
+    handleFrame?: (
+      message: {
+        readonly id: number | string;
+        readonly method?: string;
+        readonly result?: unknown;
+      },
+      reply: (result: unknown) => void
+    ) => boolean;
+  } = {}
 ): ChildProcessWithoutNullStreams {
   const child = childThatNeverExits(false);
   child.stdin.on('data', (chunk) => {
@@ -4497,6 +4887,18 @@ function controlledPeer(
       const message = JSON.parse(line);
       if (message.id === undefined) continue;
       if (message.method === 'turn/interrupt' && responses.withholdInterrupt) continue;
+      if (
+        responses.handleFrame?.(message, (result) => {
+          child.stdout.write(`${JSON.stringify({ id: message.id, result })}\n`);
+        })
+      )
+        continue;
+      const answer =
+        typeof message.method === 'string' ? responses.answerRequest?.(message.method) : undefined;
+      if (answer !== undefined) {
+        child.stdout.write(`${JSON.stringify({ id: message.id, result: answer })}\n`);
+        continue;
+      }
       const result =
         message.method === 'config/read'
           ? { config: { mcp_servers: {} } }

@@ -10,6 +10,8 @@ import type {
   WorkerAdapterLlmRoute,
   WorkerAdapterResult,
   WorkerHostManagedLoginAccess,
+  WorkerHostManagedLoginObservation,
+  WorkerHostManagedLoginReceipt,
   WorkerNativeEvidence,
   WorkerNativeHandle,
   WorkerResidentAdapter,
@@ -77,6 +79,63 @@ const THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 const MCP_SERVER_ID = /^(?:_discovery|[A-Za-z0-9][A-Za-z0-9_-]{0,127})$/;
 /** Image-owned immutable binary, installed by the worker-runtimes Codex slice. */
 export const CODEX_PRODUCTION_BINARY = '/usr/local/lib/codex/bin/codex';
+
+/** Only the current Turn's receipt metadata survives a private completion. */
+interface CodexLoginQuotaScope {
+  receipt: (WorkerHostManagedLoginReceipt & { readonly accountId: string }) | null;
+  reading: boolean;
+}
+
+/** Projects only the account-correlated Codex allowance and the two bounded native windows. */
+function projectLoginQuota(
+  value: unknown,
+  accountId: string
+): WorkerHostManagedLoginObservation | null {
+  if (!isRecord(value) || value.accountId !== accountId) return null;
+  const buckets = value.rateLimitsByLimitId;
+  const bucket = isRecord(buckets) ? buckets.codex : buckets == null ? value.rateLimits : null;
+  const windows: WorkerHostManagedLoginObservation['windows'][number][] = [];
+  if (isRecord(bucket) && bucket.limitId === 'codex') {
+    for (const kind of ['primary', 'secondary'] as const) {
+      const window = bucket[kind];
+      if (
+        !isRecord(window) ||
+        typeof window.usedPercent !== 'number' ||
+        !Number.isInteger(window.usedPercent) ||
+        window.usedPercent < 0 ||
+        window.usedPercent > 2_147_483_647
+      )
+        continue;
+      const duration = window.windowDurationMins;
+      const reset = window.resetsAt;
+      const date =
+        typeof reset === 'number' && Number.isSafeInteger(reset) ? new Date(reset * 1000) : null;
+      const resetTime = date && Number.isFinite(date.getTime()) ? date.toISOString() : null;
+      windows.push({
+        kind,
+        usedPercent: window.usedPercent,
+        durationMinutes:
+          typeof duration === 'number' &&
+          Number.isInteger(duration) &&
+          duration >= 1 &&
+          duration <= 525_600
+            ? duration
+            : null,
+        resetsAt: resetTime?.length === 24 ? resetTime : null,
+      });
+    }
+  }
+  return {
+    state:
+      value.ordinaryUsageAllowed === true
+        ? 'available'
+        : value.ordinaryUsageAllowed === false
+          ? 'exhausted'
+          : 'unknown',
+    windows,
+    source: 'native-read',
+  };
+}
 
 /**
  * Environment of the supervised process. `CODEX_HOME` is the complete admitted retained native home.
@@ -386,6 +445,7 @@ class CodexResidentSession implements WorkerResidentSession {
   private readonly secrets: string[];
   private captureSecrets: string[] = [];
   private loginAccountId: string | null = null;
+  private loginQuotaScope: CodexLoginQuotaScope | null = null;
   private readonly resolveExited: () => void;
   private threadId: string | null = null;
   private rolloutPath: string | null = null;
@@ -485,7 +545,7 @@ class CodexResidentSession implements WorkerResidentSession {
       },
       launch.controlTimeoutMs ?? LIFECYCLE_DEFAULTS.nativeRequestMs,
       open.hostManagedLogin
-        ? async (params) => {
+        ? async (params, signal) => {
             if (
               !this.active ||
               !isRecord(params) ||
@@ -495,18 +555,25 @@ class CodexResidentSession implements WorkerResidentSession {
                 params.previousAccountId !== this.loginAccountId)
             )
               throw new Error('Codex refresh account correlation failed.');
-            const access = await this.acquireLogin('refresh');
+            const quotaScope = this.loginQuotaScope;
+            if (quotaScope) quotaScope.receipt = null;
+            const access = await this.acquireLogin('refresh', signal);
             return {
               result: {
                 accessToken: access.accessToken,
                 chatgptAccountId: access.accountId,
                 chatgptPlanType: access.planType,
               },
-              complete: () =>
-                open.hostManagedLogin!.complete({
-                  receiptId: access.receiptId,
-                  materialGeneration: access.materialGeneration,
-                }),
+              complete: async () => {
+                await open.hostManagedLogin!.complete(
+                  {
+                    receiptId: access.receiptId,
+                    materialGeneration: access.materialGeneration,
+                  },
+                  signal
+                );
+                this.recordLoginQuotaReceipt(quotaScope, access);
+              },
             };
           }
         : undefined
@@ -596,6 +663,7 @@ class CodexResidentSession implements WorkerResidentSession {
   /** Fences admission and memoizes the complete qualified close result, including refusal. */
   close(): Promise<void> {
     this.closing = true;
+    this.loginQuotaScope = null;
     this.closePromise ??= this.closeOnce();
     return this.closePromise;
   }
@@ -779,12 +847,17 @@ class CodexResidentSession implements WorkerResidentSession {
    */
   /** Consumes only current private access, registering exclusions before any native disclosure. */
   private async acquireLogin(
-    reason: 'activate' | 'refresh'
+    reason: 'activate' | 'refresh',
+    signal?: AbortSignal
   ): Promise<WorkerHostManagedLoginAccess> {
+    signal?.throwIfAborted();
     const callbacks = this.open.hostManagedLogin;
     if (!callbacks || !this.active || this.closing || this.unusable || this.phase !== 'running')
       throw new Error('Codex private Login is unavailable.');
-    const value: unknown = await callbacks.acquire(reason);
+    const value: unknown = await (signal
+      ? callbacks.acquire(reason, signal)
+      : callbacks.acquire(reason));
+    signal?.throwIfAborted();
     if (
       !this.active ||
       this.closing ||
@@ -837,6 +910,49 @@ class CodexResidentSession implements WorkerResidentSession {
     };
   }
 
+  /** Tracks only the completed receipt for this live Turn, and requests one bounded read at use. */
+  private recordLoginQuotaReceipt(
+    scope: CodexLoginQuotaScope | null,
+    { receiptId, materialGeneration, accountId }: WorkerHostManagedLoginAccess
+  ): void {
+    if (!scope || this.loginQuotaScope !== scope || !this.active || this.terminalSeen) return;
+    scope.receipt = { receiptId, materialGeneration, accountId };
+    void this.readLoginQuota();
+  }
+
+  /** A failed or late read cannot report availability or advance the native Turn. */
+  private async readLoginQuota(): Promise<void> {
+    const scope = this.loginQuotaScope;
+    const receipt = scope?.receipt;
+    const login = this.open.hostManagedLogin;
+    const isCurrent = () =>
+      this.loginQuotaScope === scope &&
+      scope?.receipt === receipt &&
+      this.active &&
+      !this.closing &&
+      !this.unusable &&
+      !this.terminalSeen;
+    if (!scope || !receipt || !login || scope.reading || !isCurrent()) return;
+    scope.reading = true;
+    try {
+      const read = await this.rpc.request('account/rateLimits/read', {
+        excludeResetCreditDetails: true,
+      });
+      if (!isCurrent()) return;
+      const observation = projectLoginQuota(read, receipt.accountId);
+      if (observation)
+        await login.observe({
+          receiptId: receipt.receiptId,
+          materialGeneration: receipt.materialGeneration,
+          observation,
+        });
+    } catch {
+      // Unavailable optional evidence does not prove recovery and never breaks a known Login.
+    } finally {
+      scope.reading = false;
+    }
+  }
+
   /** Native account acceptance and canonical receipt completion precede thread/model work. */
   private async activateLogin(native: {
     outstanding: boolean;
@@ -844,6 +960,7 @@ class CodexResidentSession implements WorkerResidentSession {
   }): Promise<void> {
     const callbacks = this.open.hostManagedLogin;
     if (!callbacks) throw new Error('Codex private Login is unavailable.');
+    const quotaScope = this.loginQuotaScope;
     const access = await controlDeadline(
       this.acquireLogin('activate'),
       native.deadline.remainingMs()
@@ -879,6 +996,7 @@ class CodexResidentSession implements WorkerResidentSession {
         }),
         native.deadline.remainingMs()
       );
+      this.recordLoginQuotaReceipt(quotaScope, access);
     } catch {
       this.unusable = true;
       throw new Error('Codex native Login completion is unproved.');
@@ -924,6 +1042,7 @@ class CodexResidentSession implements WorkerResidentSession {
         : undefined;
     this.boundRoutes = routeSet;
     this.active = true;
+    this.loginQuotaScope = nativeLogin ? { receipt: null, reading: false } : null;
     this.interruptRequested = false;
     this.terminalSeen = false;
     this.terminalProofEvaluated = false;
@@ -1101,6 +1220,7 @@ class CodexResidentSession implements WorkerResidentSession {
       this.currentTurnId = null;
       this.itemText.clear();
       this.active = false;
+      this.loginQuotaScope = null;
       // Stop collector scheduling immediately; a stalled observation sink must not delay native cleanup.
       const stoppedCapture = capture as CodexRuntimeCapture | null;
       void controlDeadline(
@@ -1395,6 +1515,7 @@ class CodexResidentSession implements WorkerResidentSession {
         this.itemText.delete(turnId);
         this.currentTurnId = null;
         this.active = false;
+        this.loginQuotaScope = null;
         return this.withDiagnostics(result, collectionIncomplete);
       })
       .finally(async () => {
@@ -1450,6 +1571,10 @@ class CodexResidentSession implements WorkerResidentSession {
         method.includes('compaction')
       )
         this.closeEvidenceLost = true;
+      return;
+    }
+    if (method === 'account/rateLimits/updated') {
+      if (isRecord(params) && isRecord(params.rateLimits)) void this.readLoginQuota();
       return;
     }
     if (method !== 'item/completed' && method !== 'turn/completed') return;

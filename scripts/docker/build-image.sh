@@ -53,9 +53,10 @@ dockerfile="$(read_image_field dockerfile)"
 context="$(read_image_field context)"
 tag="${IMAGE_TAG:-$(read_image_field localTag)}"
 target="$(read_optional_image_field target)"
+image_kind="$(read_image_field kind)"
 docker_args=(-f "${dockerfile}" -t "${tag}")
 
-if [[ "${IMAGE_ID}" == "app" ]]; then
+if [[ "${image_kind}" == "app" || "${image_kind}" == "worker" ]]; then
   # Only a clean checkout identifies the complete local build context. Explicit
   # release/candidate inputs already name the selected source revision.
   source_commit="${OPENKIT_SOURCE_COMMIT:-}"

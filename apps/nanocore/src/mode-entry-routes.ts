@@ -2490,6 +2490,7 @@ export function createConversationService({
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
   providerCredentialConfigured,
+  supportedRequiredFeatures,
   repositoryWorkspaceDb,
   resolveGatewayProvider,
   runtimeConfig,
@@ -2509,6 +2510,7 @@ export function createConversationService({
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   /** Current API-key presence without resolving Vault material. */
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
+  readonly supportedRequiredFeatures?: readonly string[];
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly resolveGatewayProvider: (
     providerId: string,
@@ -2556,6 +2558,7 @@ export function createConversationService({
 }) {
   const setupProviderSupply = {
     providerCredentialConfigured,
+    ...(supportedRequiredFeatures ? { supportedRequiredFeatures } : {}),
     ...(providerSubscriptionAccountManager
       ? { subscriptionAccounts: providerSubscriptionAccountManager }
       : {}),

@@ -17,6 +17,7 @@ import type { AgentManifest } from '../agents/manifest.js';
 import { computeReadiness, isAgentLaunchable } from '../agents/readiness.js';
 import {
   type AgentSetupResolverDependencies,
+  readSupportedAgentSetupFeatures,
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
 import { deriveArtifactReviewWorkerRequestId } from '../artifact-reviews.js';
@@ -673,6 +674,7 @@ function resolveDispatchAgentSetup(
     );
   }
   const resolved = resolveAgentSetup(manifest, {
+    supportedRequiredFeatures: readSupportedAgentSetupFeatures(input.executionBackend),
     gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
     providerCredentialConfigured: input.providerCredentialConfigured,

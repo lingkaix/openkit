@@ -55,6 +55,14 @@ export type HarnessLoginSelection =
   | { readonly kind: 'keep' | 'target'; readonly referenceId: string }
   | { readonly kind: 'unavailable' };
 
+/** Only an explicit exhaustion observation for the current material generation blocks use. */
+export function hasCurrentHarnessLoginExhaustion(
+  quota: Pick<HarnessLoginQuotaObservation, 'state' | 'materialGeneration'> | undefined,
+  materialGeneration: number
+): boolean {
+  return quota?.state === 'exhausted' && quota.materialGeneration === materialGeneration;
+}
+
 /**
  * Selects a harness Login without resolving material, changing metadata or performing effects.
  *
@@ -68,10 +76,8 @@ export function selectHarnessLogin(input: HarnessLoginSelectionInput): HarnessLo
   // An allowance belongs to the account, not to an individual refresh family.
   const exhaustedAccounts = new Set(
     input.eligible
-      .filter(
-        (candidate) =>
-          candidate.quota?.materialGeneration === candidate.materialGeneration &&
-          candidate.quota.state === 'exhausted'
+      .filter((candidate) =>
+        hasCurrentHarnessLoginExhaustion(candidate.quota, candidate.materialGeneration)
       )
       .map((candidate) => candidate.accountId)
   );

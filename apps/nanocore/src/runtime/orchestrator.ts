@@ -23,6 +23,7 @@ import {
   type AgentSetupDiagnostic,
   type AgentSetupResolverDependencies,
   type ResolvedAgentSetup,
+  readSupportedAgentSetupFeatures,
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
 import type { FsStore } from '../lib/store.js';
@@ -280,6 +281,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   assertAgentManifestSupportsModel(selectedAgent, input.modelId);
 
   const agentSetupResult = resolveAgentSetup(selectedAgent, {
+    supportedRequiredFeatures: readSupportedAgentSetupFeatures(input.turnExecutor.executionBackend),
     gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
     providerCredentialConfigured: input.providerCredentialConfigured,

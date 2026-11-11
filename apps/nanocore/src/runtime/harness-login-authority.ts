@@ -12,7 +12,7 @@ import {
 } from '../storage/vault-native-codecs.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
-import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
+import { resolveLiveNanoHostAttemptLease } from './nanohost-attempt-records.js';
 import { getNanoHostRuntimeTarget } from './nanohost-runtime-target.js';
 import type { NanoHostHarnessLoginPhysical } from './nanohost-session-dispatch.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
@@ -232,7 +232,7 @@ export function requireHarnessLoginBinding(
     b.next_turn_sequence AS nextSequence, b.cleanup_state AS bindingCleanup,
     h.lifecycle_state AS harnessState, h.drain_state AS harnessDrain,
     h.operation_state AS operationState, h.operation, h.command_body_json AS command,
-    s.sandbox_binding_ref AS sandboxBindingRef, s.sandbox_integration_binding_ref AS integrationRef,
+    s.sandbox_integration_binding_ref AS integrationRef,
     s.runtime_target_id AS targetId, s.origin_physical_epoch AS physicalEpoch,
     s.lifecycle_state AS sandboxState, s.health_state AS sandboxHealth,
     s.drain_state AS sandboxDrain, s.cleanup_state AS sandboxCleanup
@@ -257,7 +257,6 @@ export function requireHarnessLoginBinding(
         operationState: string;
         operation: string | null;
         command: string | null;
-        sandboxBindingRef: string;
         integrationRef: string;
         targetId: string;
         physicalEpoch: string;
@@ -273,8 +272,10 @@ export function requireHarnessLoginBinding(
   if (!row) return refuse();
   for (const schemaVersion of [row.schemaVersion, row.harnessVersion])
     readRetainedV1({ schemaVersion }, () => null);
-  const resolution = resolveNanoHostAttemptTokenBinding(coreDb, {
-    sandboxBindingRef: row.sandboxBindingRef,
+  // The resident Sandbox may outlive its creating attempt. The exact command or active
+  // binding below must name this lease, whose route reference belongs to the current Turn.
+  const resolution = resolveLiveNanoHostAttemptLease(coreDb, {
+    attemptId: input.leaseId,
     lineage: input,
     now: () => now,
   });
@@ -303,7 +304,6 @@ export function requireHarnessLoginBinding(
     attempt.phase !== 'open' ||
     attempt.agentSessionId !== input.agentSessionId ||
     attempt.inputRef !== input.packageSnapshotId ||
-    attempt.bindingRef !== row.sandboxBindingRef ||
     (attempt.deadline !== null && attempt.deadline <= now)
   )
     return refuse();

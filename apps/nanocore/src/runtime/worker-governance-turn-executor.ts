@@ -27,6 +27,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
+import { readSupportedAgentSetupFeatures } from '../agents/setup-resolver.js';
 import { publishedErrorMessage } from '../api-errors.js';
 import { ArtifactAuthorityError } from '../artifact-authority.js';
 import {
@@ -1964,6 +1965,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       resolveAgentEnvironmentPackageMetadata({
         agentSessionId,
         agentSetup: input.agentSetup,
+        supportedRequiredFeatures: readSupportedAgentSetupFeatures(this.executionBackend),
         backend: { kind: 'openshell' },
         ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
         ...(this.coreDb ? { coreDb: this.coreDb } : {}),
@@ -2182,7 +2184,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
       if (declaration.visibility === 'runtime-token') {
         const deliverAccess = this.backend.deliverCredentialAccess?.bind(this.backend);
-        const receiptId = `receipt_${original.snapshotId}_${declaration.id}`;
+        const refresh = input.loginRefresh;
+        const previousReceiptId = refresh?.previousReceiptId;
+        const receiptId =
+          previousReceiptId === undefined
+            ? `receipt_${original.snapshotId}_${declaration.id}`
+            : `receipt_${input.requestId}`;
         if (
           input.action !== 'deliver' ||
           !deliverAccess ||
@@ -2191,7 +2198,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           consumer.schemaVersion !== 4 ||
           consumer.llm.mode !== 'harness' ||
           declaration.consumer !== 'codex-login' ||
-          active.length !== 0 ||
+          (previousReceiptId === undefined
+            ? active.length !== 0
+            : active.length !== 1 ||
+              active[0]?.receiptId !== previousReceiptId ||
+              previousReceiptId === receiptId) ||
           getVaultInjectionReceipt(coreDb, receiptId) ||
           input.receiptId !== receiptId
         )
@@ -2260,7 +2271,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               consumer
             ) ||
             this.vaultBackend!() !== backend ||
-            !isDeepStrictEqual(current().reference, expectedReference)
+            !isDeepStrictEqual(current().reference, expectedReference) ||
+            (previousReceiptId !== undefined &&
+              !isDeepStrictEqual(getVaultInjectionReceipt(coreDb, previousReceiptId), active[0]))
           )
             throw new Error('Login authority or generation changed.');
           // A synchronous rotate precedes its separate canonical publication. Only that
@@ -2297,6 +2310,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           attemptId: attempt.attemptId,
           planId: plan.planId,
           receiptId,
+          ...(refresh
+            ? { previousReceiptId: refresh.previousReceiptId, refreshContext: refresh.context }
+            : {}),
           reference,
           ...(input.policyProof ? { policyProof: input.policyProof } : {}),
         });
@@ -2322,6 +2338,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               planId: plan.planId,
               receiptId,
               expectedMaterialVersion: expectedVersion,
+              ...(refresh
+                ? { previousReceiptId: refresh.previousReceiptId, refreshContext: refresh.context }
+                : {}),
               consumer: 'codex-login',
             },
             () => {
@@ -3104,6 +3123,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         captureCoverage,
         ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
         agentSetup: context.agentSetup,
+        supportedRequiredFeatures: readSupportedAgentSetupFeatures(this.executionBackend),
         agentSessionId: resolvedAgentSessionId,
         backend: { kind: 'openshell' },
         ...(preparedWorkerContext

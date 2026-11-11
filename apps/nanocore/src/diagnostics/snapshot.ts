@@ -76,6 +76,8 @@ interface CreateDiagnosticsSnapshotInput {
    * so a declared or omitted `ready` is not launchability proof.
    */
   gatewayConfig?: GatewayConfig;
+  /** Installed setup features from the current backend, not grant or provider readiness. */
+  supportedRequiredFeatures?: readonly string[];
   /** Current API-key presence without resolving Vault material. */
   providerCredentialConfigured?: ProviderCredentialConfigured;
   /** Current network-free subscription supply when its live owner is available. */
@@ -133,6 +135,9 @@ function projectAgentDiagnostics(
   }
 
   const setup = resolveAgentSetup(manifest, {
+    ...(input.supportedRequiredFeatures
+      ? { supportedRequiredFeatures: input.supportedRequiredFeatures }
+      : {}),
     gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
     providerCredentialConfigured: input.providerCredentialConfigured,

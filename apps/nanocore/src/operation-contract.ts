@@ -13,6 +13,12 @@ import type { SchedulerExecutionLineage } from './scheduler-records.js';
 export interface OperationRequestFacts {
   /** Trusted transport currentness repeated around admission waits; never operation JSON. */
   readonly recheckEntry?: () => void | Promise<void>;
+  /** Exact previous access delivery selected by the private Login handler, never operation JSON. */
+  readonly harnessLoginRefresh?: Readonly<{
+    previousReceiptId: string;
+    receiptId: string;
+    context: import('./runtime/harness-login-authority.js').HarnessLoginContext;
+  }>;
   /** Core-only, invocation-scoped refresh failure; operation JSON never supplies this fact. */
   readonly coreConfirmedLoginFailure?: object;
   /** Existing querying lineage supplied by internal assembly, never an operation payload. */

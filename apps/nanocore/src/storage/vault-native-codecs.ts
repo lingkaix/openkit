@@ -1847,7 +1847,7 @@ export const VaultBindingPolicyProofSchema = z
   .strict();
 /** References the original decision and documents; native current owners still decide. */
 export type VaultBindingPolicyProof = z.infer<typeof VaultBindingPolicyProofSchema>;
-/** Transient deciding facts for one initial access-only delivery; never retained or Worker-authored. */
+/** Transient deciding facts for access-only delivery; never retained or Worker-authored. */
 const loginBindingAuthority = z
   .object({
     binding: bindingAuthority,
@@ -1855,6 +1855,8 @@ const loginBindingAuthority = z
     attemptId: z.string().min(1),
     planId: z.string().min(1),
     receiptId: z.string().min(1),
+    previousReceiptId: z.string().min(1).max(512).optional(),
+    refreshContext: z.lazy(() => HarnessLoginContextSchema).optional(),
     reference: VaultReferenceRecordSchema,
     policyProof: VaultBindingPolicyProofSchema.optional(),
   })

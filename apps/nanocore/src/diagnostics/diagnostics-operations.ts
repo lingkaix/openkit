@@ -4,6 +4,7 @@ import type {
   DIAGNOSTICS_OPERATION_DEFINITIONS,
   ReleaseBuildIdentity,
 } from '@openkit/app-api-schemas';
+import { readSupportedAgentSetupFeatures } from '../agents/setup-resolver.js';
 import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager, RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import type { GatewayUsageTracker } from '../llm/gateway-usage.js';
@@ -144,8 +145,10 @@ export function createDiagnosticsOperationImplementations(
         runtimeConfigManager,
         providerCredentialConfigured,
         providerSubscriptionAccountManager,
+        turnExecutor,
       } = services!;
       return createSetupDiagnostics({
+        supportedRequiredFeatures: readSupportedAgentSetupFeatures(turnExecutor.executionBackend),
         dataRoot,
         gatewayConfig: runtimeConfig().gatewayConfig,
         mode,

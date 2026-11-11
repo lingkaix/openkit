@@ -81,6 +81,13 @@ export interface AgentSetupResolverDependencies {
   supportedRequiredFeatures?: readonly string[];
 }
 
+/** Projects the configured backend's installed private Login capability into Agent setup. */
+export function readSupportedAgentSetupFeatures(
+  backend: { supportsHarnessLogin?(): boolean } | undefined
+): readonly string[] {
+  return backend?.supportsHarnessLogin?.() === true ? ['worker.harness-login.v1'] : [];
+}
+
 /**
  * Reports the setup owner's resource refusal.
  *

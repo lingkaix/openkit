@@ -178,6 +178,9 @@ function assertRefreshFailureCurrent(scope: RefreshFailureScope): void {
   const { consumer, declaration, materialVersion } = binding.binding;
   const current = assertCurrentWorkerCredentialAuthority(coreDb, consumer, now, declaration);
   const attempt = requireSchedulerExecutionAttempt(coreDb, binding.attemptId);
+  const prior = binding.previousReceiptId
+    ? getVaultInjectionReceipt(coreDb, binding.previousReceiptId)
+    : null;
   if (
     scope.signal.aborted ||
     !coreDb.sqlite.open ||
@@ -191,7 +194,14 @@ function assertRefreshFailureCurrent(scope: RefreshFailureScope): void {
     scope.plan.packageSnapshotId !== consumer.snapshotId ||
     materialVersion !== current.reference.currentVersion ||
     binding.planId !== `plan_${consumer.snapshotId}_${declaration.id}` ||
-    binding.receiptId !== `receipt_${consumer.snapshotId}_${declaration.id}` ||
+    (binding.previousReceiptId === undefined
+      ? binding.receiptId !== `receipt_${consumer.snapshotId}_${declaration.id}`
+      : !prior ||
+        prior.revocationStatus !== 'active' ||
+        prior.planId !== binding.planId ||
+        prior.grantId !== current.grant.grantId ||
+        prior.agentSessionId !== consumer.scope.agentSessionId ||
+        prior.receiptId === binding.receiptId) ||
     getVaultInjectionReceipt(coreDb, binding.receiptId) ||
     attempt.phase !== 'open' ||
     !attempt.deadline ||

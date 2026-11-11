@@ -242,7 +242,7 @@ export class PolicyInterception {
     };
   }
 
-  /** Reads the original initial Login intent before native physical preparation, without granting an effect. */
+  /** Reads the original Login intent before native physical preparation, without granting an effect. */
   static readVaultBindingIntent(
     kind: 'reference-advance' | 'receipt-create' | 'reference-login-state',
     binding: NonNullable<
@@ -266,6 +266,7 @@ export class PolicyInterception {
         : { kind: 'public', actor: caller.actor, actorRef: caller.actorRef };
     const proposal = proof.proposal;
     const originalVersion = proposal.inputAttributes.materialVersion;
+    const refresh = binding.refreshContext;
     const successorOffset = kind === 'receipt-create' ? 1 : 0;
     // Delivery stages retain their original receipt; failed refresh remains at original X.
     if (
@@ -289,6 +290,21 @@ export class PolicyInterception {
       proposal.inputReferences.planId !== binding.planId ||
       proposal.inputReferences.grantId !== binding.binding.declaration.vaultGrantId ||
       proposal.inputReferences.receiptId !== binding.receiptId ||
+      (proposal.inputReferences.previousReceiptId ?? undefined) !== binding.previousReceiptId ||
+      (binding.previousReceiptId !== undefined) !== (refresh !== undefined) ||
+      (proposal.inputReferences.refreshContextDigest ?? undefined) !==
+        (refresh ? policyDigest(refresh) : undefined) ||
+      (refresh &&
+        (caller.kind !== 'worker' ||
+          typeof proposal.inputReferences.requestId !== 'string' ||
+          binding.receiptId !== `receipt_${proposal.inputReferences.requestId}` ||
+          binding.receiptId === binding.previousReceiptId ||
+          refresh.leaseId !== binding.attemptId ||
+          refresh.workspaceId !== workspaceId ||
+          refresh.threadId !== consumer.scope.threadId ||
+          refresh.turnId !== consumer.scope.turnId ||
+          refresh.agentSessionId !== consumer.scope.agentSessionId ||
+          refresh.packageSnapshotId !== consumer.snapshotId)) ||
       proposal.inputReferences.packageSnapshotId !== consumer.snapshotId ||
       proposal.inputAttributes.contract !== POLICY_OPERATION_REFERENCE_INPUT_V1 ||
       proposal.inputAttributes.format !== 'chatgptAuthTokens' ||

@@ -176,6 +176,8 @@ export interface ResolveAgentEnvironmentPackageInput {
   backend?: ResolveAgentEnvironmentBackendInput;
   /** Reads current public-route authority from the active configuration snapshot. */
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined;
+  /** Current backend setup support for the independent public-network recheck. */
+  supportedRequiredFeatures?: readonly string[] | undefined;
   /** Optional Core database used to derive durable vault grants into package metadata. */
   coreDb?: CoreDb;
   /** ISO timestamp used for deterministic package tests. */
@@ -468,7 +470,8 @@ function resolveOpenShellAgentEnvironmentPackage(
         mcp: manifest.mcp,
       },
       input.readRuntimeConfig(),
-      mcpCatalog
+      mcpCatalog,
+      input.supportedRequiredFeatures
     );
   }
   const backendRequirements = sandboxAccess.backend;

@@ -19,7 +19,7 @@ import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 export interface PrepareRecurringOccurrenceInput
   extends Pick<
     AgentSetupResolverDependencies,
-    'providerCredentialConfigured' | 'subscriptionAccounts'
+    'providerCredentialConfigured' | 'subscriptionAccounts' | 'supportedRequiredFeatures'
   > {
   readonly occurrence: RecurringOccurrence;
   readonly snapshot: RuntimeConfigSnapshot;
@@ -55,6 +55,9 @@ export async function prepareRecurringOccurrence(
     (entry) => entry.userId === occurrence.snapshot.actor.responsibleUserId
   )?.config;
   const resolved = resolveAgentSetup(selected, {
+    ...(input.supportedRequiredFeatures
+      ? { supportedRequiredFeatures: input.supportedRequiredFeatures }
+      : {}),
     gatewayConfig: snapshot.gatewayConfig,
     providerRegistry: snapshot.providerRegistry,
     providerCredentialConfigured: input.providerCredentialConfigured,

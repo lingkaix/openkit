@@ -571,6 +571,17 @@ export function createVaultOperationImplementations(
           404
         );
       const receiptId = input.expectedReceiptId ?? input.receiptId ?? null;
+      const refresh = context.harnessLoginRefresh;
+      if (
+        refresh &&
+        (context.kind !== 'worker' ||
+          action !== 'deliver' ||
+          plan.injectionVisibility !== 'runtime-token' ||
+          refresh.receiptId !== receiptId ||
+          refresh.receiptId !== `receipt_${input.requestId}` ||
+          refresh.previousReceiptId === receiptId)
+      )
+        vaultWorkspaceAccessDenied();
       const selectedGrant = getVaultGrant(coreDb, plan.grantId);
       const selectedReference = selectedGrant
         ? getVaultReference(coreDb, selectedGrant.vaultReferenceId)
@@ -608,6 +619,9 @@ export function createVaultOperationImplementations(
               ? selectedReference
               : reference,
           receipt: receiptId ? getVaultInjectionReceipt(coreDb, receiptId) : null,
+          ...(refresh
+            ? { previousReceipt: getVaultInjectionReceipt(coreDb, refresh.previousReceiptId) }
+            : {}),
         };
       };
       return await governedVaultOperation(
@@ -620,6 +634,12 @@ export function createVaultOperationImplementations(
           planId: input.planId,
           grantId: plan.grantId,
           receiptId,
+          ...(refresh
+            ? {
+                previousReceiptId: refresh.previousReceiptId,
+                refreshContextDigest: policyDigest(refresh.context),
+              }
+            : {}),
           requestId: input.requestId,
           packageSnapshotId: plan.packageSnapshotId,
           targetDigest:
@@ -692,6 +712,7 @@ export function createVaultOperationImplementations(
               requestId: input.requestId,
               ...(input.receiptId ? { receiptId: input.receiptId } : {}),
               ...(input.expectedReceiptId ? { expectedReceiptId: input.expectedReceiptId } : {}),
+              ...(refresh ? { loginRefresh: refresh } : {}),
               ...(input.materialVersion ? { materialVersion: input.materialVersion } : {}),
               ...(context.signal ? { signal: context.signal } : {}),
             },

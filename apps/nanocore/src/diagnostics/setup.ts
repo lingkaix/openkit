@@ -35,6 +35,8 @@ interface CreateSetupDiagnosticsInput {
   providerCredentialConfigured?: ProviderCredentialConfigured | undefined;
   /** Current network-free subscription supply from its existing live owner. */
   subscriptionAccounts?: Parameters<typeof resolveLogicalModelCatalog>[2];
+  /** Installed setup features from the current backend, not grant or provider readiness. */
+  supportedRequiredFeatures?: readonly string[];
   /** Agent manifests available for setup and readiness checks. */
   agentManifests: AgentManifest[];
   /** Runtime config reload status. */
@@ -51,6 +53,9 @@ export function createSetupDiagnostics(
   input: CreateSetupDiagnosticsInput
 ): SetupDiagnosticsResponse {
   const setupDependencies = {
+    ...(input.supportedRequiredFeatures
+      ? { supportedRequiredFeatures: input.supportedRequiredFeatures }
+      : {}),
     gatewayConfig: input.gatewayConfig,
     providerRegistry: input.providerRegistry,
     providerCredentialConfigured: input.providerCredentialConfigured,

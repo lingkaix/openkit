@@ -338,7 +338,7 @@ export interface CreateConfiguredTurnExecutorOptions {
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
 export interface ConfiguredWorkerLifecycleRuntime {
-  /** Installs one initial access exchange on the actual pending start; no capability or handler is installed. */
+  /** Joins private access on the exact pending or active Turn; installs no handler. */
   readonly acquireHarnessLogin: (
     context: HarnessLoginContext,
     requestSignal: AbortSignal,
@@ -351,7 +351,8 @@ export interface ConfiguredWorkerLifecycleRuntime {
         readonly accountId: string;
       },
       exchangeSignal: AbortSignal
-    ) => Promise<void>
+    ) => Promise<void>,
+    refresh?: Readonly<{ previousReceiptId: string; receiptId: string }>
   ) => Promise<{
     readonly accessToken: string;
     readonly accountId: string;
@@ -359,7 +360,9 @@ export interface ConfiguredWorkerLifecycleRuntime {
     readonly receiptId: string;
     readonly materialGeneration: number;
   }>;
-  /** Acknowledges external activation, then joins the original governed receipt and registered affinity. */
+  /** Returns the last privately acknowledged receipt for this exact current consumer. */
+  readonly readCompletedHarnessLoginReceipt: (context: HarnessLoginContext) => HarnessLoginReceipt;
+  /** Acknowledges external completion, then joins the original governed receipt and any affinity effect. */
   readonly completeHarnessLogin: (
     context: HarnessLoginContext,
     receiptId: string,
@@ -586,6 +589,8 @@ function createNanoHostWorkerLifecycleRuntime(
   return {
     executionReconciler,
     acquireHarnessLogin: (...args) => backend.acquireHarnessLogin(...args),
+    readCompletedHarnessLoginReceipt: (context) =>
+      backend.readCompletedHarnessLoginReceipt(context),
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
     advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
     captureArtifact: (input) => backend.captureArtifact(input),
@@ -661,14 +666,21 @@ function createNanoHostWorkerLifecycleRuntime(
 type InitialHarnessLoginAccess = Awaited<
   ReturnType<ConfiguredWorkerLifecycleRuntime['acquireHarnessLogin']>
 >;
+type HarnessLoginReceipt = Readonly<
+  Pick<InitialHarnessLoginAccess, 'receiptId' | 'materialGeneration'>
+>;
 type InitialHarnessLoginEffect = Parameters<
   Parameters<ConfiguredWorkerLifecycleRuntime['acquireHarnessLogin']>[4]
 >[0];
 
-/** One initial exchange in the existing session lifetime; only its HTTP owner holds the access value. */
+/** One exchange in the existing session lifetime; only its HTTP owner holds the access value. */
 interface InitialHarnessLoginExchange {
   readonly context: HarnessLoginContext;
-  readonly pending: PendingNanoHostHarnessOperation;
+  readonly pending: PendingNanoHostHarnessOperation | null;
+  readonly refresh: Readonly<{ previousReceiptId: string; receiptId: string }> | null;
+  readonly deadlineUnixMs: number;
+  readonly deadlineMonotonicMs: number;
+  timeout: NodeJS.Timeout | null;
   readonly controller: AbortController;
   currentCheck: (() => Promise<void>) | null;
   publishAffinity:
@@ -682,7 +694,7 @@ interface InitialHarnessLoginExchange {
   settlement: Promise<void> | null;
   delivery: Promise<void> | null;
   completion: Promise<void> | null;
-  receipt: { readonly receiptId: string; readonly materialGeneration: number } | null;
+  receipt: HarnessLoginReceipt | null;
   effect: InitialHarnessLoginEffect | null;
   verifySupply: ((receiptRequired: boolean) => void) | null;
   supplied: boolean;
@@ -739,6 +751,7 @@ interface NanoHostBackendTurnSession {
   pendingHarnessOperation: PendingNanoHostHarnessOperation | null;
   /** Initial private Login only; never restored, advertised or stored in runtime credential values. */
   initialHarnessLogin: InitialHarnessLoginExchange | null;
+  refreshHarnessLogin: InitialHarnessLoginExchange | null;
   turnStopSettlement: Promise<void> | null;
   readonly retainedStagingPaths: string[];
   terminalInspectionComplete: boolean;
@@ -2144,6 +2157,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       runtimeCheckVersions: null,
       pendingHarnessOperation: null,
       initialHarnessLogin: null,
+      refreshHarnessLogin: null,
       turnStopSettlement: null,
       retainedStagingPaths: [],
       sharedHarness,
@@ -2177,6 +2191,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  /** The exact dispatcher used by this backend must have the real private lifecycle bound. */
+  public supportsHarnessLogin(): boolean {
+    return (
+      typeof this.deliverCredentialAccess === 'function' &&
+      this.sessionDispatch?.supportsHarnessLogin?.() === true
+    );
+  }
+
   /** Validates a package against the fixed NanoHost capability declaration. */
   public async validatePackage(
     environmentPackage: AgentEnvironmentPackagePreview
@@ -2201,8 +2223,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             environmentPackage.vault.grants.some(
               (grant) => grant.id === declaration.vaultGrantId
             ) &&
-            typeof this.deliverCredentialAccess === 'function' &&
-            this.sessionDispatch?.supportsHarnessLogin?.() === true
+            this.supportsHarnessLogin()
           )
       )
     )
@@ -2795,12 +2816,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const attemptId = this.requireAttemptId(identity.packageSnapshotId);
     const session = this.sessions.get(identity.packageSnapshotId);
     if (
-      session?.initialHarnessLogin &&
-      (!session.initialHarnessLogin.completed || !session.turnStarted)
+      session &&
+      ((session.initialHarnessLogin &&
+        (!session.initialHarnessLogin.completed || !session.turnStarted)) ||
+        (session.refreshHarnessLogin && !session.refreshHarnessLogin.completed))
     ) {
-      this.failInitialHarnessLogin(session);
-      session.initialHarnessLogin.pending.reject(new Error('Native Login session is closing.'));
-      await this.joinInitialHarnessLoginDelivery(session);
+      this.failHarnessLoginDeliveries(session);
+      if (!session.turnStarted)
+        session.initialHarnessLogin?.pending?.reject(new Error('Native Login session is closing.'));
+      await this.joinHarnessLoginDeliveries(session);
     }
     const anchor = getWorkerBackendSession(this.coreDb, attemptId);
     if (
@@ -4116,8 +4140,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         session.pendingHarnessOperation.reject(error);
         session.pendingHarnessOperation = null;
       }
-      this.failInitialHarnessLogin(session);
-      await this.joinInitialHarnessLoginDelivery(session);
+      this.failHarnessLoginDeliveries(session);
+      await this.joinHarnessLoginDeliveries(session);
       for (const stagingPath of session.retainedStagingPaths) {
         await removeNanoHostStagedExport(stagingPath).catch(() => undefined);
       }
@@ -4588,6 +4612,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         : null,
       pendingHarnessOperation: null,
       initialHarnessLogin: null,
+      refreshHarnessLogin: null,
       turnStopSettlement: null,
       retainedStagingPaths: [],
       sharedHarness,
@@ -4934,14 +4959,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Requires the authenticated consumer and this backend's immutable physical origin after every wait. */
-  private requireInitialHarnessLoginSession(
-    context: HarnessLoginContext
-  ): NanoHostBackendTurnSession {
+  private requireHarnessLoginSession(context: HarnessLoginContext): NanoHostBackendTurnSession {
     const session = this.requireSession(context.packageSnapshotId);
     const scope = session.environmentPackage.scope;
     const attempt = requireSchedulerExecutionAttempt(this.coreDb, session.attemptId);
     if (
-      this.sessionDispatch?.supportsHarnessLogin?.() !== true ||
+      !this.supportsHarnessLogin() ||
       session.environmentPackage.schemaVersion !== 4 ||
       session.environmentPackage.llm.mode !== 'harness' ||
       session.environmentPackage.agent.runtimeKind !== 'codex' ||
@@ -4966,31 +4989,40 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** The original start budget is never restarted by an acquire or complete request. */
-  private assertInitialHarnessLoginCurrent(
+  private assertHarnessLoginCurrent(
     session: NanoHostBackendTurnSession,
     exchange: InitialHarnessLoginExchange
   ): void {
     if (
       exchange.failure ||
       exchange.controller.signal.aborted ||
-      session.initialHarnessLogin !== exchange ||
-      this.requireInitialHarnessLoginSession(exchange.context) !== session ||
+      (exchange.refresh ? session.refreshHarnessLogin : session.initialHarnessLogin) !== exchange ||
+      this.requireHarnessLoginSession(exchange.context) !== session ||
       (!exchange.completed &&
-        (session.turnStarted ||
-          session.pendingHarnessOperation !== exchange.pending ||
-          exchange.pending.operation !== 'turn.start' ||
-          exchange.pending.operationId === null ||
-          Date.now() < exchange.pending.admittedUnixMs ||
-          Date.now() >= exchange.pending.deadlineUnixMs ||
-          performance.now() >= exchange.pending.deadlineMonotonicMs))
+        (Date.now() >= exchange.deadlineUnixMs ||
+          performance.now() >= exchange.deadlineMonotonicMs ||
+          (exchange.refresh
+            ? !session.initialHarnessLogin?.completed
+            : !exchange.pending ||
+              session.turnStarted ||
+              session.pendingHarnessOperation !== exchange.pending ||
+              exchange.pending.operation !== 'turn.start' ||
+              exchange.pending.operationId === null ||
+              Date.now() < exchange.pending.admittedUnixMs)))
     )
       throw new Error('Native Login original allowance is unavailable.');
   }
 
   /** Rejects access and external completion; cleanup joins delivery, never its own governing caller. */
-  private failInitialHarnessLogin(session: NanoHostBackendTurnSession): void {
-    const exchange = session.initialHarnessLogin;
+  private failHarnessLoginDeliveries(session: NanoHostBackendTurnSession): void {
+    this.failHarnessLoginExchange(session.initialHarnessLogin);
+    this.failHarnessLoginExchange(session.refreshHarnessLogin);
+  }
+
+  private failHarnessLoginExchange(exchange: InitialHarnessLoginExchange | null): void {
     if (!exchange || exchange.completed || exchange.failure) return;
+    if (exchange.timeout) clearTimeout(exchange.timeout);
+    exchange.timeout = null;
     const error = new Error(
       'Native Login exchange did not complete; inspect its original outcome.'
     );
@@ -5009,24 +5041,47 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Backend cleanup can be called by the failed governed delivery, so it joins only its backend child. */
-  private async joinInitialHarnessLoginDelivery(
-    session: NanoHostBackendTurnSession
-  ): Promise<void> {
+  private async joinHarnessLoginDeliveries(session: NanoHostBackendTurnSession): Promise<void> {
     await session.initialHarnessLogin?.delivery?.catch(() => {});
+    await session.refreshHarnessLogin?.delivery?.catch(() => {});
   }
 
-  /** Starts one real governed supply while leaving the genuine pending turn.start unresolved. */
+  /** Reads only this session's last positively completed supply, never a Worker-selected receipt. */
+  public readCompletedHarnessLoginReceipt(context: HarnessLoginContext): HarnessLoginReceipt {
+    const session = this.requireHarnessLoginSession(context);
+    const exchange = session.refreshHarnessLogin ?? session.initialHarnessLogin;
+    if (!exchange?.completed || !exchange.receipt || !isDeepStrictEqual(exchange.context, context))
+      throw new Error('Native Login previous completion is unavailable.');
+    this.assertHarnessLoginCurrent(session, exchange);
+    return { ...exchange.receipt };
+  }
+
+  /** Starts one governed supply without resolving or joining the genuine pending turn.start. */
   public acquireHarnessLogin: ConfiguredWorkerLifecycleRuntime['acquireHarnessLogin'] = async (
     context,
     requestSignal,
     currentCheck,
     runGovernedDelivery,
-    publishAffinity
+    publishAffinity,
+    refresh
   ) => {
-    const session = this.requireInitialHarnessLoginSession(context);
-    const pending = session.pendingHarnessOperation;
-    if (session.initialHarnessLogin || session.turnStarted || pending?.operation !== 'turn.start')
+    const session = this.requireHarnessLoginSession(context);
+    const pending = refresh ? null : session.pendingHarnessOperation;
+    const previous = session.refreshHarnessLogin ?? session.initialHarnessLogin;
+    if (
+      refresh
+        ? !previous?.completed ||
+          previous.receipt?.receiptId !== refresh.previousReceiptId ||
+          refresh.previousReceiptId === refresh.receiptId
+        : !!previous || session.turnStarted || pending?.operation !== 'turn.start'
+    )
       throw new Error('Native Login acquire cannot replay or replace a live exchange.');
+    const deadlineUnixMs =
+      pending?.deadlineUnixMs ??
+      Date.parse(requireNanoHostExecutionAttempt(this.coreDb, session.attemptId).deadline ?? '');
+    const remaining = deadlineUnixMs - Date.now();
+    if (!Number.isFinite(remaining) || remaining <= 0)
+      throw new Error('Native Login original allowance is unavailable.');
     let resolveAccess!: (value: InitialHarnessLoginAccess) => void;
     let rejectAccess!: (error: Error) => void;
     const access = new Promise<InitialHarnessLoginAccess>((resolve, reject) => {
@@ -5044,6 +5099,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const exchange: InitialHarnessLoginExchange = {
       context: Object.freeze({ ...context }),
       pending,
+      refresh: refresh ? Object.freeze({ ...refresh }) : null,
+      deadlineUnixMs,
+      deadlineMonotonicMs: pending?.deadlineMonotonicMs ?? performance.now() + remaining,
+      timeout: null,
       controller: new AbortController(),
       currentCheck,
       publishAffinity,
@@ -5063,26 +5122,28 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       completed: false,
       failure: null,
     };
-    session.initialHarnessLogin = exchange;
+    if (refresh) session.refreshHarnessLogin = exchange;
+    else session.initialHarnessLogin = exchange;
     const abort = () => {
       if (exchange.completed) return;
-      this.failInitialHarnessLogin(session);
-      pending.reject(new Error('Native Login request was cancelled.'));
+      this.failHarnessLoginExchange(exchange);
+      pending?.reject(new Error('Native Login request was cancelled.'));
     };
+    if (refresh) exchange.timeout = setTimeout(abort, remaining);
     requestSignal.addEventListener('abort', abort, { once: true });
     if (requestSignal.aborted) abort();
     exchange.settlement = (async () => {
       try {
-        this.assertInitialHarnessLoginCurrent(session, exchange);
+        this.assertHarnessLoginCurrent(session, exchange);
         await currentCheck();
-        this.assertInitialHarnessLoginCurrent(session, exchange);
+        this.assertHarnessLoginCurrent(session, exchange);
         await runGovernedDelivery(exchange.controller.signal);
-        this.assertInitialHarnessLoginCurrent(session, exchange);
+        this.assertHarnessLoginCurrent(session, exchange);
         if (!exchange.externalCompleted || !exchange.supplied)
           throw new Error('Native Login governing operation did not settle an external delivery.');
       } catch (error) {
-        this.failInitialHarnessLogin(session);
-        pending.reject(new Error('Native Login governed delivery did not complete.'));
+        this.failHarnessLoginExchange(exchange);
+        pending?.reject(new Error('Native Login governed delivery did not complete.'));
         throw error;
       }
     })();
@@ -5090,7 +5151,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       const supplied = await access;
       await currentCheck();
-      this.assertInitialHarnessLoginCurrent(session, exchange);
+      this.assertHarnessLoginCurrent(session, exchange);
       return supplied;
     } catch (error) {
       abort();
@@ -5107,10 +5168,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public deliverCredentialAccess: NonNullable<WorkerGovernanceBackend['deliverCredentialAccess']> =
     (input, supply, recheckAuthority) => {
       const session = this.requireSession(input.packageSnapshotId);
-      const exchange = session.initialHarnessLogin;
-      if (!exchange || exchange.supplied || exchange.delivery)
-        throw new Error('Native Login supply has no exact initial exchange.');
-      this.assertInitialHarnessLoginCurrent(session, exchange);
+      const exchange =
+        input.previousReceiptId === undefined
+          ? session.initialHarnessLogin
+          : session.refreshHarnessLogin;
+      if (
+        !exchange ||
+        exchange.supplied ||
+        exchange.delivery ||
+        (exchange.refresh?.previousReceiptId ?? undefined) !== input.previousReceiptId ||
+        (exchange.refresh
+          ? !isDeepStrictEqual(exchange.context, input.refreshContext)
+          : input.refreshContext !== undefined)
+      )
+        throw new Error('Native Login supply has no exact exchange.');
+      this.assertHarnessLoginCurrent(session, exchange);
       const pkg = session.environmentPackage;
       const declaration = pkg.credentials.declarations.find(
         (value) => value.id === input.declarationId
@@ -5130,7 +5202,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         input.expectedMaterialVersion < 1 ||
         input.expectedMaterialVersion === Number.MAX_SAFE_INTEGER ||
         input.planId !== `plan_${pkg.snapshotId}_${declaration.id}` ||
-        input.receiptId !== `receipt_${pkg.snapshotId}_${declaration.id}` ||
+        input.receiptId !==
+          (exchange.refresh?.receiptId ?? `receipt_${pkg.snapshotId}_${declaration.id}`) ||
         !plan ||
         plan.status !== 'active' ||
         plan.injectionVisibility !== 'runtime-token' ||
@@ -5154,7 +5227,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('Native Login original generation is unavailable.');
       const verify = (generation: number, receiptRequired: boolean) => {
-        this.assertInitialHarnessLoginCurrent(session, exchange);
+        this.assertHarnessLoginCurrent(session, exchange);
         const current = assertCurrentWorkerCredentialAuthority(
           this.coreDb,
           pkg,
@@ -5182,6 +5255,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             : receipt !== null
         )
           throw new Error('Native Login receipt authority changed.');
+        if (exchange.refresh) {
+          const previous = getVaultInjectionReceipt(
+            this.coreDb,
+            exchange.refresh.previousReceiptId
+          );
+          if (
+            !previous ||
+            previous.planId !== input.planId ||
+            previous.grantId !== input.grantId ||
+            previous.agentSessionId !== input.agentSessionId ||
+            previous.revocationStatus !== (receiptRequired ? 'revoked' : 'active') ||
+            (previous.expiresAt !== null && previous.expiresAt <= new Date().toISOString())
+          )
+            throw new Error('Native Login previous receipt authority changed.');
+        }
       };
       const work = (async () => {
         try {
@@ -5227,7 +5315,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           verify(proof.materialGeneration, false);
           return proof;
         } catch (error) {
-          this.failInitialHarnessLogin(session);
+          this.failHarnessLoginExchange(exchange);
           throw error;
         }
       })();
@@ -5245,7 +5333,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     currentCheck
   ) => {
     const session = this.requireSession(context.packageSnapshotId);
-    const exchange = session.initialHarnessLogin;
+    const exchange =
+      session.refreshHarnessLogin?.receipt?.receiptId === receiptId
+        ? session.refreshHarnessLogin
+        : session.initialHarnessLogin;
     if (
       !exchange ||
       !isDeepStrictEqual(exchange.context, context) ||
@@ -5255,20 +5346,20 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('Native Login completion does not match its original supply.');
     const abort = () => {
       if (exchange.completed) return;
-      this.failInitialHarnessLogin(session);
-      exchange.pending.reject(new Error('Native Login completion was cancelled.'));
+      this.failHarnessLoginExchange(exchange);
+      exchange.pending?.reject(new Error('Native Login completion was cancelled.'));
     };
     requestSignal.addEventListener('abort', abort, { once: true });
     if (requestSignal.aborted) abort();
     try {
-      this.requireInitialHarnessLoginSession(context);
+      this.requireHarnessLoginSession(context);
       await currentCheck();
-      this.assertInitialHarnessLoginCurrent(session, exchange);
+      this.assertHarnessLoginCurrent(session, exchange);
       if (!exchange.completion) {
         exchange.currentCheck = currentCheck;
         exchange.completion = (async () => {
           try {
-            this.assertInitialHarnessLoginCurrent(session, exchange);
+            this.assertHarnessLoginCurrent(session, exchange);
             if (!exchange.settlement || !exchange.effect || !exchange.publishAffinity)
               throw new Error('Native Login original completion owner is unavailable.');
             exchange.externalCompleted = true;
@@ -5277,7 +5368,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             exchange.rejectExternal = null;
             await exchange.settlement;
             await currentCheck();
-            this.assertInitialHarnessLoginCurrent(session, exchange);
+            this.assertHarnessLoginCurrent(session, exchange);
             const effect = exchange.effect;
             const publish = exchange.publishAffinity;
             const verify = exchange.verifySupply;
@@ -5286,8 +5377,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             verify(true);
             await publish(effect, exchange.controller.signal);
             await currentCheck();
-            this.assertInitialHarnessLoginCurrent(session, exchange);
+            this.assertHarnessLoginCurrent(session, exchange);
             exchange.completed = true;
+            if (exchange.timeout) clearTimeout(exchange.timeout);
+            exchange.timeout = null;
             exchange.effect = null;
             exchange.publishAffinity = null;
             exchange.verifySupply = null;
@@ -5301,7 +5394,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       }
       await exchange.completion;
       await currentCheck();
-      this.assertInitialHarnessLoginCurrent(session, exchange);
+      this.assertHarnessLoginCurrent(session, exchange);
     } catch (error) {
       abort();
       await exchange.settlement?.catch(() => {});
@@ -5830,12 +5923,17 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('Native cancellation has no exact revoked owner.');
     const session = attempt.inputRef ? this.sessions.get(attempt.inputRef) : null;
     if (
-      session?.initialHarnessLogin &&
-      (!session.initialHarnessLogin.completed || !session.turnStarted)
+      session &&
+      ((session.initialHarnessLogin &&
+        (!session.initialHarnessLogin.completed || !session.turnStarted)) ||
+        (session.refreshHarnessLogin && !session.refreshHarnessLogin.completed))
     ) {
-      this.failInitialHarnessLogin(session);
-      session.initialHarnessLogin.pending.reject(new Error('Native Login attempt was cancelled.'));
-      await this.joinInitialHarnessLoginDelivery(session);
+      this.failHarnessLoginDeliveries(session);
+      if (!session.turnStarted)
+        session.initialHarnessLogin?.pending?.reject(
+          new Error('Native Login attempt was cancelled.')
+        );
+      await this.joinHarnessLoginDeliveries(session);
     }
     if (session?.turnStarted) await this.interruptTurn(session.environmentPackage.snapshotId);
     return {
@@ -6032,6 +6130,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
    */
   public async interruptTurn(packageSnapshotId: string): Promise<void> {
     const session = this.requireSession(packageSnapshotId);
+    this.failHarnessLoginExchange(session.refreshHarnessLogin);
     const settlement = this.queueAndWaitForHarnessOperation(session, 'turn.interrupt', {
       agentSessionId: session.environmentPackage.scope.agentSessionId,
       agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
@@ -8435,7 +8534,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
               )
           );
         } else rejectResult(error);
-        if (session.initialHarnessLogin?.pending === pending) this.failInitialHarnessLogin(session);
+        if (session.initialHarnessLogin?.pending === pending)
+          this.failHarnessLoginDeliveries(session);
       },
       resolve: resolveResult,
       timeout: null,
@@ -8688,7 +8788,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       workspaceDb.sqlite.close();
       const exchange = session.initialHarnessLogin;
       if (exchange?.pending === pending) {
-        if (!exchange.completed) this.failInitialHarnessLogin(session);
+        if (!exchange.completed) this.failHarnessLoginDeliveries(session);
         // Release the original command owner before joining its governed cleanup caller.
         await exchange.settlement?.catch(() => {});
       }
@@ -8712,7 +8812,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         const session = [...this.sessions.values()].find(
           (value) => value.initialHarnessLogin?.pending === pending
         );
-        if (session) this.failInitialHarnessLogin(session);
+        if (session) this.failHarnessLoginDeliveries(session);
         // A Login close keeps its live admission owner until the rejection's physical fence joins.
         if (pending.closeDeparture?.expectedReferenceId == null) clearOwner();
         if (pending.closeDeparture?.expectedReferenceId != null)

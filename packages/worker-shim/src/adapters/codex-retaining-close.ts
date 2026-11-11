@@ -1,9 +1,44 @@
 import { constants } from 'node:fs';
 import { open } from 'node:fs/promises';
+import { isRecord } from '@openkit/protocol';
 
 /** Native 0.166.0 context marker omitted from thread/read after a requested interruption. */
 const INTERRUPTED_CONTEXT =
   '<turn_aborted>\nThe user interrupted the previous turn on purpose. Any running unified exec processes may still be running in the background. If any tools/commands were aborted, they may have partially executed.\n</turn_aborted>';
+
+const USAGE_COUNTERS = [
+  'input_tokens',
+  'cached_input_tokens',
+  'cache_write_input_tokens',
+  'output_tokens',
+  'reasoning_output_tokens',
+  'total_tokens',
+] as const;
+
+/** Accepts only the pinned accounting payload; it cannot stand in for native Turn context. */
+function isRootTurnUsage(value: unknown, threadId: string): value is { turn_id: string } {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 8 &&
+    value.thread_id === threadId &&
+    typeof value.turn_id === 'string' &&
+    value.turn_id.length > 0 &&
+    value.root_turn_id === value.turn_id &&
+    typeof value.session_id === 'string' &&
+    /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(value.session_id) &&
+    typeof value.response_id === 'string' &&
+    value.response_id.length > 0 &&
+    [value.usage, value.turn_token_usage, value.thread_token_usage].every(
+      (counts) =>
+        isRecord(counts) &&
+        Object.keys(counts).length === USAGE_COUNTERS.length &&
+        USAGE_COUNTERS.every((key) => {
+          const count = counts[key];
+          return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0;
+        })
+    )
+  );
+}
 
 /** Exact last settled native Turn, retained only for this binding's close qualification. */
 export interface CodexCloseTerminal {
@@ -54,9 +89,14 @@ export async function readCodexCloseRollout(path: string, threadId: string): Pro
         !frame ||
         typeof frame !== 'object' ||
         Array.isArray(frame) ||
-        !['session_meta', 'response_item', 'turn_context', 'world_state', 'event_msg'].includes(
-          frame.type
-        ) ||
+        ![
+          'session_meta',
+          'response_item',
+          'turn_context',
+          'world_state',
+          'event_msg',
+          'token_usage_record',
+        ].includes(frame.type) ||
         !frame.payload ||
         typeof frame.payload !== 'object' ||
         Array.isArray(frame.payload) ||
@@ -65,6 +105,8 @@ export async function readCodexCloseRollout(path: string, threadId: string): Pro
         throw new Error(
           'Codex retained close history is malformed, incomplete or outside the qualified path.'
         );
+      if (frame.type === 'token_usage_record' && !isRootTurnUsage(frame.payload, threadId))
+        throw new Error('Codex retaining close usage accounting is unqualified.');
       if (frame.type === 'world_state') {
         if (
           typeof frame.payload.full !== 'boolean' ||
@@ -226,13 +268,26 @@ export function requireCodexCloseHistory(
   // The unchanged-prefix proof still covers its bytes through orderly EOF.
   // Tool and child-writer histories remain unqualified; the generic warning is not cleanup proof.
   const abortPositions = new Map<string, number>();
+  const ended = new Set<string>();
+  let currentContext: unknown;
   for (const [index, frame] of frames.entries()) {
+    if (frame.type === 'turn_context') currentContext = frame.payload.turn_id;
+    if (frame.type === 'event_msg') {
+      if (frame.payload.type === 'turn_aborted' && frame.payload.reason === 'interrupted')
+        abortPositions.set(frame.payload.turn_id, index);
+      if (frame.payload.type === 'task_complete' || frame.payload.type === 'turn_aborted')
+        ended.add(frame.payload.turn_id);
+    }
+    // Codex excludes accounting from thread/read. It still must belong to an exact live root
+    // Turn in that barrier, and its original bytes remain covered by the close-time comparison.
     if (
-      frame.type === 'event_msg' &&
-      frame.payload.type === 'turn_aborted' &&
-      frame.payload.reason === 'interrupted'
+      frame.type === 'token_usage_record' &&
+      (!isRootTurnUsage(frame.payload, threadId) ||
+        frame.payload.turn_id !== currentContext ||
+        !turnIds.has(frame.payload.turn_id) ||
+        ended.has(frame.payload.turn_id))
     )
-      abortPositions.set(frame.payload.turn_id, index);
+      throw new Error('Codex retaining close usage has no current root Turn context.');
   }
   const markers = new Set<string>();
   for (const [index, frame] of frames.entries()) {

@@ -41,10 +41,15 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
+  closeSchedulerExecutionAttemptWithoutEffects,
+  requireSchedulerExecutionAttempt,
+} from './execution-attempts.js';
+import {
   authenticateHarnessLoginRequest,
   type HarnessLoginContext,
   requireHarnessLoginBinding,
 } from './harness-login-authority.js';
+import { resolveNanoHostAttemptTokenBinding } from './nanohost-attempt-records.js';
 import {
   createNanoHostHarnessRuntime,
   dispatchNanoHostHarnessOperation,
@@ -59,6 +64,13 @@ import {
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
 import type { NanoHostHarnessLoginPhysical } from './nanohost-session-dispatch.js';
+import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
+import {
+  getWorkerBackendSession,
+  recordWorkerBackendSessionMaterializing,
+  workerBackendLineageFromRuntimeImage,
+} from './worker-backend-sessions.js';
+import { WorkerGovernanceTurnExecutor } from './worker-governance-turn-executor.js';
 
 const timestamp = '2098-08-21T00:00:00.000Z';
 
@@ -69,7 +81,10 @@ const timestamp = '2098-08-21T00:00:00.000Z';
  * Grants here are owner-produced auth-fixture inputs, not proof of reviewed consent or vault.use.
  * No native result, active binding, Login activation, material release or handler is fabricated.
  */
-async function fixture(mode: 'harness' | 'gateway' = 'harness') {
+async function fixture(
+  mode: 'harness' | 'gateway' = 'harness',
+  placement: 'original' | 'shared-resident' = 'original'
+) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-login-private-auth-'));
   const coreDb = createTestCoreDb(root);
   const authority = createNanoHostTransportSessionAuthority();
@@ -88,13 +103,60 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
   const workspace = await store.createWorkspace('Private Login authentication');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
   const thread = await store.createThread(workspace.id, 'Authenticate the original consumer');
+  const residentOrigin =
+    placement === 'shared-resident' ? `sandbox-binding:${randomUUID()}` : undefined;
+  let predecessorAttemptId: string | undefined;
+  if (residentOrigin !== undefined) {
+    const previousTurn = await store.createTurn(workspace.id, thread.id, 'Prior prepared Turn', {
+      kind: 'user',
+      id: userId,
+    });
+    const previousEntry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue:${previousTurn.id}`,
+      requestedAgentId: 'agent_codex_host',
+      workspaceId: workspace.id,
+      threadId: thread.id,
+      turnId: previousTurn.id,
+      turnInput: 'Prior prepared Turn',
+      triggerActor: previousTurn.triggerActor,
+      requestId: randomUUID(),
+      now: () => timestamp,
+    });
+    const previousSessionId = allocateEntityId('as');
+    const previous = recordTestExecutionAttempt(coreDb, {
+      entry: previousEntry,
+      attemptId: allocateEntityId('attempt'),
+      agentSessionId: previousSessionId,
+      inputRef: `aepsnap_${previousTurn.id}_${previousSessionId}`,
+      bindingRef: residentOrigin,
+      sessionCompatibilityKey: 'b'.repeat(64),
+      now: () => timestamp,
+    });
+    // The predecessor was never submitted. Close its real scheduler record without
+    // inventing a native result, execution-release proof, or accepted backend effect.
+    const closed = await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+      attemptId: previous.attemptId,
+      noOutstandingEffects: true,
+      cause: 'fixture-predecessor-not-submitted',
+      now: () => timestamp,
+    });
+    // Scheduler closure does not release the Workspace's active Turn slot.
+    await store.completeTurn(previousTurn.id, {
+      status: 'cancelled',
+      completedAt: new Date().toISOString(),
+    });
+    predecessorAttemptId = closed.attemptId;
+  }
   const turn = await store.createTurn(workspace.id, thread.id, 'Prepare private Login', {
     kind: 'user',
     id: userId,
   });
   await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
   const agentSessionId = allocateEntityId('as');
-  const sandboxBindingRef = `sandbox-binding:${randomUUID()}`;
+  const sandboxBindingRef = residentOrigin ?? `sandbox-binding:${randomUUID()}`;
+  const attemptBindingRef =
+    placement === 'shared-resident' ? `sandbox-binding:${randomUUID()}` : sandboxBindingRef;
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     queueEntryId: `queue:${turn.id}`,
@@ -112,7 +174,7 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
     attemptId: allocateEntityId('attempt'),
     agentSessionId,
     inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
-    bindingRef: sandboxBindingRef,
+    bindingRef: attemptBindingRef,
     sessionCompatibilityKey: 'b'.repeat(64),
     operationId: `submit:${turn.id}`,
     now: () => timestamp,
@@ -149,6 +211,9 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
   });
   const privateRoute = { providerProfileId: 'native-metadata', providerModel: 'gpt-5.1-codex' };
   const setup = createTestAgentSetup({
+    ...(placement === 'shared-resident'
+      ? { requiredCapabilities: ['trusted-worker-inference-relay'] }
+      : {}),
     privateRoute,
     credentialDeclarations:
       mode === 'harness'
@@ -221,6 +286,23 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
     physicalEpoch,
     observedAt: timestamp,
   });
+  if (placement === 'shared-resident') {
+    // Pure plan and actual pre-effect anchor. This module fixture does not launch the backend.
+    const runtime = createConfiguredWorkerLifecycleRuntime({ coreDb, store, env: {} });
+    const executor = runtime.turnExecutor;
+    const planner =
+      executor instanceof WorkerGovernanceTurnExecutor ? executor.executionBackend : undefined;
+    if (!planner || !('planSession' in planner) || typeof planner.planSession !== 'function')
+      throw new Error('Auth fixture lacks the actual NanoHost session planner.');
+    await recordWorkerBackendSessionMaterializing(coreDb, {
+      identity: planner.planSession(environmentPackage),
+      backendVersion: null,
+      backendLineage: workerBackendLineageFromRuntimeImage(environmentPackage.runtime.image),
+      lineage: environmentPackage.scope,
+      sandboxBindingRef: attemptBindingRef,
+      now: () => timestamp,
+    });
+  }
   const harnessInstanceId = `harness:${randomUUID()}`;
   const bindingId = `session-binding:${randomUUID()}`;
   const integrationRef = `integration:${randomUUID()}`;
@@ -292,7 +374,7 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
   };
   const gateway = createDefaultWorkerControlGateway(coreDb);
   const registration = gateway.registerSession(environmentPackage, {
-    sandboxBindingRef,
+    sandboxBindingRef: attemptBindingRef,
     workerControlToken: token('workerControlToken'),
     workerInferenceToken: token('inferenceToken'),
     workerCapabilityToken: token('capabilityToken'),
@@ -367,6 +449,10 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
     authority,
     sandboxBindingRef,
     integrationRef,
+    attemptBindingRef,
+    predecessorAttemptId,
+    dispatchedExactStart:
+      command.operation === 'turn.start' && command.body.leaseId === attempt.attemptId,
     now: () => now,
     expire: () => {
       now = '2100-01-01T00:00:00.000Z';
@@ -408,6 +494,73 @@ async function fixture(mode: 'harness' | 'gateway' = 'harness') {
 // Codex Worker Adapter / Host-Managed Subscription Login; private canonical pending native binding.
 // No case proves serving support, physical NanoHost readiness, reviewed consent or delivery.
 describe('private Harness Login request authentication', () => {
+  it('authenticates the current lease on a shared resident whose origin attempt closed', async () => {
+    const f = await fixture('harness', 'shared-resident');
+    if (!f.predecessorAttemptId) throw new Error('Auth fixture lacks the closed predecessor.');
+    const previous = requireSchedulerExecutionAttempt(f.coreDb, f.predecessorAttemptId);
+    const current = resolveNanoHostAttemptTokenBinding(f.coreDb, {
+      sandboxBindingRef: f.attemptBindingRef,
+      lineage: f.context,
+      tokenFamily: 'worker-control',
+      token: f.registration.token,
+      now: f.now,
+    });
+    const anchor = getWorkerBackendSession(f.coreDb, f.context.leaseId);
+    expect(
+      previous.phase === 'closed' &&
+        previous.bindingRef === f.sandboxBindingRef &&
+        f.attemptBindingRef !== f.sandboxBindingRef
+    ).toBe(true);
+    expect(f.dispatchedExactStart).toBe(true);
+    expect(
+      current.status === 'accepted' &&
+        current.attempt.phase === 'open' &&
+        current.attempt.attemptId === f.context.leaseId &&
+        current.attempt.bindingRef === f.attemptBindingRef
+    ).toBe(true);
+    expect(
+      anchor?.attemptId === f.context.leaseId &&
+        anchor.sandboxBindingRef === f.attemptBindingRef &&
+        anchor.workspaceId === f.context.workspaceId &&
+        anchor.threadId === f.context.threadId &&
+        anchor.turnId === f.context.turnId &&
+        anchor.agentSessionId === f.context.agentSessionId &&
+        anchor.packageSnapshotId === f.context.packageSnapshotId &&
+        anchor.runtimeTargetId === f.physical.runtimeTargetId &&
+        anchor.originPhysicalEpoch === f.physical.physicalEpoch
+    ).toBe(true);
+    f.physical.assertCurrent();
+    expect(
+      f.gateway.authenticatePackageToken(`Bearer ${f.registration.token}`, {
+        tokenFamily: 'worker-control',
+      }).snapshotId === f.environmentPackage.snapshotId
+    ).toBe(true);
+    const authenticate = (leaseId: string) =>
+      authenticateHarnessLoginRequest({
+        coreDb: f.coreDb,
+        gateway: f.gateway,
+        physical: f.physical,
+        request: f.request({ kind: 'acquire', reason: 'activate', leaseId }),
+        now: f.now,
+      });
+    const authenticated = await authenticate(f.context.leaseId);
+    expect(isDeepStrictEqual(authenticated.context, f.context)).toBe(true);
+    expect(authenticated.environmentPackage.snapshotId === f.environmentPackage.snapshotId).toBe(
+      true
+    );
+    expect(() => authenticated.recheck()).not.toThrow();
+    const refused = (leaseId: string) =>
+      authenticate(leaseId).then(
+        () => false,
+        () => true
+      );
+    expect(await refused(previous.attemptId)).toBe(true);
+    f.authority.fenceAuthoritative(f.target.identityId);
+    expect(() => authenticated.recheck()).toThrow();
+    expect(await refused(f.context.leaseId)).toBe(true);
+    expect(f.noMaterialEffects()).toBe(true);
+  });
+
   it.each([
     { kind: 'acquire', reason: 'activate' },
     { kind: 'acquire', reason: 'refresh' },

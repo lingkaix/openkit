@@ -410,16 +410,22 @@ export class WorkerHarness {
           ...(hostManagedLogin
             ? {
                 hostManagedLogin: {
-                  acquire: async (reason) =>
+                  acquire: async (reason, signal) =>
                     readNativeLoginAccess(
-                      await this.loginExchange(body.agentSessionRuntimeBindingId, 'acquire', {
-                        reason,
-                      })
+                      await this.loginExchange(
+                        body.agentSessionRuntimeBindingId,
+                        'acquire',
+                        { reason },
+                        signal
+                      )
                     ),
-                  complete: async (receipt) => {
-                    await this.loginExchange(body.agentSessionRuntimeBindingId, 'complete', {
-                      ...receipt,
-                    });
+                  complete: async (receipt, signal) => {
+                    await this.loginExchange(
+                      body.agentSessionRuntimeBindingId,
+                      'complete',
+                      { ...receipt },
+                      signal
+                    );
                   },
                   observe: async (value) => {
                     await this.loginExchange(body.agentSessionRuntimeBindingId, 'observe', {
@@ -892,7 +898,8 @@ export class WorkerHarness {
   private async loginExchange(
     bindingId: string,
     kind: 'acquire' | 'complete' | 'observe',
-    fields: Readonly<Record<string, unknown>>
+    fields: Readonly<Record<string, unknown>>,
+    requestSignal?: AbortSignal
   ): Promise<unknown> {
     const session = this.sessions.get(bindingId);
     const active = session?.activeTurn;
@@ -905,10 +912,14 @@ export class WorkerHarness {
           !session.closing &&
           session.activeTurn === active &&
           !active.barrierReached &&
-          !active.abort.signal.aborted
+          !active.abort.signal.aborted &&
+          !requestSignal?.aborted
       );
     if (!session || !active || !current())
       throw new Error('Native Login requires the current active Turn.');
+    const signal = requestSignal
+      ? AbortSignal.any([active.abort.signal, requestSignal])
+      : active.abort.signal;
     try {
       const response = await this.integration.workerControlFetch('/worker-control/harness/login', {
         method: 'POST',
@@ -916,7 +927,7 @@ export class WorkerHarness {
           Authorization: `Bearer ${active.workerControlToken}`,
           'Content-Type': 'application/json',
         },
-        signal: active.abort.signal,
+        signal,
         body: JSON.stringify({
           ...fields,
           kind,

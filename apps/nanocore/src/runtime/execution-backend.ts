@@ -40,6 +40,8 @@ export interface ExecutionReleaseProof {
 /** NanoCore's four-operation backend boundary; preparation uses existing supply and Workspace owners. */
 export interface ExecutionBackend {
   readonly id: string;
+  /** Reports the installed private Login path, independent of current placement or Vault authority. */
+  supportsHarnessLogin?(): boolean;
   submit(
     input: ExecutionBackendCorrelation & {
       readonly deadline: string;

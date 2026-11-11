@@ -6,6 +6,7 @@ import { computeReadiness } from '../agents/readiness.js';
 import { selectAgent } from '../agents/selector.js';
 import {
   type AgentSetupResolverDependencies,
+  readSupportedAgentSetupFeatures,
   resolveAgentSetup,
 } from '../agents/setup-resolver.js';
 import type { Actor } from '../auth/identity.js';
@@ -222,6 +223,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       503
     );
   const setup = resolveAgentSetup(selectedAgent, {
+    supportedRequiredFeatures: readSupportedAgentSetupFeatures(backend),
     gatewayConfig: input.snapshot.gatewayConfig,
     providerRegistry: input.snapshot.providerRegistry,
     providerCredentialConfigured: input.providerCredentialConfigured,

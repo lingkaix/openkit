@@ -553,6 +553,28 @@ export function resolveNanoHostAttemptTokenBinding(
     .prepare(`${nanoHostExecutionAttemptSelectSql()} WHERE binding_ref = ?`)
     .get(input.sandboxBindingRef) as NanoHostExecutionAttemptRow | undefined;
 
+  return resolveNanoHostAttemptBinding(coreDb, row, input);
+}
+
+/** Resolves the exact Turn lease; a resident Sandbox may be shared by several leases. */
+export function resolveLiveNanoHostAttemptLease(
+  coreDb: CoreDb,
+  input: Pick<ResolveNanoHostAttemptTokenBindingInput, 'lineage' | 'now'> & {
+    readonly attemptId: string;
+  }
+): NanoHostAttemptTokenBindingResolution {
+  const row = coreDb.sqlite
+    .prepare(`${nanoHostExecutionAttemptSelectSql()} WHERE attempt_id = ?`)
+    .get(input.attemptId) as NanoHostExecutionAttemptRow | undefined;
+  return resolveNanoHostAttemptBinding(coreDb, row, input);
+}
+
+/** Applies the same retained lineage, recovery and deadline rules to either exact selector. */
+function resolveNanoHostAttemptBinding(
+  coreDb: CoreDb,
+  row: NanoHostExecutionAttemptRow | undefined,
+  input: Omit<ResolveNanoHostAttemptTokenBindingInput, 'sandboxBindingRef'>
+): NanoHostAttemptTokenBindingResolution {
   if (!row) {
     return { status: 'rejected', reason: 'binding-not-found' };
   }

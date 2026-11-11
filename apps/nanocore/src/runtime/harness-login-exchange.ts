@@ -14,6 +14,7 @@ import {
   nextNativeThreadLogin,
 } from '../storage/native-thread-login.js';
 import { getVaultInjectionPlan } from '../storage/vault-native-codecs.js';
+import { hasCurrentHarnessLoginExhaustion } from '../vault/login-selection.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
 import { authenticateHarnessLoginRequest } from './harness-login-authority.js';
 import type { NanoHostHarnessLoginHandler } from './nanohost-session-dispatch.js';
@@ -25,9 +26,8 @@ import {
 } from './worker-credential-authority.js';
 
 /**
- * Composes initial private access with the existing governed Vault operation and backend session.
- * This factory installs no route or capability. Refresh, replacement and observations remain
- * unavailable until their separate lifecycle composition is qualified.
+ * Composes governed Login access, completion and bounded native observations.
+ * This factory installs no route or capability. Replacement remains unavailable.
  * @param input Actual Core, operation, transport and configured placement owners.
  * @returns An uninstalled private handler that acknowledges completion only after receipt and affinity.
  */
@@ -56,26 +56,23 @@ export function createHarnessLoginExchange(input: {
         physical,
         request,
       });
-      const { context, environmentPackage } = authenticated;
-      let checkAffinity: (() => void) | undefined;
+      const { context, environmentPackage, request: command } = authenticated;
+      let checkSelection: (() => void) | undefined;
       const currentCheck = async () => {
         authenticated.recheck();
-        checkAffinity?.();
+        checkSelection?.();
       };
-      if (authenticated.request.kind === 'complete') {
+      if (command.kind === 'complete') {
         await input.runtime.completeHarnessLogin(
           context,
-          authenticated.request.receiptId,
-          authenticated.request.materialGeneration,
+          command.receiptId,
+          command.materialGeneration,
           request.signal,
           currentCheck
         );
         authenticated.recheck();
         return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } });
       }
-      if (authenticated.request.kind !== 'acquire' || authenticated.request.reason !== 'activate')
-        throw unavailable();
-
       // The private body selects neither a declaration nor a Vault family.
       const declarations = environmentPackage.credentials.declarations.filter(
         (declaration) =>
@@ -88,7 +85,6 @@ export function createHarnessLoginExchange(input: {
       const referenceId = reference.referenceId;
       if (!isEntityId('vault', referenceId)) throw unavailable();
       const planId = `plan_${environmentPackage.snapshotId}_${declaration.id}`;
-      const receiptId = `receipt_${environmentPackage.snapshotId}_${declaration.id}`;
       const plan = getVaultInjectionPlan(dependencies.coreDb, planId);
       if (
         !plan ||
@@ -115,27 +111,98 @@ export function createHarnessLoginExchange(input: {
           db.sqlite.close();
         }
       };
+      if (command.kind === 'observe') {
+        const accountId = reference.login?.accountId;
+        if (!accountId || command.materialGeneration !== reference.currentVersion)
+          throw unavailable();
+        const recheckObservation = () => {
+          request.signal.throwIfAborted();
+          authenticated.recheck();
+          const completed = input.runtime.readCompletedHarnessLoginReceipt(context);
+          if (
+            completed.receiptId !== command.receiptId ||
+            completed.materialGeneration !== command.materialGeneration ||
+            readAffinity()?.referenceId !== referenceId
+          )
+            throw unavailable();
+        };
+        recheckObservation();
+        const observedAt = new Date().toISOString();
+        await getControlStoreWorkerClient().vault(
+          dependencies.coreDb,
+          'reference-login-observe',
+          {
+            context,
+            referenceId,
+            grantId: grant.grantId,
+            planId,
+            receiptId: command.receiptId,
+            materialGeneration: command.materialGeneration,
+            accountId,
+            now: () => observedAt,
+            observations: {
+              ...command.observation,
+              observedAt,
+              bindingId: context.agentSessionRuntimeBindingId,
+              materialGeneration: command.materialGeneration,
+            },
+          },
+          recheckObservation
+        );
+        recheckObservation();
+        return new Response(null, { status: 204, headers: { 'cache-control': 'no-store' } });
+      }
+
+      const refreshing = command.reason === 'refresh';
+      const requestId = randomUUID();
+      const receiptId = refreshing
+        ? `receipt_${requestId}`
+        : `receipt_${environmentPackage.snapshotId}_${declaration.id}`;
+      const refresh = refreshing
+        ? Object.freeze({
+            previousReceiptId: input.runtime.readCompletedHarnessLoginReceipt(context).receiptId,
+            receiptId,
+            context,
+          })
+        : undefined;
       const previous = readAffinity();
       const expectedReferenceId = previous?.referenceId ?? null;
       if (expectedReferenceId !== null && !isEntityId('vault', expectedReferenceId))
         throw unavailable();
-      // Initial composition does not authorize a switch or claim cross-account continuation.
-      if (expectedReferenceId !== null && expectedReferenceId !== reference.referenceId)
+      // Same-family refresh never establishes new affinity or claims cross-account continuation.
+      if (
+        (refreshing || expectedReferenceId !== null) &&
+        expectedReferenceId !== reference.referenceId
+      )
         throw unavailable();
       let affinityPublished = false;
-      checkAffinity = () => {
+      checkSelection = () => {
+        // The retained package selects one reviewed grant. Refuse its known exhausted
+        // generation before entering governed material use, without looking for another grant.
+        const latest = requireDeclarationReference(
+          dependencies.coreDb,
+          requireDeclarationGrant(dependencies.coreDb, declaration)
+        );
+        if (
+          latest.referenceId !== referenceId ||
+          hasCurrentHarnessLoginExhaustion(
+            latest.login?.observations ?? undefined,
+            latest.currentVersion
+          )
+        )
+          throw unavailable();
         const current = readAffinity();
         if (
           (current?.referenceId ?? null) !==
           (affinityPublished ? reference.referenceId : expectedReferenceId)
         )
           throw unavailable();
-        // This existing pure proposal checks re-entry before access, without publishing affinity.
-        nextNativeThreadLogin(current, reference.referenceId, new Date().toISOString());
+        // Initial selection checks re-entry before access; same-family refresh leaves affinity intact.
+        if (!refreshing)
+          nextNativeThreadLogin(current, reference.referenceId, new Date().toISOString());
       };
       await currentCheck();
       const materialVersion = reference.currentVersion;
-      const requestId = randomUUID();
       const access = await input.runtime.acquireHarnessLogin(
         context,
         request.signal,
@@ -165,6 +232,7 @@ export function createHarnessLoginExchange(input: {
               bindings: { workspaceId: context.workspaceId, requestId },
               signal,
               recheckEntry: currentCheck,
+              ...(refresh ? { harnessLoginRefresh: refresh } : {}),
             }
           );
         },
@@ -177,6 +245,10 @@ export function createHarnessLoginExchange(input: {
             effect.accountId !== reference.login?.accountId
           )
             throw unavailable();
+          if (refreshing) {
+            await currentCheck();
+            return;
+          }
           const workspaceDb = dependencies.repositoryWorkspaceDb(context.workspaceId);
           try {
             await getControlStoreWorkerClient().vault(
@@ -204,7 +276,8 @@ export function createHarnessLoginExchange(input: {
           } finally {
             workspaceDb.sqlite.close();
           }
-        }
+        },
+        refresh
       );
       authenticated.recheck();
       return Response.json(access, { headers: { 'cache-control': 'no-store' } });

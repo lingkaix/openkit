@@ -175,7 +175,8 @@ export function assertCurrentPublicNetworkGrants(
     readonly mcp: ResolvedAgentManifest['mcp'];
   },
   current: PublicNetworkConfiguration,
-  mcpCatalog: WorkspaceMcpServerCatalog | undefined
+  mcpCatalog: WorkspaceMcpServerCatalog | undefined,
+  supportedRequiredFeatures?: readonly string[]
 ): void {
   const authored = current.agentManifests.find((manifest) => manifest.id === input.agentId);
   if (!authored) throw new Error('Public network current Agent authority is unavailable.');
@@ -183,6 +184,7 @@ export function assertCurrentPublicNetworkGrants(
     (entry) => entry.workspaceId === input.workspaceId
   )?.config;
   const resolved = resolveAgentSetup(authored, {
+    ...(supportedRequiredFeatures ? { supportedRequiredFeatures } : {}),
     gatewayConfig: current.gatewayConfig,
     providerRegistry: current.providerRegistry,
     selectedProfileId: input.profileId,

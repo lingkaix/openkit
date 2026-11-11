@@ -194,7 +194,10 @@ export class CodexAppServer {
     private readonly onNotification: (method: string, params: unknown) => void,
     private readonly onBroken: (reason: string) => void,
     private readonly controlTimeoutMs: number = LIFECYCLE_DEFAULTS.nativeRequestMs,
-    private readonly refreshAuthTokens?: (params: unknown) => Promise<CodexAuthTokensRefreshReply>
+    private readonly refreshAuthTokens?: (
+      params: unknown,
+      signal: AbortSignal
+    ) => Promise<CodexAuthTokensRefreshReply>
   ) {
     child.stdout.on('data', (chunk: Buffer) => this.onStdout(chunk));
     child.stdout.on('end', () => this.endStdout());
@@ -443,7 +446,7 @@ export class CodexAppServer {
       this.fail('Codex native authentication refresh deadline expired.');
     }, this.controlTimeoutMs);
     try {
-      const reply = await this.refreshAuthTokens(message.params);
+      const reply = await this.refreshAuthTokens(message.params, abort.signal);
       if (this.broken || abort.signal.aborted)
         throw new Error('Codex native authentication refresh was abandoned.');
       await this.send({ id: message.id, result: reply.result }, abort.signal);

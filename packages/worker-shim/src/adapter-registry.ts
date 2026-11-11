@@ -152,9 +152,15 @@ export interface WorkerHostManagedLoginObservation {
 /** Trusted Harness closure for an explicitly admitted Codex harness-Login binding. */
 export interface WorkerHostManagedLogin {
   /** Requests fresh current access only after an actual Turn has bound its control authority. */
-  readonly acquire: (reason: 'activate' | 'refresh') => Promise<WorkerHostManagedLoginAccess>;
+  readonly acquire: (
+    reason: 'activate' | 'refresh',
+    signal?: AbortSignal
+  ) => Promise<WorkerHostManagedLoginAccess>;
   /** Acknowledges actual native activation or refresh-pipe delivery, not preparation. */
-  readonly complete: (receipt: WorkerHostManagedLoginReceipt) => Promise<void>;
+  readonly complete: (
+    receipt: WorkerHostManagedLoginReceipt,
+    signal?: AbortSignal
+  ) => Promise<void>;
   /** Reports bounded native facts; it cannot select a reference, grant, account or clock. */
   readonly observe: (
     value: WorkerHostManagedLoginReceipt & {

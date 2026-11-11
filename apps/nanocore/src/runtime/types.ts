@@ -146,6 +146,11 @@ export interface TurnExecutor {
       readonly planId: string;
       readonly receiptId?: string;
       readonly expectedReceiptId?: string;
+      /** Prior successful access delivery from the authenticated private Login exchange. */
+      readonly loginRefresh?: Readonly<{
+        previousReceiptId: string;
+        context: import('./harness-login-authority.js').HarnessLoginContext;
+      }>;
       readonly materialVersion?: number;
       readonly requestId: string;
       /** Original operation cancellation; it never supplies authority. */
