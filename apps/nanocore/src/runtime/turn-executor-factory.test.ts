@@ -43,6 +43,7 @@ import {
 } from '@openkit/worker-protocol';
 import { Hono } from 'hono';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import * as appOwner from '../app.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -65,6 +66,7 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import * as releaseIdentityOwner from '../diagnostics/release-identity.js';
 import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -75,6 +77,7 @@ import { OperationError } from '../operation-error.js';
 import { PolicyInterception } from '../policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { closeRetrievalServices } from '../retrieval-service.js';
 import * as attemptActionOwners from '../scheduler-records.js';
 import {
   createSchedulerAdmissionEntry,
@@ -198,6 +201,7 @@ import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
+import * as nanoHostDispatchOwner from './nanohost-session-dispatch.js';
 import {
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
@@ -3202,6 +3206,133 @@ describe('createConfiguredTurnExecutor', () => {
       ).toEqual({ count: 0 });
     } finally {
       coreDb.sqlite.close();
+    }
+  });
+
+  it('uses the identity read by NanoCore boot for the Worker runtime handed to App', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-boot-worker-release-'));
+    const identityFile = join(dataRoot, 'release-identity.json');
+    writeFileSync(identityFile, JSON.stringify(TEST_WORKER_RELEASE_IDENTITY));
+    const readReleaseIdentity = releaseIdentityOwner.readReleaseIdentity;
+    const identity = vi
+      .spyOn(releaseIdentityOwner, 'readReleaseIdentity')
+      .mockImplementation(() => readReleaseIdentity(identityFile));
+    const effects: NanoHostSessionEffectRequest[] = [];
+    const peer = createFactoryNanoHostDispatch(effects);
+    let observed = { sourceCommit: 'b'.repeat(40), releaseTag: null as string | null };
+    const dispatch = vi
+      .spyOn(nanoHostDispatchOwner, 'createNanoHostSessionDispatch')
+      .mockReturnValue({
+        ...peer,
+        async effect(requestOrConnection: object, carried?: NanoHostSessionEffectRequest) {
+          const request = carried ?? (requestOrConnection as NanoHostSessionEffectRequest);
+          const result = await peer.effect(request);
+          return request.kind === 'image.inspect'
+            ? { ...nanoHostImageInspection(request), releaseIdentity: observed }
+            : result;
+        },
+      });
+    // Stop after the real boot phases hand the runtime to App, before opening listeners.
+    const atApp = new Error('Boot reached App handoff');
+    let appOptions: Parameters<typeof appOwner.createApp>[0];
+    const app = vi.spyOn(appOwner, 'createApp').mockImplementation((options) => {
+      appOptions = options;
+      throw atApp;
+    });
+    const signals = ['exit', 'SIGINT', 'SIGTERM'] as const;
+    const before = signals.map((signal) => new Set(process.rawListeners(signal)));
+    vi.stubEnv('OPENKIT_DATA_ROOT', dataRoot);
+    vi.stubEnv('OPENKIT_CORE_MODE', 'local');
+    vi.stubEnv('OPENKIT_BIND_HOST', '127.0.0.1');
+    try {
+      const packageFor = (label: string) =>
+        completeNanoHostPackage({
+          scope: {
+            agentSessionId: testEntityId('as', label),
+            threadId: testEntityId('th', label),
+            turnId: testEntityId('tu', label),
+          },
+          snapshotId: `snapshot_${label}`,
+        });
+      const previousPackage = await packageFor('boot_old_release');
+      const currentPackage = await packageFor('boot_current_release');
+      ensureLayout(dataRoot);
+      const seedDb = openCoreDb(dataRoot);
+      try {
+        applyMigrations(seedDb);
+        ensureLocalUser(seedDb);
+        await authorizeNanoHostPackage(seedDb, previousPackage);
+        await authorizeNanoHostPackage(seedDb, currentPackage);
+      } finally {
+        seedDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+      }
+
+      await expect(import('../index.js')).rejects.toBe(atApp);
+      const coreDb = appOptions?.coreDb;
+      const runtime = appOptions?.workerLifecycleRuntime;
+      if (!coreDb || !runtime)
+        throw new Error('Boot did not hand off its Core and Worker runtime.');
+      expect(appOptions?.releaseIdentity).toEqual(TEST_WORKER_RELEASE_IDENTITY);
+      const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
+        .backend;
+      await recordTestNativeRuntimeTarget(coreDb);
+      const attempt = async (pkg: AgentEnvironmentPackage, label: string) => {
+        const sandboxBindingRef = `binding_${label}`;
+        const attemptId = testEntityId('attempt', label);
+        bindNanoHostWorkerLineage(coreDb, pkg, { attemptId, sandboxBindingRef });
+        await anchorNanoHostMaterialization(coreDb, backend, pkg);
+        return { pkg, sandboxBindingRef, attemptId };
+      };
+
+      const mismatch = await attempt(previousPackage, 'boot_old_release');
+      await expect(
+        backend.materialize(mismatch.pkg, {
+          workspaceRoots: [],
+          sandboxBindingRef: mismatch.sandboxBindingRef,
+        })
+      ).rejects.toThrow(
+        expect.objectContaining({ code: 'worker_release_incompatible', status: 409 })
+      );
+      await backend.cleanupSession(backend.planSession(mismatch.pkg));
+      expect(effects.map((effect) => effect.kind)).toEqual(['image.acquire', 'image.inspect']);
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
+      ).toEqual({ count: 0 });
+
+      await closeFactoryAttempt(coreDb, mismatch.attemptId);
+
+      effects.length = 0;
+      observed = TEST_WORKER_RELEASE_IDENTITY;
+      const compatible = await attempt(currentPackage, 'boot_current_release');
+      await backend.materialize(compatible.pkg, {
+        workspaceRoots: [],
+        sandboxBindingRef: compatible.sandboxBindingRef,
+      });
+      expect(effects.slice(0, 3).map((effect) => effect.kind)).toEqual([
+        'image.acquire',
+        'image.inspect',
+        'sandbox.create',
+      ]);
+      await backend.cleanupSession(backend.planSession(compatible.pkg));
+    } finally {
+      app.mockRestore();
+      dispatch.mockRestore();
+      identity.mockRestore();
+      vi.unstubAllEnvs();
+      try {
+        await closeRetrievalServices();
+        await shutdownControlStoreWorkerClient();
+      } finally {
+        signals.forEach((signal, index) => {
+          for (const listener of process.rawListeners(signal)) {
+            if (before[index]?.has(listener)) continue;
+            process.removeListener(signal, listener);
+            if (signal === 'exit') listener(0);
+          }
+        });
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
     }
   });
 

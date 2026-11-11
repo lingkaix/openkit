@@ -442,6 +442,7 @@ const bootResult = await runBootPhases({
           // Defer snapshot reads until admission, after the shared manager is initialized below.
           readRuntimeConfig: () => runtimeConfigManager.current(),
           nanoHostSessionDispatch,
+          releaseIdentity: requireBootValue(releaseIdentity, 'Release identity was not read.'),
           store: recoveryStore,
           vaultBackend: () =>
             requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
