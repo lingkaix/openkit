@@ -79,6 +79,20 @@ export interface RuntimeConfigDataSourceAuthorityChange {
   fields: string[];
 }
 
+/** Exact non-secret preferred grant change published in one Workspace config file. */
+export interface RuntimeConfigCredentialBindingChange {
+  /** Workspace owning the authored binding. */
+  workspaceId: string;
+  /** Agent whose reusable requirement is bound. */
+  agentId: string;
+  /** Reusable credential requirement whose preference changed. */
+  requirementId: string;
+  /** Previously authored grant, or null for a new binding. */
+  previousGrantId: string | null;
+  /** Newly authored grant, or null for a removed binding. */
+  nextGrantId: string | null;
+}
+
 /**
  * Runtime config file service construction input.
  */
@@ -95,6 +109,10 @@ export interface RuntimeConfigFileServiceOptions {
   readRuntimeConfigStatus: () => RuntimeConfigStatus;
   /** Revokes a key profile reference through the existing Vault lifecycle before file removal. */
   revokeProviderSecret?: (secretRef: string) => void | Promise<void>;
+  /** Publication Audit of exact Workspace credential preference changes. */
+  onCredentialBindingChange?: (
+    change: RuntimeConfigCredentialBindingChange
+  ) => void | Promise<void>;
   /** Optional hook for durable audit of authority-bearing catalog edits. */
   onDataSourceAuthorityChange?: (
     change: RuntimeConfigDataSourceAuthorityChange
@@ -148,6 +166,9 @@ export class RuntimeConfigFileService {
   private readonly runtimeConfigManager: RuntimeConfigManager;
   private readonly readRuntimeConfigStatus: () => RuntimeConfigStatus;
   private readonly revokeProviderSecret: ((secretRef: string) => void | Promise<void>) | undefined;
+  private readonly onCredentialBindingChange:
+    | ((change: RuntimeConfigCredentialBindingChange) => void | Promise<void>)
+    | undefined;
   private readonly onDataSourceAuthorityChange:
     | ((change: RuntimeConfigDataSourceAuthorityChange) => void | Promise<void>)
     | undefined;
@@ -172,6 +193,7 @@ export class RuntimeConfigFileService {
     this.userId = options.userId;
     this.runtimeConfigManager = options.runtimeConfigManager;
     this.readRuntimeConfigStatus = options.readRuntimeConfigStatus;
+    this.onCredentialBindingChange = options.onCredentialBindingChange;
     this.onDataSourceAuthorityChange = options.onDataSourceAuthorityChange;
   }
 
@@ -258,8 +280,9 @@ export class RuntimeConfigFileService {
     }
 
     this.assertSupportedWorkspaceMaterialization(spec, content);
+    const credentialChanges = this.prepareCredentialBindingAudit(spec, null, content);
     this.writeFileAtomically(spec, content);
-    await this.auditCatalogAuthorityChanges(spec, null, content);
+    await this.auditCatalogAuthorityChanges(spec, null, content, credentialChanges);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
       file: this.summaryForSpec(spec, content),
@@ -326,8 +349,13 @@ export class RuntimeConfigFileService {
       }
     }
     this.assertSupportedWorkspaceMaterialization(spec, input.content);
+    const credentialChanges = this.prepareCredentialBindingAudit(
+      spec,
+      currentContent,
+      input.content
+    );
     this.writeFileAtomically(spec, input.content);
-    await this.auditCatalogAuthorityChanges(spec, currentContent, input.content);
+    await this.auditCatalogAuthorityChanges(spec, currentContent, input.content, credentialChanges);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
       file: this.summaryForSpec(spec, input.content),
@@ -946,20 +974,50 @@ export class RuntimeConfigFileService {
     writeFileAtomic(spec.absolutePath, content, preservedMode ?? 0o666 & ~process.umask());
   }
 
+  /** Validates exact old/new binding authority and the Audit owner before file publication. */
+  private prepareCredentialBindingAudit(
+    spec: RuntimeConfigFileSpec,
+    previousContent: string | null,
+    nextContent: string
+  ): readonly RuntimeConfigCredentialBindingChange[] {
+    if (spec.kind !== 'workspace' || !spec.workspaceId) return [];
+    const changes = credentialBindingChanges(spec.workspaceId, previousContent, nextContent);
+    if (changes.length && !this.onCredentialBindingChange)
+      throw new RuntimeConfigFileServiceError(
+        'config_binding_audit_unavailable',
+        'Credential binding publication requires its Audit owner.',
+        503
+      );
+    return changes;
+  }
+
   /**
-   * Emits audit hooks for authority-bearing data source catalog edits.
-   *
+   * Joins publication Audit for prepared credential changes and existing data source edits.
    * @param spec Written runtime config file spec.
    * @param previousContent Previous file content, or null when creating.
    * @param nextContent Written file content.
+   * @param credentialChanges Exact changes validated before the file was written.
    */
   private async auditCatalogAuthorityChanges(
     spec: RuntimeConfigFileSpec,
     previousContent: string | null,
-    nextContent: string
+    nextContent: string,
+    credentialChanges: readonly RuntimeConfigCredentialBindingChange[]
   ): Promise<void> {
     if (!spec.workspaceId) {
       return;
+    }
+    for (const change of credentialChanges) {
+      try {
+        await this.onCredentialBindingChange!(change);
+      } catch {
+        // The file publication is already complete. Do not imply rollback or retry the Audit.
+        throw new RuntimeConfigFileServiceError(
+          'config_file_saved_audit_unknown',
+          'Configuration was saved, but its Audit completion is unknown. Inspect the file and Audit before another request. No reload or automatic repair is implied.',
+          503
+        );
+      }
     }
     if (spec.kind === 'data-source' && this.onDataSourceAuthorityChange) {
       for (const change of dataSourceAuthorityChanges(
@@ -1587,6 +1645,61 @@ function schemaForKind(kind: RuntimeConfigFileKind): z.ZodType {
  */
 function isWorkspaceScopedKind(kind: RuntimeConfigFileKind): kind is 'workspace' | 'data-source' {
   return kind === 'workspace' || kind === 'data-source';
+}
+
+/** Compares validated authored preferences only; it grants no Login use or activation authority. */
+function credentialBindingChanges(
+  workspaceId: string,
+  previousContent: string | null,
+  nextContent: string
+): RuntimeConfigCredentialBindingChange[] {
+  const bindings = (content: string | null) => {
+    const result = new Map<string, { agentId: string; requirementId: string; grantId: string }>();
+    if (content === null) return result;
+    const errors: ParseError[] = [];
+    const parsed: unknown = parse(content, errors, {
+      allowTrailingComma: true,
+      disallowComments: false,
+    });
+    const config = WorkspaceConfigSchema.safeParse(parsed);
+    // Unknown previous authority cannot be reported as an absent preference.
+    if (errors.length || !config.success)
+      throw new RuntimeConfigFileServiceError(
+        'invalid_config_content',
+        'Credential binding Audit requires valid Workspace configuration.',
+        409
+      );
+    for (const agent of config.data.workspace.agents) {
+      for (const binding of agent.credentialBindings) {
+        result.set(JSON.stringify([agent.agentId, binding.requirementId]), {
+          agentId: agent.agentId,
+          requirementId: binding.requirementId,
+          grantId: binding.vaultGrantId,
+        });
+      }
+    }
+    return result;
+  };
+  const previous = bindings(previousContent);
+  const next = bindings(nextContent);
+  return [...new Set([...previous.keys(), ...next.keys()])].sort().flatMap((key) => {
+    const before = previous.get(key);
+    const after = next.get(key);
+    const previousGrantId = before?.grantId ?? null;
+    const nextGrantId = after?.grantId ?? null;
+    const binding = after ?? before;
+    return binding && previousGrantId !== nextGrantId
+      ? [
+          {
+            workspaceId,
+            agentId: binding.agentId,
+            requirementId: binding.requirementId,
+            previousGrantId,
+            nextGrantId,
+          },
+        ]
+      : [];
+  });
 }
 
 /**

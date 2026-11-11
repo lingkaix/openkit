@@ -14,6 +14,7 @@ import fs, {
 import { syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRuntimeConfigManager } from './config/runtime-config.js';
 import {
@@ -27,7 +28,7 @@ import { createApp as createTestApp } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
-import { initializeTestCore } from './test-support/store.js';
+import { disposeTestStore, initializeTestCore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 
 /**
@@ -1024,4 +1025,199 @@ describe('runtime config Policy source selector', () => {
       syncBuiltinESMExports();
     }
   });
+});
+
+/** Builds only the actual file owner's inputs; callback failure is an external effect fault. */
+async function credentialPreferenceFileFixture(
+  onCredentialBindingChange?: (change: unknown) => Promise<void>
+) {
+  const dataRoot = createDataRoot();
+  try {
+    writeServerConfig(dataRoot);
+    await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const fileId = `workspaces/${workspaceId}/workspace.jsonc`;
+    const path = join(dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+    const document = parse(readFileSync(path, 'utf8'));
+    document.workspace.agents = [
+      {
+        agentId: 'agent_codex',
+        credentialBindings: [
+          {
+            requirementId: 'first-login',
+            vaultGrantId: 'grant_00000000-0000-7000-8000-000000000091',
+          },
+          {
+            requirementId: 'second-login',
+            vaultGrantId: 'grant_00000000-0000-7000-8000-000000000092',
+          },
+        ],
+      },
+    ];
+    const content = JSON.stringify(document);
+    writeFileSync(path, content);
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const files = new RuntimeConfigFileService({
+      dataRoot,
+      workspaceIds: [workspaceId],
+      userId: 'usr_00000000-0000-7000-8000-000000000001',
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+      ...(onCredentialBindingChange ? { onCredentialBindingChange } : {}),
+    });
+    return { dataRoot, workspaceId, fileId, path, content, manager, files };
+  } catch (error) {
+    await disposeTestStore(dataRoot);
+    throw error;
+  }
+}
+
+/** Changes both authored references without inventing grant records or loaded authority. */
+function changedPreferenceContent(content: string): string {
+  const document = JSON.parse(content);
+  document.workspace.agents[0].credentialBindings[0].vaultGrantId =
+    'grant_00000000-0000-7000-8000-000000000093';
+  document.workspace.agents[0].credentialBindings[1].vaultGrantId =
+    'grant_00000000-0000-7000-8000-000000000094';
+  return JSON.stringify(document);
+}
+
+// Unknown authority refuses before publication; an Audit-tail failure cannot undo saved bytes.
+describe('credential preference publication failure boundaries', () => {
+  it.each(['duplicate-requirement', 'invalid-grant'] as const)(
+    'refuses unknown previous binding authority before replacing its bytes: %s',
+    async (fault) => {
+      const audit = vi.fn(async (_change: unknown) => undefined);
+      const f = await credentialPreferenceFileFixture(audit);
+      try {
+        const loaded = f.manager.current();
+        const reload = vi.spyOn(f.manager, 'reload');
+        const corrupt = JSON.parse(f.content);
+        const bindings = corrupt.workspace.agents[0].credentialBindings;
+        if (fault === 'duplicate-requirement') bindings.push({ ...bindings[0] });
+        else bindings[0].vaultGrantId = 'not-a-grant-id';
+        const corruptContent = JSON.stringify(corrupt);
+        // Deliberate physical fault follows valid setup and preserves the retained header/default ID.
+        writeFileSync(f.path, corruptContent);
+        const current = f.files.readFile(f.fileId);
+        expect(current.content).toBe(corruptContent);
+        await expect(
+          f.files.updateFile({
+            id: f.fileId,
+            kind: 'workspace',
+            expectedRevision: current.file.revision,
+            content: changedPreferenceContent(f.content),
+          })
+        ).rejects.toMatchObject({ code: 'invalid_config_content', status: 409 });
+        // Deciding R1 assertion: first draft rejected only after replacing the file.
+        expect(readFileSync(f.path, 'utf8')).toBe(corruptContent);
+        expect(audit).not.toHaveBeenCalled();
+        expect(f.manager.current()).toBe(loaded);
+        expect(reload).not.toHaveBeenCalled();
+      } finally {
+        await disposeTestStore(f.dataRoot);
+      }
+    }
+  );
+
+  it('requires an Audit owner for a nonempty diff while allowing an unchanged save', async () => {
+    const f = await credentialPreferenceFileFixture();
+    try {
+      const current = f.files.readFile(f.fileId);
+      const loaded = f.manager.current();
+      const reload = vi.spyOn(f.manager, 'reload');
+      await expect(
+        f.files.updateFile({
+          id: f.fileId,
+          kind: 'workspace',
+          expectedRevision: current.file.revision,
+          content: changedPreferenceContent(f.content),
+        })
+      ).rejects.toMatchObject({ code: 'config_binding_audit_unavailable', status: 503 });
+      expect(readFileSync(f.path, 'utf8')).toBe(f.content);
+      await expect(
+        f.files.updateFile({
+          id: f.fileId,
+          kind: 'workspace',
+          expectedRevision: current.file.revision,
+          content: current.content,
+        })
+      ).resolves.toMatchObject({ file: { id: f.fileId } });
+      expect(readFileSync(f.path, 'utf8')).toBe(f.content);
+      expect(f.manager.current()).toBe(loaded);
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      await disposeTestStore(f.dataRoot);
+    }
+  });
+
+  it.each([1, 2])(
+    'reports saved/Audit-unknown without replay when Audit callback %i fails',
+    async (failAt) => {
+      const failure = new Error('Injected external Audit acknowledgement failure');
+      const atCallback: string[] = [];
+      const acknowledged: unknown[] = [];
+      let publishedPath = '';
+      const audit = vi.fn(async (change: unknown) => {
+        atCallback.push(readFileSync(publishedPath, 'utf8'));
+        if (atCallback.length === failAt) throw failure;
+        acknowledged.push(change);
+      });
+      const f = await credentialPreferenceFileFixture(audit);
+      try {
+        publishedPath = f.path;
+        const loaded = f.manager.current();
+        const reload = vi.spyOn(f.manager, 'reload');
+        const current = f.files.readFile(f.fileId);
+        const replacement = changedPreferenceContent(current.content);
+        let caught: unknown;
+        try {
+          await f.files.updateFile({
+            id: f.fileId,
+            kind: 'workspace',
+            expectedRevision: current.file.revision,
+            content: replacement,
+          });
+        } catch (error) {
+          caught = error;
+        }
+        // Establish actual callback entry and completed file effect before classifying the failure.
+        expect(atCallback).toEqual(Array.from({ length: failAt }, () => replacement));
+        expect(readFileSync(f.path, 'utf8')).toBe(replacement);
+        expect(f.files.readFile(f.fileId).content).toBe(replacement);
+        expect(caught).toMatchObject({ code: 'config_file_saved_audit_unknown', status: 503 });
+        expect(caught).toBeInstanceOf(Error);
+        if (!(caught instanceof Error))
+          throw new Error('The typed publication failure is required.');
+        expect(caught.message).toMatch(/\bsaved\b/i);
+        expect(caught.message).toMatch(/\baudit\b.*\bunknown\b/i);
+        expect(caught.message).toMatch(/\binspect\b/i);
+        const offered = audit.mock.calls.map(([change]) => change);
+        const expected = [
+          {
+            workspaceId: f.workspaceId,
+            agentId: 'agent_codex',
+            requirementId: 'first-login',
+            previousGrantId: 'grant_00000000-0000-7000-8000-000000000091',
+            nextGrantId: 'grant_00000000-0000-7000-8000-000000000093',
+          },
+          {
+            workspaceId: f.workspaceId,
+            agentId: 'agent_codex',
+            requirementId: 'second-login',
+            previousGrantId: 'grant_00000000-0000-7000-8000-000000000092',
+            nextGrantId: 'grant_00000000-0000-7000-8000-000000000094',
+          },
+        ];
+        expect(offered).toHaveLength(failAt);
+        for (const change of offered) expect(expected).toContainEqual(change);
+        expect(new Set(offered.map((change) => JSON.stringify(change))).size).toBe(failAt);
+        expect(acknowledged).toEqual(offered.slice(0, -1));
+        expect(f.manager.current()).toBe(loaded);
+        expect(reload).not.toHaveBeenCalled();
+      } finally {
+        await disposeTestStore(f.dataRoot);
+      }
+    }
+  );
 });

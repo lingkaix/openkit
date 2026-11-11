@@ -278,6 +278,7 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'catalog.light-app-select',
     'catalog.light-app-pin',
     'data_source_catalog.authority.update',
+    'workspace.credential-binding.update',
     'app.update.start',
     'app.update.start.handoff',
     'administration.server-mcp-create',

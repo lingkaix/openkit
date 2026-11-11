@@ -450,6 +450,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'policy.write',
     'scheduler.admission.cancel',
     'scheduler.admission.retry',
+    'workspace.credential-binding.update',
   ]);
 });
 

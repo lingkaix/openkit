@@ -99,7 +99,9 @@ Server AgentManifest plus Workspace binding, selected nested profile, and User p
 
 No layer in this chain may infer a second runtime definition or become a parallel supply authority.
 
-The manifest may be file-backed, built-in, server-provided, organization-provided, or future workspace-local. A Workspace binding is a co-equal authored composition input for the addressed Workspace and may add Workspace-owned resources, credential bindings, and runtime-compatible behavior. After composition, catalogs, grants, policy, runtime proof, governance materialization, and adaptation may validate, resolve, or restrict but cannot author missing setup.
+The accepted selection and persistent-preference rationale is recorded in [Login Preference And New-Turn Selection](../decisions/20261111-login_preference_new_turn_selection.md).
+
+The manifest may be file-backed, built-in, server-provided, organization-provided, or future workspace-local. A Workspace binding is a co-equal authored composition input for the addressed Workspace and may add Workspace-owned resources, credential bindings, and runtime-compatible behavior. After composition, catalogs, grants, policy, runtime proof, governance materialization, and adaptation may validate, resolve, or restrict but cannot author missing setup. A composed Codex Login requirement keeps its authored preferred grant; the governed Vault replacement path may resolve a different eligible grant for that same requirement into a new Turn’s AEP. In v0.1.0, explicit preference changes require a currently authorized deployment administrator using the existing `runtime.file-update` and successful `runtime.reload` path, with the binding-change Audit owned by file publication. They apply to Turns composed from the installed reload snapshot; a save alone is not active, and queued dispatch keeps its captured snapshot under the existing snapshot/currentness contract. Ordinary Users, Workspace members and agents acquire no configuration-write authority. Existing AEPs remain immutable.
 
 ## Manifest Sources
 
@@ -218,7 +220,7 @@ Resolution must turn workspace declarations into a session-static workspace layo
 
 `context` declares allowed context package categories and task-time injection hints.
 
-`vault` declares credentials without secret values. A Server-only manifest may directly name a Server-scope VaultGrant. A reusable manifest instead declares a stable `requirementId`, purpose, target, visibility, injection mode, and whether it is required; `workspace.jsonc` binds that ID to one Workspace-scope VaultGrant. Missing, duplicate, wrong-scope, wrong-target, expired, revoked, or incompatible required binding blocks readiness before runtime effects.
+`vault` declares credentials without secret values. A Server-only manifest may directly name a Server-scope VaultGrant. A reusable manifest instead declares a stable `requirementId`, purpose, target, visibility, injection mode, and whether it is required; `workspace.jsonc` binds that ID to one Workspace-scope VaultGrant. Missing, duplicate, wrong-scope, wrong-target, expired, revoked, or incompatible required binding blocks readiness before runtime effects, subject only to the Codex Login replacement rule below. That rule still requires an authored binding and never selects an invalid grant. For a composed Codex Login requirement, the authored grant is the first eligible preference and [governed replacement](20260703-vault_secret_injection.md#selection-and-activation) may resolve a different current exact Workspace grant at a new Turn boundary. Every new AEP still resolves exactly one grant for the requirement, and a retained AEP is never changed. No other credential requirement gains a fallback.
 
 `policy` declares required actions, approval points, and policy domains touched by this agent.
 

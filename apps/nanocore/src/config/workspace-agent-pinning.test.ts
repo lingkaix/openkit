@@ -3,12 +3,13 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { OperationId } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { openCoreDb } from '../storage/db.js';
+import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -430,6 +431,157 @@ describe('Workspace Agent pins through existing runtime configuration', () => {
     expect(submit.status, await submit.clone().text()).toBe(409);
     expect(await submit.json()).toMatchObject({ code: 'target_unavailable' });
     expect(readFileSync(f.workspacePath, 'utf8')).toBe(original.content);
+    f.noWork();
+  });
+});
+
+/** Changes one authored preference without creating a grant or claiming Login eligibility. */
+function preferredGrantContent(content: string, vaultGrantId: string): string {
+  const config = JSON.parse(content);
+  const binding = config.workspace.agents.find(
+    (agent: { agentId: string }) => agent.agentId === 'agent_kept'
+  );
+  if (!binding) throw new Error('The existing Agent binding is required.');
+  binding.credentialBindings = [{ requirementId: 'codex-login', vaultGrantId }];
+  return JSON.stringify(config);
+}
+
+/** Reads the actual Workspace Audit after the public file operation returns. */
+function readPreferredGrantAudit(dataRoot: string) {
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
+  try {
+    return listWorkspaceAuditEvents(workspaceDb, workspaceId).filter(
+      (event) => event.action === 'workspace.credential-binding.update'
+    );
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+}
+
+// Amendment 2: an administrator's saved preference needs the existing publication Audit.
+// This checks saved publication; it does not claim loaded selection or grant-use authority.
+describe('Workspace credential preference publication Audit', () => {
+  it('records the exact administrator, requirement, old/new grants and Kernel outcome after replacement', async () => {
+    const f = await fixture();
+    const previousGrantId = 'grant_00000000-0000-7000-8000-000000000091';
+    const nextGrantId = 'grant_00000000-0000-7000-8000-000000000092';
+    const original = await f.read();
+    const firstContent = preferredGrantContent(original.content, previousGrantId);
+    const first = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: original.file.revision,
+      content: firstContent,
+    });
+    expect(first.status).toBe(200);
+    const selected = await f.read();
+    expect(selected.content).toBe(firstContent);
+    const before = readPreferredGrantAudit(f.dataRoot);
+    const originalIds = new Set(before.map((event) => event.id));
+    const replacement = preferredGrantContent(selected.content, nextGrantId);
+    const update = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: selected.file.revision,
+      content: replacement,
+    });
+
+    // OLD must reach a real saved replacement before the missing Audit can decide this row.
+    expect(update.status).toBe(200);
+    expect(readFileSync(f.workspacePath, 'utf8')).toBe(replacement);
+    expect((await f.read()).content).toBe(replacement);
+    const added = readPreferredGrantAudit(f.dataRoot).filter((event) => !originalIds.has(event.id));
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatchObject({
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      actor: { kind: 'user', id: f.admin.record.ownerUserId },
+      authentication: { credentialKind: 'token', credentialId: f.admin.tokenId },
+      agentId: 'agent_kept',
+      vaultGrantId: nextGrantId,
+      permissionDecisionId: null,
+      resource: 'workspace-credential-binding:agent_kept:codex-login',
+      outcome: 'succeeded',
+    });
+    expect(added[0]?.summary).toContain(previousGrantId);
+    expect(added[0]?.summary).toContain(nextGrantId);
+    expect(added[0]?.summary).toMatch(/\bkernel\b.*\ballowed\b/i);
+    f.noWork();
+  });
+
+  it('does not report a binding change for identical/unrelated edits or refused/unwritten input', async () => {
+    const f = await fixture();
+    const previousGrantId = 'grant_00000000-0000-7000-8000-000000000091';
+    const nextGrantId = 'grant_00000000-0000-7000-8000-000000000092';
+    const original = await f.read();
+    const first = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: original.file.revision,
+      content: preferredGrantContent(original.content, previousGrantId),
+    });
+    expect(first.status).toBe(200);
+    const selected = await f.read();
+    const before = readPreferredGrantAudit(f.dataRoot);
+    const unchanged = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: selected.file.revision,
+      content: selected.content,
+    });
+    expect(unchanged.status).toBe(200);
+    expect(readPreferredGrantAudit(f.dataRoot)).toEqual(before);
+
+    const unrelated = JSON.parse(selected.content);
+    unrelated.workspace.name = 'Renamed without changing credential preference';
+    const unrelatedContent = JSON.stringify(unrelated);
+    const rename = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: selected.file.revision,
+      content: unrelatedContent,
+    });
+    expect(rename.status).toBe(200);
+    const current = await f.read();
+    expect(current.content).toBe(unrelatedContent);
+    expect(current.file.revision).not.toBe(selected.file.revision);
+    expect(readPreferredGrantAudit(f.dataRoot)).toEqual(before);
+
+    const replacement = preferredGrantContent(current.content, nextGrantId);
+    const denied = await f.call(
+      'runtime.file-update',
+      {
+        id: workspaceFileId,
+        kind: 'workspace',
+        expectedRevision: current.file.revision,
+        content: replacement,
+      },
+      f.member.secret
+    );
+    expect(denied.status).toBe(403);
+    expect(readFileSync(f.workspacePath, 'utf8')).toBe(unrelatedContent);
+    expect(readPreferredGrantAudit(f.dataRoot)).toEqual(before);
+
+    const stale = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: selected.file.revision,
+      content: replacement,
+    });
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ code: 'config_revision_conflict' });
+    expect(readFileSync(f.workspacePath, 'utf8')).toBe(unrelatedContent);
+    expect(readPreferredGrantAudit(f.dataRoot)).toEqual(before);
+
+    const invalid = await f.call('runtime.file-update', {
+      id: workspaceFileId,
+      kind: 'workspace',
+      expectedRevision: current.file.revision,
+      content: '{',
+    });
+    expect(invalid.status).toBe(400);
+    expect(readFileSync(f.workspacePath, 'utf8')).toBe(unrelatedContent);
+    expect(readPreferredGrantAudit(f.dataRoot)).toEqual(before);
     f.noWork();
   });
 });

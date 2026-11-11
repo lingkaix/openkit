@@ -1,5 +1,7 @@
 # Configuration
 
+Workspace credential preference edits use the existing administrator-only `runtime.file-update` and successful `runtime.reload` path. Before publication, the file owner validates the exact old/new bindings and requires its Audit publisher. After saving, the existing native standalone Audit records `workspace.credential-binding.update` with the actor, Workspace, Agent requirement, old/new grant identities and Kernel authorization outcome; it adds no PermissionDecision family or grant authority. An unconfirmed Audit returns `config_file_saved_audit_unknown`: the file is saved, Audit completion is unknown, and the caller must inspect both before another request. Saving alone does not activate a preference or reload configuration. Later composition uses the installed snapshot; queued work keeps its captured snapshot. Ordinary-owner preference editing is deferred to [#711](https://github.com/lingkaix/openkit/issues/711).
+
 This directory owns NanoCore-specific configuration discovery, loading, precedence, runtime snapshots, reload behavior, and configuration routes.
 
 ## Boundaries

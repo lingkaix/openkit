@@ -1416,6 +1416,32 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       },
       ...(options.coreDb
         ? {
+            onCredentialBindingChange: async (change) => {
+              const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
+              try {
+                await getControlStoreWorkerClient().standaloneAudit(workspaceDb, {
+                  workspaceId: change.workspaceId,
+                  stage: 'workspace.credential-binding.update',
+                  event: prepareWorkspaceAuditEvent({
+                    workspaceDb,
+                    workspaceId: change.workspaceId,
+                    category: 'system',
+                    action: 'workspace.credential-binding.update',
+                    actor: { kind: 'user', id: actor.userId },
+                    authentication: auditAuthenticationFromActor(actor),
+                    agentId: change.agentId,
+                    vaultGrantId: change.nextGrantId,
+                    resource: `workspace-credential-binding:${change.agentId}:${change.requirementId}`,
+                    outcome: 'succeeded',
+                    severity: 'info',
+                    // This actor-bound service is reached after Kernel administrator admission.
+                    summary: `Preferred credential binding ${change.requirementId} changed from ${change.previousGrantId ?? 'none'} to ${change.nextGrantId ?? 'none'}; Kernel authorization allowed.`,
+                  }),
+                });
+              } finally {
+                workspaceDb.sqlite.close();
+              }
+            },
             onDataSourceAuthorityChange: async (change) => {
               const workspaceDb = repositoryWorkspaceDb(change.workspaceId);
               try {

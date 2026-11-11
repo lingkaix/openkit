@@ -25,6 +25,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.light-app-select',
   'catalog.light-app-pin',
   'data_source_catalog.authority.update',
+  'workspace.credential-binding.update',
   'app.update.start',
   'app.update.start.handoff',
   'administration.server-mcp-create',
@@ -297,6 +298,17 @@ export const ControlStandaloneAuditInputSchema = z
         event.severity === 'info' &&
         typeof event.resourceRevision === 'number' &&
         event.resource?.startsWith(stage === 'catalog.plugin-import' ? 'plugin:' : 'mcp:') === true
+      );
+    if (stage === 'workspace.credential-binding.update')
+      return (
+        workspaceId !== undefined &&
+        event.workspaceId === workspaceId &&
+        event.actor?.kind === 'user' &&
+        event.category === 'system' &&
+        event.outcome === 'succeeded' &&
+        event.severity === 'info' &&
+        typeof event.agentId === 'string' &&
+        event.resource?.startsWith(`workspace-credential-binding:${event.agentId}:`) === true
       );
     if (stage === 'data_source_catalog.authority.update')
       return (
