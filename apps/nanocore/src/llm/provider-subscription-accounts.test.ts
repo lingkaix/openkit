@@ -37,10 +37,14 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -3794,12 +3798,28 @@ describe('ProviderSubscriptionAccountManager', () => {
     const rawAuditPair = accountPair('raw_audit_insert');
     await rawAuditFixture.manager.createAccount(rawAuditPair);
     const rawAuditCanary = 'raw-audit-insert-failure-canary';
-    rawAuditFixture.coreDb.sqlite.exec(`CREATE TEMP TRIGGER fail_raw_audit_insert
-      BEFORE INSERT ON audit_events
-      FOR EACH ROW
-      BEGIN
-        SELECT RAISE(FAIL, '${rawAuditCanary}');
-      END`);
+    const rawAuditWriter = getControlStoreWorkerClient();
+    const publishRawAudit = rawAuditWriter.vault.bind(rawAuditWriter);
+    let rawAuditFailureEntered = false;
+    // Fail the actual publication boundary without retaining the canary in SQLite SQL text.
+    const rawAuditFailure = vi.spyOn(rawAuditWriter, 'vault').mockImplementation((...args) => {
+      if (
+        args[0] === rawAuditFixture.coreDb &&
+        args[1] === 'audit-insert' &&
+        Reflect.get(args[2], 'action') === 'provider_subscription.account.update' &&
+        Reflect.get(args[2], 'resource') ===
+          `provider-subscription:${rawAuditPair.subscriptionProviderId}:${rawAuditPair.accountSlotId}`
+      ) {
+        const failingPublication: Parameters<typeof rawAuditWriter.vault> = [...args];
+        failingPublication[3] = async () => {
+          await args[3]?.();
+          rawAuditFailureEntered = true;
+          throw new Error(rawAuditCanary);
+        };
+        return publishRawAudit(...failingPublication);
+      }
+      return publishRawAudit(...args);
+    });
 
     let rawAuditError: unknown;
     try {
@@ -3810,7 +3830,8 @@ describe('ProviderSubscriptionAccountManager', () => {
     expect.soft(rawAuditError).toBeInstanceOf(ProviderSubscriptionAccountError);
     expect.soft(rawAuditError).toMatchObject(PERSISTENCE_ERROR);
     expect.soft((rawAuditError as Error | undefined)?.message).toBe(PERSISTENCE_ERROR.message);
-    rawAuditFixture.coreDb.sqlite.exec('DROP TRIGGER fail_raw_audit_insert');
+    rawAuditFailure.mockRestore();
+    expect.soft(rawAuditFailureEntered).toBe(true);
     const injectedFailureCanaries = [revokeFailureCanary, rawAuditCanary];
     const injectedFailureEvidence = JSON.stringify({
       capturedConsole,
@@ -3959,6 +3980,7 @@ describe('ProviderSubscriptionAccountManager', () => {
     const deleteFirstLifecycle = lifecycleOperations(deleteFirstFixture.manager);
     const deletion = deleteFirstFixture.manager.deleteAccount(deleteFirstPair);
     const lateStart = deleteFirstLifecycle.startLogin(deleteFirstPair);
+    void lateStart.catch(() => undefined);
 
     await expect(deletion).resolves.toBeUndefined();
     await expectAccountError(() => lateStart, ACCOUNT_NOT_FOUND_ERROR);
@@ -5935,6 +5957,188 @@ describe('subscription account status dependency projection', () => {
 });
 
 describe('Codex settings and manual reset public behavior', () => {
+  it('awaits native lifecycle and reset Audit while the canonical Main Core handle is query-only', async () => {
+    const fixture = await codexManagementFixture();
+    const writer = getControlStoreWorkerClient();
+    const scope = nativeProductScope(fixture.dataRoot, { kind: 'server' });
+    await writer.open({
+      database: `core:${scope.path}`,
+      path: scope.path,
+      create: false,
+      initialize: 'core',
+      dataRoot: fixture.dataRoot,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    fixture.coreDb.sqlite.pragma('query_only = ON');
+    expect(fixture.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    const redeemRequestId = randomUUID();
+    const resource = `provider-subscription:${fixture.pair.subscriptionProviderId}:${fixture.pair.accountSlotId}`;
+    const resetResource = `${resource}:reset-credit:soon-credit:`;
+    const before = new Set(listServerAuditEvents(fixture.coreDb).map((event) => event.id));
+    const lifecycleHeld = deferredGate();
+    const releaseLifecycle = deferredGate();
+    const intentHeld = deferredGate();
+    const releaseIntent = deferredGate();
+    const outcomeHeld = deferredGate();
+    const releaseOutcome = deferredGate();
+    const apply = writer.vault.bind(writer);
+    const publication = vi.spyOn(writer, 'vault').mockImplementation(async (...args) => {
+      const result = await apply(...args);
+      if (args[0] === fixture.coreDb && args[1] === 'audit-insert') {
+        const action = Reflect.get(args[2], 'action');
+        if (action === 'provider_subscription.account.update') {
+          lifecycleHeld.resolve();
+          await releaseLifecycle.promise;
+        } else if (
+          action === 'provider_subscription.reset.manual' &&
+          Reflect.get(args[2], 'requestId') === redeemRequestId
+        ) {
+          if (Reflect.get(args[2], 'outcome') === 'unknown') {
+            intentHeld.resolve();
+            await releaseIntent.promise;
+          } else {
+            outcomeHeld.resolve();
+            await releaseOutcome.promise;
+          }
+        }
+      }
+      return result;
+    });
+    let update: Promise<Response> | undefined;
+    let reset: Promise<Response> | undefined;
+    let updateSettled = false;
+    let resetSettled = false;
+    const resetAudit = () =>
+      listServerAuditEvents(fixture.coreDb)
+        .filter((event) => event.requestId === redeemRequestId)
+        .map((event) => ({
+          actor: event.actor,
+          authentication: event.authentication,
+          requestId: event.requestId,
+          action: event.action,
+          resource: event.resource,
+          outcome: event.outcome,
+          errorCode: event.errorCode,
+        }));
+    const intent = {
+      actor: { kind: 'user', id: fixture.userId },
+      authentication: { credentialKind: 'local', credentialId: null },
+      requestId: redeemRequestId,
+      action: 'provider_subscription.reset.manual',
+      resource: resetResource,
+      outcome: 'unknown',
+      errorCode: null,
+    };
+    const transport = codexManagementTransport((body) => {
+      expect(body).toEqual({ credit_id: 'soon-credit', redeem_request_id: redeemRequestId });
+      expect(resetAudit()).toEqual([intent]);
+      return Response.json({
+        code: 'reset',
+        windows_reset: true,
+        provider_private: 'native-audit-reset-canary',
+      });
+    });
+    try {
+      update = fixture.invoke('account-update', { displayName: 'Native Audit Account' });
+      void update
+        .finally(() => {
+          updateSettled = true;
+        })
+        .catch(() => undefined);
+      const lifecycleStage = await Promise.race([
+        lifecycleHeld.promise.then(() => 'native-audit-held'),
+        update.then(() => 'returned'),
+      ]);
+      // Establish actual file publication before classifying the reached Audit stage.
+      expect(readAccountJson(fixture.dataRoot, fixture.pair).displayName).toBe(
+        'Native Audit Account'
+      );
+      expect(lifecycleStage).toBe('native-audit-held');
+      expect(updateSettled).toBe(false);
+      expect(
+        listServerAuditEvents(fixture.coreDb)
+          .filter((event) => !before.has(event.id))
+          .map((event) => ({
+            actor: event.actor,
+            authentication: event.authentication,
+            requestId: event.requestId,
+            action: event.action,
+            resource: event.resource,
+            outcome: event.outcome,
+          }))
+      ).toEqual([
+        {
+          actor: { kind: 'user', id: fixture.userId },
+          authentication: { credentialKind: 'local', credentialId: null },
+          requestId: null,
+          action: 'provider_subscription.account.update',
+          resource,
+          outcome: 'succeeded',
+        },
+      ]);
+      releaseLifecycle.resolve();
+      expect((await update).status).toBe(200);
+
+      reset = fixture.invoke('account-use-reset', { redeemRequestId });
+      void reset
+        .finally(() => {
+          resetSettled = true;
+        })
+        .catch(() => undefined);
+      expect(
+        await Promise.race([
+          intentHeld.promise.then(() => 'native-intent-held'),
+          reset.then(() => 'returned'),
+        ])
+      ).toBe('native-intent-held');
+      expect(resetSettled).toBe(false);
+      expect(transport.bodies).toEqual([]);
+      expect(resetAudit()).toEqual([intent]);
+      releaseIntent.resolve();
+      expect(
+        await Promise.race([
+          outcomeHeld.promise.then(() => 'native-outcome-held'),
+          reset.then(() => 'returned'),
+        ])
+      ).toBe('native-outcome-held');
+      expect(resetSettled).toBe(false);
+      expect(transport.bodies).toEqual([
+        { credit_id: 'soon-credit', redeem_request_id: redeemRequestId },
+      ]);
+      const retained = resetAudit();
+      expect(retained).toHaveLength(2);
+      expect(retained).toEqual(
+        expect.arrayContaining([
+          intent,
+          { ...intent, outcome: 'succeeded', errorCode: 'codex_reset_reset_windows_reset' },
+        ])
+      );
+      releaseOutcome.resolve();
+      const response = await reset;
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body).toMatchObject({
+        ...fixture.pair,
+        redeemRequestId,
+        creditId: 'soon-credit',
+        outcome: 'reset',
+        windowsReset: true,
+      });
+      expect(fixture.coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
+      const outward = JSON.stringify({ body, audit: listServerAuditEvents(fixture.coreDb) });
+      for (const canary of ['management-canary', 'native-audit-reset-canary'])
+        expect(outward.includes(canary)).toBe(false);
+    } finally {
+      releaseLifecycle.resolve();
+      releaseIntent.resolve();
+      releaseOutcome.resolve();
+      await update?.catch(() => undefined);
+      await reset?.catch(() => undefined);
+      publication.mockRestore();
+    }
+  });
+
   it('projects defaults and persists partial settings separately from the display label', async () => {
     const fixture = await codexManagementFixture();
     const status = await fixture.invoke('account-status');

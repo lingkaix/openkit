@@ -30,10 +30,11 @@ import {
 } from '@openkit/config-schema';
 import { allocateEntityId, isEntityId, isRecord } from '@openkit/protocol';
 import { createDirectoryExclusive } from '@openkit/storage';
-import { type RecordServerAuditEventInput, recordServerAuditEvent } from '../audit-events.js';
+import type { RecordServerAuditEventInput } from '../audit-events.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb } from '../storage/db.js';
 import { ensureCanonicalDirectory } from '../storage/workspace-file-records.js';
+import { recordVaultAuditEvent } from '../vault/vault-admin-audit-events.js';
 import {
   type VaultBackend,
   VaultBackendError,
@@ -775,11 +776,11 @@ export class ProviderSubscriptionAccountManager {
           return { ...exactPair, redeemRequestId, outcome: 'no_credit' };
         if (!credit) {
           const absent = { ...exactPair, redeemRequestId, outcome: 'no_credit' as const };
-          this.recordCodexReset(`${prefix}:`, redeemRequestId, trigger, absent);
+          await this.recordCodexReset(`${prefix}:`, redeemRequestId, trigger, absent);
           return absent;
         }
         resource = `${prefix}${encodeURIComponent(credit.id)}:${trigger === 'weekly' ? encodeURIComponent(weekly!.resetsAt) : ''}`;
-        this.recordCodexReset(resource, redeemRequestId, trigger);
+        await this.recordCodexReset(resource, redeemRequestId, trigger);
       }
       options.signal?.throwIfAborted();
       const creditId = decodeURIComponent(resource.slice(prefix.length).split(':')[0]!);
@@ -804,7 +805,7 @@ export class ProviderSubscriptionAccountManager {
       const originalTrigger = prior
         ? (prior.action.slice('provider_subscription.reset.'.length) as typeof trigger)
         : trigger;
-      this.recordCodexReset(resource, redeemRequestId, originalTrigger, outcome);
+      await this.recordCodexReset(resource, redeemRequestId, originalTrigger, outcome);
       return outcome;
     });
   }
@@ -865,15 +866,15 @@ export class ProviderSubscriptionAccountManager {
     }
   }
 
-  /** Records only non-secret exact reset identity in the existing Server Audit fields. */
-  private recordCodexReset(
+  /** Records non-secret exact reset identity and awaits its native Server Audit acknowledgement. */
+  private async recordCodexReset(
     resource: string,
     redeemRequestId: string,
     trigger: 'manual' | 'weekly' | 'expiring',
     result?: CodexAccountResetResult
-  ): void {
+  ): Promise<void> {
     const timestamp = new Date(this.canonicalNow());
-    recordServerAuditEvent({
+    await recordVaultAuditEvent({
       ...this.credentialAudit.getStore(),
       coreDb: this.coreDb,
       requestId: redeemRequestId,
@@ -2383,7 +2384,7 @@ export class ProviderSubscriptionAccountManager {
    * @param pair Provider-slot resource identity.
    * @param operation Lifecycle work.
    * @param audit Current admitted command attribution, when available.
-   * @returns Lifecycle result.
+   * @returns Lifecycle result after its native Audit acknowledgement.
    */
   private async withLifecycleAudit<T>(
     action: LifecycleAuditAction,
@@ -2400,14 +2401,14 @@ export class ProviderSubscriptionAccountManager {
     } catch (error) {
       const normalized = normalizeAccountError(error);
       try {
-        this.recordLifecycleAudit(action, pair, 'failed', normalized.code, audit);
+        await this.recordLifecycleAudit(action, pair, 'failed', normalized.code, audit);
       } catch {
         throw persistenceError();
       }
       throw normalized;
     }
     try {
-      this.recordLifecycleAudit(action, pair, 'succeeded', null, audit);
+      await this.recordLifecycleAudit(action, pair, 'succeeded', null, audit);
     } catch {
       throw persistenceError();
     }
@@ -2422,16 +2423,17 @@ export class ProviderSubscriptionAccountManager {
    * @param outcome Stable event outcome.
    * @param errorCode Stable error code for failures.
    * @param audit Current admitted command attribution, when available.
+   * @returns Resolves after the existing native Core Audit publication.
    */
-  private recordLifecycleAudit(
+  private async recordLifecycleAudit(
     action: LifecycleAuditAction,
     pair: ProviderSubscriptionAccountPair,
     outcome: 'succeeded' | 'failed',
     errorCode: ProviderSubscriptionAccountErrorCode | null,
     audit?: ProviderSubscriptionAuditContext
-  ): void {
+  ): Promise<void> {
     const timestamp = new Date(this.canonicalNow());
-    recordServerAuditEvent({
+    await recordVaultAuditEvent({
       ...(audit ?? this.credentialAudit.getStore()),
       action,
       category: 'system',

@@ -1670,8 +1670,19 @@ const vaultAuditActions = new Set<string>([
   'vault.resolve',
   'administration.mcp-discovery-preview',
   'administration.mcp-discovery-preview.delivery',
+  // These existing Server Audit actions retire the provider-subscription Main writer.
+  'provider_subscription.account.create',
+  'provider_subscription.account.update',
+  'provider_subscription.account.delete',
+  'provider_subscription.credential.store',
+  'provider_subscription.credential.rotate',
+  'provider_subscription.credential.revoke',
+  'provider_subscription.reconcile',
+  'provider_subscription.reset.manual',
+  'provider_subscription.reset.weekly',
+  'provider_subscription.reset.expiring',
 ]);
-/** One original prepared general Audit, admitted only for its existing Vault producers. */
+/** One original prepared general Audit, admitted only for existing Vault and subscription producers. */
 export const VaultAuditEventSchema = AuditEventSchema.extend({
   createdAt: z.string().datetime(),
   occurredAt: z.string().datetime(),
