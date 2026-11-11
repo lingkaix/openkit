@@ -24,6 +24,7 @@ import {
   type ControlDiscordChannelResult,
   ControlDiscordChannelResultSchema,
 } from '../channels/discord-codecs.js';
+import { BootConfigError } from '../config/mode.js';
 import type { AttentionDelivery } from '../notifications/attention.js';
 import {
   type AttentionEnqueueCommand,
@@ -2899,7 +2900,7 @@ class ControlStoreWorkerClient {
     return result;
   }
 
-  /** Native format setup precedes the owned readonly User handle; ACKed/current reads need no healthy writer. */
+  /** Native ownership precedes a cold readonly User handle; an ACKed/current read needs no healthy writer. */
   async openInitializedUserReadDb(dataRoot: string, userId: string): Promise<UserDb> {
     ensureUserLayout(dataRoot, userId);
     const path = userDbPath(dataRoot, userId);
@@ -2930,7 +2931,7 @@ class ControlStoreWorkerClient {
           throw new ControlStoreWorkerError('precondition', 'not-committed');
         }
       }
-      if (statSync(path, { throwIfNoEntry: false })) {
+      if (opening && statSync(path, { throwIfNoEntry: false })) {
         const reader = openUserReadDb(dataRoot, userId);
         try {
           if (!hasPendingUserMigrations(reader.sqlite)) return reader;
@@ -2939,14 +2940,32 @@ class ControlStoreWorkerClient {
           throw error;
         }
         reader.sqlite.close();
-        if (opening) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
       }
-      await this.open({
-        database,
-        path,
-        create: !statSync(path, { throwIfNoEntry: false }),
-        initialize: 'user',
-      });
+      // Cold readonly WAL connections create sidecars without owning their final cleanup.
+      // Admit the existing native owner first, including when the file is already current.
+      try {
+        await this.open({
+          database,
+          path,
+          create: !statSync(path, { throwIfNoEntry: false }),
+          initialize: 'user',
+        });
+      } catch (error) {
+        // Cold ownership must preserve the User read API's unsupported-history refusal.
+        if (
+          error instanceof ControlStoreWorkerError &&
+          error.code === 'migration_unsupported_user'
+        ) {
+          const refusal = new BootConfigError(
+            error.code,
+            'Unsupported user native Drizzle ledger identity.'
+          );
+          refusal.cause = error;
+          throw refusal;
+        }
+        throw error;
+      }
       const reader = openUserReadDb(dataRoot, userId);
       try {
         if (hasPendingUserMigrations(reader.sqlite))

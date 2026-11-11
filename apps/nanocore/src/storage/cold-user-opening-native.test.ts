@@ -49,6 +49,10 @@ import { readThreadReadReceipt } from './thread-read-receipts.js';
 
 const fault = vi.hoisted(() => ({
   userPath: '',
+  observeMain: undefined as undefined | ((db: unknown) => void),
+  observeNative: undefined as
+    | undefined
+    | ((event: 'posted' | 'reply', worker: NativeWorker, value: unknown) => void),
   fence: false,
   gate: new SharedArrayBuffer(8),
   handles: [] as Array<{ open: boolean; readonly: boolean }>,
@@ -72,6 +76,7 @@ vi.mock('better-sqlite3', async (load) => {
         const selected = fault.fence && args[0] === fault.userPath;
         const absent = selected && !existsSync(fault.userPath);
         const db = Reflect.construct(target, args, newTarget);
+        fault.observeMain?.(db);
         if (!selected) return db;
         if (absent) fault.createdOnMain++;
         fault.handles.push(db);
@@ -195,6 +200,7 @@ vi.mock('node:worker_threads', async (load) => {
           request.id !== undefined
         )
           fault.userOpenIds.add(request.id);
+        fault.observeNative?.('posted', this, request);
         super.postMessage(...args);
       }
       override emit(event: string | symbol, ...args: unknown[]): boolean {
@@ -225,6 +231,7 @@ vi.mock('node:worker_threads', async (load) => {
           }
           return true;
         }
+        if (event === 'message') fault.observeNative?.('reply', this, value);
         return super.emit(event, ...args);
       }
     },
@@ -252,6 +259,8 @@ afterEach(async () => {
   vi.restoreAllMocks();
   await closeRetrievalServices();
   for (const close of cleanup.splice(0).reverse()) await close();
+  fault.observeMain = undefined;
+  fault.observeNative = undefined;
   fault.userPath = '';
   fault.fence = false;
   fault.gate = new SharedArrayBuffer(8);
@@ -802,4 +811,219 @@ it('keeps original unsupported predecessor-ledger refusal when native User journ
   }
   expect(fault.nativeOpened).toBe(0);
   expect(fault.createdOnMain).toBe(0);
+});
+
+it('acknowledges the existing native User owner before returning a cold current reader and closes at rest', async () => {
+  const f = await fixture();
+  const exactReceipt = { status: 200, body: { readItemIds: [f.item.id], unreadItemIds: [] } };
+  expect(await f.call('thread.mark-read', { ...f.owner, itemIds: [f.item.id] })).toEqual(
+    exactReceipt
+  );
+  const setup = openUserReadDb(f.dataRoot, f.userId);
+  let journal: unknown[];
+  let schema: unknown[];
+  try {
+    journal = setup.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
+    schema = setup.sqlite
+      .prepare(
+        "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+      )
+      .all();
+    expect(journal.length).toBeGreaterThan(0);
+    expect(readThreadReadReceipt(setup, f.workspace.id, f.thread.id)).toEqual([f.item.id]);
+  } finally {
+    setup.sqlite.close();
+  }
+  const identity = statSync(fault.userPath);
+  const client = getControlStoreWorkerClient();
+  const database = `user:${fault.userPath}`;
+  let sequence = 0;
+  let phase = 'initial-close';
+  type Command = {
+    id: number;
+    operation: string;
+    path?: string;
+    create?: boolean;
+    initialize?: string;
+    phase: string;
+    posted: number;
+  };
+  const requests = new Map<NativeWorker, Map<number, Command>>();
+  const acks: Array<Command & { acknowledged: number }> = [];
+  const errors: Command[] = [];
+  const constructors = new Map<
+    Database.Database,
+    {
+      constructed: number;
+      readonly: boolean;
+      closeCalls: number;
+      closeQueryOnly?: unknown;
+      closed?: boolean;
+      closedAt?: number;
+    }
+  >();
+  fault.observeNative = (event, worker, value) => {
+    if (typeof value !== 'object' || value === null) return;
+    const message = value as {
+      id?: number;
+      operation?: string;
+      database?: string;
+      path?: string;
+      create?: boolean;
+      initialize?: string;
+      status?: string;
+    };
+    if (typeof message.id !== 'number') return;
+    if (event === 'posted') {
+      if (
+        message.database !== database &&
+        !(message.operation === 'shutdown' && requests.has(worker))
+      )
+        return;
+      if (!message.operation) return;
+      if (!requests.has(worker)) requests.set(worker, new Map());
+      requests.get(worker)!.set(message.id, {
+        id: message.id,
+        operation: message.operation,
+        path: message.path,
+        create: message.create,
+        initialize: message.initialize,
+        phase,
+        posted: ++sequence,
+      });
+      return;
+    }
+    const command = requests.get(worker)?.get(message.id);
+    if (!command) return;
+    requests.get(worker)!.delete(message.id);
+    if (message.status === 'ok') acks.push({ ...command, acknowledged: ++sequence });
+    else errors.push(command);
+  };
+  let reader: Awaited<ReturnType<typeof client.openInitializedUserReadDb>> | undefined;
+  try {
+    await client.close(database);
+    expect(acks.some((row) => row.phase === 'initial-close' && row.operation === 'close')).toBe(
+      true
+    );
+    expect({
+      wal: existsSync(`${fault.userPath}-wal`),
+      shm: existsSync(`${fault.userPath}-shm`),
+    }).toEqual({ wal: false, shm: false });
+    expect(fault.fence).toBe(false); // This lane observes real query policy; it never injects query_only.
+    fault.observeMain = (value) => {
+      const sqlite = value as Database.Database;
+      if (sqlite.name !== fault.userPath) return;
+      const row = { constructed: ++sequence, readonly: sqlite.readonly, closeCalls: 0 } as {
+        constructed: number;
+        readonly: boolean;
+        closeCalls: number;
+        closeQueryOnly?: unknown;
+        closed?: boolean;
+        closedAt?: number;
+      };
+      constructors.set(sqlite, row);
+      const close = sqlite.close;
+      sqlite.close = function () {
+        row.closeQueryOnly = this.pragma('query_only', { simple: true });
+        try {
+          return close.call(this);
+        } finally {
+          row.closeCalls++;
+          row.closed = !this.open;
+          row.closedAt = ++sequence;
+        }
+      };
+    };
+    phase = 'reopen';
+    reader = await client.openInitializedUserReadDb(f.dataRoot, f.userId);
+    const returnedAt = ++sequence;
+    expect(reader.sqlite.readonly).toBe(true);
+    expect(reader.sqlite.pragma('query_only', { simple: true })).toBe(1);
+    expect(readThreadReadReceipt(reader, f.workspace.id, f.thread.id)).toEqual([f.item.id]);
+    expect(reader.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+      journal
+    );
+    expect(
+      reader.sqlite
+        .prepare(
+          "SELECT type,name,tbl_name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+        )
+        .all()
+    ).toEqual(schema);
+    expect({ dev: statSync(fault.userPath).dev, ino: statSync(fault.userPath).ino }).toEqual({
+      dev: identity.dev,
+      ino: identity.ino,
+    });
+    const admitted = acks.filter((row) => row.phase === 'reopen' && row.operation === 'open');
+    expect(
+      admitted,
+      `Actual matching native owner acknowledgements: ${JSON.stringify(acks)}`
+    ).toHaveLength(1);
+    expect(admitted[0]).toMatchObject({ path: fault.userPath, create: false, initialize: 'user' });
+    const actualConstructor = constructors.get(reader.sqlite);
+    expect(actualConstructor).toBeDefined();
+    expect(actualConstructor!.readonly).toBe(true);
+    expect(actualConstructor!.constructed).toBeGreaterThan(admitted[0]!.acknowledged);
+    expect(returnedAt).toBeGreaterThan(admitted[0]!.acknowledged);
+    let code: string | undefined;
+    reader.sqlite.exec('SAVEPOINT cold_current_user_read_challenge');
+    try {
+      reader.sqlite
+        .prepare(
+          'DELETE FROM __drizzle_migrations WHERE id = (SELECT id FROM __drizzle_migrations ORDER BY id LIMIT 1)'
+        )
+        .run();
+    } catch (error) {
+      code =
+        typeof error === 'object' && error !== null && 'code' in error
+          ? String(error.code)
+          : 'UNCLASSIFIED';
+    } finally {
+      reader.sqlite.exec('ROLLBACK TO cold_current_user_read_challenge');
+      reader.sqlite.exec('RELEASE cold_current_user_read_challenge');
+    }
+    expect(code).toBe('SQLITE_READONLY');
+    expect(reader.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
+      journal
+    );
+    expect(await f.call('thread.read-state', f.owner)).toEqual(exactReceipt);
+    reader.sqlite.close();
+    expect(constructors.size).toBeGreaterThan(0);
+    for (const [sqlite, row] of constructors) {
+      expect(row.readonly).toBe(true);
+      expect(row.closeQueryOnly).toBe(1);
+      expect(row.closeCalls).toBe(1);
+      expect(row.closed).toBe(true);
+      expect(sqlite.open).toBe(false);
+    }
+    phase = 'final-user-close';
+    await client.close(database);
+    const closed = acks.filter(
+      (row) => row.phase === 'final-user-close' && row.operation === 'close'
+    );
+    expect(closed).toHaveLength(1);
+    for (const row of constructors.values())
+      expect(row.closedAt!).toBeLessThan(closed[0]!.acknowledged);
+    expect({
+      wal: existsSync(`${fault.userPath}-wal`),
+      shm: existsSync(`${fault.userPath}-shm`),
+    }).toEqual({ wal: false, shm: false });
+    phase = 'shutdown';
+    await shutdownControlStoreWorkerClient();
+    expect(acks.some((row) => row.phase === 'shutdown' && row.operation === 'shutdown')).toBe(true);
+    expect(errors).toEqual([]);
+    expect([...requests.values()].every((pending) => pending.size === 0)).toBe(true);
+    expect({
+      wal: existsSync(`${fault.userPath}-wal`),
+      shm: existsSync(`${fault.userPath}-shm`),
+    }).toEqual({ wal: false, shm: false });
+    expect({ dev: statSync(fault.userPath).dev, ino: statSync(fault.userPath).ino }).toEqual({
+      dev: identity.dev,
+      ino: identity.ino,
+    });
+  } finally {
+    if (reader?.sqlite.open) reader.sqlite.close();
+    fault.observeMain = undefined;
+    fault.observeNative = undefined;
+  }
 });
