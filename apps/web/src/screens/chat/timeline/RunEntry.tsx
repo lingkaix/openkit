@@ -57,6 +57,7 @@ export function RunEntry({
   onInspect,
   stepsInSheet,
   onOpenSteps,
+  onOpenAllSteps,
   stepsSheetOpen,
   runningStatus,
   showActivity,
@@ -79,6 +80,7 @@ export function RunEntry({
   /** Phone opens steps in a sheet instead of in the run. */
   stepsInSheet?: boolean;
   onOpenSteps?: () => void;
+  onOpenAllSteps?: () => void;
   stepsSheetOpen?: boolean;
   runningStatus?: ReactNode;
   showActivity: boolean;
@@ -248,7 +250,7 @@ export function RunEntry({
           {entry.outcome.text}
         </p>
       ) : null}
-      {steps.length > 0 ? (
+      {steps.length > 0 || entry.stats.stepCount > 0 ? (
         <div data-fold-depth="1">
           <Button
             variant="quiet"
@@ -265,6 +267,11 @@ export function RunEntry({
           >
             {stepsFoldLabel(entry.stats.stepCount, entry.stats.failedStepCount)}
           </Button>
+          {entry.stats.stepCount > 500 ? (
+            <Button variant="quiet" size="sm" onPress={onOpenAllSteps}>
+              {timelineCopy.openAllSteps}
+            </Button>
+          ) : null}
           {!stepsInSheet && (runLens === 'full' || stepsOpen) ? (
             <ul data-fold-depth="2" className="mt-2 flex flex-col gap-2">
               {groups.map((group) =>

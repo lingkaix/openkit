@@ -1,9 +1,16 @@
 import { createRequestId } from '@openkit/core-client';
 import { useQueryClient } from '@tanstack/react-query';
-import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react';
+import {
+  type ComponentProps,
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { usePersistentNavigation } from '../../app/AppShell';
-import { useConnection } from '../../app/core-client';
+import { useConnection, useCoreClient } from '../../app/core-client';
 import { useGenerativeSourceGroups } from '../../generative/source-groups';
 import {
   Button,
@@ -60,6 +67,7 @@ import {
   projectTimeline,
   runSeparatorCopy,
 } from './timeline/source';
+import { TimelineScroll } from './timeline/TimelineScroll';
 import { TimelineTime } from './timeline/TimelineTime';
 import {
   durationDateTime,
@@ -69,8 +77,41 @@ import {
   useReducedMotion,
 } from './timeline/time';
 import type { LensName } from './timeline/types';
+import {
+  timelineReadAvailable,
+  useCoalescedItems,
+  useRunItemWindow,
+  useTimelineWindow,
+} from './timeline/use-timeline-window';
+import {
+  completeDetails,
+  entryFromRun,
+  mergeDisplayedItems,
+  runHasDecision,
+  showJumpToLatest,
+  type TimelineAnchorRequest,
+} from './timeline/window';
 
 /** Seconds since a running Turn started. Zero when the timestamp cannot be read. */
+function itemBodyText(item: ThreadItem): string {
+  if ('text' in item && typeof item.text === 'string') return item.text;
+  if ('output' in item && typeof item.output === 'string') return item.output;
+  if ('content' in item && typeof item.content === 'string') return item.content;
+  if ('result' in item && typeof item.result === 'string') return item.result;
+  return '';
+}
+
+function mergeUnique(current: readonly ThreadItem[], extra: readonly ThreadItem[]): ThreadItem[] {
+  const seen = new Set(current.map((item) => item.id));
+  const merged = [...current];
+  for (const item of extra) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    merged.push(item);
+  }
+  return merged;
+}
+
 function elapsedSeconds(startedAt: string): number {
   const started = Date.parse(startedAt);
   if (!Number.isFinite(started)) return 0;
@@ -121,6 +162,14 @@ export interface ThreadStreamProps {
   stopPending?: boolean;
   /** Item anchor from a Needs you jump. */
   focusItemId?: string | null;
+  /** Window anchor. Defaults to latest. Item and run links set this from the URL. */
+  anchor?: TimelineAnchorRequest;
+  /** A run is in progress. The window refreshes every 5 seconds. */
+  running?: boolean;
+  /** A run is waiting to start. The window refreshes every 5 seconds. */
+  pending?: boolean;
+  /** Clears an Item, run, or catch-up anchor after Jump to latest. */
+  onJumpToLatest?: () => void;
   /** Open a row's owning surface. Same-thread anchors scroll instead. */
   onOpen?: (href: string) => void;
   /**
@@ -154,6 +203,10 @@ export function ThreadStream({
   mode,
   stopPending,
   focusItemId,
+  anchor: anchorProp,
+  running,
+  pending,
+  onJumpToLatest,
   onOpen,
   narrativeOnly,
   sheets,
@@ -164,6 +217,21 @@ export function ThreadStream({
       ? 'work'
       : readStoredLens()
   );
+  const client = useCoreClient();
+  const timelineOn = timelineReadAvailable(client);
+  const anchor = anchorProp ?? { kind: 'latest' as const };
+  const [anchorOverride, setAnchorOverride] = useState<TimelineAnchorRequest | null>(null);
+  const [anchorKey, setAnchorKey] = useState(() => JSON.stringify(anchor));
+  const nextAnchorKey = JSON.stringify(anchor);
+  if (nextAnchorKey !== anchorKey) {
+    setAnchorKey(nextAnchorKey);
+    setAnchorOverride(null);
+  }
+  const windowAnchor = anchorOverride ?? anchor;
+  const [allStepsTurnId, setAllStepsTurnId] = useState<string | null>(null);
+  const [followNew, setFollowNew] = useState({ count: 0, decision: false });
+  const following = useRef(windowAnchor.kind === 'latest');
+  const knownRunIds = useRef<Set<string>>(new Set());
   const [localDecision, setLocalDecision] = useState<string | null>(null);
   const [localSteps, setLocalSteps] = useState<string | null>(null);
   const [localInspect, setLocalInspect] = useState<string | null>(null);
@@ -177,19 +245,104 @@ export function ThreadStream({
   const [portalNode, setPortalNode] = useState<HTMLElement | null>(null);
   const connection = useConnection();
   const queryClient = useQueryClient();
-  const items = useThreadItems(workspaceId, threadId);
+  const items = useThreadItems(workspaceId, threadId, false, !timelineOn);
+  const liveSnapshot = useCoalescedItems(timelineOn ? items.data : undefined);
+  const timelineWindow = useTimelineWindow({
+    workspaceId,
+    threadId,
+    anchor: windowAnchor,
+    enabled: timelineOn,
+    running: Boolean(running),
+    pending: Boolean(pending),
+  });
+  const level2TurnId = timelineOn
+    ? (allStepsTurnId ?? expandedTurnId ?? sheets?.stepsTurnId ?? localSteps)
+    : null;
+  const level2 = useRunItemWindow({
+    workspaceId,
+    threadId,
+    turnId: level2TurnId,
+    enabled: timelineOn && Boolean(level2TurnId),
+  });
+  const [fullText, setFullText] = useState<Record<string, string>>({});
+  const scopeKey = `${workspaceId ?? ''}:${threadId}`;
+  const [seenScope, setSeenScope] = useState(scopeKey);
+  if (seenScope !== scopeKey) {
+    setSeenScope(scopeKey);
+    knownRunIds.current = new Set();
+    setFollowNew({ count: 0, decision: false });
+  }
+  useEffect(() => {
+    if (!timelineOn) return;
+    const next = timelineWindow.data?.runs ?? [];
+    const known = knownRunIds.current;
+    if (known.size === 0) {
+      for (const run of next) known.add(run.id);
+      return;
+    }
+    const oldestKnown = next.find((run) => known.has(run.id))?.admissionOrder;
+    let added = 0;
+    let decision = false;
+    for (const run of next) {
+      if (known.has(run.id)) continue;
+      known.add(run.id);
+      const prepended = oldestKnown !== undefined && run.admissionOrder < oldestKnown;
+      if (prepended || following.current) continue;
+      added += 1;
+      if (runHasDecision(run)) decision = true;
+    }
+    if (added > 0) {
+      setFollowNew((current) => ({
+        count: current.count + added,
+        decision: current.decision || decision,
+      }));
+    }
+  }, [timelineOn, timelineWindow.data]);
+  const liveKey = liveSnapshot
+    .map(
+      (item) =>
+        `${item.id}:${'text' in item && typeof item.text === 'string' ? item.text.length : 0}`
+    )
+    .join('|');
+  const seenLive = useRef<string | null>(null);
+  useEffect(() => {
+    if (!timelineOn) return;
+    // While the reader is at the end, the current text is the baseline.
+    // One coalesced burst still counts once the reader has scrolled up.
+    if (following.current) {
+      seenLive.current = liveKey;
+      return;
+    }
+    if (seenLive.current === null || seenLive.current === liveKey) {
+      seenLive.current = liveKey;
+      return;
+    }
+    seenLive.current = liveKey;
+    if (liveKey.length === 0) return;
+    setFollowNew((current) => ({ count: current.count + 1, decision: current.decision }));
+  }, [liveKey, timelineOn]);
   const cursor = useThreadItemCursor(workspaceId, threadId);
   const loadEarlier = useLoadEarlierItems(workspaceId, threadId);
   const earlierCursor =
     typeof cursor.data === 'string' && cursor.data.length > 0 ? cursor.data : null;
   const decisionScope = useRef<string | null>(null);
   const knownDecisionIds = useRef<Set<string>>(new Set());
-  const decisionIds = (items.data ?? [])
-    .filter((item) => item.type === 'approval-request' || item.type === 'user-input-request')
-    .map((item) => item.id)
-    .join('\n');
+  const decisionIds = (
+    timelineOn
+      ? (timelineWindow.data?.runs ?? []).flatMap((run) =>
+          run.narrative
+            .filter(
+              (item) => item.type === 'approval-request' || item.type === 'user-input-request'
+            )
+            .map((item) => item.id)
+        )
+      : (items.data ?? [])
+          .filter((item) => item.type === 'approval-request' || item.type === 'user-input-request')
+          .map((item) => item.id)
+  ).join('\n');
   useEffect(() => {
-    if (!workspaceId || !items.isSuccess) return;
+    const ready = timelineOn ? timelineWindow.isSuccess : items.isSuccess;
+    if (!workspaceId || !ready) return;
     const ids = decisionIds.length === 0 ? [] : decisionIds.split('\n');
     const scope = `${workspaceId}:${threadId}`;
     if (decisionScope.current !== scope) {
@@ -199,10 +352,29 @@ export function ThreadStream({
     }
     const arrived = ids.some((id) => !knownDecisionIds.current.has(id));
     knownDecisionIds.current = new Set(ids);
-    if (arrived) void queryClient.invalidateQueries({ queryKey: ['attention', workspaceId] });
-  }, [decisionIds, items.isSuccess, queryClient, threadId, workspaceId]);
+    if (!arrived) return;
+    if (timelineOn && !following.current) {
+      setFollowNew((current) => ({ ...current, decision: true }));
+    }
+    void queryClient.invalidateQueries({ queryKey: ['attention', workspaceId] });
+  }, [
+    decisionIds,
+    items.isSuccess,
+    queryClient,
+    threadId,
+    timelineOn,
+    timelineWindow.isSuccess,
+    workspaceId,
+  ]);
+  const historySuccess = timelineOn ? timelineWindow.isSuccess : items.isSuccess;
+  const historyLoading = timelineOn ? timelineWindow.isLoading : items.isLoading;
+  const historyError = timelineOn ? timelineWindow.isError : items.isError;
+  const historyDenied = isDeniedRead(timelineOn ? timelineWindow.error : items.error);
   const baselineCandidate =
-    items.isSuccess && (items.fetchStatus === 'idle' || items.isFetchedAfterMount);
+    historySuccess &&
+    (timelineOn
+      ? timelineWindow.fetchStatus === 'idle' || timelineWindow.isFetchedAfterMount
+      : items.fetchStatus === 'idle' || items.isFetchedAfterMount);
   const [baseline, setBaseline] = useState(() => ({
     workspaceId,
     threadId,
@@ -221,9 +393,19 @@ export function ThreadStream({
 
   const baselineReady =
     baseline.workspaceId === workspaceId && baseline.threadId === threadId && baseline.ready;
-  const sourceGroups = useGenerativeSourceGroups(items.data);
+  const windowRuns = timelineOn && timelineWindow.data ? timelineWindow.data.runs : null;
+  const anchoredItems = timelineWindow.data?.itemWindow
+    ? completeDetails(timelineWindow.data.itemWindow.items)
+    : [];
+  const feedItems = windowRuns
+    ? mergeUnique(mergeDisplayedItems(windowRuns, liveSnapshot), [
+        ...anchoredItems,
+        ...level2.completeItems,
+      ])
+    : (items.data ?? []);
+  const sourceGroups = useGenerativeSourceGroups(feedItems);
   const groupedSourceIds = new Set([...sourceGroups.values()].map((item) => item.id));
-  const live = useLiveThreadItems(workspaceId, threadId, items.isSuccess, baselineReady);
+  const live = useLiveThreadItems(workspaceId, threadId, historySuccess, baselineReady);
   const dashboard = live.data;
   const attention = useTimelineAttention(workspaceId);
   const reducedMotion = useReducedMotion();
@@ -240,23 +422,27 @@ export function ThreadStream({
     return () => clearInterval(timer);
   }, [liveElapsed]);
   useEffect(() => {
-    if (!focusItemId || items.isLoading || !items.data) return;
+    if (!focusItemId || historyLoading || feedItems.length === 0) return;
     if (itemLocated.current === focusItemId) return;
     if (focusTimelineItem(focusItemId)) itemLocated.current = focusItemId;
-  }, [focusItemId, items.data, items.isLoading]);
+  }, [feedItems.length, focusItemId, historyLoading]);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
-  const itemsDenied = isDeniedRead(items.error);
+  const itemsDenied = historyDenied;
   const [missedRefreshes, setMissedRefreshes] = useState(0);
   const seenRefreshError = useRef(0);
   useEffect(() => {
     if (itemsDenied || isDeniedRead(live.error)) toastQueue.clear();
   }, [itemsDenied, live.error]);
   useEffect(() => {
-    const stamp = Math.max(items.errorUpdatedAt, live.errorUpdatedAt);
-    if (!items.isError && !live.isError) {
+    const stamp = Math.max(
+      items.errorUpdatedAt,
+      live.errorUpdatedAt,
+      timelineOn ? timelineWindow.errorUpdatedAt : 0
+    );
+    if (!items.isError && !live.isError && !historyError) {
       seenRefreshError.current = 0;
       setMissedRefreshes(0);
       return;
@@ -265,10 +451,22 @@ export function ThreadStream({
       seenRefreshError.current = stamp;
       setMissedRefreshes((count) => count + 1);
     }
-  }, [items.errorUpdatedAt, items.isError, live.errorUpdatedAt, live.isError]);
+  }, [
+    historyError,
+    items.errorUpdatedAt,
+    items.isError,
+    live.errorUpdatedAt,
+    live.isError,
+    timelineOn,
+    timelineWindow.errorUpdatedAt,
+  ]);
   const fresh = freshnessCopy(
     missedRefreshes,
-    Math.max(items.dataUpdatedAt, live.dataUpdatedAt),
+    Math.max(
+      items.dataUpdatedAt,
+      live.dataUpdatedAt,
+      timelineOn ? timelineWindow.dataUpdatedAt : 0
+    ),
     clock
   );
   const holdReason = fresh ?? undefined;
@@ -285,14 +483,14 @@ export function ThreadStream({
   const selectedTurn = focusedDashboard?.turns.find((turn) => turn.id === focusTurnId);
   const focusKey = JSON.stringify([workspaceId, threadId, focusTurnId]);
   useEffect(() => {
-    if (!selectedTurn || items.isLoading || items.isError || !focusedElement.current) {
+    if (!selectedTurn || historyLoading || historyError || !focusedElement.current) {
       if (located.current !== focusKey) located.current = null;
       return;
     }
     if (located.current === focusKey) return;
     focusedElement.current.scrollIntoView({ block: 'center' });
     located.current = focusKey;
-  }, [focusKey, selectedTurn, items.isLoading, items.isError]);
+  }, [focusKey, historyError, historyLoading, selectedTurn]);
   const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !selectedTurn);
   useEffect(() => {
     setPortalNode(!phone && inspectedTurnId ? (panelHost?.current ?? null) : null);
@@ -304,7 +502,7 @@ export function ThreadStream({
     panelRef.current?.focus();
   }, [inspectedTurnId, panelHost, phone, phoneInspectId, portalNode]);
 
-  if (items.isLoading) {
+  if (historyLoading) {
     return (
       <div className="flex flex-col gap-5" aria-busy="true">
         <div className="ok-bar-slot" aria-hidden="true" />
@@ -315,11 +513,11 @@ export function ThreadStream({
     );
   }
 
-  if (itemsDenied || items.isError) {
+  if (historyDenied || historyError) {
     return (
       <ErrorBanner
-        message={itemsDenied ? timelineCopy.deniedRead : "Couldn't load this thread."}
-        onRetry={() => void items.refetch()}
+        message={historyDenied ? timelineCopy.deniedRead : "Couldn't load this thread."}
+        onRetry={() => void (timelineOn ? timelineWindow.refetch() : items.refetch())}
       />
     );
   }
@@ -328,13 +526,21 @@ export function ThreadStream({
   const activityByTurn = new Map(
     live.isError ? [] : dashboard?.runtimeActivity?.map((activity) => [activity.turnId, activity])
   );
-  const timeline = projectTimeline({
-    items: items.data ?? [],
-    turns: dashboard?.turns,
-    latestTurnId,
-    focusTurnId: selectedTurn ? focusTurnId : null,
-    activityTurnIds: new Set(activityByTurn.keys()),
-  });
+  const timeline = windowRuns
+    ? {
+        groups: windowRuns.map((run) => ({
+          turnId: run.id,
+          items: feedItems.filter((item) => item.turnId === run.id),
+        })),
+        entries: windowRuns.map((run) => entryFromRun(run)),
+      }
+    : projectTimeline({
+        items: feedItems,
+        turns: dashboard?.turns,
+        latestTurnId,
+        focusTurnId: selectedTurn ? focusTurnId : null,
+        activityTurnIds: new Set(activityByTurn.keys()),
+      });
   const groups = timeline.groups;
   const entryByTurn = new Map(timeline.entries.map((entry) => [entry.turnId, entry]));
   const participantNames = new Map(
@@ -355,7 +561,7 @@ export function ThreadStream({
   });
   const profileId = profile.state === 'ready' ? profile.profile.id : 'default';
   const scoped = orderNeedsYou(scopeNeedsYou(attention.data ?? [], [threadId])).map((row) =>
-    toNeedsYouRow(row, openHrefForRow(row), undefined, carriedQuestion(items.data, row.itemId))
+    toNeedsYouRow(row, openHrefForRow(row), undefined, carriedQuestion(feedItems, row.itemId))
   );
   const latestTurn = dashboard?.turns.at(-1);
   const lastKnownAt = latestTurn?.completedAt ?? latestTurn?.startedAt;
@@ -371,21 +577,21 @@ export function ThreadStream({
       errorMessage: turn.error?.message,
       reasoningEffort: turn.reasoningEffort,
     })),
-    items: items.data ?? [],
+    items: feedItems,
     blockingCount: scoped.filter((row) => row.blocking).length,
     lastKnown: latestTurn && lastKnownAt ? { status: latestTurn.status, at: lastKnownAt } : null,
   });
   const emphasis = planEmphasis({
     needsYou: scoped.length > 0,
     nowWaiting: nowModel.kind === 'waiting-for-you',
-    decisionIds: openDecisionIds(items.data ?? []),
+    decisionIds: openDecisionIds(feedItems),
   });
   const emphasized = new Set(emphasis.decisions);
   const alignment = buildAlignment({
     profileId,
     now: clock,
     taskInputs: dashboard?.taskInputs,
-    items: (items.data ?? []).map((item) => ({
+    items: feedItems.map((item) => ({
       id: item.id,
       type: item.type,
       createdAt: item.createdAt,
@@ -572,7 +778,7 @@ export function ThreadStream({
     }
     if (
       item.type === 'user-input-request' &&
-      (items.data ?? []).some(
+      feedItems.some(
         (candidate) =>
           candidate.type === 'user-input-response' &&
           candidate.userInputRequestId === item.userInputRequestId
@@ -606,7 +812,7 @@ export function ThreadStream({
         }
         resolvedApproval={
           item.type === 'approval-request'
-            ? (items.data ?? []).find(
+            ? feedItems.find(
                 (
                   candidate
                 ): candidate is Extract<typeof candidate, { type: 'approval-decision' }> =>
@@ -617,7 +823,7 @@ export function ThreadStream({
         }
         approvalRequestTitle={
           item.type === 'approval-decision'
-            ? (items.data ?? []).find(
+            ? feedItems.find(
                 (candidate): candidate is Extract<ThreadItem, { type: 'approval-request' }> =>
                   candidate.type === 'approval-request' &&
                   candidate.approvalRequestId === item.approvalRequestId
@@ -702,7 +908,7 @@ export function ThreadStream({
   }
 
   const activeInspectId = phone ? phoneInspectId : inspectedTurnId;
-  const inspectedItems = (items.data ?? []).filter((item) => item.turnId === activeInspectId);
+  const inspectedItems = feedItems.filter((item) => item.turnId === activeInspectId);
   const inspectedActivity = activeInspectId ? activityByTurn.get(activeInspectId) : undefined;
   const inspectedTurn = dashboard?.turns.find((turn) => turn.id === activeInspectId);
   const inspector = activeInspectId ? (
@@ -718,7 +924,7 @@ export function ThreadStream({
       onExpand={() => setSheetExpanded((open) => !open)}
     />
   ) : null;
-  const decisionItems = (items.data ?? []).filter(
+  const decisionItems = feedItems.filter(
     (item): item is Extract<ThreadItem, { type: 'approval-request' | 'user-input-request' }> =>
       item.type === 'approval-request' || item.type === 'user-input-request'
   );
@@ -731,9 +937,11 @@ export function ThreadStream({
     ? decisionQueue.findIndex((item) => item.id === openDecision.id)
     : -1;
   const decisionsAfter = decisionIndex >= 0 ? decisionQueue.length - decisionIndex - 1 : 0;
-  const stepItems = (items.data ?? []).filter(
-    (item) => item.turnId === stepsTurnId && isStepItem(item)
-  );
+  const stepSource =
+    timelineOn && stepsTurnId && level2TurnId === stepsTurnId && level2.completeItems.length > 0
+      ? level2.completeItems
+      : feedItems;
+  const stepItems = stepSource.filter((item) => item.turnId === stepsTurnId && isStepItem(item));
 
   return (
     <TimelineNowProvider now={clock}>
@@ -743,7 +951,7 @@ export function ThreadStream({
         workspaceId={workspaceId}
         threadId={threadId}
         viewerUserId={dashboard?.viewerUserId}
-        items={items.data ?? []}
+        items={feedItems}
         disabled={controlsReadOnly || live.isError}
       >
         <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
@@ -784,7 +992,7 @@ export function ThreadStream({
               </Button>
             </fieldset>
           ) : null}
-          {earlierCursor ? (
+          {!windowRuns && earlierCursor ? (
             <Button
               variant="quiet"
               size="sm"
@@ -803,175 +1011,253 @@ export function ThreadStream({
               onRetry={() => void live.refetch()}
             />
           ) : null}
-          {groups.map((group, index) => {
-            const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
-            const isLastGroup =
-              groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
-            const activity =
-              groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
-            const projected = entryByTurn.get(group.turnId);
-            const historicalFailure =
-              groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
-                ? (projected?.outcome?.text ?? timelineCopy.runFailed)
-                : null;
-            const runningStep =
-              groupTurn?.status === 'running' ? latestRunningStep(group.items) : undefined;
-            const namedAgent = groupTurn?.agentId
-              ? participantNames.get(`agent:${groupTurn.agentId}`)
-              : undefined;
-            const actorName = plainActorName(namedAgent, 'worker');
-            const runLens =
-              !phone && (lens === 'full' || expandedTurnId === group.turnId) ? 'full' : 'work';
-            const firstViewerMessage = group.items.find(
-              (item) =>
-                item.type === 'user-message' &&
-                item.actor.kind === 'user' &&
-                item.actor.id === dashboard?.viewerUserId
-            );
-            const entry =
-              projected ??
-              ({
-                turnId: group.turnId,
-                header: null,
-                narrative: [],
-                notes: [],
-                plan: null,
-                stats: { stepCount: 0, fileCount: 0, failedCommandCount: 0, failedStepCount: 0 },
-                long: false,
-                stepWindow: [],
-                outcome: null,
-              } as const);
+          <TimelineFrame
+            windowed={Boolean(windowRuns)}
+            topEntryId={windowRuns?.[0]?.id ?? null}
+            initiallyFollowing={windowAnchor.kind === 'latest'}
+            canEarlier={Boolean(timelineWindow.data?.beforeCursor)}
+            canLater={Boolean(timelineWindow.data?.afterCursor)}
+            paging={timelineWindow.paging}
+            onEarlier={timelineWindow.pageEarlier}
+            onLater={timelineWindow.pageLater}
+            showJump={showJumpToLatest(windowAnchor, timelineWindow.data?.afterCursor ?? null)}
+            onJump={() => {
+              setAnchorOverride({ kind: 'latest' });
+              setFollowNew({ count: 0, decision: false });
+              following.current = true;
+              onJumpToLatest?.();
+            }}
+            newCount={followNew.count}
+            decisionNew={followNew.decision}
+            onFollowChange={(next) => {
+              following.current = next;
+              if (next) setFollowNew({ count: 0, decision: false });
+            }}
+            onCatchUp={() => {
+              setAnchorOverride({ kind: 'latest' });
+              setFollowNew({ count: 0, decision: false });
+              following.current = true;
+              onJumpToLatest?.();
+            }}
+          >
+            {groups.map((group, index) => {
+              const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
+              const isLastGroup =
+                groups.findLastIndex((candidate) => candidate.turnId === group.turnId) === index;
+              const activity =
+                groupTurn && isLastGroup ? activityByTurn.get(group.turnId) : undefined;
+              const projected = entryByTurn.get(group.turnId);
+              const historicalFailure =
+                groupTurn?.status === 'failed' && groupTurn.id !== latestTurnId && isLastGroup
+                  ? (projected?.outcome?.text ?? timelineCopy.runFailed)
+                  : null;
+              const runningStep =
+                groupTurn?.status === 'running' ? latestRunningStep(group.items) : undefined;
+              const namedAgent = groupTurn?.agentId
+                ? participantNames.get(`agent:${groupTurn.agentId}`)
+                : undefined;
+              const actorName = plainActorName(namedAgent, 'worker');
+              const runLens =
+                !phone && (lens === 'full' || expandedTurnId === group.turnId) ? 'full' : 'work';
+              const firstViewerMessage = group.items.find(
+                (item) =>
+                  item.type === 'user-message' &&
+                  item.actor.kind === 'user' &&
+                  item.actor.id === dashboard?.viewerUserId
+              );
+              const entry =
+                projected ??
+                ({
+                  turnId: group.turnId,
+                  header: null,
+                  narrative: [],
+                  notes: [],
+                  plan: null,
+                  stats: { stepCount: 0, fileCount: 0, failedCommandCount: 0, failedStepCount: 0 },
+                  long: false,
+                  stepWindow: [],
+                  outcome: null,
+                } as const);
 
-            return (
-              <div
-                key={group.turnId}
-                className="flex flex-col gap-4"
-                ref={
-                  selectedTurn?.id === group.turnId &&
-                  groups.findIndex((candidate) => candidate.turnId === group.turnId) === index
-                    ? focusedElement
-                    : undefined
-                }
-              >
-                {selectedTurn?.id === group.turnId &&
-                groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
-                  <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
-                ) : null}
-                {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
-                <RunEntry
-                  entry={entry}
-                  items={group.items}
-                  turn={groupTurn}
-                  lens={inlineLens}
-                  expanded={phone ? false : expandedTurnId === group.turnId}
-                  stepsInSheet={phone}
-                  stepsSheetOpen={stepsTurnId === group.turnId}
-                  onOpenSteps={() => openSheet('steps', group.turnId)}
-                  actorName={actorName}
-                  omitTrigger={Boolean(firstViewerMessage)}
-                  durationMs={runDurationMs(groupTurn, Date.now())}
-                  hiddenIds={groupedSourceIds}
-                  renderItem={(item) => renderTimelineItem(item)}
-                  inspectRef={activeInspectId === group.turnId ? inspectButtonRef : undefined}
-                  inspected={activeInspectId === group.turnId}
-                  onInspect={() => {
-                    if (phone) {
-                      openSheet('inspect', group.turnId);
-                      return;
-                    }
-                    setInspectedTurnId((current) =>
-                      current === group.turnId ? null : group.turnId
-                    );
-                  }}
-                  runningStatus={
-                    runningStep && groupTurn ? (
-                      <div role="status" className="ok-meta text-fg">
-                        <Button
-                          variant="quiet"
-                          size="sm"
-                          onPress={() => {
-                            if (phone) openSheet('steps', group.turnId);
-                            else setExpandedTurnId(group.turnId);
-                          }}
-                        >
-                          <span>{actorName}</span>
-                          <span aria-hidden="true"> · </span>
-                          <span>running</span>
-                          <span aria-hidden="true"> · </span>
-                          <time
-                            dateTime={durationDateTime(
-                              elapsedSeconds(groupTurn.startedAt ?? '') * 1000
-                            )}
+              return (
+                <div
+                  key={group.turnId}
+                  data-timeline-entry={group.turnId}
+                  className="flex flex-col gap-4"
+                  ref={
+                    selectedTurn?.id === group.turnId &&
+                    groups.findIndex((candidate) => candidate.turnId === group.turnId) === index
+                      ? focusedElement
+                      : undefined
+                  }
+                >
+                  {selectedTurn?.id === group.turnId &&
+                  groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
+                    <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
+                  ) : null}
+                  {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
+                  <RunEntry
+                    entry={entry}
+                    items={group.items}
+                    turn={groupTurn}
+                    lens={inlineLens}
+                    expanded={phone ? false : expandedTurnId === group.turnId}
+                    stepsInSheet={phone}
+                    stepsSheetOpen={stepsTurnId === group.turnId}
+                    onOpenSteps={() => openSheet('steps', group.turnId)}
+                    onOpenAllSteps={() => {
+                      setAllStepsTurnId(group.turnId);
+                      if (phone) openSheet('steps', group.turnId);
+                    }}
+                    actorName={actorName}
+                    omitTrigger={Boolean(firstViewerMessage)}
+                    durationMs={runDurationMs(groupTurn, Date.now())}
+                    hiddenIds={groupedSourceIds}
+                    renderItem={(item) => renderTimelineItem(item)}
+                    inspectRef={activeInspectId === group.turnId ? inspectButtonRef : undefined}
+                    inspected={activeInspectId === group.turnId}
+                    onInspect={() => {
+                      if (phone) {
+                        openSheet('inspect', group.turnId);
+                        return;
+                      }
+                      setInspectedTurnId((current) =>
+                        current === group.turnId ? null : group.turnId
+                      );
+                    }}
+                    runningStatus={
+                      runningStep && groupTurn ? (
+                        <div role="status" className="ok-meta text-fg">
+                          <Button
+                            variant="quiet"
+                            size="sm"
+                            onPress={() => {
+                              if (phone) openSheet('steps', group.turnId);
+                              else setExpandedTurnId(group.turnId);
+                            }}
                           >
-                            {elapsedSeconds(groupTurn.startedAt ?? '')} seconds
-                          </time>
-                          <span aria-hidden="true"> · </span>
-                          <span>{runningStep.tool}</span>
-                        </Button>
-                      </div>
-                    ) : null
-                  }
-                  workerCue={Boolean(activity && activity.entries.length > 0) && runLens === 'work'}
-                  showActivity={Boolean(activity) && runLens === 'full'}
-                  activityLine={
-                    activity ? (
-                      <section
-                        aria-label="Runtime activity"
-                        aria-live="polite"
-                        className="rounded-ok border border-border bg-sunken p-4 text-sm"
-                      >
-                        <h3 className="font-semibold text-fg">Runtime activity</h3>
-                        {activity.entries.length > 0 ? (
-                          <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
-                        ) : null}
-                        <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
-                        <p className="mt-1 text-fg-muted">{captureCopy(activity.contentCapture)}</p>
-                        {activity.omittedEntryCount > 0 ? (
+                            <span>{actorName}</span>
+                            <span aria-hidden="true"> · </span>
+                            <span>running</span>
+                            <span aria-hidden="true"> · </span>
+                            <time
+                              dateTime={durationDateTime(
+                                elapsedSeconds(groupTurn.startedAt ?? '') * 1000
+                              )}
+                            >
+                              {elapsedSeconds(groupTurn.startedAt ?? '')} seconds
+                            </time>
+                            <span aria-hidden="true"> · </span>
+                            <span>{runningStep.tool}</span>
+                          </Button>
+                        </div>
+                      ) : null
+                    }
+                    workerCue={
+                      Boolean(activity && activity.entries.length > 0) && runLens === 'work'
+                    }
+                    showActivity={Boolean(activity) && runLens === 'full'}
+                    activityLine={
+                      activity ? (
+                        <section
+                          aria-label="Runtime activity"
+                          aria-live="polite"
+                          className="rounded-ok border border-border bg-sunken p-4 text-sm"
+                        >
+                          <h3 className="font-semibold text-fg">Runtime activity</h3>
+                          {activity.entries.length > 0 ? (
+                            <p className="mt-1 text-fg-muted">{timelineCopy.reportedByWorker}</p>
+                          ) : null}
+                          <p className="mt-1 text-fg-muted">{coverageCopy(activity.coverage)}</p>
                           <p className="mt-1 text-fg-muted">
-                            {omittedActivityCopy(activity.omittedEntryCount)}
+                            {captureCopy(activity.contentCapture)}
                           </p>
-                        ) : null}
-                        {activity.entries.length > 0 ? (
-                          <ol className="mt-3 flex flex-col gap-3">
-                            {activity.entries.map((report) => (
-                              <li key={report.sequence}>
-                                <div className="flex flex-wrap items-baseline gap-2">
-                                  <span className="font-medium text-fg">
-                                    {report.label ??
-                                      {
-                                        'child-started': timelineCopy.childStarted,
-                                        progress: timelineCopy.reportedProgress,
-                                        result: timelineCopy.reportedResult,
-                                        failure: timelineCopy.reportedFailure,
-                                      }[report.kind]}
-                                  </span>
-                                  <TimelineTime iso={report.observedAt} now={clock} />
-                                </div>
-                                {report.text !== undefined ? (
-                                  <p className="mt-1 whitespace-pre-wrap break-words text-fg">
-                                    {report.text}
-                                  </p>
-                                ) : null}
-                                {report.textTruncated ? (
-                                  <p className="mt-1 text-xs text-fg-muted">
-                                    {timelineCopy.textShortened}
-                                  </p>
-                                ) : null}
-                              </li>
-                            ))}
-                          </ol>
-                        ) : null}
-                      </section>
-                    ) : null
-                  }
-                />
-                {groupTurn?.status === 'failed' ? (
-                  <p className="ok-meta">{classifyRunError(groupTurn.error?.code).text}</p>
-                ) : null}
-                {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
-              </div>
-            );
-          })}
+                          {activity.omittedEntryCount > 0 ? (
+                            <p className="mt-1 text-fg-muted">
+                              {omittedActivityCopy(activity.omittedEntryCount)}
+                            </p>
+                          ) : null}
+                          {activity.entries.length > 0 ? (
+                            <ol className="mt-3 flex flex-col gap-3">
+                              {activity.entries.map((report) => (
+                                <li key={report.sequence}>
+                                  <div className="flex flex-wrap items-baseline gap-2">
+                                    <span className="font-medium text-fg">
+                                      {report.label ??
+                                        {
+                                          'child-started': timelineCopy.childStarted,
+                                          progress: timelineCopy.reportedProgress,
+                                          result: timelineCopy.reportedResult,
+                                          failure: timelineCopy.reportedFailure,
+                                        }[report.kind]}
+                                    </span>
+                                    <TimelineTime iso={report.observedAt} now={clock} />
+                                  </div>
+                                  {report.text !== undefined ? (
+                                    <p className="mt-1 whitespace-pre-wrap break-words text-fg">
+                                      {report.text}
+                                    </p>
+                                  ) : null}
+                                  {report.textTruncated ? (
+                                    <p className="mt-1 text-xs text-fg-muted">
+                                      {timelineCopy.textShortened}
+                                    </p>
+                                  ) : null}
+                                </li>
+                              ))}
+                            </ol>
+                          ) : null}
+                        </section>
+                      ) : null
+                    }
+                  />
+                  {groupTurn?.status === 'failed' ? (
+                    <p className="ok-meta">{classifyRunError(groupTurn.error?.code).text}</p>
+                  ) : null}
+                  {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
+                  {windowRuns?.find((run) => run.id === group.turnId)?.restrictedReferences ||
+                  windowRuns?.find((run) => run.id === group.turnId)?.interruptedBy.visibility ===
+                    'restricted' ? (
+                    <p className="ok-meta">{timelineCopy.restricted}</p>
+                  ) : null}
+                  {windowRuns
+                    ?.find((run) => run.id === group.turnId)
+                    ?.narrative.filter(
+                      (item) => item.detail.kind === 'preview' && item.detail.truncated
+                    )
+                    .map((item) =>
+                      item.detail.kind === 'preview' ? (
+                        <div key={item.id} className="ok-prose">
+                          <p>{fullText[item.id] ?? item.detail.text}</p>
+                          {fullText[item.id] ? null : (
+                            <Button
+                              variant="quiet"
+                              size="sm"
+                              onPress={() => {
+                                if (!workspaceId) return;
+                                void client.operations['thread.item-body']({
+                                  workspaceId,
+                                  threadId,
+                                  turnId: group.turnId,
+                                  itemId: item.id,
+                                }).then((body) => {
+                                  setFullText((current) => ({
+                                    ...current,
+                                    [item.id]: itemBodyText(body.item),
+                                  }));
+                                });
+                              }}
+                            >
+                              {timelineCopy.showFullText}
+                            </Button>
+                          )}
+                        </div>
+                      ) : null
+                    )}
+                </div>
+              );
+            })}
+          </TimelineFrame>
         </div>
       </ThreadReadReceipts>
       {inspector && !phone ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
@@ -1042,16 +1328,80 @@ export function ThreadStream({
           onClose={closeSheet}
         >
           <ul className="flex flex-col gap-2">
+            {level2.data?.beforeCursor ? (
+              <li>
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  onPress={level2.pageEarlier}
+                  isDisabled={level2.paging}
+                >
+                  {timelineCopy.loadEarlier}
+                </Button>
+              </li>
+            ) : null}
             {stepItems.map((item) => (
               <li key={item.id} className="ok-step">
                 {renderTimelineItem(item)}
               </li>
             ))}
+            {level2.data?.afterCursor ? (
+              <li>
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  onPress={level2.pageLater}
+                  isDisabled={level2.paging}
+                >
+                  {timelineCopy.loadLater}
+                </Button>
+              </li>
+            ) : null}
           </ul>
         </PhoneSheetFrame>
       ) : null}
+      {allStepsTurnId && !phone ? (
+        <div role="dialog" aria-label={timelineCopy.openAllSteps} className="ok-prose">
+          {level2.data?.beforeCursor ? (
+            <Button
+              variant="quiet"
+              size="sm"
+              onPress={level2.pageEarlier}
+              isDisabled={level2.paging}
+            >
+              {timelineCopy.loadEarlier}
+            </Button>
+          ) : null}
+          <ul className="flex flex-col gap-2">
+            {(level2.completeItems.length > 0 ? level2.completeItems : feedItems)
+              .filter((item) => item.turnId === allStepsTurnId && isStepItem(item))
+              .map((item) => (
+                <li key={item.id} className="ok-step">
+                  {renderTimelineItem(item)}
+                </li>
+              ))}
+          </ul>
+          {level2.data?.afterCursor ? (
+            <Button variant="quiet" size="sm" onPress={level2.pageLater} isDisabled={level2.paging}>
+              {timelineCopy.loadLater}
+            </Button>
+          ) : null}
+          <Button variant="quiet" size="sm" onPress={() => setAllStepsTurnId(null)}>
+            {timelineCopy.closeInspector}
+          </Button>
+        </div>
+      ) : null}
     </TimelineNowProvider>
   );
+}
+
+function TimelineFrame({
+  windowed,
+  children,
+  ...props
+}: { windowed: boolean; children: ReactNode } & ComponentProps<typeof TimelineScroll>) {
+  if (!windowed) return children;
+  return <TimelineScroll {...props}>{children}</TimelineScroll>;
 }
 
 function approvalEffectText(

@@ -660,7 +660,12 @@ function withEarlierItems(
   return [...earlier.filter((item) => !seen.has(item.id)), ...page];
 }
 
-export function useThreadItems(workspaceId: string | null, threadId: string, poll = false) {
+export function useThreadItems(
+  workspaceId: string | null,
+  threadId: string,
+  poll = false,
+  enabled = true
+) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   return useQuery({
@@ -681,7 +686,7 @@ export function useThreadItems(workspaceId: string | null, threadId: string, pol
         [];
       return withEarlierItems(earlier, page.items);
     },
-    enabled: Boolean(workspaceId),
+    enabled: Boolean(workspaceId) && enabled,
     refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
   });

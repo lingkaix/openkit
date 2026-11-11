@@ -3,6 +3,7 @@
 .ok-timeline {
   max-width: 100%;
   overflow-x: clip;
+  overflow-anchor: auto;
 }
 
 .ok-prose {

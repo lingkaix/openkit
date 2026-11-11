@@ -43,6 +43,8 @@ import { useTimelineSheets } from './timeline/PhoneChrome';
 import { selectAgentProfile } from './timeline/profiles';
 import { SendFailure, SendPending } from './timeline/SendState';
 import type { LensName } from './timeline/types';
+import { timelineReadAvailable, useTimelineWindow } from './timeline/use-timeline-window';
+import { anchorFromSearch, turnHasCompletedAnswer } from './timeline/window';
 import { composerVoice } from './voice';
 
 export interface ThreadScreenProps {
@@ -78,9 +80,24 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   // Pending is the open Turn that is not running ("waiting"). It keeps today's 5s
   // items poll. A running Turn stays on the event stream. Terminal Turns do not poll.
   const waitingTurn = dashboard.data?.turns.some((turn) => turn.status === 'pending');
-  const items = useThreadItems(workspaceId, threadId, Boolean(waitingTurn) && !activeTurn);
-  const targets = useConversationTargets(workspaceId, threadId);
   const client = useCoreClient();
+  const timelineOn = timelineReadAvailable(client);
+  const searchAnchor = anchorFromSearch(location.search);
+  const timelineWindow = useTimelineWindow({
+    workspaceId,
+    threadId,
+    anchor: searchAnchor,
+    enabled: timelineOn,
+    running: Boolean(activeTurn),
+    pending: Boolean(waitingTurn) && !activeTurn,
+  });
+  const items = useThreadItems(
+    workspaceId,
+    threadId,
+    Boolean(waitingTurn) && !activeTurn && !timelineOn,
+    !timelineOn
+  );
+  const targets = useConversationTargets(workspaceId, threadId);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
   const send = useSendTurn();
@@ -198,12 +215,14 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     (turn) =>
       // Product projection that differs from sealed terminals: feedback is offered for completed Turns only.
       turn.status === 'completed' &&
-      items.data?.some(
-        (item) =>
-          item.turnId === turn.id &&
-          item.type === 'assistant-message' &&
-          item.status === 'completed'
-      ) === true
+      (timelineOn
+        ? turnHasCompletedAnswer(timelineWindow.data?.runs ?? [], turn.id)
+        : items.data?.some(
+            (item) =>
+              item.turnId === turn.id &&
+              item.type === 'assistant-message' &&
+              item.status === 'completed'
+          ) === true)
   );
   const feedback = useTurnFeedback(workspaceId ?? '', threadId, feedbackTurn?.id ?? null);
   const submitFeedback = useSubmitTurnFeedback();
@@ -510,7 +529,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
           <div className="mx-auto w-full max-w-[760px] px-6 py-6">
             <ThreadStream
               workspaceId={workspaceId}
@@ -518,6 +537,21 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               readOnly={disconnected}
               focusTurnId={new URLSearchParams(location.search).get('turnId')}
               focusItemId={new URLSearchParams(location.search).get('item')}
+              anchor={searchAnchor}
+              running={Boolean(activeTurn)}
+              pending={Boolean(waitingTurn) && !activeTurn}
+              onJumpToLatest={() => {
+                const params = new URLSearchParams(location.search);
+                params.delete('item');
+                params.delete('attention');
+                params.delete('turnId');
+                params.delete('catchUp');
+                const search = params.toString();
+                navigate(
+                  { pathname: location.pathname, search: search ? `?${search}` : '' },
+                  { replace: true }
+                );
+              }}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
               panelHost={panelHost}
               lens={lens}
