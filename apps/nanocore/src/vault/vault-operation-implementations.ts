@@ -1152,7 +1152,7 @@ export function createVaultOperationImplementations(
         ? `Core-confirmed Login quarantine; Workspace ${context.lineage.workspaceId}; generation ${caller.attributes.materialVersion}; failure invalid-grant.`
         : null;
     const userId = caller.userId;
-    const userDb = dependencies.repositoryUserDb(userId);
+    const userDb = await dependencies.repositoryUserDb(userId);
     try {
       // Finite Policy reads need the existing native User migrations before first use.
       const userPath = nativeUserDatabasePath(userDb);

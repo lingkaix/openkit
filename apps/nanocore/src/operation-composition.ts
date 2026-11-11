@@ -188,8 +188,10 @@ export interface OperationInvocationDependencies {
     ProviderSubscriptionAccountManager,
     'gatewayUnavailableReason'
   >;
-  /** Opens the actual public caller's existing User evidence home. */
-  readonly repositoryUserDb?: (userId: string) => import('./storage/db.js').UserDb;
+  /** Opens the caller's owned User reader after native first-use initialization. */
+  readonly repositoryUserDb?: (
+    userId: string
+  ) => import('./storage/db.js').UserDb | Promise<import('./storage/db.js').UserDb>;
   readonly store?: FsStore;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;

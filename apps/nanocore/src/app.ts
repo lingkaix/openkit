@@ -248,13 +248,11 @@ import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import {
   type CoreDb,
+  openAdmittedWorkspaceReadDb,
   openBootVerifiedWorkspaceDb,
-  openUserDb,
-  openWorkspaceDb,
   type WorkspaceDb,
 } from './storage/db.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
-import { applyScopedMigrations } from './storage/migrate.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-admissions.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
@@ -1211,20 +1209,21 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   /** Opens the actual caller's User evidence home; native commands own writes. */
   function repositoryUserDb(userId: string) {
-    return openUserDb(repositoryCoreDb().dataRoot, userId);
+    return getControlStoreWorkerClient().openInitializedUserReadDb(
+      repositoryCoreDb().dataRoot,
+      userId
+    );
   }
 
   /**
    * Opens the workspace-owned repository database for one request.
    *
    * @param workspaceId Workspace id that owns repository resources.
-   * @returns Migrated workspace database handle.
+   * @returns Owned readonly handle for the already-admitted Workspace.
    */
   function repositoryWorkspaceDb(workspaceId: string): WorkspaceDb {
     const coreDb = repositoryCoreDb();
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb);
-    return workspaceDb;
+    return openAdmittedWorkspaceReadDb(coreDb.dataRoot, workspaceId);
   }
 
   /**
@@ -2415,9 +2414,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         if (options.coreDb) return repositoryWorkspaceDb(workspaceId);
         const root = sharedStore.getDataRoot();
         if (!root) throw new Error('Pending requests have no workspace database.');
-        const workspaceDb = openWorkspaceDb(root, workspaceId);
-        applyScopedMigrations(workspaceDb);
-        return workspaceDb;
+        return openAdmittedWorkspaceReadDb(root, workspaceId);
       },
     });
   /** Uses current canonical shared supply without activating saved but unadmitted local configuration. */
