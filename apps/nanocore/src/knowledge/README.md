@@ -1,5 +1,7 @@
 # Knowledge Format
 
+Captured Memory Source rechecks use the existing read-only, query-only User connection after the current self-only authority checks.
+
 Notebook initialization, Memory forget and Source publication import receipt input hashing from `../storage/control-store-input.ts`. Source publication imports the canonical conflict class from `../operation-error.ts`; its receipt type import from Main idempotent orchestration is erased.
 
 Schema application history retains the exact reviewed and actual reports in one immutable, digest-bound record, together with the original and candidate schema bytes. The original receipt and Audit select that record; replay returns its actual applied Notebook revision. Missing or contradictory actual evidence requires recovery. This pre-v0.1.0 format correction uses the final reset boundary, without a reviewed-only reader.

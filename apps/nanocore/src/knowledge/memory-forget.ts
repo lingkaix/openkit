@@ -7,7 +7,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { assertCanonicalDirectory } from '@openkit/storage';
-import Database from 'better-sqlite3';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import { authorizeWorkspace, evaluateProductAuthorization } from '../auth/operation-authorizer.js';
@@ -30,7 +30,12 @@ import {
   readPendingRequest,
 } from '../runtime/pending-requests.js';
 import { commandInputHash } from '../storage/control-store-input.js';
-import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openAdmittedWorkspaceReadDb,
+  openUserReadDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 
 import { type MemoryWriter, readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
@@ -236,7 +241,7 @@ export function checkMemoryForgetSourceAdmission(
     const file = lstatSync(path);
     if (!file.isFile() || file.isSymbolicLink()) throw new Error('Unavailable User database.');
     // Approval and preview readers must never initialize, migrate or replace a missing User database.
-    sqlite = new Database(path, { readonly: true, fileMustExist: true });
+    sqlite = openUserReadDb(coreDb.dataRoot, actor.userId).sqlite;
     const admitted = admitUserMemorySources(
       {
         coreDb,

@@ -122,7 +122,6 @@
     "apps/nanocore/src/internal-agents/assistant-skill-resources.ts\tfs:realpathSync\te7b569cdfc59c5e51d0ace47ae35e877a5f92cf605074457c7d3e6039b4af7d2": 1,
     "apps/nanocore/src/internal-agents/assistant-skill-resources.ts\tfs:realpathSync\te99efe4810f360f623f7fe91c830d02536f893f9a46346f19f66efe4ef49f511": 1,
     "apps/nanocore/src/knowledge/memory-forget.ts\tfs:lstatSync\te02f4297315401894c44540303933587154025db94a198ca9eb9b0f3d073db04": 1,
-    "apps/nanocore/src/knowledge/memory-forget.ts\tsqlite:constructor\t109d542f333a5b86b370e7054f484c8ccba77f2709061cb4cb7570233253a62b": 1,
     "apps/nanocore/src/knowledge/memory-history.ts\tfs:readFileSync\tf3ef29b0dce886d90dec341ee66714d8829e3d7184341046f9d2c2666de4b0b2": 1,
     "apps/nanocore/src/knowledge/memory-maintenance.ts\tfs:lstatSync\t5d13ca4817caa75c6ea33de539358582ff2317dc7e9a76bb37fd1236f6a96dff": 2,
     "apps/nanocore/src/knowledge/memory-maintenance.ts\tfs:mkdirSync\t4fccb661eb27d514bf180ebbf5138771a50b6409903ff4f6cf1e91e56f97753e": 1,
