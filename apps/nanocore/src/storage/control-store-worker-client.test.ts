@@ -1,9 +1,10 @@
 // openkit-test-platform: posix
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   existsSync,
   linkSync,
   mkdtempSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -15,12 +16,20 @@ import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { Worker } from 'node:worker_threads';
-import type { JsonOperationId } from '@openkit/app-api-schemas';
-import { allocateEntityId, writeRetainedV1 } from '@openkit/protocol';
+import type { JsonOperationId, LightAppSchemaInput } from '@openkit/app-api-schemas';
+import { allocateEntityId, type Item, writeRetainedV1 } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import {
+  createLightApp,
+  createRecord,
+  getLightApp,
+  getRecord,
+  type KernelCommandContext,
+  updateRecord,
+} from '../generative-kernel/commands.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { recordProductPermissionDecision } from '../policy/permission-decisions.js';
@@ -29,13 +38,19 @@ import {
   createSchedulerExecutionAttempt,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import {
+  createSchedulerAdmissionEntry,
+  requireSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { lightAppDbPath, openExistingAppDb } from './app-db.js';
+import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
+import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -46,7 +61,7 @@ import {
 } from './control-store-worker-protocol.js';
 import { createDataRootAdminOperationImplementations } from './data-root-admin-operations.js';
 import * as dataRootBackup from './data-root-backup.js';
-import { openCoreDb, openUserDb, openWorkspaceDb } from './db.js';
+import { bindCoreSqlite, openCoreDb, openUserDb, openUserReadDb, openWorkspaceDb } from './db.js';
 import {
   coreDbPath,
   ensureLayout,
@@ -55,7 +70,9 @@ import {
   userDbPath,
   workspaceDbPath,
 } from './fs-layout.js';
-import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { applyMigrations, applyScopedMigrations, hasPendingUserMigrations } from './migrate.js';
+import { publishSchedulerAdmission } from './scheduler-admission-publication.js';
+import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
 const interception = vi.hoisted(() => ({
@@ -76,8 +93,18 @@ vi.mock('node:worker_threads', async (load) => {
             const {parentPort, workerData} = require('node:worker_threads');
             const Database = require(workerData.databaseModule);
             const original = Database.prototype.exec;
-            function hold() {
+            function hold(path, sqlite) {
               if (workerData.gate.length > 3 && Atomics.load(workerData.gate, 3) !== workerData.index) return;
+              if (workerData.gate.length > 4) {
+                const length = Atomics.load(workerData.gate, 4);
+                const selected = String.fromCharCode(...workerData.gate.slice(5, 5 + length));
+                if (path !== selected) return;
+              }
+              if (workerData.gate.length > 4 && Atomics.load(workerData.gate, 2) === 2) {
+                let synchronous = -1;
+                try { synchronous = Number(sqlite.pragma('synchronous', {simple:true})); } catch {}
+                Atomics.store(workerData.gate, workerData.gate.length - 1, synchronous);
+              }
               if (workerData.gate.length > 2 && Atomics.load(workerData.gate, 2) === 1) {
                 Atomics.add(workerData.gate, 0, 1);
                 Atomics.wait(workerData.gate, 1, 0);
@@ -92,9 +119,9 @@ vi.mock('node:worker_threads', async (load) => {
             };
             Database.prototype.exec = function(sql) {
               const commit = /^COMMIT$/i.test(sql);
-              if (commit && workerData.point === 'before') hold();
+              if (commit && workerData.point === 'before') hold(this.name, this);
               const result = original.call(this, sql);
-              if (commit && workerData.point === 'after') hold();
+              if (commit && workerData.point === 'after') hold(this.name, this);
               return result;
             };
           `;
@@ -244,7 +271,7 @@ async function productPoolFixture() {
   });
   const call = <K extends JsonOperationId>(workspaceId: string, id: K, input: object) =>
     invoke(id, { workspaceId, ...input }, { kind: 'public', actor: { kind: 'session', userId } });
-  return { client, root, workspaces, call };
+  return { client, root, workspaces, call, coreDb, userId, store };
 }
 
 /** Reuses the existing native journal receipt table to observe this transport's real COMMIT boundary. */
@@ -1568,6 +1595,835 @@ describe('control writer parent admission', () => {
     ).rejects.toMatchObject({ code: 'invalid-request', commit: 'not-committed' });
     await expect(f.client.write('user', metadata('healthy'))).resolves.toHaveLength(1);
   });
+});
+
+// Core Storage / Snapshot Cut And Capture Protection: a drain alone cannot authorize a moving cut.
+// These tests qualify the native Core/User/Workspace/App SQL join, not mutable file-owner closure.
+describe('typed global capture cut across native physical owners', () => {
+  it.each(['Core', 'User', 'Workspace'] as const)(
+    'captures one exact typed cut after the held %s FULL ACK and excludes later native mutations',
+    async (heldScope) => {
+      // Extra test-owned slots select an exact physical DB even when User and Workspace share a host.
+      interception.gate = new SharedArrayBuffer(4 * (5 + 4096));
+      interception.point = 'before';
+      const gate = new Int32Array(interception.gate);
+      Atomics.store(gate, 0, 1);
+      Atomics.store(gate, 3, -1); // No setup host is selected for a COMMIT hold.
+      const f = await productPoolFixture();
+      roots.push(`${f.root}.backups`);
+      const workspace = f.workspaces[0]!;
+      const actor = { kind: 'user' as const, id: f.userId };
+      const turns: Array<Awaited<ReturnType<FsStore['createTurn']>>> = [];
+      for (const name of [
+        'First queued work',
+        'Later queued work',
+        'Read membership',
+        'Item publication',
+      ]) {
+        const thread = await f.store.createThread(workspace.id, name);
+        turns.push(await f.store.createTurn(workspace.id, thread.id, name, actor));
+      }
+      const userTurn = turns[2]!;
+      const itemTurn = turns[3]!;
+      const stamp = new Date().toISOString();
+      const message = (
+        turn: (typeof turns)[number],
+        text: string
+      ): Extract<Item, { type: 'assistant-message' }> => ({
+        id: allocateEntityId('it'),
+        owner: turn.owner,
+        threadId: turn.threadId,
+        turnId: turn.id,
+        type: 'assistant-message',
+        status: 'completed',
+        text,
+        createdAt: stamp,
+        completedAt: stamp,
+      });
+      const eligible = [
+        message(userTurn, 'Actually displayed first reply.\r\n'),
+        message(userTurn, 'Actually displayed later reply. 🚀'),
+      ];
+      for (const item of eligible) await f.store.createItem(item);
+      const workspaceItems = [
+        message(itemTurn, 'Included native Item bytes.\r\n'),
+        message(itemTurn, 'Later native Item bytes. 🚀'),
+      ];
+      const coreScope = nativeProductScope(f.root, { kind: 'server' });
+      const coreDatabase = `core:${coreScope.path}`;
+      await f.client.open({
+        database: coreDatabase,
+        path: coreScope.path,
+        dataRoot: f.root,
+        create: false,
+        initialize: 'core',
+        productOwner: coreScope.owner,
+        contentMount: coreScope.contentMount,
+      });
+      const userDb = await f.client.openInitializedUserReadDb(f.root, f.userId);
+      const coreCommands = turns.slice(0, 2).map((turn, index) => ({
+        mode: 'create' as const,
+        entry: {
+          backendId: 'nanohost',
+          queueEntryId: `typed-capture-${index}-${randomUUID()}`,
+          requestId: randomUUID(),
+          requestedAgentId: 'agent_worker',
+          timestamp: stamp,
+          triggerActor: actor,
+          workspaceId: workspace.id,
+          threadId: turn.threadId,
+          turnId: turn.id,
+          turnInput:
+            index === 0
+              ? 'Include this original Core admission.\r\n'
+              : 'Exclude this later Core admission. 🚀',
+        },
+      }));
+      const userDatabase = `user:${userDbPath(f.root, f.userId)}`;
+      const workspaceDatabase = `workspace:${workspaceDbPath(f.root, workspace.id)}`;
+      const selectors = {
+        Core: { operation: 'scheduler-admission', database: coreDatabase },
+        User: { operation: 'thread-read-membership', database: userDatabase },
+        Workspace: { operation: 'item', database: workspaceDatabase },
+      };
+      f.coreDb.sqlite.pragma('query_only = ON');
+      const initialPosted = Promise.withResolvers<void>();
+      const captureEntered = Promise.withResolvers<void>();
+      const releaseCapture = Promise.withResolvers<void>();
+      const initialRoles = new Set<string>();
+      const frames: Array<{ operation: string; database: string; id: number }> = [];
+      let initialPhase = true;
+      let armed = false;
+      const originalPost = Worker.prototype.postMessage;
+      vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        ...args
+      ) {
+        const request = args[0] as { operation?: string; database?: string; id?: number };
+        for (const [role, selector] of Object.entries(selectors)) {
+          if (request.operation !== selector.operation || request.database !== selector.database)
+            continue;
+          if (typeof request.id !== 'number')
+            throw new Error('Typed native frame has no request identity.');
+          frames.push({ operation: request.operation, database: request.database, id: request.id });
+          if (initialPhase) {
+            initialRoles.add(role);
+            if (role === heldScope && !armed) {
+              const index = interception.workers.indexOf(this);
+              if (index < 0) throw new Error('Typed mutation used an unobserved native host.');
+              const selectedPath = realpathSync(
+                {
+                  Core: coreScope.path,
+                  User: userDbPath(f.root, f.userId),
+                  Workspace: workspaceDbPath(f.root, workspace.id),
+                }[heldScope]
+              );
+              if (selectedPath.length > gate.length - 5)
+                throw new Error('Owned test path does not fit its COMMIT selector.');
+              for (let position = 0; position < selectedPath.length; position++)
+                Atomics.store(gate, 5 + position, selectedPath.charCodeAt(position));
+              Atomics.store(gate, 4, selectedPath.length);
+              Atomics.store(gate, 3, index); // Exact actual host and DB, including shared-host routing.
+              Atomics.store(gate, 0, 0);
+              armed = true;
+            }
+            if (initialRoles.size === 3) initialPosted.resolve();
+          }
+        }
+        return Reflect.apply(originalPost, this, args);
+      });
+      const pauseEntered = Promise.withResolvers<void>();
+      let actualPauseAcquired = false;
+      const pause = f.client.pauseForDataRootBackup.bind(f.client);
+      vi.spyOn(f.client, 'pauseForDataRootBackup').mockImplementationOnce(async (...args) => {
+        const acquiring = pause(...args);
+        pauseEntered.resolve(); // The original global pause was called while the native gate is held.
+        const resume = await acquiring;
+        actualPauseAcquired = true; // Genuine original drain and global hold already own the cut.
+        captureEntered.resolve();
+        await releaseCapture.promise;
+        return resume; // Exact original release; no copy/manifest result is substituted.
+      });
+      vi.spyOn(dataRootBackup, 'writeHotDataRootBackup');
+      const tracked: Promise<unknown>[] = [];
+      const track = <T>(promise: Promise<T>) => {
+        tracked.push(promise);
+        void promise.catch(() => {}); // Observe early failures without replacing the original result.
+        return promise;
+      };
+      let userClosed = false;
+      let backupRoot: string | undefined;
+      try {
+        const initialCore = track(publishSchedulerAdmission(f.coreDb, coreCommands[0]!));
+        const initialUser = track(
+          advanceThreadReadReceipt(userDb, workspace.id, userTurn.threadId, [eligible[0]!.id])
+        );
+        const initialWorkspace = track(f.store.createItem(workspaceItems[0]!));
+        void Promise.all([initialCore, initialUser, initialWorkspace]).catch(initialPosted.reject);
+        await initialPosted.promise; // All three actual typed frames are posted before the capture request.
+        await waitForHold(gate);
+        expect(armed).toBe(true);
+        expect(initialRoles).toEqual(new Set(['Core', 'User', 'Workspace']));
+        const settled = new Set<string>();
+        for (const [name, pending] of [
+          ['Core', initialCore],
+          ['User', initialUser],
+          ['Workspace', initialWorkspace],
+        ] as const)
+          void pending.then(
+            () => {
+              settled.add(name);
+            },
+            () => {}
+          );
+        expect(settled.has(heldScope)).toBe(false);
+        if (heldScope === 'Core')
+          expect(() =>
+            requireSchedulerAdmissionEntry(f.coreDb, coreCommands[0]!.entry.queueEntryId)
+          ).toThrow();
+        if (heldScope === 'User')
+          expect(readThreadReadReceipt(userDb, workspace.id, userTurn.threadId)).toEqual([]);
+        if (heldScope === 'Workspace')
+          expect(f.store.listThreadItems(workspace.id, itemTurn.threadId)).toEqual([]);
+        const operations = createDataRootAdminOperationImplementations(f.root);
+        const backup = track(operations['backup.create']());
+        await Promise.race([
+          pauseEntered.promise,
+          backup.then(() => {
+            throw new Error('Backup bypassed the actual global pause entry.');
+          }),
+        ]);
+        await nextTurn();
+        expect(actualPauseAcquired).toBe(false); // Independent of the wrapper's later copy barrier.
+        expect(vi.mocked(dataRootBackup.writeHotDataRootBackup)).not.toHaveBeenCalled();
+        expect(existsSync(`${f.root}.backups`)).toBe(false);
+        release(gate);
+        await Promise.race([
+          captureEntered.promise,
+          backup.then(() => {
+            throw new Error('Backup bypassed its actual copy boundary.');
+          }),
+        ]);
+        expect(actualPauseAcquired).toBe(true);
+        const queue = await initialCore;
+        expect(queue.kind).toBe('queue');
+        if (queue.kind !== 'queue')
+          throw new Error('Core typed admission did not retain its queue entry.');
+        expect(await initialUser).toEqual([eligible[0]!.id]);
+        expect(await initialWorkspace).toEqual(workspaceItems[0]);
+        expect(
+          requireSchedulerAdmissionEntry(f.coreDb, coreCommands[0]!.entry.queueEntryId)
+        ).toEqual(queue.entry);
+        expect(readThreadReadReceipt(userDb, workspace.id, userTurn.threadId)).toEqual([
+          eligible[0]!.id,
+        ]);
+        expect(f.store.listThreadItems(workspace.id, itemTurn.threadId)).toEqual([
+          workspaceItems[0],
+        ]);
+        initialPhase = false;
+        const firstFrames = frames.slice();
+        expect(firstFrames).toHaveLength(3);
+        expect(new Set(firstFrames.map((frame) => frame.id)).size).toBe(3);
+        const lateEntered = new Set<string>();
+        const allLateEntered = Promise.withResolvers<void>();
+        const entered = (name: string) => {
+          lateEntered.add(name);
+          if (lateEntered.size === 3) allLateEntered.resolve();
+        };
+        const schedulerAdmission = f.client.schedulerAdmission.bind(f.client);
+        vi.spyOn(f.client, 'schedulerAdmission').mockImplementation((...args) => {
+          const result = schedulerAdmission(...args);
+          entered('Core');
+          return result;
+        });
+        const membership = f.client.threadReadMembership.bind(f.client);
+        vi.spyOn(f.client, 'threadReadMembership').mockImplementation((...args) => {
+          const result = membership(...args);
+          entered('User');
+          return result;
+        });
+        const append = f.client.appendItem.bind(f.client);
+        vi.spyOn(f.client, 'appendItem').mockImplementation((...args) => {
+          const result = append(...args);
+          entered('Workspace');
+          return result;
+        });
+        let laterAcknowledged = 0;
+        const laterCore = track(
+          publishSchedulerAdmission(f.coreDb, coreCommands[1]!).then((value) => {
+            laterAcknowledged++;
+            return value;
+          })
+        );
+        const laterUser = track(
+          advanceThreadReadReceipt(userDb, workspace.id, userTurn.threadId, [eligible[1]!.id]).then(
+            (value) => {
+              laterAcknowledged++;
+              return value;
+            }
+          )
+        );
+        const laterWorkspace = track(
+          f.store.createItem(workspaceItems[1]!).then((value) => {
+            laterAcknowledged++;
+            return value;
+          })
+        );
+        void Promise.all([laterCore, laterUser, laterWorkspace]).catch(allLateEntered.reject);
+        await allLateEntered.promise; // Original request functions ran; a pending Promise alone is not the oracle.
+        expect(laterAcknowledged).toBe(0);
+        expect(frames).toEqual(firstFrames);
+        expect(readThreadReadReceipt(userDb, workspace.id, userTurn.threadId)).toEqual([
+          eligible[0]!.id,
+        ]);
+        expect(f.store.listThreadItems(workspace.id, itemTurn.threadId)).toEqual([
+          workspaceItems[0],
+        ]);
+        expect(() =>
+          requireSchedulerAdmissionEntry(f.coreDb, coreCommands[1]!.entry.queueEntryId)
+        ).toThrow();
+        releaseCapture.resolve();
+        const captured = await backup;
+        backupRoot = join(`${f.root}.backups`, captured.backupId);
+        const verified = dataRootBackup.verifyDataRootBackupManifest({ backupRoot });
+        expect(verified.manifest).toEqual(captured.manifest);
+        const reader = new Database(coreDbPath(backupRoot), {
+          readonly: true,
+          fileMustExist: true,
+        });
+        try {
+          const core = bindCoreSqlite(reader, backupRoot);
+          expect(requireSchedulerAdmissionEntry(core, queue.entry.queueEntryId)).toEqual(
+            queue.entry
+          );
+          expect(() =>
+            requireSchedulerAdmissionEntry(core, coreCommands[1]!.entry.queueEntryId)
+          ).toThrow();
+        } finally {
+          reader.close();
+        }
+        const capturedUser = openUserReadDb(backupRoot, f.userId);
+        try {
+          expect(hasPendingUserMigrations(capturedUser.sqlite)).toBe(false);
+          expect(readThreadReadReceipt(capturedUser, workspace.id, userTurn.threadId)).toEqual([
+            eligible[0]!.id,
+          ]);
+        } finally {
+          capturedUser.sqlite.close();
+        }
+        expect(
+          new FsStore({ dataRoot: backupRoot }).listThreadItems(workspace.id, itemTurn.threadId)
+        ).toEqual([workspaceItems[0]]);
+        const laterQueue = await laterCore;
+        expect(laterQueue.kind).toBe('queue');
+        if (laterQueue.kind !== 'queue')
+          throw new Error('Later Core admission failed after capture release.');
+        expect(await laterUser).toEqual(eligible.map((item) => item.id).sort());
+        expect(await laterWorkspace).toEqual(workspaceItems[1]);
+        expect(laterAcknowledged).toBe(3);
+        expect(frames).toHaveLength(6);
+        expect(new Set(frames.map((frame) => frame.id)).size).toBe(6);
+        userDb.sqlite.close();
+        userClosed = true;
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(f.root);
+        const cold = new FsStore({ dataRoot: f.root });
+        expect(cold.listThreadItems(workspace.id, itemTurn.threadId)).toEqual(workspaceItems);
+        const liveCoreReader = new Database(coreDbPath(f.root), {
+          readonly: true,
+          fileMustExist: true,
+        });
+        try {
+          const core = bindCoreSqlite(liveCoreReader, f.root);
+          expect(requireSchedulerAdmissionEntry(core, queue.entry.queueEntryId)).toEqual(
+            queue.entry
+          );
+          expect(requireSchedulerAdmissionEntry(core, laterQueue.entry.queueEntryId)).toEqual(
+            laterQueue.entry
+          );
+        } finally {
+          liveCoreReader.close();
+        }
+        const coldUser = openUserReadDb(f.root, f.userId);
+        try {
+          expect(readThreadReadReceipt(coldUser, workspace.id, userTurn.threadId)).toEqual(
+            eligible.map((item) => item.id).sort()
+          );
+        } finally {
+          coldUser.sqlite.close();
+        }
+      } finally {
+        release(gate);
+        releaseCapture.resolve();
+        await Promise.allSettled(tracked);
+        if (!userClosed) userDb.sqlite.close();
+        closeWorkspaceProductReadHandles(f.root);
+        if (backupRoot) closeWorkspaceProductReadHandles(backupRoot);
+      }
+    }
+  );
+
+  it('keeps a genuinely first User opening outside the captured cut until the global hold releases', async () => {
+    const f = await productPoolFixture();
+    roots.push(`${f.root}.backups`);
+    const workspace = f.workspaces[0]!;
+    const thread = await f.store.createThread(workspace.id, 'First User during capture');
+    const turn = await f.store.createTurn(workspace.id, thread.id, 'Original unread reply', {
+      kind: 'user',
+      id: f.userId,
+    });
+    const item = await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'assistant-message',
+      status: 'completed',
+      text: 'Read only after the original native opening ACK.\r\n',
+      createdAt: turn.startedAt!,
+      completedAt: turn.startedAt!,
+    });
+    const path = userDbPath(f.root, f.userId);
+    expect(existsSync(path)).toBe(false); // Canonical User authority and directories exist; its DB genuinely does not.
+    const captureEntered = Promise.withResolvers<void>();
+    const releaseCapture = Promise.withResolvers<void>();
+    const openEntered = Promise.withResolvers<void>();
+    const pause = f.client.pauseForDataRootBackup.bind(f.client);
+    vi.spyOn(f.client, 'pauseForDataRootBackup').mockImplementationOnce(async (...args) => {
+      const resume = await pause(...args);
+      captureEntered.resolve();
+      await releaseCapture.promise;
+      return resume;
+    });
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    const nativeOpen = f.client.open.bind(f.client);
+    vi.spyOn(f.client, 'open').mockImplementation((...args) => {
+      const result = nativeOpen(...args);
+      if (args[0].path === path) openEntered.resolve();
+      return result; // Same native request, binding, original Promise and failure.
+    });
+    const operations = createDataRootAdminOperationImplementations(f.root);
+    const backup = operations['backup.create']();
+    void backup.catch(() => {});
+    let firstUser: Promise<string[]> | undefined;
+    let backupRoot: string | undefined;
+    let acknowledged = false;
+    try {
+      await Promise.race([
+        captureEntered.promise,
+        backup.then(() => {
+          throw new Error('Backup bypassed its actual copy boundary.');
+        }),
+      ]);
+      firstUser = f.client.openInitializedUserReadDb(f.root, f.userId).then(async (reader) => {
+        acknowledged = true;
+        try {
+          return await advanceThreadReadReceipt(reader, workspace.id, thread.id, [item.id]);
+        } finally {
+          reader.sqlite.close();
+        }
+      });
+      void firstUser.catch(() => {});
+      await Promise.race([
+        openEntered.promise,
+        firstUser.then(() => {
+          throw new Error('User mutation bypassed its native first opening.');
+        }),
+      ]);
+      expect(acknowledged).toBe(false);
+      expect(existsSync(path)).toBe(false);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.operation === 'open' && request.path === path
+        )
+      ).toEqual([]);
+      releaseCapture.resolve();
+      const captured = await backup;
+      backupRoot = join(`${f.root}.backups`, captured.backupId);
+      expect(dataRootBackup.verifyDataRootBackupManifest({ backupRoot }).manifest).toEqual(
+        captured.manifest
+      );
+      expect(existsSync(userDbPath(backupRoot, f.userId))).toBe(false);
+      expect(
+        captured.manifest.contentInventory.some(
+          (entry) => entry.path === `users/${f.userId}/db/user.sqlite`
+        )
+      ).toBe(false);
+      expect(await firstUser).toEqual([item.id]);
+      expect(acknowledged).toBe(true);
+      expect(
+        posted.mock.calls.filter(
+          ([request]) => request.operation === 'open' && request.path === path
+        )
+      ).toHaveLength(1);
+      await shutdownControlStoreWorkerClient();
+      closeWorkspaceProductReadHandles(f.root);
+      const coldUser = openUserReadDb(f.root, f.userId);
+      try {
+        expect(hasPendingUserMigrations(coldUser.sqlite)).toBe(false);
+        expect(readThreadReadReceipt(coldUser, workspace.id, thread.id)).toEqual([item.id]);
+      } finally {
+        coldUser.sqlite.close();
+      }
+      expect(new FsStore({ dataRoot: f.root }).listThreadItems(workspace.id, thread.id)).toEqual([
+        item,
+      ]);
+    } finally {
+      releaseCapture.resolve();
+      await Promise.allSettled(firstUser ? [backup, firstUser] : [backup]);
+      closeWorkspaceProductReadHandles(f.root);
+      if (backupRoot) closeWorkspaceProductReadHandles(backupRoot);
+    }
+  });
+
+  it.each(['before', 'after'] as const)(
+    'captures the physical App tuple only after its original native reply held %s COMMIT and blocks later App publication',
+    async (point) => {
+      // Reuse the same bounded physical-path gate; mode2 samples actual FULL in its last slot.
+      interception.gate = new SharedArrayBuffer(4 * (5 + 4096));
+      interception.point = point;
+      const gate = new Int32Array(interception.gate);
+      Atomics.store(gate, 0, 1);
+      Atomics.store(gate, 3, -1);
+      const f = await productPoolFixture();
+      roots.push(`${f.root}.backups`);
+      const workspace = f.workspaces[0]!;
+      const context: KernelCommandContext = {
+        store: f.store,
+        inflightCommands: new WeakMap(),
+        dataRoot: f.root,
+        workspaceId: workspace.id,
+        actor: { kind: 'user', id: f.userId },
+        requestId: randomUUID(),
+      };
+      const schema: LightAppSchemaInput = {
+        format: 'openkit.light-app',
+        schemaVersion: 1,
+        title: 'Physical App capture',
+        purpose:
+          'Retain a real App record, Audit and original command receipt across a global SQL cut.',
+        collections: [
+          {
+            name: 'entries',
+            type: 'base',
+            description: 'Captured entries.',
+            fields: [
+              { name: 'note', type: 'text', required: true, description: 'Retained exact text.' },
+            ],
+            indexes: [],
+          },
+        ],
+      };
+      const app = await createLightApp(context, schema);
+      const seed = await createRecord(
+        { ...context, requestId: randomUUID() },
+        app.appId,
+        'entries',
+        app.schemaRevision,
+        { note: 'Original published App record.\r\n' }
+      );
+      const path = lightAppDbPath(f.root, workspace.id, app.appId);
+      const physicalPath = realpathSync(path);
+      const database = `app:${path}`;
+      expect(existsSync(path)).toBe(true);
+      const initialRequestId = randomUUID(),
+        laterRequestId = randomUUID();
+      const scope = { workspaceId: workspace.id, appId: app.appId };
+      const firstData = { note: 'Included exact App value.\r\n' };
+      const laterData = { note: 'Excluded from capture; later live value. 🚀' };
+      const recordAt = (root: string) =>
+        getRecord(root, workspace.id, app.appId, 'entries', seed.id, app.schemaRevision);
+      const receiptAt = (root: string, requestId: string) =>
+        getCommandRequestRecord(
+          root,
+          scope,
+          commandRequestKey('kernel.records.update', requestId, scope),
+          new Date().toISOString()
+        );
+      const auditsAt = (root: string, requestId: string) => {
+        const reader = openExistingAppDb(root, workspace.id, app.appId);
+        try {
+          expect(reader.sqlite.readonly).toBe(true);
+          expect(reader.sqlite.pragma('query_only', { simple: true })).toBe(1);
+          return listSqliteAuditEvents(reader.sqlite).filter(
+            (event) => event.requestId === requestId
+          );
+        } finally {
+          reader.sqlite.close();
+        }
+      };
+      expect(recordAt(f.root)).toEqual(seed);
+      expect(receiptAt(f.root, initialRequestId)).toBeNull();
+      expect(receiptAt(f.root, laterRequestId)).toBeNull();
+      f.coreDb.sqlite.pragma('query_only = ON'); // Legitimate setup-handle counterfactual; no serving Main claim.
+      Atomics.store(gate, 2, 2);
+      const frames: Array<{ worker: number; id: number; operation: string; database: string }> = [];
+      const replies: Array<{ worker: number; id: number; operation: string; status: string }> = [];
+      const removeListeners: Array<() => void> = [];
+      const observedWorkers = new WeakSet<Worker>();
+      let armed = false;
+      const initialPosted = Promise.withResolvers<void>();
+      const originalPost = Worker.prototype.postMessage;
+      vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+        this: Worker,
+        ...args
+      ) {
+        const request = args[0] as { operation?: string; database?: string; id?: number };
+        if (request.operation === 'app-kernel' && request.database === database) {
+          const worker = interception.workers.indexOf(this);
+          if (worker < 0 || typeof request.id !== 'number')
+            throw new Error('App frame has no actual native host/identity.');
+          frames.push({ worker, id: request.id, operation: request.operation, database });
+          if (!observedWorkers.has(this)) {
+            observedWorkers.add(this);
+            const onReply = (value: unknown) => {
+              if (value === null || typeof value !== 'object') return;
+              const reply = value as { id?: number; operation?: string; status?: string };
+              if (
+                reply.operation === 'app-kernel' &&
+                typeof reply.id === 'number' &&
+                (reply.status === 'ok' || reply.status === 'error') &&
+                frames.some((frame) => frame.worker === worker && frame.id === reply.id)
+              )
+                replies.push({
+                  worker,
+                  id: reply.id,
+                  operation: reply.operation,
+                  status: reply.status,
+                });
+            };
+            this.on('message', onReply);
+            removeListeners.push(() => this.off('message', onReply));
+          }
+          if (!armed) {
+            if (physicalPath.length > gate.length - 6)
+              throw new Error('App path leaves no bounded FULL sample slot.');
+            for (let position = 0; position < physicalPath.length; position++)
+              Atomics.store(gate, 5 + position, physicalPath.charCodeAt(position));
+            Atomics.store(gate, 4, physicalPath.length);
+            Atomics.store(gate, 3, worker);
+            Atomics.store(gate, 0, 0);
+            armed = true;
+            initialPosted.resolve();
+          }
+        }
+        return Reflect.apply(originalPost, this, args);
+      });
+      const captureEntered = Promise.withResolvers<void>();
+      const releaseCapture = Promise.withResolvers<void>();
+      const pauseEntered = Promise.withResolvers<void>();
+      let actualPauseAcquired = false;
+      const pause = f.client.pauseForDataRootBackup.bind(f.client);
+      vi.spyOn(f.client, 'pauseForDataRootBackup').mockImplementationOnce(async (...args) => {
+        expect(args).toEqual([]); // The actual capture uses the global hold, not an App-only hold.
+        const acquiring = pause(...args);
+        pauseEntered.resolve(); // The original global pause was called while the native gate is held.
+        const resume = await acquiring;
+        actualPauseAcquired = true;
+        captureEntered.resolve();
+        await releaseCapture.promise;
+        return resume;
+      });
+      vi.spyOn(dataRootBackup, 'writeHotDataRootBackup');
+      const tracked: Promise<unknown>[] = [];
+      const track = <T>(promise: Promise<T>) => {
+        tracked.push(promise);
+        void promise.catch(() => {});
+        return promise;
+      };
+      let initialAcknowledged = false,
+        laterAcknowledged = false;
+      let backupRoot: string | undefined;
+      try {
+        const initial = track(
+          updateRecord({ ...context, requestId: initialRequestId }, app.appId, 'entries', seed.id, {
+            schemaRevision: app.schemaRevision,
+            expectedRecordRevision: seed.revision,
+            data: firstData,
+          }).then((value) => {
+            initialAcknowledged = true;
+            return value;
+          })
+        );
+        await Promise.race([
+          initialPosted.promise,
+          initial.then(() => {
+            throw new Error('App mutation returned without its actual native posting boundary.');
+          }),
+        ]);
+        await Promise.race([
+          waitForHold(gate),
+          initial.then(() => {
+            throw new Error('App mutation returned before its held native COMMIT boundary.');
+          }),
+        ]);
+        expect(armed).toBe(true);
+        expect(Atomics.load(gate, gate.length - 1)).toBe(2); // Actual selected native App connection is FULL.
+        expect(initialAcknowledged).toBe(false);
+        expect(frames).toHaveLength(1);
+        expect(replies).toEqual([]);
+        const heldRecord = recordAt(f.root);
+        const heldReceipt = receiptAt(f.root, initialRequestId);
+        const heldAudits = auditsAt(f.root, initialRequestId);
+        if (point === 'before') {
+          expect(heldRecord).toEqual(seed);
+          expect(heldReceipt).toBeNull();
+          expect(heldAudits).toEqual([]);
+        } else {
+          expect(heldRecord.data).toEqual(firstData);
+          expect(heldRecord.revision).toBe(seed.revision + 1);
+          expect(heldReceipt).toMatchObject({
+            command: 'kernel.records.update',
+            requestId: initialRequestId,
+            response: { kind: 'light_app_record', id: seed.id },
+          });
+          expect(heldAudits).toHaveLength(1);
+        }
+        const operations = createDataRootAdminOperationImplementations(f.root);
+        const backup = track(operations['backup.create']());
+        await Promise.race([
+          pauseEntered.promise,
+          backup.then(() => {
+            throw new Error('Backup bypassed the actual global pause entry.');
+          }),
+        ]);
+        await nextTurn();
+        expect(actualPauseAcquired).toBe(false); // Independent of the wrapper's later copy barrier.
+        expect(vi.mocked(dataRootBackup.writeHotDataRootBackup)).not.toHaveBeenCalled();
+        expect(existsSync(`${f.root}.backups`)).toBe(false);
+        expect(initialAcknowledged).toBe(false);
+        expect(replies).toEqual([]);
+        release(gate);
+        await Promise.race([
+          captureEntered.promise,
+          backup.then(() => {
+            throw new Error('Backup bypassed the actual global App drain/copy boundary.');
+          }),
+        ]);
+        expect(actualPauseAcquired).toBe(true);
+        const originalRecord = await initial;
+        expect(initialAcknowledged).toBe(true);
+        expect(recordAt(f.root)).toEqual(originalRecord);
+        expect(originalRecord.data).toEqual(firstData);
+        expect(originalRecord.revision).toBe(seed.revision + 1);
+        const originalReceipt = receiptAt(f.root, initialRequestId);
+        expect(originalReceipt).toMatchObject({
+          command: 'kernel.records.update',
+          requestId: initialRequestId,
+          response: { kind: 'light_app_record', id: seed.id },
+        });
+        const originalAudits = auditsAt(f.root, initialRequestId);
+        expect(originalAudits).toHaveLength(1);
+        expect(originalAudits[0]).toMatchObject({
+          action: 'kernel.records.update',
+          outcome: 'succeeded',
+          requestId: initialRequestId,
+        });
+        if (point === 'after') {
+          expect(originalRecord).toEqual(heldRecord);
+          expect(originalReceipt).toEqual(heldReceipt);
+          expect(originalAudits).toEqual(heldAudits);
+        }
+        expect(replies).toEqual([
+          { worker: frames[0]!.worker, id: frames[0]!.id, operation: 'app-kernel', status: 'ok' },
+        ]);
+        const committedApp = getLightApp(f.root, workspace.id, app.appId);
+        const firstFrames = frames.slice();
+        const lateEntered = Promise.withResolvers<void>();
+        const open = f.client.open.bind(f.client);
+        vi.spyOn(f.client, 'open').mockImplementation((...args) => {
+          const result = open(...args);
+          if (args[0].path === path) lateEntered.resolve();
+          return result;
+        });
+        const later = track(
+          updateRecord({ ...context, requestId: laterRequestId }, app.appId, 'entries', seed.id, {
+            schemaRevision: app.schemaRevision,
+            expectedRecordRevision: originalRecord.revision,
+            data: laterData,
+          }).then((value) => {
+            laterAcknowledged = true;
+            return value;
+          })
+        );
+        void later.catch(lateEntered.reject);
+        await lateEntered.promise; // The real public producer entered its existing App native opening path.
+        await nextTurn();
+        expect(laterAcknowledged).toBe(false);
+        expect(frames).toEqual(firstFrames);
+        expect(replies).toHaveLength(1);
+        expect(recordAt(f.root)).toEqual(originalRecord);
+        expect(receiptAt(f.root, initialRequestId)).toEqual(originalReceipt);
+        expect(receiptAt(f.root, laterRequestId)).toBeNull();
+        expect(auditsAt(f.root, initialRequestId)).toEqual(originalAudits);
+        expect(auditsAt(f.root, laterRequestId)).toEqual([]);
+        releaseCapture.resolve();
+        const captured = await backup;
+        backupRoot = join(`${f.root}.backups`, captured.backupId);
+        expect(dataRootBackup.verifyDataRootBackupManifest({ backupRoot }).manifest).toEqual(
+          captured.manifest
+        );
+        expect(
+          captured.manifest.contentInventory.some(
+            (entry) =>
+              entry.path === `workspaces/${workspace.id}/light-apps/${app.appId}/data.sqlite`
+          )
+        ).toBe(true);
+        expect(getLightApp(backupRoot, workspace.id, app.appId)).toEqual(committedApp);
+        expect(recordAt(backupRoot)).toEqual(originalRecord);
+        expect(receiptAt(backupRoot, initialRequestId)).toEqual(originalReceipt);
+        expect(receiptAt(backupRoot, laterRequestId)).toBeNull();
+        expect(auditsAt(backupRoot, initialRequestId)).toEqual(originalAudits);
+        expect(auditsAt(backupRoot, laterRequestId)).toEqual([]);
+        const laterRecord = await later;
+        expect(laterAcknowledged).toBe(true);
+        expect(laterRecord.data).toEqual(laterData);
+        expect(laterRecord.revision).toBe(originalRecord.revision + 1);
+        expect(frames).toHaveLength(2);
+        expect(new Set(frames.map((frame) => frame.id)).size).toBe(2);
+        expect(replies).toEqual(
+          frames.map((frame) => ({
+            worker: frame.worker,
+            id: frame.id,
+            operation: 'app-kernel',
+            status: 'ok',
+          }))
+        );
+        const laterReceipt = receiptAt(f.root, laterRequestId);
+        expect(laterReceipt).toMatchObject({
+          command: 'kernel.records.update',
+          requestId: laterRequestId,
+          response: { kind: 'light_app_record', id: seed.id },
+        });
+        const laterAudits = auditsAt(f.root, laterRequestId);
+        expect(laterAudits).toHaveLength(1);
+        expect(laterAudits[0]).toMatchObject({
+          action: 'kernel.records.update',
+          outcome: 'succeeded',
+          requestId: laterRequestId,
+        });
+        f.coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(f.root);
+        expect(recordAt(f.root)).toEqual(laterRecord);
+        expect(receiptAt(f.root, initialRequestId)).toEqual(originalReceipt);
+        expect(receiptAt(f.root, laterRequestId)).toEqual(laterReceipt);
+        expect(auditsAt(f.root, initialRequestId)).toEqual(originalAudits);
+        expect(auditsAt(f.root, laterRequestId)).toEqual(laterAudits);
+        expect(recordAt(backupRoot)).toEqual(originalRecord);
+        expect(receiptAt(backupRoot, initialRequestId)).toEqual(originalReceipt);
+        expect(receiptAt(backupRoot, laterRequestId)).toBeNull();
+      } finally {
+        release(gate);
+        releaseCapture.resolve();
+        await Promise.allSettled(tracked);
+        for (const remove of removeListeners) remove();
+        if (f.coreDb.sqlite.open) f.coreDb.sqlite.close();
+        closeWorkspaceProductReadHandles(f.root);
+        if (backupRoot) closeWorkspaceProductReadHandles(backupRoot);
+      }
+    }
+  );
 });
 
 // A real native COMMIT hold decides User publication timing; awaiting a promise alone cannot prove it.
