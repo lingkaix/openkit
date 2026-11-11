@@ -246,12 +246,7 @@ import {
 import { registerServiceRoutes } from './service-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import {
-  type CoreDb,
-  openAdmittedWorkspaceReadDb,
-  openBootVerifiedWorkspaceDb,
-  type WorkspaceDb,
-} from './storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-admissions.js';
@@ -565,7 +560,7 @@ export function createDefaultWorkerControlGateway(
     publishHeartbeat: (input) => publishWorkerControlHeartbeat(coreDb, input),
     publishControlOperation: (input) => publishWorkerControlOperation(coreDb, input),
     publishFinalStatus: async (input) => {
-      const rawDb = openBootVerifiedWorkspaceDb(coreDb.dataRoot, input.lineage.workspaceId);
+      const rawDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.lineage.workspaceId);
       try {
         assertWorkerRawOutputFinalStatus(
           rawDb,

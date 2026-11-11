@@ -6,7 +6,7 @@ import type { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import type { VaultUnlockState } from '../vault/vault-unlock-state.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
@@ -87,7 +87,8 @@ export async function dispatchOpenkitGenerativeTool(
     store: context.store,
     inflightCommands: context.inflightCommands,
     workspaceMutationAdmission: context.workspaceMutationAdmission,
-    repositoryWorkspaceDb: (workspaceId) => openWorkspaceDb(context.dataRoot, workspaceId),
+    repositoryWorkspaceDb: (workspaceId) =>
+      openAdmittedWorkspaceReadDb(context.dataRoot, workspaceId),
   });
   const packageSnapshotId = context.packageSnapshotId;
   const trustedFor = (id: keyof typeof definitions) => ({

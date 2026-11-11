@@ -121,15 +121,21 @@ async function seedArchiveAdministrator(dataRoot: string): Promise<string> {
   await seedDemoWorkspaceAuthority(dataRoot);
   const { openCoreDb } = await import('../dist/storage/db.js');
   const { createOpenKitAccessTokenRecord } = await import('../dist/auth/access-token-store.js');
+  const { shutdownControlStoreWorkerClient } = await import(
+    '../dist/storage/control-store-worker-client.js'
+  );
   const coreDb = openCoreDb(dataRoot);
   try {
-    return createOpenKitAccessTokenRecord(coreDb, {
-      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-      scope: 'server-admin',
-      workspaceIds: [],
-      expiresAt: '2099-01-01T00:00:00.000Z',
-    }).secret;
+    return (
+      await createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2099-01-01T00:00:00.000Z',
+      })
+    ).secret;
   } finally {
     coreDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
   }
 }

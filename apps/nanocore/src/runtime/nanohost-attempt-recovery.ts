@@ -12,10 +12,8 @@ import {
   requireSchedulerExecutionAttemptAdmissionContext,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
+import { openAdmittedWorkspaceReadDb } from '../storage/db.js';
 import {
   findNamedAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -540,9 +538,8 @@ function openRecoveryWorkspace(
   coreDb: CoreDb,
   row: NanoHostExecutionAttemptRecord
 ): RecoveryWorkspace {
-  const db = openWorkspaceDb(coreDb.dataRoot, row.workspaceId);
+  const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, row.workspaceId);
   try {
-    applyScopedMigrations(db);
     const environmentPackage = requireAgentEnvironmentPackageSnapshot(
       db,
       row.workspaceId,
@@ -880,10 +877,9 @@ async function settleTerminalFailedStart(
   if (unassigned && session)
     throw new Error('Unassigned failed-start preparation already has a product AgentSession.');
   const admission = requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
-  const workspaceDb = openWorkspaceDb(coreDb.dataRoot, attempt.workspaceId);
+  const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, attempt.workspaceId);
   const workspace = { db: workspaceDb };
   try {
-    applyScopedMigrations(workspaceDb);
     if (unassigned) {
       const preparation = JSON.parse(attempt.preparationInputJson);
       if (

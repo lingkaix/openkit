@@ -29,7 +29,7 @@ import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import { ensureWorkspaceLayout } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { isCurrentServerMcpMaterial } from '../vault/server-mcp-authority.js';
@@ -1043,7 +1043,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
           if (!coreDb || !event) throw preparationError;
           const preparedEvent = event;
           // This closure retains only the original prepared Audit and storage scope, never input.
-          const db = preview ? coreDb : openWorkspaceDb(coreDb.dataRoot, workspaceId);
+          const db = preview ? coreDb : openAdmittedWorkspaceReadDb(coreDb.dataRoot, workspaceId);
           try {
             const client = getControlStoreWorkerClient();
             await client.runOperation(() =>

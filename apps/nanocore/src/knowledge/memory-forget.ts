@@ -30,7 +30,7 @@ import {
   readPendingRequest,
 } from '../runtime/pending-requests.js';
 import { commandInputHash } from '../storage/control-store-input.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
 
 import { type MemoryWriter, readMemoryPage, recordMemorySuppression } from './memory-lifecycle.js';
@@ -622,7 +622,8 @@ export async function applyMemoryForget(
       writer.store,
       {
         coreDb: writer.coreDb,
-        openWorkspace: (workspaceId) => openWorkspaceDb(writer.coreDb.dataRoot, workspaceId),
+        openWorkspace: (workspaceId) =>
+          openAdmittedWorkspaceReadDb(writer.coreDb.dataRoot, workspaceId),
       },
       input.workspaceId,
       input.threadId

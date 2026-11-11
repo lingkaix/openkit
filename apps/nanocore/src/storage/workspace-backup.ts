@@ -127,7 +127,12 @@ import {
   verifyDataRootBackupManifest,
 } from './data-root-backup.js';
 import type { CoreDb } from './db.js';
-import { bindCoreSqlite, bindWorkspaceSqlite, openExistingCoreDbWithIntegrityCheck } from './db.js';
+import {
+  bindCoreSqlite,
+  bindWorkspaceSqlite,
+  openExistingCoreDbWithIntegrityCheck,
+  openWorkspaceReadDb,
+} from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   exportRecurringPortableHistory,
@@ -2038,7 +2043,7 @@ async function runWorkspaceCapture(
       if (input.purpose === 'move' && captureFreeze) {
         // Before a pin a refused MOVE reopens; uncertain retained truth keeps its fence.
         try {
-          const retained = captureDatabase(live.dataRoot, targetWorkspaceId);
+          const retained = openWorkspaceReadDb(live.dataRoot, targetWorkspaceId);
           try {
             if (!inspectCapture(retained, targetWorkspaceId, input.backupId))
               captureFreeze.release();

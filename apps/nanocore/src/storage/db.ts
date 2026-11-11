@@ -179,6 +179,12 @@ export function openSupportedScopeReadOnlySqlite(
   return openOwnedSqlite(path, scope, { fileMustExist: true, readonly: true }, busyTimeoutMs);
 }
 
+/** Opens an existing Core reader without layout creation or migration; the caller owns its lifetime. */
+export function openCoreReadDb(dataRoot: string): CoreDb {
+  const reader = openControlStoreProductReadHandle(coreDbPath(dataRoot), { kind: 'server' });
+  return bindCoreSqlite(reader.sqlite, dataRoot);
+}
+
 /**
  * Opens one server-scope Core database under the provided data root.
  *

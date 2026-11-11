@@ -11,7 +11,7 @@ import {
   type FsStore,
   type TerminalTurnPublication,
 } from '../lib/store.js';
-import { openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import {
   createExecutionStepJournalReader,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
@@ -523,7 +523,7 @@ async function readTerminalPublication(
   if (input.publication) return input.publication;
   const dataRoot = input.store.getDataRoot();
   if (!turn.agentSessionId || !dataRoot) return undefined;
-  const workspaceDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
+  const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceIdForOwner(turn.owner));
   try {
     return await workerTurnTerminalPublication(
       workspaceDb,

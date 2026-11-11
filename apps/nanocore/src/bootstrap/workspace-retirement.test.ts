@@ -14,7 +14,7 @@ import {
 } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
@@ -34,6 +34,7 @@ import {
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -271,7 +272,7 @@ function memoryDependencies(f: Awaited<ReturnType<typeof fixture>>) {
 }
 
 /** Runs the real source entry in a separate process, with no watcher, built-App dependency or Host fixture. */
-async function startRetirementProcess(dataRoot: string) {
+async function startRetirementProcess(dataRoot: string, observerManifest?: string) {
   const reservation = createServer();
   await new Promise<void>((resolve, reject) => {
     reservation.once('error', reject);
@@ -285,23 +286,43 @@ async function startRetirementProcess(dataRoot: string) {
     reservation.close((error) => (error ? reject(error) : resolve()))
   );
   const appRoot = fileURLToPath(new URL('../../', import.meta.url));
-  const child = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
-    cwd: appRoot,
-    env: {
-      PATH: process.env.PATH,
-      TMPDIR: tmpdir(),
-      // Share this invocation's compiled real native owners with the source child.
-      VITEST: 'true',
-      HOME: dataRoot,
-      OPENKIT_DATA_ROOT: dataRoot,
-      OPENKIT_CORE_MODE: 'server',
-      OPENKIT_BIND_HOST: '127.0.0.1',
-      PORT: String(port),
-      OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
-      BETTER_AUTH_SECRET: 'retirement-process-fixture-only-secret-at-least-32-characters',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
+  const child = spawn(
+    process.execPath,
+    observerManifest
+      ? [
+          '--require',
+          fileURLToPath(
+            new URL('../test-support/published-main-handle-observer.cjs', import.meta.url)
+          ),
+          '--import',
+          'tsx',
+          'src/index.ts',
+        ]
+      : ['--import', 'tsx', 'src/index.ts'],
+    {
+      cwd: appRoot,
+      env: {
+        PATH: process.env.PATH,
+        TMPDIR: tmpdir(),
+        // Share this invocation's compiled real native owners with the source child.
+        VITEST: 'true',
+        HOME: dataRoot,
+        OPENKIT_DATA_ROOT: dataRoot,
+        OPENKIT_CORE_MODE: 'server',
+        OPENKIT_BIND_HOST: '127.0.0.1',
+        PORT: String(port),
+        OPENKIT_INTERNAL_SELF_CHECK_EXECUTOR: '1',
+        BETTER_AUTH_SECRET: 'retirement-process-fixture-only-secret-at-least-32-characters',
+        ...(observerManifest
+          ? {
+              OPENKIT_F1_OBSERVER_MANIFEST: observerManifest,
+              OPENKIT_F1_OBSERVER_PORT: String(port),
+            }
+          : {}),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }
+  );
   let output = '';
   let exited = false;
   const done = new Promise<void>((resolve) => {
@@ -995,3 +1016,456 @@ describe('retired registry consumers and retained Core migration', () => {
     expect(store.getWorkspace(f.siblingId).id).toBe(f.siblingId);
   }, 20000);
 });
+
+it('fences every published Main scope handle at the real index listener after genuine native and public admission', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'f1-entrypoint-root-'));
+  const observationRoot = mkdtempSync(join(tmpdir(), 'f1-entrypoint-observation-'));
+  const coreDb = openCoreDb(dataRoot);
+  disposals.push(() => {
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    closeWorkspaceProductReadHandles(dataRoot);
+    rmSync(dataRoot, { recursive: true, force: true });
+    rmSync(observationRoot, { recursive: true, force: true });
+  });
+  applyMigrations(coreDb);
+  const userId = ensureLocalUser(coreDb);
+  const userDb = openUserDb(dataRoot, userId);
+  try {
+    applyScopedMigrations(userDb);
+  } finally {
+    userDb.sqlite.close();
+  }
+  const store = new FsStore({ dataRoot });
+  const workspace = await store.createWorkspace('F1 healthy published Workspace');
+  await recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
+  const admin = await createOpenKitAccessTokenRecord(coreDb, {
+    ownerUserId: userId,
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: '2999-01-01T00:00:00.000Z',
+  });
+  const requestId = randomUUID();
+  const manifestPath = join(observationRoot, 'manifest.json');
+  const reportPath = join(observationRoot, 'report.json');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      corePath: coreDbPath(dataRoot),
+      workspacePath: workspaceDbPath(dataRoot, workspace.id),
+      requestId,
+      reportPath,
+    })
+  );
+  // The child alone owns the real root. No setup handle or native writer survives into boot.
+  await shutdownControlStoreWorkerClient();
+  closeWorkspaceProductReadHandles(dataRoot);
+  coreDb.sqlite.close();
+  expect(coreDb.sqlite.open).toBe(false);
+  const child = await startRetirementProcess(dataRoot, manifestPath);
+  let created: ReturnType<FsStore['getThread']> | undefined;
+  try {
+    const response = await child.call(
+      'thread.create',
+      {
+        workspaceId: workspace.id,
+        name: 'F1 real entrypoint publication',
+        requestId,
+      },
+      admin.secret
+    );
+    expect(response.status).toBe(200);
+    created = (await response.json()) as ReturnType<FsStore['getThread']>;
+    expect(created.name).toBe('F1 real entrypoint publication');
+    const read = await child.call(
+      'thread.dashboard',
+      {
+        workspaceId: workspace.id,
+        threadId: created.id,
+      },
+      admin.secret
+    );
+    expect(read.status).toBe(200);
+    expect(await read.json()).toMatchObject({
+      thread: {
+        id: created.id,
+        name: 'F1 real entrypoint publication',
+      },
+    });
+  } finally {
+    await child.stop();
+  }
+  // Optional metadata-only receipt survives any later assertion or fixture disposal.
+  // This does not change the child, observer limits, results or policy assertions.
+  const rawReportReceipt = process.env.OPENKIT_F1_RAW_REPORT_RECEIPT;
+  if (rawReportReceipt && existsSync(reportPath)) {
+    if (!isAbsolute(rawReportReceipt)) throw new Error('F1 raw report receipt must be absolute.');
+    const metadata = readFileSync(reportPath);
+    if (metadata.byteLength > 8 * 1024 * 1024)
+      throw new Error('F1 raw metadata report exceeds its bounded receipt size.');
+    writeFileSync(rawReportReceipt, metadata, { flag: 'wx', mode: 0o600 });
+  }
+  type CoreState = { handle: number; open: boolean; readonly?: boolean; queryOnly?: unknown };
+  type PublishedState = CoreState & {
+    scope: 'core' | 'user' | 'workspace' | 'app';
+    database: number;
+  };
+  type Event = {
+    seq: number;
+    kind: string;
+    reason?: string;
+    server?: number;
+    handle?: number;
+    open?: boolean;
+    worker?: number;
+    rpc?: number;
+    requestSeq?: number;
+    scope?: string;
+    operation?: string;
+    publicOrdinal?: number | null;
+    auditPhase?: 'boot.start' | 'boot.outcome' | 'boot.shutdown';
+    status?: string | number;
+    core?: CoreState[];
+    published?: PublishedState[];
+    database?: number;
+    readonly?: boolean;
+    policy?: { readonly?: boolean; queryOnly?: unknown };
+    closingDatabase?: number | null;
+    liveAfter?: number;
+    uniqueSuffix?: boolean;
+    finalAbsent?: boolean;
+  };
+  expect(existsSync(reportPath)).toBe(true);
+  const report = JSON.parse(readFileSync(reportPath, 'utf8')) as {
+    schemaVersion: number;
+    mainThread: boolean;
+    installed: boolean;
+    overflow: boolean;
+    observerErrors: Array<{ phase: string; code: string }>;
+    exitCode: number;
+    pending: number;
+    liveHandles: number;
+    maxLiveHandles: number;
+    retainedLiveHandles: number;
+    events: Event[];
+    finalHandles: Array<{ handle: number; open: boolean }>;
+    finalPublishedHandles: PublishedState[];
+    constructorCounts: {
+      published: number;
+      staging: number;
+      outside: number;
+      memory: number;
+      unclassified: number;
+    };
+    scopeConstructorCounts: Record<'core' | 'user' | 'workspace' | 'app', number>;
+    databases: Array<{ database: number; scope: string; relativePath: string }>;
+  };
+  expect(created).toBeDefined();
+  // Inspect accepted normal close before cold readback can create derived SQLite sidecars.
+  for (const [scope, database] of [
+    ['Core', coreDbPath(dataRoot)],
+    ['Workspace', workspaceDbPath(dataRoot, workspace.id)],
+  ]) {
+    expect(existsSync(`${database}-wal`), `${scope} normal close leaves no WAL`).toBe(false);
+    expect(existsSync(`${database}-shm`), `${scope} normal close leaves no SHM`).toBe(false);
+  }
+  // All observed published physical databases must reach accepted normal close before cold access.
+  for (const database of report.databases) {
+    // These exact paths came from actual canonical fixture constructors. No tree scan.
+    expect(
+      existsSync(`${join(dataRoot, database.relativePath)}-wal`),
+      `${database.scope} normal close leaves no WAL`
+    ).toBe(false);
+    expect(
+      existsSync(`${join(dataRoot, database.relativePath)}-shm`),
+      `${database.scope} normal close leaves no SHM`
+    ).toBe(false);
+  }
+  const cold = new FsStore({ dataRoot });
+  expect(cold.getThread(workspace.id, created!.id)).toEqual(created);
+
+  // Reliability/reachability guards precede the deciding policy assertion. No hook miss is OLD proof.
+  expect(report.schemaVersion).toBe(1);
+  expect(report.mainThread).toBe(true);
+  expect(report.installed).toBe(true);
+  expect(report.overflow).toBe(false);
+  expect(report.observerErrors).toEqual([]);
+  expect(report.exitCode).toBe(0);
+  expect(report.pending).toBe(0);
+  const events = report.events;
+  const listenerCall = events.find(
+    (event) => event.kind === 'core-snapshot' && event.reason === 'listen-call'
+  );
+  const listening = events.find(
+    (event) => event.kind === 'core-snapshot' && event.reason === 'listening'
+  );
+  expect(listenerCall).toBeDefined();
+  expect(listening).toBeDefined();
+  if (!listenerCall || !listening)
+    throw new Error('F1 fixture did not observe actual listener admission.');
+  expect(listenerCall.server).toBe(listening.server);
+  expect(listenerCall.seq).toBeLessThan(listening.seq);
+  expect(listenerCall.core!.some((state) => state.open)).toBe(true);
+  const publicStart = events.filter((event) => event.kind === 'public-start');
+  const publicResult = events.filter((event) => event.kind === 'public-response');
+  expect(publicStart).toHaveLength(1);
+  expect(publicResult).toHaveLength(1);
+  expect(publicStart[0]!.publicOrdinal).toBe(1);
+  expect(publicResult[0]!.status).toBe(200);
+  expect(listening.seq).toBeLessThan(publicStart[0]!.seq);
+  const native = events.filter((event) => event.kind === 'native-terminal');
+  const coreBoot = native.filter(
+    (event) =>
+      event.scope === 'core' &&
+      event.status === 'ok' &&
+      event.operation === 'boot-audit' &&
+      event.seq < listenerCall.seq
+  );
+  expect(coreBoot.length).toBeGreaterThan(0);
+  const publicAcks = native.filter(
+    (event) =>
+      event.scope === 'workspace' &&
+      event.status === 'ok' &&
+      event.publicOrdinal === 1 &&
+      event.operation === 'transition'
+  );
+  expect(publicAcks.length).toBeGreaterThan(0);
+  for (const ack of publicAcks) {
+    const post = events.find(
+      (event) => event.seq === ack.requestSeq && event.kind === 'native-request'
+    );
+    expect(post).toMatchObject({
+      worker: ack.worker,
+      rpc: ack.rpc,
+      scope: 'workspace',
+      operation: ack.operation,
+      publicOrdinal: 1,
+    });
+    expect(publicStart[0]!.seq).toBeLessThan(post!.seq);
+    expect(post!.seq).toBeLessThan(ack.seq);
+    expect(ack.seq).toBeLessThan(publicResult[0]!.seq);
+  }
+  const snapshots = events.filter((event) => event.kind === 'core-snapshot');
+  for (const ack of [...coreBoot, ...publicAcks]) {
+    const snapshot = snapshots.find(
+      (event) =>
+        event.reason === 'native-ack' &&
+        event.worker === ack.worker &&
+        event.rpc === ack.rpc &&
+        event.seq > ack.seq
+    );
+    expect(snapshot).toBeDefined();
+    expect(snapshot!.core!.some((state) => state.open)).toBe(true);
+  }
+  const opens = events.filter((event) => event.kind === 'core-open');
+  const closes = events.filter((event) => event.kind === 'core-close' && event.open === false);
+  expect(opens.length).toBeGreaterThan(0);
+  for (const snapshot of snapshots) {
+    expect(snapshot.core!.map((state) => state.handle)).toEqual(
+      opens.filter((event) => event.seq < snapshot.seq).map((event) => event.handle)
+    );
+    for (const state of snapshot.core!.filter((state) => !state.open)) {
+      expect(Object.keys(state).sort()).toEqual(['handle', 'open']);
+      expect(
+        closes.some((event) => event.handle === state.handle && event.seq < snapshot.seq)
+      ).toBe(true);
+    }
+  }
+  expect(report.finalHandles.length).toBe(opens.length);
+  for (const state of report.finalHandles) {
+    expect(state.open).toBe(false);
+    expect(closes.some((event) => event.handle === state.handle)).toBe(true);
+  }
+  const shutdownAudits = native.filter(
+    (event) =>
+      event.scope === 'core' &&
+      event.operation === 'boot-audit' &&
+      event.auditPhase === 'boot.shutdown' &&
+      event.status === 'ok'
+  );
+  expect(shutdownAudits).toHaveLength(1);
+  const shutdownAudit = shutdownAudits[0]!;
+  expect(publicResult[0]!.seq).toBeLessThan(shutdownAudit.seq);
+  const shutdownAuditSnapshot = snapshots.find(
+    (event) =>
+      event.reason === 'native-ack' &&
+      event.worker === shutdownAudit.worker &&
+      event.rpc === shutdownAudit.rpc &&
+      event.seq > shutdownAudit.seq
+  );
+  expect(shutdownAuditSnapshot).toBeDefined();
+  expect(shutdownAuditSnapshot!.core!.some((state) => state.open)).toBe(true);
+  const nativeShutdowns = events.filter(
+    (event) => event.kind === 'native-request' && event.operation === 'shutdown'
+  );
+  expect(nativeShutdowns.length).toBeGreaterThan(0);
+  const beforeNativeShutdown = snapshots.filter(
+    (event) => event.reason === 'before-native-shutdown'
+  );
+  expect(beforeNativeShutdown).toHaveLength(nativeShutdowns.length);
+  for (const post of nativeShutdowns) {
+    const ack = native.find(
+      (event) =>
+        event.worker === post.worker && event.rpc === post.rpc && event.requestSeq === post.seq
+    );
+    expect(ack).toMatchObject({ operation: 'shutdown', status: 'ok' });
+    expect(post.seq).toBeLessThan(ack!.seq);
+  }
+  // Additive all-scope completeness checks: every actual fixture-root constructor,
+  // including boot and ledger-preflight readers, appears in this same bounded ledger.
+  const publishedOpens = events.filter((event) =>
+    ['core-open', 'published-open'].includes(event.kind)
+  );
+  const publishedCloses = events.filter(
+    (event) => ['core-close', 'published-close'].includes(event.kind) && event.open === false
+  );
+  expect(publishedOpens.length).toBeGreaterThan(opens.length);
+  expect(report.constructorCounts.published).toBe(publishedOpens.length);
+  // The 32 budget limits retained live Database references, not lifetime operations.
+  // Every lifetime open/close remains in the original bounded512-event ledger.
+  expect(events.length).toBeLessThanOrEqual(512);
+  expect(publishedOpens.map((event) => event.handle)).toEqual(
+    Array.from({ length: publishedOpens.length }, (_, index) => index + 1)
+  );
+  let actualLive = 0,
+    actualMaxLive = 0;
+  for (const event of events) {
+    if (['core-open', 'published-open'].includes(event.kind)) actualLive += 1;
+    else if (['core-close', 'published-close'].includes(event.kind) && event.open === false)
+      actualLive -= 1;
+    else continue;
+    expect(event.liveAfter).toBe(actualLive);
+    expect(actualLive).toBeGreaterThanOrEqual(0);
+    actualMaxLive = Math.max(actualMaxLive, actualLive);
+  }
+  expect(report.maxLiveHandles).toBe(actualMaxLive);
+  expect(report.maxLiveHandles).toBeLessThanOrEqual(32);
+  expect(report.liveHandles).toBe(actualLive);
+  expect(actualLive).toBe(0);
+  expect(report.retainedLiveHandles).toBe(0);
+  expect(publishedCloses).toHaveLength(publishedOpens.length);
+  expect(report.finalPublishedHandles).toHaveLength(publishedOpens.length);
+  expect(report.constructorCounts.unclassified).toBe(0);
+  for (const scope of ['core', 'user', 'workspace', 'app'] as const) {
+    const selected = publishedOpens.filter((event) => event.scope === scope);
+    expect(report.scopeConstructorCounts[scope]).toBe(selected.length);
+    if (scope !== 'app')
+      expect(selected.length, `actual ${scope} constructor reachability`).toBeGreaterThan(0);
+  }
+  const stagingOpens = events.filter((event) => event.kind === 'unpublished-staging-open');
+  expect(report.constructorCounts.staging).toBe(stagingOpens.length);
+  for (const staged of stagingOpens)
+    expect(staged).toMatchObject({ uniqueSuffix: true, finalAbsent: true });
+  const pathForms: Record<string, RegExp> = {
+    core: /^server\/db\/core\.sqlite$/,
+    user: /^users\/[^/]+\/db\/user\.sqlite$/,
+    workspace: /^workspaces\/(?!\.staging\/)[^/]+\/db\/workspace\.sqlite$/,
+    app: /^workspaces\/(?!\.staging\/)[^/]+\/light-apps\/[^/]+\/data\.sqlite$/,
+  };
+  expect(new Set(report.databases.map((entry) => entry.database)).size).toBe(
+    report.databases.length
+  );
+  expect(new Set(report.databases.map((entry) => entry.relativePath)).size).toBe(
+    report.databases.length
+  );
+  for (const database of report.databases) {
+    expect(pathForms[database.scope]).toBeDefined();
+    expect(database.relativePath).toMatch(pathForms[database.scope]!);
+    expect(
+      publishedOpens.some(
+        (event) => event.database === database.database && event.scope === database.scope
+      )
+    ).toBe(true);
+  }
+  for (const snapshot of snapshots) {
+    expect(snapshot.published!.map((state) => state.handle)).toEqual(
+      publishedOpens.filter((event) => event.seq < snapshot.seq).map((event) => event.handle)
+    );
+    expect(
+      snapshot
+        .published!.filter((state) => state.scope === 'core')
+        .map(({ scope, database, ...state }) => state)
+    ).toEqual(snapshot.core);
+    for (const state of snapshot.published!) {
+      expect(publishedOpens.find((event) => event.handle === state.handle)).toMatchObject({
+        scope: state.scope,
+        database: state.database,
+      });
+      if (!state.open) {
+        expect(Object.keys(state).sort()).toEqual(['database', 'handle', 'open', 'scope']);
+        expect(
+          publishedCloses.some((event) => event.handle === state.handle && event.seq < snapshot.seq)
+        ).toBe(true);
+      }
+    }
+  }
+  for (const state of report.finalPublishedHandles) {
+    expect(state.open).toBe(false);
+    const closed = publishedCloses.filter((event) => event.handle === state.handle);
+    expect(closed).toHaveLength(1);
+    expect(closed[0]).toMatchObject({ scope: state.scope, database: state.database });
+  }
+  const servingPolicies = snapshots
+    .filter((event) => event.seq >= listenerCall.seq)
+    .flatMap((event) =>
+      event
+        .core!.filter((state) => state.open)
+        .map((state) => ({ reason: event.reason, seq: event.seq, ...state }))
+    );
+  // Current writable serving Core should fail HERE, after public/native/cold proof, not at setup.
+  expect(servingPolicies.filter((state) => !state.readonly || state.queryOnly !== 1)).toEqual([]);
+  const publishedServingPolicies = snapshots
+    .filter((event) => event.seq >= listenerCall.seq)
+    .flatMap((event) =>
+      event
+        .published!.filter((state) => state.open)
+        .map((state) => ({ reason: event.reason, seq: event.seq, ...state }))
+    );
+  // Core Storage65/79 applies to every published physical database, not just Core.
+  expect(
+    publishedServingPolicies.filter((state) => !state.readonly || state.queryOnly !== 1)
+  ).toEqual([]);
+  const postListenOpens = publishedOpens.filter((event) => event.seq >= listenerCall.seq);
+  expect(postListenOpens.filter((event) => !event.readonly)).toEqual([]);
+  const servingCloses = publishedCloses.filter((event) => event.seq >= listenerCall.seq);
+  expect(
+    servingCloses.filter((event) => !event.policy?.readonly || event.policy.queryOnly !== 1)
+  ).toEqual([]);
+  // Core Storage65 requires readers released before final native close. The actual
+  // shutdown Audit ACK must precede reader closure; normal exit cannot replace that order.
+  const firstNativeShutdown = Math.min(...nativeShutdowns.map((event) => event.seq));
+  expect(shutdownAudit.seq).toBeLessThan(firstNativeShutdown);
+  for (const state of shutdownAuditSnapshot!.core!.filter((state) => state.open)) {
+    const closed = closes.filter((event) => event.handle === state.handle);
+    expect(closed).toHaveLength(1);
+    expect(shutdownAudit.seq).toBeLessThan(closed[0]!.seq);
+    expect(closed[0]!.seq).toBeLessThan(firstNativeShutdown);
+  }
+  for (const snapshot of [
+    ...beforeNativeShutdown,
+    ...snapshots.filter((event) => event.reason === 'before-native-close'),
+  ])
+    expect(snapshot.core!.every((state) => !state.open)).toBe(true);
+  const beforePublishedClose = snapshots.filter((event) =>
+    ['before-native-close', 'before-published-native-close'].includes(event.reason ?? '')
+  );
+  for (const snapshot of beforePublishedClose) {
+    const relevant = snapshot.published!.filter(
+      (state) => state.database === snapshot.closingDatabase
+    );
+    expect(relevant.every((state) => !state.open)).toBe(true);
+    for (const state of relevant) {
+      const closed = publishedCloses.find((event) => event.handle === state.handle);
+      expect(closed).toBeDefined();
+      expect(closed!.seq).toBeLessThan(snapshot.seq);
+    }
+  }
+  for (const snapshot of beforeNativeShutdown)
+    expect(snapshot.published!.every((state) => !state.open)).toBe(true);
+  for (const state of shutdownAuditSnapshot!.published!.filter((state) => state.open)) {
+    const closed = publishedCloses.filter((event) => event.handle === state.handle);
+    expect(closed).toHaveLength(1);
+    expect(shutdownAudit.seq).toBeLessThan(closed[0]!.seq);
+    expect(closed[0]!.seq).toBeLessThan(firstNativeShutdown);
+  }
+}, 40000);

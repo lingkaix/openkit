@@ -89,7 +89,7 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import {
   bindWorkspaceSqlite,
   type CoreDb,
-  openWorkspaceDb,
+  openAdmittedWorkspaceReadDb,
   type WorkspaceDb,
 } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
@@ -97,7 +97,6 @@ import {
   prepareKnowledgeRetrievalTraceRead,
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
   AgentSessionRetainedStorageSchema,
@@ -2056,7 +2055,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         'Credential binding not found.',
         404
       );
-    const db = openWorkspaceDb(coreDb.dataRoot, input.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, input.workspaceId);
     let effectAttempt: ReturnType<typeof requireSchedulerExecutionAttempt> | undefined;
     let effectPackage: AgentEnvironmentPackage | undefined;
     let loginDeliveryKey: string | undefined;
@@ -2804,7 +2803,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const plan = getVaultInjectionPlan(coreDb, receipt.planId);
       if (plan?.injectionVisibility !== 'runtime-file' || !plan.packageSnapshotId) continue;
       const session = store.getAgentSession(receipt.agentSessionId);
-      const db = openWorkspaceDb(coreDb.dataRoot, session.workspaceId);
+      const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
       try {
         const original = requireAgentEnvironmentPackageSnapshot(
           db,
@@ -3028,9 +3027,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
       workspaceDb = this.openWorkspaceDb(workspaceIdForOwner(turn.owner));
-      if (workspaceDb) {
-        applyScopedMigrations(workspaceDb);
-      }
       const checkpoint = workspaceDb
         ? getWorkerCheckpoint(workspaceDb, workspaceIdForOwner(turn.owner), turn.threadId, turn.id)
         : null;
@@ -3573,7 +3569,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             ? { readRuntimePolicy: () => this.readRuntimeConfig!().openKitConfig.policy?.mediation }
             : {}),
           repositoryWorkspaceDb: (workspaceId: string) =>
-            openWorkspaceDb(this.coreDb!.dataRoot, workspaceId),
+            openAdmittedWorkspaceReadDb(this.coreDb!.dataRoot, workspaceId),
           ...(this.workspaceMutationAdmission
             ? { workspaceMutationAdmission: this.workspaceMutationAdmission }
             : {}),
@@ -3957,7 +3953,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     if (!workspaceDb) {
       throw new Error('Restart closeout requires durable workspace storage.');
     }
-    applyScopedMigrations(workspaceDb);
 
     try {
       const backendCapabilities = await this.backend.describeCapabilities();
@@ -4240,7 +4235,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         attempt[0]!.inputRef !== packageSnapshotId
       )
         throw stale();
-      const db = openWorkspaceDb(this.coreDb!.dataRoot, target.workspaceId);
+      const db = openAdmittedWorkspaceReadDb(this.coreDb!.dataRoot, target.workspaceId);
       try {
         readGoalTaskPolicyContext({ coreDb: this.coreDb!, store, db, lineage });
       } catch (cause) {
@@ -4688,7 +4683,10 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         'Workspace access denied.',
         403
       );
-    const db = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(
+      this.coreDb.dataRoot,
+      environmentPackage.scope.workspaceId
+    );
     try {
       await this.createWorkspaceChangeArtifacts(
         store,
@@ -5180,7 +5178,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       return null;
     }
 
-    return openWorkspaceDb(this.coreDb.dataRoot, workspaceId);
+    return openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, workspaceId);
   }
 
   /**

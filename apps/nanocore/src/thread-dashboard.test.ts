@@ -397,7 +397,7 @@ describe('thread dashboard app API', () => {
     coreDb.sqlite
       .prepare('UPDATE users SET display_name = ? WHERE id = ?')
       .run('Simon', 'usr_00000000-0000-7000-8000-000000000001');
-    const openedWorkspaceDb = vi.spyOn(database, 'openWorkspaceDb');
+    const openedWorkspaceDb = vi.spyOn(database, 'openAdmittedWorkspaceReadDb');
     try {
       const response = await app.request('/api/app/operations/thread.dashboard', {
         method: 'POST',
@@ -662,7 +662,7 @@ describe('thread dashboard app API', () => {
     const read = vi
       .spyOn(workObservations, 'readThreadRuntimeActivity')
       .mockReturnValue([activity]);
-    const opened = vi.spyOn(database, 'openWorkspaceDb');
+    const opened = vi.spyOn(database, 'openAdmittedWorkspaceReadDb');
     const app = createApp({
       coreDb,
       dataRoot,

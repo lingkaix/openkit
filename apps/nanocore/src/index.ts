@@ -126,8 +126,9 @@ import {
   type CoreDb,
   isFreshCoreInitializationScope,
   listExistingWorkspaceDatabaseScopes,
-  openBootVerifiedWorkspaceDb,
+  openAdmittedWorkspaceReadDb,
   openCoreDbWithIntegrityCheck,
+  openCoreReadDb,
 } from './storage/db.js';
 import {
   ensureConfigTemplateSurface,
@@ -492,7 +493,7 @@ const bootResult = await runBootPhases({
             }
 
             if ('id' in result && result.error?.code === 'worker_governance_restart_recovery') {
-              const workspaceDb = openBootVerifiedWorkspaceDb(
+              const workspaceDb = openAdmittedWorkspaceReadDb(
                 dataRoot,
                 workspaceIdForOwner(result.owner)
               );
@@ -523,7 +524,7 @@ const bootResult = await runBootPhases({
               (manifest) => manifest.id === record.agentId
             ),
           openWorkspace: (workspaceId: string) =>
-            openBootVerifiedWorkspaceDb(dataRoot, workspaceId),
+            openAdmittedWorkspaceReadDb(dataRoot, workspaceId),
         };
         installPendingRequestAdmission(recoveryStore, pendingWorkspace);
         await recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
@@ -597,6 +598,16 @@ if (shutdownCompletion) await shutdownCompletion;
 runtimeConfigSnapshot = requireBootValue(runtimeConfigSnapshot, 'Runtime config was not loaded.');
 mode = requireBootValue(mode, 'Core mode was not resolved.');
 coreDb = requireBootValue(coreDb, 'Core database was not initialized.');
+// Boot owns migration authority. Preserve the Core object captured by boot services,
+// but release its writer before any serving adapter can retain a database view.
+const servingCoreDb = openCoreReadDb(dataRoot);
+try {
+  coreDb.sqlite.close();
+} catch (error) {
+  servingCoreDb.sqlite.close();
+  throw error;
+}
+Object.assign(coreDb, servingCoreDb);
 const activeCoreDb = coreDb;
 const activeVaultUnlockState = requireBootValue(
   vaultUnlockState,
@@ -1010,6 +1021,9 @@ function shutdown(signal: NodeJS.Signals): void {
             ],
             false
           );
+          // The shutdown Audit has its FULL ACK. Release Main's reader before the
+          // native owner's final drain and checkpoint so normal close leaves no sidecars.
+          if (!closeProcessCoreDatabase()) throw new Error('Core reader shutdown failed.');
           await shutdownControlStoreWorkerClient();
         })
         .then(() => {
@@ -1149,9 +1163,9 @@ async function classifyWorkerCheckpointsAfterSchedulerRecovery(
   const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
 
   for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
-    let workspaceDb: ReturnType<typeof openBootVerifiedWorkspaceDb> | null = null;
+    let workspaceDb: ReturnType<typeof openAdmittedWorkspaceReadDb> | null = null;
     try {
-      workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+      workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
       for (const checkpoint of listExportableWorkerCheckpoints(workspaceDb, workspaceId)) {
         try {
           if (checkpoint.goalId === null && checkpoint.taskId === null) {

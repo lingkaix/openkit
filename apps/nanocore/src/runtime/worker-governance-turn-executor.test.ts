@@ -8224,11 +8224,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const prepareSpy = vi
       .spyOn(getControlStoreWorkerClient(), 'projectCleanup')
       .mockRejectedValue(new Error('cleanup status persistence failed'));
-    // Observe the runtime's writable Workspace handles; native read projections open separately.
+    // Storage65: observe only this runtime owner's handles, excluding independent ledger inspectors.
+    const runtimeReaders = new Set<WorkspaceDb['sqlite']>();
     const close = sqlitePrototype.close;
     const closeSpy = vi.fn();
     const closeObserver = vi.spyOn(sqlitePrototype, 'close').mockImplementation(function () {
-      if (!this.readonly && this.name.endsWith('workspace.sqlite')) closeSpy();
+      if (runtimeReaders.has(this)) closeSpy();
       return close.call(this);
     });
     setupDb.sqlite.close();
@@ -8251,6 +8252,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
       environmentBackend: {
         kind: 'openshell',
       },
+    });
+
+    const readerOwner = executor as unknown as {
+      openWorkspaceDb(workspaceId: string): WorkspaceDb | null;
+    };
+    const openReader = readerOwner.openWorkspaceDb.bind(readerOwner);
+    const openedReader = vi.spyOn(readerOwner, 'openWorkspaceDb').mockImplementation((id) => {
+      const db = openReader(id);
+      if (db) {
+        expect(db.sqlite.readonly).toBe(true);
+        expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        runtimeReaders.add(db.sqlite);
+      }
+      return db;
     });
 
     try {
@@ -8276,6 +8291,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
       expect(closeSpy).toHaveBeenCalledTimes(2);
     } finally {
+      openedReader.mockRestore();
       closeObserver.mockRestore();
       prepareSpy.mockRestore();
     }
@@ -8397,97 +8413,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it('fails with one terminal outcome when workspace storage migration fails', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-workspace-migrate-fail-'));
-    const coreDb = openCoreDb(dataRoot);
-    applyMigrations(coreDb);
-    const store = await createDemoStore({ dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const setupDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    const sqlitePrototype = Object.getPrototypeOf(setupDb.sqlite) as {
-      exec: typeof setupDb.sqlite.exec;
-      prepare: typeof setupDb.sqlite.prepare;
-    };
-    setupDb.sqlite.close();
-    const turn = await createAssignedTurn(
-      store,
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Fail workspace storage migration'
-    );
-    await recordExecutorAttempt(coreDb, {
-      admittedAt: new Date().toISOString(),
-      agentSessionId: testEntityId('as', 'as_workspace_migrate_fail_1'),
-      packageSnapshotId: `aepsnap_${turn.id}_as_workspace_migrate_fail_1`,
-      sandboxBindingRef: `lease-binding:${turn.id}`,
-      threadId: turn.threadId,
-      turnId: turn.id,
-    });
-    const executor = new WorkerGovernanceTurnExecutor({
-      // Keep the existing deterministic fixture clock across the native owner boundary.
-      now: () => new Date().toISOString(),
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend: new FakeWorkerGovernanceBackend(),
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_workspace_migrate_fail_1'),
-      environmentBackend: {
-        kind: 'openshell',
-      },
-    });
-
-    const originalPrepare = sqlitePrototype.prepare;
-    // Fail only the writable migration owner after fixture admission and readonly ledger checks.
-    const prepareSpy = vi.spyOn(sqlitePrototype, 'prepare').mockImplementation(function (
-      this: { name?: string; readonly?: boolean },
-      sql: string,
-      ...rest: unknown[]
-    ) {
-      const filename = typeof this.name === 'string' ? this.name : '';
-      if (
-        filename.endsWith('workspace.sqlite') &&
-        this.readonly === false &&
-        sql === 'SELECT created_at FROM __drizzle_migrations ORDER BY created_at DESC LIMIT 1'
-      ) {
-        throw new Error('injected workspace migration failure');
-      }
-      return originalPrepare.call(this, sql, ...rest);
-    });
-
-    try {
-      const execution = executor.startTurn(store, turn.id, 'Fail workspace storage migration', {
-        attemptId: testEntityId('attempt', `lease_${turn.id}`),
-        agentSessionId: testEntityId('as', 'as_workspace_migrate_fail_1'),
-        sandboxBindingRef: `lease-binding:${turn.id}`,
-        agentSetup: createTestAgentSetup(),
-        requestId: '00000000-0000-4000-8000-000000000209',
-        triggerActor: turn.triggerActor,
-        workspaceRoots: [],
-      });
-      // Bootstrap phase 4 requires a typed scoped failure and excludes arbitrary exception text.
-      await expect(execution).rejects.toMatchObject({
-        code: 'migration_failed',
-        message: expect.stringContaining('workspace'),
-      });
-      await expect(execution).rejects.not.toThrow('injected workspace migration failure');
-
-      expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
-      expect(
-        store.getTurnEvents(turn.id).filter((event) => event.event === 'turn.completed')
-      ).toEqual([
-        expect.objectContaining({
-          data: expect.objectContaining({ stopReason: 'error' }),
-        }),
-      ]);
-    } finally {
-      prepareSpy.mockRestore();
-      coreDb.sqlite.close();
-    }
-  });
-
   it('does not emit completed before failed when workspace storage close fails', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-close-fail-')));
     applyMigrations(coreDb);
@@ -8509,9 +8434,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Fail workspace storage close'
     );
     const close = sqlitePrototype.close;
+    const runtimeReaders = new Set<WorkspaceDb['sqlite']>();
     let injected = false;
     const closeSpy = vi.spyOn(sqlitePrototype, 'close').mockImplementation(function () {
-      if (!injected && !this.readonly && this.name.endsWith('workspace.sqlite')) {
+      if (!injected && runtimeReaders.has(this)) {
         injected = true;
         throw new Error('workspace storage close failed');
       }
@@ -8527,6 +8453,20 @@ describe('WorkerGovernanceTurnExecutor', () => {
       environmentBackend: {
         kind: 'openshell',
       },
+    });
+
+    const readerOwner = executor as unknown as {
+      openWorkspaceDb(workspaceId: string): WorkspaceDb | null;
+    };
+    const openReader = readerOwner.openWorkspaceDb.bind(readerOwner);
+    const openedReader = vi.spyOn(readerOwner, 'openWorkspaceDb').mockImplementation((id) => {
+      const db = openReader(id);
+      if (db) {
+        expect(db.sqlite.readonly).toBe(true);
+        expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
+        runtimeReaders.add(db.sqlite);
+      }
+      return db;
     });
 
     try {
@@ -8557,7 +8497,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         }),
       ]);
     } finally {
+      openedReader.mockRestore();
       closeSpy.mockRestore();
+      for (const reader of runtimeReaders) if (reader.open) reader.close();
       coreDb.sqlite.close();
     }
   });

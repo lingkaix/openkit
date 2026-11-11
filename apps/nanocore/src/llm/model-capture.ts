@@ -4,8 +4,12 @@ import { workspaceIdForOwner } from '@openkit/protocol';
 import { readReleaseIdentity } from '../diagnostics/release-identity.js';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { FsStore } from '../lib/store.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
-import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
+import {
+  type CoreDb,
+  openAdmittedWorkspaceReadDb,
+  openCoreReadDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import {
   type AdmittedWorkBody,
   type AssistantSkillAdmission,
@@ -122,17 +126,13 @@ export async function withTurnModelCapture<T>(
     captureDb =
       borrowedDb ??
       (turn.owner.kind === 'server'
-        ? openCoreDb(dataRoot)
-        : openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner)));
+        ? openCoreReadDb(dataRoot)
+        : openAdmittedWorkspaceReadDb(dataRoot, workspaceIdForOwner(turn.owner)));
   } catch {
     throw new ModelCaptureError();
   }
   try {
     try {
-      if (!borrowedDb) {
-        if (captureDb.scope === 'core') applyMigrations(captureDb);
-        else applyScopedMigrations(captureDb);
-      }
       const binding = readWorkObservationTurnBinding(captureDb, {
         threadId: turn.threadId,
         turnId: turn.id,

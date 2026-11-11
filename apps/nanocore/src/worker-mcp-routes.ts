@@ -164,12 +164,10 @@ import {
   bindWorkspaceSqlite,
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
-  openBootVerifiedWorkspaceDb,
-  openWorkspaceDb,
+  openAdmittedWorkspaceReadDb,
   type WorkspaceDb,
 } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
-import { applyScopedMigrations } from './storage/migrate.js';
 import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
@@ -611,11 +609,11 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   400
                 );
               }
-              activeWorkspaceDb = openWorkspaceDb(
+              activeWorkspaceDb = openAdmittedWorkspaceReadDb(
                 input.coreDb!.dataRoot,
                 environmentPackage.scope.workspaceId
               );
-              applyScopedMigrations(activeWorkspaceDb);
+
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               const requireCurrentBuiltinToolPolicy = () => {
                 const toolConditions = currentWorkerMcpPermissions(
@@ -1231,7 +1229,7 @@ function mcpBootDecidedPublicationEqual(
 export async function reconcileWorkerMcpItems(dataRoot: string, store: FsStore): Promise<number> {
   let recovered = 0;
   for (const { workspaceId } of listExistingWorkspaceDatabaseScopes(dataRoot)) {
-    const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+    const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
     try {
       const rows = workspaceDb.sqlite
         .prepare(

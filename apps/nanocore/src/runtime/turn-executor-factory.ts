@@ -62,11 +62,9 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import {
   bindWorkspaceSqlite,
   type CoreDb,
-  openBootVerifiedWorkspaceDb,
-  openWorkspaceDb,
+  openAdmittedWorkspaceReadDb,
   type WorkspaceDb,
 } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   NATIVE_THREAD_LOGIN_FEATURE,
   type NativeThreadLogin,
@@ -562,10 +560,9 @@ function createNanoHostWorkerLifecycleRuntime(
   async function restoreDurableSession(
     session: WorkerBackendSessionRecord
   ): Promise<AgentEnvironmentPackage> {
-    const workspaceDb = openWorkspaceDb(coreDb.dataRoot, session.workspaceId);
+    const workspaceDb = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
     try {
-      applyScopedMigrations(workspaceDb);
       environmentPackage = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
         session.workspaceId,
@@ -614,7 +611,7 @@ function createNanoHostWorkerLifecycleRuntime(
       const store = sharedStore ?? new FsStore({ dataRoot: coreDb.dataRoot });
       let captureDisposed = false;
       let collected = false;
-      const db = openWorkspaceDb(coreDb.dataRoot, session.workspaceId);
+      const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
       try {
         if (await hasPendingWorkspaceCapture(coreDb, db, session, environmentPackage, store)) {
           const turn = store.getTurnById(session.turnId);
@@ -1487,7 +1484,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         // A cleared private Login is not evidence that its departure ACK was received.
         // Only a validated ordinary Thread can acknowledge cold close without that live proof.
         if (consumed.receiver) {
-          const db = openBootVerifiedWorkspaceDb(
+          const db = openAdmittedWorkspaceReadDb(
             this.coreDb.dataRoot,
             consumed.receiver.workspaceId
           );
@@ -1647,7 +1644,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       receiver.threadId !== session.environmentPackage.scope.threadId
     )
       throw new Error('NanoHost Login close receiver scope conflicts.');
-    const db = openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, receiver.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, receiver.workspaceId);
     try {
       const thread = readProduct(
         db.sqlite,
@@ -1718,7 +1715,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           throw new Error('NanoHost Login departure reference is invalid.');
         db =
           pending.journal?.workspaceDb ??
-          openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, departure.workspaceId);
+          openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, departure.workspaceId);
         await getControlStoreWorkerClient().vault(
           db,
           'thread-login-remove',
@@ -3135,10 +3132,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     for (const anchor of readNanoHostWorkspaceCaptureAnchors(this.coreDb, sandboxBindingRef)) {
       const admitted = isScopeAdmitted(this.coreDb.dataRoot, 'workspace', anchor.workspaceId);
       const db = admitted
-        ? openWorkspaceDb(this.coreDb.dataRoot, anchor.workspaceId)
+        ? openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, anchor.workspaceId)
         : this.openRetiringWorkspaceDb(anchor.workspaceId);
       try {
-        if (admitted) applyScopedMigrations(db);
         if (
           await hasPendingWorkspaceCapture(
             this.coreDb,
@@ -4620,12 +4616,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       turnStarted: false,
     });
     if (initializesNewSlot) {
-      const initializationDb = openWorkspaceDb(
+      const initializationDb = openAdmittedWorkspaceReadDb(
         this.coreDb.dataRoot,
         environmentPackage.scope.workspaceId
       );
       try {
-        applyScopedMigrations(initializationDb);
         await authorizeWorkspaceBaselineInitialization(
           initializationDb,
           this.workspaceCollectionIdentity(
@@ -4670,10 +4665,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         timestamp: environmentPackage.createdAt,
       });
     }
-    const cursorDb = openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+    const cursorDb = openAdmittedWorkspaceReadDb(
+      this.coreDb.dataRoot,
+      environmentPackage.scope.workspaceId
+    );
     let workspaceBaseCommits: Record<string, string> | undefined;
     try {
-      applyScopedMigrations(cursorDb);
       const cursor = readWorkspaceSnapshotCursor(
         cursorDb,
         this.workspaceCollectionIdentity(
@@ -5559,7 +5556,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const body = Buffer.from(input.credentialValue, 'utf8');
     if (body.length === 0 || body.length > 256 * 1024 * 1024)
       throw new Error('Credential binding content bound is invalid.');
-    const db = openWorkspaceDb(this.coreDb.dataRoot, session.environmentPackage.scope.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(
+      this.coreDb.dataRoot,
+      session.environmentPackage.scope.workspaceId
+    );
     try {
       const values = await this.restoreCollectionRuntimeCredentials(session, db);
       const row = this.coreDb.sqlite
@@ -5670,7 +5670,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     )
       throw new Error('Credential revocation has no exact placement authority.');
     const session = this.sessions.get(input.inputRef!);
-    const db = openWorkspaceDb(this.coreDb.dataRoot, attempt.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, attempt.workspaceId);
     let environmentPackage: AgentEnvironmentPackage;
     try {
       environmentPackage =
@@ -5734,7 +5734,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       throw new Error('Native submit binding contradicts its attempt.');
     this.requireDurableAgentSessionProvenance(session.environmentPackage, attempt.attemptId);
     this.requireCurrentBackendPhysicalEpoch(session.identity);
-    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, attempt.workspaceId);
+    const workspaceDb = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, attempt.workspaceId);
     try {
       const retained = requireAgentEnvironmentPackageSnapshot(
         workspaceDb,
@@ -6339,7 +6339,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const itemsBytes = await exportTranscriptFile(transcript.itemsPath);
     const observationSources: NonNullable<WorkerTranscriptPayload['observationSources']> = [];
     const lineage = { ...session.environmentPackage.scope, packageSnapshotId };
-    const observationDb = openWorkspaceDb(this.coreDb.dataRoot, lineage.workspaceId);
+    const observationDb = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, lineage.workspaceId);
     let publications: Set<string>;
     try {
       publications = new Set(
@@ -6872,9 +6872,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ): Promise<void> {
     await this.assertWorkspaceCaptureSettled(session.sharedHarness.sandbox.sandboxBindingRef);
     const identity = this.workspaceCollectionIdentity(session, 'baseline');
-    const db = openWorkspaceDb(this.coreDb.dataRoot, identity.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, identity.workspaceId);
     try {
-      applyScopedMigrations(db);
       if (readWorkspaceSnapshotCursor(db, identity)) {
         // Only this actual fresh session.open may check its private values before receipt settlement.
         if (opensNewBinding) await this.collectWorkspaceSnapshot(session, 'successor');
@@ -6973,9 +6972,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       session,
       `${boundary}-${createHash('sha256').update(session.environmentPackage.snapshotId).digest('hex')}`
     );
-    const db = openWorkspaceDb(this.coreDb.dataRoot, identity.workspaceId);
+    const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, identity.workspaceId);
     try {
-      applyScopedMigrations(db);
       let receipt = readWorkspaceCollection(db, identity);
       // Exact disposition was verified above. Retained A is never replaced by a release scan of B.
       if (disposedCaptures.has(session.attemptId)) return [];
@@ -7362,7 +7360,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const workspaceDb =
       attempt.phase === 'closed'
         ? null
-        : openWorkspaceDb(this.coreDb.dataRoot, attempt.workspaceId);
+        : openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, attempt.workspaceId);
     const deadlineUnixMs = Math.min(
       Date.now() +
         (operation === 'image.acquire' || operation === 'image.build' ? 900_000 : 300_000),
@@ -7443,7 +7441,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         for (const other of others()) {
           const anchor = getWorkerBackendSession(this.coreDb, other.attemptId);
           if (!anchor) throw new Error('NanoHost sibling cleanup lineage is unavailable.');
-          const db = openWorkspaceDb(this.coreDb.dataRoot, anchor.workspaceId);
+          const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, anchor.workspaceId);
           try {
             if (!(await hasCompletedWorkerTurnCollection(db, anchor)))
               throw new Error('NanoHost wider cleanup requires acknowledged sibling collection.');
@@ -7964,7 +7962,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const anchor = getWorkerBackendSession(this.coreDb, attemptId);
     const workspaceDb = historical
       ? null
-      : openWorkspaceDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
+      : openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, environmentPackage.scope.workspaceId);
     let retainedSnapshot: AgentEnvironmentPackage;
     let normalizedSnapshot: AgentEnvironmentPackage;
     try {
@@ -8166,7 +8164,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     // Inspection must preserve a missing Workspace rather than recreate canonical storage.
     const workspaceDb = retirement
       ? this.openRetiringWorkspaceDb(latest.workspaceId)
-      : openBootVerifiedWorkspaceDb(this.coreDb.dataRoot, latest.workspaceId);
+      : openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, latest.workspaceId);
     let historical: AgentEnvironmentPackageSnapshotReadRecord;
     try {
       historical = requireAgentEnvironmentPackageSnapshot(
@@ -8602,7 +8600,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         if (closeOwner?.pending === pending) closeOwner.pending = null;
       }
     }
-    const workspaceDb = openWorkspaceDb(
+    const workspaceDb = openAdmittedWorkspaceReadDb(
       this.coreDb.dataRoot,
       session.environmentPackage.scope.workspaceId
     );

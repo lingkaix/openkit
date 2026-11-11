@@ -60,7 +60,7 @@ import {
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
-import type { CoreDb } from '../storage/db.js';
+import { type CoreDb, openWorkspaceReadDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { type VaultBackend, vaultSecretMaterialToString } from '../vault/vault-backend.js';
@@ -355,28 +355,26 @@ function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Tur
   if (!existsSync(path)) {
     return false;
   }
-  const schema = 'agent_session_compatibility_workspace';
-  coreDb.sqlite.prepare(`ATTACH DATABASE ? AS ${schema}`).run(path);
+  const workspaceId = workspaceIdForOwner(turn.owner);
+  const workspaceDb = openWorkspaceReadDb(coreDb.dataRoot, workspaceId);
   try {
-    const checkpointTable = coreDb.sqlite
+    const checkpointTable = workspaceDb.sqlite
       .prepare(
-        `SELECT 1 FROM ${schema}.sqlite_master
+        `SELECT 1 FROM sqlite_master
          WHERE type = 'table' AND name = 'worker_turn_checkpoints'`
       )
       .get();
-    if (!checkpointTable) {
-      return false;
-    }
+    if (!checkpointTable) return false;
     return Boolean(
-      coreDb.sqlite
+      workspaceDb.sqlite
         .prepare(
-          `SELECT 1 FROM ${schema}.worker_turn_checkpoints
+          `SELECT 1 FROM worker_turn_checkpoints
            WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?`
         )
-        .get(workspaceIdForOwner(turn.owner), turn.threadId, turn.id)
+        .get(workspaceId, turn.threadId, turn.id)
     );
   } finally {
-    coreDb.sqlite.prepare(`DETACH DATABASE ${schema}`).run();
+    workspaceDb.sqlite.close();
   }
 }
 

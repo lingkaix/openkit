@@ -178,6 +178,7 @@ import {
   recordSchedulerExecutionOperation,
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
+import * as nativeAttemptOwners from './execution-attempts.js';
 import * as journalOwners from './execution-journal.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionInvocation, ExecutionJournalRef } from './execution-step-journal.js';
@@ -642,7 +643,8 @@ async function admitFactoryTurnJournal(
 async function anchorNanoHostMaterialization(
   coreDb: ReturnType<typeof createFactoryCoreDb>,
   backend: WorkerGovernanceBackend,
-  environmentPackage: AgentEnvironmentPackage
+  environmentPackage: AgentEnvironmentPackage,
+  nativeCoreOwner = false
 ): Promise<void> {
   const fixtureStore = new FsStore({ dataRoot: coreDb.dataRoot });
   try {
@@ -715,6 +717,26 @@ async function anchorNanoHostMaterialization(
     lease = { sandboxBindingRef };
   }
   await admitFactoryTurnJournal(coreDb, environmentPackage, leaseId, identity);
+  if (nativeCoreOwner) {
+    await recordWorkerBackendSessionMaterializing(coreDb, {
+      identity,
+      backendVersion: '0.0.99',
+      backendLineage:
+        environmentPackage.runtime.image.kind === 'reference'
+          ? { kind: 'reference', imageRef: environmentPackage.runtime.image.ref }
+          : {
+              kind: 'build',
+              buildArgumentsDigest: environmentPackage.runtime.image.argumentsDigest,
+              buildContextDigest: environmentPackage.runtime.image.contextDigest,
+              buildInputDigest: environmentPackage.runtime.image.input.digest,
+              resultingImageDigest: `sha256:${'c'.repeat(64)}`,
+            },
+      lineage: environmentPackage.scope,
+      sandboxBindingRef: lease.sandboxBindingRef,
+      now: () => environmentPackage.createdAt,
+    });
+    return;
+  }
   coreDb.sqlite
     .prepare(
       `INSERT INTO worker_backend_sessions (
@@ -1697,7 +1719,7 @@ describe('createConfiguredTurnExecutor', () => {
 
   it('denies a fresh AgentSession before lease acquisition when RuntimeTarget is missing', async () => {
     const coreDb = createFactoryCoreDb();
-    const store = await createDemoStore();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = await store.updateTurn(
       (
         await store.createTurn(
@@ -2044,7 +2066,7 @@ describe('createConfiguredTurnExecutor', () => {
       ready: true,
       observedAt: '2026-08-21T00:00:01.000Z',
     });
-    const store = await createDemoStore();
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const turn = await store.updateTurn(
       (
         await store.createTurn(
@@ -3286,14 +3308,55 @@ describe('createConfiguredTurnExecutor', () => {
       if (!coreDb || !runtime)
         throw new Error('Boot did not hand off its Core and Worker runtime.');
       expect(appOptions?.releaseIdentity).toEqual(TEST_WORKER_RELEASE_IDENTITY);
+      expect(coreDb.sqlite.readonly).toBe(true);
+      expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
       const backend = (runtime.turnExecutor as unknown as { backend: WorkerGovernanceBackend })
         .backend;
       await recordTestNativeRuntimeTarget(coreDb);
       const attempt = async (pkg: AgentEnvironmentPackage, label: string) => {
         const sandboxBindingRef = `binding_${label}`;
         const attemptId = testEntityId('attempt', label);
-        bindNanoHostWorkerLineage(coreDb, pkg, { attemptId, sandboxBindingRef });
-        await anchorNanoHostMaterialization(coreDb, backend, pkg);
+        // The actual boot Core handle remains a reader; setup publishes through its native owners.
+        const now = () => new Date().toISOString();
+        const admission = await publishSchedulerAdmission(coreDb, {
+          mode: 'create',
+          entry: {
+            backendId: 'nanohost',
+            queueEntryId: `queue:${attemptId}`,
+            requestId: pkg.scope.requestId,
+            requestedAgentId: pkg.agent.agentId,
+            threadId: pkg.scope.threadId,
+            triggerActor: pkg.scope.triggerActor,
+            turnId: pkg.scope.turnId,
+            turnInput: 'Factory worker storage fixture',
+            workspaceId: pkg.scope.workspaceId,
+            timestamp: now(),
+          },
+        });
+        if (admission.kind !== 'queue') throw new Error('Boot fixture admission did not publish.');
+        const entry = admission.entry;
+        await nativeAttemptOwners.createSchedulerExecutionAttempt(coreDb, {
+          entry,
+          attemptId,
+          preparationInput: { admission: entry },
+          now,
+        });
+        await nativeAttemptOwners.bindSchedulerExecutionAttemptSession(coreDb, {
+          attemptId,
+          agentSessionId: pkg.scope.agentSessionId,
+          now,
+        });
+        await nativeAttemptOwners.bindNanoHostAttemptPreparation(coreDb, {
+          attemptId,
+          agentSessionId: pkg.scope.agentSessionId,
+          inputRef: pkg.snapshotId,
+          bindingRef: sandboxBindingRef,
+          sessionCompatibilityKey: (
+            pkg.extensions.openkit as { sessionWorkspace: SessionWorkspaceMaterializationPlan }
+          ).sessionWorkspace.compatibilityKey.digest,
+          now,
+        });
+        await anchorNanoHostMaterialization(coreDb, backend, pkg, true);
         return { pkg, sandboxBindingRef, attemptId };
       };
 
@@ -3312,7 +3375,7 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
       ).toEqual({ count: 0 });
 
-      await closeFactoryAttempt(coreDb, mismatch.attemptId);
+      await closeFactoryAttempt(coreDb, mismatch.attemptId, null, backend, true);
 
       effects.length = 0;
       observed = TEST_WORKER_RELEASE_IDENTITY;
@@ -21600,7 +21663,10 @@ async function closeFactoryAttempt(
   db: ReturnType<typeof openCoreDb>,
   attemptId: string,
   outcomeRef: string | null = null,
-  releaseOwner: Pick<WorkerGovernanceBackend, 'release'> = new SimulatedTurnExecutor({ coreDb: db })
+  releaseOwner: Pick<WorkerGovernanceBackend, 'release'> = new SimulatedTurnExecutor({
+    coreDb: db,
+  }),
+  nativeCoreOwner = false
 ) {
   const native = getWorkerBackendSession(db, attemptId);
   if (native && native.state !== 'cleaned') {
@@ -21628,16 +21694,19 @@ async function closeFactoryAttempt(
   const current = attempts.requireSchedulerExecutionAttempt(db, attemptId);
   if (current.phase === 'closed') return current;
   if (!current.operationId)
-    return attempts.closeSchedulerExecutionAttemptWithoutEffects(db, {
+    return (
+      nativeCoreOwner
+        ? nativeAttemptOwners.closeSchedulerExecutionAttemptWithoutEffects
+        : attempts.closeSchedulerExecutionAttemptWithoutEffects
+    )(db, {
       attemptId,
       cause: 'worker-final-phase',
       noOutstandingEffects: true,
     });
-  const closing = attempts.markSchedulerExecutionAttemptClosing(db, {
-    attemptId,
-    cause: 'worker-final-phase',
-    outcomeRef,
-  });
+  const closingInput = { attemptId, cause: 'worker-final-phase', outcomeRef };
+  const closing = nativeCoreOwner
+    ? await nativeAttemptOwners.markSchedulerExecutionAttemptClosing(db, closingInput)
+    : attempts.markSchedulerExecutionAttemptClosing(db, closingInput);
   const proof = {
     terminalHandoff: true,
     output: true,
@@ -21651,7 +21720,11 @@ async function closeFactoryAttempt(
     proof,
   });
   expect(released.state).toBe('released');
-  return attempts.closeSchedulerExecutionAttemptWithFence(db, {
+  return (
+    nativeCoreOwner
+      ? nativeAttemptOwners.closeSchedulerExecutionAttemptWithFence
+      : attempts.closeSchedulerExecutionAttemptWithFence
+  )(db, {
     correlation: attempts.schedulerExecutionCorrelation(closing),
     fenceRef: released.fenceRef!,
     proof,

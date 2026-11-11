@@ -105,7 +105,7 @@ import {
 } from './storage/control-store-knowledge.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
-import { openWorkspaceDb } from './storage/db.js';
+import { openAdmittedWorkspaceReadDb } from './storage/db.js';
 import {
   readWorkspaceKnowledgeDerivedIndexes,
   retrieveWorkspaceKnowledge,
@@ -114,7 +114,6 @@ import {
   knowledgeProposalDocumentDigest,
   knowledgeProposalId,
 } from './storage/knowledge-proposal-codecs.js';
-import { applyScopedMigrations } from './storage/migrate.js';
 
 /** Projects known Knowledge command, record and decoder refusals; arbitrary exceptions escape. */
 const knowledgeNotebookListCursorSchema = z.tuple([
@@ -256,10 +255,9 @@ async function recordKnowledgeGatewayUsage(input: {
     return;
   }
 
-  const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, input.workspaceId);
+  const workspaceDb = openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, input.workspaceId);
 
   try {
-    applyScopedMigrations(workspaceDb);
     const call = await startCapabilityCall({
       authorityActor: input.authorityActor,
       capabilityId: input.capabilityId,

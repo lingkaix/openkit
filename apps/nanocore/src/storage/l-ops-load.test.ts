@@ -33,7 +33,14 @@ import {
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './db.js';
+import {
+  type CoreDb,
+  openCoreDb,
+  openCoreReadDb,
+  openWorkspaceDb,
+  openWorkspaceReadDb,
+  type WorkspaceDb,
+} from './db.js';
 import { readImmutableProductJson } from './immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import { nativeProductScope } from './workspace-file-records.js';
@@ -83,6 +90,34 @@ function scopes(db: ReturnType<typeof openWorkspaceDb>) {
     })
   );
 }
+/** Challenges one existing protected record after physical read admission; no fixture state is created. */
+function proveFixtureReader(
+  db: CoreDb | WorkspaceDb,
+  table: 'users' | 'control_workspaces',
+  id: string
+) {
+  const readonly = db.sqlite.readonly;
+  const queryOnly = db.sqlite.pragma('query_only', { simple: true });
+  demand(
+    readonly && queryOnly === 1,
+    'Measured fixture owner is not physically readonly and query-only'
+  );
+  const before = db.sqlite.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
+  demand(before, 'Protected fixture record is absent');
+  const column = table === 'users' ? 'display_name' : 'revision';
+  let refusalCode: unknown = null;
+  try {
+    // The exact existing row is protected; even this no-op UPDATE must be refused.
+    db.sqlite.prepare(`UPDATE ${table} SET ${column}=${column} WHERE id=?`).run(id);
+  } catch (error) {
+    refusalCode =
+      typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+  }
+  const after = db.sqlite.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id);
+  demand(refusalCode === 'SQLITE_READONLY', 'Measured fixture reader accepted protected DML');
+  demand(isDeepStrictEqual(before, after), 'Readonly challenge changed an existing fixture record');
+  return { readonly, queryOnly, refusalCode, unchanged: true, recordSha256: hash(after) };
+}
 function write(file: string, value: unknown) {
   const fd = fs.openSync(join(B, file), 'wx', 0o600);
   try {
@@ -131,6 +166,21 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
     referenceRateParameter: RATE,
     thresholdsUnchanged: true,
     qualification: false,
+    fixtureReaders: {
+      status: 'setup-writers',
+      core: null,
+      workspaces: [],
+      releasedBeforeNativeShutdown: false,
+    },
+    freshCreate: {
+      attempted: false,
+      outcome: 'not-attempted',
+      elapsedMs: null,
+      mainLoop: { status: 'absent', reason: 'not-started', metrics: null },
+      qualification: false,
+      meaning:
+        'One existing first createWorkspace setup call only. Elapsed is not blocking time; sampled delays/overlap do not infer cause or a statistically qualified startup percentile.',
+    },
     hostLoad: { start: observeHostLoad(), end: null },
     mainLoop: {
       p50Ms: null,
@@ -148,7 +198,66 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
     stop = Infinity;
   try {
     for (let w = 0; w < N; w++) {
-      const workspace = await store.createWorkspace(`r2 envelope ${PROFILE} ${w}`);
+      let firstCreateLoop: ReturnType<typeof observeMainLoop> | undefined;
+      if (w === 0) {
+        result.freshCreate.attempted = true;
+        try {
+          firstCreateLoop = observeMainLoop();
+          if (!firstCreateLoop)
+            result.freshCreate.mainLoop = {
+              status: 'absent',
+              reason: 'observer-unavailable',
+              metrics: null,
+            };
+        } catch {
+          result.freshCreate.mainLoop = {
+            status: 'absent',
+            reason: 'observer-start-failed',
+            metrics: null,
+          };
+        }
+      }
+      const firstCreateStarted = w === 0 ? performance.now() : null;
+      let firstCreateObserverError: unknown;
+      let firstCreateObserverFailed = false;
+      let workspace: Awaited<ReturnType<FsStore['createWorkspace']>>;
+      try {
+        workspace = await store.createWorkspace(`r2 envelope ${PROFILE} ${w}`);
+        if (w === 0) result.freshCreate.outcome = 'returned';
+      } finally {
+        if (w === 0) {
+          result.freshCreate.elapsedMs = performance.now() - firstCreateStarted!;
+          if (result.freshCreate.outcome !== 'returned') result.freshCreate.outcome = 'threw';
+          if (firstCreateLoop) {
+            try {
+              const metrics = firstCreateLoop.finish();
+              const sampled = metrics.samples > 0;
+              result.freshCreate.mainLoop = {
+                status: 'observed',
+                histogramStatus: sampled ? 'measured' : 'absent',
+                reason: sampled ? null : 'no-histogram-samples',
+                metrics: {
+                  ...metrics,
+                  p50Ms: sampled ? metrics.p50Ms : null,
+                  p99Ms: sampled ? metrics.p99Ms : null,
+                  p999Ms: sampled ? metrics.p999Ms : null,
+                  maxMs: sampled ? metrics.maxMs : null,
+                },
+              };
+            } catch (error) {
+              result.freshCreate.mainLoop = {
+                status: 'absent',
+                reason: 'observer-finish-failed',
+                metrics: null,
+              };
+              firstCreateObserverError = error;
+              firstCreateObserverFailed = true;
+            }
+          }
+        }
+      }
+      // A sampler that did not stop cannot enter later setup or steady measurement.
+      if (firstCreateObserverFailed) throw firstCreateObserverError;
       await recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: workspace.id,
@@ -191,6 +300,26 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
         list.push(...fixture.turns.filter((t) => t.workspaceId === workspaces[w]!.workspace.id));
       actors.push(list);
     }
+    // Setup is complete. Captured fixture/gateway objects keep their identity and
+    // receive raw and ORM views of the same owned readonly connection before offers.
+    const coreSetupWriter = coreDb.sqlite;
+    coreSetupWriter.close();
+    demand(!coreSetupWriter.open, 'Core setup writer survived measurement handoff');
+    const coreReader = openCoreReadDb(root);
+    Object.defineProperties(coreDb, Object.getOwnPropertyDescriptors(coreReader));
+    result.fixtureReaders.core = proveFixtureReader(coreDb, 'users', userId);
+    for (const entry of workspaces) {
+      const setupWriter = entry.db.sqlite;
+      setupWriter.close();
+      demand(!setupWriter.open, 'Workspace setup writer survived measurement handoff');
+      const reader = openWorkspaceReadDb(root, entry.workspace.id);
+      Object.defineProperties(entry.db, Object.getOwnPropertyDescriptors(reader));
+      result.fixtureReaders.workspaces.push({
+        workspaceId: entry.workspace.id,
+        ...proveFixtureReader(entry.db, 'control_workspaces', entry.workspace.id),
+      });
+    }
+    result.fixtureReaders.status = 'readonly';
     result.turns = actors;
     result.topology = actors.map((a, w) => ({
       workspace: w,
@@ -327,15 +456,21 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
       result.teardown = await fixture.close();
       fixtureClosed = true;
     } else result.teardown = { clientCloseFailures: 0 };
-    await shutdownControlStoreWorkerClient();
-    clientClosed = true;
     const before = workspaces.map((w) => scopes(w.db));
     for (const w of workspaces) w.db.sqlite.close();
     coreDb.sqlite.close();
+    demand(
+      !coreDb.sqlite.open && workspaces.every((w) => !w.db.sqlite.open),
+      'Main fixture reader survived into native final shutdown'
+    );
+    result.fixtureReaders.releasedBeforeNativeShutdown = true;
+    await shutdownControlStoreWorkerClient();
+    clientClosed = true;
     result.reopen = { scopeHashesMatch: false, effectTuples: 0, progressBodies: 0 };
     for (let w = 0; w < N; w++) {
-      const db = openWorkspaceDb(root, workspaces[w]!.workspace.id);
+      const db = openWorkspaceReadDb(root, workspaces[w]!.workspace.id);
       try {
+        proveFixtureReader(db, 'control_workspaces', workspaces[w]!.workspace.id);
         demand(isDeepStrictEqual(scopes(db), before[w]), 'Cold native SQL values changed');
         for (const witness of witnesses.filter(
           (x) => x.workspaceId === workspaces[w]!.workspace.id
@@ -512,19 +647,19 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
         await fixture.close();
       } catch {}
     }
+    for (const w of workspaces) {
+      try {
+        if (w.db.sqlite.open) w.db.sqlite.close();
+      } catch {}
+    }
+    try {
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    } catch {}
     if (!clientClosed) {
       try {
         await shutdownControlStoreWorkerClient();
       } catch {}
     }
-    for (const w of workspaces) {
-      try {
-        w.db.sqlite.close();
-      } catch {}
-    }
-    try {
-      coreDb.sqlite.close();
-    } catch {}
     result.hostLoad.end = observeHostLoad();
     result.sqliteOpenCoverage = {
       main: observeMainOpens(),

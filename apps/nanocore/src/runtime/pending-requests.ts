@@ -44,7 +44,7 @@ import {
 } from '../storage/control-store-products.js';
 import {
   listExistingWorkspaceDatabaseScopes,
-  openBootVerifiedWorkspaceDb,
+  openAdmittedWorkspaceReadDb,
   type WorkspaceDb,
 } from '../storage/db.js';
 import { StoredItemPayloadV1Schema } from '../storage/retained-work-items-v1.js';
@@ -1459,9 +1459,9 @@ export function loadApprovalProjections(
 ): ApprovalRequest[] {
   const approvals: ApprovalRequest[] = [];
   for (const scope of listExistingWorkspaceDatabaseScopes(dataRoot)) {
-    let db: ReturnType<typeof openBootVerifiedWorkspaceDb> | undefined;
+    let db: ReturnType<typeof openAdmittedWorkspaceReadDb> | undefined;
     try {
-      db = openBootVerifiedWorkspaceDb(dataRoot, scope.workspaceId);
+      db = openAdmittedWorkspaceReadDb(dataRoot, scope.workspaceId);
       approvals.push(...loadApprovalProjectionsFromSqlite(db.sqlite, turns, receipts));
     } catch {
       refuseScope(dataRoot, { scope: 'workspace', id: scope.workspaceId, check: 'database' });

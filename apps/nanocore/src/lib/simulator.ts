@@ -110,9 +110,8 @@ import {
   ArtifactPayloadCleanupError,
   stageArtifactPayload,
 } from '../storage/artifacts/file-payload.js';
-import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-layout.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
@@ -670,15 +669,12 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     }
     const timestamp = turn.startedAt ?? new Date().toISOString();
     const workspaceDb = this.coreDb
-      ? openWorkspaceDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner))
+      ? openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner))
       : null;
 
     let journalAdmitted = false;
     let materializationEnded = false;
     try {
-      if (workspaceDb) {
-        applyScopedMigrations(workspaceDb);
-      }
       if (this.coreDb && workspaceDb && context.attemptId && context.agentSessionId)
         await bindWorkerCheckpointToPreparedSession({
           coreDb: this.coreDb,
@@ -1321,7 +1317,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           proof,
           fenceRef: release.fenceRef,
         });
-        const releaseDb = openWorkspaceDb(
+        const releaseDb = openAdmittedWorkspaceReadDb(
           this.coreDb.dataRoot,
           workspaceIdForOwner(store.getTurnById(turnId).owner)
         );
@@ -1994,7 +1990,10 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
   ): Promise<TerminalTurnPublication> {
     if (!this.coreDb) return {};
     const turn = store.getTurnById(turnId);
-    const workspaceDb = openWorkspaceDb(this.coreDb.dataRoot, workspaceIdForOwner(turn.owner));
+    const workspaceDb = openAdmittedWorkspaceReadDb(
+      this.coreDb.dataRoot,
+      workspaceIdForOwner(turn.owner)
+    );
     try {
       return await workerTurnTerminalPublication(workspaceDb, turnId, outcome);
     } finally {

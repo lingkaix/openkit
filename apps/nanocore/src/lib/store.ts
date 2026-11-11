@@ -233,6 +233,7 @@ import {
 } from '../storage/control-store-worker-client.js';
 import {
   bindCoreSqlite,
+  bindWorkspaceSqlite,
   type CoreDb,
   openWorkspaceDbAtRoot,
   openWorkspaceReadDb,
@@ -7557,11 +7558,9 @@ export class FsStore {
     }
     const release = this.enterWorkspaceMutation(input.workspaceId, 'capture');
     const root = this.workspaceRootPath(input.workspaceId);
-    const db = openWorkspaceDbAtRoot({
-      dataRoot: this.dataRoot,
-      workspaceId: input.workspaceId,
-      workspaceRoot: root,
-    });
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId: input.workspaceId });
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    const db = bindWorkspaceSqlite(reader.sqlite, this.dataRoot, input.workspaceId);
     try {
       const selected = await this.prepareWorkspaceKnowledgeProposalReads(input.workspaceId);
       const proposal = await this.prepareKnowledgeProposal(input, selected);
@@ -7574,7 +7573,6 @@ export class FsStore {
       });
       // Maintenance's original Turn command is already durable; no nested command receipt is created.
       this.getWorkspace(input.workspaceId);
-      const scope = this.nativeScope({ kind: 'workspace', workspaceId: input.workspaceId });
       const client = getControlStoreWorkerClient();
       const database = `workspace:${scope.path}`;
       await client.open({

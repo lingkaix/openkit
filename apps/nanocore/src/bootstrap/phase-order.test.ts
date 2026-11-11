@@ -440,7 +440,7 @@ describe('NanoCore boot phase order', () => {
             'exit:0',
           ].includes(event)
         )
-      ).toEqual(['audit.acknowledged', 'native.closed', 'core.closed', 'lock.released', 'exit:0']);
+      ).toEqual(['audit.acknowledged', 'core.closed', 'native.closed', 'lock.released', 'exit:0']);
       expect(lifecycle.shutdownControlStoreWorkerClient).toHaveBeenCalledTimes(1);
       expect(lifecycle.exit).toHaveBeenCalledTimes(1);
       expect(lifecycle.exit).toHaveBeenCalledWith(0);

@@ -30,7 +30,7 @@ import type { PiAiFailure, PiAiFailureKind } from '../llm/pi-ai-failure.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import { openAdmittedWorkspaceReadDb, openCoreDb } from '../storage/db.js';
+import { openAdmittedWorkspaceReadDb, openCoreReadDb } from '../storage/db.js';
 import type {
   AgentAssistantMessage,
   AgentMessage,
@@ -121,7 +121,7 @@ export function createInternalAgentGatewayProvider(
     const workspaceDb = !context
       ? captureDb
       : captureDb.scope === 'core'
-        ? openCoreDb(captureDb.dataRoot)
+        ? openCoreReadDb(captureDb.dataRoot)
         : openAdmittedWorkspaceReadDb(captureDb.dataRoot, captureDb.workspaceId);
     let call: StartedCapabilityCall | StartedCapabilityCall<ServerGatewayCallContext> | undefined;
     let callFinished = false;

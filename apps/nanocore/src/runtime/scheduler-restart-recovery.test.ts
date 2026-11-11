@@ -3869,8 +3869,8 @@ describe('scheduler restart recovery', () => {
       const database = `workspace:${scope.path}`;
       const cleanup = vi.fn(async () => undefined);
       const project = vi.fn(async () => ({ status: 'failed' as const }));
-      const actualOpen = dbOwner.openWorkspaceDb;
-      const queryOnlyReaders: ReturnType<typeof openWorkspaceDb>[] = [];
+      const actualOpen = dbOwner.openAdmittedWorkspaceReadDb;
+      const queryOnlyReaders: ReturnType<typeof dbOwner.openAdmittedWorkspaceReadDb>[] = [];
       let opening: { mockRestore: () => void } | undefined;
       try {
         applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
@@ -3913,9 +3913,10 @@ describe('scheduler restart recovery', () => {
           contentMount: scope.contentMount,
         });
         // Call through to every actual recovery reader. Native SQL is in the real Worker.
-        opening = vi.spyOn(dbOwner, 'openWorkspaceDb').mockImplementation((...args) => {
+        opening = vi.spyOn(dbOwner, 'openAdmittedWorkspaceReadDb').mockImplementation((...args) => {
           const db = actualOpen(...args);
           if (args[0] === coreDb.dataRoot && args[1] === workspaceId) {
+            expect(db.sqlite.readonly).toBe(true);
             db.sqlite.pragma('query_only = ON');
             expect(db.sqlite.pragma('query_only', { simple: true })).toBe(1);
             queryOnlyReaders.push(db);

@@ -38,11 +38,10 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import {
   type CoreDb,
   listExistingWorkspaceDatabaseScopes,
-  openWorkspaceDb,
+  openAdmittedWorkspaceReadDb,
   openWorkspaceReadDb,
 } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
@@ -521,9 +520,8 @@ async function dispatchSchedulerAdmission(
       throw new Error('Configured executor has no AgentSession replacement owner.');
     const current = requireSchedulerAdmissionEntry(input.coreDb, entry.queueEntryId);
     if (!currentSchedulerDispatchAuthority(input, current)) throw authorityDenial;
-    const workspaceDb = openWorkspaceDb(input.coreDb.dataRoot, entry.workspaceId);
+    const workspaceDb = openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
     try {
-      applyScopedMigrations(workspaceDb);
       const handle = await startTurn({
         onSubmissionSettled: () => {
           const settled = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
