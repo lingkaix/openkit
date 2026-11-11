@@ -1016,11 +1016,12 @@ export class KnowledgeNotebook {
 
   /** Retains the same exact create-only Proposal ref without blocking Main on Git. */
   async retainCandidateAsync(
-    input: Parameters<KnowledgeNotebook['retainCandidate']>[0]
+    input: Parameters<KnowledgeNotebook['retainCandidate']>[0] & { beforeRetain?: () => void }
   ): Promise<void> {
     if (!/^[A-Za-z0-9_-]+$/.test(input.proposalId)) throw new NotebookError('invalid_request');
     const candidate = await this.inspectRevisionAsync(input.candidateRevision);
     if (!candidate.parentRevision) throw new NotebookError('invalid_request');
+    input.beforeRetain?.();
     await this.gitAsync([
       'update-ref',
       `refs/proposals/${input.proposalId}`,

@@ -204,7 +204,7 @@ describe('QP-2c Knowledge operation authority', () => {
         { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.userId },
         []
       );
-      const selected = readUserMemoryProposal(context, proposal.id);
+      const selected = await readUserMemoryProposal(context, proposal.id);
       expect(selected.reviews).toEqual([]);
       // Core Knowledge Proposal Review: a retained candidate grants neither a human decision nor publication.
       removeOperationGrants(operation);
@@ -219,7 +219,7 @@ describe('QP-2c Knowledge operation authority', () => {
         })
       ).rejects.toThrow();
       expect(notebook.publishedRevision()).toBe(baseRevision);
-      expect(readUserMemoryProposal(context, proposal.id)).toEqual(selected);
+      expect(await readUserMemoryProposal(context, proposal.id)).toEqual(selected);
     }
   );
 

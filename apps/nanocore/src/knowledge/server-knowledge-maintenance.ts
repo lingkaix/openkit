@@ -544,7 +544,7 @@ export async function prepareServerKnowledgeMaintenance(
               });
               return published;
             }
-            const proposal = createServerNotebookProposal(
+            const proposal = await createServerNotebookProposal(
               {
                 ...dependencies,
                 actor: actor!,

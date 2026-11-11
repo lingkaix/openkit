@@ -1664,10 +1664,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                 'Consolidate admitted recent information, preserve human edits and keep the notebook overview current.',
               sources: [],
               signal: new AbortController().signal,
-              currentAdmission: (request) => {
+              currentAdmission: (request, preparedSelection) => {
                 const db = repositoryWorkspaceDb(workspaceId);
                 try {
                   const selection = readWorkspaceNotebookSelection({
+                    preparedSelection,
+                    requirePreparedMatch: preparedSelection !== undefined,
                     workspaceDb: db,
                     workspaceRoot: join(coreDb.dataRoot, 'workspaces', workspaceId),
                     knowledgeBaseId: readDefaultKnowledgeBaseId({
@@ -1685,6 +1687,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                     runtimeConfigManager,
                     workspaceMutationAdmission,
                     notebook: selection.notebook,
+                    preparedSelection: preparedSelection ? selection : undefined,
                     scopeSchemaText: selection.scopeSchemaText,
                   });
                 } finally {

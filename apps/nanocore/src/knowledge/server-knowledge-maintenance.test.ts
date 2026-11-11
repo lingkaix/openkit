@@ -344,7 +344,7 @@ it.each([
         revalidate: (files?: Readonly<Record<string, string>>) =>
           serverNotebookAdmission(f.dependencies, f.requestActor, files),
       };
-      const saved = readServerNotebookProposal(proposalContext, result.proposalId!);
+      const saved = await readServerNotebookProposal(proposalContext, result.proposalId!);
       const accepted = await decideServerNotebookProposal(proposalContext, {
         requestId: randomUUID(),
         proposalId: result.proposalId!,
@@ -469,7 +469,7 @@ it.each([true, false])(
         revalidate: (files?: Readonly<Record<string, string>>) =>
           serverNotebookAdmission(f.dependencies, f.requestActor, files),
       };
-      const candidate = readServerNotebookProposal(context, result.proposalId!);
+      const candidate = await readServerNotebookProposal(context, result.proposalId!);
       expect(candidate.diff[0]!.after).toContain('Preserve this human correction.');
       const decision = await decideServerNotebookProposal(context, {
         proposalId: result.proposalId!,
@@ -519,7 +519,7 @@ it('recalls the exact Server candidate only after its human Review publishes the
     responsibleUserId: f.requestActor.userId,
   };
   const sourceBaseRevision = f.notebook.publishedRevision();
-  const proposal = createServerNotebookProposal(
+  const proposal = await createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
@@ -531,8 +531,8 @@ it('recalls the exact Server candidate only after its human Review publishes the
     [sourceReference]
   );
   expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
-  const selected = readServerNotebookProposal(context, proposal.id);
-  const preview = readServerNotebookProposalPreview(context, {
+  const selected = await readServerNotebookProposal(context, proposal.id);
+  const preview = await readServerNotebookProposalPreview(context, {
     proposalId: proposal.id,
     path: 'release-rule.md',
     offset: 0,
@@ -558,13 +558,13 @@ it('recalls the exact Server candidate only after its human Review publishes the
     })
   ).rejects.toMatchObject({ code: 'human_review_required', status: 403 });
   expect(f.notebook.publishedRevision()).toBe(sourceBaseRevision);
-  const afterRefusal = readServerNotebookProposal(context, proposal.id);
+  const afterRefusal = await readServerNotebookProposal(context, proposal.id);
   expect(afterRefusal.reviews).toEqual([]);
   expect(afterRefusal.proposalDigest).toBe(selected.proposalDigest);
   const human = { kind: 'public' as const, actor: f.requestActor, delivery: 'human' as const };
   const accepted = await invoke('knowledge.server.proposal.decide', request, human);
   expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(accepted);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
+  expect((await readServerNotebookProposal(context, proposal.id)).reviews).toHaveLength(1);
   expect(f.notebook.publishedRevision()).toBe(accepted.notebookRevision);
   const published = f.notebook.readRevision(accepted.notebookRevision!);
   expect(published.metadata.producer).toEqual(producer);
@@ -681,7 +681,7 @@ it('previews and reviews a valid candidate larger than the display limit using t
       serverNotebookAdmission(f.dependencies, f.requestActor, files),
   };
   const content = `---\nokf_version: "0.2"\n---\n# Large candidate\n${'Large retained content. '.repeat(3600)}`;
-  const proposal = createServerNotebookProposal(
+  const proposal = await createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
@@ -692,14 +692,14 @@ it('previews and reviews a valid candidate larger than the display limit using t
     { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.input.actor.id },
     []
   );
-  const inventory = readServerNotebookProposalPreview(context, {
+  const inventory = await readServerNotebookProposalPreview(context, {
     proposalId: proposal.id,
     offset: 0,
   });
   expect(inventory.paths).toEqual(['index.md']);
   expect(inventory).not.toHaveProperty('after');
   expect(JSON.stringify(inventory).length).toBeLessThan(65_536);
-  const chunk = readServerNotebookProposalPreview(context, {
+  const chunk = await readServerNotebookProposalPreview(context, {
     proposalId: proposal.id,
     path: 'index.md',
     offset: 0,
@@ -745,7 +745,7 @@ it('reads retained Proposal/Review annotations and preserves them on the next hu
         `owner_scope: ${JSON.stringify({ ...JSON.parse(value), note: 'retained scope annotation' })}`
     );
   writeFileSync(path, annotated);
-  const selected = readServerNotebookProposal(context, result.proposalId!);
+  const selected = await readServerNotebookProposal(context, result.proposalId!);
   const request = {
     proposalId: result.proposalId!,
     requestId: randomUUID(),
@@ -768,7 +768,7 @@ it('reads retained Proposal/Review annotations and preserves them on the next hu
   retained.decisions[0].note = 'decision note';
   retained.decisions[0].actor.note = 'actor note';
   writeFileSync(reviewPath, JSON.stringify(retained));
-  expect(readServerNotebookProposal(context, result.proposalId!).reviews).toHaveLength(1);
+  expect((await readServerNotebookProposal(context, result.proposalId!)).reviews).toHaveLength(1);
   await decideServerNotebookProposal(context, {
     ...request,
     requestId: randomUUID(),
@@ -808,7 +808,7 @@ it.each([
   };
   const published = f.notebook.publishedRevision();
   const original = f.notebook.readRevision(published).files['index.md']!;
-  const proposal = createServerNotebookProposal(
+  const proposal = await createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
@@ -819,7 +819,7 @@ it.each([
     producer,
     []
   );
-  const selected = readServerNotebookProposal(context, proposal.id);
+  const selected = await readServerNotebookProposal(context, proposal.id);
   const proposalPath = join(
     f.coreDb.dataRoot,
     'server',
@@ -892,7 +892,7 @@ it.each([
     else if (fault === 'duplicate-request') retained.decisions.push(retained.decisions[0]);
     else if (fault === 'terminal-order') retained.decisions.unshift(retained.decisions.pop());
     else {
-      const other = createServerNotebookProposal(
+      const other = await createServerNotebookProposal(
         context,
         {
           requestId: randomUUID(),
@@ -903,7 +903,7 @@ it.each([
         producer,
         []
       );
-      const otherSelected = readServerNotebookProposal(context, other.id);
+      const otherSelected = await readServerNotebookProposal(context, other.id);
       if (fault === 'review-proposal-digest')
         retained.decisions[0].proposalDigest = otherSelected.proposalDigest;
       else retained.decisions[0].contentDigest = other.contentDigest;
@@ -912,9 +912,9 @@ it.each([
   }
   const damagedProposal = readFileSync(proposalPath, 'utf8');
   const damagedReviews = existsSync(reviewPath) ? readFileSync(reviewPath, 'utf8') : undefined;
-  expect
-    .soft(() => readServerNotebookProposalPreview(context, { proposalId: proposal.id, offset: 0 }))
-    .toThrowError(expect.objectContaining({ code: 'recovery_required' }));
+  await expect
+    .soft(readServerNotebookProposalPreview(context, { proposalId: proposal.id, offset: 0 }))
+    .rejects.toThrowError(expect.objectContaining({ code: 'recovery_required' }));
   expect(f.notebook.publishedRevision()).toBe(published);
   expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
   expect(readFileSync(proposalPath, 'utf8')).toBe(damagedProposal);
@@ -970,7 +970,7 @@ it('keeps the producing human and another current Server administrator distinct 
   };
   const baseRevision = f.notebook.publishedRevision();
   const original = f.notebook.readRevision(baseRevision).files['index.md']!;
-  const proposal = createServerNotebookProposal(
+  const proposal = await createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
@@ -989,8 +989,8 @@ it('keeps the producing human and another current Server administrator distinct 
     revalidate: (files?: Readonly<Record<string, string>>) =>
       serverNotebookAdmission(f.dependencies, administrator, files),
   };
-  const selected = readServerNotebookProposal(reviewer, proposal.id);
-  const preview = readServerNotebookProposalPreview(reviewer, {
+  const selected = await readServerNotebookProposal(reviewer, proposal.id);
+  const preview = await readServerNotebookProposalPreview(reviewer, {
     proposalId: proposal.id,
     path: 'index.md',
     offset: 0,
@@ -1024,7 +1024,7 @@ it('retains the exact human Server Proposal command receipt and Audit on accepte
       serverNotebookAdmission(f.dependencies, f.requestActor, files),
   };
   const baseRevision = f.notebook.publishedRevision();
-  const proposal = createServerNotebookProposal(
+  const proposal = await createServerNotebookProposal(
     context,
     {
       requestId: randomUUID(),
@@ -1040,7 +1040,7 @@ it('retains the exact human Server Proposal command receipt and Audit on accepte
     { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
     []
   );
-  const selected = readServerNotebookProposal(context, proposal.id);
+  const selected = await readServerNotebookProposal(context, proposal.id);
   const request = {
     requestId: randomUUID(),
     proposalId: proposal.id,
@@ -1103,7 +1103,7 @@ it('retains the exact human Server Proposal command receipt and Audit on accepte
   expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(accepted);
   expect(receipt()).toEqual(originalReceipt);
   expect(audits()).toEqual(beforeReplay);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
+  expect((await readServerNotebookProposal(context, proposal.id)).reviews).toHaveLength(1);
   expect(f.notebook.publishedRevision()).toBe(proposal.candidateRevision);
 });
 
@@ -1120,7 +1120,7 @@ it.each(['rejected', 'deferred'] as const)(
         serverNotebookAdmission(f.dependencies, f.requestActor, files),
     };
     const baseRevision = f.notebook.publishedRevision();
-    const proposal = createServerNotebookProposal(
+    const proposal = await createServerNotebookProposal(
       context,
       {
         requestId: randomUUID(),
@@ -1136,7 +1136,7 @@ it.each(['rejected', 'deferred'] as const)(
       { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
       []
     );
-    const selected = readServerNotebookProposal(context, proposal.id);
+    const selected = await readServerNotebookProposal(context, proposal.id);
     const request = {
       requestId: randomUUID(),
       proposalId: proposal.id,
@@ -1169,7 +1169,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(f.notebook.publishedRevision()).toBe(baseRevision);
     expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(result);
     expect(audits()).toEqual(retainedAudit);
-    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([result.review]);
+    expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual([
+      result.review,
+    ]);
     expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
   }
 );
@@ -1186,7 +1188,7 @@ it.each(['rejected', 'deferred'] as const)(
         serverNotebookAdmission(f.dependencies, f.requestActor, files),
     };
     const baseRevision = f.notebook.publishedRevision();
-    const proposal = createServerNotebookProposal(
+    const proposal = await createServerNotebookProposal(
       context,
       {
         requestId: randomUUID(),
@@ -1202,7 +1204,7 @@ it.each(['rejected', 'deferred'] as const)(
       { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
       []
     );
-    const selected = readServerNotebookProposal(context, proposal.id);
+    const selected = await readServerNotebookProposal(context, proposal.id);
     const request = {
       requestId: randomUUID(),
       proposalId: proposal.id,
@@ -1241,7 +1243,7 @@ it.each(['rejected', 'deferred'] as const)(
       f.coreDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');
     }
     // These deciding checks refuse credit for an error before the actual Review/Audit boundary.
-    const afterFailure = readServerNotebookProposal(context, proposal.id);
+    const afterFailure = await readServerNotebookProposal(context, proposal.id);
     expect(afterFailure.reviews).toHaveLength(1);
     expect(afterFailure.reviews[0]).toMatchObject({ requestId: request.requestId, decision });
     expect(auditRows()).toEqual([]);
@@ -1269,7 +1271,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(auditRows()).toEqual([]);
     expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
     expect(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
-    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual(afterFailure.reviews);
+    expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual(
+      afterFailure.reviews
+    );
     expect(f.notebook.publishedRevision()).toBe(baseRevision);
     expect(f.notebook.retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
   }
@@ -1288,7 +1292,7 @@ it.each(['rejected', 'deferred'] as const)(
         serverNotebookAdmission(f.dependencies, f.requestActor, files),
     };
     const baseRevision = f.notebook.publishedRevision();
-    const proposal = createServerNotebookProposal(
+    const proposal = await createServerNotebookProposal(
       context,
       {
         requestId: randomUUID(),
@@ -1304,7 +1308,7 @@ it.each(['rejected', 'deferred'] as const)(
       { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
       []
     );
-    const selected = readServerNotebookProposal(context, proposal.id);
+    const selected = await readServerNotebookProposal(context, proposal.id);
     const request = {
       requestId: randomUUID(),
       proposalId: proposal.id,
@@ -1328,7 +1332,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(auditRows()).toEqual([]);
     const completed = await invoke('knowledge.server.proposal.decide', request, human);
     expect(completed.notebookRevision).toBeNull();
-    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
+    expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual([
+      completed.review,
+    ]);
     const retainedAudit = auditRows();
     expect(retainedAudit).toHaveLength(1);
     expect(retainedAudit[0]).toMatchObject({
@@ -1358,7 +1364,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(await invoke('knowledge.server.proposal.decide', request, human)).toEqual(completed);
     expect(auditRows()).toEqual(retainedAudit);
     expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
-    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([completed.review]);
+    expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual([
+      completed.review,
+    ]);
     // Deliberate corruption after lawful public completion: remove this fixture's Review only.
     unlinkSync(reviewPath);
     expect(existsSync(reviewPath)).toBe(false);
@@ -1400,10 +1408,10 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       revalidate: (files?: Readonly<Record<string, string>>) =>
         serverNotebookAdmission(f.dependencies, f.requestActor, files),
     };
-    const selected = readServerNotebookProposal(context, pending.proposalId!);
+    const selected = await readServerNotebookProposal(context, pending.proposalId!);
     const proposal = selected.proposal;
     // Advance the real head through a separately created and accepted Proposal, not a raw ref write.
-    const control = createServerNotebookProposal(
+    const control = await createServerNotebookProposal(
       context,
       {
         requestId: randomUUID(),
@@ -1419,7 +1427,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
       []
     );
-    const controlSelected = readServerNotebookProposal(context, control.id);
+    const controlSelected = await readServerNotebookProposal(context, control.id);
     await decideServerNotebookProposal(context, {
       requestId: randomUUID(),
       proposalId: control.id,
@@ -1433,7 +1441,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
     expect(currentHead).toBe(control.candidateRevision);
     expect(currentHead).not.toBe(proposal.baseRevision);
     expect(currentHead).not.toBe(proposal.candidateRevision);
-    expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
+    expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual([]);
     const request = {
       requestId: randomUUID(),
       proposalId: proposal.id,
@@ -1446,13 +1454,13 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       await expect(decideServerNotebookProposal(context, request)).rejects.toMatchObject({
         code: 'conflict',
       });
-      expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([]);
+      expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual([]);
     } else {
       await expect(decideServerNotebookProposal(context, request)).resolves.toMatchObject({
         review: request,
         notebookRevision: null,
       });
-      expect(readServerNotebookProposal(context, proposal.id).reviews).toEqual([
+      expect((await readServerNotebookProposal(context, proposal.id)).reviews).toEqual([
         expect.objectContaining(request),
       ]);
     }

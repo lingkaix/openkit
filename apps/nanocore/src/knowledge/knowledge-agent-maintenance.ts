@@ -57,14 +57,19 @@ import {
 import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import {
+  prepareWorkspaceNotebookRead,
+  type WorkspaceNotebookRead,
+} from './notebook-index-source.js';
+import {
   type NotebookPublicationAdmission,
   type NotebookUpdate,
   publishWorkspaceNotebook,
 } from './notebook-publication.js';
-import { validateNotebookCandidate } from './notebook-validation.js';
+import { prepareNotebookCandidateValidation } from './notebook-validation.js';
 import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
 import {
   prepareWorkspaceNotebookReads,
+  readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from './notebook-workspace-selection.js';
 import {
@@ -396,6 +401,18 @@ export async function prepareKnowledgeMaintenance(
           dataRoot: dependencies.coreDb.dataRoot,
           ownerScope: { kind: 'workspace' as const, workspaceId: input.workspaceId },
         };
+        const currentPointers = () => {
+          const selection = readWorkspaceNotebookSelection({
+            workspaceDb,
+            workspaceRoot: workspaceSelection.workspaceRoot,
+            knowledgeBaseId: readDefaultKnowledgeBaseId({
+              dataRoot: sourceOwner.dataRoot,
+              scope: sourceOwner.ownerScope,
+            }),
+            preparedSelection: workspaceSelection,
+          });
+          return readSourcePointers(sourceOwner, undefined, selection);
+        };
         // Captured Source lineage is immutable; current audience and canonical digest are still checked on every use.
         const readSource = async (source: KnowledgeSourceRecord) => {
           if (!knowledgeSourceLineageReadable(target, source))
@@ -409,8 +426,7 @@ export async function prepareKnowledgeMaintenance(
           if (
             delivered.status !== 'ok' ||
             !knowledgeSourceLineageReadable(target, source) ||
-            store.getKnowledgeSource(input.workspaceId, source.id).contentDigest !==
-              source.contentDigest
+            currentPointers().get(source.id)?.source.contentDigest !== source.contentDigest
           )
             throw new NotebookError('recovery_required');
           return delivered.value;
@@ -424,14 +440,15 @@ export async function prepareKnowledgeMaintenance(
           if (Buffer.byteLength(content) > NOTEBOOK_EDITING_LIMITS.fileBytes)
             throw new NotebookError('invalid_request');
           const digest = `sha256:${createHash('sha256').update(content).digest('hex')}`;
-          let source = store
-            .listKnowledgeSources(input.workspaceId)
-            .find(
-              (entry) =>
-                entry.originatingTurnId === turnId &&
-                entry.originatingThreadId === threadId &&
-                entry.contentDigest === digest
-            );
+          // A prior capture can advance the SQL head; prepare that live pointer tree before reading it.
+          const pointers = readSourcePointers(sourceOwner, undefined, await selectNotebook());
+          const prior = [...pointers.values()].find(
+            ({ source }) =>
+              source.originatingTurnId === turnId &&
+              source.originatingThreadId === threadId &&
+              source.contentDigest === digest
+          );
+          let source = prior && { ...prior.source, workspaceId: input.workspaceId };
           if (!source) {
             if (input.actor.kind !== 'user' && input.actor.kind !== 'agent')
               throw new NotebookError('invalid_request');
@@ -564,18 +581,46 @@ export async function prepareKnowledgeMaintenance(
           for (const ref of stringListFrontmatterField(parsed.document, 'source_refs') ?? [])
             admittedReferences.add(ref);
         }
-        readAuthorizedWorkspaceNotebookPages({
-          ...target,
-          pageIds: Object.keys(files).map((path) => path.slice(0, -3)),
-        });
+        const pageReads = new Map<string, WorkspaceNotebookRead>();
+        const readPages = (revision: string, pageIds: readonly string[]) =>
+          readAuthorizedWorkspaceNotebookPages({
+            ...target,
+            notebookRevision: revision,
+            pageIds,
+            notebookRead: pageReads.get(revision),
+          });
+        const preparePages = async (revision: string, pageIds: readonly string[]) => {
+          const previous = pageReads.get(revision);
+          const requested = [
+            ...new Set([
+              ...pageIds,
+              ...Object.keys(previous?.selected.files ?? {}).map((path) => path.slice(0, -3)),
+            ]),
+          ];
+          await workspaceSelection.notebook.preloadRevisionAsync(revision, {
+            paths: requested.map((id) => `${id}.md`),
+            sources: false,
+          });
+          const view = await prepareWorkspaceNotebookRead({
+            ...target,
+            selection: workspaceSelection,
+            notebookRevision: revision,
+            pageIds: requested,
+          });
+          pageReads.set(revision, {
+            ...view,
+            sources: readSourcePointers(sourceOwner, undefined, workspaceSelection),
+          });
+        };
+        const initialPageIds = Object.keys(files).map((path) => path.slice(0, -3));
+        await preparePages(baseRevision, initialPageIds);
+        readPages(baseRevision, initialPageIds);
         // Omitted base files stay immutable; an explicit selection may include non-active pages.
         for (const id of input.pageIds ?? []) {
           if (!Object.hasOwn(files, `${id}.md`)) throw new NotebookError('invalid_request');
         }
         const registered = new Map(
-          store
-            .listKnowledgeSources(input.workspaceId)
-            .map((source) => [source.id, source.contentDigest])
+          [...currentPointers()].map(([id, { source }]) => [id, source.contentDigest])
         );
         const editableSources = new Set(suppliedSource ? [suppliedSource.id] : []);
         for (const supplied of input.sources) {
@@ -586,10 +631,9 @@ export async function prepareKnowledgeMaintenance(
           if (!resolution.resolved || !resolution.targetId)
             throw new NotebookError('invalid_request');
           editableSources.add(resolution.targetId);
-          sources.set(
-            resolution.targetId,
-            store.getKnowledgeSource(input.workspaceId, resolution.targetId)
-          );
+          const pointer = currentPointers().get(resolution.targetId);
+          if (!pointer) throw new NotebookError('invalid_request');
+          sources.set(resolution.targetId, { ...pointer.source, workspaceId: input.workspaceId });
         }
         for (const source of sources.values()) {
           const text = await readSource(source);
@@ -616,19 +660,20 @@ export async function prepareKnowledgeMaintenance(
           input.signal.throwIfAborted();
           admitKnowledgeRetrieval(target);
           admission(empty);
-          for (const source of sources.values())
-            if (
-              !knowledgeSourceLineageReadable(target, source) ||
-              store.getKnowledgeSource(input.workspaceId, source.id).contentDigest !==
-                source.contentDigest
-            )
+          let pointers: ReturnType<typeof currentPointers> | undefined;
+          for (const source of sources.values()) {
+            if (!knowledgeSourceLineageReadable(target, source))
               throw new NotebookError('recovery_required');
-          readAuthorizedWorkspaceNotebookPages({
-            ...target,
-            pageIds: Object.keys(files)
+            pointers ??= currentPointers();
+            if (pointers.get(source.id)?.source.contentDigest !== source.contentDigest)
+              throw new NotebookError('recovery_required');
+          }
+          readPages(
+            baseRevision,
+            Object.keys(files)
               .filter((path) => !path.startsWith('@sources/'))
-              .map((path) => path.slice(0, -3)),
-          });
+              .map((path) => path.slice(0, -3))
+          );
           // Group one immutable revision per read; each group still rechecks current source and audience authority.
           const historyByRevision = new Map<string, typeof historyReads>();
           for (const selection of historyReads) {
@@ -638,11 +683,9 @@ export async function prepareKnowledgeMaintenance(
           }
           for (const [notebookRevision, selections] of historyByRevision) {
             const pages = new Map(
-              readAuthorizedWorkspaceNotebookPages({
-                ...target,
-                notebookRevision,
-                pageIds: [...new Set(selections.map(({ path }) => path.slice(0, -3)))],
-              }).pages.map((page) => [page.path, page.content])
+              readPages(notebookRevision, [
+                ...new Set(selections.map(({ path }) => path.slice(0, -3))),
+              ]).pages.map((page) => [page.path, page.content])
             );
             for (const selection of selections)
               if (pages.get(selection.path) !== selection.content)
@@ -694,10 +737,12 @@ export async function prepareKnowledgeMaintenance(
             ].sort();
             if (refs.some((ref) => !admittedReferences.has(ref)))
               throw new NotebookError('invalid_request');
+            // A narrow editor selection may omit unchanged base objects needed by the full candidate proof.
+            await notebook.preloadRevisionAsync(baseRevision);
+            assertCurrent();
             const release = dependencies.workspaceMutationAdmission.enter(input.workspaceId);
             if (!release) throw new NotebookError('invalid_request');
             try {
-              const facts = admission(request);
               // Explain structural refusals before either native publisher or Proposal creation.
               // Both still perform their own current-authority and exact-candidate verification.
               const baseFiles = notebook.readContent(baseRevision);
@@ -712,12 +757,15 @@ export async function prepareKnowledgeMaintenance(
                     'delegated'
                   );
               }
-              const validation = validateNotebookCandidate({
+              const validatePrepared = await prepareNotebookCandidateValidation({
                 ownerScope: { kind: 'workspace', workspaceId: input.workspaceId },
                 base: { files: baseFiles },
                 candidate: { files: candidateFiles },
-                ...facts,
+                ...admission(request),
               });
+              assertCurrent();
+              const facts = admission(request);
+              const validation = validatePrepared(facts);
               if (validation.errors.length)
                 throw new NotebookError(
                   'invalid_request',
@@ -758,6 +806,10 @@ export async function prepareKnowledgeMaintenance(
                         kind: 'delegated',
                         settingReference: `workspace:${input.workspaceId}:knowledgeMaintenance:${JSON.stringify(setting)}`,
                         settingDigest: commandInputHash(setting),
+                      },
+                      prepareWorkspaceProjection: async (selection) => {
+                        workspaceSelection = selection;
+                        for (const revision of pageReads.keys()) await preparePages(revision, []);
                       },
                       revalidate: (preparedSelection) => {
                         if (preparedSelection) workspaceSelection = preparedSelection;
@@ -977,23 +1029,22 @@ export async function prepareKnowledgeMaintenance(
                 (!selectedPages || selectedPages.has(path.slice(0, -3))) &&
                 revision.entries[path] !== parent?.entries[path]
             );
-            const read = (
+            const read = async (
               notebookRevision: string | undefined,
               paths: readonly string[]
-            ): ReadonlyMap<string, string> => {
+            ): Promise<ReadonlyMap<string, string>> => {
               if (!notebookRevision || !paths.length) return new Map();
-              const pages = readAuthorizedWorkspaceNotebookPages({
-                ...target,
-                notebookRevision,
-                pageIds: paths.map((path) => path.slice(0, -3)),
-              }).pages;
-              return new Map(pages.map((page) => [page.path, page.content]));
+              const pageIds = paths.map((path) => path.slice(0, -3));
+              await preparePages(notebookRevision, pageIds);
+              return new Map(
+                readPages(notebookRevision, pageIds).pages.map((page) => [page.path, page.content])
+              );
             };
-            const beforePages = read(
+            const beforePages = await read(
               parent?.revision,
               changedPaths.filter((path) => Boolean(parent?.entries[path]))
             );
-            const afterPages = read(
+            const afterPages = await read(
               revision.revision,
               changedPaths.filter((path) => Boolean(revision.entries[path]))
             );

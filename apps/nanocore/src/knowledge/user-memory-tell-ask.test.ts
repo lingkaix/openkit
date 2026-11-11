@@ -245,7 +245,7 @@ async function fixture() {
     expect(store.getTurnById(result.turnId).internalExecution).toMatchObject({
       contextStrategy: 'compaction',
     });
-    const selected = readUserMemoryProposal(proposalContext, result.proposalId!);
+    const selected = await readUserMemoryProposal(proposalContext, result.proposalId!);
     return { result, selected };
   }
 
@@ -312,7 +312,7 @@ it('remembers through exact review, selects the published bytes, and cites them 
       updates: { title: 'Working note' },
     }),
   }));
-  const preview = readUserMemoryProposalPreview(f.proposalContext, {
+  const preview = await readUserMemoryProposalPreview(f.proposalContext, {
     proposalId: pending.result.proposalId!,
     path: 'labels.md',
     offset: 0,
@@ -328,7 +328,7 @@ it('remembers through exact review, selects the published bytes, and cites them 
     created_at: nativeTime,
     updated_at: nativeTime,
   });
-  const rough = readUserMemoryProposalPreview(f.proposalContext, {
+  const rough = await readUserMemoryProposalPreview(f.proposalContext, {
     proposalId: pending.result.proposalId!,
     path: 'rough-note.md',
     offset: 0,

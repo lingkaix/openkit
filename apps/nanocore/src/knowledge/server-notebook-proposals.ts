@@ -79,36 +79,44 @@ function digest(bytes: string): string {
   return `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
 }
 /** Retains a validated candidate through the existing Proposal ref and Markdown family. */
-export function createServerNotebookProposal(
+export async function createServerNotebookProposal(
   context: ServerNotebookProposalContext,
   edit: NotebookEdit,
   producer: ActorRef & { kind: 'agent' },
   sourceReferences: readonly string[]
-): Proposal {
-  requireAdministratorOperation(
-    context.coreDb,
-    context.actor,
-    'knowledge.write',
-    undefined,
-    'knowledge'
-  );
-  const git = notebook(context.coreDb);
-  const changes = prepareNotebookProposalChanges({
-    notebook: git,
+): Promise<Proposal> {
+  const requireWrite = () =>
+    requireAdministratorOperation(
+      context.coreDb,
+      context.actor,
+      'knowledge.write',
+      undefined,
+      'knowledge'
+    );
+  requireWrite();
+  const prepared = await prepareNotebookProposalChanges({
+    notebook: notebook(context.coreDb),
     ownerScope: { kind: 'server' },
     edit,
     revalidate: (files) => context.revalidate(files),
   });
   const id = knowledgeProposalId({ kind: 'server' }, edit.requestId);
   if (existsSync(proposalPath(context.coreDb, id))) throw new NotebookError('conflict');
-  const candidateRevision = retainNotebookProposalCandidate({
-    notebook: git,
+  const revalidate = () => {
+    requireWrite();
+    prepared.revalidate();
+  };
+  const { changes } = prepared;
+  const candidateRevision = await retainNotebookProposalCandidate({
+    notebook: prepared.notebook,
     edit,
     changes,
     producer,
     proposalId: id,
     sourceReferences,
+    revalidate,
   });
+  requireWrite();
   const proposal = ServerKnowledgeProposalSchema.parse({
     id,
     operation: 'notebook-change',
@@ -127,28 +135,34 @@ export function createServerNotebookProposal(
   return proposal;
 }
 /** Reads exact retained bytes and candidate identity under current Server authority. */
-export function readServerNotebookProposal(context: ServerNotebookProposalContext, id: string) {
-  requireAdministratorOperation(
-    context.coreDb,
-    context.actor,
-    'knowledge.read',
-    undefined,
-    'knowledge'
-  );
+export async function readServerNotebookProposal(
+  context: ServerNotebookProposalContext,
+  id: string
+) {
+  const requireRead = () =>
+    requireAdministratorOperation(
+      context.coreDb,
+      context.actor,
+      'knowledge.read',
+      undefined,
+      'knowledge'
+    );
+  requireRead();
   const bytes = readFileSync(proposalPath(context.coreDb, id), 'utf8');
   const header = /^---\n([\s\S]*?)\n---\n/.exec(bytes);
   if (!header) throw new NotebookError('recovery_required');
   const meta = parseYaml(header[1]!) as Record<string, unknown>;
   if (meta.type !== 'proposal' || meta.review_required !== true)
     throw new NotebookError('recovery_required');
-  const git = notebook(context.coreDb);
   const {
+    notebook: git,
     candidate,
     base,
     paths,
     changes,
     proposal: rawProposal,
-  } = readNotebookProposalCandidateMaterial(git, id, meta);
+  } = await readNotebookProposalCandidateMaterial(notebook(context.coreDb), id, meta);
+  requireRead();
   const proposal = ProposalReader.parse(rawProposal);
   if (proposal.baseRevision !== candidate.parentRevision)
     throw new NotebookError('recovery_required');
@@ -157,10 +171,12 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
     JSON.stringify(proposal.producer) !== JSON.stringify(candidate.metadata.producer) ||
     candidate.metadata.authority.kind !== 'proposal' ||
     candidate.metadata.authority.proposalId !== id ||
-    knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !== id ||
-    git.retainedCandidate(id).revision !== candidate.revision
+    knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !== id
   )
     throw new NotebookError('recovery_required');
+  const retained = await git.retainedCandidateAsync(id);
+  requireRead();
+  if (retained.revision !== candidate.revision) throw new NotebookError('recovery_required');
   const reviewPath = join(context.coreDb.dataRoot, 'server', 'knowledge', 'reviews', `${id}.json`);
   const raw = existsSync(reviewPath)
     ? (JSON.parse(readFileSync(reviewPath, 'utf8')) as { decisions?: unknown })
@@ -195,7 +211,7 @@ export function readServerNotebookProposal(context: ServerNotebookProposalContex
   };
 }
 /** Uses the existing bounded Unicode candidate preview rather than exposing the private complete record. */
-export function readServerNotebookProposalPreview(
+export async function readServerNotebookProposalPreview(
   context: ServerNotebookProposalContext,
   input: {
     readonly proposalId: string;
@@ -203,7 +219,7 @@ export function readServerNotebookProposalPreview(
     readonly offset: number;
   }
 ) {
-  const selected = readServerNotebookProposal(context, input.proposalId);
+  const selected = await readServerNotebookProposal(context, input.proposalId);
   return projectSelectedKnowledgeProposalPreview(selected, input);
 }
 
@@ -219,7 +235,7 @@ export async function decideServerNotebookProposal(
     readonly decision: 'accepted' | 'rejected' | 'deferred';
   }
 ): Promise<{ review: Review; notebookRevision: string | null }> {
-  const selected = readServerNotebookProposal(context, request.proposalId);
+  const selected = await readServerNotebookProposal(context, request.proposalId);
   const { proposal } = selected;
   if (
     selected.proposalDigest !== request.proposalDigest ||
@@ -298,12 +314,16 @@ export async function decideServerNotebookProposal(
     await recordDecision();
     return { review, notebookRevision: null };
   }
+  const prepared = await notebook(context.coreDb).withPreparedReadsAsync([
+    proposal.baseRevision,
+    proposal.candidateRevision,
+  ]);
   const publication = await publishNotebook(
     {
       owner: { kind: 'server', coreDb: context.coreDb },
       store: context.store,
       inflightCommands: context.inflightCommands,
-      notebook: notebook(context.coreDb),
+      notebook: prepared,
       producer: proposal.producer,
       command: { name: 'knowledge.proposal.decide', input: request },
       actor: { kind: 'user', id: context.actor.userId },
@@ -325,9 +345,7 @@ export async function decideServerNotebookProposal(
           undefined,
           'knowledge'
         );
-        return context.revalidate(
-          notebook(context.coreDb).readRevision(proposal.candidateRevision).files
-        );
+        return context.revalidate(prepared.readRevision(proposal.candidateRevision).files);
       },
     },
     {

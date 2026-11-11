@@ -596,9 +596,9 @@ describe('User-private bounded Memory maintenance', () => {
           paths
         ),
     };
-    const selected = readUserMemoryProposal(context, result.proposalId!);
+    const selected = await readUserMemoryProposal(context, result.proposalId!);
     expect(selected.proposal.changes?.map(({ path }) => path)).toEqual(['index.md', 'labels.md']);
-    const preview = readUserMemoryProposalPreview(context, {
+    const preview = await readUserMemoryProposalPreview(context, {
       proposalId: result.proposalId!,
       path: 'labels.md',
       offset: 0,
@@ -728,13 +728,13 @@ describe('User-private bounded Memory maintenance', () => {
       actorId: userId,
       sourceFingerprints: refs,
     });
-    expect(() =>
+    await expect(
       readUserMemoryProposalPreview(proposalContext, {
         proposalId: pending.id,
         path: 'index.md',
         offset: 0,
       })
-    ).toThrow();
+    ).rejects.toThrow();
     const denied = await runUserMemoryMaintenanceCommand(f.dependencies, {
       ...f.input,
       requestId: randomUUID(),
@@ -875,7 +875,7 @@ it.each(['rejected', 'deferred'] as const)(
           paths
         ),
     };
-    const selected = readUserMemoryProposal(context, pending.proposalId!);
+    const selected = await readUserMemoryProposal(context, pending.proposalId!);
     const proposal = selected.proposal;
     const baseRevision = f.notebook().publishedRevision();
     const request = {
@@ -915,7 +915,7 @@ it.each(['rejected', 'deferred'] as const)(
       f.userDb.sqlite.exec('DROP TRIGGER refuse_proposal_decision_audit');
     }
     // The new public handle must have reached Review retention before the intended SQL refusal.
-    const afterFailure = readUserMemoryProposal(context, proposal.id);
+    const afterFailure = await readUserMemoryProposal(context, proposal.id);
     expect(afterFailure.reviews).toHaveLength(1);
     expect(afterFailure.reviews[0]).toMatchObject({ requestId: request.requestId, decision });
     expect(auditRows(proposal.id, request.requestId)).toEqual([]);
@@ -936,7 +936,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(auditRows(proposal.id, request.requestId)).toEqual([]);
     expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
     expect(readFileSync(proposalPath, 'utf8')).toBe(retainedProposalBytes);
-    expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual(afterFailure.reviews);
+    expect((await readUserMemoryProposal(context, proposal.id)).reviews).toEqual(
+      afterFailure.reviews
+    );
     expect(f.notebook().publishedRevision()).toBe(baseRevision);
     expect(f.notebook().retainedCandidate(proposal.id).revision).toBe(proposal.candidateRevision);
     // A separate lawful request proves restored persistence and successful nonaccepted replay remain valid.
@@ -956,7 +958,7 @@ it.each(['rejected', 'deferred'] as const)(
       { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
       []
     );
-    const controlSelected = readUserMemoryProposal(context, control.id);
+    const controlSelected = await readUserMemoryProposal(context, control.id);
     const controlRequest = {
       requestId: randomUUID(),
       proposalId: control.id,
@@ -970,7 +972,7 @@ it.each(['rejected', 'deferred'] as const)(
     expect(completedAudit).toHaveLength(1);
     expect(await invoke('memory.proposal.decide', controlRequest, human)).toEqual(completed);
     expect(auditRows(control.id, controlRequest.requestId)).toEqual(completedAudit);
-    expect(readUserMemoryProposal(context, control.id).reviews).toEqual([completed.review]);
+    expect((await readUserMemoryProposal(context, control.id)).reviews).toEqual([completed.review]);
     expect(f.notebook().publishedRevision()).toBe(baseRevision);
   }
 );
@@ -994,7 +996,7 @@ it.each(['rejected', 'deferred'] as const)(
           paths
         ),
     };
-    const selected = readUserMemoryProposal(context, pending.proposalId!);
+    const selected = await readUserMemoryProposal(context, pending.proposalId!);
     const proposal = selected.proposal;
     const baseRevision = f.notebook().publishedRevision();
     const request = {
@@ -1020,7 +1022,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(auditRows()).toEqual([]);
     const completed = await invoke('memory.proposal.decide', request, human);
     expect(completed.application).toBeNull();
-    expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([completed.review]);
+    expect((await readUserMemoryProposal(context, proposal.id)).reviews).toEqual([
+      completed.review,
+    ]);
     const retainedAudit = auditRows();
     expect(retainedAudit).toHaveLength(1);
     expect(retainedAudit[0]).toMatchObject({
@@ -1043,7 +1047,9 @@ it.each(['rejected', 'deferred'] as const)(
     expect(await invoke('memory.proposal.decide', request, human)).toEqual(completed);
     expect(auditRows()).toEqual(retainedAudit);
     expect(readFileSync(reviewPath, 'utf8')).toBe(retainedReviewBytes);
-    expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([completed.review]);
+    expect((await readUserMemoryProposal(context, proposal.id)).reviews).toEqual([
+      completed.review,
+    ]);
     // Deliberate corruption after lawful public completion: no SQL or synthetic Review is written.
     unlinkSync(reviewPath);
     expect(existsSync(reviewPath)).toBe(false);
@@ -1089,7 +1095,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
           paths
         ),
     };
-    const selected = readUserMemoryProposal(context, pending.proposalId!);
+    const selected = await readUserMemoryProposal(context, pending.proposalId!);
     const proposal = selected.proposal;
     // Advance the real head through a separately created and accepted Proposal, not a raw ref write.
     const control = await createUserMemoryProposal(
@@ -1108,7 +1114,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
       []
     );
-    const controlSelected = readUserMemoryProposal(context, control.id);
+    const controlSelected = await readUserMemoryProposal(context, control.id);
     await decideUserMemoryProposal(context, {
       requestId: randomUUID(),
       proposalId: control.id,
@@ -1122,7 +1128,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
     expect(currentHead).toBe(control.candidateRevision);
     expect(currentHead).not.toBe(proposal.baseRevision);
     expect(currentHead).not.toBe(proposal.candidateRevision);
-    expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([]);
+    expect((await readUserMemoryProposal(context, proposal.id)).reviews).toEqual([]);
     const request = {
       requestId: randomUUID(),
       proposalId: proposal.id,
@@ -1135,13 +1141,13 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       await expect(decideUserMemoryProposal(context, request)).rejects.toMatchObject({
         code: 'conflict',
       });
-      expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([]);
+      expect((await readUserMemoryProposal(context, proposal.id)).reviews).toEqual([]);
     } else {
       await expect(decideUserMemoryProposal(context, request)).resolves.toMatchObject({
         review: request,
         notebookRevision: null,
       });
-      expect(readUserMemoryProposal(context, proposal.id).reviews).toEqual([
+      expect((await readUserMemoryProposal(context, proposal.id)).reviews).toEqual([
         expect.objectContaining(request),
       ]);
     }

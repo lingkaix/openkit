@@ -463,7 +463,7 @@ export function createMemoryOperationImplementations(
             403
           );
         const owner = proposalContext(writer);
-        const { proposal } = readUserMemoryProposal(owner, input.proposalId);
+        const { proposal } = await readUserMemoryProposal(owner, input.proposalId);
         const result = await decideUserMemoryProposal(owner, input);
         return {
           proposalId: input.proposalId,

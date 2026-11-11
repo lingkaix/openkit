@@ -719,13 +719,13 @@ it('publishes and replays exact human Server Review through the public operation
     revalidate: (files?: Readonly<Record<string, string>>) =>
       serverNotebookAdmission(dependencies, f.input.actor, files),
   };
-  const proposal = createServerNotebookProposal(
+  const proposal = await createServerNotebookProposal(
     context,
     f.request,
     { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.input.actor.userId },
     []
   );
-  const selected = readServerNotebookProposal(context, proposal.id);
+  const selected = await readServerNotebookProposal(context, proposal.id);
   const request = {
     requestId: f.request.requestId,
     proposalId: proposal.id,
@@ -742,7 +742,7 @@ it('publishes and replays exact human Server Review through the public operation
   });
   const first = await invoke('knowledge.server.proposal.decide', request, human);
   expect(f.notebook.publishedRevision()).toBe(proposal.candidateRevision);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
+  expect((await readServerNotebookProposal(context, proposal.id)).reviews).toHaveLength(1);
   const prefix = f.rows();
   expect(prefix.audits.map((row: any) => row.action)).toEqual([
     'knowledge.notebook.admit',
@@ -761,7 +761,7 @@ it('publishes and replays exact human Server Review through the public operation
   });
   await expect(cold('knowledge.server.proposal.decide', request, human)).resolves.toEqual(first);
   expect(f.rows()).toEqual(prefix);
-  expect(readServerNotebookProposal(context, proposal.id).reviews).toHaveLength(1);
+  expect((await readServerNotebookProposal(context, proposal.id)).reviews).toHaveLength(1);
 });
 
 it.each(['user', 'server'] as const)(

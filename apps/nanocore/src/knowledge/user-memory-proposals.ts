@@ -107,22 +107,27 @@ export async function createUserMemoryProposal(
   sourceReferences: readonly string[]
 ): Promise<Proposal> {
   admitMemoryContext(context, 'knowledge.write');
-  const git = notebook(context);
-  const changes = prepareNotebookProposalChanges({
-    notebook: git,
+  const prepared = await prepareNotebookProposalChanges({
+    notebook: notebook(context),
     ownerScope: { kind: 'user', userId: context.userDb.userId },
     edit,
     revalidate: (files, paths) => context.revalidate(files, paths),
   });
   const id = knowledgeProposalId({ kind: 'user', userId: context.userDb.userId }, edit.requestId);
   if (existsSync(proposalPath(context, id))) throw new NotebookError('conflict');
-  const candidateRevision = retainNotebookProposalCandidate({
-    notebook: git,
+  const revalidate = () => {
+    admitMemoryContext(context, 'knowledge.write');
+    prepared.revalidate();
+  };
+  const { changes } = prepared;
+  const candidateRevision = await retainNotebookProposalCandidate({
+    notebook: prepared.notebook,
     edit,
     changes,
     producer,
     proposalId: id,
     sourceReferences,
+    revalidate,
   });
   const proposal = UserProposalSchema.parse({
     id,
@@ -150,7 +155,7 @@ export async function createUserMemoryProposal(
   return proposal;
 }
 /** Reads exact retained bytes and candidate identity under current User Memory authority. */
-export function readUserMemoryProposal(context: UserMemoryProposalContext, id: string) {
+export async function readUserMemoryProposal(context: UserMemoryProposalContext, id: string) {
   admitMemoryContext(context);
   const bytes = readFileSync(proposalPath(context, id), 'utf8');
   const header = /^---\n([\s\S]*?)\n---\n/.exec(bytes);
@@ -158,14 +163,15 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
   const meta = parseYaml(header[1]!) as Record<string, unknown>;
   if (meta.type !== 'proposal' || meta.review_required !== true)
     throw new NotebookError('recovery_required');
-  const git = notebook(context);
   const {
+    notebook: git,
     candidate,
     base,
     paths,
     changes,
     proposal: rawProposal,
-  } = readNotebookProposalCandidateMaterial(git, id, meta);
+  } = await readNotebookProposalCandidateMaterial(notebook(context), id, meta);
+  admitMemoryContext(context);
   const proposal = ProposalReader.parse(rawProposal);
   if (
     proposal.ownerScope.userId !== context.userDb.userId ||
@@ -176,10 +182,12 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
     proposal.contentDigest !== digest(JSON.stringify(changes)) ||
     candidate.metadata.authority.kind !== 'proposal' ||
     candidate.metadata.authority.proposalId !== id ||
-    knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !== id ||
-    git.retainedCandidate(id).revision !== candidate.revision
+    knowledgeProposalId(proposal.ownerScope, candidate.metadata.changeRequest.requestId) !== id
   )
     throw new NotebookError('recovery_required');
+  const retained = await git.retainedCandidateAsync(id);
+  admitMemoryContext(context);
+  if (retained.revision !== candidate.revision) throw new NotebookError('recovery_required');
   const reviewPath = join(admitMemoryContext(context).notebookRoot, 'reviews', `${id}.json`);
   const raw = existsSync(reviewPath)
     ? (JSON.parse(readFileSync(reviewPath, 'utf8')) as { decisions?: unknown })
@@ -237,11 +245,11 @@ export function readUserMemoryProposal(context: UserMemoryProposalContext, id: s
   };
 }
 /** Uses the existing bounded Unicode candidate preview rather than exposing the private complete record. */
-export function readUserMemoryProposalPreview(
+export async function readUserMemoryProposalPreview(
   context: UserMemoryProposalContext,
   input: { readonly proposalId: string; readonly path?: string; readonly offset: number }
 ) {
-  const selected = readUserMemoryProposal(context, input.proposalId);
+  const selected = await readUserMemoryProposal(context, input.proposalId);
   return projectSelectedKnowledgeProposalPreview(selected, input);
 }
 
@@ -258,7 +266,7 @@ export async function decideUserMemoryProposal(
   }
 ): Promise<{ review: Review; notebookRevision: string | null }> {
   admitMemoryContext(context, 'review.apply');
-  const selected = readUserMemoryProposal(context, request.proposalId);
+  const selected = await readUserMemoryProposal(context, request.proposalId);
   const { proposal } = selected;
   if (
     selected.proposalDigest !== request.proposalDigest ||
@@ -334,12 +342,16 @@ export async function decideUserMemoryProposal(
     return { review, notebookRevision: null };
   }
   admitMemoryContext(context, 'knowledge.write');
+  const prepared = await notebook(context).withPreparedReadsAsync([
+    proposal.baseRevision,
+    proposal.candidateRevision,
+  ]);
   const publication = await publishNotebook(
     {
       owner: { kind: 'user', userDb: context.userDb },
       store: context.store,
       inflightCommands: context.inflightCommands,
-      notebook: notebook(context),
+      notebook: prepared,
       producer: proposal.producer,
       command: { name: 'knowledge.proposal.decide', input: request },
       actor: { kind: 'user', id: context.actor.userId },
@@ -355,9 +367,9 @@ export async function decideUserMemoryProposal(
       ),
       revalidate: () => {
         admitMemoryContext(context, 'knowledge.write');
-        context.revalidate(notebook(context).readRevision(proposal.baseRevision).files);
+        context.revalidate(prepared.readRevision(proposal.baseRevision).files);
         return context.revalidate(
-          notebook(context).readRevision(proposal.candidateRevision).files,
+          prepared.readRevision(proposal.candidateRevision).files,
           proposal.changes!.map(({ path }) => path)
         );
       },

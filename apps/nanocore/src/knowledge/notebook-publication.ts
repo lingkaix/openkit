@@ -122,6 +122,8 @@ export interface NotebookPublicationDependencies {
     notebook: KnowledgeNotebook,
     revisions: readonly string[]
   ) => Promise<KnowledgeNotebook>;
+  /** Refreshes operation-local disclosure bytes when projection selects a new Workspace head. */
+  readonly prepareWorkspaceProjection?: (selection: WorkspaceNotebookSelection) => Promise<void>;
   readonly revalidate: (
     preparedSelection?: WorkspaceNotebookSelection
   ) => NotebookPublicationAdmission;
@@ -176,7 +178,7 @@ export type ScopedNotebookPublicationDependencies = Omit<
 export type NotebookEdit = Omit<NotebookUpdate, 'workspaceId'>;
 
 /** Prepares one fixed-base scoped Proposal; native callers retain current admission, identity and retention. */
-export function prepareNotebookProposalChanges(input: {
+export async function prepareNotebookProposalChanges(input: {
   readonly notebook: KnowledgeNotebook;
   readonly ownerScope: Extract<KnowledgeOwnerScope, { kind: 'server' | 'user' }>;
   readonly edit: NotebookEdit;
@@ -185,9 +187,12 @@ export function prepareNotebookProposalChanges(input: {
     changedPaths: readonly string[]
   ) => NotebookPublicationAdmission;
 }) {
-  const { notebook, edit, ownerScope } = input;
-  if (notebook.publishedRevision() !== edit.baseRevision)
-    throw new NotebookError('conflict', notebook.publishedRevision());
+  const { edit, ownerScope } = input;
+  const current = await input.notebook.publishedRevisionAsync();
+  if (current !== edit.baseRevision) throw new NotebookError('conflict', current);
+  const notebook = await input.notebook.withPreparedReadsAsync([edit.baseRevision], {
+    sources: false,
+  });
   const base = notebook.readRevision(edit.baseRevision);
   const changes = edit.changes
     .map(({ path, content }) => ({
@@ -204,29 +209,37 @@ export function prepareNotebookProposalChanges(input: {
     if (content === null) delete files[path];
     else files[path] = content;
   }
-  const report = validateNotebookCandidate({
+  const admission = () =>
+    input.revalidate(
+      files,
+      changes.map(({ path }) => path)
+    );
+  const validate = await prepareNotebookCandidateValidation({
     ownerScope,
     base,
     candidate: { files },
-    ...input.revalidate(
-      files,
-      changes.map(({ path }) => path)
-    ),
+    ...admission(),
   });
-  if (report.errors.length) throw new NotebookError('invalid_request');
-  return changes;
+  const revalidate = () => {
+    if (validate(admission()).errors.length) throw new NotebookError('invalid_request');
+  };
+  revalidate();
+  return { notebook, changes, revalidate };
 }
 
 /** Reads immutable candidate material; each caller validates its own Proposal scope before disclosure. */
-export function readNotebookProposalCandidateMaterial(
+export async function readNotebookProposalCandidateMaterial(
   git: KnowledgeNotebook,
   id: string,
   meta: Record<string, unknown>
 ) {
   if (typeof meta.candidate_revision !== 'string' || typeof meta.base_revision !== 'string')
     throw new NotebookError('recovery_required');
-  const candidate = git.readRevision(meta.candidate_revision);
-  const base = git.readRevision(meta.base_revision);
+  const notebook = await git.withPreparedReadsAsync([meta.candidate_revision, meta.base_revision], {
+    sources: false,
+  });
+  const candidate = notebook.readRevision(meta.candidate_revision);
+  const base = notebook.readRevision(meta.base_revision);
   const paths = [...new Set([...Object.keys(base.files), ...Object.keys(candidate.files)])]
     .filter((path) => base.files[path] !== candidate.files[path])
     .sort();
@@ -245,20 +258,21 @@ export function readNotebookProposalCandidateMaterial(
     status: 'pending',
     createdAt: meta.created_at,
   };
-  return { candidate, base, paths, changes, proposal };
+  return { notebook, candidate, base, paths, changes, proposal };
 }
 
 /** Retains the exact already-validated Proposal candidate without changing the published head. */
-export function retainNotebookProposalCandidate(input: {
+export async function retainNotebookProposalCandidate(input: {
   readonly notebook: KnowledgeNotebook;
   readonly edit: NotebookEdit;
   readonly changes: NotebookEdit['changes'];
   readonly producer: ActorRef & { kind: 'agent' };
   readonly proposalId: string;
   readonly sourceReferences: readonly string[];
-}): string {
+  readonly revalidate: () => void;
+}): Promise<string> {
   const { notebook: git, edit, changes, producer, proposalId: id, sourceReferences } = input;
-  const candidateRevision = git.prepare({
+  const candidateRevision = await git.prepareAsync({
     baseRevision: edit.baseRevision,
     changes: Object.fromEntries(changes.map(({ path, content }) => [path, content])),
     metadata: {
@@ -272,7 +286,13 @@ export function retainNotebookProposalCandidate(input: {
       sourceReferences: [...sourceReferences],
     },
   });
-  git.retainCandidate({ proposalId: id, candidateRevision });
+  const current = await git.publishedRevisionAsync();
+  if (current !== edit.baseRevision) throw new NotebookError('conflict', current);
+  await git.retainCandidateAsync({
+    proposalId: id,
+    candidateRevision,
+    beforeRetain: input.revalidate,
+  });
   return candidateRevision;
 }
 
@@ -616,6 +636,7 @@ async function publishAdmittedNotebook(
         knowledgeBaseId: preparedSelection.head.knowledgeBaseId,
         revisions: [request.baseRevision, revision],
       });
+      await dependencies.prepareWorkspaceProjection?.(preparedSelection);
     }
     dependencies.revalidate();
     const candidate = readNotebookAdmissionRevision(dependencies, request, evidence, ownerScope);
@@ -725,7 +746,10 @@ async function publishAdmittedNotebook(
         }
         if (published) throw new NotebookError('recovery_required');
       }
-      const current = dependencies.notebook.publishedRevision();
+      const current =
+        dependencies.owner.kind === 'workspace'
+          ? dependencies.notebook.publishedRevision()
+          : await dependencies.notebook.publishedRevisionAsync();
       if (current !== request.baseRevision) throw new NotebookError('conflict', current);
       if (
         request.changes.length > 256 ||
@@ -915,9 +939,10 @@ async function publishAdmittedNotebook(
         );
       };
       if (dependencies.reviewedCandidate) {
-        const retained = dependencies.notebook.retainedCandidate(
+        const retained = await dependencies.notebook.retainedCandidateAsync(
           dependencies.reviewedCandidate.proposalId
         );
+        revalidatePublication();
         if (
           retained.revision !== candidateRevision ||
           retained.parentRevision !== request.baseRevision
@@ -1007,6 +1032,7 @@ async function publishAdmittedNotebook(
         knowledgeBaseId: preparedSelection.head.knowledgeBaseId,
         revisions: [request.baseRevision, result.notebookRevision],
       });
+      await dependencies.prepareWorkspaceProjection?.(preparedSelection);
     }
     dependencies.revalidate();
   }
