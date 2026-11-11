@@ -72,7 +72,7 @@ import { assertWorkspaceDeletionRecoveryExportAuthority } from '../workspace-del
 import { listExportableWorkspaceMaterialRows } from '../workspace-materials.js';
 import type { FileStorageAdmission } from './artifacts/file-admission.js';
 import { withCanonicalFileWriteAdmission } from './canonical-write-capacity.js';
-import { type CoreDb, openBootVerifiedWorkspaceDb, type WorkspaceDb } from './db.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import {
   assertExportableGenerativePresentations,
@@ -149,7 +149,7 @@ export function canReadWorkspaceExport(
     return false;
 
   try {
-    const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, verified.manifest.workspaceId);
+    const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, verified.manifest.workspaceId);
     try {
       const rows = workspaceDb.sqlite
         .prepare(`

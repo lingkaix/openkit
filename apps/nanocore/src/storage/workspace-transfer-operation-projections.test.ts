@@ -1,9 +1,13 @@
+// openkit-test-platform: posix
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { zstdDecompressSync } from 'node:zlib';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { deriveEntityId, PROTOCOL_VERSION, writeRetainedV1 } from '@openkit/protocol';
+import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -31,8 +35,11 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { openCoreDb, openWorkspaceDb } from './db.js';
+import { openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
+import { workspaceDbPath } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
+import { workspaceArchiveHeader } from './workspace-archive.js';
+import { verifyWorkspaceExportTree, WORKSPACE_EXPORT_MANIFEST_FILE } from './workspace-export.js';
 import {
   nativeProductScope,
   readNativeProductEntries,
@@ -106,6 +113,110 @@ function exportUsage(root: string) {
   } finally {
     workspaceDb.sqlite.close();
   }
+}
+
+/** Observes the genuine selected Main SQLite instances without throwing policy assertions into HTTP. */
+function observeExportDownloadReader(path: string) {
+  const prepare = Database.prototype.prepare;
+  const close = Database.prototype.close;
+  const exec = Database.prototype.exec;
+  const readers = new Map<Database.Database, { readonly: boolean; queryOnly: unknown }>();
+  const businessReaders = new Set<Database.Database>();
+  const closed: Array<{
+    reader: Database.Database;
+    readonly: boolean;
+    queryOnly: unknown;
+    code: string | null;
+    unchanged: boolean;
+    closed: boolean;
+    observationError?: string;
+  }> = [];
+  let inside = false;
+  const prepared = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+    this: Database.Database,
+    sql: string
+  ) {
+    if (!inside && this.name === path) {
+      // The physical flag is intrinsic. Supported-ledger preflight precedes ready query policy.
+      if (!readers.has(this)) readers.set(this, { readonly: this.readonly, queryOnly: undefined });
+      if (
+        /\bFROM\s+capability_calls\s+call\b/i.test(sql) &&
+        /\bJOIN\s+usage_records\s+usage\b/i.test(sql)
+      ) {
+        inside = true;
+        try {
+          businessReaders.add(this);
+          readers.get(this)!.queryOnly = this.pragma('query_only', { simple: true });
+        } finally {
+          inside = false;
+        }
+      }
+    }
+    return prepare.call(this, sql);
+  });
+  const closing = vi.spyOn(Database.prototype, 'close').mockImplementation(function (
+    this: Database.Database
+  ) {
+    if (this.name !== path) return close.call(this);
+    const row = {
+      reader: this,
+      readonly: this.readonly,
+      queryOnly: this.pragma('query_only', { simple: true }) as unknown,
+      code: null as string | null,
+      unchanged: false,
+      closed: false,
+      observationError: undefined as string | undefined,
+    };
+    // Preflight has no published business-read phase; require its configured close policy.
+    const ready = readers.get(this);
+    if (ready && ready.queryOnly === undefined) ready.queryOnly = row.queryOnly;
+    inside = true;
+    try {
+      const before = prepare.call(this, 'SELECT * FROM __drizzle_migrations ORDER BY id').all();
+      if (!before.length || this.inTransaction)
+        throw new Error('Unusable protected-row challenge.');
+      exec.call(this, 'SAVEPOINT export_download_reader_challenge');
+      try {
+        prepare
+          .call(
+            this,
+            'DELETE FROM __drizzle_migrations WHERE id = (SELECT id FROM __drizzle_migrations ORDER BY id LIMIT 1)'
+          )
+          .run();
+      } catch (error) {
+        row.code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String(error.code)
+            : 'UNCLASSIFIED';
+      } finally {
+        exec.call(this, 'ROLLBACK TO export_download_reader_challenge');
+        exec.call(this, 'RELEASE export_download_reader_challenge');
+      }
+      row.unchanged =
+        JSON.stringify(
+          prepare.call(this, 'SELECT * FROM __drizzle_migrations ORDER BY id').all()
+        ) === JSON.stringify(before);
+    } catch (error) {
+      row.observationError = error instanceof Error ? error.message : String(error);
+    } finally {
+      inside = false;
+    }
+    try {
+      return close.call(this);
+    } finally {
+      row.closed = !this.open;
+      closed.push(row);
+    }
+  });
+  return {
+    readers,
+    businessReaders,
+    closed,
+    restore() {
+      prepared.mockRestore();
+      closing.mockRestore();
+    },
+  };
 }
 
 describe('Workspace JSON transfer cutover', () => {
@@ -707,5 +818,199 @@ describe('Workspace JSON transfer cutover', () => {
     expect(
       db.sqlite.prepare('SELECT * FROM workspace_registry ORDER BY workspace_id').all()
     ).toEqual(registry);
+  });
+  it('downloads the exact attributed archive with physically read-only query-only Main readers', async () => {
+    const f = await fixture();
+    // Reuse this owner's existing session-admission seam; Core still decides current export authority.
+    const administrator = createOpenKitAccessTokenRecord(f.db, {
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const app = createApp({
+      dataRoot: f.root,
+      coreDb: f.db,
+      store: f.store,
+      mode: 'server',
+      auth: {
+        api: {
+          getSession: async () => ({
+            session: { id: 'export_reader_creator_session' },
+            user: { id: FIXTURE_LOCAL_USER_ID },
+          }),
+        },
+        handler: async () => Response.json({ status: 'auth-ok' }),
+      },
+    });
+    const path = realpathSync(workspaceDbPath(f.root, DEMO_WORKSPACE_ID));
+    const database = `workspace:${path}`;
+    const nativeAcks: Array<{ operation: string; id: number }> = [];
+    const pending = new Map<Worker, Map<number, string>>();
+    const listeners: Array<{ worker: Worker; listener: (reply: unknown) => void }> = [];
+    const postMessage = Worker.prototype.postMessage;
+    const posting = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: Worker,
+      ...args: Parameters<Worker['postMessage']>
+    ) {
+      const message = args[0] as { id?: number; operation?: string; database?: string } | null;
+      if (
+        message &&
+        typeof message.id === 'number' &&
+        typeof message.operation === 'string' &&
+        (message.database === database || (message.operation === 'shutdown' && pending.has(this)))
+      ) {
+        if (!pending.has(this)) {
+          pending.set(this, new Map());
+          const listener = (reply: unknown) => {
+            const row = reply as { id?: number; status?: string } | null;
+            if (!row || typeof row.id !== 'number') return;
+            const operation = pending.get(this)?.get(row.id);
+            if (!operation) return;
+            pending.get(this)!.delete(row.id);
+            if (row.status === 'ok') nativeAcks.push({ operation, id: row.id });
+          };
+          this.on('message', listener);
+          listeners.push({ worker: this, listener });
+        }
+        pending.get(this)!.set(message.id, message.operation);
+      }
+      return Reflect.apply(postMessage, this, args);
+    });
+    let observed: ReturnType<typeof observeExportDownloadReader> | undefined;
+    try {
+      const exported = await app.request(
+        ...request('/api/app/operations/workspace.export', { workspaceId: DEMO_WORKSPACE_ID })
+      );
+      expect(exported.status, await exported.clone().text()).toBe(200);
+      const { exportId } = await exported.json();
+      const exportRoot = join(
+        f.root,
+        'server',
+        'exports',
+        'workspaces',
+        DEMO_WORKSPACE_ID,
+        exportId
+      );
+      const verified = verifyWorkspaceExportTree({ exportRoot });
+      expect(verified.manifest.workspaceId).toBe(DEMO_WORKSPACE_ID);
+      expect(verified.artifactPayloadFiles.size).toBe(0);
+      const files = new Map<string, Buffer>([
+        [WORKSPACE_EXPORT_MANIFEST_FILE, Buffer.from(verified.manifestText)],
+        ...[...verified.fileContents].map(([name, text]) => [name, Buffer.from(text)] as const),
+        ...[...verified.binaryFileContents].map(
+          ([name, bytes]) => [name, Buffer.from(bytes)] as const
+        ),
+      ]);
+      const originalFiles = [...files].map(([name, bytes]) => [name, Buffer.from(bytes)] as const);
+      const directories = new Set<string>();
+      for (const name of files.keys()) {
+        const parts = name.split('/');
+        parts.pop();
+        while (parts.length) {
+          directories.add(`${parts.join('/')}/`);
+          parts.pop();
+        }
+      }
+      const compare = (a: string, b: string) => Buffer.compare(Buffer.from(a), Buffer.from(b));
+      const chunks: Buffer[] = [];
+      for (const name of [...directories].sort(compare))
+        chunks.push(workspaceArchiveHeader(name, 'directory', 0));
+      for (const name of [...files.keys()].sort(compare)) {
+        const bytes = files.get(name)!;
+        chunks.push(workspaceArchiveHeader(name, 'file', bytes.length), bytes);
+        const padding = (512 - (bytes.length % 512)) % 512;
+        if (padding) chunks.push(Buffer.alloc(padding));
+      }
+      chunks.push(Buffer.alloc(1024));
+      const usage = exportUsage(f.root);
+      const callId = deriveEntityId('cap', ['storage_export', exportId]);
+      const attributed = usage.filter(
+        (row) => (row as { capability_call_id: string }).capability_call_id === callId
+      ) as Array<{ unit: string; quantity: number; responsible_user_id: string }>;
+      expect(attributed).toHaveLength(2);
+      expect(new Map(attributed.map((row) => [row.unit, row.quantity]))).toEqual(
+        new Map([
+          ['files', verified.checkedFiles.length],
+          ['bytes', verified.manifest.contentInventory.reduce((sum, file) => sum + file.bytes, 0)],
+        ])
+      );
+      expect(attributed.every((row) => row.responsible_user_id === FIXTURE_LOCAL_USER_ID)).toBe(
+        true
+      );
+      expect(nativeAcks.some((row) => row.operation === 'capability')).toBe(true);
+      observed = observeExportDownloadReader(path);
+      const downloaded = await app.request(
+        `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`
+      );
+      expect(downloaded.status, await downloaded.clone().text()).toBe(200);
+      expect(zstdDecompressSync(Buffer.from(await downloaded.arrayBuffer()))).toEqual(
+        Buffer.concat(chunks)
+      );
+      observed.restore();
+      expect(exportUsage(f.root)).toEqual(usage);
+      for (const [name, bytes] of originalFiles)
+        expect(readFileSync(join(exportRoot, name))).toEqual(bytes);
+      revokeOpenKitAccessTokenRecord(f.db, administrator.record.tokenId);
+      const denied = await app.request(
+        `/api/app/workspaces/${DEMO_WORKSPACE_ID}/exports/${exportId}/archive`
+      );
+      expect(denied.status).toBe(403);
+      expect(await denied.json()).toEqual({
+        protocolVersion: PROTOCOL_VERSION,
+        code: 'workspace_access_denied',
+        message: 'Workspace access denied.',
+      });
+      expect(exportUsage(f.root)).toEqual(usage);
+      await shutdownControlStoreWorkerClient();
+      expect(nativeAcks.some((row) => row.operation === 'shutdown')).toBe(true);
+      expect([...pending.values()].every((requests) => requests.size === 0)).toBe(true);
+      const cold = openWorkspaceReadDb(f.root, DEMO_WORKSPACE_ID);
+      try {
+        expect(
+          cold.sqlite
+            .prepare("SELECT * FROM usage_records WHERE category='storage' ORDER BY usage_id")
+            .all()
+        ).toEqual(usage);
+      } finally {
+        cold.sqlite.close();
+      }
+      // Deciding physical policy checks follow real HTTP/native/canonical/cold prerequisites.
+      expect(observed.readers.size).toBeGreaterThan(0);
+      expect(observed.businessReaders.size).toBeGreaterThan(0);
+      expect(observed.closed).toHaveLength(observed.readers.size);
+      for (const [reader, ready] of observed.readers) {
+        expect(
+          ready,
+          `Actual selected Main reader policies: ${JSON.stringify({
+            ready: [...observed.readers.values()],
+            close: observed.closed.map((row) => ({
+              readonly: row.readonly,
+              queryOnly: row.queryOnly,
+              code: row.code,
+              unchanged: row.unchanged,
+              closed: row.closed,
+              observationError: row.observationError,
+            })),
+          })}`
+        ).toEqual({ readonly: true, queryOnly: 1 });
+        expect(observed.closed.filter((row) => row.reader === reader)).toEqual([
+          {
+            reader,
+            readonly: true,
+            queryOnly: 1,
+            code: 'SQLITE_READONLY',
+            unchanged: true,
+            closed: true,
+            observationError: undefined,
+          },
+        ]);
+        expect(reader.open).toBe(false);
+      }
+    } finally {
+      observed?.restore();
+      posting.mockRestore();
+      for (const { worker, listener } of listeners) worker.off('message', listener);
+    }
   });
 });
