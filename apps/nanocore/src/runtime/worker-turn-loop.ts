@@ -39,7 +39,7 @@ import { workerTurnStageForStopReason } from './worker-stage.js';
 
 /** Materializes one acknowledged checkpoint on a scoped read-only handle before the next effect or await. */
 function readWorkerCheckpoint(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
   workspaceId: string,
   threadId: string,
   turnId: string
@@ -155,8 +155,8 @@ export interface RunWorkerTurnLoopInput {
   readonly triggerActor: ActorRef;
   /** Authenticating request actor when the caller still holds the HTTP credential context. */
   readonly requestActor?: Actor;
-  /** Open workspace-scope database handle for worker checkpoint storage. */
-  readonly workspaceDb: WorkspaceDb;
+  /** Exact Workspace identity for native checkpoints; no reader is retained across worker execution. */
+  readonly workspaceDb: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>;
   /** Workspace that owns the worker turn. */
   readonly workspaceId: string;
   /** Thread that owns the worker turn. */
@@ -581,7 +581,7 @@ async function removeOwnCancelledPreparation(
 /** Binds an admitted checkpoint when preparation selects its actual session, before worker effects. */
 export async function bindWorkerCheckpointToPreparedSession(input: {
   readonly coreDb: CoreDb;
-  readonly workspaceDb: WorkspaceDb;
+  readonly workspaceDb: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>;
   readonly store: FsStore;
   readonly workspaceId: string;
   readonly threadId: string;

@@ -85,10 +85,10 @@ export interface StartTurnInput
   agentId?: string | null;
   /** Resolved User, Workspace, or Server Agent fallback. */
   defaultAgentId?: string | null;
-  /** Actual Workspace ledger connection; its native owner acknowledges setup before launch. */
+  /** Scoped Workspace reader factory; its native owner acknowledges setup before launch. */
   agentSetupLedger?: {
-    /** Workspace connection whose lifetime belongs to the caller. */
-    workspaceDb: WorkspaceDb;
+    /** Supplies a fresh admitted reader that this setup stage closes before launch. */
+    openWorkspaceDb: () => WorkspaceDb;
     /** Existing physical publisher supplied at the already-owned scheduler composition boundary. */
     writer: Pick<ReturnType<typeof getControlStoreWorkerClient>, 'recordResolvedAgentSetup'>;
   };
@@ -363,19 +363,21 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   if (existing) await input.store.updateTurn(turn.id, { status: 'running' });
   let agentSetupRecordId: string | null = null;
   if (agentSetupResult.setup && input.agentSetupLedger) {
-    agentSetupRecordId = (
-      await input.agentSetupLedger.writer.recordResolvedAgentSetup(
-        input.agentSetupLedger.workspaceDb,
-        {
+    const workspaceDb = input.agentSetupLedger.openWorkspaceDb();
+    try {
+      agentSetupRecordId = (
+        await input.agentSetupLedger.writer.recordResolvedAgentSetup(workspaceDb, {
           recordId: `ras_${turn.id}`,
           workspaceId: input.workspaceId,
           turnId: turn.id,
           requestId: input.requestId ?? null,
           setup: agentSetupResult.setup,
           createdAt: turn.startedAt ?? new Date().toISOString(),
-        }
-      )
-    ).id;
+        })
+      ).id;
+    } finally {
+      workspaceDb.sqlite.close();
+    }
   }
 
   await input.onTurnCreated?.(input.store.getTurnById(turn.id));

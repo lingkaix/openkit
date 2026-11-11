@@ -214,6 +214,8 @@ import {
   CONTROL_PRODUCT_LIMITS,
   type ControlProductEntry,
   closeWorkspaceProductReadHandles,
+  drainMainScopeReadHandles,
+  reserveMainScopeReadAcquisition,
 } from './control-store-product-records.js';
 import {
   type ControlEventAppend,
@@ -2174,7 +2176,7 @@ class ControlStoreWorkerClient {
 
   /** Opens or reuses the exact retained Workspace scope through its existing native owner. */
   async workspaceCapability(
-    db: WorkspaceDb,
+    db: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
     input: ControlCapabilityCommandInput,
     options: { readonly immediate?: boolean } = {}
   ): Promise<ControlWorkspaceCapabilityCommandResult> {
@@ -2901,56 +2903,61 @@ class ControlStoreWorkerClient {
   async openInitializedUserReadDb(dataRoot: string, userId: string): Promise<UserDb> {
     ensureUserLayout(dataRoot, userId);
     const path = userDbPath(dataRoot, userId);
-    const database = `user:${path}`;
-    const opening = this.openings.get(database);
-    if (opening) {
-      if (
-        !isDeepStrictEqual(opening.command, {
-          database,
-          path,
-          create: opening.command.create,
-          initialize: 'user',
-        })
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      // Never infer first-create readiness from the file or repair an unknown original opening.
-      if (!opening.acknowledged) await opening.promise;
-      try {
-        const current = statSync(path);
+    const releaseAcquisition = reserveMainScopeReadAcquisition(path);
+    try {
+      const database = `user:${path}`;
+      const opening = this.openings.get(database);
+      if (opening) {
         if (
-          realpathSync(path) !== opening.path ||
-          `${current.dev}:${current.ino}` !== opening.identity
+          !isDeepStrictEqual(opening.command, {
+            database,
+            path,
+            create: opening.command.create,
+            initialize: 'user',
+          })
         )
-          throw new Error('User database binding changed.');
-      } catch {
-        throw new ControlStoreWorkerError('precondition', 'not-committed');
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        // Never infer first-create readiness from the file or repair an unknown original opening.
+        if (!opening.acknowledged) await opening.promise;
+        try {
+          const current = statSync(path);
+          if (
+            realpathSync(path) !== opening.path ||
+            `${current.dev}:${current.ino}` !== opening.identity
+          )
+            throw new Error('User database binding changed.');
+        } catch {
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        }
       }
-    }
-    if (statSync(path, { throwIfNoEntry: false })) {
+      if (statSync(path, { throwIfNoEntry: false })) {
+        const reader = openUserReadDb(dataRoot, userId);
+        try {
+          if (!hasPendingUserMigrations(reader.sqlite)) return reader;
+        } catch (error) {
+          reader.sqlite.close();
+          throw error;
+        }
+        reader.sqlite.close();
+        if (opening) throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
+      await this.open({
+        database,
+        path,
+        create: !statSync(path, { throwIfNoEntry: false }),
+        initialize: 'user',
+      });
       const reader = openUserReadDb(dataRoot, userId);
       try {
-        if (!hasPendingUserMigrations(reader.sqlite)) return reader;
+        if (hasPendingUserMigrations(reader.sqlite))
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        return reader;
       } catch (error) {
         reader.sqlite.close();
         throw error;
       }
-      reader.sqlite.close();
-      if (opening) throw new ControlStoreWorkerError('precondition', 'not-committed');
-    }
-    await this.open({
-      database,
-      path,
-      create: !statSync(path, { throwIfNoEntry: false }),
-      initialize: 'user',
-    });
-    const reader = openUserReadDb(dataRoot, userId);
-    try {
-      if (hasPendingUserMigrations(reader.sqlite))
-        throw new ControlStoreWorkerError('precondition', 'not-committed');
-      return reader;
-    } catch (error) {
-      reader.sqlite.close();
-      throw error;
+    } finally {
+      releaseAcquisition();
     }
   }
 
@@ -4266,7 +4273,12 @@ class ControlStoreWorkerClient {
     try {
       await this.drainScopePublications(opening);
       // Idle readers must not prevent the writer's final close from checkpointing at rest.
-      if (opening) closeWorkspaceProductReadHandles(opening.path);
+      if (opening) {
+        closeWorkspaceProductReadHandles(opening.path);
+        await drainMainScopeReadHandles([opening.path]);
+        // Accepted ACK continuations can create an idle metadata reader before releasing their own.
+        closeWorkspaceProductReadHandles(opening.path);
+      }
       await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
       if (this.openings.get(database) === opening) this.openings.delete(database);
     } catch (error) {
@@ -4289,7 +4301,12 @@ class ControlStoreWorkerClient {
     const opening = this.openings.get(database);
     try {
       await this.drainScopePublications(opening);
-      if (opening) closeWorkspaceProductReadHandles(opening.path);
+      if (opening) {
+        closeWorkspaceProductReadHandles(opening.path);
+        await drainMainScopeReadHandles([opening.path]);
+        // Accepted ACK continuations can create an idle metadata reader before releasing their own.
+        closeWorkspaceProductReadHandles(opening.path);
+      }
       const reply = await this.request(
         { operation: 'recovery-seal', database },
         undefined,
@@ -4435,6 +4452,8 @@ class ControlStoreWorkerClient {
             if (outcome.status === 'rejected') failures.push(outcome.reason);
         }
         // Accepted ACK continuations have finished; release readers before final writer close.
+        closeWorkspaceProductReadHandles();
+        await drainMainScopeReadHandles([...this.openings.values()].map((opening) => opening.path));
         closeWorkspaceProductReadHandles();
         const shutdowns = await Promise.allSettled(
           this.hosts

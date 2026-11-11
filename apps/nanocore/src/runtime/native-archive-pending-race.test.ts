@@ -81,11 +81,23 @@ const readers: ReturnType<typeof openControlStoreProductReadHandle>[] = [];
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  for (const reader of readers.splice(0)) reader.close();
+  closeFixtureReaders();
   await shutdownControlStoreWorkerClient();
   archiveReadFault.gate = undefined;
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
+
+/** Releases only this test's read snapshots after their consumers settle. */
+function closeFixtureReaders() {
+  for (const reader of readers.splice(0)) reader.close();
+}
+
+/** Reopens the same fixture scope after its actual Native close acknowledgement. */
+function reopenFixtureReader(f: Awaited<ReturnType<typeof fixture>>) {
+  const scope = nativeProductScope(f.root, f.turn.owner);
+  f.reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  readers.push(f.reader);
+}
 
 /** Creates the original running Turn and command receipts through their native owners. */
 async function fixture() {
@@ -386,6 +398,14 @@ describe('native standalone archive and concurrent Pending raise', () => {
       (record) => ({ status: 'fulfilled' as const, record }),
       (reason: unknown) => ({ status: 'rejected' as const, reason })
     );
+    // The raising owner reads its original Pending row after the genuine Native ACK.
+    // Release this supplied reader only after that consumer actually settles.
+    const raisedAfterReaderRelease = raiseAttempt.then((result) => {
+      const index = readers.indexOf(f.reader);
+      if (index !== -1) readers.splice(index, 1);
+      f.reader.close();
+      return result;
+    });
     const pendingArgs = await pendingPacket.promise;
     expect(pendingArgs[1].input).toMatchObject({ action: 'raise', input: f.raise });
     expect(pendingArgs[1].entries).toHaveLength(1);
@@ -421,8 +441,9 @@ describe('native standalone archive and concurrent Pending raise', () => {
 
     // Read at close ACK, before joining the producers; the complete tuple must already be decided.
     await closeResult.promise;
+    reopenFixtureReader(f);
     const atClose = committedRows(f.reader);
-    const raised = await raiseAttempt;
+    const raised = await raisedAfterReaderRelease;
     expect(raised.status).toBe('fulfilled');
     if (raised.status !== 'fulfilled') throw raised.reason;
     expect(await archiveAttempt).toMatchObject({
@@ -624,6 +645,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     const beforeReplay = committedRows(f.reader);
 
     // The real writer must stop before this fixture-only loss of an acknowledged immutable body.
+    closeFixtureReaders();
     await shutdownControlStoreWorkerClient();
     const unavailablePath = `${immutablePath}.unavailable-${randomUUID()}`;
     renameSync(immutablePath, unavailablePath);
@@ -640,6 +662,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
       contentMount: scope.contentMount,
     });
 
+    reopenFixtureReader(f);
     // Expected RED: native fresh-history preparation reads the missing body before exact receipt lookup.
     await expect(coldClient.transition(database, originalEnvelope)).resolves.toMatchObject({
       replayed: true,
@@ -916,6 +939,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     expect(retainedArchived).toEqual({ ...archived, updatedAt: expect.any(String) });
 
     // A new read-only handle opens only after the actual live writer has stopped.
+    closeFixtureReaders();
     await shutdownControlStoreWorkerClient();
     const scope = nativeProductScope(f.root, f.turn.owner);
     const cold = openControlStoreProductReadHandle(scope.path, scope.owner);
@@ -946,6 +970,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
     const raisingTurn = structuredClone(f.store.getTurnById(f.turn.id));
     const originalThread = structuredClone(f.store.getThread(f.workspace.id, f.thread.id));
     const before = committedRows(f.reader);
+    closeFixtureReaders();
     await shutdownControlStoreWorkerClient();
     const stopped = openWorkspaceDb(f.root, f.workspace.id);
     try {
@@ -980,6 +1005,7 @@ describe('native standalone archive and concurrent Pending raise', () => {
       code: 'constraint',
       commit: 'not-committed',
     });
+    closeFixtureReaders();
     await shutdownControlStoreWorkerClient();
     const scope = nativeProductScope(f.root, f.turn.owner);
     const cold = openControlStoreProductReadHandle(scope.path, scope.owner);

@@ -954,7 +954,7 @@ describe('private Harness Login request authentication', () => {
       const f = await fixture();
       const workspaceId = f.context.workspaceId;
       const scope = nativeProductScope(f.coreDb.dataRoot, { kind: 'workspace', workspaceId });
-      const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+      let reader = openControlStoreProductReadHandle(scope.path, scope.owner);
       try {
         const original = reader.get('workspace', workspaceId);
         if (!original) throw new Error('Workspace fault requires the original canonical row.');
@@ -970,7 +970,9 @@ describe('private Harness Login request authentication', () => {
               })
             : undefined;
         // Stop the actual writer before the shared physical-corruption fixture changes its row.
+        reader.close();
         await shutdownControlStoreWorkerClient();
+        reader = openControlStoreProductReadHandle(scope.path, scope.owner);
         try {
           // Satisfy SQL's positive-revision constraint while violating the canonical safe integer.
           setTestWorkspaceRevision(f.coreDb.dataRoot, workspaceId, Number.MAX_SAFE_INTEGER + 1);

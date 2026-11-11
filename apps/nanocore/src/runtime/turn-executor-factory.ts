@@ -22,6 +22,7 @@ import {
   isSealedTurnTerminal,
   readRetainedV1,
   responsibleUserIdForActor,
+  type WorkOwner,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
@@ -790,7 +791,7 @@ interface PendingNanoHostHarnessOperation {
   /** Original native descriptors and raw carriage stay with this existing live waiter. */
   journal?: {
     readonly store: FsStore;
-    readonly workspaceDb: WorkspaceDb;
+    readonly workspaceScope: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>;
     parent: ExecutionJournalIntent;
     child?: ExecutionJournalIntent;
     prepared?: PreparedNanoHostHarnessOperation;
@@ -799,6 +800,47 @@ interface PendingNanoHostHarnessOperation {
     resultFingerprint?: string;
     consumerReceipt?: string;
     settlement?: Promise<void>;
+  };
+}
+
+/** Keeps pending Harness history addressable without a Main reader across a private effect wait. */
+function createScopedHarnessJournalReader(
+  scope: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
+  owner: WorkOwner
+): ExecutionStepJournalReader {
+  return {
+    async readExecution(ref) {
+      const db = openAdmittedWorkspaceReadDb(scope.dataRoot, scope.workspaceId);
+      try {
+        return await createExecutionStepJournalReader(db, owner).readExecution(ref);
+      } finally {
+        db.sqlite.close();
+      }
+    },
+    async readInvocation(ref) {
+      const db = openAdmittedWorkspaceReadDb(scope.dataRoot, scope.workspaceId);
+      try {
+        return await createExecutionStepJournalReader(db, owner).readInvocation(ref);
+      } finally {
+        db.sqlite.close();
+      }
+    },
+    async readEndedSteps(ref) {
+      const db = openAdmittedWorkspaceReadDb(scope.dataRoot, scope.workspaceId);
+      try {
+        return await createExecutionStepJournalReader(db, owner).readEndedSteps(ref);
+      } finally {
+        db.sqlite.close();
+      }
+    },
+    async readLinkedInspections(ref) {
+      const db = openAdmittedWorkspaceReadDb(scope.dataRoot, scope.workspaceId);
+      try {
+        return await createExecutionStepJournalReader(db, owner).readLinkedInspections(ref);
+      } finally {
+        db.sqlite.close();
+      }
+    },
   };
 }
 
@@ -1149,7 +1191,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const started = performance.now();
     const invocation = await journal.store.writeWorkspaceExecutionJournalIntent(
-      journal.workspaceDb.workspaceId,
+      journal.workspaceScope.workspaceId,
       journal.child
     );
     const remaining = Math.min(
@@ -1713,9 +1755,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         const expectedReferenceId = departure.expectedReferenceId;
         if (expectedReferenceId !== null && !isEntityId('vault', expectedReferenceId))
           throw new Error('NanoHost Login departure reference is invalid.');
-        db =
-          pending.journal?.workspaceDb ??
-          openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, departure.workspaceId);
+        db = openAdmittedWorkspaceReadDb(
+          pending.journal?.workspaceScope.dataRoot ?? this.coreDb.dataRoot,
+          departure.workspaceId
+        );
         await getControlStoreWorkerClient().vault(
           db,
           'thread-login-remove',
@@ -1740,7 +1783,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         pending.reject(failure);
         throw failure;
       } finally {
-        if (db && db !== pending.journal?.workspaceDb) db.sqlite.close();
+        db?.sqlite.close();
       }
     })();
     await departure.settlement;
@@ -1808,7 +1851,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (original.state === 'intent') {
       await endWorkerTurnJournalStep(
         journal.store,
-        journal.workspaceDb,
+        journal.workspaceScope,
         child,
         state,
         [fingerprint],
@@ -1827,7 +1870,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       });
       if (retained.state === 'intent')
         await journal.store.writeWorkspaceExecutionJournalIntent(
-          journal.workspaceDb.workspaceId,
+          journal.workspaceScope.workspaceId,
           consume
         );
       else if (
@@ -1862,7 +1905,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       });
     }
     const receipt = JSON.stringify({
-      workspaceId: journal.workspaceDb.workspaceId,
+      workspaceId: journal.workspaceScope.workspaceId,
       turnId: child.execution.workId,
       executionId: child.execution.ref.executionId,
       stepId: consume.stepId,
@@ -1878,7 +1921,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       stepId: consume.stepId,
     });
     if (consumed.state === 'intent') {
-      await endWorkerTurnJournalStep(journal.store, journal.workspaceDb, consume, 'completed', [
+      await endWorkerTurnJournalStep(journal.store, journal.workspaceScope, consume, 'completed', [
         fingerprint,
       ]);
     } else if (
@@ -7357,10 +7400,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             | undefined)
         : undefined;
     const store = this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot });
-    const workspaceDb =
+    const admittedDb =
       attempt.phase === 'closed'
         ? null
         : openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, attempt.workspaceId);
+    const workspaceScope = admittedDb
+      ? { dataRoot: admittedDb.dataRoot, workspaceId: admittedDb.workspaceId }
+      : null;
+    admittedDb?.sqlite.close();
     const deadlineUnixMs = Math.min(
       Date.now() +
         (operation === 'image.acquire' || operation === 'image.build' ? 900_000 : 300_000),
@@ -7370,47 +7417,40 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
     const cleanup =
       attempt.phase !== 'open' || operation === 'bridge.close' || operation === 'sandbox.delete';
-    let journal: ExecutionJournalIntent;
-    try {
-      journal = workspaceDb
-        ? await beginWorkerTurnJournalStep(
-            store,
-            workspaceDb,
-            attempt.turnId,
-            cleanup
-              ? 'inspect-cleanup'
-              : operation === 'workspace.collect' || operation === 'file.export'
-                ? 'collect'
-                : operation === 'image.acquire' || operation === 'image.build'
-                  ? 'resolve-setup'
-                  : operation === 'image.inspect' || operation === 'storage.inspect'
-                    ? 'validate-setup'
-                    : 'materialize',
-            {
-              operation,
-              requestId: request.requestId!,
-              sequence: null,
-              bindingRef: attempt.bindingRef,
-            },
-            { operationId: request.requestId!, deadline: new Date(deadlineUnixMs).toISOString() }
-          )
-        : await this.beginIdleCleanupJournal(
-            identity,
-            attemptId,
+    const journal = workspaceScope
+      ? await beginWorkerTurnJournalStep(
+          store,
+          workspaceScope,
+          attempt.turnId,
+          cleanup
+            ? 'inspect-cleanup'
+            : operation === 'workspace.collect' || operation === 'file.export'
+              ? 'collect'
+              : operation === 'image.acquire' || operation === 'image.build'
+                ? 'resolve-setup'
+                : operation === 'image.inspect' || operation === 'storage.inspect'
+                  ? 'validate-setup'
+                  : 'materialize',
+          {
             operation,
-            input,
-            originPhysicalEpoch,
-            deadlineUnixMs,
-            predecessor
-          );
-    } catch (error) {
-      workspaceDb?.sqlite.close();
-      throw error;
-    }
-    const reader = createExecutionStepJournalReader(
-      workspaceDb ?? this.coreDb,
-      journal.execution.ref.owner
-    );
+            requestId: request.requestId!,
+            sequence: null,
+            bindingRef: attempt.bindingRef,
+          },
+          { operationId: request.requestId!, deadline: new Date(deadlineUnixMs).toISOString() }
+        )
+      : await this.beginIdleCleanupJournal(
+          identity,
+          attemptId,
+          operation,
+          input,
+          originPhysicalEpoch,
+          deadlineUnixMs,
+          predecessor
+        );
+    const reader = workspaceScope
+      ? createScopedHarnessJournalReader(workspaceScope, journal.execution.ref.owner)
+      : createExecutionStepJournalReader(this.coreDb, journal.execution.ref.owner);
     const ref = { execution: journal.execution.ref, stepId: journal.stepId };
     const effectSignal = AbortSignal.any([
       ...(signal ? [signal] : []),
@@ -7419,8 +7459,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const beforeDelivery = async () => {
       effectSignal.throwIfAborted();
       const started = performance.now();
-      const current = workspaceDb
-        ? await store.writeWorkspaceExecutionJournalIntent(workspaceDb.workspaceId, journal)
+      const current = workspaceScope
+        ? await store.writeWorkspaceExecutionJournalIntent(workspaceScope.workspaceId, journal)
         : await reader.readInvocation(ref);
       effectSignal.throwIfAborted();
       this.requireCurrentBackendPhysicalEpoch(identity, originPhysicalEpoch);
@@ -7541,7 +7581,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       fingerprint = actual;
       consumption ??= (async () => {
         const outcome = value.failureCode === 'effect_failed' ? 'failed' : 'completed';
-        if (!workspaceDb) {
+        if (!workspaceScope) {
           await this.settleIdleCleanupJournal(journal, outcome, actual);
           return;
         }
@@ -7550,9 +7590,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         // Stable within the existing pending operation; no second receipt queue or effect retry.
         const prior = await reader.readInvocation(ref);
         if (prior.state === 'intent') {
-          await endWorkerTurnJournalStep(store, workspaceDb, journal, outcome, [actual], consume);
+          await endWorkerTurnJournalStep(
+            store,
+            workspaceScope,
+            journal,
+            outcome,
+            [actual],
+            consume
+          );
         } else if (prior.state === 'unknown' && prior.control.outputRefs.length === 0) {
-          await store.writeWorkspaceExecutionJournalIntent(workspaceDb.workspaceId, consume);
+          await store.writeWorkspaceExecutionJournalIntent(workspaceScope.workspaceId, consume);
         } else if (
           prior.state !== outcome ||
           !isDeepStrictEqual(prior.control.outputRefs, [actual])
@@ -7564,7 +7611,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           stepId: consume.stepId,
         });
         if (consumed.state === 'intent')
-          await endWorkerTurnJournalStep(store, workspaceDb, consume, 'completed', [actual]);
+          await endWorkerTurnJournalStep(store, workspaceScope, consume, 'completed', [actual]);
         else if (
           consumed.state !== 'completed' ||
           !isDeepStrictEqual(consumed.control.outputRefs, [actual])
@@ -7606,10 +7653,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (fingerprint === undefined) {
         const prior = await reader.readInvocation(ref);
         if (prior.state === 'intent') {
-          if (workspaceDb)
+          if (workspaceScope)
             await endWorkerTurnJournalStep(
               store,
-              workspaceDb,
+              workspaceScope,
               journal,
               notEnqueued ? 'failed' : 'unknown'
             );
@@ -7625,8 +7672,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           outcomeRef: null,
         });
       throw error;
-    } finally {
-      workspaceDb?.sqlite.close();
     }
     if (cleanupTarget && operation === 'sandbox.delete')
       this.markProvedSandboxDeletion(cleanupTarget.sandboxBindingRef, originPhysicalEpoch);
@@ -8600,10 +8645,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         if (closeOwner?.pending === pending) closeOwner.pending = null;
       }
     }
-    const workspaceDb = openAdmittedWorkspaceReadDb(
+    const admittedDb = openAdmittedWorkspaceReadDb(
       this.coreDb.dataRoot,
       session.environmentPackage.scope.workspaceId
     );
+    const workspaceScope = { dataRoot: admittedDb.dataRoot, workspaceId: admittedDb.workspaceId };
+    admittedDb.sqlite.close();
     const store = this.sharedStore ?? new FsStore({ dataRoot: this.coreDb.dataRoot });
     session.pendingHarnessOperation = pending;
     if (closeOwner) closeOwner.pending = pending;
@@ -8624,7 +8671,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     try {
       parent = await beginWorkerTurnJournalStep(
         store,
-        workspaceDb,
+        workspaceScope,
         session.environmentPackage.scope.turnId,
         kind,
         {
@@ -8646,7 +8693,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           performance.now() + Math.max(0, pending.deadlineUnixMs - Date.now())
         );
       }
-      pending.journal = { store, workspaceDb, parent };
+      pending.journal = { store, workspaceScope, parent };
       this.armHarnessOperationTimeout(
         pending,
         session.harnessBindingRef,
@@ -8678,7 +8725,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         const command = prepared.command;
         const child = await beginWorkerTurnJournalStep(
           store,
-          workspaceDb,
+          workspaceScope,
           session.environmentPackage.scope.turnId,
           kind,
           {
@@ -8694,8 +8741,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           }
         );
         pending.journal!.child = child;
-        pending.journal!.reader = createExecutionStepJournalReader(
-          workspaceDb,
+        pending.journal!.reader = createScopedHarnessJournalReader(
+          workspaceScope,
           child.execution.ref.owner
         );
         if (steer) {
@@ -8737,7 +8784,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       });
       await endWorkerTurnJournalStep(
         store,
-        workspaceDb,
+        workspaceScope,
         parent,
         'completed',
         pending.operationId ? [pending.operationId] : []
@@ -8760,7 +8807,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         if (current.state === 'intent')
           await endWorkerTurnJournalStep(
             store,
-            workspaceDb,
+            workspaceScope,
             child,
             pending.operationId ? 'unknown' : session.turnStopSettlement ? 'cancelled' : 'failed'
           );
@@ -8768,7 +8815,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (parent)
         await endWorkerTurnJournalStep(
           store,
-          workspaceDb,
+          workspaceScope,
           parent,
           pending.journal?.consumerReceipt
             ? 'completed'
@@ -8783,7 +8830,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       if (pending.timeout) clearTimeout(pending.timeout);
       if (session.pendingHarnessOperation === pending) session.pendingHarnessOperation = null;
       if (closeOwner?.pending === pending) closeOwner.pending = null;
-      workspaceDb.sqlite.close();
       const exchange = session.initialHarnessLogin;
       if (exchange?.pending === pending) {
         if (!exchange.completed) this.failHarnessLoginDeliveries(session);

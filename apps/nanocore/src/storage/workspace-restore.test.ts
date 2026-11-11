@@ -2129,8 +2129,8 @@ describe('D0-2 same-deployment restore', () => {
     const wasRetained = reader.open;
     const original = statSync(dbPath);
     let closedAt: { dev: number; ino: number } | undefined;
-    const close = Database.prototype.close;
-    const closing = vi.spyOn(Database.prototype, 'close').mockImplementation(function (
+    const close = reader.close;
+    const closing = vi.spyOn(reader, 'close').mockImplementation(function (
       this: Database.Database
     ) {
       if (this === reader) {

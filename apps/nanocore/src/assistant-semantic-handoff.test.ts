@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
+import type { WorkerOptions } from 'node:worker_threads';
 import { SubmitConversationResponseSchema } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
@@ -56,6 +58,7 @@ import {
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
+import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
@@ -72,6 +75,131 @@ import { recordTestNativeRuntimeTarget } from './test-support/native-environment
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
+
+// Storage 65: accepted queued work must not retain an invocation-owned Main reader.
+const queuedTaskReaders = vi.hoisted(() => ({
+  nextId: 0,
+  targetPath: '',
+  handles: new Map<number, { path: string; ref: WeakRef<import('better-sqlite3').Database> }>(),
+  gate: undefined as SharedArrayBuffer | undefined,
+  updateCount: () => {},
+}));
+vi.mock('better-sqlite3', async (load) => {
+  const actual = await load<{ default: typeof import('better-sqlite3') }>();
+  queuedTaskReaders.updateCount = () => {
+    if (!queuedTaskReaders.gate) return;
+    let count = 0;
+    for (const row of queuedTaskReaders.handles.values()) {
+      if (row.path !== queuedTaskReaders.targetPath) continue;
+      const sqlite = row.ref.deref();
+      // Collection is not evidence of successful physical close.
+      if (!sqlite || sqlite.open) count++;
+    }
+    Atomics.store(new Int32Array(queuedTaskReaders.gate), 1, count);
+  };
+  return {
+    ...actual,
+    default: new Proxy(actual.default, {
+      construct(target, args, newTarget) {
+        const sqlite = Reflect.construct(
+          target,
+          args,
+          newTarget
+        ) as import('better-sqlite3').Database;
+        if (!sqlite.readonly) return sqlite;
+        const main = (sqlite.pragma('database_list') as Array<{ name: string; file: string }>).find(
+          (row) => row.name === 'main'
+        );
+        if (!main?.file) throw new Error('Actual Main reader has no opened physical filename.');
+        const id = ++queuedTaskReaders.nextId;
+        queuedTaskReaders.handles.set(id, { path: main.file, ref: new WeakRef(sqlite) });
+        queuedTaskReaders.updateCount();
+        const close = sqlite.close;
+        sqlite.close = function (...closeArgs) {
+          try {
+            return Reflect.apply(close, this, closeArgs);
+          } finally {
+            if (!this.open) queuedTaskReaders.handles.delete(id);
+            queuedTaskReaders.updateCount();
+          }
+        };
+        return sqlite;
+      },
+    }),
+  };
+});
+vi.mock('node:worker_threads', async (load) => {
+  const actual = await load<typeof import('node:worker_threads')>();
+  return {
+    ...actual,
+    Worker: class extends actual.Worker {
+      private readonly readerGate: Int32Array | undefined;
+      constructor(filename: string | URL, options?: WorkerOptions) {
+        const gate = queuedTaskReaders.gate;
+        if (!gate) {
+          super(filename, options);
+          return;
+        }
+        const require = createRequire(import.meta.url);
+        const prelude = `
+          const { workerData } = require('node:worker_threads');
+          const Database = require(workerData.__queuedTaskReaderObserver.databaseModule);
+          const gate = new Int32Array(workerData.__queuedTaskReaderObserver.gate);
+          const close = Database.prototype.close;
+          Database.prototype.close = function(...args) {
+            const selected = !this.readonly && Atomics.load(gate, 0) === 1;
+            if (selected) {
+              Atomics.add(gate, 2, 1);
+              if (Atomics.load(gate, 1) !== 0) Atomics.add(gate, 4, 1);
+            }
+            const result = Reflect.apply(close, this, args);
+            if (selected) Atomics.add(gate, 3, 1);
+            return result;
+          };
+        `;
+        const entry = options?.eval
+          ? String(filename)
+          : `import(${JSON.stringify(String(filename))});`;
+        super(prelude + entry, {
+          ...options,
+          eval: true,
+          workerData: {
+            ...options?.workerData,
+            __queuedTaskReaderObserver: { gate, databaseModule: require.resolve('better-sqlite3') },
+          },
+        });
+        this.readerGate = new Int32Array(gate);
+      }
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        const value = args[0] as { operation?: string; status?: string } | undefined;
+        if (event === 'message' && value?.operation === 'shutdown' && value.status === 'ok') {
+          if (this.readerGate && Atomics.load(this.readerGate, 0) === 1)
+            Atomics.add(this.readerGate, 5, 1);
+        }
+        // Forward every original Native reply unchanged.
+        return super.emit(event, ...args);
+      }
+    },
+  };
+});
+
+/** Observes actual open target readers without retaining physical handles. */
+function liveQueuedTaskWorkspaceReaders(): Array<{
+  id: number;
+  path: string;
+  open: boolean | string;
+  queryOnly: unknown;
+}> {
+  return [...queuedTaskReaders.handles].flatMap(([id, row]) => {
+    if (row.path !== queuedTaskReaders.targetPath) return [];
+    const sqlite = row.ref.deref();
+    if (!sqlite) return [{ id, path: row.path, open: 'collected-without-close', queryOnly: null }];
+    if (!sqlite.open) return [];
+    return [
+      { id, path: row.path, open: true, queryOnly: sqlite.pragma('query_only', { simple: true }) },
+    ];
+  });
+}
 
 const privateMarker = 'AMBIENT_PRIVATE_TIMELINE_DETAIL_NOT_SELECTED_FOR_SHARED_WORK';
 const brief = '  What is OpenKit?\nDo not deploy anything.\nReply with its title.  ';
@@ -572,7 +700,10 @@ describe('Assistant semantic Task handoff', () => {
   it.each([false, true])(
     'proposes exact work, waits for selection, and admits a shared Task without rerouting or nested receipts (restart=%s)',
     async (restart) => {
+      queuedTaskReaders.gate = new SharedArrayBuffer(6 * Int32Array.BYTES_PER_ELEMENT);
       const f = await fixture();
+      queuedTaskReaders.targetPath = workspaceDbPath(f.dataRoot, f.workspace.id);
+      queuedTaskReaders.updateCount();
       const response = await f.submit();
       expect(f.requests.length).toBeGreaterThan(0);
       const tools = f.requests[0]!.tools as Array<{
@@ -668,6 +799,11 @@ describe('Assistant semantic Task handoff', () => {
             }
           )
         );
+      // Observe the already-existing idle cache before genuine Task admission.
+      const baselineReaders = liveQueuedTaskWorkspaceReaders();
+      expect(baselineReaders.length).toBeGreaterThan(0);
+      expect(baselineReaders.every((row) => row.open === true && row.queryOnly === 1)).toBe(true);
+      const baselineReaderIds = new Set(baselineReaders.map((row) => row.id));
       const answered = await answer();
       expect(answered.status, await answered.clone().text()).toBe(200);
       const answerBody = await answered.json();
@@ -850,6 +986,29 @@ describe('Assistant semantic Task handoff', () => {
       expect(f.store.listCommandRequests()).toEqual(receipts);
       expect(f.requests).toHaveLength(2);
       expect(f.launches).not.toHaveBeenCalled();
+
+      // Queued work owns durable state, not an extra physical Main reader.
+      expect(
+        liveQueuedTaskWorkspaceReaders().filter((row) => !baselineReaderIds.has(row.id)),
+        'accepted queued Task retains additional actual Main Workspace readers'
+      ).toEqual([]);
+      expect(f.admissions()).toEqual(admitted);
+      expect(f.store.getTurnById(worker.id)).toEqual(worker);
+      const gate = new Int32Array(queuedTaskReaders.gate!);
+      queuedTaskReaders.updateCount();
+      Atomics.store(gate, 0, 1);
+      await expect(shutdownControlStoreWorkerClient()).resolves.toBeUndefined();
+      expect(liveQueuedTaskWorkspaceReaders()).toEqual([]);
+      expect(Atomics.load(gate, 1)).toBe(0);
+      expect(Atomics.load(gate, 2)).toBeGreaterThan(0);
+      expect(Atomics.load(gate, 3)).toBe(Atomics.load(gate, 2));
+      expect(
+        Atomics.load(gate, 4),
+        'physical Native close before target Main readers release'
+      ).toBe(0);
+      expect(Atomics.load(gate, 5), 'original successful Native shutdown ACK').toBeGreaterThan(0);
+      expect(f.admissions()).toEqual(admitted);
+      Atomics.store(gate, 0, 0);
     }
   );
   it.each(['missing', 'other-thread'] as const)(

@@ -5,9 +5,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { Worker } from 'node:worker_threads';
 import { allocateEntityId, ContentReferenceSchema, formatReferenceUri } from '@openkit/protocol';
 import { LocalStorage } from '@openkit/storage';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId, readKnowledgeMounts } from '../config/knowledge-base.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -865,3 +866,127 @@ it('stops export disclosure when its Source origin becomes restricted', async ()
   );
   expect(outcome.complete).toBe(false);
 });
+
+/** Observes actual posted shutdown requests and the original replies from the same Worker. */
+function observeKnowledgeShutdownAcknowledgements() {
+  const requests = new Map<Worker, Set<number>>();
+  const replies = new Map<Worker, Set<number>>();
+  const unexpected: unknown[] = [];
+  const postMessage = Worker.prototype.postMessage;
+  const emit = Worker.prototype.emit;
+  const posting = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+    this: Worker,
+    ...args: Parameters<Worker['postMessage']>
+  ) {
+    const value = args[0] as { operation?: string; id?: number } | undefined;
+    if (value?.operation === 'shutdown' && typeof value.id === 'number') {
+      const ids = requests.get(this) ?? new Set<number>();
+      if (ids.has(value.id)) throw new Error('Duplicate actual Native shutdown request.');
+      ids.add(value.id);
+      requests.set(this, ids);
+    }
+    return Reflect.apply(postMessage, this, args);
+  });
+  const receiving = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+    this: Worker,
+    event: string | symbol,
+    ...args: unknown[]
+  ) {
+    const value = args[0] as { operation?: string; id?: number; status?: string } | undefined;
+    if (event === 'message' && value?.operation === 'shutdown') {
+      if (
+        value.status !== 'ok' ||
+        typeof value.id !== 'number' ||
+        !requests.get(this)?.has(value.id)
+      )
+        unexpected.push(value);
+      else {
+        const ids = replies.get(this) ?? new Set<number>();
+        if (ids.has(value.id)) throw new Error('Duplicate original Native shutdown reply.');
+        ids.add(value.id);
+        replies.set(this, ids);
+      }
+    }
+    return Reflect.apply(emit, this, [event, ...args]);
+  });
+  return {
+    assertAcknowledged() {
+      expect(requests.size).toBeGreaterThan(0);
+      expect(unexpected).toEqual([]);
+      expect(replies.size).toBe(requests.size);
+      for (const [worker, ids] of requests) expect(replies.get(worker)).toEqual(ids);
+    },
+    restore() {
+      receiving.mockRestore();
+      posting.mockRestore();
+    },
+  };
+}
+
+it.each(['before-consumption', 'after-first-chunk'] as const)(
+  'releases the owned public Knowledge export reader when cancelled %s',
+  async (phase) => {
+    const f = await fixture();
+    const observed = observeKnowledgeShutdownAcknowledgements();
+    onTestFinished(() => observed.restore());
+    // Reuse the existing disclosure probe's real one-MiB Source fixture, not another scope.
+    const registered = await f.call('knowledge.source.register', f.source.id, {
+      kind: 'document',
+      title: 'Original cancellation Source',
+      content: 'x'.repeat(1024 * 1024) + 'ORIGINAL-CANCELLED-EXPORT-SOURCE',
+    });
+    expect(registered.status, JSON.stringify(registered.body)).toBe(200);
+    const beforeFiles = knowledgeFiles(f.source.root);
+    const beforeHead = f.source.selection.head;
+    const beforeRevision = f.source.notebook.publishedRevision();
+    const exported = await f.transfer('export', f.source.id);
+    expect(exported.status).toBe(200);
+    expect(exported.headers.get('content-type')?.split(';')[0]).toBe('application/x-tar');
+    expect(exported.body).not.toBeNull();
+    const body = exported.body!;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    onTestFinished(async () => {
+      try {
+        if (reader) await reader.cancel('fixture cleanup after original result');
+        else await body.cancel('fixture cleanup after original result');
+      } finally {
+        reader?.releaseLock();
+      }
+    });
+    const progress = { cancelled: false, canonicalChecked: false, nativeShutdownInvoked: false };
+    onTestFinished(() => {
+      expect(progress, 'actual public cancellation and native-close boundary reached').toEqual({
+        cancelled: true,
+        canonicalChecked: true,
+        nativeShutdownInvoked: true,
+      });
+    });
+    expect(exported.bodyUsed).toBe(false);
+    if (phase === 'before-consumption') {
+      expect(body.locked).toBe(false);
+      await body.cancel('cancel actual public export before consuming its body');
+    } else {
+      reader = body.getReader();
+      const first = await reader.read();
+      expect(first.done).toBe(false);
+      expect(first.value!.byteLength).toBeGreaterThan(0);
+      expect(exported.bodyUsed).toBe(true);
+      await reader.cancel('cancel actual public export after its first delivered chunk');
+      reader.releaseLock();
+      reader = undefined;
+    }
+    progress.cancelled = true;
+    expect(knowledgeFiles(f.source.root)).toEqual(beforeFiles);
+    expect(f.source.selection.head).toEqual(beforeHead);
+    expect(f.source.notebook.publishedRevision()).toBe(beforeRevision);
+    progress.canonicalChecked = true;
+    // Storage65: cancellation must release the actual route-owned reader so the original
+    // Native close can finish. The existing seven physical-close oracles remain separate.
+    progress.nativeShutdownInvoked = true;
+    await expect(shutdownControlStoreWorkerClient()).resolves.toBeUndefined();
+    observed.assertAcknowledged();
+    expect(knowledgeFiles(f.source.root)).toEqual(beforeFiles);
+    expect(f.source.selection.head).toEqual(beforeHead);
+    expect(f.source.notebook.publishedRevision()).toBe(beforeRevision);
+  }
+);

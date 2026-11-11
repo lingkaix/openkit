@@ -13,7 +13,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { openWorkspaceDb } from '../storage/db.js';
+import { openWorkspaceDb, openWorkspaceReadDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -628,7 +628,8 @@ describe('startTurn orchestrator', () => {
         turnExecutor,
         agentManifests: [configuredManifest],
         agentSetupLedger: {
-          workspaceDb,
+          openWorkspaceDb: () =>
+            openWorkspaceReadDb(ledgerRoot, 'ws_00000000-0000-7000-8000-000000000001'),
           writer: getControlStoreWorkerClient(),
         },
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',

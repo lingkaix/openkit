@@ -520,87 +520,85 @@ async function dispatchSchedulerAdmission(
       throw new Error('Configured executor has no AgentSession replacement owner.');
     const current = requireSchedulerAdmissionEntry(input.coreDb, entry.queueEntryId);
     if (!currentSchedulerDispatchAuthority(input, current)) throw authorityDenial;
-    const workspaceDb = openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
-    try {
-      const handle = await startTurn({
-        onSubmissionSettled: () => {
-          const settled = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
-          // Preparation effects can also be accepted; only submit fixes the absolute deadline.
-          if (
-            settled.phase !== 'open' ||
-            settled.disposition !== 'accepted' ||
-            settled.deadline === null
-          )
-            return;
-          acknowledgeSubmission({
-            startedTurns: [
-              {
-                dispatch: { status: 'dispatched', entry: current, attempt: settled },
-                handle: {
-                  turn: input.store.getTurnById(entry.turnId),
-                  agent: setup.manifest,
-                  agentSetup: setup,
-                  agentSetupRecordId: `ras_${entry.turnId}`,
-                  agentSetupDiagnostics: [],
-                  modelId: setup.logicalModels.preferredLogicalModelId ?? null,
-                  readiness: computeReadiness(setup.manifest),
-                },
+    const admittedDb = openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
+    admittedDb.sqlite.close();
+    const handle = await startTurn({
+      onSubmissionSettled: () => {
+        const settled = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
+        // Preparation effects can also be accepted; only submit fixes the absolute deadline.
+        if (
+          settled.phase !== 'open' ||
+          settled.disposition !== 'accepted' ||
+          settled.deadline === null
+        )
+          return;
+        acknowledgeSubmission({
+          startedTurns: [
+            {
+              dispatch: { status: 'dispatched', entry: current, attempt: settled },
+              handle: {
+                turn: input.store.getTurnById(entry.turnId),
+                agent: setup.manifest,
+                agentSetup: setup,
+                agentSetupRecordId: `ras_${entry.turnId}`,
+                agentSetupDiagnostics: [],
+                modelId: setup.logicalModels.preferredLogicalModelId ?? null,
+                readiness: computeReadiness(setup.manifest),
               },
-            ],
-            terminalResult: { status: 'queued', reason: 'max-dispatches' },
-          });
-        },
-        attemptId: attempt.attemptId,
-        agentSessionId: prepared.agentSessionId,
-        agentId: entry.requestedAgentId,
-        agentManifests: input.agentManifests,
-        agentSetupLedger: {
-          workspaceDb,
-          writer: getControlStoreWorkerClient(),
-        },
-        gatewayConfig: input.gatewayConfig,
-        input: entry.turnInput,
-        modelId: entry.modelId,
-        ...(entry.reasoningEffort !== undefined ? { reasoningEffort: entry.reasoningEffort } : {}),
-        profileId: entry.profileRef,
-        providerRegistry: input.providerRegistry,
-        providerCredentialConfigured: input.providerCredentialConfigured,
-        subscriptionAccounts: input.subscriptionAccounts,
-        requestId: entry.requestId,
-        sessionCompatibilityKey: prepared.sessionCompatibilityKey,
-        store: input.store,
-        threadId: entry.threadId,
-        triggerActor: entry.triggerActor,
-        turnExecutor: input.turnExecutor,
-        turnId: entry.turnId,
-        workspaceCwd: entry.workspaceCwd,
-        workerStorageChoice: committed ?? entry.workerStorageChoice ?? undefined,
-        workspaceId: entry.workspaceId,
-        ...(workspaceConfig ? { workspaceConfig } : {}),
-        ...(userConfig ? { userConfig } : {}),
-        workspaceRoots: entry.workspaceRoots,
-        ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
-        ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
-        ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
-        configVersion: input.configVersion ?? null,
-        ...(input.dependencies ? { dependencies: input.dependencies } : {}),
-      });
-      return {
-        startedTurns: [
-          {
-            dispatch: {
-              status: 'dispatched',
-              entry: current,
-              attempt: requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId),
             },
-            handle,
+          ],
+          terminalResult: { status: 'queued', reason: 'max-dispatches' },
+        });
+      },
+      attemptId: attempt.attemptId,
+      agentSessionId: prepared.agentSessionId,
+      agentId: entry.requestedAgentId,
+      agentManifests: input.agentManifests,
+      agentSetupLedger: {
+        openWorkspaceDb: () =>
+          openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId),
+        writer: getControlStoreWorkerClient(),
+      },
+      gatewayConfig: input.gatewayConfig,
+      input: entry.turnInput,
+      modelId: entry.modelId,
+      ...(entry.reasoningEffort !== undefined ? { reasoningEffort: entry.reasoningEffort } : {}),
+      profileId: entry.profileRef,
+      providerRegistry: input.providerRegistry,
+      providerCredentialConfigured: input.providerCredentialConfigured,
+      subscriptionAccounts: input.subscriptionAccounts,
+      requestId: entry.requestId,
+      sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+      store: input.store,
+      threadId: entry.threadId,
+      triggerActor: entry.triggerActor,
+      turnExecutor: input.turnExecutor,
+      turnId: entry.turnId,
+      workspaceCwd: entry.workspaceCwd,
+      workerStorageChoice: committed ?? entry.workerStorageChoice ?? undefined,
+      workspaceId: entry.workspaceId,
+      ...(workspaceConfig ? { workspaceConfig } : {}),
+      ...(userConfig ? { userConfig } : {}),
+      workspaceRoots: entry.workspaceRoots,
+      ...(workspaceDataSourceCatalog ? { workspaceDataSourceCatalog } : {}),
+      ...(workspaceMcpServerCatalog ? { workspaceMcpServerCatalog } : {}),
+      ...(workspaceSourceRefs ? { workspaceSourceRefs } : {}),
+      configVersion: input.configVersion ?? null,
+      ...(input.dependencies ? { dependencies: input.dependencies } : {}),
+    });
+    return {
+      startedTurns: [
+        {
+          dispatch: {
+            status: 'dispatched',
+            entry: current,
+            attempt: requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId),
           },
-        ],
-        terminalResult: { status: 'queued', reason: 'max-dispatches' },
-      };
-    } finally {
-      workspaceDb.sqlite.close();
-    }
+          handle,
+        },
+      ],
+      terminalResult: { status: 'queued', reason: 'max-dispatches' },
+    };
   } catch (error) {
     const current = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
     if (

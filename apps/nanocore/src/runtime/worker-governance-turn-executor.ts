@@ -2969,6 +2969,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     let submissionInvoked = false;
     let primaryFailed = false;
     let primaryError: unknown;
+    const errors: unknown[] = [];
 
     try {
       if (!context.agentSetup) {
@@ -3628,19 +3629,32 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       let observation: Awaited<
         ReturnType<import('./execution-backend.js').ExecutionBackend['submit']>
       >;
+      const submissionWorkspaceId = workspaceDb.workspaceId;
+      workspaceDb.sqlite.close();
+      workspaceDb = null;
       try {
-        submissionInvoked = true;
-        observation = await this.executionBackend.submit({
-          ...schedulerExecutionCorrelation(submission),
-          deadline: submission.deadline!,
-          ...(!existingAgentSession && runtimeFileCredentials.length > 0
-            ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
-            : {}),
-        });
-      } finally {
-        // The durable attempt holds only its own exclusion after a definite or unknown submission.
-        context.onSubmissionSettled?.();
+        try {
+          submissionInvoked = true;
+          observation = await this.executionBackend.submit({
+            ...schedulerExecutionCorrelation(submission),
+            deadline: submission.deadline!,
+            ...(!existingAgentSession && runtimeFileCredentials.length > 0
+              ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
+              : {}),
+          });
+        } finally {
+          // The durable attempt holds only its own exclusion after a definite or unknown submission.
+          context.onSubmissionSettled?.();
+        }
+      } catch (error) {
+        try {
+          workspaceDb = this.openWorkspaceDb(submissionWorkspaceId);
+        } catch (readError) {
+          errors.push(readError);
+        }
+        throw error;
       }
+      workspaceDb = this.openWorkspaceDb(submissionWorkspaceId);
       const accepted = await acceptSchedulerExecutionObservation(this.coreDb!, observation);
       if (!accepted || observation.disposition !== 'accepted')
         throw new Error(
@@ -3685,27 +3699,45 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
 
       if (this.awaitWorkerCompletion && completionLeaseId) {
-        workerFinalStatus = await withLifecycleStageTelemetry(
-          {
-            ...environmentPackage.scope,
-            packageSnapshotId: environmentPackage.snapshotId,
-            workerKind: environmentPackage.agent.runtimeKind,
-            stage: 'native.run',
-            rejectionOutcome: 'unknown',
-          },
-          () => this.awaitWorkerCompletion!(environmentPackage!, completionLeaseId),
-          // Only the accepted native status is classified; collection and release remain separate.
-          (final) =>
-            final.status === 'completed'
-              ? 'success'
-              : final.status === 'cancelled' || final.status === 'interrupted'
-                ? 'cancelled'
-                : final.status === 'failed'
-                  ? 'failure'
-                  : final.status === 'degraded' || final.status === 'blocked'
-                    ? 'degraded'
-                    : 'unknown'
-        );
+        // Worker completion needs native lineage, not a live Main SQL snapshot.
+        // Reacquire the current admitted reader for closeout after the external wait.
+        const completionWorkspaceId = workspaceDb?.workspaceId;
+        workspaceDb?.sqlite.close();
+        workspaceDb = null;
+        try {
+          workerFinalStatus = await withLifecycleStageTelemetry(
+            {
+              ...environmentPackage.scope,
+              packageSnapshotId: environmentPackage.snapshotId,
+              workerKind: environmentPackage.agent.runtimeKind,
+              stage: 'native.run',
+              rejectionOutcome: 'unknown',
+            },
+            () => this.awaitWorkerCompletion!(environmentPackage!, completionLeaseId),
+            // Only the accepted native status is classified; collection and release remain separate.
+            (final) =>
+              final.status === 'completed'
+                ? 'success'
+                : final.status === 'cancelled' || final.status === 'interrupted'
+                  ? 'cancelled'
+                  : final.status === 'failed'
+                    ? 'failure'
+                    : final.status === 'degraded' || final.status === 'blocked'
+                      ? 'degraded'
+                      : 'unknown'
+          );
+        } catch (error) {
+          if (completionWorkspaceId) {
+            try {
+              workspaceDb = this.openWorkspaceDb(completionWorkspaceId);
+            } catch (readError) {
+              // Keep the original Worker failure first and retain the independent read refusal.
+              errors.push(readError);
+            }
+          }
+          throw error;
+        }
+        if (completionWorkspaceId) workspaceDb = this.openWorkspaceDb(completionWorkspaceId);
         closeoutAt = workerFinalStatus.acceptedAt;
       }
       closeoutAt ??= this.currentTime();
@@ -3726,54 +3758,58 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       primaryError = asWorkerArtifactTurnError(error);
     }
 
-    context.onSubmissionSettled?.();
-    if (
-      primaryError instanceof WorkerGovernanceCapacityUnavailableError &&
-      !materializationPublished &&
-      requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!).operationId === null
-    ) {
-      await store.updateTurn(turnId, { status: 'pending' });
-      workspaceDb?.sqlite.close();
-      throw primaryError;
-    }
-    const errors: unknown[] = primaryFailed ? [primaryError] : [];
-    let failedAttempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
-    if (primaryFailed && failedAttempt.operationId === null)
-      failedAttempt = await closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
-        attemptId: failedAttempt.attemptId,
-        noOutstandingEffects: true,
-        cause: 'turn-start-failed',
-        ...(this.now ? { now: this.now } : {}),
-      });
-    else if (primaryFailed)
-      failedAttempt = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
-        attemptId: failedAttempt.attemptId,
-        cause: 'execution-failed',
-        ...(this.now ? { now: this.now } : {}),
-      });
-    if (backendCleanupRequired) {
-      if (!backendLifecycle || !environmentPackage || !backendCapabilities) {
-        errors.push(new Error('Backend cleanup is missing its durable runtime lineage.'));
-      } else {
-        try {
-          await this.cleanupBackendLifecycle(
-            store,
-            backendLifecycle,
-            workspaceDb,
-            environmentPackage,
-            backendCapabilities,
-            true
-          );
-          backendCleanupRequired = false;
-        } catch (error) {
-          errors.push(error);
+    let failedAttempt: ReturnType<typeof requireSchedulerExecutionAttempt>;
+    try {
+      context.onSubmissionSettled?.();
+      if (
+        primaryError instanceof WorkerGovernanceCapacityUnavailableError &&
+        !materializationPublished &&
+        requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!).operationId === null
+      ) {
+        await store.updateTurn(turnId, { status: 'pending' });
+        workspaceDb?.sqlite.close();
+        throw primaryError;
+      }
+      if (primaryFailed) errors.unshift(primaryError);
+      failedAttempt = requireSchedulerExecutionAttempt(this.coreDb!, context.attemptId!);
+      if (primaryFailed && failedAttempt.operationId === null)
+        failedAttempt = await closeSchedulerExecutionAttemptWithoutEffects(this.coreDb!, {
+          attemptId: failedAttempt.attemptId,
+          noOutstandingEffects: true,
+          cause: 'turn-start-failed',
+          ...(this.now ? { now: this.now } : {}),
+        });
+      else if (primaryFailed)
+        failedAttempt = await markSchedulerExecutionAttemptClosing(this.coreDb!, {
+          attemptId: failedAttempt.attemptId,
+          cause: 'execution-failed',
+          ...(this.now ? { now: this.now } : {}),
+        });
+      if (backendCleanupRequired) {
+        if (!backendLifecycle || !environmentPackage || !backendCapabilities) {
+          errors.push(new Error('Backend cleanup is missing its durable runtime lineage.'));
+        } else {
+          try {
+            await this.cleanupBackendLifecycle(
+              store,
+              backendLifecycle,
+              workspaceDb,
+              environmentPackage,
+              backendCapabilities,
+              true
+            );
+            backendCleanupRequired = false;
+          } catch (error) {
+            errors.push(error);
+          }
         }
       }
-    }
-    try {
-      workspaceDb?.sqlite.close();
-    } catch (error) {
-      errors.push(error);
+    } finally {
+      try {
+        if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+      } catch (error) {
+        errors.push(error);
+      }
     }
 
     let terminalObserved = false;
@@ -5968,7 +6004,7 @@ async function readWorkerTurnJournalObligation(
 /** Admits one real runtime invocation before its effect, retaining the original root and authority. */
 export async function beginWorkerTurnJournalStep(
   store: FsStore,
-  workspaceDb: WorkspaceDb,
+  workspaceScope: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
   turnId: string,
   kind:
     | 'open-session'
@@ -5991,117 +6027,130 @@ export async function beginWorkerTurnJournalStep(
     target?: ExecutionStepControl['target'];
   }
 ): Promise<ExecutionJournalIntent> {
-  const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
-  const { root, invocation } = original;
-  if (root.phase === 'closed') throw new Error('Worker journal execution is already closed.');
-  const parent = correlation?.parent;
-  const inspected = correlation?.inspectedStep
-    ? await original.reader.readInvocation(correlation.inspectedStep)
-    : undefined;
-  const inspectedSpan = inspected
-    ? (await original.reader.readEndedSteps(inspected.ref.execution)).find(
-        (step) => step.ref.stepId === inspected.ref.stepId
-      )?.span
-    : undefined;
-  const selectedCarriage = carriage ?? { ...invocation.carriage, operation: `worker.${kind}` };
-  let deadlineUnixNano = correlation
-    ? correlation.deadline === null
-      ? null
-      : BigInt(Date.parse(correlation.deadline)) * 1_000_000n
-    : invocation.control.deadlineUnixNano;
-  // Execution work cannot acquire a later expiry than its originally admitted Turn.
-  // Cleanup and receipt consumption have their separately bounded invocation allowance.
-  if (
-    !['inspect-cleanup', 'consume-receipt', 'cancel'].includes(kind) &&
-    invocation.control.deadlineUnixNano !== null &&
-    (deadlineUnixNano === null || deadlineUnixNano > invocation.control.deadlineUnixNano)
-  )
-    deadlineUnixNano = invocation.control.deadlineUnixNano;
-  const span = {
-    ...original.span,
-    spanId: randomBytes(8).toString('hex'),
-    startTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
-    endTimeUnixNano: null,
-    name: `worker.${kind}`,
-    parentSpanId: parent?.span.spanId ?? root.span.spanId,
-    status: { code: 'UNSET' as const },
-    events: [],
-    links: inspectedSpan
-      ? [
-          {
-            traceId: inspectedSpan.traceId,
-            spanId: inspectedSpan.spanId,
-            flags: inspectedSpan.flags,
-            attributes: [],
-            droppedAttributesCount: 0,
-          },
-        ]
-      : [],
-  };
-  const intent: ExecutionJournalIntent = {
-    execution: {
-      ref: root.ref,
-      definitionVersion: root.definitionVersion,
-      workId: root.workId,
-      fingerprint: root.fingerprint,
-      exclusionRefs: root.exclusionRefs,
-      span: { ...root.span, endTimeUnixNano: null },
-    },
-    stepId: randomUUID(),
-    parentStepId: parent?.stepId ?? null,
-    control: {
-      ...invocation.control,
-      kind,
-      operationId: selectedCarriage.requestId,
-      fingerprint: commandInputHash({
-        execution: root.fingerprint,
+  const workspaceDb = openAdmittedWorkspaceReadDb(
+    workspaceScope.dataRoot,
+    workspaceScope.workspaceId
+  );
+  let intent: ExecutionJournalIntent;
+  try {
+    const original = await readWorkerTurnJournalObligation(workspaceDb, turnId, 'materialize');
+    const { root, invocation } = original;
+    if (root.phase === 'closed') throw new Error('Worker journal execution is already closed.');
+    const parent = correlation?.parent;
+    const inspected = correlation?.inspectedStep
+      ? await original.reader.readInvocation(correlation.inspectedStep)
+      : undefined;
+    const inspectedSpan = inspected
+      ? (await original.reader.readEndedSteps(inspected.ref.execution)).find(
+          (step) => step.ref.stepId === inspected.ref.stepId
+        )?.span
+      : undefined;
+    const selectedCarriage = carriage ?? { ...invocation.carriage, operation: `worker.${kind}` };
+    let deadlineUnixNano = correlation
+      ? correlation.deadline === null
+        ? null
+        : BigInt(Date.parse(correlation.deadline)) * 1_000_000n
+      : invocation.control.deadlineUnixNano;
+    // Execution work cannot acquire a later expiry than its originally admitted Turn.
+    // Cleanup and receipt consumption have their separately bounded invocation allowance.
+    if (
+      !['inspect-cleanup', 'consume-receipt', 'cancel'].includes(kind) &&
+      invocation.control.deadlineUnixNano !== null &&
+      (deadlineUnixNano === null || deadlineUnixNano > invocation.control.deadlineUnixNano)
+    )
+      deadlineUnixNano = invocation.control.deadlineUnixNano;
+    const span = {
+      ...original.span,
+      spanId: randomBytes(8).toString('hex'),
+      startTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+      endTimeUnixNano: null,
+      name: `worker.${kind}`,
+      parentSpanId: parent?.span.spanId ?? root.span.spanId,
+      status: { code: 'UNSET' as const },
+      events: [],
+      links: inspectedSpan
+        ? [
+            {
+              traceId: inspectedSpan.traceId,
+              spanId: inspectedSpan.spanId,
+              flags: inspectedSpan.flags,
+              attributes: [],
+              droppedAttributesCount: 0,
+            },
+          ]
+        : [],
+    };
+    intent = {
+      execution: {
+        ref: root.ref,
+        definitionVersion: root.definitionVersion,
+        workId: root.workId,
+        fingerprint: root.fingerprint,
+        exclusionRefs: root.exclusionRefs,
+        span: { ...root.span, endTimeUnixNano: null },
+      },
+      stepId: randomUUID(),
+      parentStepId: parent?.stepId ?? null,
+      control: {
+        ...invocation.control,
         kind,
-        carriage: selectedCarriage,
-      }),
-      ...(correlation?.target !== undefined ? { target: correlation.target } : {}),
-      invocationId: randomUUID(),
-      outputRefs: [],
-      ...(correlation
+        operationId: selectedCarriage.requestId,
+        fingerprint: commandInputHash({
+          execution: root.fingerprint,
+          kind,
+          carriage: selectedCarriage,
+        }),
+        ...(correlation?.target !== undefined ? { target: correlation.target } : {}),
+        invocationId: randomUUID(),
+        outputRefs: [],
+        ...(correlation
+          ? {
+              operationId: correlation.operationId,
+              deadlineUnixNano,
+            }
+          : {}),
+      },
+      parent: parent
         ? {
-            operationId: correlation.operationId,
-            deadlineUnixNano,
+            ref: { execution: parent.execution.ref, stepId: parent.stepId },
+            deadlineUnixNano: parent.control.deadlineUnixNano,
           }
-        : {}),
-    },
-    parent: parent
-      ? {
-          ref: { execution: parent.execution.ref, stepId: parent.stepId },
-          deadlineUnixNano: parent.control.deadlineUnixNano,
-        }
-      : null,
-    carriage: selectedCarriage,
-    inspectedStep: correlation?.inspectedStep ?? null,
-    span,
-  };
-  if (
-    parent?.control.deadlineUnixNano !== null &&
-    parent?.control.deadlineUnixNano !== undefined &&
-    (intent.control.deadlineUnixNano === null ||
-      intent.control.deadlineUnixNano > parent.control.deadlineUnixNano)
-  )
-    throw new Error('Worker child invocation cannot renew its original parent allowance.');
-  await store.writeWorkspaceExecutionJournalIntent(workspaceDb.workspaceId, intent);
+        : null,
+      carriage: selectedCarriage,
+      inspectedStep: correlation?.inspectedStep ?? null,
+      span,
+    };
+    if (
+      parent?.control.deadlineUnixNano !== null &&
+      parent?.control.deadlineUnixNano !== undefined &&
+      (intent.control.deadlineUnixNano === null ||
+        intent.control.deadlineUnixNano > parent.control.deadlineUnixNano)
+    )
+      throw new Error('Worker child invocation cannot renew its original parent allowance.');
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+  await store.writeWorkspaceExecutionJournalIntent(workspaceScope.workspaceId, intent);
   return intent;
 }
 
 /** Settles only the observed invocation; unknown outcomes preserve the original exclusion. */
 export async function endWorkerTurnJournalStep(
   store: FsStore,
-  workspaceDb: WorkspaceDb,
+  workspaceScope: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
   intent: ExecutionJournalIntent,
   state: 'completed' | 'failed' | 'unknown' | 'cancelled',
   outputRefs: readonly string[] = [],
   consumeIntent?: ExecutionJournalIntent
 ): Promise<void> {
-  const { root } = await readWorkerTurnJournal(workspaceDb, intent.execution.workId);
-  await store.settleWorkspaceExecutionJournalStep(
-    workspaceDb.workspaceId,
-    {
+  const workspaceDb = openAdmittedWorkspaceReadDb(
+    workspaceScope.dataRoot,
+    workspaceScope.workspaceId
+  );
+  let settlement: Parameters<FsStore['settleWorkspaceExecutionJournalStep']>[1];
+  try {
+    const { root } = await readWorkerTurnJournal(workspaceDb, intent.execution.workId);
+    settlement = {
       ref: { execution: root.ref, stepId: intent.stepId },
       expectedExecutionRevision: root.revision,
       state,
@@ -6114,7 +6163,13 @@ export async function endWorkerTurnJournalStep(
       nextPhase: root.phase,
       terminalCause: root.terminalCause,
       exclusionRefs: root.exclusionRefs,
-    },
+    };
+  } finally {
+    workspaceDb.sqlite.close();
+  }
+  await store.settleWorkspaceExecutionJournalStep(
+    workspaceScope.workspaceId,
+    settlement,
     consumeIntent
   );
 }

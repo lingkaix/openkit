@@ -249,8 +249,14 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
     await effect.close();
     await gateway.close();
   });
+  db.sqlite.close();
   await shutdownControlStoreWorkerClient();
   closeWorkspaceProductReadHandles(f.dataRoot);
+  // Keep the effect fixture's captured WorkspaceDb identity, using a fresh physical reader.
+  Object.defineProperties(
+    db,
+    Object.getOwnPropertyDescriptors(openWorkspaceReadDb(f.dataRoot, f.workspace.id))
+  );
   const fence = observeServingOpens([workspaceDbPath(f.dataRoot, f.workspace.id)]);
   const witness = await throughFullCommit(() => effect.call(f.workspace.id, 1));
   expect(witness.cold).toBe(true);
@@ -274,6 +280,7 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
   await client.close();
   await effect.close();
   await gateway.close();
+  db.sqlite.close();
   await shutdownControlStoreWorkerClient();
   closeWorkspaceProductReadHandles(f.dataRoot);
   fence.stop();

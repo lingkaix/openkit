@@ -3397,6 +3397,9 @@ describe('createConfiguredTurnExecutor', () => {
       vi.unstubAllEnvs();
       try {
         await closeRetrievalServices();
+        // This fixture catches the deliberate boot interruption; release its captured reader before native drain.
+        const capturedCore = appOptions?.coreDb?.sqlite;
+        if (capturedCore?.open && capturedCore.readonly) capturedCore.close();
         await shutdownControlStoreWorkerClient();
       } finally {
         signals.forEach((signal, index) => {

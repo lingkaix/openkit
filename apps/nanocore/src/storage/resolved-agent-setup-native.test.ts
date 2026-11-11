@@ -38,7 +38,7 @@ import {
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { controlWorkerInputBytes } from './control-store-worker-protocol.js';
-import { openWorkspaceDb, type WorkspaceDb } from './db.js';
+import { openWorkspaceDb, openWorkspaceReadDb, type WorkspaceDb } from './db.js';
 import { applyScopedMigrations } from './migrate.js';
 
 // Keep the actual Worker entry, SQLite implementation, savepoint and covering FULL commit.
@@ -596,7 +596,10 @@ describe('resolved setup through the native Workspace owner', () => {
         turnId,
         turnExecutor: executor,
         agentManifests: [setup.manifest],
-        agentSetupLedger: { workspaceDb, writer: getControlStoreWorkerClient() },
+        agentSetupLedger: {
+          openWorkspaceDb: () => openWorkspaceReadDb(root, workspaceId),
+          writer: getControlStoreWorkerClient(),
+        },
         onTurnCreated,
         onSubmissionSettled,
       });

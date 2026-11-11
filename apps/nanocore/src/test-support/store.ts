@@ -63,15 +63,18 @@ export function createTestStore(options: FsStoreOptions = {}): FsStore {
 
 /**
  * Disposes a private Store fixture after its callers have joined work.
- * The native writer drains before supplied handles, shared readers and the fixture root close.
+ * Supplied readonly snapshots close before native reader drain; setup writers close after that drain.
  * Other handles remain caller-owned. A failed drain retains the root; this is not a stop/reopen operation.
  * @param dataRoot Exact disposable root owned by this fixture.
- * @param databases Caller-owned handles to close in order after the native writer drains.
+ * @param databases Caller-owned handles; readonly snapshots release before drain, setup writers after.
  */
 export async function disposeTestStore(
   dataRoot: string,
   ...databases: (CoreDb | UserDb | WorkspaceDb)[]
 ): Promise<void> {
+  for (const database of databases) {
+    if (database.sqlite.open && database.sqlite.readonly) database.sqlite.close();
+  }
   await shutdownControlStoreWorkerClient();
   for (const database of databases) {
     if (database.sqlite.open) database.sqlite.close();

@@ -15,6 +15,7 @@ import Database from 'better-sqlite3';
 
 import { BootConfigError } from '../config/mode.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
+import { ownMainScopeReadHandle } from './control-store-product-records.js';
 import { resolveDataRootPath } from './fs-layout.js';
 import { assertSupportedNativeLedger } from './migrate.js';
 
@@ -216,7 +217,7 @@ export function openAppDbReadOnly(path: string): Database.Database {
     if (result !== 'ok') {
       throw new KernelCommandError('unavailable', 'App database failed integrity check.');
     }
-    return sqlite;
+    return ownMainScopeReadHandle(sqlite);
   } catch (error) {
     sqlite?.close();
     if (error instanceof KernelCommandError || error instanceof BootConfigError) {

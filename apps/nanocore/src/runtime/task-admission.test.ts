@@ -119,14 +119,13 @@ it.each([
     const enteredWorkerLoops: Promise<unknown>[] = [];
     const connectionClosures: Promise<void>[] = [];
     const runWorkerLoop = workerTurnLoop.runWorkerTurnLoop;
-    const loopObservation =
-      outcome === 'interrupted'
-        ? vi.spyOn(workerTurnLoop, 'runWorkerTurnLoop').mockImplementation((args) => {
-            const execution = runWorkerLoop(args);
-            if (args.store === store) enteredWorkerLoops.push(execution);
-            return execution;
-          })
-        : undefined;
+    const loopObservation = vi
+      .spyOn(workerTurnLoop, 'runWorkerTurnLoop')
+      .mockImplementation((args) => {
+        const execution = runWorkerLoop(args);
+        if (args.store === store) enteredWorkerLoops.push(execution);
+        return execution;
+      });
     const startWorker = vi.fn(
       async (input: Parameters<import('./task-admission.js').TaskWorkerStarter>[0]) => {
         if (outcome === 'refused')
@@ -566,9 +565,21 @@ it.each([
           )
         ).toBe(false);
       }
-      // Admission returns before detached Worker closeout; join its real connection release.
+      // Join actual execution, not its intentionally early physical reader release.
+      await Promise.allSettled(enteredWorkerLoops);
+      // Connection release proves physical closure; detached closeout owns durable completion.
       await Promise.all(connectionClosures);
       expect(connections.every((connection) => !connection.sqlite.open)).toBe(true);
+      if (outcome === 'admitted' || outcome === 'interrupted') {
+        // Use the same bounded observation owner as the existing live-attempt check above.
+        await vi.waitFor(() => {
+          const current = readGoalView(store, db, goal.goalId);
+          expect(current.tasks[0]!.turns).toMatchObject([
+            { status: outcome === 'interrupted' ? 'interrupted' : 'completed' },
+          ]);
+          expect(listThreadWorkerCheckpoints(db, ws.id, current.tasks[0]!.threadId)).toEqual([]);
+        });
+      }
       linked = readGoalView(store, db, goal.goalId);
       if (
         outcome === 'refused' ||

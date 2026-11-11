@@ -470,7 +470,7 @@ function schedulerAdmissionIdSuffix(
 /**
  * Observes one worker execution without making response delivery own its closeout.
  *
- * Callers validate their durable family-specific tuple before signalling admission. The scheduler execution retains its database handle; the supplied closeout and settlement callbacks retain additional family-owned handles until settlement.
+ * Callers validate their durable family-specific tuple before signalling admission. Execution and closeout keep their original promise owners. Each SQL stage owns and releases its current reader; settlement releases the remaining family resources.
  *
  * @param input Existing execution, closeout, and resource owners.
  * @returns Admission, full execution, and observed closeout promises.

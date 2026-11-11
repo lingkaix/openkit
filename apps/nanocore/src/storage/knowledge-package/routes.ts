@@ -44,6 +44,7 @@ export function registerKnowledgePackageRoutes(
       context.header('Cache-Control', 'no-store');
       let release: (() => void) | undefined;
       let staging: Awaited<ReturnType<typeof createKnowledgePackageStaging>> | undefined;
+      let workspaceDb: WorkspaceDb | undefined;
       try {
         const definition = OPERATION_DEFINITIONS[id];
         if (Buffer.byteLength(new URL(context.req.url).search) > 8192)
@@ -100,6 +101,7 @@ export function registerKnowledgePackageRoutes(
         if (id === 'knowledge.package.import') {
           await createPrivateMetadataDirectory(directory);
           await stageKnowledgePackage(context.req.raw, directory, dependencies.fileAdmission);
+          workspaceDb = dependencies.repositoryWorkspaceDb(workspaceId);
           const result = await importKnowledgePackage({
             ...dependencies,
             dataRoot: dependencies.dataRoot,
@@ -109,13 +111,14 @@ export function registerKnowledgePackageRoutes(
             requestId: admitted.input.requestId as string,
             actorId: context.get('actor').userId,
             access,
-            workspaceDb: dependencies.repositoryWorkspaceDb(workspaceId),
+            workspaceDb,
             revalidate,
           });
           return context.json(KnowledgePackageImportResponseSchema.parse(result));
         }
+        workspaceDb = dependencies.repositoryWorkspaceDb(workspaceId);
         const captured = await exportKnowledgePackage({
-          workspaceDb: dependencies.repositoryWorkspaceDb(workspaceId),
+          workspaceDb,
           ...dependencies,
           dataRoot: dependencies.dataRoot,
           workspaceId,
@@ -125,8 +128,8 @@ export function registerKnowledgePackageRoutes(
         });
         const archive = knowledgePackageArchive(directory, captured.manifest);
         const owned = staging;
-        staging = undefined;
-        // The body owns staging until EOF, cancellation or failure; no export handle is retained.
+        const ownedDb = workspaceDb;
+        // The body owns staging and its disclosure reader until EOF, cancellation or failure.
         const body = Readable.from(
           (async function* () {
             try {
@@ -136,22 +139,30 @@ export function registerKnowledgePackageRoutes(
               }
             } finally {
               archive.destroy();
-              await owned.remove();
+              try {
+                await owned.remove();
+              } finally {
+                if (ownedDb.sqlite.open) ownedDb.sqlite.close();
+              }
             }
           })(),
           { objectMode: false, highWaterMark: 65_536 }
         );
         body.once('close', () => {
           archive.destroy();
+          if (ownedDb.sqlite.open) ownedDb.sqlite.close();
           void owned.remove();
         });
-        return new Response(Readable.toWeb(body) as ReadableStream, {
+        const response = new Response(Readable.toWeb(body) as ReadableStream, {
           headers: {
             'content-type': KNOWLEDGE_PACKAGE_MEDIA_TYPE,
             'cache-control': 'no-store',
             'content-disposition': 'attachment; filename="knowledge.openkit.tar"',
           },
         });
+        staging = undefined;
+        workspaceDb = undefined;
+        return response;
       } catch (error) {
         const projected =
           projectOperationError(error) ??
@@ -180,8 +191,12 @@ export function registerKnowledgePackageRoutes(
           failure.status as 400
         );
       } finally {
-        release?.();
-        await staging?.remove();
+        try {
+          release?.();
+          await staging?.remove();
+        } finally {
+          if (workspaceDb?.sqlite.open) workspaceDb.sqlite.close();
+        }
       }
     });
   }

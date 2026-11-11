@@ -186,11 +186,24 @@ function release(index: 4 | 8) {
   Atomics.notify(state, index);
 }
 
+/** Releases only this fixture's owned readonly snapshots after work/fault joins, before native drain. */
+function closeFixtureReadSnapshots(path?: string): void {
+  for (const reader of readers) {
+    if (
+      (path === undefined || reader.sqlite.name === path) &&
+      reader.sqlite.readonly &&
+      reader.sqlite.open
+    )
+      reader.close();
+  }
+}
+
 afterEach(async () => {
   release(4);
   release(8);
+  closeFixtureReadSnapshots();
   await shutdownControlStoreWorkerClient();
-  for (const reader of readers.splice(0)) reader.close();
+  for (const reader of readers.splice(0)) if (reader.sqlite.open) reader.close();
   interception.shared = undefined;
   vi.restoreAllMocks();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -395,6 +408,7 @@ describe('natural native same-Turn FIFO', () => {
             ([phase]) => phase === (failure === 'preparation' ? 'file-failed' : 'item-rollback')
           )
       ).toBe(true);
+      closeFixtureReadSnapshots();
       await shutdownControlStoreWorkerClient();
       expect(readNativeProductEntries(lane.scope, lane.turn.id, 'item')).toEqual(retainedBefore);
       expect(createTestStore({ dataRoot: f.root }).getTurnById(lane.turn.id).items).toEqual([
@@ -499,8 +513,16 @@ describe('native FIFO dependency and poisoned-drain crossings', () => {
     expect(await second).toMatchObject({ ok: false, error: { commit: 'not-committed' } });
     expect(responses.filter((name) => name !== 'C')).toEqual(['A', 'B']);
     await vi.waitFor(() => expect(Atomics.load(f.state, 10)).toBe(0), { timeout: 3000 });
+    // The same final empty read is cold: release the fixture's target snapshots before
+    // actual native close, then acquire and close its next real readonly observation.
+    closeFixtureReadSnapshots(lane.scope.path);
     await f.client.close(lane.database);
-    expect(lane.reader.entries(lane.turn.id, 'item')).toEqual([]);
+    const coldReader = openControlStoreProductReadHandle(lane.scope.path, lane.scope.owner);
+    try {
+      expect(coldReader.entries(lane.turn.id, 'item')).toEqual([]);
+    } finally {
+      coldReader.close();
+    }
     expect(
       f
         .trace()
@@ -1022,6 +1044,7 @@ describe('runtime Policy publication through the actual native FIFO', () => {
       traffic.deliverReplies();
     }
     await Promise.allSettled(policyWork.splice(0));
+    closeFixtureReadSnapshots();
     await shutdownControlStoreWorkerClient();
     for (const db of policyDatabases.splice(0)) if (db.sqlite.open) db.sqlite.close();
   });
@@ -1331,6 +1354,7 @@ describe('runtime Policy publication through the actual native FIFO', () => {
     const previousActivation = traffic.actions.find(
       ({ action }) => action.kind === 'activate'
     )!.action;
+    closeFixtureReadSnapshots();
     await shutdownControlStoreWorkerClient();
     let client = getControlStoreWorkerClient();
     const reopened = await inspectPublication(client, f.db);
@@ -1342,6 +1366,7 @@ describe('runtime Policy publication through the actual native FIFO', () => {
     expect(rebound.identity!.serverRevision).toBe(before.identity!.serverRevision);
     await expect(client.runtimePolicyPublication(f.db, previousActivation)).rejects.toBeDefined();
     expect(await inspectPublication(client, f.db)).toEqual(rebound);
+    closeFixtureReadSnapshots();
     await shutdownControlStoreWorkerClient();
     client = getControlStoreWorkerClient();
     const restartedManager = createRuntimeConfigManager({ dataRoot: f.root });

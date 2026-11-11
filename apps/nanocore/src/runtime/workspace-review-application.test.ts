@@ -797,8 +797,9 @@ describe('workspace review application', () => {
             await expect(decideWorkspaceSyncReview({ ...command, workspaceDb })).rejects.toThrow();
             expect(rows()).toEqual(before);
             expect(getWorkspaceSyncReview(workspaceDb, workspaceId, item.review.id)).toEqual(item);
+            if (workspaceDb.sqlite.readonly) workspaceDb.sqlite.close();
             await shutdownControlStoreWorkerClient();
-            workspaceDb.sqlite.close();
+            if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
             workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
             expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
             expect(rows()).toEqual(before);
@@ -870,8 +871,9 @@ describe('workspace review application', () => {
           ).rejects.toMatchObject({ code: 'workspace_sync_review_failed', status: 404 });
           expect(rows()).toEqual(committed);
           // The result must survive writer shutdown and a new read-only SQLite connection.
+          if (workspaceDb.sqlite.readonly) workspaceDb.sqlite.close();
           await shutdownControlStoreWorkerClient();
-          workspaceDb.sqlite.close();
+          if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
           workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
           expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
           expect(rows()).toEqual(committed);
@@ -1139,8 +1141,9 @@ describe('workspace review application', () => {
             await expect(decideWorkspaceSyncReview({ ...command, workspaceDb })).rejects.toThrow();
             assertPending();
             const rolledBack = rows();
+            if (workspaceDb.sqlite.readonly) workspaceDb.sqlite.close();
             await shutdownControlStoreWorkerClient();
-            workspaceDb.sqlite.close();
+            if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
             workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
             expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
             assertPending();
@@ -1342,7 +1345,9 @@ describe('workspace review application', () => {
             assertUnknownPreserved();
             Atomics.store(finishGate!, 2, 0);
             finishInterception.target = undefined;
+            workspaceDb.sqlite.close();
             await shutdownControlStoreWorkerClient();
+            workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
             const replayApply = vi.spyOn(filesystemSync, 'applyStagedFilesystemChanges');
             const replayFinish = vi.spyOn(getControlStoreWorkerClient(), 'workspaceReviewFinish');
             const replay = await decideWorkspaceSyncReview({
@@ -1356,8 +1361,9 @@ describe('workspace review application', () => {
             expect(rows()).toEqual(committed);
             expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('after\n');
             expect(existsSync(rollbackRoot)).toBe(false);
+            if (workspaceDb.sqlite.readonly) workspaceDb.sqlite.close();
             await shutdownControlStoreWorkerClient();
-            workspaceDb.sqlite.close();
+            if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
             workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
             expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
             expect(rows()).toEqual(committed);
@@ -1379,8 +1385,9 @@ describe('workspace review application', () => {
           expect(readFileSync(join(targetRoot, 'review.txt'), 'utf8')).toBe('after\n');
           // All original row values, including original Audit ids/bytes and result request, survive replay.
           expect(rows()).toEqual(committed);
+          if (workspaceDb.sqlite.readonly) workspaceDb.sqlite.close();
           await shutdownControlStoreWorkerClient();
-          workspaceDb.sqlite.close();
+          if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
           workspaceDb = openWorkspaceReadDb(dataRoot, workspaceId);
           expect(workspaceDb.sqlite.pragma('query_only', { simple: true })).toBe(1);
           expect(rows()).toEqual(committed);
@@ -1393,6 +1400,7 @@ describe('workspace review application', () => {
           }
           finishInterception.target = undefined;
           await pendingDecision;
+          if (workspaceDb.sqlite.open && workspaceDb.sqlite.readonly) workspaceDb.sqlite.close();
           await shutdownControlStoreWorkerClient();
           finishInterception.selected = undefined;
           if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();

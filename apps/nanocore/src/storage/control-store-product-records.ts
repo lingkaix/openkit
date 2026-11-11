@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
-import { dirname, resolve, sep } from 'node:path';
+import { dirname, isAbsolute, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread } from 'node:worker_threads';
 import {
@@ -712,6 +712,76 @@ export interface ControlStoreProductReadHandle {
   close(): void;
 }
 
+/** Main-owned physical readers must release before the matching native writer's final close. */
+const ownedMainReadHandles = new Map<
+  Database.Database,
+  { path: string; cached: boolean; failure?: { error: unknown } }
+>();
+const pendingMainReadAcquisitions = new Set<{ path: string }>();
+const mainReadHandleWaiters = new Set<() => void>();
+
+/** Wakes existing close owners after a real acquisition, release or close failure. */
+function wakeMainReadHandleWaiters(): void {
+  const waiters = [...mainReadHandleWaiters];
+  mainReadHandleWaiters.clear();
+  for (const wake of waiters) wake();
+}
+
+/** Accounts for an accepted native initialization before its future Main reader exists. */
+export function reserveMainScopeReadAcquisition(path: string): () => void {
+  if (!isMainThread) return () => {};
+  const acquisition = { path: resolve(path) };
+  pendingMainReadAcquisitions.add(acquisition);
+  return () => {
+    if (pendingMainReadAcquisitions.delete(acquisition)) wakeMainReadHandleWaiters();
+  };
+}
+
+/** Preserves the owned raw connection while joining its actual close, including raw SQLite callers. */
+export function ownMainScopeReadHandle(sqlite: Database.Database): Database.Database {
+  if (!isMainThread || ownedMainReadHandles.has(sqlite)) return sqlite;
+  if (!sqlite.readonly) throw new ControlProductPreconditionError();
+  // Use SQLite's cached filename for this actual open handle: .name preserves caller
+  // aliases, while another Main filesystem lookup would duplicate admission work.
+  const main = (sqlite.pragma('database_list') as { name: string; file: unknown }[]).find(
+    (database) => database.name === 'main'
+  );
+  if (typeof main?.file !== 'string' || !isAbsolute(main.file))
+    throw new ControlProductPreconditionError();
+  const entry = { path: resolve(main.file), cached: false } as {
+    path: string;
+    cached: boolean;
+    failure?: { error: unknown };
+  };
+  const close = sqlite.close.bind(sqlite);
+  ownedMainReadHandles.set(sqlite, entry);
+  sqlite.close = () => {
+    try {
+      return close();
+    } catch (error) {
+      entry.failure = { error };
+      throw error;
+    } finally {
+      if (!sqlite.open) ownedMainReadHandles.delete(sqlite);
+      wakeMainReadHandleWaiters();
+    }
+  };
+  return sqlite;
+}
+
+/** Joins caller-owned reader releases; lifecycle owners separately release their existing idle cache. */
+export async function drainMainScopeReadHandles(paths: readonly string[]): Promise<void> {
+  const selected = new Set(paths.map((path) => resolve(path)));
+  for (;;) {
+    const pending = [...ownedMainReadHandles.values()].filter((entry) => selected.has(entry.path));
+    const failed = pending.find((entry) => entry.failure !== undefined);
+    if (failed) throw failed.failure!.error;
+    const acquiring = [...pendingMainReadAcquisitions].some((entry) => selected.has(entry.path));
+    if (!acquiring && pending.every((entry) => entry.cached)) return;
+    await new Promise<void>((resolve) => mainReadHandleWaiters.add(resolve));
+  }
+}
+
 const workspaceProductReaders = new Map<
   string,
   {
@@ -742,6 +812,8 @@ export function getWorkspaceProductReadHandle(
     }
     const reader = openControlStoreProductReadHandle(path, owner);
     workspaceProductReaders.set(path, { owner: { ...owner }, identity, reader });
+    const owned = ownedMainReadHandles.get(reader.sqlite);
+    if (owned) owned.cached = true;
     return reader;
   } catch (error) {
     if (cached) closeWorkspaceProductReadHandles(path);
@@ -755,8 +827,8 @@ export function closeWorkspaceProductReadHandles(root?: string): void {
   for (const [path, { reader }] of workspaceProductReaders) {
     if (selected !== undefined && path !== selected && !path.startsWith(`${selected}${sep}`))
       continue;
-    workspaceProductReaders.delete(path);
     if (reader.sqlite.open) reader.close();
+    workspaceProductReaders.delete(path);
   }
 }
 
@@ -794,6 +866,7 @@ export function openControlStoreProductReadHandle(
     try {
       sqlite.pragma('busy_timeout = 5');
       sqlite.pragma('query_only = ON');
+      ownMainScopeReadHandle(sqlite);
     } catch (error) {
       sqlite.close();
       throw error;

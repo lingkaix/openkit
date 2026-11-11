@@ -758,7 +758,7 @@ function mapWorkerCheckpointRow(row: WorkerCheckpointRow): WorkerCheckpointRecor
 
 /** Submits only the owned checkpoint mutation and checks its acknowledged record shape. */
 async function writeCheckpointMutation(
-  db: WorkspaceDb,
+  db: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
   input: Extract<ControlCheckpointCommandInput, { kind: 'upsert' | 'update' }>
 ): Promise<WorkerCheckpointRecord> {
   const result = await getControlStoreWorkerClient().workspaceCapability(db, {
@@ -771,7 +771,7 @@ async function writeCheckpointMutation(
 }
 /** Publishes a checkpoint through the owning native transaction before returning its record. */
 export function upsertWorkerCheckpoint(
-  db: WorkspaceDb,
+  db: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
   input: UpsertWorkerCheckpointInput
 ): Promise<WorkerCheckpointRecord> {
   const { now, ...facts } = input;
@@ -782,7 +782,7 @@ export function upsertWorkerCheckpoint(
 }
 /** Publishes a checkpoint transition with its original terminal evidence and usage tuple. */
 export function updateWorkerCheckpoint(
-  db: WorkspaceDb,
+  db: Pick<WorkspaceDb, 'dataRoot' | 'workspaceId'>,
   input: UpdateWorkerCheckpointInput
 ): Promise<WorkerCheckpointRecord> {
   const { now, ...facts } = input;

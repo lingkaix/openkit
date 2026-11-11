@@ -8227,10 +8227,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
     // Storage65: observe only this runtime owner's handles, excluding independent ledger inspectors.
     const runtimeReaders = new Set<WorkspaceDb['sqlite']>();
     const close = sqlitePrototype.close;
-    const closeSpy = vi.fn();
-    const closeObserver = vi.spyOn(sqlitePrototype, 'close').mockImplementation(function () {
-      if (runtimeReaders.has(this)) closeSpy();
-      return close.call(this);
+    const closeSpy =
+      vi.fn<
+        (
+          reader: WorkspaceDb['sqlite'],
+          outcome: { readonly: boolean; queryOnly: unknown; wasOpen: boolean; openAfter: boolean }
+        ) => void
+      >();
+    const closeObserver = vi.spyOn(sqlitePrototype, 'close').mockImplementation(function (
+      this: WorkspaceDb['sqlite']
+    ) {
+      if (!runtimeReaders.has(this)) return close.call(this);
+      const readonly = this.readonly;
+      const wasOpen = this.open;
+      let queryOnly: unknown = null;
+      if (wasOpen) {
+        try {
+          queryOnly = this.pragma('query_only', { simple: true });
+        } catch (error) {
+          queryOnly = { observationError: error instanceof Error ? error.name : 'unknown' };
+        }
+      }
+      try {
+        return close.call(this);
+      } finally {
+        closeSpy(this, { readonly, queryOnly, wasOpen, openAfter: this.open });
+      }
     });
     setupDb.sqlite.close();
     closeSpy.mockClear();
@@ -8289,7 +8311,21 @@ describe('WorkerGovernanceTurnExecutor', () => {
 
       expect(backend.calls.filter((call) => call === 'cleanupSession')).toHaveLength(1);
       expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
-      expect(closeSpy).toHaveBeenCalledTimes(2);
+      // Every actual runtime-owned physical reader must close once, regardless of stage count.
+      expect(runtimeReaders.size).toBeGreaterThan(0);
+      expect(closeSpy.mock.calls).toHaveLength(runtimeReaders.size);
+      expect(closeSpy.mock.calls.every(([reader]) => runtimeReaders.has(reader))).toBe(true);
+      for (const reader of runtimeReaders) {
+        const attempts = closeSpy.mock.calls.filter(([actual]) => actual === reader);
+        expect(attempts).toHaveLength(1);
+        expect(attempts[0]![1]).toEqual({
+          readonly: true,
+          queryOnly: 1,
+          wasOpen: true,
+          openAfter: false,
+        });
+        expect(reader.open).toBe(false);
+      }
     } finally {
       openedReader.mockRestore();
       closeObserver.mockRestore();
@@ -11511,7 +11547,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
             expect.objectContaining({ id: `context-package:${liveTurnId}`, status: 'valid' }),
           ])
         );
-        // Preview and application are separate public behaviors, not one cumulative latency budget.
+        // Preview and application remain separate public behaviors on the same owned live Task.
         // Keep the same live Task and captured history across this boundary, never a SQL read cut.
         expect(db.sqlite.inTransaction).toBe(false);
         yield;
@@ -11733,7 +11769,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           }
         }
       });
-      it('previews complete schema dependencies with exact completed and live Task history', async () => {
+      it('previews complete schema dependencies with exact completed and live Task history and preserves it across schema application and replay', async () => {
         history = assertLiveSchemaHistory(
           companion!,
           lineage.sourceReferences,
@@ -11741,8 +11777,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         );
         expect((await history.next()).done).toBe(false);
         previewed = true;
-      }, 60_000);
-      it('preserves exact completed and live Task history across schema application and replay', async () => {
+        // Keep the owned live Task inside one test lifetime so normal teardown follows its release.
         expect(previewed, 'the real live-Task preview must complete before application').toBe(true);
         expect((await history!.next()).done).toBe(true);
       }, 60_000);

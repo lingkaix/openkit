@@ -70,6 +70,7 @@ const head = { tree: '3'.repeat(40), manifest: '4'.repeat(40) };
 const timestamp = '2026-07-08T00:00:00.000Z';
 
 afterEach(async () => {
+  for (const db of handles) if (db.sqlite.open && db.sqlite.readonly) db.sqlite.close();
   await shutdownControlStoreWorkerClient();
   for (const db of handles.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -545,8 +546,8 @@ it('retains the exact large source through native admission BUSY and discovers r
   });
   deepStrictEqual(await readRawWorkspaceCapture(f.root, f.identity), f.source);
   deepStrictEqual(rawBytes(f), raw);
-  await shutdownControlStoreWorkerClient();
   reader.sqlite.close();
+  await shutdownControlStoreWorkerClient();
   const recovered = openWorkspaceReadDb(f.root, reader.workspaceId);
   handles.push(recovered);
   expect(listWorkspaceReconciliationRecords(recovered, recovered.workspaceId)).toEqual(records);

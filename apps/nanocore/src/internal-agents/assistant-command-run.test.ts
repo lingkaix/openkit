@@ -1248,8 +1248,14 @@ describe('ordinary Assistant results and cancellation', () => {
     let providerSignal: AbortSignal | undefined;
     f.createResponses.mockImplementation((_provider, _request, context) => {
       providerSignal = context?.transport?.signal;
+      if (!providerSignal) throw new Error('Provider fixture requires its real transport signal.');
+      const signal = providerSignal;
       providerStarted.resolve();
-      return new Promise(() => {});
+      return new Promise<never>((_resolve, reject) => {
+        const aborted = () => reject(signal.reason);
+        if (signal.aborted) aborted();
+        else signal.addEventListener('abort', aborted, { once: true });
+      });
     });
 
     // Keep native admission on real I/O; start deadline advancement only after Provider entry.
@@ -1268,5 +1274,13 @@ describe('ordinary Assistant results and cancellation', () => {
     } finally {
       vi.useRealTimers();
     }
+    // Internal-loop deadline aborts with TimeoutError; Gateway owns timed-out publication.
+    await vi.waitFor(() => {
+      const calls = listWorkspaceCapabilityCalls(f.workspaceDb, f.workspaceId).filter(
+        (call) => call.turnId === f.turn.id
+      );
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.status).toBe('timed-out');
+    });
   });
 });

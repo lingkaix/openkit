@@ -206,13 +206,18 @@ export function createCoordinatorTaskTool(options: {
                 rejectAccepted = reject;
               }
             );
-            const workerDb = options.openWorkspace(goal.workspaceId);
+            const admittedDb = options.openWorkspace(goal.workspaceId);
+            const workerScope = {
+              dataRoot: admittedDb.dataRoot,
+              workspaceId: admittedDb.workspaceId,
+            };
+            admittedDb.sqlite.close();
             const workerLoop = runWorkerTurnLoop({
               store: options.store,
               coreDb: options.coreDb!,
               triggerActor: { kind: 'user', id: actor.userId },
               requestActor: actor,
-              workspaceDb: workerDb,
+              workspaceDb: workerScope,
               workspaceId: goal.workspaceId,
               threadId,
               requestId,
@@ -289,19 +294,24 @@ export function createCoordinatorTaskTool(options: {
             void workerLoop
               .then(async () => {
                 // Reuse ordinary Task closeout, including its required durable receipt predicate.
-                const checkpoint = getWorkerCheckpoint(
-                  workerDb,
-                  goal.workspaceId,
-                  threadId,
-                  turnId
-                );
-                if (checkpoint)
-                  await classifyDirectTaskCheckpointAfterSchedulerRecovery({
-                    coreDb: options.coreDb!,
-                    store: options.store,
-                    workspaceDb: workerDb,
-                    checkpoint,
-                  });
+                const workerDb = options.openWorkspace(goal.workspaceId);
+                try {
+                  const checkpoint = getWorkerCheckpoint(
+                    workerDb,
+                    goal.workspaceId,
+                    threadId,
+                    turnId
+                  );
+                  if (checkpoint)
+                    await classifyDirectTaskCheckpointAfterSchedulerRecovery({
+                      coreDb: options.coreDb!,
+                      store: options.store,
+                      workspaceDb: workerDb,
+                      checkpoint,
+                    });
+                } finally {
+                  workerDb.sqlite.close();
+                }
               })
               .catch(async (error) => {
                 rejectAccepted(error);
@@ -317,9 +327,6 @@ export function createCoordinatorTaskTool(options: {
                       message: error instanceof Error ? error.message : 'Task admission failed.',
                     },
                   });
-              })
-              .finally(() => {
-                workerDb.sqlite.close();
               });
             return await accepted;
           },

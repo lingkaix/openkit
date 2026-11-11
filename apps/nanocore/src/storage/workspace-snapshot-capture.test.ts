@@ -604,6 +604,7 @@ afterEach(async () => {
   captureWorkerProbe.events.length = 0;
   captureWorkerProbe.workers.length = 0;
   vi.restoreAllMocks();
+  for (const db of databaseHandles) if (db.sqlite.open && db.sqlite.readonly) db.sqlite.close();
   await shutdownControlStoreWorkerClient();
   for (const db of databaseHandles.splice(0)) if (db.sqlite.open) db.sqlite.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });

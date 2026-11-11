@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach } from 'vitest';
+import { beforeEach, onTestFinished } from 'vitest';
 import { type CreateAppOptions, createApp as createNanoCoreApp } from '../app.js';
 import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
@@ -137,14 +137,17 @@ const workspaceAuthorityFixtures: Array<{
   ownsRoot: boolean;
 }> = [];
 
-// This helper closes only its entered App fixture; importing it does not own unrelated native peers.
-afterEach(async () => {
-  if (fixtureNativeOwner) await shutdownControlStoreWorkerClient();
-  fixtureNativeOwner = undefined;
-  for (const fixture of workspaceAuthorityFixtures.splice(0)) {
-    if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
-    if (fixture.ownsRoot) rmSync(fixture.dataRoot, { recursive: true, force: true });
-  }
+// Register before caller fixtures: Vitest finishes these callbacks in reverse order.
+// Callers release their owned readers before this helper drains only its entered App fixture.
+beforeEach(() => {
+  onTestFinished(async () => {
+    if (fixtureNativeOwner) await shutdownControlStoreWorkerClient();
+    fixtureNativeOwner = undefined;
+    for (const fixture of workspaceAuthorityFixtures.splice(0)) {
+      if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
+      if (fixture.ownsRoot) rmSync(fixture.dataRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 /** Supplies real local identity and membership records for formerly storage-only HTTP fixtures; explicit and server authority stays caller-owned. */

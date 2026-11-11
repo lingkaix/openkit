@@ -988,8 +988,9 @@ function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
       (row) => row.requestId === requestId
     );
   const dispose = async () => {
-    await shutdownControlStoreWorkerClient();
+    // Fixture work has joined; release its owned snapshot before native reader drain.
     if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+    await shutdownControlStoreWorkerClient();
     closeTestCoreDb(coreDb);
     closeWorkspaceProductReadHandles(dataRoot);
   };
@@ -2819,6 +2820,15 @@ it('drains a schema accepted before close while its yielding preparation is outs
   let closeSettled: Promise<unknown> | undefined;
   let boundary: ReturnType<typeof armOptionCHeadBoundary> | undefined;
   const historyRoot = armOptionCForecasts(f, () => {});
+  const client = getControlStoreWorkerClient();
+  const close = client.close.bind(client);
+  const closeIntent = vi.spyOn(client, 'close').mockImplementation((...args) => {
+    const result = close(...args);
+    // Enter the genuine close owner before releasing the accepted preparation. A correct
+    // reader join delays the physical close frame until that operation releases its reader.
+    if (args[0] === database) boundary!.release();
+    return result;
+  });
   const rearm = schemaFreshness.holdPost!;
   schemaFreshness.holdPost = (value, forward) => {
     if (
@@ -2828,7 +2838,6 @@ it('drains a schema accepted before close while its yielding preparation is outs
     ) {
       closeId = value.id;
       forward();
-      boundary!.release();
       return true;
     }
     return rearm(value, forward);
@@ -2837,6 +2846,7 @@ it('drains a schema accepted before close while its yielding preparation is outs
     schemaFreshness.holdPost = undefined;
     boundary?.clear();
     await closeSettled;
+    closeIntent.mockRestore();
   });
   boundary = armOptionCHeadBoundary(() => {
     // This independent test reader has no further role in the accepted operation. Release
