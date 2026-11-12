@@ -62,7 +62,10 @@ import {
   raisePendingRequest,
   readPendingRequest,
 } from './pending-requests.js';
-import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
+import {
+  getSchedulerPreparationClaims,
+  runSchedulerDispatchLoop,
+} from './scheduler-dispatch-loop.js';
 import { createConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import * as controlPublication from './worker-control-final-status.js';
@@ -210,12 +213,13 @@ async function faultFixture() {
   const requestId = randomUUID();
   const coreDb = openCoreDb(dataRoot);
   // Register before awaited setup so failure cannot remove a live native writer's root.
+  let finalizeFixture: (() => Promise<void>) | undefined;
   const cleanup = async () => {
     await shutdownControlStoreWorkerClient();
     if (coreDb.sqlite.open) coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   };
-  onTestFinished(cleanup);
+  onTestFinished(() => (finalizeFixture ?? cleanup)());
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
@@ -473,7 +477,29 @@ async function faultFixture() {
       return sequence;
     });
   let settled = false;
-  const running = runSchedulerDispatchLoop({
+  let originalTask: ReturnType<typeof runtime.turnExecutor.startTurn> | undefined;
+  let originalClaim: ReturnType<typeof runSchedulerDispatchLoop> | undefined;
+  const originalEntered = Promise.withResolvers<{
+    task: ReturnType<typeof runtime.turnExecutor.startTurn>;
+  }>();
+  const startOriginal = runtime.turnExecutor.startTurn.bind(runtime.turnExecutor);
+  const startObserver = vi
+    .spyOn(runtime.turnExecutor, 'startTurn')
+    .mockImplementation((...args) => {
+      if (!originalTask && args[0] === store && args[1] === testEntityId('tu', 'fault-turn')) {
+        // This exact existing claim outlives the public early acknowledgement and executor rejection.
+        originalClaim = getSchedulerPreparationClaims(coreDb).get('fault-queue');
+        void originalClaim?.catch(() => undefined);
+      }
+      const task = startOriginal(...args);
+      if (!originalTask && args[0] === store && args[1] === testEntityId('tu', 'fault-turn')) {
+        originalTask = task;
+        originalEntered.resolve({ task });
+      }
+      // Preserve the identical arguments, original Promise identity and original outcome.
+      return task;
+    });
+  const publicDispatch = runSchedulerDispatchLoop({
     agentManifests: [setup.manifest],
     coreDb,
     createAgentSessionId: () => testEntityId('as', 'fault-session'),
@@ -492,9 +518,31 @@ async function faultFixture() {
         models: ['openai/gpt-5.2'],
       },
     ]),
-  }).finally(() => {
-    settled = true;
   });
+  void publicDispatch.catch(() => undefined);
+  // A public submission acknowledgement is not the original executor's terminal join.
+  // A pre-start failure or no-start disposition still settles the fixture through its real owner.
+  const execution = Promise.race([
+    originalEntered.promise.then(({ task }) => task),
+    publicDispatch.then(
+      () => originalTask,
+      (error: unknown) => {
+        if (originalTask) return originalTask;
+        throw error;
+      }
+    ),
+  ]);
+  const running = Promise.allSettled([execution, publicDispatch])
+    .then(async ([task, dispatch]) => {
+      // Preserve the original full-lifecycle boundary under either public ACK ordering.
+      const claim = originalClaim ?? getSchedulerPreparationClaims(coreDb).get('fault-queue');
+      if (claim) await claim;
+      if (task.status === 'rejected') throw task.reason;
+      if (dispatch.status === 'rejected') throw dispatch.reason;
+    })
+    .finally(() => {
+      settled = true;
+    });
   void running.catch(() => undefined);
 
   /** Awaits real enqueue without advancing the production clock; Vitest bounds stalled preparation. */
@@ -546,12 +594,35 @@ async function faultFixture() {
       fetch: async (url, { signal, ...init }) =>
         app.request(url, { ...init, ...(signal ? { signal } : {}) }),
     });
-  const close = async () => {
-    enqueueObserver.mockRestore();
-    client.destroy();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    await cleanup();
+  let closeTask: Promise<void> | undefined;
+  const close = () => {
+    closeTask ??= (async () => {
+      const errors: unknown[] = [];
+      try {
+        // Join without rethrowing expected negative-case errors; running retains its raw rejection.
+        await Promise.allSettled([running]);
+      } finally {
+        // Attempt every resource disposal after the full join, even if joining or disposal fails.
+        for (const dispose of [
+          () => startObserver.mockRestore(),
+          () => enqueueObserver.mockRestore(),
+          () => client.destroy(),
+          () => new Promise<void>((resolve) => server.close(() => resolve())),
+          cleanup,
+        ]) {
+          try {
+            await dispose();
+          } catch (error) {
+            errors.push(error);
+          }
+        }
+      }
+      if (errors.length === 1) throw errors[0];
+      if (errors.length > 1) throw new AggregateError(errors, 'Fault fixture disposal failed.');
+    })();
+    return closeTask;
   };
+  finalizeFixture = close;
   return {
     coreDb,
     store,
