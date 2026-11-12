@@ -15,6 +15,11 @@ import {
 } from './present';
 import type { TimelineEntry, TimelineTurn } from './source';
 import { PlanSegments, PolicyBadge } from './tb7';
+
+function recordedPolicy(entry: TimelineEntry, itemId: string) {
+  return entry.policies?.find((row) => row.id === itemId)?.policy ?? null;
+}
+
 import { durationDateTime } from './time';
 import type { LensName } from './types';
 import { type NarrativePreview, offersOpenAllSteps } from './window';
@@ -193,7 +198,7 @@ export function RunEntry({
           {timelineCopy['run-trigger']} · {actorName}
         </p>
       ) : null}
-      {runLens === 'full' ? <RunEnvironment turnId={entry.turnId} /> : null}
+      {runLens === 'full' ? <RunEnvironment usage={entry.usage} fallback={entry.fallback} /> : null}
       {runningStatus}
       {previewNodes('narrative', null)}
       {items.map((item) => (
@@ -215,7 +220,7 @@ export function RunEntry({
           {timelineCopy.plan}
         </p>
       ) : null}
-      <PlanSegments turnId={entry.turnId} />
+      <PlanSegments recorded={entry.planSegments} />
       {earlierPlans.length > 0 ? (
         <div data-fold-depth="1">
           <Button
@@ -339,7 +344,7 @@ export function RunEntry({
                           >
                             {renderItem(item, 'ok-step')}
                             {runLens === 'full' && item.type === 'tool-call' ? (
-                              <PolicyBadge itemId={item.id} />
+                              <PolicyBadge policy={recordedPolicy(entry, item.id)} />
                             ) : null}
                             {previewNodes('step', item.id)}
                           </div>
@@ -356,7 +361,7 @@ export function RunEntry({
                   >
                     {renderItem(group.items[0]!, 'ok-step')}
                     {runLens === 'full' && group.items[0]!.type === 'tool-call' ? (
-                      <PolicyBadge itemId={group.items[0]!.id} />
+                      <PolicyBadge policy={recordedPolicy(entry, group.items[0]!.id)} />
                     ) : null}
                     {previewNodes('step', group.items[0]!.id)}
                   </li>

@@ -58,6 +58,13 @@ describe('TW9VERIFY Goal narrative links', () => {
         lines: [{ kind: 'new-messages', count: 3, anchor: { kind: 'item', itemId: RECENT } }],
         coverage: 'complete',
       };
+      if (kind === 'earlier unread') {
+        initial.earlierUnread = {
+          count: 1,
+          capped: false,
+          oldest: { turnId: TURN, itemId: EARLY },
+        };
+      }
       const expectedId = kind === 'earlier unread' ? EARLY : RECENT;
       const destinationText = `Only the ${kind} addressed window contains this note`;
       const read = vi.fn(async (input: { anchor?: { kind: string; itemId?: string } }) => {

@@ -103,15 +103,18 @@ export function PhoneBar({
   needsCount,
   reducedMotion,
   onOpen,
+  unavailable = false,
 }: {
   now: NowModel;
   needsCount: number;
   reducedMotion: boolean;
   onOpen?: () => void;
+  /** The current timeline window kept its body after a missing request or Item anchor. */
+  unavailable?: boolean;
 }) {
   const nowText = now.kind === 'hidden' ? null : now.text;
   const label = phoneBarLabel(nowText, needsCount);
-  const notice = <RequestUnavailableNotice />;
+  const notice = <RequestUnavailableNotice unavailable={unavailable} />;
   if (!label) return notice;
   const live = !reducedMotion && (now.kind === 'step' || now.kind === 'thinking') && now.live;
   const className = 'ok-meta flex min-h-11 w-full items-center gap-2 text-left';

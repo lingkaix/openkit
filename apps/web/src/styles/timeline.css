@@ -52,7 +52,7 @@
 /* The earlier-unread line is reserved on the divider's first paint. */
 .ok-earlier-unread {
   flex: 1 0 100%;
-  min-height: 1.75rem;
+  min-height: 44px;
 }
 
 .ok-voice-fact {

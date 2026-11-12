@@ -68,7 +68,10 @@ describe('knowledge revision links', () => {
       </MemoryRouter>
     );
     const link = screen.getByRole('link', { name: 'Published notebook revision' });
-    expect(link).toHaveAttribute('href', '/knowledge?revision=rev_published');
+    expect(link).toHaveAttribute(
+      'href',
+      `/knowledge?workspace=${encodeURIComponent(owner.workspaceId)}&revision=rev_published`
+    );
     expect(link.getAttribute('href')).not.toContain(threadId);
     expect(link.getAttribute('href')).not.toContain(turnId);
   });

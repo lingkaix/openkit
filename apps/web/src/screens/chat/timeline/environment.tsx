@@ -1,6 +1,4 @@
 import type { TimelineRunEntry } from '@openkit/app-api-schemas';
-import { type QueryClient, QueryClientContext } from '@tanstack/react-query';
-import { useContext } from 'react';
 import { fillCopy, timelineCopy } from './copy';
 
 type Usage = NonNullable<TimelineRunEntry['usage']>;
@@ -80,40 +78,15 @@ export function environmentLines(
   return lines;
 }
 
-function heldRows(client: QueryClient): unknown[] {
-  return [
-    ...client.getQueriesData({ queryKey: ['thread-timeline'] }),
-    ...client.getQueriesData({ queryKey: ['thread-timeline-items'] }),
-  ].map(([, data]) => data);
-}
-
-function recordedEnvironment(
-  rows: readonly unknown[],
-  turnId: string
-): { usage: Usage | null; fallback: Fallback | null } | null {
-  let absent: { usage: Usage | null; fallback: Fallback | null } | null = null;
-  for (const row of rows) {
-    if (!row || typeof row !== 'object' || !('runs' in row)) continue;
-    const runs = (
-      row as {
-        runs?: { id?: string; usage?: Usage | null; fallback?: Fallback | null }[];
-      }
-    ).runs;
-    const match = runs?.find((run) => run.id === turnId);
-    if (!match || (!('usage' in match) && !('fallback' in match))) continue;
-    const recorded = { usage: match.usage ?? null, fallback: match.fallback ?? null };
-    if (recorded.usage || recorded.fallback) return recorded;
-    absent = recorded;
-  }
-  return absent;
-}
-
-/** Recorded usage and fallback for one run. Nothing when the fields are null or absent. */
-export function RunEnvironment({ turnId }: { turnId: string }) {
-  const client = useContext(QueryClientContext);
-  const recorded = client ? recordedEnvironment(heldRows(client), turnId) : null;
-  if (!recorded) return null;
-  const lines = environmentLines(recorded.usage, recorded.fallback);
+/** Recorded usage and fallback for one run. Null or omission renders nothing. */
+export function RunEnvironment({
+  usage = null,
+  fallback = null,
+}: {
+  usage?: Usage | null;
+  fallback?: Fallback | null;
+}) {
+  const lines = environmentLines(usage, fallback);
   if (lines.length === 0) return null;
   const seen = new Map<string, number>();
   const rows = lines.map((line) => {

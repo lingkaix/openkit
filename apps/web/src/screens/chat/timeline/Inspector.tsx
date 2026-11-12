@@ -1,3 +1,4 @@
+import type { TimelineRunEntry } from '@openkit/app-api-schemas';
 import type { ReactNode, Ref } from 'react';
 import { Link } from 'react-router-dom';
 import { Button, Icon } from '../../../primitives';
@@ -38,8 +39,12 @@ export function Inspector({
   sheet,
   expanded,
   onExpand,
+  usage = null,
+  fallback = null,
 }: {
   turnId: string;
+  usage?: TimelineRunEntry['usage'];
+  fallback?: TimelineRunEntry['fallback'];
   items: readonly ThreadItem[];
   activity?: ReportedActivity | null;
   /** Today's read has no interrupt actor, so an interrupted run says so here. */
@@ -100,7 +105,7 @@ export function Inspector({
           <Icon name="close" />
         </Button>
       </div>
-      {sheet ? <RunEnvironment turnId={turnId} /> : null}
+      {sheet ? <RunEnvironment usage={usage} fallback={fallback} /> : null}
       <section className="mt-3" aria-label={timelineCopy.identifiersHeading}>
         <h3 className="text-xs font-semibold text-fg">{timelineCopy.identifiersHeading}</h3>
         <p className="mt-1 break-all text-xs text-fg-muted">{turnId}</p>

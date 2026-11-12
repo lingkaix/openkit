@@ -17,6 +17,7 @@ import {
   Skeleton,
   TextField,
 } from '../../primitives';
+import { useWorkspaces } from '../chat/data';
 import { knowledgeActionErrorMessage, workspaceKeys } from './data';
 import { NotebookPageEditor } from './NotebookPageEditor';
 
@@ -26,7 +27,16 @@ type RestoreCommand = Parameters<CoreClient['operations']['knowledge.notebook.re
 
 /** Workspace-keyed local choices cannot carry another Workspace's selected history or command. */
 export function NotebookHistoryPanel({ workspaceId }: { workspaceId: string | null }) {
-  return workspaceId ? <NotebookHistory key={workspaceId} workspaceId={workspaceId} /> : null;
+  const [params] = useSearchParams();
+  const linked = params.get('workspace');
+  const workspaces = useWorkspaces();
+  const admitted = linked
+    ? workspaces.data?.some((workspace) => workspace.id === linked)
+      ? linked
+      : null
+    : workspaceId;
+  if (linked && admitted == null) return null;
+  return admitted ? <NotebookHistory key={admitted} workspaceId={admitted} /> : null;
 }
 
 /** Published history and exact restore preview remain server-owned Query projections. */

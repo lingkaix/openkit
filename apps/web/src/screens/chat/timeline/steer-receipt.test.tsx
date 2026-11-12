@@ -27,7 +27,7 @@ function ShownReceipt({ itemId }: { itemId: string }) {
   return <SteerOutcome receipt={receipt} />;
 }
 
-it('shows the receipt held with the rendered window when the latest window has none', async () => {
+it('does not take a steer receipt from a window the current read is not showing', async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(['thread-timeline', WS, THREAD, { kind: 'catch-up' }], {
     runs: [
@@ -85,8 +85,8 @@ it('shows the receipt held with the rendered window when the latest window has n
       </CoreClientProvider>
     </QueryClientProvider>
   );
-  expect(await screen.findByText(steerCopy.accepted)).toBeVisible();
-  expect(screen.queryByText('No receipt')).toBeNull();
+  expect(await screen.findByText('No receipt')).toBeVisible();
+  expect(screen.queryByText(steerCopy.accepted)).toBeNull();
   expect(timeline).toHaveBeenCalled();
   expect(timeline.mock.calls.some((call) => call[0].anchor?.kind === 'catch-up')).toBe(false);
 });

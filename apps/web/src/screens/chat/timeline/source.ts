@@ -1,3 +1,4 @@
+import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { groupItemsByTurn, type ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
 import { countSteps, isLongRun, isStepItem, outcomeLine, type StepStats } from './present';
@@ -19,6 +20,11 @@ export interface TimelineEntry {
   long: boolean;
   stepWindow: { kind: EntryKind; itemId: string }[];
   outcome: { copyKey: 'run-outcome'; text: string } | null;
+  /** Facts from the run that produced this entry. Omission is not filled from another window. */
+  usage?: TimelineRunEntry['usage'];
+  fallback?: TimelineRunEntry['fallback'];
+  planSegments?: TimelineRunEntry['planSegments'] | null;
+  policies?: readonly { id: string; policy: TimelineItem['policy'] }[];
 }
 
 export interface TimelineTurn {

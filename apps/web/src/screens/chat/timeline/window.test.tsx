@@ -5,7 +5,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CatchUpDivider } from './CatchUpDivider';
 import { summaryLine } from './present';
@@ -52,6 +52,11 @@ const workspaceId = 'ws_00000000-0000-7b10-9af8-12fd37a880e0';
 const threadId = 'th_00000000-0000-7b47-b9e3-5a516884858f';
 const turnId = 'tu_00000000-0000-7a1a-a69e-d1682e886e7c';
 const itemId = 'it_00000000-0000-76eb-a38d-371253d2bde1';
+
+function ShownSearch() {
+  const location = useLocation();
+  return <output aria-label="Current address">{location.search}</output>;
+}
 
 function run(
   order: number,
@@ -437,22 +442,22 @@ describe('catch-up opening', () => {
 
   it('offers the earlier-unread jump and no digest list', async () => {
     const user = userEvent.setup();
-    const onEarlierUnread = vi.fn();
     render(
       <MemoryRouter>
-        <CatchUpDivider count={2} onEarlierUnread={onEarlierUnread} />
+        <CatchUpDivider recorded={{ count: 2, capped: false, oldest: { turnId, itemId } }} />
+        <ShownSearch />
       </MemoryRouter>
     );
     expect(screen.getByText('New since you were here')).toBeVisible();
     expect(screen.queryByRole('list')).toBeNull();
     await user.click(screen.getByRole('button', { name: '2 earlier unread ›' }));
-    expect(onEarlierUnread).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText('Current address')).toHaveTextContent(`item=${itemId}`);
   });
 
   it('hides the jump when nothing earlier is unread', () => {
     render(
       <MemoryRouter>
-        <CatchUpDivider count={0} onEarlierUnread={() => undefined} />
+        <CatchUpDivider recorded={{ count: 0, capped: false, oldest: null }} />
       </MemoryRouter>
     );
     expect(screen.getByText('New since you were here')).toBeVisible();

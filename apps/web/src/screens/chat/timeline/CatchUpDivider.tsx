@@ -1,58 +1,40 @@
 import type { ThreadTimelineResponse } from '@openkit/app-api-schemas';
-import { type QueryClient, QueryClientContext } from '@tanstack/react-query';
-import { useContext } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
 import { digestAnchorLocation, type TimelineDigest, visibleDigest } from './digest';
-import { type HeldTimeline, timelineJump } from './window';
+import { timelineJump } from './window';
 
 /**
  * The catch-up row at B, plus the server digest under it.
- * Lines and coverage come from `thread.timeline`. A kind that read omits is not shown.
+ * The earlier-unread line comes only from the window that renders this divider.
+ * A null or omitted server object is unknown. A loaded-window count is not a substitute.
  */
-function recordedFromWindow(
-  client: QueryClient | undefined
-): ThreadTimelineResponse['earlierUnread'] | undefined {
-  if (!client) return undefined;
-  const active = client
-    .getQueryCache()
-    .findAll({ queryKey: ['thread-timeline'] })
-    .filter((query) => query.getObserversCount() > 0);
-  for (const query of active) {
-    const data = query.state.data as HeldTimeline | undefined;
-    if (data && Object.hasOwn(data, 'earlierUnread')) return data.earlierUnread;
-  }
-  return undefined;
-}
-
 export function CatchUpDivider({
-  count,
-  onEarlierUnread,
   digest = null,
-  earlierUnreadUnresolved = false,
   recorded,
 }: {
-  count: number;
-  onEarlierUnread: () => void;
+  /** Accepted so existing callers still typecheck. It does not paint a count. */
+  count?: number;
+  /** Accepted so existing callers still typecheck. The divider jumps from `recorded.oldest`. */
+  onEarlierUnread?: () => void;
   /** Digest from the timeline window that renders this divider. */
   digest?: TimelineDigest | null;
-  /** Unread ids this read cannot place, so no count or oldest is shown. */
+  /** Accepted so existing callers still typecheck. Omission is already unknown. */
   earlierUnreadUnresolved?: boolean;
-  /** Server earlier-unread object. Omit to read the timeline window, then the loaded-window fallback. */
+  /** Server earlier-unread object from the current timeline window. */
   recorded?: ThreadTimelineResponse['earlierUnread'];
 }) {
   const shown = digest;
   const location = useLocation();
   const navigate = useNavigate();
-  const queryClient = useContext(QueryClientContext);
-  const source = recorded !== undefined ? recorded : recordedFromWindow(queryClient);
+  const source = recorded;
   const catchUp = timelineJump({
     pathname: location.pathname,
     search: location.search,
     jump: { kind: 'catch-up' },
   });
-  const line = earlierUnreadLine(source, count, earlierUnreadUnresolved);
+  const line = earlierUnreadLine(source);
   return (
     <fieldset
       data-catch-up-divider=""
@@ -76,10 +58,6 @@ export function CatchUpDivider({
             variant="quiet"
             size="sm"
             onPress={() => {
-              if (!line.itemId) {
-                onEarlierUnread();
-                return;
-              }
               const target = timelineJump({
                 pathname: location.pathname,
                 search: location.search,
@@ -100,17 +78,9 @@ export function CatchUpDivider({
 }
 
 function earlierUnreadLine(
-  source: ThreadTimelineResponse['earlierUnread'] | undefined,
-  count: number,
-  unresolved: boolean
+  source: ThreadTimelineResponse['earlierUnread'] | undefined
 ): { kind: 'jump'; text: string; itemId: string } | { kind: 'plain'; text: string } | null {
-  if (source === undefined) {
-    if (count > 0) {
-      return { kind: 'jump', text: fillCopy(timelineCopy.earlierUnread, { count }), itemId: '' };
-    }
-    return unresolved ? { kind: 'plain', text: timelineCopy.earlierUnreadUnknown } : null;
-  }
-  if (source === null) return { kind: 'plain', text: timelineCopy.earlierUnreadUnknown };
+  if (source == null) return { kind: 'plain', text: timelineCopy.earlierUnreadUnknown };
   if (source.count <= 0) return null;
   const text = source.capped
     ? timelineCopy.earlierUnreadCapped

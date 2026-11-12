@@ -106,7 +106,6 @@ import {
 import {
   completeDetails,
   dividerPlacement,
-  earlierUnread,
   entryFromRun,
   holdItems,
   itemAnchorHasLevel2,
@@ -151,6 +150,10 @@ function displayedPreviews(
   return narrativePreviews([...narrative, ...level2Items, ...planPreview]);
 }
 
+function policyRows(items: readonly TimelineItem[] | undefined) {
+  return (items ?? []).map((item) => ({ id: item.id, policy: item.policy ?? null }));
+}
+
 /**
  * Full loads one bounded step page per run. The parent window covers the open run.
  * Each other run uses the same Level-2 read.
@@ -166,7 +169,11 @@ function FullRunLevel2({
   threadId: string;
   turnId: string;
   enabled: boolean;
-  onItems: (turnId: string, items: readonly ThreadItem[]) => void;
+  onItems: (
+    turnId: string,
+    items: readonly ThreadItem[],
+    policies: ReturnType<typeof policyRows>
+  ) => void;
 }) {
   const level2 = useRunItemWindow({
     workspaceId,
@@ -176,12 +183,18 @@ function FullRunLevel2({
     placement: 'all',
   });
   const signature = liveItemSignature(level2.completeItems);
+  const policies = policyRows(level2.data?.items);
+  const policySignature = policies
+    .map((row) => `${row.id}:${row.policy?.outcome ?? ''}:${row.policy?.capabilityCallId ?? ''}`)
+    .join('\n');
   const itemsRef = useRef(level2.completeItems);
+  const policiesRef = useRef(policies);
   itemsRef.current = level2.completeItems;
+  policiesRef.current = policies;
   // biome-ignore lint/correctness/useExhaustiveDependencies: signature is the item snapshot; the effect reads the latest items from the ref.
   useEffect(() => {
-    onItems(turnId, itemsRef.current);
-  }, [onItems, signature, turnId]);
+    onItems(turnId, itemsRef.current, policiesRef.current);
+  }, [onItems, policySignature, signature, turnId]);
   return null;
 }
 
@@ -385,7 +398,6 @@ export function ThreadStream({
   running,
   pending,
   onJumpToLatest,
-  onJumpToItem,
   measureOpening,
   onOpeningSettle,
   onOpen,
@@ -521,14 +533,34 @@ export function ThreadStream({
     seedKey: level2SeedId,
   });
   const [fullRunItems, setFullRunItems] = useState<Record<string, readonly ThreadItem[]>>({});
-  const acceptFullRunItems = useCallback((turnId: string, next: readonly ThreadItem[]) => {
-    setFullRunItems((current) => {
-      if (next.length === 0 && current[turnId] === undefined) return current;
-      const previous = current[turnId];
-      if (previous && liveItemSignature(previous) === liveItemSignature(next)) return current;
-      return { ...current, [turnId]: next };
-    });
-  }, []);
+  const [fullRunPolicies, setFullRunPolicies] = useState<
+    Record<string, ReturnType<typeof policyRows>>
+  >({});
+  const acceptFullRunItems = useCallback(
+    (turnId: string, next: readonly ThreadItem[], policies: ReturnType<typeof policyRows>) => {
+      setFullRunItems((current) => {
+        if (next.length === 0 && current[turnId] === undefined) return current;
+        const previous = current[turnId];
+        if (previous && liveItemSignature(previous) === liveItemSignature(next)) return current;
+        return { ...current, [turnId]: next };
+      });
+      setFullRunPolicies((current) => {
+        const previous = current[turnId];
+        const same =
+          previous &&
+          previous.length === policies.length &&
+          previous.every(
+            (row, index) =>
+              row.id === policies[index]?.id &&
+              row.policy?.outcome === policies[index]?.policy?.outcome &&
+              row.policy?.capabilityCallId === policies[index]?.policy?.capabilityCallId
+          );
+        if (same) return current;
+        return { ...current, [turnId]: policies };
+      });
+    },
+    []
+  );
   useLayoutEffect(() => {
     if (!measureOpeningActive || openingMeasured.current) return;
     if (!timelineWindow.isSuccess || !timelineWindow.data) return;
@@ -574,6 +606,8 @@ export function ThreadStream({
     retainArmed.current = false;
     following.current = windowAnchor.kind === 'latest';
     setFollowNew({ count: 0, decision: false });
+    setFullRunItems({});
+    setFullRunPolicies({});
     setLocalSettled(null);
     localJumped.current = false;
     openingMeasured.current = false;
@@ -1240,6 +1274,7 @@ export function ThreadStream({
             now={nowModel}
             needsCount={decisionWalk.length}
             reducedMotion={reducedMotion}
+            unavailable={timelineWindow.data?.requestUnavailable === true}
             onOpen={
               barTarget
                 ? () => {
@@ -1263,6 +1298,7 @@ export function ThreadStream({
               reducedMotion={reducedMotion}
               now={clock}
               onOpen={onOpen}
+              unavailable={timelineWindow.data?.requestUnavailable === true}
             />
           </div>
         </>
@@ -1515,6 +1551,7 @@ export function ThreadStream({
   const inspectedItems = feedItems.filter((item) => item.turnId === activeInspectId);
   const inspectedActivity = activeInspectId ? activityByTurn.get(activeInspectId) : undefined;
   const inspectedTurn = dashboard?.turns.find((turn) => turn.id === activeInspectId);
+  const inspectedRun = windowRuns?.find((run) => run.id === activeInspectId);
   const inspector = activeInspectId ? (
     <Inspector
       turnId={activeInspectId}
@@ -1526,6 +1563,8 @@ export function ThreadStream({
       sheet={phone}
       expanded={sheetExpanded}
       onExpand={() => setSheetExpanded((open) => !open)}
+      usage={inspectedRun?.usage}
+      fallback={inspectedRun?.fallback}
     />
   ) : null;
   const stepSource =
@@ -1578,22 +1617,7 @@ export function ThreadStream({
   }
   const placement =
     frozenDivider.current?.key === visitKey ? frozenDivider.current.placement : null;
-  const locatedIds = new Set(locatedUnread.map((item) => item.id));
-  const earlierUnreadUnresolved = missingUnread.some((id) => !locatedIds.has(id));
-  const earlier = earlierUnread({
-    items: catchUpRefs,
-    unreadIds: stableUnread,
-    catchUp: placement ? catchUp : null,
-    runOrder,
-    located: locatedUnread,
-  });
   const catchUpOrder = catchUp ? (runOrder.get(catchUp.turnId) ?? null) : null;
-  function jumpToEarlierUnread() {
-    const itemId = earlier.oldestId;
-    if (!itemId) return;
-    if (onJumpToItem) onJumpToItem(itemId);
-    else setAnchorOverride({ kind: 'item', itemId });
-  }
 
   // The fold control and the catch-up divider have to appear together. Painting
   // the control first lets the divider land between the two fold measurements.
@@ -1754,24 +1778,31 @@ export function ThreadStream({
                   item.actor.kind === 'user' &&
                   item.actor.id === dashboard?.viewerUserId
               );
-              const entry =
-                projected ??
-                ({
-                  turnId: group.turnId,
-                  header: null,
-                  narrative: [],
-                  notes: [],
-                  plan: null,
-                  stats: {
-                    stepCount: 0,
-                    fileCount: 0,
-                    failedCommandCount: 0,
-                    failedStepCount: 0,
-                  },
-                  long: false,
-                  stepWindow: [],
-                  outcome: null,
-                } as const);
+              const projectedEntry = projected ?? {
+                turnId: group.turnId,
+                header: null,
+                narrative: [],
+                notes: [],
+                plan: null,
+                stats: {
+                  stepCount: 0,
+                  fileCount: 0,
+                  failedCommandCount: 0,
+                  failedStepCount: 0,
+                },
+                long: false,
+                stepWindow: [],
+                outcome: null,
+              };
+              const stepPolicies =
+                group.turnId === level2TurnId
+                  ? policyRows(level2.data?.items)
+                  : (fullRunPolicies[group.turnId] ?? []);
+              const policies = new Map(
+                (projectedEntry.policies ?? []).map((row) => [row.id, row] as const)
+              );
+              for (const row of stepPolicies) policies.set(row.id, row);
+              const entry = { ...projectedEntry, policies: [...policies.values()] };
               const timelineRun = windowRuns?.find((run) => run.id === group.turnId);
               const addressedHere =
                 addressedRunId === group.turnId &&
@@ -1811,10 +1842,8 @@ export function ThreadStream({
                   ) : null}
                   {placement?.turnId === group.turnId && placement.afterItemId === null ? (
                     <CatchUpDivider
-                      count={earlier.count}
-                      onEarlierUnread={jumpToEarlierUnread}
                       digest={timelineWindow.data?.digest ?? null}
-                      earlierUnreadUnresolved={earlierUnreadUnresolved}
+                      recorded={timelineWindow.data?.earlierUnread}
                     />
                   ) : null}
                   <RunEntry
@@ -1858,10 +1887,8 @@ export function ThreadStream({
                           {node}
                           {placement?.afterItemId === item.id ? (
                             <CatchUpDivider
-                              count={earlier.count}
-                              onEarlierUnread={jumpToEarlierUnread}
                               digest={timelineWindow.data?.digest ?? null}
-                              earlierUnreadUnresolved={earlierUnreadUnresolved}
+                              recorded={timelineWindow.data?.earlierUnread}
                             />
                           ) : null}
                         </>

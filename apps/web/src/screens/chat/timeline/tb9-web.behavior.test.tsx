@@ -1,6 +1,5 @@
 import type { TimelineRunEntry } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -30,44 +29,43 @@ function renderRun(
     latestTurnId: turn.id,
     focusTurnId: turn.id,
   });
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(['thread-timeline', 'held'], {
-    runs: [{ id: turnId, usage: usage ?? null, fallback: fallback ?? null }],
-  });
   render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <RunEntry
-          entry={timeline.entries[0]!}
-          items={[]}
-          turn={turn}
-          lens={lens}
-          expanded={false}
-          actorName="Worker"
-          omitTrigger={false}
-          durationMs={null}
-          hiddenIds={new Set()}
-          renderItem={() => null}
-          inspected={false}
-          onInspect={() => {}}
-          showActivity={false}
-        />
-      </MemoryRouter>
-    </QueryClientProvider>
+    <MemoryRouter>
+      <RunEntry
+        entry={{
+          ...timeline.entries[0]!,
+          ...(usage !== undefined ? { usage } : {}),
+          ...(fallback !== undefined ? { fallback } : {}),
+        }}
+        items={[]}
+        turn={turn}
+        lens={lens}
+        expanded={false}
+        actorName="Worker"
+        omitTrigger={false}
+        durationMs={null}
+        hiddenIds={new Set()}
+        renderItem={() => null}
+        inspected={false}
+        onInspect={() => {}}
+        showActivity={false}
+      />
+    </MemoryRouter>
   );
 }
 
 function renderInspector(usage: Usage, fallback: Fallback | null) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(['thread-timeline', 'held'], {
-    runs: [{ id: turnId, usage, fallback }],
-  });
   render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <Inspector turnId={turnId} items={[]} sheet onClose={() => {}} />
-      </MemoryRouter>
-    </QueryClientProvider>
+    <MemoryRouter>
+      <Inspector
+        turnId={turnId}
+        items={[]}
+        sheet
+        onClose={() => {}}
+        usage={usage}
+        fallback={fallback}
+      />
+    </MemoryRouter>
   );
 }
 
@@ -174,28 +172,24 @@ describe('per-run environment line', () => {
       latestTurnId: turn.id,
       focusTurnId: turn.id,
     });
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    client.setQueryData(['thread-timeline', 'held'], { runs: [{ id: turnId }] });
     render(
-      <QueryClientProvider client={client}>
-        <MemoryRouter>
-          <RunEntry
-            entry={timeline.entries[0]!}
-            items={[]}
-            turn={turn}
-            lens="full"
-            expanded={false}
-            actorName="Worker"
-            omitTrigger={false}
-            durationMs={null}
-            hiddenIds={new Set()}
-            renderItem={() => null}
-            inspected={false}
-            onInspect={() => {}}
-            showActivity={false}
-          />
-        </MemoryRouter>
-      </QueryClientProvider>
+      <MemoryRouter>
+        <RunEntry
+          entry={timeline.entries[0]!}
+          items={[]}
+          turn={turn}
+          lens="full"
+          expanded={false}
+          actorName="Worker"
+          omitTrigger={false}
+          durationMs={null}
+          hiddenIds={new Set()}
+          renderItem={() => null}
+          inspected={false}
+          onInspect={() => {}}
+          showActivity={false}
+        />
+      </MemoryRouter>
     );
     expect(screen.queryByText(/tokens/)).not.toBeInTheDocument();
   });

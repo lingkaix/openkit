@@ -636,11 +636,15 @@ export function ItemView({
       const title = visibleStatusTitle(item.title);
       const summary = visibleStatusSummary(item.summary);
       const revision = item.knowledgeMaintenanceResult?.notebookRevision;
-      const revisionLink: ReactNode = revision ? (
-        <Link to={`/knowledge?revision=${encodeURIComponent(revision)}`}>
-          Published notebook revision
-        </Link>
-      ) : null;
+      const ownerWorkspace = item.owner.kind === 'workspace' ? item.owner.workspaceId : null;
+      const revisionLink: ReactNode =
+        revision && ownerWorkspace ? (
+          <Link
+            to={`/knowledge?workspace=${encodeURIComponent(ownerWorkspace)}&revision=${encodeURIComponent(revision)}`}
+          >
+            Published notebook revision
+          </Link>
+        ) : null;
       if (title === timelineCopy.runAccepted) {
         return (
           <>

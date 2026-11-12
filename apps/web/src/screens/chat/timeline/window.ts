@@ -485,6 +485,13 @@ export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
     long: run.long,
     stepWindow: [],
     outcome: failed ? { copyKey: 'run-outcome', text: failed } : null,
+    usage: run.usage ?? null,
+    fallback: run.fallback ?? null,
+    planSegments: run.planSegments ?? null,
+    policies: [
+      ...run.narrative.map((item) => ({ id: item.id, policy: item.policy ?? null })),
+      ...(run.plan ? [{ id: run.plan.id, policy: run.plan.policy ?? null }] : []),
+    ],
   };
 }
 

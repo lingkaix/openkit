@@ -1,6 +1,5 @@
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { allocateEntityId, ItemSchema } from '@openkit/protocol';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
@@ -37,22 +36,6 @@ function badge(
     permissionDecisionId,
     connectionRef: 'do-not-show-connection',
   };
-}
-
-function recorded(value: ThreadItem, policy: TimelineItem['policy']): TimelineItem {
-  return {
-    id: value.id,
-    turnId: value.turnId,
-    type: value.type,
-    placement: value.type === 'plan' ? 'narrative' : 'step',
-    status: value.status,
-    createdAt: value.createdAt,
-    completedAt: value.completedAt,
-    actor: null,
-    detail: { kind: 'complete', value },
-    steer: null,
-    policy,
-  } as TimelineItem;
 }
 
 function renderRun(lens: 'work' | 'full', coverage: 'complete' | 'partial') {
@@ -137,44 +120,36 @@ function renderRun(lens: 'work' | 'full', coverage: 'complete' | 'partial') {
       },
     ],
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  client.setQueryData(['thread-timeline', 'held'], {
-    runs: [{ id: turnId, planSegments: segments }],
-  });
-  client.setQueryData(['thread-timeline-items', 'held'], {
-    items: [
-      recorded(allowed, badge('allowed', 'call-allowed', 'decision-allowed')),
-      recorded(waiting, badge('waiting-approval', 'call-waiting', 'decision-waiting')),
-      recorded(denied, badge('denied', 'call-denied', 'decision-denied')),
-      recorded(unlabeled, null),
-      recorded(command, badge('allowed', 'call-command', 'decision-command')),
-    ],
-  });
+  const policies = [
+    { id: allowed.id, policy: badge('allowed', 'call-allowed', 'decision-allowed') },
+    { id: waiting.id, policy: badge('waiting-approval', 'call-waiting', 'decision-waiting') },
+    { id: denied.id, policy: badge('denied', 'call-denied', 'decision-denied') },
+    { id: unlabeled.id, policy: null },
+    { id: command.id, policy: badge('allowed', 'call-command', 'decision-command') },
+  ];
   render(
-    <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <RunEntry
-          entry={timeline.entries[0]!}
-          items={items}
-          turn={turn}
-          lens={lens}
-          expanded={false}
-          actorName="Worker"
-          omitTrigger={false}
-          durationMs={null}
-          hiddenIds={new Set()}
-          renderItem={(entry) => {
-            if (entry.type === 'tool-call') return <p>{entry.tool}</p>;
-            if (entry.type === 'command-execution') return <p>{entry.command}</p>;
-            if (entry.type === 'plan') return <p>{entry.title}</p>;
-            return null;
-          }}
-          inspected={false}
-          onInspect={() => {}}
-          showActivity={false}
-        />
-      </MemoryRouter>
-    </QueryClientProvider>
+    <MemoryRouter>
+      <RunEntry
+        entry={{ ...timeline.entries[0]!, planSegments: segments, policies }}
+        items={items}
+        turn={turn}
+        lens={lens}
+        expanded={false}
+        actorName="Worker"
+        omitTrigger={false}
+        durationMs={null}
+        hiddenIds={new Set()}
+        renderItem={(entry) => {
+          if (entry.type === 'tool-call') return <p>{entry.tool}</p>;
+          if (entry.type === 'command-execution') return <p>{entry.command}</p>;
+          if (entry.type === 'plan') return <p>{entry.title}</p>;
+          return null;
+        }}
+        inspected={false}
+        onInspect={() => {}}
+        showActivity={false}
+      />
+    </MemoryRouter>
   );
 }
 

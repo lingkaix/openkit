@@ -1,6 +1,6 @@
 import type { ThreadTimelineResponse } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../../app/core-client';
 import type { ThreadItem } from '../data';
@@ -41,31 +41,19 @@ function keepsCurrentView(anchor: TimelineAnchorRequest): boolean {
   );
 }
 
-/** A missing request keeps the thread's current window instead of guessing a nearby Item. */
-function keptRequestWindow(
-  queryClient: QueryClient,
-  workspaceId: string,
-  threadId: string
-): HeldTimeline {
-  let kept: HeldTimeline | undefined;
-  for (const [, data] of queryClient.getQueriesData<HeldTimeline>({
-    queryKey: ['thread-timeline', workspaceId, threadId],
-  })) {
-    if (!data || data.requestUnavailable || data.runs.length === 0) continue;
-    kept = data;
-  }
-  return {
-    runs: kept?.runs ?? [],
-    beforeCursor: kept?.beforeCursor ?? null,
-    afterCursor: kept?.afterCursor ?? null,
-    anchor: kept?.anchor ?? null,
-    catchUpAnchor: kept?.catchUpAnchor ?? null,
-    itemWindow: kept?.itemWindow ?? null,
-    restrictedReferences: kept?.restrictedReferences ?? false,
-    requestUnavailable: true,
-    digest: kept?.digest,
-    earlierUnread: kept?.earlierUnread,
-  };
+function admissionKey(workspaceId: string, threadId: string) {
+  return ['thread-timeline-admission', workspaceId, threadId] as const;
+}
+
+function isThreadRead(anchor: TimelineAnchorRequest): boolean {
+  return anchor.kind === 'latest' || anchor.kind === 'catch-up' || anchor.kind === 'turn';
+}
+
+function refusesThread(error: unknown): boolean {
+  return (
+    error instanceof ApiCallError &&
+    (error.status === 401 || error.status === 403 || error.status === 404)
+  );
 }
 
 /** The real client exposes the window read. Test doubles that omit it keep today's item path. */
@@ -99,6 +87,13 @@ export function useTimelineWindow(options: {
     () => typeof document === 'undefined' || document.visibilityState !== 'hidden'
   );
   const hiddenOnce = useRef(false);
+  const precedingRef = useRef<HeldTimeline | null>(null);
+  const scope = `${workspaceId}\0${threadId}`;
+  const scopeRef = useRef(scope);
+  if (scopeRef.current !== scope) {
+    scopeRef.current = scope;
+    precedingRef.current = null;
+  }
   useEffect(() => {
     const onChange = () => setVisible(document.visibilityState !== 'hidden');
     document.addEventListener('visibilitychange', onChange);
@@ -122,15 +117,33 @@ export function useTimelineWindow(options: {
           openingInput(workspaceId, threadId, anchor)
         );
         const previous = queryClient.getQueryData<HeldTimeline>(key);
-        const held = previous?.requestUnavailable
-          ? holdFromResponse(fresh)
-          : previous
-            ? absorbPoll(previous, fresh)
-            : holdFromResponse(fresh);
-        return withDigest(held, fresh);
+        const held = withDigest(
+          previous?.requestUnavailable
+            ? holdFromResponse(fresh)
+            : previous
+              ? absorbPoll(previous, fresh)
+              : holdFromResponse(fresh),
+          fresh
+        );
+        queryClient.setQueryData(admissionKey(workspaceId, threadId), { admitted: true });
+        precedingRef.current = held;
+        return held;
       } catch (error) {
-        if (keepsCurrentView(anchor) && error instanceof ApiCallError && error.status === 404) {
-          return keptRequestWindow(queryClient, workspaceId, threadId);
+        if (isThreadRead(anchor) && refusesThread(error)) {
+          queryClient.setQueryData(admissionKey(workspaceId, threadId), null);
+          precedingRef.current = null;
+        } else if (
+          keepsCurrentView(anchor) &&
+          error instanceof ApiCallError &&
+          error.status === 404
+        ) {
+          const admission = queryClient.getQueryData<{ admitted: true } | null>(
+            admissionKey(workspaceId, threadId)
+          );
+          const preceding = precedingRef.current;
+          if (admission?.admitted && preceding) {
+            return { ...preceding, requestUnavailable: true };
+          }
         }
         throw error;
       }
@@ -140,6 +153,17 @@ export function useTimelineWindow(options: {
     refetchInterval: () => windowPollMs({ hidden: !visible, running, pending }),
     refetchIntervalInBackground: false,
   });
+  useEffect(() => {
+    if (
+      !query.isSuccess ||
+      query.isPlaceholderData ||
+      !query.data ||
+      query.data.requestUnavailable
+    ) {
+      return;
+    }
+    precedingRef.current = query.data;
+  }, [query.data, query.isPlaceholderData, query.isSuccess]);
 
   const page = useMutation({
     mutationFn: async (edge: 'before' | 'after') => {

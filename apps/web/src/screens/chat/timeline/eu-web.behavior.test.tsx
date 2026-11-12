@@ -210,13 +210,14 @@ function AddressedWindow() {
     <>
       <output aria-label="Current address">{location.search}</output>
       <p>{timeline.data?.runs[0]?.id ?? ''}</p>
-      <CatchUpDivider
-        count={99}
-        onEarlierUnread={() => {
-          throw new Error('loaded window count');
-        }}
+      <CatchUpDivider recorded={timeline.data?.earlierUnread} />
+      <NeedsYouBar
+        rows={[]}
+        threadId={threadId}
+        emphasize={false}
+        reducedMotion
+        unavailable={timeline.data?.requestUnavailable === true}
       />
-      <NeedsYouBar rows={[]} threadId={threadId} emphasize={false} reducedMotion />
     </>
   );
 }

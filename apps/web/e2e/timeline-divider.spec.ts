@@ -377,6 +377,11 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
           ? { turnId: unread.turnId, itemId: unread.itemId }
           : { turnId: runningTurnId, itemId: catchUpId },
         catchUpAnchor: { turnId: runningTurnId, itemId: catchUpId },
+        earlierUnread: {
+          count: 1,
+          capped: false,
+          oldest: { turnId: unread.turnId, itemId: unread.itemId },
+        },
         digest: {
           lines: [
             {

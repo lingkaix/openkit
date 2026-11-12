@@ -70,7 +70,13 @@ function Harness({ anchor }: { anchor: TimelineAnchorRequest }) {
   return (
     <>
       <p>{timeline.data?.runs[0]?.id ?? ''}</p>
-      <NeedsYouBar rows={[]} threadId={threadId} emphasize={false} reducedMotion />
+      <NeedsYouBar
+        rows={[]}
+        threadId={threadId}
+        emphasize={false}
+        reducedMotion
+        unavailable={timeline.data?.requestUnavailable === true}
+      />
     </>
   );
 }

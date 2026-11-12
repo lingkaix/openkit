@@ -68,6 +68,7 @@ export function NeedsYouBar({
   now,
   onOpen,
   resolveAnchor,
+  unavailable = false,
 }: {
   rows: readonly NeedsYouRow[];
   threadId?: string;
@@ -77,6 +78,8 @@ export function NeedsYouBar({
   onOpen?: (href: string) => void;
   /** Goal cards and other anchors that are not timeline items. True means the row was handled. */
   resolveAnchor?: (row: NeedsYouRow) => boolean;
+  /** The current timeline window kept its body after a missing request or Item anchor. */
+  unavailable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [fade, setFade] = useState(false);
@@ -94,7 +97,7 @@ export function NeedsYouBar({
     const timer = setTimeout(() => setFade(false), 200);
     return () => clearTimeout(timer);
   }, [reducedMotion, rows]);
-  if (rows.length === 0) return <RequestUnavailableNotice />;
+  if (rows.length === 0) return <RequestUnavailableNotice unavailable={unavailable} />;
   const ordered = orderNeedsYou(rows);
   const summary = needsYouSummary(ordered);
 
@@ -129,7 +132,7 @@ export function NeedsYouBar({
 
   return (
     <>
-      <RequestUnavailableNotice />
+      <RequestUnavailableNotice unavailable={unavailable} />
       <section
         aria-label={timelineCopy.needsYouRegion}
         className={`ok-needs-you ${emphasize ? 'text-accent' : ''} ${fade ? 'ok-decision-arrive' : ''}`}
