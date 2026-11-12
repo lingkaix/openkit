@@ -358,7 +358,7 @@ function statusLabel(state: ConversationItem['state']): string {
 
 /** Gives each contextual destination an accessible link name. */
 function openLabelForHref(href: string): string {
-  if (href === '/workspace-changes') return 'Open workspace changes';
+  if (href.split('?')[0] === '/workspace-changes') return 'Open workspace changes';
   if (href.includes('/goals/')) return 'Open goal';
   if (href.includes('/tasks/')) return 'Open task';
   return 'Open thread';

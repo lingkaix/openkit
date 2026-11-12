@@ -627,9 +627,12 @@ export function canDecideInline(
 export function openHrefForRow(row: AttentionRow): string | null {
   const resolved = resolve(attentionRefFromRow(row));
   if (!('path' in resolved)) return null;
-  // Knowledge and agent readiness had no Open link. The path stays query-free so
-  // shipped Action Center links keep their exact href.
+  // Knowledge and agent readiness had no Open link. Other paths stay query-free
+  // except a recovery record, which Workspace changes already lists by id.
   if (resolved.path === '/knowledge' || resolved.path === '/agents') return null;
+  if (resolved.path === '/workspace-changes' && resolved.search) {
+    return `${resolved.path}?${resolved.search}`;
+  }
   return resolved.path;
 }
 

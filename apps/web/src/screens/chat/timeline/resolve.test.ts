@@ -165,9 +165,19 @@ describe('timeline object resolver', () => {
       kind: 'attention',
       workspaceId: WS,
       rowId: 'workspace_recovery:1',
-      source: source({ type: 'workspace_recovery', workspaceId: WS, reviewId: '1' }),
+      source: source({
+        type: 'workspace_recovery',
+        workspaceId: WS,
+        reconciliationRecordId: 'wrr_1',
+        triggerReason: 'restart',
+        stateAfter: 'requires-human',
+        affectedRecordIds: ['rec_1'],
+        evidenceBundleIds: ['ev_1'],
+        requiredHumanDecision: null,
+      }),
     });
-    expect(hrefOf(recovery)).toBe('/workspace-changes');
+    expect(hrefOf(recovery)).toBe('/workspace-changes?recovery=wrr_1');
+    expect(recovery).toMatchObject({ focus: 'recovery-wrr_1', notice: null });
     const knowledge = resolve({
       kind: 'attention',
       workspaceId: WS,
@@ -208,10 +218,14 @@ describe('timeline object resolver', () => {
     expect(resolve({ kind: 'environment', workspaceId: WS, turnId: TURN })).toEqual({
       unavailable: timelineNotices.inspectorOnly,
     });
-    expect(resolve({ kind: 'gateway', logicalModelId: 'model_1' })).toMatchObject({
+    expect(resolve({ kind: 'gateway', logicalModelId: 'model_1' })).toEqual({
+      unavailable: timelineNotices.gatewayModelText,
+    });
+    expect(hrefOf(resolve({ kind: 'gateway', logicalModelId: 'model_1' }))).toBeNull();
+    expect(resolve({ kind: 'gateway' })).toMatchObject({
       path: '/settings/gateway',
       search: '',
-      notice: timelineNotices.opensGateway,
+      notice: null,
     });
     expect(
       resolve({ kind: 'knowledge', workspaceId: WS, pageId: 'page_1', revision: '9' })

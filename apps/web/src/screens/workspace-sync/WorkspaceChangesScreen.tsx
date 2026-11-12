@@ -1,5 +1,6 @@
 import { workspaceSyncReviewPatchBytes } from '@openkit/app-api-schemas';
-import { type ReactNode, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -54,6 +55,8 @@ const RECOVERY_ACTIONS: ReadonlyArray<{
 
 /** Live selected-Workspace Workspace Sync review, apply, and recovery surface. */
 export function WorkspaceChangesScreen() {
+  const [searchParams] = useSearchParams();
+  const recoveryId = searchParams.get('recovery');
   const workspaces = useWorkspaces();
   const currentWorkspaceId = useCurrentWorkspaceId();
   const workspace =
@@ -162,6 +165,7 @@ export function WorkspaceChangesScreen() {
       {projection.data ? (
         <WorkspaceSyncSections
           data={projection.data}
+          recoveryId={recoveryId}
           reviewError={reviewError}
           recoveryError={recoveryError}
           reviewBusy={reviewBusy}
@@ -183,6 +187,7 @@ export function WorkspaceChangesScreen() {
  */
 function WorkspaceSyncSections({
   data,
+  recoveryId,
   reviewError,
   recoveryError,
   reviewBusy,
@@ -193,6 +198,7 @@ function WorkspaceSyncSections({
   onRetryRecovery,
 }: {
   data: WorkspaceSyncProjection;
+  recoveryId: string | null;
   reviewError: string | null;
   recoveryError: string | null;
   reviewBusy: boolean;
@@ -202,6 +208,11 @@ function WorkspaceSyncSections({
   onRetryReview: () => void;
   onRetryRecovery: () => void;
 }) {
+  const recoveryFocus = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!recoveryId || !data.recovery.some((record) => record.id === recoveryId)) return;
+    recoveryFocus.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [recoveryId, data.recovery]);
   const [inspectedArtifactId, setInspectedArtifactId] = useState<string | null>(null);
 
   return (
@@ -446,104 +457,112 @@ function WorkspaceSyncSections({
         ) : (
           <Card className="py-0">
             {data.recovery.map((record) => (
-              <ListRow key={record.id} className="w-full min-w-0 items-start">
-                <div className="flex w-full min-w-0 flex-1 flex-col gap-3">
-                  <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
-                    <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">{record.id}</p>
-                    <StatusChip tone={statusTone(record.stateAfter)} dot>
-                      {workspaceSyncStatusLabel(record.stateAfter)}
-                    </StatusChip>
-                  </div>
-                  <p className="text-xs text-fg-muted">{record.backendReachability.status}</p>
-                  {record.collectedOutputManifestIds.map((manifestId) => (
-                    <p key={manifestId} className="text-xs text-fg-muted">
-                      {manifestId}
-                    </p>
-                  ))}
-                  {record.evidenceBundleIds.map((bundleId) => (
-                    <p key={bundleId} className="text-xs text-fg-muted">
-                      {bundleId}
-                    </p>
-                  ))}
-                  {record.affectedRecordIds.map((affectedId) => (
-                    <p key={affectedId} className="text-xs text-fg-muted">
-                      {affectedId}
-                    </p>
-                  ))}
-                  {record.requiredHumanDecision ? (
-                    <p className="text-sm text-fg">{record.requiredHumanDecision}</p>
-                  ) : null}
-                  {record.retentionDecision ? (
-                    <p className="text-xs text-fg-muted">{record.retentionDecision}</p>
-                  ) : null}
-                  {record.stateAfter === 'requires-human' ? (
+              <div
+                key={record.id}
+                id={`recovery-${record.id}`}
+                ref={record.id === recoveryId ? recoveryFocus : undefined}
+                data-recovery-target={record.id === recoveryId ? '' : undefined}
+                tabIndex={record.id === recoveryId ? -1 : undefined}
+              >
+                <ListRow className="w-full min-w-0 items-start">
+                  <div className="flex w-full min-w-0 flex-1 flex-col gap-3">
                     <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
-                      {RECOVERY_ACTIONS.map((action) => {
-                        const preview = recoveryDecisionEffects(action.outcome, record);
-                        if (action.decision !== 'abandon') {
-                          return (
-                            <div
-                              key={action.decision}
-                              className="flex max-w-64 flex-col gap-1 rounded-ok border border-separator p-2"
-                            >
-                              <Button
-                                size="sm"
-                                variant={
-                                  action.decision === 'resume_collection' ? 'accent' : 'outline'
-                                }
-                                aria-label={`${action.label} ${record.id}`}
-                                aria-description={preview}
-                                isDisabled={recoveryBusy}
-                                onPress={() => onRecovery(record.id, action.decision)}
+                      <p className="min-w-0 flex-1 text-sm font-bold text-fg-strong">{record.id}</p>
+                      <StatusChip tone={statusTone(record.stateAfter)} dot>
+                        {workspaceSyncStatusLabel(record.stateAfter)}
+                      </StatusChip>
+                    </div>
+                    <p className="text-xs text-fg-muted">{record.backendReachability.status}</p>
+                    {record.collectedOutputManifestIds.map((manifestId) => (
+                      <p key={manifestId} className="text-xs text-fg-muted">
+                        {manifestId}
+                      </p>
+                    ))}
+                    {record.evidenceBundleIds.map((bundleId) => (
+                      <p key={bundleId} className="text-xs text-fg-muted">
+                        {bundleId}
+                      </p>
+                    ))}
+                    {record.affectedRecordIds.map((affectedId) => (
+                      <p key={affectedId} className="text-xs text-fg-muted">
+                        {affectedId}
+                      </p>
+                    ))}
+                    {record.requiredHumanDecision ? (
+                      <p className="text-sm text-fg">{record.requiredHumanDecision}</p>
+                    ) : null}
+                    {record.retentionDecision ? (
+                      <p className="text-xs text-fg-muted">{record.retentionDecision}</p>
+                    ) : null}
+                    {record.stateAfter === 'requires-human' ? (
+                      <div className="flex w-full min-w-0 flex-wrap items-center gap-2">
+                        {RECOVERY_ACTIONS.map((action) => {
+                          const preview = recoveryDecisionEffects(action.outcome, record);
+                          if (action.decision !== 'abandon') {
+                            return (
+                              <div
+                                key={action.decision}
+                                className="flex max-w-64 flex-col gap-1 rounded-ok border border-separator p-2"
                               >
-                                {action.label}
-                              </Button>
-                              <p className="text-xs text-fg-muted">{preview}</p>
-                            </div>
-                          );
-                        }
-                        return (
-                          <Modal
-                            key={action.decision}
-                            trigger={
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                aria-label={`${action.label} ${record.id}`}
-                                aria-description={preview}
-                                isDisabled={recoveryBusy}
-                              >
-                                {action.label}
-                                <span className="sr-only">{preview}</span>
-                              </Button>
-                            }
-                          >
-                            <Dialog title="Abandon recovery">
-                              <p>
-                                This recovery becomes unrecoverable. Teardown-backend proceeds and
-                                retained evidence stays associated with this record.
-                              </p>
-                              <div className="flex justify-end gap-2">
-                                <Button slot="close" variant="quiet">
-                                  Cancel
-                                </Button>
                                 <Button
-                                  slot="close"
-                                  variant="negative"
+                                  size="sm"
+                                  variant={
+                                    action.decision === 'resume_collection' ? 'accent' : 'outline'
+                                  }
+                                  aria-label={`${action.label} ${record.id}`}
+                                  aria-description={preview}
                                   isDisabled={recoveryBusy}
                                   onPress={() => onRecovery(record.id, action.decision)}
                                 >
-                                  Abandon
+                                  {action.label}
                                 </Button>
+                                <p className="text-xs text-fg-muted">{preview}</p>
                               </div>
-                            </Dialog>
-                          </Modal>
-                        );
-                      })}
-                    </div>
-                  ) : null}
-                </div>
-              </ListRow>
+                            );
+                          }
+                          return (
+                            <Modal
+                              key={action.decision}
+                              trigger={
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  aria-label={`${action.label} ${record.id}`}
+                                  aria-description={preview}
+                                  isDisabled={recoveryBusy}
+                                >
+                                  {action.label}
+                                  <span className="sr-only">{preview}</span>
+                                </Button>
+                              }
+                            >
+                              <Dialog title="Abandon recovery">
+                                <p>
+                                  This recovery becomes unrecoverable. Teardown-backend proceeds and
+                                  retained evidence stays associated with this record.
+                                </p>
+                                <div className="flex justify-end gap-2">
+                                  <Button slot="close" variant="quiet">
+                                    Cancel
+                                  </Button>
+                                  <Button
+                                    slot="close"
+                                    variant="negative"
+                                    isDisabled={recoveryBusy}
+                                    onPress={() => onRecovery(record.id, action.decision)}
+                                  >
+                                    Abandon
+                                  </Button>
+                                </div>
+                              </Dialog>
+                            </Modal>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                </ListRow>
+              </div>
             ))}
           </Card>
         )}

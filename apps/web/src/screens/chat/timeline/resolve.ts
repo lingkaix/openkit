@@ -9,14 +9,13 @@ import { timelineNotices } from './notices';
  */
 export const RESOLVE_READ_GAPS = [
   'Audit and usage reads have no filter, so those links open Usage & audit unfiltered.',
-  'A connection has no anchor route.',
+  'No connection read lists one connection by connectionRef. Shared MCP selects a server id and Vault lists credential references, so the reference stays text.',
   'A knowledge page and revision have no URL anchor.',
-  'Gateway has no logical-model query.',
+  'Gateway lists models from the diagnostics read and has no model query, so a model reference stays text.',
   'The environment has no user surface; it stays in the inspector.',
   'Message and request anchors on a run are not opened.',
   'Attention rows do not say the viewer started the run, sent the latest message, or caused a handoff.',
   'Attention rows do not carry the run start time.',
-  'Workspace recovery rows open Workspace changes. Recovery does not list those rows.',
 ] as const;
 
 export type ConversationActivity = 'chat' | 'task' | 'goal' | 'unknown';
@@ -238,7 +237,26 @@ function resolveAttention(
   facts: ResolveFacts
 ): Resolved {
   const source = ref.source;
-  if (source.type === 'workspace_review' || source.type === 'workspace_recovery') {
+  if (source.type === 'workspace_recovery') {
+    const recordId = source.reconciliationRecordId;
+    if (typeof recordId === 'string' && recordId.length > 0) {
+      const params = new URLSearchParams();
+      params.set('recovery', recordId);
+      return {
+        path: '/workspace-changes',
+        search: params.toString(),
+        focus: `recovery-${recordId}`,
+        notice: null,
+      };
+    }
+    return {
+      path: '/workspace-changes',
+      search: '',
+      focus: null,
+      notice: timelineNotices.opensWorkspaceChanges,
+    };
+  }
+  if (source.type === 'workspace_review') {
     return {
       path: '/workspace-changes',
       search: '',
@@ -317,12 +335,8 @@ function resolveConnection(): Resolved {
 }
 
 function resolveGateway(ref: Extract<ObjectRef, { kind: 'gateway' }>): Resolved {
-  return {
-    path: '/settings/gateway',
-    search: '',
-    focus: null,
-    notice: ref.logicalModelId ? timelineNotices.opensGateway : null,
-  };
+  if (ref.logicalModelId) return { unavailable: timelineNotices.gatewayModelText };
+  return { path: '/settings/gateway', search: '', focus: null, notice: null };
 }
 
 function resolveEnvironment(): Resolved {

@@ -837,6 +837,16 @@ describe('Workspace changes', () => {
     });
   });
 
+  it('opens the recovery record named in the address', async () => {
+    renderApp(`/workspace-changes?recovery=${RECOVERY_RECORD.id}`, makeClient());
+    const row = await screen.findByText(RECOVERY_RECORD.id);
+    expect(row.closest('[data-recovery-target]')).not.toBeNull();
+    expect(document.getElementById(`recovery-${RECOVERY_RECORD.id}`)).toHaveAttribute(
+      'data-recovery-target',
+      ''
+    );
+  });
+
   it('submits one accepted review decision and refetches authoritative rows', async () => {
     const user = userEvent.setup();
     const listWorkspaceSyncReviews = vi
