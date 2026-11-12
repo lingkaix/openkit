@@ -4,6 +4,7 @@ import {
   THREAD_TIMELINE_PLACEMENT,
   ThreadTimelineInputSchema,
   TimelineDigestSchema,
+  TimelineEarlierUnreadSchema,
   TimelineItemDetailSchema,
   TimelinePlanSegmentsSchema,
   TimelinePolicyBadgeSchema,
@@ -17,6 +18,27 @@ const selector = {
 };
 
 describe('bounded Thread timeline contract', () => {
+  it('keeps earlier-unread exact and requires the oldest Item when a count exists', () => {
+    const oldest = {
+      turnId: 'tu_00000000-0000-7000-8000-000000000001',
+      itemId: 'it_00000000-0000-7000-8000-000000000001',
+    };
+    for (const value of [
+      { count: 0, capped: false, oldest: null },
+      { count: 3, capped: false, oldest },
+      { count: 100, capped: false, oldest },
+      { count: 100, capped: true, oldest },
+    ])
+      expect(TimelineEarlierUnreadSchema.parse(value)).toEqual(value);
+    for (const value of [
+      { count: 101, capped: true, oldest },
+      { count: 0, capped: true, oldest: null },
+      { count: 0, capped: false, oldest },
+      { count: 3, capped: false, oldest: null },
+      { count: 3, capped: false, oldest: { turnId: oldest.turnId } },
+    ])
+      expect(TimelineEarlierUnreadSchema.safeParse(value).success).toBe(false);
+  });
   it('keeps recorded metric qualifiers, units and zero distinct from absent observations', () => {
     const usage = TimelineRunEntrySchema.shape.usage;
     const measurement = {

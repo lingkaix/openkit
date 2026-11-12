@@ -1197,6 +1197,11 @@ export interface ThreadTimelineSnapshot {
     input: Parameters<typeof readTurnItemPositions>[3]
   ): ThreadItemPosition[];
   item(itemId: string): Item | undefined;
+  /** Budgeted current Item read under the original immutable authority; oversize/missing is unknown. */
+  itemWithinBytes(
+    itemId: string,
+    maximumBytes: number
+  ): { item: Item; byteLength: number } | undefined;
   /** Verified carried creation fact; never opens the immutable Item body. */
   itemCreatedAt(itemId: string): string | undefined;
   itemHead(turnId: string): number;
@@ -1284,6 +1289,24 @@ export function withNativeThreadTimelineSnapshot<T>(
         position: (itemId) => readThreadItemPosition(reader.sqlite, threadId, itemId),
         positions: (turnId, input) => readTurnItemPositions(reader.sqlite, threadId, turnId, input),
         item: (itemId) => readNativeThreadItem(scope, threadId, itemId, reader),
+        itemWithinBytes: (itemId, maximumBytes) => {
+          if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 65_536)
+            throw new TypeError('Invalid bounded timeline Item allowance.');
+          const row = reader.sqlite
+            .prepare(`SELECT json_extract(e.content_json,'$.byteLength') AS bytes
+            FROM control_product_entries e INDEXED BY control_product_current_idx JOIN control_turns t ON t.id=e.turn_id
+            WHERE e.kind='item' AND e.is_current=1 AND e.schema_version=1 AND e.id=? AND t.thread_id=?`)
+            .get(itemId, threadId) as { bytes: unknown } | undefined;
+          if (
+            typeof row?.bytes !== 'number' ||
+            !Number.isSafeInteger(row.bytes) ||
+            row.bytes < 0 ||
+            row.bytes > maximumBytes
+          )
+            return undefined;
+          const item = readNativeThreadItem(scope, threadId, itemId, reader);
+          return item ? { item, byteLength: row.bytes } : undefined;
+        },
         itemHead: (turnId) => readTurnItemHead(reader.sqlite, threadId, turnId),
         counts: (turnId) => reader.turnItemCounts(threadId, turnId) ?? {},
         failures: (turnId) => {

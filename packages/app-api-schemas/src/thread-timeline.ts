@@ -243,6 +243,20 @@ export const TimelineRunEntrySchema = z.object({
   restrictedReferences: z.boolean(),
 });
 
+/** Exact receipt-eligible unread messages before B, or null when a fixed probe cannot prove the answer. */
+export const TimelineEarlierUnreadSchema = z
+  .object({
+    count: z.number().int().nonnegative().max(100),
+    capped: z.boolean(),
+    oldest: position.extend({ itemId: ItemIdSchema }).strict().nullable(),
+  })
+  .strict()
+  .refine(
+    (value) =>
+      (value.count === 0) === (value.oldest === null) && (!value.capped || value.count === 100),
+    'Earlier unread count, cap and oldest must agree.'
+  );
+
 /** Deterministic counts over a bounded retained window after B; partial counts are lower bounds. */
 export const TimelineDigestSchema = z.object({
   lines: z
@@ -285,6 +299,7 @@ export const ThreadTimelineResponseSchema = z
       .nullable(),
     anchor: position.nullable(),
     catchUpAnchor: position.nullable(),
+    earlierUnread: TimelineEarlierUnreadSchema.nullable().optional(),
     digest: TimelineDigestSchema,
     restrictedReferences: z.boolean(),
   })

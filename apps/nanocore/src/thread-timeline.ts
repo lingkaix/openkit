@@ -34,7 +34,7 @@ import type {
 } from './storage/control-store-product-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
-import { readThreadReceiptMembership } from './thread-read-state.js';
+import { readThreadReceiptMembership, receiptMessageItemIds } from './thread-read-state.js';
 import { projectTimelinePolicy, readTimelinePlanSegments } from './thread-timeline-attributes.js';
 import { readTimelineDigest } from './thread-timeline-digest.js';
 import { projectTurnErrorPresentation, turnErrorInspectAction } from './turn-error-presentation.js';
@@ -374,6 +374,63 @@ function itemWindow(
   };
 }
 
+function earlierUnread(
+  owner: ThreadTimelineReadInput,
+  snapshot: ThreadTimelineSnapshot,
+  boundary: ThreadItemPosition | undefined,
+  receipts: readonly string[]
+): NonNullable<ThreadTimelineResponse['earlierUnread']> | null {
+  if (!owner.coreDb || !boundary) return null;
+  const turns = snapshot.turns({
+    upper: boundary.admissionOrder,
+    boundary: 0,
+    direction: 'after',
+    limit: 33,
+  });
+  const read = new Set(receipts);
+  let examined = 0;
+  let bodyAllowance = 65_536;
+  let count = 0;
+  let oldest: { turnId: string; itemId: string } | null = null;
+  for (const turn of turns.slice(0, 32)) {
+    const turnId = String(turn.record.id);
+    const upper =
+      turn.admissionOrder === boundary.admissionOrder
+        ? boundary.sequence - 1
+        : Number.MAX_SAFE_INTEGER;
+    let cursor = 0;
+    for (;;) {
+      if (cursor >= upper) break;
+      const allowance = Math.min(64, 128 - examined);
+      if (allowance <= 0) return null;
+      const positions = snapshot.positions(turnId, {
+        types: ['user-message', 'assistant-message'],
+        upper,
+        boundary: cursor,
+        direction: 'after',
+        limit: allowance,
+      });
+      for (const position of positions) {
+        cursor = position.sequence;
+        examined++;
+        if (read.has(position.itemId)) continue;
+        const bounded = snapshot.itemWithinBytes(position.itemId, bodyAllowance);
+        if (!bounded) return null;
+        bodyAllowance -= bounded.byteLength;
+        const item = bounded.item;
+        if (!isThreadItemSourceAllowed(item, owner)) return null;
+        if (!receiptMessageItemIds([item], owner.actor.userId).length) continue;
+        oldest ??= { turnId: position.turnId, itemId: position.itemId };
+        count++;
+        if (count === 101) return { count: 100, capped: true, oldest };
+      }
+      if (positions.length < allowance) break;
+      // Respect the existing 64-position owner pages; exhaustion never becomes a partial count.
+    }
+  }
+  return turns.length > 32 ? null : { count, capped: false, oldest };
+}
+
 function recordedEnvironment(owner: ThreadTimelineReadInput, turnId: string, budget: number) {
   const unavailable = { usage: null, fallback: null };
   const allowance = Math.min(1024, Math.max(0, Math.floor(budget / 4)));
@@ -660,6 +717,7 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
         ? { turnId: anchor.turnId, ...(anchor.itemId ? { itemId: anchor.itemId } : {}) }
         : null,
       catchUpAnchor: catchUp ? { turnId: catchUp.turnId, itemId: catchUp.itemId } : null,
+      earlierUnread: earlierUnread(owner, snapshot, catchUp, retained),
       digest: readTimelineDigest(owner, snapshot, catchUp),
       restrictedReferences: false,
     };

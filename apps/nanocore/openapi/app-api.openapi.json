@@ -64968,6 +64968,57 @@
               }
             ]
           },
+          "earlierUnread": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "count": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100
+                  },
+                  "capped": {
+                    "type": "boolean"
+                  },
+                  "oldest": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "turnId": {
+                            "type": "string",
+                            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "itemId": {
+                            "type": "string",
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          }
+                        },
+                        "required": [
+                          "turnId",
+                          "itemId"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "count",
+                  "capped",
+                  "oldest"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "digest": {
             "type": "object",
             "properties": {
@@ -179081,5 +179132,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cb9c349b683a2935abb5b3b107d4e7ebc70821d95e5b0d3a1f0b5fc74890a317"
+  "x-openkit-source-digest": "sha256:05e85ced0cd4c292a2ddf79e1c393bd127db0af6c59d164533a95196651b9bd1"
 }

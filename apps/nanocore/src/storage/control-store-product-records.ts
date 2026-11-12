@@ -512,7 +512,7 @@ export function readTurnItemPositions(
   // Seek each immutable kind independently so a sparse narrative does not scan an unbounded process history.
   const statement =
     sqlite.prepare(`SELECT e.id AS itemId,e.turn_id AS turnId,e.sequence,t.admission_order AS admissionOrder
-    FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
+    FROM control_product_entries e INDEXED BY control_items_turn_type_idx JOIN control_turns t ON t.id=e.turn_id
     WHERE e.kind='item' AND e.revision=1 AND e.turn_id=? AND t.thread_id=? AND e.sequence<=?
     AND e.sequence ${before ? '<' : '>'} ? AND json_extract(e.identity_json,'$.type')=?
     ORDER BY e.sequence ${before ? 'DESC' : 'ASC'} LIMIT ?`);

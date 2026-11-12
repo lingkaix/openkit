@@ -5998,6 +5998,16 @@ export class FsStore {
     return read({
       upperOrder: metadata.length,
       policyEvidence: () => null,
+      itemWithinBytes: (itemId, maximumBytes) => {
+        if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 65_536)
+          throw new TypeError('Invalid bounded timeline Item allowance.');
+        const item = positions.some((position) => position.itemId === itemId)
+          ? this.items.get(itemId)
+          : undefined;
+        if (!item) return undefined;
+        const byteLength = Buffer.byteLength(JSON.stringify(item), 'utf8');
+        return byteLength <= maximumBytes ? { item, byteLength } : undefined;
+      },
       itemCreatedAt: (itemId) =>
         revisions.find((entry) => entry.item.id === itemId)?.item.createdAt,
       planRevisions: (turnId) =>
