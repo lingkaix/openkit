@@ -72,7 +72,15 @@ function run(
     noteItemIds: [],
     finalItemId: null,
     narrativeCursor: null,
-    statistics: { steps: 0, filesChanged: 0, messages: 0, itemCounts: {}, coverage: 'complete' },
+    statistics: {
+      steps: 0,
+      failedStepCount: 0,
+      failedCommandCount: 0,
+      filesChanged: 0,
+      messages: 0,
+      itemCounts: {},
+      coverage: 'complete',
+    },
     interruptedBy: { visibility: 'available', actor: null },
     restrictedReferences: false,
   };

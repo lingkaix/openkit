@@ -1,5 +1,8 @@
 import type { TaskSteerReceiptMetadata } from '../runtime/task-steer-receipt.js';
-import { prepareControlReadMetadata } from '../storage/control-store-read-metadata.js';
+import {
+  isRecordedItemFailure,
+  prepareControlReadMetadata,
+} from '../storage/control-store-read-metadata.js';
 import {
   ControlScopedNotebookSqlInputSchema,
   isSeparateScopedNotebookReceipt,
@@ -6080,6 +6083,12 @@ export class FsStore {
             entry.item.turnId === turnId && entry.item.id === itemId && entry.revision === revision
         )?.item;
         return item ? digestItem(item) : undefined;
+      },
+      failures: (turnId) => {
+        const counts: Partial<Record<Item['type'], number>> = {};
+        for (const item of turns.find((turn) => turn.id === turnId)?.items ?? [])
+          if (isRecordedItemFailure(item)) counts[item.type] = (counts[item.type] ?? 0) + 1;
+        return counts;
       },
       counts: (turnId) => {
         const counts: Partial<Record<Item['type'], number>> = {};

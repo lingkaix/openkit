@@ -58084,6 +58084,16 @@
                       "minimum": 0,
                       "maximum": 9007199254740991
                     },
+                    "failedStepCount": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "failedCommandCount": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
                     "filesChanged": {
                       "type": "integer",
                       "minimum": 0,
@@ -58134,6 +58144,8 @@
                   },
                   "required": [
                     "steps",
+                    "failedStepCount",
+                    "failedCommandCount",
                     "filesChanged",
                     "messages",
                     "itemCounts",
@@ -178207,5 +178219,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:0bbc0c03d0e6cf3e36f4f98ec86872a3f029352e5cac0d92faf964cd87caa4e9"
+  "x-openkit-source-digest": "sha256:664bffbfe8961fb70e1991896eee55e767bd9e2c4234698290afbd7ccb046470"
 }

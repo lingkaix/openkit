@@ -437,7 +437,7 @@ async function fixture(channelHistory = false, unfinished = false) {
     priorMoves: [],
     release: { version: release.releaseTag, buildId: release.sourceCommit },
     requiredFeatures: [],
-    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 24 } }],
+    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 25 } }],
     capture: {
       startedAt: '2026-10-21T10:00:00.000Z',
       completedAt: '2026-10-21T10:00:00.000Z',
@@ -479,7 +479,7 @@ async function fixture(channelHistory = false, unfinished = false) {
       stagingParent: join(root, 'staging'),
       admission: new FileStorageAdmission(root, () => 0n),
       expectedRelease: manifest.release,
-      supportedDatabaseFormats: { 'drizzle.workspace': 24 },
+      supportedDatabaseFormats: { 'drizzle.workspace': 25 },
     },
     async (verified) => {
       expect(verified.manifest).toEqual(manifest);

@@ -5,6 +5,7 @@ import {
   ThreadTimelineInputSchema,
   TimelineDigestSchema,
   TimelineItemDetailSchema,
+  TimelineStatisticsSchema,
 } from './thread-timeline.js';
 
 const selector = {
@@ -72,6 +73,24 @@ describe('bounded Thread timeline contract', () => {
       { lines: [line], coverage: 'guessed' },
     ])
       expect(TimelineDigestSchema.safeParse(invalid).success).toBe(false);
+  });
+
+  it('requires explicit nonnegative current failure counts instead of a fabricated zero default', () => {
+    const statistics = {
+      steps: 3,
+      failedStepCount: 2,
+      failedCommandCount: 1,
+      filesChanged: 0,
+      messages: 0,
+      itemCounts: {},
+      coverage: 'complete',
+    };
+    expect(TimelineStatisticsSchema.safeParse(statistics).success).toBe(true);
+    const { failedCommandCount: _omitted, ...missing } = statistics;
+    expect(TimelineStatisticsSchema.safeParse(missing).success).toBe(false);
+    expect(TimelineStatisticsSchema.safeParse({ ...statistics, failedStepCount: -1 }).success).toBe(
+      false
+    );
   });
 
   it('bounds preview UTF-8 bytes rather than JavaScript code units', () => {

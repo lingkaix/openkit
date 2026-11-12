@@ -136,6 +136,8 @@ export const TimelineItemSchema = z.object({
 /** Counts come from original identities; source-derived counts remain restricted until their owner admits them. */
 export const TimelineStatisticsSchema = z.object({
   steps: z.number().int().nonnegative(),
+  failedStepCount: z.number().int().nonnegative(),
+  failedCommandCount: z.number().int().nonnegative(),
   filesChanged: z.number().int().nonnegative(),
   messages: z.number().int().nonnegative(),
   itemCounts: z.partialRecord(ItemTypeSchema, z.number().int().nonnegative()),

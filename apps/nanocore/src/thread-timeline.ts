@@ -331,6 +331,15 @@ function runEntry(
 ): TimelineRunEntry {
   const turn = TurnRecordSchema.parse({ ...row.record, items: [] });
   const counts = snapshot.counts(turn.id);
+  const failures = snapshot.failures(turn.id);
+  const failedStepCount = types.reduce(
+    (count, type) =>
+      count +
+      (THREAD_TIMELINE_PLACEMENT[type] === 'step' && !sourceKinds.has(type)
+        ? (failures[type] ?? 0)
+        : 0),
+    0
+  );
   const safeCounts = Object.fromEntries(
     Object.entries(counts).filter(([type]) => !sourceKinds.has(type as Item['type']))
   );
@@ -403,6 +412,8 @@ function runEntry(
     narrativeCursor: null,
     statistics: {
       steps,
+      failedStepCount,
+      failedCommandCount: failures['command-execution'] ?? 0,
       filesChanged: counts['file-change'] ?? 0,
       messages: (counts['user-message'] ?? 0) + (counts['assistant-message'] ?? 0),
       itemCounts: safeCounts,

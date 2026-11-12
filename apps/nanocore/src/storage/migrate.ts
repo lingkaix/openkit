@@ -276,6 +276,12 @@ export function applyNativeScopeMigrations(
         )
           backfillControlReadMetadata(sqlite);
         if (
+          statement &&
+          statement.tag === '0024_thread_failure_counts' &&
+          statements[statementIndex]?.tag !== statement.tag
+        )
+          backfillControlReadMetadata(sqlite, true);
+        if (
           statement?.tag === KNOWLEDGE_AUTHORITY_TAG &&
           statements[statementIndex]?.tag !== KNOWLEDGE_AUTHORITY_TAG
         ) {

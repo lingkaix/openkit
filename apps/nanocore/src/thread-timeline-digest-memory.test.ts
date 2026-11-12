@@ -62,4 +62,37 @@ describe('in-memory timeline digest snapshot', () => {
       expect(snapshot.revisionHead(turn.id)).toBe(4);
     });
   });
+
+  it('counts the same recorded tool error in failure statistics and digest problems', async () => {
+    const store = await createDemoStore();
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recorded tool error');
+    const turn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Input', {
+      kind: 'user',
+      id: FIXTURE_LOCAL_USER_ID,
+    });
+    await store.createItem({
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: thread.id,
+      turnId: turn.id,
+      type: 'tool-call',
+      status: 'completed',
+      tool: 'fixture.read',
+      server: null,
+      arguments: {},
+      result: null,
+      error: 'Recorded failure',
+      durationMs: 1,
+      createdAt: '2026-11-12T05:30:00.000Z',
+      completedAt: '2026-11-12T05:30:00.000Z',
+    });
+    const response = readThreadTimeline({
+      store,
+      actor: { userId: FIXTURE_LOCAL_USER_ID, kind: 'local' },
+      administratorEligible: true,
+      input: { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id },
+    });
+    expect(response.runs[0]?.statistics.failedStepCount).toBe(1);
+    expect(response.digest.lines.find((line) => line.kind === 'problems')?.count).toBe(1);
+  });
 });

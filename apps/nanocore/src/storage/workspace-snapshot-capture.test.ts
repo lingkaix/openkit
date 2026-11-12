@@ -383,7 +383,7 @@ const databaseHandles: { readonly sqlite: Database.Database }[] = [];
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { version: '0.1.0-c-a-oracle', buildId: 'independent-snapshot-oracle' };
 const formats = {
-  'drizzle.workspace': 24,
+  'drizzle.workspace': 25,
   'drizzle.app.1': 1,
   'drizzle.app.2': 2,
   'drizzle.app.3': 3,

@@ -3,6 +3,7 @@ import { type Item, TurnRecordSchema } from '@openkit/protocol';
 import { readScopedHumanAttention } from './action-center.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import type { ThreadItemPosition } from './storage/control-store-product-records.js';
+import { isRecordedItemFailure } from './storage/control-store-read-metadata.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
 import { hasWorkspaceReviewArtifact } from './storage/workspace-review-records.js';
 import { isThreadItemSourceAllowed, type ThreadTimelineReadInput } from './thread-timeline.js';
@@ -131,13 +132,7 @@ export function readTimelineDigest(
           )
             add('new-messages', item.id, anchor);
           if (
-            (item.status === 'failed' && previous?.status !== 'failed') ||
-            (item.type === 'command-execution' &&
-              item.exitCode !== null &&
-              item.exitCode !== 0 &&
-              (previous?.type !== 'command-execution' ||
-                previous.exitCode === null ||
-                previous.exitCode === 0)) ||
+            (isRecordedItemFailure(item) && (!previous || !isRecordedItemFailure(previous))) ||
             (item.type === 'status' && item.level === 'error' && entry.revision === 1)
           )
             add('problems', item.id, anchor);

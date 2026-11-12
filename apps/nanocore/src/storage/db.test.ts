@@ -771,6 +771,7 @@ describe('scoped storage databases', () => {
         'workspace_0021_timeline_windows',
         'workspace_0022_thread_dashboard',
         'workspace_0023_task_steer',
+        'workspace_0024_thread_failure_counts',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -1138,6 +1139,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0021_timeline_windows',
         'workspace_0022_thread_dashboard',
         'workspace_0023_task_steer',
+        'workspace_0024_thread_failure_counts',
       ]);
     } finally {
       userDb.sqlite.close();

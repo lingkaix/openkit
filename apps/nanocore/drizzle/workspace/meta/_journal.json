@@ -169,6 +169,13 @@
       "when": 1794165000000,
       "tag": "0023_task_steer",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1794459600000,
+      "tag": "0024_thread_failure_counts",
+      "breakpoints": true
     }
   ]
 }

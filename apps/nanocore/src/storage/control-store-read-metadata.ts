@@ -1,6 +1,6 @@
 import { dirname, join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { readRetainedV1 } from '@openkit/protocol';
+import { type Item, readRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { ControlProductEntrySchema } from './control-store-product-records.js';
 import { readImmutableProductJson } from './immutable-content.js';
@@ -14,6 +14,15 @@ function readEvent(value: unknown) {
     value && typeof value === 'object' && 'workspaceId' in value
       ? StoredEventV1Schema.parse(value)
       : StoredServerEventV1Schema.parse(value)
+  );
+}
+
+/** A recorded failure is an explicit status, nonzero exit, or tool error; absence is never a failure. */
+export function isRecordedItemFailure(item: Item): boolean {
+  return (
+    item.status === 'failed' ||
+    (item.type === 'command-execution' && item.exitCode !== null && item.exitCode !== 0) ||
+    (item.type === 'tool-call' && Boolean(item.error))
   );
 }
 
@@ -33,6 +42,7 @@ export function prepareControlReadMetadata(kind: 'item' | 'event', value: unknow
   const item = readRetainedV1(value, StoredItemV1Schema.parse);
   return JSON.stringify({
     status: item.status,
+    failed: isRecordedItemFailure(item),
     createdAt: item.createdAt,
     completedAt: item.completedAt,
     requestId:
@@ -45,13 +55,14 @@ export function prepareControlReadMetadata(kind: 'item' | 'event', value: unknow
 }
 
 /** One-way verified carry inside the original native migration transaction, before its ledger row. */
-export function backfillControlReadMetadata(sqlite: Database.Database): void {
+export function backfillControlReadMetadata(sqlite: Database.Database, failuresOnly = false): void {
   if (!sqlite.inTransaction)
     throw new TypeError('Product read carry requires its migration transaction.');
   const select = sqlite.prepare(`SELECT e.rowid AS rowId,e.kind,e.id,e.turn_id AS turnId,
     e.content_json AS contentJson,e.identity_json AS identityJson,e.sequence,e.schema_version AS schemaVersion,t.thread_id AS threadId,t.record_json AS turnJson
     FROM control_product_entries e LEFT JOIN control_turns t ON t.id=e.turn_id
-    WHERE e.read_metadata_json IS NULL AND e.rowid>? ORDER BY e.rowid LIMIT 128`);
+    WHERE ${failuresOnly ? "e.kind='item' AND json_type(e.read_metadata_json,'$.failed') IS NULL" : 'e.read_metadata_json IS NULL'}
+    AND e.rowid>? ORDER BY e.rowid LIMIT 128`);
   type CarryRow = {
     rowId: number;
     kind: 'item' | 'event';

@@ -104,6 +104,7 @@ import {
   compareCodeUnits,
   deriveEntityId,
   type ItemSchema,
+  ItemTypeSchema,
   isSealedTurnTerminal,
   KnowledgeNotebookPageSchema,
   readRetainedV1,
@@ -1014,6 +1015,8 @@ export interface ThreadTimelineSnapshot {
   item(itemId: string): Item | undefined;
   itemHead(turnId: string): number;
   counts(turnId: string): Partial<Record<Item['type'], number>>;
+  /** Current failed identities only; revisions and body sizes do not inflate or load this aggregate. */
+  failures(turnId: string): Partial<Record<Item['type'], number>>;
   /** Indexed tail of all revisions, not only first-publication positions. */
   revisionHead(turnId: string): number;
   /** Bounded append positions include revisions, so a changed plan after B is not lost. */
@@ -1062,6 +1065,15 @@ export function withNativeThreadTimelineSnapshot<T>(
         item: (itemId) => readNativeThreadItem(scope, threadId, itemId, reader),
         itemHead: (turnId) => readTurnItemHead(reader.sqlite, threadId, turnId),
         counts: (turnId) => reader.turnItemCounts(threadId, turnId) ?? {},
+        failures: (turnId) => {
+          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return {};
+          const rows = reader.sqlite
+            .prepare(`SELECT json_extract(identity_json,'$.type') AS type,count(*) AS count
+            FROM control_product_entries WHERE kind='item' AND is_current=1 AND turn_id=?
+            AND json_extract(read_metadata_json,'$.failed')=1 GROUP BY json_extract(identity_json,'$.type')`)
+            .all(turnId) as Array<{ type: Item['type']; count: number }>;
+          return Object.fromEntries(rows.map((row) => [ItemTypeSchema.parse(row.type), row.count]));
+        },
         revisionHead: (turnId) => {
           if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return 0;
           return (
