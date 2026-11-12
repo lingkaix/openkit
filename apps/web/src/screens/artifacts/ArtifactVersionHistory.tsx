@@ -8,8 +8,12 @@ import {
   Label,
   TextArea,
 } from 'react-aria-components';
+import { Link } from 'react-router-dom';
 import { useCoreClient } from '../../app/core-client';
 import { Button, ErrorBanner, Select, Skeleton, StatusChip, TextField } from '../../primitives';
+import { useThreadAudience } from '../chat/timeline/audience';
+import { BackLink } from '../chat/timeline/BackLink';
+import { hrefOf, isUnavailable, resolve } from '../chat/timeline/resolve';
 import { ArtifactJudgements } from './ArtifactJudgements';
 import {
   type ArtifactVersionCommitInput,
@@ -44,12 +48,26 @@ function OpenedArtifact(props: {
     artifactId: artifact.id,
     artifactVersion: artifact.version,
   });
+  const audience = useThreadAudience([artifact.workspaceId]);
+  const originThread =
+    metadata?.threadId ??
+    (artifact.origin.kind === 'turn-output' ? artifact.origin.threadId : artifact.threadId);
+  const originTurn =
+    metadata?.turnId ??
+    (artifact.origin.kind === 'turn-output' ? artifact.origin.turnId : artifact.turnId);
   const zip = Boolean(
     file && (file.mediaType === 'application/zip' || artifact.title.toLowerCase().endsWith('.zip'))
   );
   return (
     <>
       <h3 className="text-base font-bold text-fg-strong">{artifact.title}</h3>
+      <BackLink
+        workspaceId={artifact.workspaceId}
+        threadId={originThread}
+        turnId={originTurn}
+        recordedAt={metadata?.recordedAt}
+        audience={audience.sourceFor(originThread)}
+      />
       {metadata ? (
         <dl className="text-sm text-fg-muted">
           <dt>Parent version</dt>
@@ -146,6 +164,8 @@ function ArtifactDetails(props: { mediaType: string | null; digest: string; arti
 /** Exact retained-version inspection within one selected Artifact. Remount when Workspace or Artifact identity changes. */
 export function ArtifactVersionHistory(props: {
   currentArtifact: Awaited<ReturnType<CoreClient['operations']['artifact.read']>>;
+  /** Exact version from the output link. Absent means the current head. */
+  initialVersion?: number | null;
   disabled: boolean;
   unavailable?: boolean;
   onVersionChange: (version: number, readable: boolean) => void;
@@ -153,7 +173,9 @@ export function ArtifactVersionHistory(props: {
   comparisonDisabled?: boolean;
 }) {
   const current = props.currentArtifact;
-  const [selectedVersion, setSelectedVersion] = useState(current.version);
+  const pinned =
+    props.initialVersion != null && props.initialVersion > 0 ? props.initialVersion : null;
+  const [selectedVersion, setSelectedVersion] = useState(pinned ?? current.version);
   const [creating, setCreating] = useState(false);
   const [createdVersion, setCreatedVersion] = useState<number | null>(null);
   const history = useArtifactVersions(current.workspaceId, current.id, current.version);
@@ -161,7 +183,7 @@ export function ArtifactVersionHistory(props: {
     current.workspaceId,
     current.id,
     selectedVersion,
-    history.isSuccess && selectedVersion !== current.version
+    selectedVersion !== current.version && (history.isSuccess || pinned !== null)
   );
   const metadata = history.isSuccess
     ? history.data.find((version) => version.artifactVersion === selectedVersion)
@@ -186,6 +208,20 @@ export function ArtifactVersionHistory(props: {
   const readable = Boolean(
     !props.unavailable && history.isSuccess && !history.isFetching && preview
   );
+  const pinnedSelection = pinned !== null && selectedVersion === pinned && !headSelected;
+  const pinnedMiss =
+    pinnedSelection &&
+    history.isSuccess &&
+    ((!metadata && history.data.length > 0) ||
+      (exact.isError && !isWorkspaceAccessDenied(exact.error)));
+  const pinnedUnavailable = pinnedMiss
+    ? resolve({
+        kind: 'artifact',
+        workspaceId: current.workspaceId,
+        artifactId: current.id,
+        version: selectedVersion,
+      })
+    : null;
   const onVersionChange = props.onVersionChange;
   useEffect(() => {
     onVersionChange(selectedVersion, readable);
@@ -237,7 +273,19 @@ export function ArtifactVersionHistory(props: {
           ) : (
             <Skeleton lines={2} />
           )}
-          {history.isSuccess && !metadata && !(headSelected && history.data.length === 0) ? (
+          {pinnedUnavailable && isUnavailable(pinnedUnavailable) ? (
+            <div className="flex flex-col gap-2">
+              <p className="text-sm text-fg">{pinnedUnavailable.unavailable}</p>
+              {pinnedUnavailable.fallback ? (
+                <Link
+                  to={hrefOf(pinnedUnavailable) ?? pinnedUnavailable.fallback.path}
+                  className="inline-flex min-h-11 items-center text-sm font-bold text-accent underline"
+                >
+                  {pinnedUnavailable.fallback.label}
+                </Link>
+              ) : null}
+            </div>
+          ) : history.isSuccess && !metadata && !(headSelected && history.data.length === 0) ? (
             <ErrorBanner
               message="That version isn't available."
               onRetry={() => void history.refetch()}

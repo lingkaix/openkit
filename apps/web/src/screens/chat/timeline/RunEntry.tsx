@@ -57,6 +57,7 @@ export function RunEntry({
   onInspect,
   stepsInSheet,
   onOpenSteps,
+  onStepsToggle,
   onOpenAllSteps,
   stepsSheetOpen,
   runningStatus,
@@ -80,6 +81,8 @@ export function RunEntry({
   /** Phone opens steps in a sheet instead of in the run. */
   stepsInSheet?: boolean;
   onOpenSteps?: () => void;
+  /** Records the run fold in history. The parent keeps one expanded run. */
+  onStepsToggle?: (open: boolean) => void;
   onOpenAllSteps?: () => void;
   stepsSheetOpen?: boolean;
   runningStatus?: ReactNode;
@@ -262,7 +265,9 @@ export function RunEntry({
                 onOpenSteps?.();
                 return;
               }
-              setStepsOpen((open) => !open);
+              const open = expanded || stepsOpen;
+              setStepsOpen(!open);
+              onStepsToggle?.(!open);
             }}
           >
             {stepsFoldLabel(entry.stats.stepCount, entry.stats.failedStepCount)}

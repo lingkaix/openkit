@@ -149,6 +149,10 @@ export function ArtifactsScreen() {
   const navigate = useNavigate();
   const requestedWorkspaceId = searchParams.get('workspaceId')?.trim() || null;
   const requestedArtifactId = searchParams.get('artifact')?.trim() || null;
+  const requestedVersionRaw = searchParams.get('version')?.trim() ?? '';
+  const requestedVersion = /^[1-9]\d*$/.test(requestedVersionRaw)
+    ? Number(requestedVersionRaw)
+    : null;
   const workspaceId = useCurrentWorkspaceId(requestedWorkspaceId);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
@@ -744,8 +748,9 @@ export function ArtifactsScreen() {
               ) : null}
               {historyArtifact ? (
                 <ArtifactVersionHistory
-                  key={`${workspaceId}:${selectedId}`}
+                  key={`${workspaceId}:${selectedId}:${requestedVersion ?? 'head'}`}
                   currentArtifact={historyArtifact}
+                  initialVersion={requestedVersion}
                   disabled={writeBlocked}
                   unavailable={!detail || selected.isFetching}
                   onVersionChange={onInspectedVersionChange}

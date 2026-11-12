@@ -272,6 +272,9 @@ export interface CapabilityUsageCallRow {
   status: string;
   summary: string | null;
   startedAt?: string;
+  /** Recorded lineage for the From line. Absent when the call recorded none. */
+  threadId: string | null;
+  turnId: string | null;
 }
 
 /** Whitelisted metering metadata exposed to Usage & audit. */
@@ -283,6 +286,10 @@ export interface UsageRecordRow {
   measurement: string;
   modelId: string | null;
   recordedAt?: string;
+  workspaceId: string | null;
+  /** Recorded lineage for the From line. Absent when the record recorded none. */
+  threadId: string | null;
+  turnId: string | null;
 }
 
 /** Whitelisted audit metadata shared by the separate Workspace and server surfaces. */
@@ -494,6 +501,8 @@ export function projectUsageAndAudit(
       status: projectSafeValue(call.status) as string,
       summary: call.summary === null ? null : (projectSafeValue(call.summary) as string),
       startedAt: recordedInstant(call.startedAt),
+      threadId: recordedId(call.threadId),
+      turnId: recordedId(call.turnId),
     })),
     usageRecords: usage.usageRecords.map((record) => ({
       id: projectSafeValue(record.id) as string,
@@ -503,6 +512,9 @@ export function projectUsageAndAudit(
       measurement: usageMeasurement(record.source),
       modelId: record.modelId ? (projectSafeValue(record.modelId) as string) : null,
       recordedAt: recordedInstant(record.recordedAt),
+      workspaceId: recordedId(record.workspaceId),
+      threadId: recordedId(record.threadId),
+      turnId: recordedId(record.turnId),
     })),
     ...projectAuditAndDecisions(audit, decisions),
   };
@@ -533,6 +545,11 @@ function recordedInstant(value: unknown): string | undefined {
   return typeof value === 'string' && value !== ''
     ? (projectSafeValue(value) as string)
     : undefined;
+}
+
+/** Returns a redacted recorded id, or null when the producer omitted one. */
+function recordedId(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? (projectSafeValue(value) as string) : null;
 }
 
 /**

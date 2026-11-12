@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
+import { writeTimelineHistory } from './navigation-state';
 import { isFollowing, scrollCorrection, sentinelDistancePx, shouldPageEdge } from './window';
 
 /** The thread window scroller, or the nearest ancestor that actually scrolls. */
@@ -44,6 +45,7 @@ export function TimelineScroll({
   onCatchUp,
   pinDivider,
   pinKey,
+  restoreTop,
   children,
 }: {
   topEntryId: string | null;
@@ -63,6 +65,8 @@ export function TimelineScroll({
   pinDivider?: boolean;
   /** Changing this arms the pin again. A prepend does not. */
   pinKey?: string;
+  /** Scroll position from this history entry. Null follows the latest anchor. */
+  restoreTop?: number | null;
   children: ReactNode;
 }) {
   const frame = useRef<HTMLDivElement>(null);
@@ -73,6 +77,15 @@ export function TimelineScroll({
   const followingRef = useRef(initiallyFollowing);
   const pinnedDivider = useRef(false);
   const pinToken = useRef(pinKey);
+  const restored = useRef(false);
+  // The edge sentinel must not page while a saved offset is still waiting for height.
+  const [restoreSettled, setRestoreSettled] = useState(restoreTop == null);
+  const restoreToken = useRef(restoreTop);
+  if (restoreToken.current !== restoreTop) {
+    restoreToken.current = restoreTop;
+    restored.current = false;
+    setRestoreSettled(restoreTop == null);
+  }
 
   function setFollow(next: boolean) {
     followingRef.current = next;
@@ -87,6 +100,7 @@ export function TimelineScroll({
     const onScroll = () => {
       const next = isFollowing(distanceFromEnd(scroller));
       if (next !== followingRef.current) setFollow(next);
+      writeTimelineHistory(window.history, { scrollTop: scroller.scrollTop });
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => scroller.removeEventListener('scroll', onScroll);
@@ -94,6 +108,7 @@ export function TimelineScroll({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: paging callbacks stay current; rebinding the observer on each render would page twice.
   useEffect(() => {
+    if (!restoreSettled) return undefined;
     const root = scrollParent(frame.current);
     const viewport = root.clientHeight || window.innerHeight;
     const margin = `${Math.round(sentinelDistancePx(viewport))}px 0px`;
@@ -128,7 +143,7 @@ export function TimelineScroll({
     if (topSentinel.current) observer.observe(topSentinel.current);
     if (bottomSentinel.current) observer.observe(bottomSentinel.current);
     return () => observer.disconnect();
-  }, [canEarlier, canLater, onEarlier, onLater, paging]);
+  }, [canEarlier, canLater, onEarlier, onLater, paging, restoreSettled]);
 
   useLayoutEffect(() => {
     const fix = pending.current;
@@ -155,6 +170,23 @@ export function TimelineScroll({
     if (pinDivider || !followingRef.current || pending.current) return;
     const scroller = scrollParent(frame.current);
     scroller.scrollTop = scroller.scrollHeight;
+  });
+
+  useLayoutEffect(() => {
+    if (restoreTop == null) {
+      restored.current = false;
+      return;
+    }
+    if (restored.current || !frame.current) return;
+    const scroller = scrollParent(frame.current);
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const hasEntry = scroller.querySelector('[data-timeline-entry]') != null;
+    // Wait until the runs have height. A saved offset past the mounted end clamps.
+    if (restoreTop > 0 && max < restoreTop - 2 && (!hasEntry || max === 0)) return;
+    scroller.scrollTop = Math.min(restoreTop, max);
+    restored.current = true;
+    setRestoreSettled(true);
+    if (!isFollowing(distanceFromEnd(scroller))) setFollow(false);
   });
 
   useLayoutEffect(() => {

@@ -22,6 +22,8 @@ import {
   useConversationNavigation,
   useThreadDashboard,
 } from '../chat/data';
+import { useThreadAudience } from '../chat/timeline/audience';
+import { BackLink } from '../chat/timeline/BackLink';
 import {
   type AttentionRow,
   attentionDecisionErrorMessage,
@@ -63,6 +65,7 @@ export function OverviewScreen() {
   const workspaceId = useCurrentWorkspaceId();
   const attention = useHumanAttention(workspaceId);
   const navigation = useConversationNavigation(workspaceId);
+  const audience = useThreadAudience([workspaceId]);
   const decide = useDecideAttention();
   const { failed: disconnected } = useConnection();
 
@@ -149,6 +152,7 @@ export function OverviewScreen() {
               <AttentionListRow
                 key={row.id}
                 row={row}
+                audience={audience}
                 conversation={
                   conversationByThread.get(
                     row.threadId ?? ('threadId' in row.source ? (row.source.threadId ?? '') : '')
@@ -195,14 +199,26 @@ export function OverviewScreen() {
   );
 }
 
+function attentionThread(row: AttentionRow): { threadId: string | null; turnId: string | null } {
+  if (row.threadId) return { threadId: row.threadId, turnId: row.turnId ?? null };
+  if ('threadId' in row.source && typeof row.source.threadId === 'string') {
+    const turnId =
+      'turnId' in row.source && typeof row.source.turnId === 'string' ? row.source.turnId : null;
+    return { threadId: row.source.threadId, turnId };
+  }
+  return { threadId: null, turnId: null };
+}
+
 function AttentionListRow({
   row,
   conversation,
+  audience,
   disabled,
   onDecide,
 }: {
   row: AttentionRow;
   conversation: ConversationItem | null;
+  audience: ReturnType<typeof useThreadAudience>;
   disabled: boolean;
   onDecide: (action: AttentionRow['actions'][number]) => void;
 }) {
@@ -235,6 +251,12 @@ function AttentionListRow({
       {activity ? <Icon name={ACTIVITY_ICON[activity]} label={ACTIVITY_LABEL[activity]} /> : null}
       <div className="min-w-0 flex-1">
         <h3 className="text-sm font-bold text-fg-strong">{row.title}</h3>
+        <BackLink
+          workspaceId={row.workspaceId}
+          threadId={attentionThread(row).threadId}
+          turnId={attentionThread(row).turnId}
+          audience={audience.sourceFor(attentionThread(row).threadId)}
+        />
         <p className="mt-0.5 text-xs text-fg-muted">
           {conversation ? `${conversation.thread.name ?? 'Untitled conversation'} · ` : ''}
           {waitingLabel(row.createdAt)}

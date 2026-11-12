@@ -1,3 +1,4 @@
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   UNSTABLE_Toast as AriaToast,
   UNSTABLE_ToastContent as AriaToastContent,
@@ -24,11 +25,79 @@ export interface QueuedToast {
   actionLabel?: string;
   /** Opens the source. Absent when the event has no destination. */
   onAction?: () => void;
+  /** Failure toasts close after this many milliseconds. Decision toasts omit it. */
+  lifetimeMs?: number;
+  /** Holds lifetimeMs while the pointer or focus is inside the toast. */
+  onPause?: (paused: boolean) => void;
+  /** Marks the policy toast dismissed. The underlying row stays. */
+  onDismiss?: () => void;
 }
 
 /** Reads a string or structured queue value as one notice. */
 function noticeOf(content: string | QueuedToast): QueuedToast {
   return typeof content === 'string' ? { message: content } : content;
+}
+
+/**
+ * Hover uses the toast's pointer events. Focus comes from React Aria's toast state.
+ * Either one holds a timed toast; leaving both resumes it.
+ */
+function HoldableToast({
+  notice,
+  toast,
+  onClose,
+}: {
+  notice: QueuedToast;
+  toast: { key: string; content: string | QueuedToast };
+  onClose: () => void;
+}) {
+  const [hovered, setHovered] = useState(false);
+  const pause = notice.onPause;
+  return (
+    <AriaToast
+      toast={toast}
+      className="outline-none"
+      onPointerEnter={pause ? () => setHovered(true) : undefined}
+      onPointerLeave={pause ? () => setHovered(false) : undefined}
+    >
+      {({ isFocused }) => (
+        <ToastHold active={hovered || isFocused} onPause={pause}>
+          <AriaToastContent>
+            <Text slot="title" className="sr-only">
+              {notice.message}
+            </Text>
+            <Toast
+              message={notice.message}
+              actionLabel={notice.actionLabel}
+              onAction={notice.onAction}
+              onDismissAction={() => {
+                notice.onDismiss?.();
+                onClose();
+              }}
+            />
+          </AriaToastContent>
+        </ToastHold>
+      )}
+    </AriaToast>
+  );
+}
+
+function ToastHold({
+  active,
+  onPause,
+  children,
+}: {
+  active: boolean;
+  onPause?: (paused: boolean) => void;
+  children: ReactNode;
+}) {
+  const held = useRef(false);
+  useEffect(() => {
+    if (!onPause || held.current === active) return;
+    held.current = active;
+    onPause(active);
+  }, [active, onPause]);
+  return children;
 }
 
 /**
@@ -89,19 +158,7 @@ export function ToastProvider({
       {({ toast }) => {
         const notice = noticeOf(toast.content);
         return (
-          <AriaToast toast={toast} className="outline-none">
-            <AriaToastContent>
-              <Text slot="title" className="sr-only">
-                {notice.message}
-              </Text>
-              <Toast
-                message={notice.message}
-                actionLabel={notice.actionLabel}
-                onAction={notice.onAction}
-                onDismissAction={() => queue.close(toast.key)}
-              />
-            </AriaToastContent>
-          </AriaToast>
+          <HoldableToast notice={notice} toast={toast} onClose={() => queue.close(toast.key)} />
         );
       }}
     </AriaToastRegion>

@@ -45,6 +45,7 @@ import { Inspector } from './timeline/Inspector';
 import { readStoredLens, writeStoredLens } from './timeline/lens-store';
 import { NeedsYouBar, useTimelineAttention } from './timeline/NeedsYouBar';
 import { NowLine } from './timeline/NowLine';
+import { readTimelineHistory, writeTimelineHistory } from './timeline/navigation-state';
 import {
   focusTimelineItem,
   orderNeedsYou,
@@ -194,6 +195,11 @@ export interface ThreadStreamProps {
   narrativeOnly?: boolean;
   /** URL-backed phone sheets. Desktop ignores steps and the inspector here. */
   sheets?: TimelineSheets;
+  /**
+   * A stale dashboard is already cached. Hide runs until this mount's read succeeds.
+   * A pending read with no cache still shows its own checking state.
+   */
+  holdContent?: boolean;
 }
 
 /**
@@ -228,6 +234,7 @@ export function ThreadStream({
   onOpen,
   narrativeOnly,
   sheets,
+  holdContent = false,
 }: ThreadStreamProps) {
   const phone = !usePersistentNavigation();
   const [internalLens, setInternalLens] = useState<LensName>(() =>
@@ -273,7 +280,27 @@ export function ThreadStream({
   const [sheetExpanded, setSheetExpanded] = useState(false);
   const phoneInspectId = phone ? (sheets?.inspectTurnId ?? localInspect) : null;
   const lens = lensProp ?? internalLens;
-  const [expandedTurnId, setExpandedTurnId] = useState<string | null>(null);
+  const historyScope = `${workspaceId ?? ''}:${threadId}`;
+  const restoredScope = useRef<string | null>(null);
+  const restoredNavigation = useRef<ReturnType<typeof readTimelineHistory>>(null);
+  if (restoredScope.current !== historyScope) {
+    restoredScope.current = historyScope;
+    restoredNavigation.current =
+      typeof window === 'undefined' ? null : readTimelineHistory(window.history.state);
+  }
+  const [expandedScope, setExpandedScope] = useState(historyScope);
+  const [expandedTurnId, setExpandedTurnId] = useState<string | null>(
+    () => restoredNavigation.current?.expandedRunIds[0] ?? null
+  );
+  if (expandedScope !== historyScope) {
+    setExpandedScope(historyScope);
+    setExpandedTurnId(restoredNavigation.current?.expandedRunIds[0] ?? null);
+  }
+  function rememberExpanded(turnId: string | null) {
+    setExpandedTurnId(turnId);
+    if (typeof window === 'undefined') return;
+    writeTimelineHistory(window.history, { expandedRunIds: turnId ? [turnId] : [] });
+  }
   const [inspectedTurnId, setInspectedTurnId] = useState<string | null>(null);
   const inspectButtonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -580,6 +607,16 @@ export function ThreadStream({
     if (!phone && panelHost && !portalNode) return;
     panelRef.current?.focus();
   }, [inspectedTurnId, panelHost, phone, phoneInspectId, portalNode]);
+
+  if (holdContent) {
+    return (
+      <div className="flex flex-col gap-5" aria-busy="true">
+        <div className="ok-run-skeleton" aria-hidden="true">
+          <Skeleton lines={3} />
+        </div>
+      </div>
+    );
+  }
 
   if (historyLoading) {
     return (
@@ -1133,7 +1170,10 @@ export function ThreadStream({
           <TimelineFrame
             windowed={Boolean(windowRuns)}
             topEntryId={windowRuns?.[0]?.id ?? null}
-            initiallyFollowing={windowAnchor.kind === 'latest'}
+            initiallyFollowing={
+              windowAnchor.kind === 'latest' && restoredNavigation.current == null
+            }
+            restoreTop={restoredNavigation.current?.scrollTop ?? null}
             canEarlier={Boolean(timelineWindow.data?.beforeCursor)}
             canLater={Boolean(timelineWindow.data?.afterCursor)}
             paging={timelineWindow.paging}
@@ -1162,7 +1202,7 @@ export function ThreadStream({
               following.current = true;
               onJumpToLatest?.();
             }}
-            pinDivider={windowAnchor.kind === 'catch-up'}
+            pinDivider={windowAnchor.kind === 'catch-up' && restoredNavigation.current == null}
             pinKey={scopeKey}
           >
             {groups.map((group, index) => {
@@ -1249,6 +1289,7 @@ export function ThreadStream({
                     expanded={phone ? false : expandedTurnId === group.turnId}
                     stepsInSheet={phone}
                     stepsSheetOpen={stepsTurnId === group.turnId}
+                    onStepsToggle={(open) => rememberExpanded(open ? group.turnId : null)}
                     onOpenSteps={() => openSheet('steps', group.turnId)}
                     onOpenAllSteps={() => {
                       setAllStepsTurnId(group.turnId);
@@ -1300,7 +1341,7 @@ export function ThreadStream({
                             size="sm"
                             onPress={() => {
                               if (phone) openSheet('steps', group.turnId);
-                              else setExpandedTurnId(group.turnId);
+                              else rememberExpanded(group.turnId);
                             }}
                           >
                             <span>{actorName}</span>

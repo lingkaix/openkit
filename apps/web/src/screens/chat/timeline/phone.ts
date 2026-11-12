@@ -40,3 +40,20 @@ export function closeSheetSearch(current: string): string {
   next.delete('inspect');
   return next.toString();
 }
+
+/** Depth recorded on the history entry. The query still holds one sheet. */
+export function sheetDepthOf(state: unknown): number {
+  if (!state || typeof state !== 'object') return 0;
+  const record = state as { usr?: { sheetDepth?: unknown }; sheetDepth?: unknown };
+  const raw = record.usr?.sheetDepth ?? record.sheetDepth;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+
+/**
+ * Sheets stack at most two deep. The third replaces the second.
+ * The query keeps a single sheet; depth is the history stack.
+ */
+export function nextSheetDepth(depth: number): { mode: 'push' | 'replace'; depth: number } {
+  if (depth >= 2) return { mode: 'replace', depth: 2 };
+  return { mode: 'push', depth: depth + 1 };
+}

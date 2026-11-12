@@ -58,14 +58,14 @@ export interface HeldItems {
   afterCursor: string | null;
 }
 
-/** Anchor named by the thread URL. Item, attention, run, then catch-up. Otherwise latest. */
+/** Anchor named by the thread URL. Item, row, run, then catch-up. Otherwise latest. */
 export function anchorFromSearch(search: string): TimelineAnchorRequest {
   const params = new URLSearchParams(search);
   const itemId = params.get('item');
   if (itemId) return { kind: 'item', itemId };
-  const rowId = params.get('attention');
+  const rowId = params.get('row') || params.get('attention');
   if (rowId) return { kind: 'attention', rowId };
-  const turnId = params.get('turnId');
+  const turnId = params.get('turn') || params.get('turnId');
   if (turnId) return { kind: 'turn', turnId };
   if (params.get('catchUp') === '1') return { kind: 'catch-up' };
   return { kind: 'latest' };
@@ -529,7 +529,9 @@ export function timelineJump(input: {
   );
   params.delete('item');
   params.delete('attention');
+  params.delete('row');
   params.delete('turnId');
+  params.delete('turn');
   params.delete('catchUp');
   if (input.jump.kind === 'item') params.set('item', input.jump.itemId);
   if (input.jump.kind === 'catch-up') params.set('catchUp', '1');

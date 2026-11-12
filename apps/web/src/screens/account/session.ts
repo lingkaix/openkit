@@ -5,6 +5,7 @@ import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { toastQueue } from '../../primitives/Toast';
 import { retainShellCacheOnLogout } from '../../pwa/shell-cache';
+import { resetToastPolicy } from '../chat/timeline/toast-policy';
 import { useWorkspaceStore } from '../workspace-store';
 import { advanceAccountGeneration } from './generation';
 
@@ -218,6 +219,7 @@ export function useAccountMutation() {
     onSuccess: (_data, variables) => {
       advanceAccountGeneration();
       toastQueue.clear();
+      resetToastPolicy();
       queryClient.removeQueries({ queryKey: ['items'] });
       if (variables.operation === 'signOut') void retainShellCacheOnLogout();
       const mutationCache = queryClient.getMutationCache();

@@ -14,6 +14,7 @@ import {
   useCurrentWorkspaceId,
   useWorkspaces,
 } from '../chat/data';
+import { attentionRefFromRow, resolve } from '../chat/timeline/resolve';
 
 /**
  * Workspace / Overview data hooks (WP-6). Action Center, Agents, Knowledge, and
@@ -624,20 +625,12 @@ export function canDecideInline(
 
 /** Open the owning workspace-change, thread, goal, or artifact surface for a Needs-you row. */
 export function openHrefForRow(row: AttentionRow): string | null {
-  if (row.source.type === 'workspace_review' || row.source.type === 'workspace_recovery') {
-    return '/workspace-changes';
-  }
-  if (row.source.type === 'artifact_review') {
-    return `/goals/${encodeURIComponent(row.workspaceId)}/${encodeURIComponent(row.source.threadId)}/artifacts/${encodeURIComponent(row.source.artifactId)}`;
-  }
-
-  if (row.threadId) {
-    return chatThreadPath(row.workspaceId, row.threadId);
-  }
-  if ('threadId' in row.source && typeof row.source.threadId === 'string') {
-    return chatThreadPath(row.workspaceId, row.source.threadId);
-  }
-  return null;
+  const resolved = resolve(attentionRefFromRow(row));
+  if (!('path' in resolved)) return null;
+  // Knowledge and agent readiness had no Open link. The path stays query-free so
+  // shipped Action Center links keep their exact href.
+  if (resolved.path === '/knowledge' || resolved.path === '/agents') return null;
+  return resolved.path;
 }
 
 /** Map agent health into the plain-language readiness vocabulary (DESIGN.md §13). */

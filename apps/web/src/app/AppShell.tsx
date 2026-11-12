@@ -3,38 +3,12 @@ import { Dialog, Modal, ModalOverlay } from 'react-aria-components';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Button, ToastProvider } from '../primitives';
 import { AppUpdatePrompt } from '../pwa/AppUpdatePrompt';
+import { TimelineToasts } from '../screens/chat/timeline/TimelineToasts';
 import { DisconnectedBanner } from './DisconnectedBanner';
+import { usePersistentNavigation } from './persistent-nav';
 import { Sidebar } from './Sidebar';
 
-/** Viewport width at which the left navigation stays a persistent sidebar. */
-const PERSISTENT_NAV_QUERY = '(min-width: 800px)';
-
-/**
- * True when the current viewport is at least 800px wide.
- *
- * @returns Whether the left navigation should stay persistent.
- */
-function readPersistentNavigation(): boolean {
-  return window.matchMedia?.(PERSISTENT_NAV_QUERY)?.matches ?? true;
-}
-
-/**
- * Tracks the 800px persistent-navigation breakpoint.
- *
- * @returns Whether the left navigation should stay in the layout.
- */
-export function usePersistentNavigation(): boolean {
-  const [persistent, setPersistent] = useState(readPersistentNavigation);
-  useEffect(() => {
-    const media = window.matchMedia?.(PERSISTENT_NAV_QUERY);
-    if (!media) return undefined;
-    const sync = () => setPersistent(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
-  return persistent;
-}
+export { usePersistentNavigation } from './persistent-nav';
 
 /** Phone sections. Action Center is a count on Work's Tasks segment and a More row. */
 function PhoneNav({ drawerOpen, onMore }: { drawerOpen: boolean; onMore: () => void }) {
@@ -167,6 +141,7 @@ export function AppShell() {
         ) : null}
       </div>
       <ToastProvider />
+      <TimelineToasts />
     </div>
   );
 }

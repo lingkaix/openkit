@@ -1,11 +1,19 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { usePersistentNavigation } from '../../../app/AppShell';
 import { Button, Icon, TextField } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
 import type { NowModel } from './now';
-import { closeSheetSearch, openSheetSearch, phoneBarLabel, type SheetKind } from './phone';
+import {
+  closeSheetSearch,
+  nextSheetDepth,
+  openSheetSearch,
+  phoneBarLabel,
+  type SheetKind,
+  sheetDepthOf,
+} from './phone';
 import { TimelineTime } from './TimelineTime';
 
 export interface TimelineSheets {
@@ -30,9 +38,13 @@ export function useTimelineSheets(): TimelineSheets {
   const open = (kind: SheetKind, id: string, mode: 'push' | 'replace' = 'push') => {
     opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const search = openSheetSearch(searchParams.toString(), kind, id);
+    const next = nextSheetDepth(sheetDepthOf(history.state));
     navigate(
       { pathname: location.pathname, search },
-      { replace: mode === 'replace', state: { okSheet: kind } }
+      {
+        replace: mode === 'replace' || next.mode === 'replace',
+        state: { okSheet: kind, sheetDepth: next.depth },
+      }
     );
   };
   const close = () => {
@@ -43,6 +55,39 @@ export function useTimelineSheets(): TimelineSheets {
     }
     setSearchParams(closeSheetSearch(searchParams.toString()), { replace: true });
   };
+  const seeded = useRef<string | null>(null);
+  useEffect(() => {
+    const id = decisionId ?? stepsTurnId ?? inspectTurnId;
+    if (!id) return;
+    const state = history.state as {
+      usr?: { okSheet?: string };
+      okSheet?: string;
+    } | null;
+    if (sheetDepthOf(state) > 0 || state?.usr?.okSheet || state?.okSheet) return;
+    const key = `${location.pathname}?${location.search}`;
+    if (seeded.current === key) return;
+    seeded.current = key;
+    const kind: SheetKind = decisionId ? 'decision' : stepsTurnId ? 'steps' : 'inspect';
+    const current = searchParams.toString();
+    flushSync(() => {
+      navigate(
+        { pathname: location.pathname, search: closeSheetSearch(current) },
+        { replace: true, state: { sheetDepth: 0 } }
+      );
+    });
+    navigate(
+      { pathname: location.pathname, search: openSheetSearch(current, kind, id) },
+      { state: { okSheet: kind, sheetDepth: 1 } }
+    );
+  }, [
+    decisionId,
+    inspectTurnId,
+    location.pathname,
+    location.search,
+    navigate,
+    searchParams,
+    stepsTurnId,
+  ]);
   useEffect(() => {
     if (decisionId || stepsTurnId || inspectTurnId) return;
     const target = opener.current;

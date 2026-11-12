@@ -86,8 +86,10 @@ describe('timeline window anchors', () => {
   it.each([
     ['latest', anchorFromSearch('')],
     ['run', anchorFromSearch(`?turnId=${turnId}`)],
+    ['spec run', anchorFromSearch(`?turn=${turnId}`)],
     ['item', anchorFromSearch(`?item=${itemId}`)],
     ['attention', anchorFromSearch('?attention=row-1')],
+    ['spec row', anchorFromSearch('?row=row-1')],
     ['catch-up', anchorFromSearch('?catchUp=1')],
   ] as const)('resolves a %s anchor into a read the server accepts', (_label, anchor) => {
     const input = openingInput(workspaceId, threadId, anchor);
@@ -404,7 +406,7 @@ describe('catch-up opening', () => {
     ).toBe(false);
     const itemJump = timelineJump({
       pathname: '/tasks/ws/th',
-      search: `?turnId=${turnId}&attention=row&catchUp=1`,
+      search: `?turnId=${turnId}&turn=${turnId}&attention=row&row=row-1&catchUp=1`,
       jump: { kind: 'item', itemId },
     });
     expect(itemJump).toEqual({

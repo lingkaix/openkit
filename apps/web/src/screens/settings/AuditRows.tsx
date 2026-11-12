@@ -1,8 +1,9 @@
-import { useQueries } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { useCoreClient } from '../../app/core-client';
 import { ListRow, StatusChip, type StatusTone } from '../../primitives';
-import { chatKeys, conversationThreadPath } from '../chat/data';
+import { conversationThreadPath } from '../chat/data';
+import type { ThreadAudience } from '../chat/timeline/audience';
+import { useThreadAudience } from '../chat/timeline/audience';
+import { BackLink } from '../chat/timeline/BackLink';
 import type { AuditEventDisplayRow, PermissionDecisionDisplayRow } from './data';
 
 type ThreadActivity = Parameters<typeof conversationThreadPath>[2];
@@ -15,30 +16,7 @@ type ThreadActivity = Parameters<typeof conversationThreadPath>[2];
  * @returns A lookup that is pending only while a real navigation read is in flight.
  */
 export function useThreadActivity(workspaceIds: readonly (string | null | undefined)[]) {
-  const client = useCoreClient();
-  const ids = [...new Set(workspaceIds.filter((id): id is string => Boolean(id)))].sort();
-  const navigable = typeof client.operations['conversation.navigation'] === 'function';
-  const queries = useQueries({
-    queries: ids.map((workspaceId) => ({
-      queryKey: chatKeys.navigation(workspaceId),
-      enabled: navigable,
-      retry: false,
-      queryFn: async () =>
-        (await client.operations['conversation.navigation']({ workspaceId })).items,
-    })),
-  });
-  const byThread = new Map<string, ThreadActivity>();
-  for (const query of queries) {
-    for (const item of query.data ?? []) byThread.set(item.thread.id, item.activity);
-  }
-  const pending = navigable && ids.length > 0 && queries.some((query) => query.isPending);
-  return {
-    pending,
-    activityFor(threadId: string | null): ThreadActivity | 'pending' {
-      if (!threadId || pending) return pending ? 'pending' : 'unknown';
-      return byThread.get(threadId) ?? 'unknown';
-    },
-  };
+  return useThreadAudience(workspaceIds);
 }
 
 const threadLinkClass =
@@ -126,9 +104,12 @@ export function RecordedTime({ value }: { value?: string }) {
 export function AuditEventRow({
   event,
   activity = 'unknown',
+  audience = { status: 'unknown' },
 }: {
   event: AuditEventDisplayRow;
   activity?: ThreadActivity | 'pending';
+  /** Audience for the From line. Unknown or pending shows no title. */
+  audience?: ThreadAudience;
 }) {
   const status = evidenceStatus(event.outcome);
   const linkActivity = activity === 'pending' ? null : activity;
@@ -145,6 +126,13 @@ export function AuditEventRow({
           workspaceId={event.workspaceId}
           threadId={event.threadId}
           activity={linkActivity ?? 'pending'}
+        />
+        <BackLink
+          workspaceId={event.workspaceId}
+          threadId={event.threadId}
+          turnId={event.turnId}
+          recordedAt={event.recordedAt}
+          audience={audience}
         />
         {event.turnId ? (
           <p className="break-all text-xs text-fg-muted">Turn: {event.turnId}</p>

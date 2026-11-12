@@ -167,6 +167,7 @@ export function ServerAuditScreen() {
                               key={event.id}
                               event={event}
                               activity={activity.activityFor(event.threadId)}
+                              audience={activity.sourceFor(event.threadId)}
                             />
                           ))}
                       </Card>

@@ -11,6 +11,8 @@ import {
   Skeleton,
   StatusChip,
 } from '../../primitives';
+import type { ThreadAudience } from '../chat/timeline/audience';
+import { BackLink } from '../chat/timeline/BackLink';
 import {
   AuditEventRow,
   evidenceStatus,
@@ -100,6 +102,7 @@ export function UsageScreen() {
         <UsageRecords
           evidence={evidence.data}
           activity={activity}
+          workspaceId={workspaceId}
           hasNextPage={evidence.hasNextPage}
           isFetchingNextPage={evidence.isFetchingNextPage}
           fetchNextPage={() => void evidence.fetchNextPage()}
@@ -117,12 +120,14 @@ export function UsageScreen() {
 function UsageRecords({
   evidence,
   activity,
+  workspaceId,
   hasNextPage,
   isFetchingNextPage,
   fetchNextPage,
 }: {
   evidence: NonNullable<ReturnType<typeof useUsageAndAudit>['data']>;
   activity: ReturnType<typeof useThreadActivity>;
+  workspaceId: string | null;
   hasNextPage: boolean;
   isFetchingNextPage: boolean;
   fetchNextPage: () => void;
@@ -237,7 +242,12 @@ function UsageRecords({
                   })
                 )
                 .map((record) => (
-                  <UsageRow key={record.id} record={record} />
+                  <UsageRow
+                    key={record.id}
+                    record={record}
+                    workspaceId={record.workspaceId ?? workspaceId}
+                    audience={activity.sourceFor(record.threadId)}
+                  />
                 ))}
               {evidence.capabilityCalls
                 .filter((call) =>
@@ -248,7 +258,12 @@ function UsageRecords({
                   })
                 )
                 .map((call) => (
-                  <CapabilityCallRow key={call.id} call={call} />
+                  <CapabilityCallRow
+                    key={call.id}
+                    call={call}
+                    workspaceId={workspaceId}
+                    audience={activity.sourceFor(call.threadId)}
+                  />
                 ))}
             </UsageSection>
             <UsageSection
@@ -271,6 +286,7 @@ function UsageRecords({
                     key={event.id}
                     event={event}
                     activity={activity.activityFor(event.threadId)}
+                    audience={activity.sourceFor(event.threadId)}
                   />
                 ))}
             </UsageSection>
@@ -355,7 +371,15 @@ function UsageHeader({ actions }: { actions?: React.ReactNode }) {
  *
  * @param props Safe capability-call metadata.
  */
-function CapabilityCallRow({ call }: { call: CapabilityUsageCallRow }) {
+function CapabilityCallRow({
+  call,
+  workspaceId,
+  audience,
+}: {
+  call: CapabilityUsageCallRow;
+  workspaceId: string | null;
+  audience: ThreadAudience;
+}) {
   const status = evidenceStatus(call.status);
   return (
     <ListRow>
@@ -363,6 +387,13 @@ function CapabilityCallRow({ call }: { call: CapabilityUsageCallRow }) {
         <p className="text-sm font-bold text-fg-strong">{call.operation}</p>
         {call.summary ? <p className="text-xs text-fg-muted">{call.summary}</p> : null}
         <p className="text-xs text-fg-muted">{call.family}</p>
+        <BackLink
+          workspaceId={workspaceId}
+          threadId={call.threadId}
+          turnId={call.turnId}
+          recordedAt={call.startedAt}
+          audience={audience}
+        />
         <RecordedTime value={call.startedAt} />
       </div>
       <StatusChip tone={status.tone} dot>
@@ -377,7 +408,15 @@ function CapabilityCallRow({ call }: { call: CapabilityUsageCallRow }) {
  *
  * @param props Safe metering metadata.
  */
-function UsageRow({ record }: { record: UsageRecordRow }) {
+function UsageRow({
+  record,
+  workspaceId,
+  audience,
+}: {
+  record: UsageRecordRow;
+  workspaceId: string | null;
+  audience: ThreadAudience;
+}) {
   return (
     <ListRow>
       <div className="min-w-0 flex-1">
@@ -391,6 +430,13 @@ function UsageRow({ record }: { record: UsageRecordRow }) {
         {record.category === 'llm' ? (
           <p className="text-xs text-fg-muted">Logical model: {record.modelId ?? 'Not recorded'}</p>
         ) : null}
+        <BackLink
+          workspaceId={workspaceId}
+          threadId={record.threadId}
+          turnId={record.turnId}
+          recordedAt={record.recordedAt}
+          audience={audience}
+        />
         <RecordedTime value={record.recordedAt} />
       </div>
     </ListRow>

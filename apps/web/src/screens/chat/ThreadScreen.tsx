@@ -39,6 +39,7 @@ import { ThreadStream } from './ThreadStream';
 import { timelineCopy } from './timeline/copy';
 import { classifySendFailure } from './timeline/degraded';
 import { readStoredLens, writeStoredLens } from './timeline/lens-store';
+import { contentAdmitted, historyModeForHref, turnIdFromSearch } from './timeline/navigation-state';
 import { useTimelineSheets } from './timeline/PhoneChrome';
 import { selectAgentProfile } from './timeline/profiles';
 import { SendFailure, SendPending } from './timeline/SendState';
@@ -82,6 +83,45 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const thread = useThread(workspaceId, threadId);
   const dashboard = useThreadDashboard(workspaceId, threadId, true, true);
+  const admissionMount = useRef<{ id: string; at: number; admitted: boolean } | null>(null);
+  let admission = admissionMount.current;
+  if (admission?.id !== threadId) {
+    admission = { id: threadId, at: Date.now(), admitted: false };
+    admissionMount.current = admission;
+  }
+  if (
+    contentAdmitted({
+      succeeded: dashboard.isSuccess,
+      fetching: dashboard.isFetching,
+      updatedAt: dashboard.dataUpdatedAt,
+      mountedAt: admission.at,
+    })
+  ) {
+    admission.admitted = true;
+  }
+  // The first successful read of this mount stays visible through later polls.
+  const dashboardAdmitted = admission.admitted;
+  useEffect(() => {
+    if (
+      !workspaceId ||
+      !threadId ||
+      dashboard.isFetching ||
+      dashboard.isError ||
+      dashboard.isRefetchError ||
+      dashboardAdmitted
+    ) {
+      return;
+    }
+    void dashboard.refetch();
+  }, [
+    dashboard.refetch,
+    dashboard.isError,
+    dashboard.isFetching,
+    dashboard.isRefetchError,
+    dashboardAdmitted,
+    threadId,
+    workspaceId,
+  ]);
   // Product projection that differs from recovery rewritable: composer liveness follows running only, not pending.
   const activeTurn = dashboard.data?.turns.findLast((turn) => turn.status === 'running');
   // Pending is the open Turn that is not running ("waiting"). It keeps today's 5s
@@ -565,43 +605,55 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
 
         <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
           <div className="mx-auto w-full max-w-[760px] px-6 py-6">
-            <ThreadStream
-              workspaceId={workspaceId}
-              threadId={threadId}
-              readOnly={disconnected}
-              focusTurnId={new URLSearchParams(location.search).get('turnId')}
-              focusItemId={new URLSearchParams(location.search).get('item')}
-              anchor={windowAnchor}
-              measureOpening={measureOpening}
-              onOpeningSettle={setSettledAnchor}
-              running={Boolean(activeTurn)}
-              pending={Boolean(waitingTurn) && !activeTurn}
-              onJumpToLatest={() => {
-                jumpedToLatest.current = true;
-                setSettledAnchor({ kind: 'latest' });
-                const target = timelineJump({
-                  pathname: location.pathname,
-                  search: location.search,
-                  jump: { kind: 'latest' },
-                });
-                navigate({ pathname: target.pathname, search: target.search }, { replace: true });
-              }}
-              onJumpToItem={(itemId) => {
-                const target = timelineJump({
-                  pathname: location.pathname,
-                  search: location.search,
-                  jump: { kind: 'item', itemId },
-                });
-                navigate({ pathname: target.pathname, search: target.search }, { replace: true });
-              }}
-              emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
-              panelHost={panelHost}
-              lens={lens}
-              mode={mode}
-              stopPending={interruptState?.status === 'pending'}
-              onOpen={(href) => navigate(href)}
-              sheets={sheets}
-            />
+            {dashboard.isError && !dashboardAdmitted ? (
+              <ErrorBanner
+                message={timelineCopy.protectedEntryFailed}
+                onRetry={() => void dashboard.refetch()}
+              />
+            ) : (
+              <ThreadStream
+                workspaceId={workspaceId}
+                threadId={threadId}
+                readOnly={disconnected}
+                focusTurnId={turnIdFromSearch(new URLSearchParams(location.search))}
+                focusItemId={new URLSearchParams(location.search).get('item')}
+                anchor={windowAnchor}
+                measureOpening={measureOpening}
+                onOpeningSettle={setSettledAnchor}
+                running={Boolean(activeTurn)}
+                pending={Boolean(waitingTurn) && !activeTurn}
+                holdContent={dashboard.data != null && !dashboardAdmitted}
+                onJumpToLatest={() => {
+                  jumpedToLatest.current = true;
+                  setSettledAnchor({ kind: 'latest' });
+                  const target = timelineJump({
+                    pathname: location.pathname,
+                    search: location.search,
+                    jump: { kind: 'latest' },
+                  });
+                  navigate({ pathname: target.pathname, search: target.search }, { replace: true });
+                }}
+                onJumpToItem={(itemId) => {
+                  const target = timelineJump({
+                    pathname: location.pathname,
+                    search: location.search,
+                    jump: { kind: 'item', itemId },
+                  });
+                  navigate({ pathname: target.pathname, search: target.search }, { replace: true });
+                }}
+                emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
+                panelHost={panelHost}
+                lens={lens}
+                mode={mode}
+                stopPending={interruptState?.status === 'pending'}
+                onOpen={(href) =>
+                  navigate(href, {
+                    replace: historyModeForHref(location.pathname, href) === 'replace',
+                  })
+                }
+                sheets={sheets}
+              />
+            )}
             {feedbackTurn ? (
               <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">
                 <fieldset className="flex items-center gap-2">
