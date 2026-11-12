@@ -14,6 +14,7 @@ import {
   StatusChip,
   TextField,
 } from '../../primitives';
+import { useArtifactVersion } from '../artifacts/data';
 import { classifiedThreadPath, useConversationNavigation } from '../chat/data';
 import { useMaterialProposalText, useWorkspaceMaterialRevision } from '../material/data';
 import { MaterialRangeFeedback } from '../material/MaterialRangeFeedback';
@@ -58,6 +59,28 @@ export function ArtifactReviewScreen() {
       return true;
     }) ?? null;
   const review = addressed ? addressedReview : (pendingReview ?? reviews.data?.at(-1) ?? null);
+  const loadedHead =
+    artifact.data && artifact.data.id === artifactId && artifact.data.workspaceId === workspaceId
+      ? artifact.data
+      : null;
+  const headIsExact = Boolean(
+    review &&
+      loadedHead &&
+      loadedHead.version === review.artifactVersion &&
+      loadedHead.contentDigest === review.contentDigest
+  );
+  const exactVersion = useArtifactVersion(
+    workspaceId ?? '',
+    artifactId,
+    review?.artifactVersion ?? 1,
+    Boolean(
+      workspaceId &&
+        artifactId &&
+        review &&
+        (artifact.isSuccess || artifact.isError) &&
+        !headIsExact
+    )
+  );
 
   if (!workspaceId || reviews.isLoading || (artifact.isLoading && !review)) {
     return (
@@ -76,6 +99,7 @@ export function ArtifactReviewScreen() {
           onRetry={() => {
             void reviews.refetch();
             void artifact.refetch();
+            void exactVersion.refetch();
           }}
         />
       </div>
@@ -94,13 +118,17 @@ export function ArtifactReviewScreen() {
     );
   }
 
-  const exactArtifact =
-    artifact.data?.id === artifactId &&
-    artifact.data.workspaceId === workspaceId &&
-    artifact.data.version === review.artifactVersion &&
-    artifact.data.contentDigest === review.contentDigest
-      ? artifact.data
-      : null;
+  const retained = exactVersion.data?.artifact;
+  const retainedMatches = Boolean(
+    retained &&
+      retained.id === artifactId &&
+      retained.workspaceId === workspaceId &&
+      retained.version === review.artifactVersion &&
+      retained.contentDigest === review.contentDigest
+  );
+  let exactArtifact: GetArtifactResponse | null = null;
+  if (headIsExact && loadedHead) exactArtifact = loadedHead;
+  else if (retained && retainedMatches) exactArtifact = retained;
 
   return (
     <ExactArtifactReview
@@ -115,6 +143,7 @@ export function ArtifactReviewScreen() {
       onRefresh={() => {
         void reviews.refetch();
         void artifact.refetch();
+        void exactVersion.refetch();
       }}
     />
   );
