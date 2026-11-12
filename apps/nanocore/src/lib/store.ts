@@ -5998,11 +5998,16 @@ export class FsStore {
     return read({
       upperOrder: metadata.length,
       policyEvidence: () => null,
+      itemCreatedAt: (itemId) =>
+        revisions.find((entry) => entry.item.id === itemId)?.item.createdAt,
       planRevisions: (turnId) =>
         revisions
           .filter((entry) => entry.item.turnId === turnId && entry.item.type === 'plan')
-          .slice(-10)
-          .map((entry) => ({ ...entry, item: digestItem(entry.item) })),
+          .slice(-11)
+          .map((entry, index, retained) => ({
+            ...entry,
+            item: retained.length > 10 && index === 0 ? null : digestItem(entry.item),
+          })),
       segmentCounts: (turnId, after, before) => {
         const counts: Partial<Record<Item['type'], number>> = {};
         for (const entry of revisions)

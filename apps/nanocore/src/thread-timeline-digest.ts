@@ -19,6 +19,7 @@ export function readTimelineDigest(
 ): Digest {
   const lines = new Map<Kind, Digest['lines'][number]>();
   const seen = new Set<string>();
+  const reviews = new Map<string, string>();
   const result: Digest = { lines: [], coverage: 'complete' };
   const add = (kind: Kind, key: string, anchor: Digest['lines'][number]['anchor'], count = 1) => {
     if (count < 1 || seen.has(`${kind}:${key}`)) return;
@@ -53,6 +54,13 @@ export function readTimelineDigest(
       });
       if (attention.more) result.coverage = 'partial';
       for (const row of attention.items) {
+        if (row.source.type === 'artifact_review') {
+          reviews.set(
+            `${row.source.turnId}:${row.source.artifactId}:${row.source.artifactVersion}`,
+            row.id
+          );
+          continue;
+        }
         if (
           !row.itemId ||
           !row.turnId ||
@@ -85,7 +93,8 @@ export function readTimelineDigest(
       }).length
     )
       result.coverage = 'partial';
-    const boundaryItem = boundary ? snapshot.item(boundary.itemId) : undefined;
+    const boundaryCreatedAt = boundary ? snapshot.itemCreatedAt(boundary.itemId) : undefined;
+    if (boundary && !boundaryCreatedAt) result.coverage = 'partial';
     let remaining = THREAD_TIMELINE_LIMITS.digestRevisions;
     const prior = new Map<string, Item | null>();
     const completedPlanSteps = new Set<string>();
@@ -97,7 +106,7 @@ export function readTimelineDigest(
         terminal &&
         (!boundary ||
           row.admissionOrder > boundary.admissionOrder ||
-          (!!turn.completedAt && !!boundaryItem && turn.completedAt > boundaryItem.createdAt))
+          (!!turn.completedAt && !!boundaryCreatedAt && turn.completedAt > boundaryCreatedAt))
       ) {
         add('runs-finished', turn.id, { kind: 'turn', turnId: turn.id });
         if (turn.status === 'failed') add('problems', turn.id, { kind: 'turn', turnId: turn.id });
@@ -133,7 +142,9 @@ export function readTimelineDigest(
             add('new-messages', item.id, anchor);
           if (
             (isRecordedItemFailure(item) && (!previous || !isRecordedItemFailure(previous))) ||
-            (item.type === 'status' && item.level === 'error' && entry.revision === 1)
+            (item.type === 'status' &&
+              item.level === 'error' &&
+              !(previous?.type === 'status' && previous.level === 'error'))
           )
             add('problems', item.id, anchor);
           if (item.type === 'plan') {
@@ -162,6 +173,8 @@ export function readTimelineDigest(
           )
             add('decisions-by-others', item.id, anchor);
           if (item.type === 'artifact-reference' && entry.revision === 1) {
+            const review = reviews.get(`${turn.id}:${item.artifactId}:${item.artifactVersion}`);
+            if (review) add('needs-you', review, { kind: 'attention', rowId: review });
             const artifact = owner.store.getArtifact(owner.input.workspaceId, item.artifactId);
             if (
               artifact.status === 'ready' &&

@@ -1197,6 +1197,8 @@ export interface ThreadTimelineSnapshot {
     input: Parameters<typeof readTurnItemPositions>[3]
   ): ThreadItemPosition[];
   item(itemId: string): Item | undefined;
+  /** Verified carried creation fact; never opens the immutable Item body. */
+  itemCreatedAt(itemId: string): string | undefined;
   itemHead(turnId: string): number;
   counts(turnId: string): Partial<Record<Item['type'], number>>;
   /** Current failed identities only; revisions and body sizes do not inflate or load this aggregate. */
@@ -1238,9 +1240,10 @@ export function withNativeThreadTimelineSnapshot<T>(
           const rows = reader.sqlite
             .prepare(`SELECT sequence,revision FROM control_product_entries
             WHERE kind='item' AND turn_id=? AND json_extract(identity_json,'$.type')='plan'
-            ORDER BY sequence DESC LIMIT 10`)
+            ORDER BY sequence DESC LIMIT 11`)
             .all(turnId) as Array<{ sequence: number; revision: number }>;
-          return rows.reverse().map((row) => {
+          return rows.reverse().map((row, index) => {
+            if (rows.length > 10 && index === 0) return { ...row, item: null };
             const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0]!;
             return {
               sequence: row.sequence,
@@ -1262,6 +1265,14 @@ export function withNativeThreadTimelineSnapshot<T>(
         agentSession: (sessionId) => {
           const row = readNativeProduct(scope, 'agent-session', sessionId, reader);
           return row?.record.threadId === threadId ? row : undefined;
+        },
+        itemCreatedAt: (itemId) => {
+          const row = reader.sqlite
+            .prepare(`SELECT json_extract(e.read_metadata_json,'$.createdAt') AS createdAt
+            FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
+            WHERE e.kind='item' AND e.id=? AND e.revision=1 AND e.schema_version=1 AND t.thread_id=?`)
+            .get(itemId, threadId) as { createdAt: unknown } | undefined;
+          return typeof row?.createdAt === 'string' ? row.createdAt : undefined;
         },
         currentPositions: (input) => readCurrentThreadItemPositions(reader.sqlite, threadId, input),
         turnRanks: (turnId) => readThreadTurnRanks(reader.sqlite, threadId, turnId),

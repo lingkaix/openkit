@@ -83,8 +83,9 @@ export function readTimelinePlanSegments(
   turnId: string,
   budget: number
 ): NonNullable<TimelineRunEntry['planSegments']> {
-  const observations = snapshot.planRevisions(turnId);
-  let partial = observations.length === 10;
+  const retained = snapshot.planRevisions(turnId);
+  const observations = retained.slice(-10);
+  let partial = retained.length > 10;
   type Segment = NonNullable<TimelineRunEntry['planSegments']>['segments'][number];
   const segments: Segment[] = [];
   let active: Segment | undefined;
@@ -129,7 +130,8 @@ export function readTimelinePlanSegments(
   }
   while (
     segments.length > 8 ||
-    Buffer.byteLength(JSON.stringify({ segments, coverage: 'partial' })) > budget
+    Buffer.byteLength(JSON.stringify({ segments, coverage: partial ? 'partial' : 'complete' })) >
+      budget
   ) {
     if (!segments.length) break;
     segments.shift();
