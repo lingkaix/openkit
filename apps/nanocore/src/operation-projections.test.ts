@@ -12,7 +12,12 @@ import {
   operationToolName,
 } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
-import { ApiErrorSchema, PROTOCOL_VERSION, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  ApiErrorSchema,
+  PROTOCOL_VERSION,
+  TimestampSchema,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
@@ -1457,7 +1462,15 @@ describe('Workspace Thread Turn projection cutover', () => {
             items: f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id),
             nextCursor: null,
           });
-          const read = await project('thread.dashboard', child);
+          const startedAt = Date.now();
+          const { serverTime, ...read } = (await project('thread.dashboard', child)) as Record<
+            string,
+            unknown
+          >;
+          // P4 samples the current server clock on every read; all other transport facts stay equal.
+          const sampledAt = Date.parse(TimestampSchema.parse(serverTime));
+          expect(sampledAt).toBeGreaterThanOrEqual(startedAt);
+          expect(sampledAt).toBeLessThanOrEqual(Date.now());
           dashboard ??= read;
           expect(read).toEqual(dashboard);
           expect(read).toMatchObject({
