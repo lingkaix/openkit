@@ -140,6 +140,42 @@ export function attentionWalk<TItem extends { id: string }>(
   }));
 }
 
+/**
+ * The phone bar opens a loaded open decision.
+ * A review row whose request is not loaded is not that decision.
+ * When the request is on screen before its row arrives, the item id is the target.
+ */
+export function barDecisionTarget<T extends { id: string }>(
+  walk: readonly AttentionWalkEntry<T>[],
+  openItemIds: readonly string[]
+): string | null {
+  const open = new Set(openItemIds);
+  const loaded = walk.find((entry) => entry.item != null && open.has(entry.item.id));
+  if (loaded) return loaded.key;
+  if (openItemIds.length > 0) return openItemIds[0] ?? null;
+  return walk[0]?.key ?? null;
+}
+
+/**
+ * Later open decisions after the one on screen.
+ * A row with no loaded request does not count and is not the next sheet.
+ */
+export function openDecisionsAfter<T extends { id: string }>(
+  walk: readonly AttentionWalkEntry<T>[],
+  openId: string | null,
+  openItemIds: readonly string[]
+): { count: number; nextKey: string | null } {
+  if (!openId) return { count: 0, nextKey: null };
+  const open = new Set(openItemIds);
+  const index = walk.findIndex(
+    (entry) => entry.key === openId || entry.itemId === openId || entry.rowId === openId
+  );
+  const rest = (index >= 0 ? walk.slice(index + 1) : []).filter(
+    (entry) => entry.item != null && open.has(entry.item.id)
+  );
+  return { count: rest.length, nextKey: rest[0]?.key ?? null };
+}
+
 /** Map one Action Center row. Age and blocking are copied, not derived. */
 export function toNeedsYouRow(
   row: Pick<

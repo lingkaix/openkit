@@ -49,7 +49,9 @@ import { NowLine } from './timeline/NowLine';
 import { readTimelineHistory, writeTimelineHistory } from './timeline/navigation-state';
 import {
   attentionWalk,
+  barDecisionTarget,
   focusTimelineItem,
+  openDecisionsAfter,
   orderNeedsYou,
   scopeNeedsYou,
   toNeedsYouRow,
@@ -89,8 +91,11 @@ import {
   dividerPlacement,
   earlierUnread,
   entryFromRun,
+  holdItems,
+  itemAnchorHasLevel2,
   keepsUnreadMark,
   mergeDisplayedItems,
+  narrativePreviews,
   newContentExceedsScreen,
   runHasDecision,
   runStaysNew,
@@ -300,6 +305,7 @@ export function ThreadStream({
     if (typeof window === 'undefined') return;
     writeTimelineHistory(window.history, { expandedRunIds: turnId ? [turnId] : [] });
   }
+  const [followRequest, setFollowRequest] = useState(0);
   const [inspectedTurnId, setInspectedTurnId] = useState<string | null>(null);
   const inspectButtonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
@@ -317,12 +323,31 @@ export function ThreadStream({
     pending: Boolean(pending),
   });
   const stepsTurnId = sheets?.stepsTurnId ?? localSteps;
-  const level2TurnId = timelineOn ? (stepsTurnId ?? expandedTurnId) : null;
+  const anchoredWindow =
+    timelineWindow.data && itemAnchorHasLevel2(timelineWindow.data)
+      ? timelineWindow.data.itemWindow
+      : null;
+  const fullTurnId =
+    lens === 'full'
+      ? (timelineWindow.data?.anchor?.turnId ?? timelineWindow.data?.runs.at(-1)?.id ?? null)
+      : null;
+  const level2TurnId = timelineOn
+    ? (stepsTurnId ?? expandedTurnId ?? fullTurnId ?? anchoredWindow?.turnId ?? null)
+    : null;
+  const level2Seed =
+    anchoredWindow && anchoredWindow.turnId === level2TurnId
+      ? holdItems(anchoredWindow.items, anchoredWindow.beforeCursor, anchoredWindow.afterCursor)
+      : null;
+  const level2Run = timelineWindow.data?.runs.find((run) => run.id === level2TurnId);
+  const level2Placement = stepsTurnId || expandedTurnId ? 'step' : 'all';
   const level2 = useRunItemWindow({
     workspaceId,
     threadId,
     turnId: level2TurnId,
-    enabled: timelineOn && Boolean(level2TurnId),
+    enabled: timelineOn && timelineWindow.isFetched && Boolean(level2TurnId),
+    placement: level2Placement,
+    cursor: level2Seed || level2Placement === 'step' ? null : (level2Run?.narrativeCursor ?? null),
+    seed: level2Seed,
   });
   useLayoutEffect(() => {
     if (!measureOpeningActive || openingMeasured.current) return;
@@ -395,29 +420,22 @@ export function ThreadStream({
       }));
     }
   }, [timelineOn, timelineWindow.data]);
-  const liveKey = liveSnapshot
-    .map(
-      (item) =>
-        `${item.id}:${'text' in item && typeof item.text === 'string' ? item.text.length : 0}`
-    )
-    .join('|');
-  const seenLive = useRef<string | null>(null);
+  const seenLiveIds = useRef<Set<string> | null>(null);
   useEffect(() => {
     if (!timelineOn) return;
-    // While the reader is at the end, the current text is the baseline.
-    // One coalesced burst still counts once the reader has scrolled up.
+    const ids = liveSnapshot.map((item) => item.id);
     if (following.current) {
-      seenLive.current = liveKey;
+      seenLiveIds.current = new Set(ids);
       return;
     }
-    if (seenLive.current === null || seenLive.current === liveKey) {
-      seenLive.current = liveKey;
-      return;
-    }
-    seenLive.current = liveKey;
-    if (liveKey.length === 0) return;
-    setFollowNew((current) => ({ count: current.count + 1, decision: current.decision }));
-  }, [liveKey, timelineOn]);
+    const known = seenLiveIds.current;
+    seenLiveIds.current = new Set(ids);
+    if (known === null) return;
+    let added = 0;
+    for (const id of ids) if (!known.has(id)) added += 1;
+    if (added === 0) return;
+    setFollowNew((current) => ({ count: current.count + added, decision: current.decision }));
+  }, [liveSnapshot, timelineOn]);
   const cursor = useThreadItemCursor(workspaceId, threadId);
   const loadEarlier = useLoadEarlierItems(workspaceId, threadId);
   const earlierCursor =
@@ -511,6 +529,7 @@ export function ThreadStream({
   );
   const [clock, setClock] = useState(() => Date.now());
   const itemLocated = useRef<string | null>(null);
+  const openedAnchor = useRef<string | null>(null);
   useEffect(() => {
     const timer = setInterval(
       () => setClock(Date.now()),
@@ -518,11 +537,25 @@ export function ThreadStream({
     );
     return () => clearInterval(timer);
   }, [liveElapsed]);
+  const anchoredItemId =
+    focusItemId ??
+    timelineWindow.data?.anchor?.itemId ??
+    timelineWindow.data?.catchUpAnchor?.itemId ??
+    null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rememberExpanded is recreated each render; openedAnchor records the one expand.
   useEffect(() => {
-    if (!focusItemId || historyLoading || feedItems.length === 0) return;
-    if (itemLocated.current === focusItemId) return;
-    if (focusTimelineItem(focusItemId)) itemLocated.current = focusItemId;
-  }, [feedItems.length, focusItemId, historyLoading]);
+    if (!anchoredItemId || historyLoading || feedItems.length === 0) return;
+    if (itemLocated.current === anchoredItemId) return;
+    const item = feedItems.find((candidate) => candidate.id === anchoredItemId);
+    if (item && isStepItem(item) && expandedTurnId !== item.turnId && lens !== 'full') {
+      if (openedAnchor.current !== anchoredItemId) {
+        openedAnchor.current = anchoredItemId;
+        rememberExpanded(item.turnId);
+      }
+      return;
+    }
+    if (focusTimelineItem(anchoredItemId)) itemLocated.current = anchoredItemId;
+  }, [anchoredItemId, expandedTurnId, feedItems, historyLoading, lens]);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
@@ -753,6 +786,7 @@ export function ThreadStream({
       item.type === 'approval-request' || item.type === 'user-input-request'
   );
   const decisionWalk = attentionWalk(scoped, decisionItems);
+  const openDecisionItemIds = openDecisionIds(decisionItems);
   const openEntry =
     decisionId == null
       ? null
@@ -760,14 +794,24 @@ export function ThreadStream({
           (entry) =>
             entry.key === decisionId || entry.itemId === decisionId || entry.rowId === decisionId
         ) ?? null);
-  const decisionIndex = openEntry
-    ? decisionWalk.findIndex((entry) => entry.key === openEntry.key)
-    : -1;
-  const decisionsAfter = decisionIndex >= 0 ? decisionWalk.length - decisionIndex - 1 : 0;
-  const nextWalk = decisionIndex >= 0 ? decisionWalk[decisionIndex + 1] : undefined;
   const openRow = openEntry ? scoped.find((row) => row.id === openEntry.rowId) : undefined;
-  const openItem = openEntry?.item ?? null;
-  const firstDecision = decisionWalk[0];
+  const openItem =
+    openEntry?.item ??
+    (decisionId == null
+      ? null
+      : (decisionItems.find(
+          (item) => item.id === decisionId && openDecisionItemIds.includes(item.id)
+        ) ?? null));
+  const remainingDecisions = openDecisionsAfter(
+    decisionWalk,
+    openEntry?.key ?? decisionId,
+    openDecisionItemIds
+  );
+  const decisionsAfter = remainingDecisions.count;
+  const nextWalk = remainingDecisions.nextKey
+    ? decisionWalk.find((entry) => entry.key === remainingDecisions.nextKey)
+    : undefined;
+  const barTarget = barDecisionTarget(decisionWalk, openDecisionItemIds);
   const chrome = narrativeOnly ? null : (
     <div className="sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2">
       {phone ? (
@@ -781,9 +825,9 @@ export function ThreadStream({
             needsCount={decisionWalk.length}
             reducedMotion={reducedMotion}
             onOpen={
-              firstDecision
+              barTarget
                 ? () => {
-                    openSheet('decision', firstDecision.key);
+                    openSheet('decision', barTarget);
                   }
                 : undefined
             }
@@ -1197,6 +1241,7 @@ export function ThreadStream({
               setAnchorOverride({ kind: 'latest' });
               setFollowNew({ count: 0, decision: false });
               following.current = true;
+              setFollowRequest((current) => current + 1);
               onJumpToLatest?.();
             }}
             newCount={followNew.count}
@@ -1212,8 +1257,10 @@ export function ThreadStream({
               setAnchorOverride({ kind: 'latest' });
               setFollowNew({ count: 0, decision: false });
               following.current = true;
+              setFollowRequest((current) => current + 1);
               onJumpToLatest?.();
             }}
+            followRequest={followRequest}
             pinDivider={windowAnchor.kind === 'catch-up' && restoredNavigation.current == null}
             pinKey={scopeKey}
           >
@@ -1284,7 +1331,11 @@ export function ThreadStream({
                   groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
                     <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
                   ) : null}
-                  {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
+                  {index > 0 ? (
+                    <TurnSeparator
+                      label={runSeparatorCopy(timelineRun?.admissionOrder ?? index + 1)}
+                    />
+                  ) : null}
                   {staysNew ? (
                     <p data-still-new="true" data-voice="fact" className="ok-voice-fact ok-meta">
                       {timelineCopy.stillNew}
@@ -1373,6 +1424,29 @@ export function ThreadStream({
                     workerCue={
                       Boolean(activity && activity.entries.length > 0) && runLens === 'work'
                     }
+                    previews={narrativePreviews(timelineRun?.narrative ?? []).map((preview) =>
+                      fullText[preview.id]
+                        ? {
+                            ...preview,
+                            text: fullText[preview.id] ?? preview.text,
+                            truncated: false,
+                          }
+                        : preview
+                    )}
+                    onShowFullText={(preview) => {
+                      if (!workspaceId || fullText[preview.id]) return;
+                      void client.operations['thread.item-body']({
+                        workspaceId,
+                        threadId,
+                        turnId: group.turnId,
+                        itemId: preview.id,
+                      }).then((body) => {
+                        setFullText((current) => ({
+                          ...current,
+                          [preview.id]: itemBodyText(body.item),
+                        }));
+                      });
+                    }}
                     showActivity={Boolean(activity) && runLens === 'full'}
                     activityLine={
                       activity ? (
@@ -1437,40 +1511,32 @@ export function ThreadStream({
                     'restricted' ? (
                     <p className="ok-meta">{timelineCopy.restricted}</p>
                   ) : null}
-                  {windowRuns
-                    ?.find((run) => run.id === group.turnId)
-                    ?.narrative.filter(
-                      (item) => item.detail.kind === 'preview' && item.detail.truncated
-                    )
-                    .map((item) =>
-                      item.detail.kind === 'preview' ? (
-                        <div key={item.id} className="ok-prose">
-                          <p>{fullText[item.id] ?? item.detail.text}</p>
-                          {fullText[item.id] ? null : (
-                            <Button
-                              variant="quiet"
-                              size="sm"
-                              onPress={() => {
-                                if (!workspaceId) return;
-                                void client.operations['thread.item-body']({
-                                  workspaceId,
-                                  threadId,
-                                  turnId: group.turnId,
-                                  itemId: item.id,
-                                }).then((body) => {
-                                  setFullText((current) => ({
-                                    ...current,
-                                    [item.id]: itemBodyText(body.item),
-                                  }));
-                                });
-                              }}
-                            >
-                              {timelineCopy.showFullText}
-                            </Button>
-                          )}
-                        </div>
-                      ) : null
-                    )}
+                  {!stepsTurnId &&
+                  level2TurnId === group.turnId &&
+                  (expandedTurnId === group.turnId || lens === 'full') ? (
+                    <div className="flex gap-2">
+                      {level2.data?.beforeCursor ? (
+                        <Button
+                          variant="quiet"
+                          size="sm"
+                          onPress={level2.pageEarlier}
+                          isDisabled={level2.paging}
+                        >
+                          {timelineCopy.loadEarlier}
+                        </Button>
+                      ) : null}
+                      {level2.data?.afterCursor ? (
+                        <Button
+                          variant="quiet"
+                          size="sm"
+                          onPress={level2.pageLater}
+                          isDisabled={level2.paging}
+                        >
+                          {timelineCopy.loadLater}
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
@@ -1571,7 +1637,7 @@ export function ThreadStream({
               </li>
             ) : null}
             {stepItems.map((item) => (
-              <li key={item.id} className="ok-step">
+              <li key={item.id} id={`timeline-item-${item.id}`} tabIndex={-1} className="ok-step">
                 {renderTimelineItem(item)}
               </li>
             ))}

@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { CONVERSATION_NAVIGATION_PAGE_LIMIT } from '../screens/chat/data';
+import { anchorFromSearch } from '../screens/chat/timeline/window';
 import { useWorkspaceStore } from '../screens/workspace-store';
 import { CoreClientProvider } from './core-client';
 import { AppRoutes } from './routes';
@@ -906,9 +907,18 @@ function register_p2_nav_behavior_test_tsx_1() {
       expect(decision).toBeVisible();
       const decisionRow = decision.closest('.border-b');
       expect(decisionRow).toBeTruthy();
-      expect(
-        within(decisionRow as HTMLElement).getByRole('link', { name: 'Open thread' })
-      ).toHaveAttribute('href', `/chat/${WORKSPACE_ID}/th_019a0000-0000-7000-8000-000000000120`);
+      const openThread = within(decisionRow as HTMLElement).getByRole('link', {
+        name: 'Open thread',
+      });
+      const href = openThread.getAttribute('href') ?? '';
+      expect(href.startsWith(`/chat/${WORKSPACE_ID}/th_019a0000-0000-7000-8000-000000000120`)).toBe(
+        true
+      );
+      expect(href).toContain('attention=question%3Aq1');
+      expect(anchorFromSearch(href.slice(href.indexOf('?')))).toEqual({
+        kind: 'item',
+        itemId: 'it_019a0000-0000-7000-8000-000000000202',
+      });
 
       const actionCenter = await screen.findByRole('button', { name: /^Action Center/ });
       expect(await within(actionCenter).findByText('2')).toBeInTheDocument();

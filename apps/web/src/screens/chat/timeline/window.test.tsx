@@ -5,6 +5,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CatchUpDivider } from './CatchUpDivider';
 import type { AgentProfileId } from './profiles';
@@ -142,7 +143,7 @@ describe('timeline window anchors', () => {
 });
 
 describe('timeline cursor paging', () => {
-  it('pages both ways under a concurrent append without a duplicate or a hole', () => {
+  it('pages both ways under a concurrent append without inventing a missing admission', () => {
     const held = [10, 11, 12, 13].map((order) => run(order));
     const earlier = [8, 9, 10].map((order) => run(order));
     const appended = [13, 14].map((order) => run(order));
@@ -191,6 +192,7 @@ describe('timeline cursor paging', () => {
     expect(polled.runs.map((entry) => entry.admissionOrder)).toEqual([8, 9, 10, 11, 12, 13, 15]);
     expect(polled.beforeCursor).toBe('older');
     expect(polled.afterCursor).toBe('fresh-after');
+    // Admission 14 is in neither page. The overlap must not invent it.
     expect(admissionGaps(polled.runs.map((entry) => entry.admissionOrder)).missing).toEqual([14]);
   });
 
@@ -414,7 +416,7 @@ describe('catch-up opening', () => {
     ).toBe(false);
     const itemJump = timelineJump({
       pathname: '/tasks/ws/th',
-      search: `?turnId=${turnId}&turn=${turnId}&attention=row&row=row-1&catchUp=1`,
+      search: `?turnId=${turnId}&turn=${turnId}&attention=row&row=row-1&catchUp=1&request=req_1`,
       jump: { kind: 'item', itemId },
     });
     expect(itemJump).toEqual({
@@ -433,7 +435,11 @@ describe('catch-up opening', () => {
   it('offers the earlier-unread jump and no digest list', async () => {
     const user = userEvent.setup();
     const onEarlierUnread = vi.fn();
-    render(<CatchUpDivider count={2} onEarlierUnread={onEarlierUnread} />);
+    render(
+      <MemoryRouter>
+        <CatchUpDivider count={2} onEarlierUnread={onEarlierUnread} />
+      </MemoryRouter>
+    );
     expect(screen.getByText('New since you were here')).toBeVisible();
     expect(screen.queryByRole('list')).toBeNull();
     await user.click(screen.getByRole('button', { name: '2 earlier unread ›' }));
@@ -441,7 +447,11 @@ describe('catch-up opening', () => {
   });
 
   it('hides the jump when nothing earlier is unread', () => {
-    render(<CatchUpDivider count={0} onEarlierUnread={() => undefined} />);
+    render(
+      <MemoryRouter>
+        <CatchUpDivider count={0} onEarlierUnread={() => undefined} />
+      </MemoryRouter>
+    );
     expect(screen.getByText('New since you were here')).toBeVisible();
     expect(screen.queryByRole('button', { name: /earlier unread/ })).toBeNull();
     expect(screen.queryByRole('list')).toBeNull();

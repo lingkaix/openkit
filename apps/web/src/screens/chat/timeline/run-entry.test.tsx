@@ -1,15 +1,22 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import '../../../styles/timeline.css';
 import { lintCopyText } from './copy';
 import { longRunFixture } from './fixture';
 import { RunEntry } from './RunEntry';
 import { projectTimeline } from './source';
+import type { NarrativePreview } from './window';
 
-function renderFixture(lens: 'work' | 'full') {
-  const fixture = longRunFixture();
+function renderFixture(
+  lens: 'work' | 'full',
+  extras?: {
+    previews?: readonly NarrativePreview[];
+    onShowFullText?: (preview: NarrativePreview) => void;
+  },
+  fixture = longRunFixture()
+) {
   const timeline = projectTimeline({
     items: fixture.items,
     turns: [fixture.turn],
@@ -42,6 +49,8 @@ function renderFixture(lens: 'work' | 'full') {
           inspected={false}
           onInspect={() => {}}
           showActivity={false}
+          previews={extras?.previews}
+          onShowFullText={extras?.onShowFullText}
         />
       </div>
     </MemoryRouter>
@@ -83,6 +92,78 @@ describe('run entry presentation', () => {
     await user.click(fullControl);
     expect(fullControl.getBoundingClientRect().top).toBe(before);
     expect(fullControl.isConnected).toBe(true);
+  });
+
+  it('keeps a preview beside the item it follows', async () => {
+    const user = userEvent.setup();
+    const fixture = longRunFixture();
+    const decision = fixture.items.find((item) => item.type === 'approval-request');
+    const command = fixture.items.find((item) => item.type === 'command-execution');
+    if (!decision || !command) throw new Error('The fixture is missing a decision or a command.');
+    const onShowFullText = vi.fn();
+    const { unmount } = renderFixture(
+      'work',
+      {
+        onShowFullText,
+        previews: [
+          {
+            id: 'it-plan',
+            afterItemId: decision.id,
+            text: 'plan head',
+            truncated: false,
+            placement: 'narrative',
+          },
+          {
+            id: 'it-cut',
+            afterItemId: decision.id,
+            text: 'cut head',
+            truncated: true,
+            placement: 'narrative',
+          },
+        ],
+      },
+      fixture
+    );
+    const decisionText = screen.getByText('Approve the export');
+    const preview = screen.getByText('plan head');
+    expect(decisionText.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+    await user.click(screen.getByRole('button', { name: 'Show the full text' }));
+    expect(onShowFullText).toHaveBeenCalledOnce();
+    expect(onShowFullText.mock.calls[0]?.[0].id).toBe('it-cut');
+    unmount();
+    renderFixture(
+      'full',
+      {
+        previews: [
+          {
+            id: 'it-out',
+            afterItemId: command.id,
+            text: 'command head',
+            truncated: false,
+            placement: 'step',
+          },
+        ],
+      },
+      fixture
+    );
+    const commandText = screen.getAllByText('npm test')[0];
+    if (!commandText) throw new Error('The open fold did not show the command.');
+    const output = screen.getByText('command head');
+    expect(commandText.compareDocumentPosition(output) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
+    expect(screen.queryByRole('button', { name: 'Show the full text' })).toBeNull();
+  });
+
+  it('focuses the loaded request the address names', () => {
+    const previous = window.location.href;
+    window.history.replaceState(null, '', '?request=apr-long');
+    renderFixture('work');
+    const card = screen.getByText('Approve the export').closest('[id^="timeline-item-"]');
+    expect(card).toHaveFocus();
+    window.history.replaceState(null, '', previous);
   });
 
   it('uses the prose measure on notes', () => {

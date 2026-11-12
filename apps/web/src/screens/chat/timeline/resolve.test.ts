@@ -69,8 +69,8 @@ describe('timeline object resolver', () => {
     }
   });
 
-  it('opens a run anchor and drops message and request anchors', () => {
-    const result = resolve(
+  it('opens a message on its item and a request on the run', () => {
+    const message = resolve(
       {
         kind: 'thread',
         workspaceId: WS,
@@ -81,15 +81,31 @@ describe('timeline object resolver', () => {
       },
       threads(true)
     );
-    expect(result).toMatchObject({
+    expect(message).toMatchObject({
       path: `/tasks/${WS}/${THREAD}`,
-      focus: TURN,
-      notice: timelineNotices.opensRunNotMessage,
+      focus: 'it_1',
+      notice: null,
     });
-    expect(hrefOf(result)).toContain('turn=tu_1');
-    expect(hrefOf(result)).toContain('turnId=tu_1');
-    expect(hrefOf(result)).not.toContain('item=');
-    expect(hrefOf(result)).not.toContain('request');
+    expect(hrefOf(message)).toContain('item=it_1');
+    expect(hrefOf(message)).toContain('turn=tu_1');
+    expect(hrefOf(message)).not.toContain('request');
+
+    const request = resolve(
+      {
+        kind: 'thread',
+        workspaceId: WS,
+        threadId: THREAD,
+        turnId: TURN,
+        requestId: 'req_1',
+      },
+      threads(true)
+    );
+    expect(request).toMatchObject({
+      focus: TURN,
+      notice: timelineNotices.opensRunNotRequest,
+    });
+    expect(hrefOf(request)).toContain('request=req_1');
+    expect(hrefOf(request)).not.toContain('item=');
   });
 
   it('shows no title when the viewer cannot open the source', () => {

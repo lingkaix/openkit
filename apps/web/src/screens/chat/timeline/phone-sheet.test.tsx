@@ -1,7 +1,9 @@
 import { ItemSchema } from '@openkit/protocol';
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import { DecisionSheet } from './PhoneChrome';
+import userEvent from '@testing-library/user-event';
+import { describe, expect, it, vi } from 'vitest';
+import { barDecisionTarget, openDecisionsAfter } from './needs-you';
+import { DecisionSheet, PhoneSheetFrame } from './PhoneChrome';
 
 const approval = ItemSchema.parse({
   id: 'it_00000000-0000-7570-9913-dd37f2bda2fe',
@@ -16,6 +18,48 @@ const approval = ItemSchema.parse({
   kind: 'permission',
   createdAt: '2026-07-21T00:00:02.000Z',
   completedAt: '2026-07-21T00:00:02.000Z',
+});
+
+describe('phone bar decision target', () => {
+  const question = { id: 'it_question' };
+  const walk = [
+    { key: 'artifact-review:rev', rowId: 'artifact-review:rev', item: null },
+    { key: 'it_question', rowId: 'question:1', itemId: 'it_question', item: question },
+  ];
+
+  it('opens the loaded question ahead of a review row the sheet cannot answer', () => {
+    expect(barDecisionTarget(walk, ['it_question'])).toBe('it_question');
+    expect(
+      barDecisionTarget(
+        [{ key: 'artifact-review:rev', rowId: 'artifact-review:rev', item: null }],
+        ['it_question']
+      )
+    ).toBe('it_question');
+  });
+
+  it('does not offer a review row as the next decision', () => {
+    expect(openDecisionsAfter(walk, 'it_question', ['it_question'])).toEqual({
+      count: 0,
+      nextKey: null,
+    });
+  });
+});
+
+describe('steps sheet', () => {
+  it('traps focus and closes from the keyboard', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    render(
+      <PhoneSheetFrame label="Steps" mode="partial" onClose={onClose}>
+        <button type="button">Earlier</button>
+      </PhoneSheetFrame>
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Steps' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
 });
 
 describe('decision sheet', () => {

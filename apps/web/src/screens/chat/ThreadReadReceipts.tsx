@@ -138,7 +138,7 @@ export function ThreadReadReceipts({
   return (
     <ReadReceiptContext.Provider value={context}>
       {viewerUserId && !disabled ? (
-        <div className="flex flex-col gap-2">
+        <div className="flex min-h-11 flex-col gap-2">
           {state.isError ? (
             <ErrorBanner
               message="Read state is unavailable."

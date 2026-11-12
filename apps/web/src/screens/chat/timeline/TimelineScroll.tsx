@@ -48,6 +48,7 @@ export function TimelineScroll({
   pinDivider,
   pinKey,
   restoreTop,
+  followRequest = 0,
   children,
 }: {
   topEntryId: string | null;
@@ -71,12 +72,14 @@ export function TimelineScroll({
   pinKey?: string;
   /** Scroll position from this history entry. Null follows the latest anchor. */
   restoreTop?: number | null;
+  /** Bumps when Jump to latest or the catch-up control asks the scroller to follow. */
+  followRequest?: number;
   children: ReactNode;
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const topSentinel = useRef<HTMLDivElement>(null);
   const bottomSentinel = useRef<HTMLDivElement>(null);
-  const pending = useRef<{ id: string; top: number } | null>(null);
+  const pending = useRef<{ id: string; top: number; height: number } | null>(null);
   const [following, setFollowing] = useState(initiallyFollowing);
   const followingRef = useRef(initiallyFollowing);
   const pinnedDivider = useRef(false);
@@ -156,10 +159,12 @@ export function TimelineScroll({
       `[data-timeline-entry="${CSS.escape(fix.id)}"]`
     );
     if (!entry) return;
+    const scroller = scrollParent(frame.current);
+    // A follow render can land before the prepend. Wait until the page changes height,
+    // then clear even when overflow-anchor already left a zero residual.
+    if (scroller.scrollHeight === fix.height) return;
     const delta = scrollCorrection(fix.top, entry.getBoundingClientRect().top);
-    // A follow-state render can land before the prepend. Keep the anchor until it moves.
-    if (delta === 0) return;
-    scrollParent(frame.current).scrollTop += delta;
+    if (delta !== 0) scroller.scrollTop += delta;
     pending.current = null;
   });
 
@@ -168,6 +173,16 @@ export function TimelineScroll({
     if (!initiallyFollowing || followingRef.current) return;
     setFollow(true);
   }, [initiallyFollowing]);
+
+  const followedRequest = useRef(0);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setFollow is recreated each render; followedRequest records the one snap.
+  useLayoutEffect(() => {
+    if (followRequest === 0 || followRequest === followedRequest.current) return;
+    followedRequest.current = followRequest;
+    setFollow(true);
+    const scroller = scrollParent(frame.current);
+    scroller.scrollTop = scroller.scrollHeight;
+  }, [followRequest]);
 
   useLayoutEffect(() => {
     if (followingRef.current) pending.current = null;
@@ -218,7 +233,12 @@ export function TimelineScroll({
       `[data-timeline-entry="${CSS.escape(topEntryId)}"]`
     );
     if (!entry) return;
-    pending.current = { id: topEntryId, top: entry.getBoundingClientRect().top };
+    const scroller = scrollParent(frame.current);
+    pending.current = {
+      id: topEntryId,
+      top: entry.getBoundingClientRect().top,
+      height: scroller.scrollHeight,
+    };
   }
 
   const newUpdatesButton =

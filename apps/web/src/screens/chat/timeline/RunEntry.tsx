@@ -1,8 +1,9 @@
-import { type ReactNode, type Ref, useState } from 'react';
+import { Fragment, type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
 import { Button } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
 import { resolveRender } from './lens';
+import { focusTimelineItem } from './needs-you';
 import {
   formatRunDuration,
   groupSteps,
@@ -15,6 +16,7 @@ import {
 import type { TimelineEntry, TimelineTurn } from './source';
 import { durationDateTime } from './time';
 import type { LensName } from './types';
+import { itemIdForRequest, type NarrativePreview, offersOpenAllSteps } from './window';
 
 function SummaryText({ summary, durationMs }: { summary: string; durationMs: number | null }) {
   if (durationMs == null || durationMs < 1000) return summary;
@@ -64,6 +66,8 @@ export function RunEntry({
   showActivity,
   activityLine,
   workerCue,
+  previews,
+  onShowFullText,
 }: {
   entry: TimelineEntry;
   items: readonly ThreadItem[];
@@ -89,6 +93,9 @@ export function RunEntry({
   showActivity: boolean;
   activityLine?: ReactNode;
   workerCue?: boolean;
+  /** Previews in read order. They stay at the Item they follow, including when not truncated. */
+  previews?: readonly NarrativePreview[];
+  onShowFullText?: (preview: NarrativePreview) => void;
 }) {
   const runLens: LensName = lens === 'full' || expanded ? 'full' : 'work';
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -100,6 +107,23 @@ export function RunEntry({
   const visibleNotes = new Set(notes.visible);
   const steps = items.filter((item) => isStepItem(item));
   const groups = groupSteps(steps);
+  const locatedRequest = useRef<string | null>(null);
+  const askedForRequest = useRef(false);
+  useEffect(() => {
+    const requestId = new URLSearchParams(window.location.search).get('request');
+    if (!requestId || locatedRequest.current === requestId) return;
+    const itemId = itemIdForRequest(items, requestId);
+    if (!itemId) return;
+    const item = items.find((candidate) => candidate.id === itemId);
+    if (item && isStepItem(item) && runLens !== 'full') {
+      if (!askedForRequest.current) {
+        askedForRequest.current = true;
+        onStepsToggle?.(true);
+      }
+      return;
+    }
+    if (focusTimelineItem(itemId)) locatedRequest.current = requestId;
+  }, [items, onStepsToggle, runLens]);
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
   const [showEarlierNotes, setShowEarlierNotes] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
@@ -163,6 +187,21 @@ export function RunEntry({
     );
   }
 
+  function previewNodes(placement: NarrativePreview['placement'], afterItemId: string | null) {
+    return (previews ?? [])
+      .filter((preview) => preview.placement === placement && preview.afterItemId === afterItemId)
+      .map((preview) => (
+        <div key={preview.id} className="ok-prose" data-preview={preview.id}>
+          <p>{preview.text}</p>
+          {preview.truncated && onShowFullText ? (
+            <Button variant="quiet" size="sm" onPress={() => onShowFullText(preview)}>
+              {timelineCopy.showFullText}
+            </Button>
+          ) : null}
+        </div>
+      ));
+  }
+
   return (
     <article data-voice="fact" data-entry="run" className="ok-run flex flex-col gap-2">
       {!omitTrigger && turn ? (
@@ -171,7 +210,13 @@ export function RunEntry({
         </p>
       ) : null}
       {runningStatus}
-      {items.map((item) => row(item))}
+      {previewNodes('narrative', null)}
+      {items.map((item) => (
+        <Fragment key={item.id}>
+          {row(item)}
+          {previewNodes('narrative', item.id)}
+        </Fragment>
+      ))}
       {showChecklist && latestPlan?.type === 'plan' ? (
         <ul data-voice="claim" className="ok-voice-claim ok-prose" aria-label={timelineCopy.plan}>
           {latestPlan.steps.map((step) => (
@@ -272,7 +317,7 @@ export function RunEntry({
           >
             {stepsFoldLabel(entry.stats.stepCount, entry.stats.failedStepCount)}
           </Button>
-          {entry.stats.stepCount > 500 ? (
+          {offersOpenAllSteps(entry.stats.stepCount) ? (
             <Button variant="quiet" size="sm" onPress={onOpenAllSteps}>
               {timelineCopy.openAllSteps}
             </Button>
@@ -299,15 +344,29 @@ export function RunEntry({
                     </Button>
                     {openGroups.has(group.key)
                       ? group.items.map((item) => (
-                          <div key={item.id} data-voice="process" className="ok-step">
+                          <div
+                            key={item.id}
+                            id={`timeline-item-${item.id}`}
+                            tabIndex={-1}
+                            data-voice="process"
+                            className="ok-step"
+                          >
                             {renderItem(item, 'ok-step')}
+                            {previewNodes('step', item.id)}
                           </div>
                         ))
                       : null}
                   </li>
                 ) : (
-                  <li key={group.key} data-voice="process" className="ok-step">
+                  <li
+                    key={group.key}
+                    id={`timeline-item-${group.items[0]!.id}`}
+                    tabIndex={-1}
+                    data-voice="process"
+                    className="ok-step"
+                  >
                     {renderItem(group.items[0]!, 'ok-step')}
+                    {previewNodes('step', group.items[0]!.id)}
                   </li>
                 )
               )}

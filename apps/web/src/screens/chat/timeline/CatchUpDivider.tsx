@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
 import {
@@ -9,6 +9,7 @@ import {
   type TimelineDigest,
   visibleDigest,
 } from './digest';
+import { timelineJump } from './window';
 
 /**
  * The catch-up row at B, plus the server digest under it.
@@ -26,6 +27,12 @@ export function CatchUpDivider({
 }) {
   const published = useSyncExternalStore(subscribeTimelineDigest, readTimelineDigest, () => null);
   const shown = digest === undefined ? published : digest;
+  const location = useLocation();
+  const catchUp = timelineJump({
+    pathname: location.pathname,
+    search: location.search,
+    jump: { kind: 'catch-up' },
+  });
   return (
     <fieldset
       data-catch-up-divider=""
@@ -34,7 +41,15 @@ export function CatchUpDivider({
       className="ok-catch-up ok-voice-fact m-0 min-w-0 border-0 p-0"
       aria-label={timelineCopy.newSinceHere}
     >
-      <p className="ok-meta">{timelineCopy.newSinceHere}</p>
+      <p className="ok-meta">
+        <Link
+          to={{ pathname: catchUp.pathname, search: catchUp.search }}
+          replace
+          className="inline-flex min-h-11 items-center"
+        >
+          {timelineCopy.newSinceHere}
+        </Link>
+      </p>
       {count > 0 ? (
         <Button variant="quiet" size="sm" onPress={onEarlierUnread}>
           {fillCopy(timelineCopy.earlierUnread, { count })}

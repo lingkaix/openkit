@@ -9,6 +9,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AppRoutes } from '../../app/routes';
+import { anchorFromSearch } from '../chat/timeline/window';
 import { useWorkspaceStore } from '../workspace-store';
 import { workspaceKeys } from './data';
 import { patchKnowledgePageTitleBody } from './knowledge-okf';
@@ -1290,10 +1291,17 @@ describe('Action Center (board 07)', () => {
     });
     renderApp('/attention', client);
     expect(await screen.findByText('Answer required')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Open thread' })).toHaveAttribute(
-      'href',
-      '/chat/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7c00-b9fc-382312fdf476'
-    );
+    const href = screen.getByRole('link', { name: 'Open thread' }).getAttribute('href') ?? '';
+    expect(
+      href.startsWith(
+        '/chat/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7c00-b9fc-382312fdf476'
+      )
+    ).toBe(true);
+    expect(href).toContain('attention=question%3Aq1');
+    expect(anchorFromSearch(href.slice(href.indexOf('?')))).toEqual({
+      kind: 'item',
+      itemId: 'it_00000000-0000-785f-a82d-59daa7b54760',
+    });
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
   });

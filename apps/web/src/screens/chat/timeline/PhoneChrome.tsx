@@ -151,15 +151,62 @@ export function PhoneSheetFrame({
   footer?: ReactNode;
 }) {
   const full = mode === 'full' || expanded === true;
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    const node = dialogRef.current;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const firstControl = node?.querySelector<HTMLElement>('button, [href], input, textarea');
+    (firstControl ?? node)?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (!node) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [
+        ...node.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+        ),
+      ];
+      if (focusable.length === 0) {
+        event.preventDefault();
+        node.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) return;
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !node.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      previous?.focus();
+    };
+  }, []);
   return (
     <div className="fixed inset-0 z-40 flex flex-col">
       {mode === 'partial' && !full ? <div className="min-h-0 flex-1" aria-hidden="true" /> : null}
       <div
+        ref={dialogRef}
         role="dialog"
+        aria-modal="true"
         aria-label={label}
+        tabIndex={-1}
         data-sheet={mode}
         data-expanded={full ? 'true' : 'false'}
-        className={`flex flex-col bg-layer-1 shadow-ok-modal ${full ? 'h-full' : 'h-[60vh] rounded-t-ok-xl border border-separator'}`}
+        className={`flex flex-col bg-layer-1 shadow-ok-modal outline-none ${full ? 'h-full' : 'h-[60vh] rounded-t-ok-xl border border-separator'}`}
       >
         {mode === 'partial' ? (
           <button

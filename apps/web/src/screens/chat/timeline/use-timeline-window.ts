@@ -16,6 +16,7 @@ import {
   holdItems,
   level2Input,
   openingInput,
+  retainWindowWhileAnchorLoads,
   TEXT_RENDER_INTERVAL_MS,
   type TimelineAnchorRequest,
   windowPollMs,
@@ -81,6 +82,8 @@ export function useTimelineWindow(options: {
       const held = previous ? absorbPoll(previous, fresh) : holdFromResponse(fresh);
       return withDigest(held, fresh.digest);
     },
+    placeholderData: (previous, previousQuery) =>
+      retainWindowWhileAnchorLoads(workspaceId, threadId, previous, previousQuery?.queryKey),
     refetchInterval: () => windowPollMs({ hidden: !visible, running, pending }),
     refetchIntervalInBackground: false,
   });
@@ -115,39 +118,58 @@ export function useTimelineWindow(options: {
   return { ...query, pageEarlier, pageLater, paging: page.isPending };
 }
 
-function itemsKey(workspaceId: string, threadId: string, turnId: string) {
-  return ['thread-timeline-items', workspaceId, threadId, turnId] as const;
+function itemsKey(
+  workspaceId: string,
+  threadId: string,
+  turnId: string,
+  placement: 'all' | 'narrative' | 'step',
+  cursor: string | null
+) {
+  return ['thread-timeline-items', workspaceId, threadId, turnId, placement, cursor] as const;
 }
 
-/** Level-2 step pages for one open run. */
+/** Level-2 pages for one open run. A seed keeps the anchored window and its cursors. */
 export function useRunItemWindow(options: {
   workspaceId: string | null;
   threadId: string;
   turnId: string | null;
   enabled: boolean;
+  placement?: 'all' | 'narrative' | 'step';
+  /** First page is this cursor. Narrative continuation uses the run cursor. */
+  cursor?: string | null;
+  /** Anchored Level-2 window. Paging continues from its cursors. */
+  seed?: HeldItems | null;
 }) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const workspaceId = options.workspaceId ?? '';
   const { threadId, turnId, enabled } = options;
-  const key = itemsKey(workspaceId, threadId, turnId ?? '');
+  const placement = options.placement ?? 'step';
+  const cursor = options.cursor ?? null;
+  const seed = options.seed ?? null;
+  const key = itemsKey(workspaceId, threadId, turnId ?? '', placement, cursor);
   const query = useQuery({
     queryKey: key,
     enabled: enabled && Boolean(options.workspaceId && turnId),
     queryFn: async () => {
-      const page = await client.operations['thread.timeline'](
-        level2Input(workspaceId, threadId, turnId as string, 'step')
-      );
+      const cached = queryClient.getQueryData<HeldItems>(key);
+      if (cached) return cached;
+      if (seed) return seed;
+      const page = cursor
+        ? await client.operations['thread.timeline'](cursorInput(workspaceId, threadId, cursor))
+        : await client.operations['thread.timeline'](
+            level2Input(workspaceId, threadId, turnId as string, placement)
+          );
       return holdItems(page.items, page.beforeCursor, page.afterCursor);
     },
   });
   const page = useMutation({
     mutationFn: async (edge: 'before' | 'after') => {
       const held = queryClient.getQueryData<HeldItems>(key);
-      const cursor = edge === 'before' ? held?.beforeCursor : held?.afterCursor;
-      if (!cursor) return null;
+      const edgeCursor = edge === 'before' ? held?.beforeCursor : held?.afterCursor;
+      if (!edgeCursor) return null;
       const response = await client.operations['thread.timeline'](
-        cursorInput(workspaceId, threadId, cursor)
+        cursorInput(workspaceId, threadId, edgeCursor)
       );
       return { edge, response };
     },
@@ -164,12 +186,21 @@ export function useRunItemWindow(options: {
       );
     },
   });
-  const completeItems: ThreadItem[] = (query.data?.items ?? []).flatMap((item) =>
+  const loaded = query.data?.items ?? [];
+  const completeItems: ThreadItem[] = loaded.flatMap((item) =>
     item.detail.kind === 'complete' ? [item.detail.value as ThreadItem] : []
   );
+  const previewDetails = loaded.flatMap((item) => (item.detail.kind === 'preview' ? [item] : []));
   const pageEarlier = useCallback(() => page.mutate('before'), [page.mutate]);
   const pageLater = useCallback(() => page.mutate('after'), [page.mutate]);
-  return { ...query, completeItems, pageEarlier, pageLater, paging: page.isPending };
+  return {
+    ...query,
+    completeItems,
+    previewDetails,
+    pageEarlier,
+    pageLater,
+    paging: page.isPending,
+  };
 }
 
 /**
@@ -180,11 +211,33 @@ export function useCoalescedItems(items: readonly ThreadItem[] | undefined): rea
   const latest = useRef<readonly ThreadItem[]>(items ?? []);
   latest.current = items ?? [];
   const [shown, setShown] = useState<readonly ThreadItem[]>(items ?? []);
+  const lastFlush = useRef(0);
   useEffect(() => {
-    const handle = window.setInterval(() => {
-      setShown((current) => (current === latest.current ? current : latest.current));
-    }, TEXT_RENDER_INTERVAL_MS);
-    return () => window.clearInterval(handle);
-  }, []);
+    latest.current = items ?? [];
+    let frame = 0;
+    let timer = 0;
+    let stopped = false;
+    const flush = () => {
+      frame = 0;
+      if (stopped) return;
+      lastFlush.current = performance.now();
+      const next = latest.current;
+      setShown((current) => (current === next ? current : next));
+    };
+    const elapsed = performance.now() - lastFlush.current;
+    const wait = TEXT_RENDER_INTERVAL_MS - elapsed;
+    if (wait <= 0) frame = requestAnimationFrame(flush);
+    else {
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (!stopped) frame = requestAnimationFrame(flush);
+      }, wait);
+    }
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [items]);
   return shown;
 }

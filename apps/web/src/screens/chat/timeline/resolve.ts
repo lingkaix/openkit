@@ -12,7 +12,7 @@ export const RESOLVE_READ_GAPS = [
   'No connection read lists one connection by connectionRef. Shared MCP selects a server id and Vault lists credential references, so the reference stays text.',
   'A knowledge page and revision have no URL anchor.',
   'The environment has no user surface; it stays in the inspector.',
-  'Message and request anchors on a run are not opened.',
+  'A request Item outside the loaded window has no timeline anchor.',
   'Attention rows do not say the viewer started the run, sent the latest message, or caused a handoff.',
   'Attention rows do not carry the run start time.',
 ] as const;
@@ -156,12 +156,23 @@ function activityOf(facts: ResolveFacts, threadId: string): ConversationActivity
   return facts.threads?.get(threadId)?.activity ?? 'unknown';
 }
 
-/** Run anchor. `turn` is the spec name. `turnId` keeps the shipped window anchor working. */
-function threadSearch(turnId: string | undefined): string {
-  if (!turnId) return '';
+/**
+ * Run anchor. `turn` is the spec name. `turnId` keeps the shipped window anchor working.
+ * An Item uses the existing `item` address. A request id is not an Item id, so it stays
+ * `request` and the loaded card that carries it is focused. It does not select the window.
+ */
+function threadSearch(
+  turnId: string | undefined,
+  itemId: string | undefined,
+  requestId: string | undefined
+): string {
   const params = new URLSearchParams();
-  params.set('turn', turnId);
-  params.set('turnId', turnId);
+  if (turnId) {
+    params.set('turn', turnId);
+    params.set('turnId', turnId);
+  }
+  if (itemId) params.set('item', itemId);
+  else if (requestId) params.set('request', requestId);
   return params.toString();
 }
 
@@ -174,9 +185,8 @@ function artifactSearch(workspaceId: string, artifactId: string, version: number
 }
 
 function threadNotice(itemId: string | undefined, requestId: string | undefined): string | null {
-  if (itemId) return timelineNotices.opensRunNotMessage;
-  if (requestId) return timelineNotices.opensRunNotRequest;
-  return null;
+  if (itemId || !requestId) return null;
+  return timelineNotices.opensRunNotRequest;
 }
 
 function resolveThread(ref: Extract<ObjectRef, { kind: 'thread' }>, facts: ResolveFacts): Resolved {
@@ -184,8 +194,8 @@ function resolveThread(ref: Extract<ObjectRef, { kind: 'thread' }>, facts: Resol
   if (denied) return denied;
   return {
     path: conversationThreadPath(ref.workspaceId, ref.threadId, activityOf(facts, ref.threadId)),
-    search: threadSearch(ref.turnId),
-    focus: ref.turnId ?? null,
+    search: threadSearch(ref.turnId, ref.itemId, ref.requestId),
+    focus: ref.itemId ?? ref.turnId ?? null,
     notice: threadNotice(ref.itemId, ref.requestId),
   };
 }
@@ -294,13 +304,17 @@ function resolveAttention(
   const threadId = ref.threadId ?? fromSource.threadId;
   const turnId = ref.turnId ?? fromSource.turnId;
   if (!threadId) return { unavailable: timelineNotices.noDestination };
+  const itemId =
+    ref.itemId ??
+    ('itemId' in source && typeof source.itemId === 'string' ? source.itemId : undefined);
   return resolveThread(
     {
       kind: 'thread',
       workspaceId: ref.workspaceId,
       threadId,
       turnId,
-      itemId: ref.itemId,
+      itemId,
+      requestId: !itemId && source.type === 'approval' ? source.approvalRequestId : undefined,
     },
     facts
   );

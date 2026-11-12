@@ -623,17 +623,22 @@ export function canDecideInline(
   return false;
 }
 
+/** A conversation route can open on an attention anchor. Artifact and material routes cannot. */
+function acceptsAttentionAnchor(path: string): boolean {
+  if (path.startsWith('/chat/') || path.startsWith('/tasks/')) return true;
+  return path.startsWith('/goals/') && !path.includes('/artifacts/');
+}
+
 /** Open the owning workspace-change, thread, goal, or artifact surface for a Needs-you row. */
 export function openHrefForRow(row: AttentionRow): string | null {
   const resolved = resolve(attentionRefFromRow(row));
   if (!('path' in resolved)) return null;
-  // Knowledge and agent readiness had no Open link. Other paths stay query-free
-  // except a recovery record, which Workspace changes already lists by id.
+  // Knowledge and agent readiness had no Open link.
   if (resolved.path === '/knowledge' || resolved.path === '/agents') return null;
-  if (resolved.path === '/workspace-changes' && resolved.search) {
-    return `${resolved.path}?${resolved.search}`;
-  }
-  return resolved.path;
+  const params = new URLSearchParams(resolved.search);
+  if (acceptsAttentionAnchor(resolved.path)) params.set('attention', row.id);
+  const search = params.toString();
+  return search ? `${resolved.path}?${search}` : resolved.path;
 }
 
 /** Map agent health into the plain-language readiness vocabulary (DESIGN.md §13). */

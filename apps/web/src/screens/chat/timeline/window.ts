@@ -50,6 +50,10 @@ export interface HeldTimeline {
   catchUpAnchor: ThreadTimelineResponse['catchUpAnchor'];
   itemWindow: ThreadTimelineResponse['itemWindow'];
   restrictedReferences: boolean;
+  /** True after the reader pages earlier. A latest poll must not drop that page. */
+  pagedEarlier?: boolean;
+  /** True after the reader pages later. A poll must not rewind that page. */
+  pagedLater?: boolean;
 }
 
 export interface HeldItems {
@@ -178,21 +182,88 @@ type TimelinePage = Pick<
   | 'restrictedReferences'
 >;
 
-/** A poll keeps earlier pages and takes the fresh tail cursor. */
+function admissionSpan(
+  runs: readonly { admissionOrder: number }[]
+): { min: number; max: number } | null {
+  if (runs.length === 0) return null;
+  let min = runs[0]!.admissionOrder;
+  let max = min;
+  for (const run of runs) {
+    if (run.admissionOrder < min) min = run.admissionOrder;
+    if (run.admissionOrder > max) max = run.admissionOrder;
+  }
+  return { min, max };
+}
+
+function spansDisjoint(
+  held: { min: number; max: number },
+  fresh: { min: number; max: number }
+): boolean {
+  return held.max + 1 < fresh.min || fresh.max + 1 < held.min;
+}
+
+/**
+ * A poll keeps reachable history.
+ * Disjoint windows are not spliced into one list: the gap stays behind a cursor.
+ * A reader who already reached the newest run keeps that later cursor.
+ * An unpaged latest window is the fresh page, so a sliding tail does not grow forever.
+ */
 export function absorbPoll(held: HeldTimeline, fresh: TimelinePage): HeldTimeline {
-  const runs = mergeRuns(held.runs, fresh.runs);
-  const extendedEarlier =
-    held.runs.length > 0 &&
-    fresh.runs.length > 0 &&
-    held.runs[0]!.admissionOrder < fresh.runs[0]!.admissionOrder;
-  return {
-    runs,
-    beforeCursor: extendedEarlier ? held.beforeCursor : fresh.beforeCursor,
-    afterCursor: fresh.afterCursor,
+  const heldEdge = admissionSpan(held.runs);
+  const freshEdge = admissionSpan(fresh.runs);
+  const kept = {
     anchor: fresh.anchor,
     catchUpAnchor: fresh.catchUpAnchor,
     itemWindow: fresh.itemWindow ?? held.itemWindow,
     restrictedReferences: held.restrictedReferences || fresh.restrictedReferences,
+    pagedEarlier: held.pagedEarlier === true,
+    pagedLater: held.pagedLater === true,
+  };
+  const readerPaged = kept.pagedEarlier || kept.pagedLater;
+  if (heldEdge && freshEdge && spansDisjoint(heldEdge, freshEdge)) {
+    if (heldEdge.max < freshEdge.min) {
+      if (readerPaged) {
+        return {
+          ...kept,
+          runs: held.runs,
+          beforeCursor: held.beforeCursor,
+          afterCursor: held.afterCursor ?? fresh.beforeCursor,
+        };
+      }
+      if (fresh.beforeCursor) {
+        return {
+          ...kept,
+          runs: fresh.runs,
+          beforeCursor: fresh.beforeCursor,
+          afterCursor: fresh.afterCursor,
+          pagedEarlier: false,
+          pagedLater: false,
+        };
+      }
+      return {
+        ...kept,
+        runs: held.runs,
+        beforeCursor: held.beforeCursor,
+        afterCursor: held.afterCursor,
+      };
+    }
+    return {
+      ...kept,
+      runs: held.runs,
+      beforeCursor: held.beforeCursor,
+      afterCursor: held.afterCursor,
+    };
+  }
+  const keepOlderCursor =
+    readerPaged && heldEdge !== null && freshEdge !== null && heldEdge.min <= freshEdge.min;
+  const heldReachesNewest =
+    freshEdge === null || (heldEdge !== null && heldEdge.max >= freshEdge.max);
+  const runs = readerPaged || freshEdge === null ? mergeRuns(held.runs, fresh.runs) : fresh.runs;
+  return {
+    ...kept,
+    runs,
+    beforeCursor: !freshEdge || keepOlderCursor ? held.beforeCursor : fresh.beforeCursor,
+    afterCursor: heldReachesNewest ? held.afterCursor : fresh.afterCursor,
   };
 }
 
@@ -208,6 +279,8 @@ export function absorbEdge(
     beforeCursor: edge === 'before' ? page.beforeCursor : held.beforeCursor,
     afterCursor: edge === 'after' ? page.afterCursor : held.afterCursor,
     restrictedReferences: held.restrictedReferences || page.restrictedReferences,
+    pagedEarlier: edge === 'before' ? true : held.pagedEarlier === true,
+    pagedLater: edge === 'after' ? true : held.pagedLater === true,
   };
 }
 
@@ -310,6 +383,50 @@ export function completeThreadItems(runs: readonly TimelineRunEntry[]): ThreadIt
 
 export function previewItems(run: TimelineRunEntry): TimelineItem[] {
   return run.narrative.filter((item) => item.detail.kind === 'preview');
+}
+
+/** A preview drawn at its narrative position. `afterItemId` null means it is first. */
+export interface NarrativePreview {
+  id: string;
+  afterItemId: string | null;
+  text: string;
+  truncated: boolean;
+  placement: 'narrative' | 'step';
+}
+
+/** Every preview, including one that is not truncated, in read order. */
+export function narrativePreviews(items: readonly TimelineItem[]): NarrativePreview[] {
+  const previews: NarrativePreview[] = [];
+  let afterItemId: string | null = null;
+  for (const item of items) {
+    if (item.detail.kind === 'preview') {
+      previews.push({
+        id: item.id,
+        afterItemId,
+        text: item.detail.text,
+        truncated: item.detail.truncated,
+        placement: item.placement,
+      });
+      continue;
+    }
+    afterItemId = item.id;
+  }
+  return previews;
+}
+
+/**
+ * The previous window stays on screen while the same thread loads another anchor.
+ * A different thread does not keep it.
+ */
+export function retainWindowWhileAnchorLoads<T>(
+  workspaceId: string,
+  threadId: string,
+  previous: T | undefined,
+  previousKey: readonly unknown[] | undefined
+): T | undefined {
+  if (previous === undefined || previousKey === undefined) return undefined;
+  if (previousKey[1] !== workspaceId || previousKey[2] !== threadId) return undefined;
+  return previous;
 }
 
 /** Live Items win on id so a streamed body replaces the snapshot copy. */
@@ -518,6 +635,30 @@ export function runStaysNew(input: {
   return input.admissionOrder > input.catchUpOrder;
 }
 
+/**
+ * Loaded Item named by a request address.
+ * The request card wins over a later decision that repeats the same id.
+ * Null when that Item is not in the loaded window.
+ */
+export function itemIdForRequest(
+  items: readonly {
+    id: string;
+    type: string;
+    approvalRequestId?: string;
+    userInputRequestId?: string;
+  }[],
+  requestId: string
+): string | null {
+  let fallback: string | null = null;
+  for (const item of items) {
+    const named = item.approvalRequestId === requestId || item.userInputRequestId === requestId;
+    if (!named) continue;
+    if (item.type === 'approval-request' || item.type === 'user-input-request') return item.id;
+    fallback ??= item.id;
+  }
+  return fallback;
+}
+
 /** Jumps inside the timeline replace history, so Back leaves the thread. */
 export function timelineJump(input: {
   pathname: string;
@@ -533,6 +674,7 @@ export function timelineJump(input: {
   params.delete('turnId');
   params.delete('turn');
   params.delete('catchUp');
+  params.delete('request');
   if (input.jump.kind === 'item') params.set('item', input.jump.itemId);
   if (input.jump.kind === 'catch-up') params.set('catchUp', '1');
   const search = params.toString();
