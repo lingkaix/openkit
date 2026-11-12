@@ -226,6 +226,11 @@ export function TimelineScroll({
     pinnedDivider.current = true;
   });
 
+  // Inspecting steps leaves follow mode before their height changes.
+  function pauseForFold(target: EventTarget | null) {
+    if (target instanceof Element && target.closest('[data-fold-control]')) setFollow(false);
+  }
+
   function remember() {
     setFollow(false);
     if (!topEntryId) return;
@@ -256,7 +261,15 @@ export function TimelineScroll({
   const newUpdates = updatesHost ? createPortal(newUpdatesButton, updatesHost) : newUpdatesButton;
 
   return (
-    <div ref={frame} className="flex flex-col gap-3">
+    <div
+      ref={frame}
+      className="flex flex-col gap-3"
+      onPointerDownCapture={(event) => pauseForFold(event.target)}
+      onClickCapture={(event) => pauseForFold(event.target)}
+      onKeyDownCapture={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') pauseForFold(event.target);
+      }}
+    >
       <div ref={topSentinel} aria-hidden="true" />
       {canEarlier ? (
         <Button

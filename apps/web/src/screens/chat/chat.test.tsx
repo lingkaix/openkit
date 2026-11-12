@@ -3712,7 +3712,10 @@ describe('live turn subscription (S6)', () => {
       await waitFor(() => expect(getThreadDashboard).toHaveBeenCalledTimes(1));
 
       if (command === 'send') {
-        await user.type(screen.getByRole('textbox', { name: 'Message' }), 'Start fresh work');
+        await user.type(
+          await screen.findByRole('textbox', { name: 'Message' }),
+          'Start fresh work'
+        );
         await user.click(screen.getByRole('button', { name: 'Send message' }));
         await waitFor(() => expect(submitConversation).toHaveBeenCalledTimes(1));
       } else {
@@ -7589,7 +7592,7 @@ describe('exact Review candidate draft handoff', () => {
     await screen.findByText(
       'The candidate was not added. Finish the existing message, then select Use in the next run again.'
     );
-    expect(screen.getByRole('textbox', { name: 'Message' })).toHaveValue(original.input);
+    expect(await screen.findByRole('textbox', { name: 'Message' })).toHaveValue(original.input);
     expect(
       screen.queryByRole('button', { name: 'Remove Reviewed candidate' })
     ).not.toBeInTheDocument();

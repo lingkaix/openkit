@@ -173,13 +173,17 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     running: Boolean(activeTurn),
     pending: Boolean(waitingTurn) && !activeTurn,
   });
+  const targets = useConversationTargets(workspaceId, threadId);
+  // The skeleton is the first visible paint. Keep the thread mounted so its
+  // items observer shares this opening read instead of refetching when the
+  // skeleton clears.
+  const openingShell = workspaces.isLoading || dashboard.isLoading || targets.isLoading;
   const items = useThreadItems(
     workspaceId,
     threadId,
     Boolean(waitingTurn) && !activeTurn && !timelineOn,
     !timelineOn
   );
-  const targets = useConversationTargets(workspaceId, threadId);
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
   const send = useSendTurn();
@@ -363,11 +367,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     await result;
   }
 
-  if (workspaces.isLoading) {
-    return <Skeleton lines={5} className="m-6" />;
-  }
-
-  if (workspaces.isError) {
+  if (workspaces.isError && !openingShell) {
     return (
       <div className="m-6">
         <ErrorBanner
@@ -379,7 +379,9 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   }
 
   if (!workspaceId) {
-    return (
+    return openingShell ? (
+      <Skeleton lines={5} className="m-6" />
+    ) : (
       <EmptyState
         icon="error"
         title="Workspace unavailable"
@@ -389,449 +391,459 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   }
 
   return (
-    <div
-      className="@container/thread relative isolate flex h-full"
-      data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
-    >
-      <div className="flex h-full min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            {mode === 'task' ? (
-              <span className="shrink-0" title="Task">
-                <Icon name="agents" size="lg" label="Task" />
-              </span>
-            ) : null}
-            <h1 className="min-w-0 truncate text-sm font-bold text-fg-strong">{title}</h1>
-            {mode === 'task' ? (
-              <PartOfGoal
-                workspaceId={workspaceId}
-                threadId={threadId}
-                parentThreadId={thread.data?.parentThreadId}
-              />
-            ) : null}
-            <Button
-              ref={renameButtonRef}
-              size="sm"
-              variant="quiet"
-              aria-label="Rename thread"
-              title="Rename thread"
-              className="h-8 w-8 shrink-0 px-0!"
-              isDisabled={!workspaceId}
-              onPress={() => {
-                rename.reset();
-                if (workspaceId) {
-                  setRenameDrafts((drafts) => [
-                    ...drafts.filter(
-                      (draft) => draft.workspaceId !== workspaceId || draft.threadId !== threadId
-                    ),
-                    { workspaceId, threadId, name: title },
-                  ]);
-                }
-              }}
-            >
-              <Icon name="edit" size="lg" />
-            </Button>
-            <Button
-              size="sm"
-              variant="quiet"
-              aria-label="Archive thread"
-              title="Archive thread"
-              className="h-8 w-8 shrink-0 px-0!"
-              isDisabled={
-                !workspaceId ||
-                archiveState?.status === 'pending' ||
-                thread.data?.status === 'archived'
-              }
-              onPress={() => archive.mutate({ workspaceId: workspaceId ?? '', threadId })}
-            >
-              <Icon name="archive" size="lg" />
-            </Button>
-            {thread.data?.status === 'archived' ? (
-              <StatusChip tone="neutral">Archived</StatusChip>
-            ) : null}
-            {latestTurn?.status === 'interrupted' ? (
-              // Product projection that differs from sealed terminals: the interrupted header chip is interrupted-only.
-              <StatusChip tone="neutral">Interrupted</StatusChip>
-            ) : null}
-            {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}
-          </div>
-          {/* The phone header is the title only; the trigger line overlapped its icons at 360 px. */}
-          {activeTurn && !phone ? (
-            <p className="min-w-0 shrink truncate text-xs text-fg-muted">
-              Triggered by{' '}
-              {dashboard.data?.participants?.find(
-                (participant) =>
-                  participant.kind === activeTurn.triggerActor.kind &&
-                  participant.id === activeTurn.triggerActor.id
-              )?.displayName ?? activeTurn.triggerActor.id}
-              {activeTurn.triggerActor.kind === 'user' &&
-              activeTurn.triggerActor.id === dashboard.data?.viewerUserId
-                ? ' (You)'
-                : ''}
-            </p>
-          ) : null}
-          <div className="ml-auto flex items-center gap-2">
-            {activeTurn && !phone ? (
-              <div className="flex flex-col items-end gap-1">
-                <p id="stop-consequence">{timelineCopy.stopConsequence}</p>
-                {interruptState?.status === 'pending' ? (
-                  <p id="stop-wait" role="status">
-                    {timelineCopy.stopping} {timelineCopy.waitForStop}
-                  </p>
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="negative-outline"
-                  isDisabled={!workspaceId || interruptState?.status === 'pending'}
-                  aria-describedby={
-                    interruptState?.status === 'pending' ? 'stop-wait' : 'stop-consequence'
-                  }
-                  onPress={() =>
-                    interrupt.mutate({
-                      workspaceId: workspaceId ?? '',
-                      threadId,
-                      turnId: activeTurn.id,
-                    })
-                  }
-                >
-                  {timelineCopy.stopRun}
-                </Button>
-              </div>
-            ) : null}
-            <fieldset
-              aria-label={timelineCopy.lensName}
-              className="m-0 flex min-w-0 gap-1 border-0 p-0"
-            >
-              {(['work', 'full'] as const).map((choice) => (
-                <Button
-                  key={choice}
-                  size="sm"
-                  variant={lens === choice ? 'outline' : 'quiet'}
-                  aria-label={
-                    choice === 'work' ? timelineCopy.lensWorkName : timelineCopy.lensFullName
-                  }
-                  aria-pressed={lens === choice}
-                  onPress={() => {
-                    setLens(choice);
-                    writeStoredLens(choice);
-                    if (phone && choice === 'full') {
-                      const turnId = dashboard.data?.turns.at(-1)?.id;
-                      if (turnId) sheets.open('steps', turnId);
-                    }
-                  }}
-                >
-                  {choice === 'work' ? timelineCopy.lensWork : timelineCopy.lensFull}
-                </Button>
-              ))}
-            </fieldset>
-          </div>
-        </header>
-        {renameDraft ? (
-          <div className="border-b border-separator bg-layer-1 px-6 py-3">
-            <div className="ml-auto flex max-w-xl flex-col gap-2">
-              <div className="flex items-end gap-2">
-                <TextField
-                  label="Thread name"
-                  value={renameDraft.name}
-                  onChange={(name) =>
-                    setRenameDrafts((drafts) =>
-                      drafts.map((draft) => (draft === renameDraft ? { ...draft, name } : draft))
-                    )
-                  }
-                />
-                <Button
-                  size="sm"
-                  variant="quiet"
-                  onPress={() => {
-                    rename.reset();
-                    setRenameDrafts((drafts) => drafts.filter((draft) => draft !== renameDraft));
-                    renameButtonRef.current?.focus();
-                  }}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  isDisabled={
-                    renameState?.status === 'pending' || renameDraft.name.trim().length === 0
-                  }
-                  onPress={() =>
-                    rename.mutate({
-                      ...renameDraft,
-                      name: renameDraft.name.trim(),
-                    })
-                  }
-                >
-                  Save
-                </Button>
-              </div>
-              {renameState?.status === 'error' && renameState.variables ? (
-                <ErrorBanner
-                  message="Couldn't rename this thread."
-                  onRetry={() => rename.mutate(renameState.variables!)}
+    <>
+      {openingShell ? <Skeleton lines={5} className="m-6" /> : null}
+      <div
+        hidden={openingShell || undefined}
+        className="@container/thread relative isolate flex h-full"
+        data-agent-profile={profile.state === 'ready' ? profile.profile.id : 'error'}
+      >
+        <div className="flex h-full min-w-0 flex-1 flex-col">
+          <header className="flex items-center gap-3 border-b border-separator px-6 py-3">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              {mode === 'task' ? (
+                <span className="shrink-0" title="Task">
+                  <Icon name="agents" size="lg" label="Task" />
+                </span>
+              ) : null}
+              <h1 className="min-w-0 truncate text-sm font-bold text-fg-strong">{title}</h1>
+              {mode === 'task' ? (
+                <PartOfGoal
+                  workspaceId={workspaceId}
+                  threadId={threadId}
+                  parentThreadId={thread.data?.parentThreadId}
                 />
               ) : null}
-            </div>
-          </div>
-        ) : null}
-        {!renameDraft && renameState?.status === 'error' && renameState.variables ? (
-          <div className="border-b border-separator px-6 py-3">
-            <ErrorBanner
-              message="Couldn't rename this thread."
-              onRetry={() => rename.mutate(renameState.variables!)}
-            />
-          </div>
-        ) : null}
-        {archiveState?.status === 'error' && archiveState.variables ? (
-          <div className="border-b border-separator px-6 py-3">
-            <ErrorBanner
-              message="Couldn't archive this thread."
-              onRetry={() => archive.mutate(archiveState.variables!)}
-            />
-          </div>
-        ) : null}
-        {interruptState?.status === 'error' && interruptState.variables ? (
-          <div className="border-b border-separator px-6 py-3">
-            <ErrorBanner
-              message={timelineCopy.stopFailed}
-              onRetry={() => interrupt.mutate(interruptState.variables!)}
-            />
-          </div>
-        ) : null}
-        {failedTurnMessage ? (
-          <div className="border-b border-separator px-6 py-3">
-            <ErrorBanner message={failedTurnMessage} />
-          </div>
-        ) : null}
-
-        <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
-          <div className="mx-auto w-full max-w-[760px] px-6 py-6">
-            {dashboard.isError && !dashboardAdmitted ? (
-              <ErrorBanner
-                message={timelineCopy.protectedEntryFailed}
-                onRetry={() => void dashboard.refetch()}
-              />
-            ) : (
-              <ThreadStream
-                workspaceId={workspaceId}
-                threadId={threadId}
-                readOnly={disconnected}
-                focusTurnId={turnIdFromSearch(new URLSearchParams(location.search))}
-                focusItemId={new URLSearchParams(location.search).get('item')}
-                anchor={windowAnchor}
-                measureOpening={measureOpening}
-                onOpeningSettle={setSettledAnchor}
-                running={Boolean(activeTurn)}
-                pending={Boolean(waitingTurn) && !activeTurn}
-                holdContent={dashboard.data != null && !dashboardAdmitted}
-                onJumpToLatest={() => {
-                  jumpedToLatest.current = true;
-                  setSettledAnchor({ kind: 'latest' });
-                  const target = timelineJump({
-                    pathname: location.pathname,
-                    search: location.search,
-                    jump: { kind: 'latest' },
-                  });
-                  navigate({ pathname: target.pathname, search: target.search }, { replace: true });
+              <Button
+                ref={renameButtonRef}
+                size="sm"
+                variant="quiet"
+                aria-label="Rename thread"
+                title="Rename thread"
+                className="h-8 w-8 shrink-0 px-0!"
+                isDisabled={!workspaceId}
+                onPress={() => {
+                  rename.reset();
+                  if (workspaceId) {
+                    setRenameDrafts((drafts) => [
+                      ...drafts.filter(
+                        (draft) => draft.workspaceId !== workspaceId || draft.threadId !== threadId
+                      ),
+                      { workspaceId, threadId, name: title },
+                    ]);
+                  }
                 }}
-                onJumpToItem={(itemId) => {
-                  const target = timelineJump({
-                    pathname: location.pathname,
-                    search: location.search,
-                    jump: { kind: 'item', itemId },
-                  });
-                  navigate({ pathname: target.pathname, search: target.search }, { replace: true });
-                }}
-                emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
-                panelHost={panelHost}
-                lens={lens}
-                mode={mode}
-                stopPending={interruptState?.status === 'pending'}
-                onOpen={(href) =>
-                  navigate(href, {
-                    replace: historyModeForHref(location.pathname, href) === 'replace',
-                  })
+              >
+                <Icon name="edit" size="lg" />
+              </Button>
+              <Button
+                size="sm"
+                variant="quiet"
+                aria-label="Archive thread"
+                title="Archive thread"
+                className="h-8 w-8 shrink-0 px-0!"
+                isDisabled={
+                  !workspaceId ||
+                  archiveState?.status === 'pending' ||
+                  thread.data?.status === 'archived'
                 }
-                sheets={sheets}
-                updatesHost={updatesHost}
-              />
-            )}
-            {feedbackTurn ? (
-              <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">
-                <fieldset className="flex items-center gap-2">
-                  <legend className="text-xs text-fg-muted">Was this helpful?</legend>
-                  {(['good', 'bad'] as const).map((rating) => (
-                    <Button
-                      key={rating}
-                      size="sm"
-                      variant={feedback.data?.rating === rating ? 'accent' : 'quiet'}
-                      aria-pressed={feedback.data?.rating === rating}
-                      isDisabled={feedbackOwner && submitFeedback.isPending}
-                      onPress={() =>
-                        submitFeedback.mutate({
-                          workspaceId: workspaceId ?? '',
-                          threadId,
-                          turnId: feedbackTurn.id,
-                          rating,
-                        })
+                onPress={() => archive.mutate({ workspaceId: workspaceId ?? '', threadId })}
+              >
+                <Icon name="archive" size="lg" />
+              </Button>
+              {thread.data?.status === 'archived' ? (
+                <StatusChip tone="neutral">Archived</StatusChip>
+              ) : null}
+              {latestTurn?.status === 'interrupted' ? (
+                // Product projection that differs from sealed terminals: the interrupted header chip is interrupted-only.
+                <StatusChip tone="neutral">Interrupted</StatusChip>
+              ) : null}
+              {failedTurn ? <StatusChip tone="negative">Failed</StatusChip> : null}
+            </div>
+            {/* The phone header is the title only; the trigger line overlapped its icons at 360 px. */}
+            {activeTurn && !phone ? (
+              <p className="min-w-0 shrink truncate text-xs text-fg-muted">
+                Triggered by{' '}
+                {dashboard.data?.participants?.find(
+                  (participant) =>
+                    participant.kind === activeTurn.triggerActor.kind &&
+                    participant.id === activeTurn.triggerActor.id
+                )?.displayName ?? activeTurn.triggerActor.id}
+                {activeTurn.triggerActor.kind === 'user' &&
+                activeTurn.triggerActor.id === dashboard.data?.viewerUserId
+                  ? ' (You)'
+                  : ''}
+              </p>
+            ) : null}
+            <div className="ml-auto flex items-center gap-2">
+              {activeTurn && !phone ? (
+                <div className="flex flex-col items-end gap-1">
+                  <p id="stop-consequence">{timelineCopy.stopConsequence}</p>
+                  {interruptState?.status === 'pending' ? (
+                    <p id="stop-wait" role="status">
+                      {timelineCopy.stopping} {timelineCopy.waitForStop}
+                    </p>
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="negative-outline"
+                    isDisabled={!workspaceId || interruptState?.status === 'pending'}
+                    aria-describedby={
+                      interruptState?.status === 'pending' ? 'stop-wait' : 'stop-consequence'
+                    }
+                    onPress={() =>
+                      interrupt.mutate({
+                        workspaceId: workspaceId ?? '',
+                        threadId,
+                        turnId: activeTurn.id,
+                      })
+                    }
+                  >
+                    {timelineCopy.stopRun}
+                  </Button>
+                </div>
+              ) : null}
+              <fieldset
+                aria-label={timelineCopy.lensName}
+                className="m-0 flex min-w-0 gap-1 border-0 p-0"
+              >
+                {(['work', 'full'] as const).map((choice) => (
+                  <Button
+                    key={choice}
+                    size="sm"
+                    variant={lens === choice ? 'outline' : 'quiet'}
+                    aria-label={
+                      choice === 'work' ? timelineCopy.lensWorkName : timelineCopy.lensFullName
+                    }
+                    aria-pressed={lens === choice}
+                    onPress={() => {
+                      setLens(choice);
+                      writeStoredLens(choice);
+                      if (phone && choice === 'full') {
+                        const turnId = dashboard.data?.turns.at(-1)?.id;
+                        if (turnId) sheets.open('steps', turnId);
                       }
-                    >
-                      {rating === 'good' ? 'Good' : 'Bad'}
-                    </Button>
-                  ))}
-                </fieldset>
-                {feedbackOwner && submitFeedback.isError ? (
+                    }}
+                  >
+                    {choice === 'work' ? timelineCopy.lensWork : timelineCopy.lensFull}
+                  </Button>
+                ))}
+              </fieldset>
+            </div>
+          </header>
+          {renameDraft ? (
+            <div className="border-b border-separator bg-layer-1 px-6 py-3">
+              <div className="ml-auto flex max-w-xl flex-col gap-2">
+                <div className="flex items-end gap-2">
+                  <TextField
+                    label="Thread name"
+                    value={renameDraft.name}
+                    onChange={(name) =>
+                      setRenameDrafts((drafts) =>
+                        drafts.map((draft) => (draft === renameDraft ? { ...draft, name } : draft))
+                      )
+                    }
+                  />
+                  <Button
+                    size="sm"
+                    variant="quiet"
+                    onPress={() => {
+                      rename.reset();
+                      setRenameDrafts((drafts) => drafts.filter((draft) => draft !== renameDraft));
+                      renameButtonRef.current?.focus();
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    isDisabled={
+                      renameState?.status === 'pending' || renameDraft.name.trim().length === 0
+                    }
+                    onPress={() =>
+                      rename.mutate({
+                        ...renameDraft,
+                        name: renameDraft.name.trim(),
+                      })
+                    }
+                  >
+                    Save
+                  </Button>
+                </div>
+                {renameState?.status === 'error' && renameState.variables ? (
                   <ErrorBanner
-                    message="Couldn't save feedback."
-                    onRetry={() => submitFeedback.mutate(submitFeedback.variables)}
+                    message="Couldn't rename this thread."
+                    onRetry={() => rename.mutate(renameState.variables!)}
                   />
                 ) : null}
               </div>
-            ) : null}
+            </div>
+          ) : null}
+          {!renameDraft && renameState?.status === 'error' && renameState.variables ? (
+            <div className="border-b border-separator px-6 py-3">
+              <ErrorBanner
+                message="Couldn't rename this thread."
+                onRetry={() => rename.mutate(renameState.variables!)}
+              />
+            </div>
+          ) : null}
+          {archiveState?.status === 'error' && archiveState.variables ? (
+            <div className="border-b border-separator px-6 py-3">
+              <ErrorBanner
+                message="Couldn't archive this thread."
+                onRetry={() => archive.mutate(archiveState.variables!)}
+              />
+            </div>
+          ) : null}
+          {interruptState?.status === 'error' && interruptState.variables ? (
+            <div className="border-b border-separator px-6 py-3">
+              <ErrorBanner
+                message={timelineCopy.stopFailed}
+                onRetry={() => interrupt.mutate(interruptState.variables!)}
+              />
+            </div>
+          ) : null}
+          {failedTurnMessage ? (
+            <div className="border-b border-separator px-6 py-3">
+              <ErrorBanner message={failedTurnMessage} />
+            </div>
+          ) : null}
+
+          <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
+            <div className="mx-auto w-full max-w-[760px] px-6 py-6">
+              {dashboard.isError && !dashboardAdmitted ? (
+                <ErrorBanner
+                  message={timelineCopy.protectedEntryFailed}
+                  onRetry={() => void dashboard.refetch()}
+                />
+              ) : (
+                <ThreadStream
+                  workspaceId={workspaceId}
+                  threadId={threadId}
+                  readOnly={disconnected}
+                  focusTurnId={turnIdFromSearch(new URLSearchParams(location.search))}
+                  focusItemId={new URLSearchParams(location.search).get('item')}
+                  anchor={windowAnchor}
+                  measureOpening={measureOpening}
+                  onOpeningSettle={setSettledAnchor}
+                  running={Boolean(activeTurn)}
+                  pending={Boolean(waitingTurn) && !activeTurn}
+                  holdContent={dashboard.data != null && !dashboardAdmitted}
+                  onJumpToLatest={() => {
+                    jumpedToLatest.current = true;
+                    setSettledAnchor({ kind: 'latest' });
+                    const target = timelineJump({
+                      pathname: location.pathname,
+                      search: location.search,
+                      jump: { kind: 'latest' },
+                    });
+                    navigate(
+                      { pathname: target.pathname, search: target.search },
+                      { replace: true }
+                    );
+                  }}
+                  onJumpToItem={(itemId) => {
+                    const target = timelineJump({
+                      pathname: location.pathname,
+                      search: location.search,
+                      jump: { kind: 'item', itemId },
+                    });
+                    navigate(
+                      { pathname: target.pathname, search: target.search },
+                      { replace: true }
+                    );
+                  }}
+                  emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
+                  panelHost={panelHost}
+                  lens={lens}
+                  mode={mode}
+                  stopPending={interruptState?.status === 'pending'}
+                  onOpen={(href) =>
+                    navigate(href, {
+                      replace: historyModeForHref(location.pathname, href) === 'replace',
+                    })
+                  }
+                  sheets={sheets}
+                  updatesHost={updatesHost}
+                />
+              )}
+              {feedbackTurn ? (
+                <div className="mt-5 flex flex-col items-end gap-2 border-t border-separator pt-3">
+                  <fieldset className="flex items-center gap-2">
+                    <legend className="text-xs text-fg-muted">Was this helpful?</legend>
+                    {(['good', 'bad'] as const).map((rating) => (
+                      <Button
+                        key={rating}
+                        size="sm"
+                        variant={feedback.data?.rating === rating ? 'accent' : 'quiet'}
+                        aria-pressed={feedback.data?.rating === rating}
+                        isDisabled={feedbackOwner && submitFeedback.isPending}
+                        onPress={() =>
+                          submitFeedback.mutate({
+                            workspaceId: workspaceId ?? '',
+                            threadId,
+                            turnId: feedbackTurn.id,
+                            rating,
+                          })
+                        }
+                      >
+                        {rating === 'good' ? 'Good' : 'Bad'}
+                      </Button>
+                    ))}
+                  </fieldset>
+                  {feedbackOwner && submitFeedback.isError ? (
+                    <ErrorBanner
+                      message="Couldn't save feedback."
+                      onRetry={() => submitFeedback.mutate(submitFeedback.variables)}
+                    />
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
-        </div>
 
-        <div ref={setUpdatesHost} data-new-updates-dock="bar" className="flex justify-center" />
+          <div ref={setUpdatesHost} data-new-updates-dock="bar" className="flex justify-center" />
 
-        <div
-          data-composer-dock="true"
-          className="border-t border-separator bg-layer-1 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
-        >
-          <div className="mx-auto w-full max-w-[760px]">
-            {submission?.status === 'pending' ? <SendPending /> : null}
-            {submission?.status === 'error' ? (
-              cancelledRequestId ? (
-                <p role="alert" className="mb-2 text-xs font-medium text-negative-fg">
-                  {timelineCopy.runStopped}
+          <div
+            data-composer-dock="true"
+            className="border-t border-separator bg-layer-1 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
+          >
+            <div className="mx-auto w-full max-w-[760px]">
+              {submission?.status === 'pending' ? <SendPending /> : null}
+              {submission?.status === 'error' ? (
+                cancelledRequestId ? (
+                  <p role="alert" className="mb-2 text-xs font-medium text-negative-fg">
+                    {timelineCopy.runStopped}
+                  </p>
+                ) : (
+                  <SendFailure
+                    error={submission.error}
+                    requestId={submission.variables?.draft.requestId}
+                    onRetry={() => {
+                      const draft = submission.variables?.draft;
+                      if (draft) void submitConversation(draft);
+                    }}
+                    onEdit={() => {
+                      document
+                        .querySelector<HTMLTextAreaElement>('textarea[name="message"], textarea')
+                        ?.focus();
+                    }}
+                  />
+                )
+              ) : null}
+              {hasCandidateInput && unfinishedSubmission ? (
+                <p role="status" className="mb-2 text-sm text-fg-muted">
+                  {timelineCopy.candidateNotAdded}
+                </p>
+              ) : null}
+              {candidateUnavailable ? (
+                <ErrorBanner
+                  message="The selected candidate is unavailable or has changed. Return to its review and select an available candidate."
+                  onRetry={candidateContextMatches ? () => void candidate.refetch() : undefined}
+                />
+              ) : null}
+              {candidateLoading ? (
+                <p role="status" className="text-sm text-fg-muted">
+                  Checking the selected candidate.
                 </p>
               ) : (
-                <SendFailure
-                  error={submission.error}
-                  requestId={submission.variables?.draft.requestId}
-                  onRetry={() => {
-                    const draft = submission.variables?.draft;
-                    if (draft) void submitConversation(draft);
-                  }}
-                  onEdit={() => {
-                    document
-                      .querySelector<HTMLTextAreaElement>('textarea[name="message"], textarea')
-                      ?.focus();
-                  }}
-                />
-              )
-            ) : null}
-            {hasCandidateInput && unfinishedSubmission ? (
-              <p role="status" className="mb-2 text-sm text-fg-muted">
-                {timelineCopy.candidateNotAdded}
-              </p>
-            ) : null}
-            {candidateUnavailable ? (
-              <ErrorBanner
-                message="The selected candidate is unavailable or has changed. Return to its review and select an available candidate."
-                onRetry={candidateContextMatches ? () => void candidate.refetch() : undefined}
-              />
-            ) : null}
-            {candidateLoading ? (
-              <p role="status" className="text-sm text-fg-muted">
-                Checking the selected candidate.
-              </p>
-            ) : (
-              <Composer
-                fileWorkspaceLabel={
-                  workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
-                }
-                key={JSON.stringify([workspaceId, threadId])}
-                initialDraft={
-                  submission?.status === 'success'
-                    ? {
-                        targetRef: submission.variables?.draft.targetRef,
-                        logicalModelId: submission.variables?.draft.logicalModelId,
-                        ...candidateDraft,
-                      }
-                    : (submission?.variables?.draft ?? candidateDraft)
-                }
-                isSubmitting={submission?.status === 'pending'}
-                lastAdmittedEffort={
-                  dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
-                    ?.reasoningEffort
-                }
-                cancelledRequestId={cancelledRequestId}
-                completedRequestId={
-                  submission?.status === 'success'
-                    ? submission.variables?.draft.requestId
-                    : undefined
-                }
-                targetCatalog={
-                  taskDefaultTarget && targets.data
-                    ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
-                    : (targets.data ?? null)
-                }
-                artifacts={(hasCandidateInput && !unfinishedSubmission
-                  ? candidateUnavailable
-                    ? []
-                    : candidate.data
-                      ? [candidate.data]
-                      : []
-                  : (workspaceArtifacts.data ?? [])
-                ).map((artifact) => ({
-                  id: artifact.id,
-                  version: artifact.version,
-                  label: artifact.title,
-                }))}
-                variant={mode === 'chat' ? 'assistant' : undefined}
-                workerEnvironments={workerEnvironments}
-                disabledReason={
-                  disconnected
-                    ? 'OpenKit needs a connection.'
-                    : submission?.status === 'error' &&
-                        classifySendFailure(submission.error) === 'kept' &&
-                        (latestTurn?.status === 'running' || latestTurn?.status === 'pending')
-                      ? timelineCopy.keepDraft
-                      : targets.isError
-                        ? "Couldn't load conversation agents."
-                        : candidateUnavailable
-                          ? 'The selected candidate is unavailable or has changed.'
-                          : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
-                            ? 'Checking the selected candidate.'
-                            : undefined
-                }
-                voice={composerVoice({
-                  client,
-                  workspaceId,
-                  threadId,
-                  catalog:
+                <Composer
+                  fileWorkspaceLabel={
+                    workspaces.data?.find((workspace) => workspace.id === workspaceId)?.name
+                  }
+                  key={JSON.stringify([workspaceId, threadId])}
+                  initialDraft={
+                    submission?.status === 'success'
+                      ? {
+                          targetRef: submission.variables?.draft.targetRef,
+                          logicalModelId: submission.variables?.draft.logicalModelId,
+                          ...candidateDraft,
+                        }
+                      : (submission?.variables?.draft ?? candidateDraft)
+                  }
+                  isSubmitting={submission?.status === 'pending'}
+                  lastAdmittedEffort={
+                    dashboard.data?.turns.findLast((turn) => turn.reasoningEffort !== undefined)
+                      ?.reasoningEffort
+                  }
+                  cancelledRequestId={cancelledRequestId}
+                  completedRequestId={
+                    submission?.status === 'success'
+                      ? submission.variables?.draft.requestId
+                      : undefined
+                  }
+                  targetCatalog={
                     taskDefaultTarget && targets.data
                       ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
-                      : targets.data,
-                })}
-                onSubmit={submitConversation}
-                phoneRun={
-                  phone
-                    ? {
-                        steerReason: timelineCopy.steerUnavailable,
-                        stop: activeTurn
-                          ? {
-                              label: timelineCopy.stopRun,
-                              pending: interruptState?.status === 'pending',
-                              consequence: timelineCopy.stopConsequence,
-                              waitReason: `${timelineCopy.stopping} ${timelineCopy.waitForStop}`,
-                              onStop: () =>
-                                interrupt.mutate({
-                                  workspaceId: workspaceId ?? '',
-                                  threadId,
-                                  turnId: activeTurn.id,
-                                }),
-                            }
-                          : undefined,
-                      }
-                    : undefined
-                }
-              />
-            )}
+                      : (targets.data ?? null)
+                  }
+                  artifacts={(hasCandidateInput && !unfinishedSubmission
+                    ? candidateUnavailable
+                      ? []
+                      : candidate.data
+                        ? [candidate.data]
+                        : []
+                    : (workspaceArtifacts.data ?? [])
+                  ).map((artifact) => ({
+                    id: artifact.id,
+                    version: artifact.version,
+                    label: artifact.title,
+                  }))}
+                  variant={mode === 'chat' ? 'assistant' : undefined}
+                  workerEnvironments={workerEnvironments}
+                  disabledReason={
+                    disconnected
+                      ? 'OpenKit needs a connection.'
+                      : submission?.status === 'error' &&
+                          classifySendFailure(submission.error) === 'kept' &&
+                          (latestTurn?.status === 'running' || latestTurn?.status === 'pending')
+                        ? timelineCopy.keepDraft
+                        : targets.isError
+                          ? "Couldn't load conversation agents."
+                          : candidateUnavailable
+                            ? 'The selected candidate is unavailable or has changed.'
+                            : hasCandidateInput && !unfinishedSubmission && candidate.isFetching
+                              ? 'Checking the selected candidate.'
+                              : undefined
+                  }
+                  voice={composerVoice({
+                    client,
+                    workspaceId,
+                    threadId,
+                    catalog:
+                      taskDefaultTarget && targets.data
+                        ? { ...targets.data, defaultTargetRef: taskDefaultTarget.targetRef }
+                        : targets.data,
+                  })}
+                  onSubmit={submitConversation}
+                  phoneRun={
+                    phone
+                      ? {
+                          steerReason: timelineCopy.steerUnavailable,
+                          stop: activeTurn
+                            ? {
+                                label: timelineCopy.stopRun,
+                                pending: interruptState?.status === 'pending',
+                                consequence: timelineCopy.stopConsequence,
+                                waitReason: `${timelineCopy.stopping} ${timelineCopy.waitForStop}`,
+                                onStop: () =>
+                                  interrupt.mutate({
+                                    workspaceId: workspaceId ?? '',
+                                    threadId,
+                                    turnId: activeTurn.id,
+                                  }),
+                              }
+                            : undefined,
+                        }
+                      : undefined
+                  }
+                />
+              )}
+            </div>
           </div>
         </div>
+        <div ref={panelHost} className="contents" />
       </div>
-      <div ref={panelHost} className="contents" />
-    </div>
+    </>
   );
 }

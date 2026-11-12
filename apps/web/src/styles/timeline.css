@@ -2,8 +2,12 @@
 
 .ok-timeline {
   max-width: 100%;
-  overflow-x: clip;
   overflow-anchor: auto;
+}
+
+/* The step control stays out of the first paint until the catch-up divider is frozen. */
+.ok-timeline[data-opening-layout] [data-fold-control] {
+  display: none;
 }
 
 .ok-prose {

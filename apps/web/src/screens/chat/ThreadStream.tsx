@@ -38,7 +38,7 @@ import {
 } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
-import { ThreadReadReceipts, useThreadUnreadIds } from './ThreadReadReceipts';
+import { readStateQueryKey, ThreadReadReceipts, useThreadUnreadIds } from './ThreadReadReceipts';
 import { AlignmentHeader } from './timeline/AlignmentHeader';
 import { CatchUpDivider } from './timeline/CatchUpDivider';
 import {
@@ -104,7 +104,6 @@ import {
   entryFromRun,
   holdItems,
   itemAnchorHasLevel2,
-  keepsUnreadMark,
   mergeDisplayedItems,
   mergeRuns,
   narrativePreviews,
@@ -834,9 +833,63 @@ export function ThreadStream({
     feedItems,
     controlsReadOnly || live.isError
   );
+  const visitKey = `${workspaceId ?? ''}:${threadId}`;
+  const frozenDivider = useRef<{
+    key: string;
+    placement: { turnId: string; afterItemId: string | null } | null;
+  } | null>(null);
+  const visitRevealed = useRef<string | null>(null);
+  const visitMarks = useRef<{ key: string; ids: Set<string>; hidden: Set<string> } | null>(null);
+  const settledUnread = useRef<ReadonlySet<string>>(new Set());
+  const [markHideVersion, setMarkHideVersion] = useState(0);
+  const marks =
+    visitMarks.current?.key === visitKey
+      ? visitMarks.current
+      : { key: visitKey, ids: new Set<string>(), hidden: new Set<string>() };
+  if (visitMarks.current !== marks) {
+    visitMarks.current = marks;
+    frozenDivider.current = null;
+    settledUnread.current = new Set();
+  }
+  const readKey = readStateQueryKey(workspaceId, threadId, dashboard?.viewerUserId, feedItems);
+  const subscribeRead = useCallback(
+    (onChange: () => void) =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (event.query.queryKey[0] === 'thread-read-state') onChange();
+      }),
+    [queryClient]
+  );
+  const readSnapshot = useSyncExternalStore(
+    subscribeRead,
+    () => {
+      const state = queryClient.getQueryState(readKey);
+      return `${state?.status ?? 'pending'}:${state?.dataUpdatedAt ?? 0}`;
+    },
+    () => 'pending:0'
+  );
+  const readSuccess = readSnapshot.startsWith('success');
+  if (readSuccess) {
+    settledUnread.current = unreadIds;
+    for (const id of unreadIds) marks.ids.add(id);
+  }
+  const stableUnread = readSuccess ? unreadIds : settledUnread.current;
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      const button = target.closest('button');
+      if (!button || button.textContent?.trim() !== 'Mark read') return;
+      const current = visitMarks.current;
+      if (!current) return;
+      for (const id of current.ids) current.hidden.add(id);
+      setMarkHideVersion((version) => version + 1);
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
+  }, []);
   const catchUpRefs = catchUpItemRefs(windowRuns ?? [], timelineWindow.data?.itemWindow ?? null);
   const [locatedUnread, setLocatedUnread] = useState<LocatedUnreadRef[]>([]);
-  const missingUnread = unplacedUnreadIds(catchUpRefs, unreadIds);
+  const missingUnread = unplacedUnreadIds(catchUpRefs, stableUnread);
   const locateKey =
     missingUnread.length === 0 || missingUnread.length > EARLIER_UNREAD_LOCATE_LIMIT
       ? ''
@@ -1437,26 +1490,51 @@ export function ThreadStream({
     if (!runOrder.has(item.turnId)) runOrder.set(item.turnId, item.admissionOrder);
   }
   const hasUnreadAnswer = catchUpRefs.some(
-    (item) => item.type === 'assistant-message' && unreadIds.has(item.id)
+    (item) => item.type === 'assistant-message' && stableUnread.has(item.id)
   );
-  const dividerShown = showCatchUpDivider({
-    profile: profileId,
-    catchUp,
-    hasUnreadAnswer,
-  });
-  const placement = dividerShown
-    ? dividerPlacement({
-        runs: windowRuns ?? [],
-        items: catchUpRefs,
-        catchUp,
-      })
-    : null;
+  const readFailed = readSnapshot.startsWith('error');
+  // A connected read that cannot run (read-only or a failed live stream) has
+  // nothing further to wait for. A connection check is not that case: it must
+  // not freeze the divider off before the read exists.
+  const readBlocked = (controlsReadOnly || live.isError) && connection.connected;
+  // Assistant geometry waits for a real read. A missing viewer, a failed read,
+  // or a dropped connection has nothing further to wait for.
+  const readSettled =
+    profileId !== 'assistant' ||
+    readSuccess ||
+    readFailed ||
+    readBlocked ||
+    Boolean(dashboard && dashboard.viewerUserId == null) ||
+    connection.failed;
+  const historyReady = timelineOn
+    ? timelineWindow.isSuccess || retainHistory
+    : items.isSuccess || retainHistory;
+  const dividerReady = historyReady && readSettled;
+  if (dividerReady && frozenDivider.current?.key !== visitKey) {
+    const shown = showCatchUpDivider({
+      profile: profileId,
+      catchUp,
+      hasUnreadAnswer,
+    });
+    frozenDivider.current = {
+      key: visitKey,
+      placement: shown
+        ? dividerPlacement({
+            runs: windowRuns ?? [],
+            items: catchUpRefs,
+            catchUp,
+          })
+        : null,
+    };
+  }
+  const placement =
+    frozenDivider.current?.key === visitKey ? frozenDivider.current.placement : null;
   const locatedIds = new Set(locatedUnread.map((item) => item.id));
   const earlierUnreadUnresolved = missingUnread.some((id) => !locatedIds.has(id));
   const earlier = earlierUnread({
     items: catchUpRefs,
-    unreadIds,
-    catchUp: dividerShown ? catchUp : null,
+    unreadIds: stableUnread,
+    catchUp: placement ? catchUp : null,
     runOrder,
     located: locatedUnread,
   });
@@ -1467,6 +1545,12 @@ export function ThreadStream({
     if (onJumpToItem) onJumpToItem(itemId);
     else setAnchorOverride({ kind: 'item', itemId });
   }
+
+  // The fold control and the catch-up divider have to appear together. Painting
+  // the control first lets the divider land between the two fold measurements.
+  // A later read must not hide a control this visit has already shown.
+  if (dividerReady) visitRevealed.current = visitKey;
+  const openingLayout = visitRevealed.current !== visitKey;
 
   return (
     <TimelineNowProvider now={clock}>
@@ -1479,7 +1563,11 @@ export function ThreadStream({
         items={feedItems}
         disabled={controlsReadOnly || live.isError}
       >
-        <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
+        <div
+          className="ok-timeline flex flex-col gap-5"
+          data-timeline-lens={lens}
+          data-opening-layout={openingLayout ? '' : undefined}
+        >
           {lens === 'full'
             ? (windowRuns ?? [])
                 .filter((run) => run.id !== level2TurnId)
@@ -1664,11 +1752,9 @@ export function ThreadStream({
                       {selectedRunLabel(selectedTurn?.status ?? timelineRun?.status)}
                     </p>
                   ) : null}
-                  {index > 0 ? (
-                    <TurnSeparator
-                      label={runSeparatorCopy(timelineRun?.admissionOrder ?? index + 1)}
-                    />
-                  ) : null}
+                  <TurnSeparator
+                    label={runSeparatorCopy(timelineRun?.admissionOrder ?? index + 1)}
+                  />
                   {staysNew ? (
                     <p data-still-new="true" data-voice="fact" className="ok-voice-fact ok-meta">
                       {timelineCopy.stillNew}
@@ -1700,13 +1786,23 @@ export function ThreadStream({
                     renderItem={(item) => {
                       const node = renderTimelineItem(item);
                       if (node == null) return node;
-                      const unread =
+                      const showMark =
                         (item.type === 'assistant-message' || item.type === 'user-message') &&
-                        keepsUnreadMark(item.id, unreadIds);
+                        visitMarks.current?.ids.has(item.id) === true;
+                      const hideMark =
+                        showMark &&
+                        visitMarks.current?.hidden.has(item.id) === true &&
+                        markHideVersion >= 0;
                       return (
                         <>
-                          {unread ? (
-                            <p data-unread="true" data-voice="fact" className="ok-meta">
+                          {showMark ? (
+                            <p
+                              data-unread="true"
+                              data-voice="fact"
+                              className="ok-meta"
+                              aria-hidden={hideMark ? true : undefined}
+                              style={hideMark ? { visibility: 'hidden' } : undefined}
+                            >
                               {timelineCopy.unreadMark}
                             </p>
                           ) : null}
