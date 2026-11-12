@@ -1225,6 +1225,10 @@ describe('database setup', () => {
       // These exact tests inject SQL faults into private databases; they own no production schema.
       // The cold User reader fixture injects only an unsupported predecessor ledger after private setup.
       .filter((path) => path !== join(sourceRoot, 'storage', 'cold-user-opening-native.test.ts'))
+      // Layout-report fixture faults remove only a closed test User ledger; the public diagnostic must not repair it.
+      .filter(
+        (path) => path !== join(sourceRoot, 'storage', 'storage-layout-private-readers.test.ts')
+      )
       .filter((path) => path !== join(sourceRoot, 'workspace-retirement.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'operation-error.test.ts'))
       .filter((path) => path !== join(sourceRoot, 'server-thread-operation-projections.test.ts'))
