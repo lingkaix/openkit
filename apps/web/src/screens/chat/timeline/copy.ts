@@ -74,6 +74,7 @@ export const timelineCopy = {
   digestPartial:
     'These counts are a lower bound. Later history, large records, or further waiting items were not all counted.',
   runUnavailable: 'This run is not in this conversation.',
+  requestUnavailable: 'This request is no longer available',
   selectedRun: 'Selected run',
   stopRun: 'Stop run',
   stopFailed: "Couldn't stop this run.",

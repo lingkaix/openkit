@@ -39,6 +39,8 @@ export type TimelineAnchorRequest =
   | { kind: 'latest' }
   | { kind: 'turn'; turnId: string }
   | { kind: 'item'; itemId: string }
+  | { kind: 'approval-request'; approvalRequestId: string }
+  | { kind: 'user-input-request'; userInputRequestId: string }
   | { kind: 'attention'; rowId: string }
   | { kind: 'catch-up' };
 
@@ -54,6 +56,9 @@ export interface HeldTimeline {
   pagedEarlier?: boolean;
   /** True after the reader pages later. A poll must not rewind that page. */
   pagedLater?: boolean;
+  /** The request anchor was not found. The held runs stay the current view. */
+  requestUnavailable?: boolean;
+  digest?: ThreadTimelineResponse['digest'];
 }
 
 export interface HeldItems {
@@ -62,9 +67,13 @@ export interface HeldItems {
   afterCursor: string | null;
 }
 
-/** Anchor named by the thread URL. Item, row, run, then catch-up. Otherwise latest. */
+/** Anchor named by the thread URL. A request id wins over a loaded Item. Otherwise item, row, run, then catch-up. */
 export function anchorFromSearch(search: string): TimelineAnchorRequest {
   const params = new URLSearchParams(search);
+  const approvalRequestId = params.get('approvalRequest');
+  if (approvalRequestId) return { kind: 'approval-request', approvalRequestId };
+  const userInputRequestId = params.get('userInputRequest');
+  if (userInputRequestId) return { kind: 'user-input-request', userInputRequestId };
   const itemId = params.get('item');
   if (itemId) return { kind: 'item', itemId };
   const rowId = params.get('row') || params.get('attention');
@@ -86,6 +95,10 @@ export function anchorInput(
       return { kind: 'turn', turnId: anchor.turnId };
     case 'item':
       return { kind: 'item', itemId: anchor.itemId };
+    case 'approval-request':
+      return { kind: 'approval-request', approvalRequestId: anchor.approvalRequestId };
+    case 'user-input-request':
+      return { kind: 'user-input-request', userInputRequestId: anchor.userInputRequestId };
     case 'attention':
       return { kind: 'attention', rowId: anchor.rowId };
     case 'catch-up':
@@ -690,6 +703,8 @@ export function timelineJump(input: {
   params.delete('turn');
   params.delete('catchUp');
   params.delete('request');
+  params.delete('approvalRequest');
+  params.delete('userInputRequest');
   if (input.jump.kind === 'item') params.set('item', input.jump.itemId);
   if (input.jump.kind === 'catch-up') params.set('catchUp', '1');
   const search = params.toString();

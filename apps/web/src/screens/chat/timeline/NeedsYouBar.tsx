@@ -16,6 +16,7 @@ import {
   scopeNeedsYou,
   toNeedsYouRow,
 } from './needs-you';
+import { RequestUnavailableNotice } from './request-anchor';
 import { TimelineTime } from './TimelineTime';
 import { formatAgeSeconds, useReducedMotion } from './time';
 
@@ -93,7 +94,7 @@ export function NeedsYouBar({
     const timer = setTimeout(() => setFade(false), 200);
     return () => clearTimeout(timer);
   }, [reducedMotion, rows]);
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return <RequestUnavailableNotice />;
   const ordered = orderNeedsYou(rows);
   const summary = needsYouSummary(ordered);
 
@@ -127,30 +128,33 @@ export function NeedsYouBar({
   }
 
   return (
-    <section
-      aria-label={timelineCopy.needsYouRegion}
-      className={`ok-needs-you ${emphasize ? 'text-accent' : ''} ${fade ? 'ok-decision-arrive' : ''}`}
-      {...(emphasize ? { 'data-emphasis': 'true' } : {})}
-    >
-      {ordered.length > 1 && !open ? (
-        <button type="button" onClick={() => setOpen(true)}>
-          {summary}
-        </button>
-      ) : (
-        <ul className="flex flex-col gap-1">
-          {ordered.map((row) => (
-            <li key={row.id}>{rowButton(row)}</li>
-          ))}
-          {ordered.length > 1 ? (
-            <li>
-              <button type="button" onClick={() => setOpen(false)}>
-                {timelineCopy.showLess}
-              </button>
-            </li>
-          ) : null}
-        </ul>
-      )}
-    </section>
+    <>
+      <RequestUnavailableNotice />
+      <section
+        aria-label={timelineCopy.needsYouRegion}
+        className={`ok-needs-you ${emphasize ? 'text-accent' : ''} ${fade ? 'ok-decision-arrive' : ''}`}
+        {...(emphasize ? { 'data-emphasis': 'true' } : {})}
+      >
+        {ordered.length > 1 && !open ? (
+          <button type="button" onClick={() => setOpen(true)}>
+            {summary}
+          </button>
+        ) : (
+          <ul className="flex flex-col gap-1">
+            {ordered.map((row) => (
+              <li key={row.id}>{rowButton(row)}</li>
+            ))}
+            {ordered.length > 1 ? (
+              <li>
+                <button type="button" onClick={() => setOpen(false)}>
+                  {timelineCopy.showLess}
+                </button>
+              </li>
+            ) : null}
+          </ul>
+        )}
+      </section>
+    </>
   );
 }
 

@@ -11,7 +11,6 @@ export const RESOLVE_READ_GAPS = [
   'No connection read lists one connection by connectionRef. Shared MCP selects a server id and Vault lists credential references, so the reference stays text.',
   'A knowledge page and revision have no URL anchor.',
   'The environment has no user surface; it stays in the inspector.',
-  'A request Item outside the loaded window has no timeline anchor.',
   'Attention rows do not say whether the viewer sent the latest message.',
 ] as const;
 
@@ -45,7 +44,10 @@ export type ObjectRef =
       threadId: string;
       turnId?: string;
       itemId?: string;
-      requestId?: string;
+      /** Opens the raising Item through thread.timeline, including outside the loaded window. */
+      request?:
+        | { kind: 'approval-request'; approvalRequestId: string }
+        | { kind: 'user-input-request'; userInputRequestId: string };
     }
   | { kind: 'artifact'; workspaceId: string; artifactId: string; version: number }
   | {
@@ -156,21 +158,30 @@ function activityOf(facts: ResolveFacts, threadId: string): ConversationActivity
 
 /**
  * Run anchor. `turn` is the spec name. `turnId` keeps the shipped window anchor working.
- * An Item uses the existing `item` address. A request id is not an Item id, so it stays
- * `request` and the loaded card that carries it is focused. It does not select the window.
+ * A request id is the strict timeline anchor. It is not searched for in the loaded window.
  */
 function threadSearch(
   turnId: string | undefined,
   itemId: string | undefined,
-  requestId: string | undefined
+  request:
+    | { kind: 'approval-request'; approvalRequestId: string }
+    | { kind: 'user-input-request'; userInputRequestId: string }
+    | undefined
 ): string {
   const params = new URLSearchParams();
+  if (request?.kind === 'approval-request') {
+    params.set('approvalRequest', request.approvalRequestId);
+    return params.toString();
+  }
+  if (request?.kind === 'user-input-request') {
+    params.set('userInputRequest', request.userInputRequestId);
+    return params.toString();
+  }
   if (turnId) {
     params.set('turn', turnId);
     params.set('turnId', turnId);
   }
   if (itemId) params.set('item', itemId);
-  else if (requestId) params.set('request', requestId);
   return params.toString();
 }
 
@@ -192,9 +203,9 @@ function resolveThread(ref: Extract<ObjectRef, { kind: 'thread' }>, facts: Resol
   if (denied) return denied;
   return {
     path: conversationThreadPath(ref.workspaceId, ref.threadId, activityOf(facts, ref.threadId)),
-    search: threadSearch(ref.turnId, ref.itemId, ref.requestId),
-    focus: ref.itemId ?? ref.turnId ?? null,
-    notice: threadNotice(ref.itemId, ref.requestId),
+    search: threadSearch(ref.turnId, ref.itemId, ref.request),
+    focus: ref.request ? null : (ref.itemId ?? ref.turnId ?? null),
+    notice: ref.request ? null : threadNotice(ref.itemId, undefined),
   };
 }
 
@@ -329,8 +340,11 @@ function resolveAttention(
       workspaceId: ref.workspaceId,
       threadId,
       turnId,
-      itemId,
-      requestId: !itemId && source.type === 'approval' ? source.approvalRequestId : undefined,
+      itemId: source.type === 'approval' ? undefined : itemId,
+      request:
+        source.type === 'approval'
+          ? { kind: 'approval-request', approvalRequestId: source.approvalRequestId }
+          : undefined,
     },
     facts
   );

@@ -161,12 +161,12 @@ describe('run entry presentation', () => {
     expect(screen.queryByRole('button', { name: 'Show the full text' })).toBeNull();
   });
 
-  it('focuses the loaded request the address names', () => {
+  it('does not search the loaded window for a request address', () => {
     const previous = window.location.href;
     window.history.replaceState(null, '', '?request=apr-long');
     renderFixture('work');
     const card = screen.getByText('Approve the export').closest('[id^="timeline-item-"]');
-    expect(card).toHaveFocus();
+    expect(card).not.toHaveFocus();
     window.history.replaceState(null, '', previous);
   });
 

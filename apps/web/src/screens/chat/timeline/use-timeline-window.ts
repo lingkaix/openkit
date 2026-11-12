@@ -1,6 +1,6 @@
 import type { ThreadTimelineResponse } from '@openkit/app-api-schemas';
-import type { CoreClient } from '@openkit/core-client';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { ApiCallError, type CoreClient } from '@openkit/core-client';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../../app/core-client';
 import type { ThreadItem } from '../data';
@@ -22,7 +22,37 @@ import {
 } from './window';
 
 function withDigest(held: HeldTimeline, digest: ThreadTimelineResponse['digest']) {
-  return { ...held, digest };
+  return { ...held, digest, requestUnavailable: undefined };
+}
+
+function isRequestAnchor(anchor: TimelineAnchorRequest): boolean {
+  return anchor.kind === 'approval-request' || anchor.kind === 'user-input-request';
+}
+
+/** A missing request keeps the thread's current window instead of guessing a nearby Item. */
+function keptRequestWindow(
+  queryClient: QueryClient,
+  workspaceId: string,
+  threadId: string
+): HeldTimeline {
+  let kept: HeldTimeline | undefined;
+  for (const [, data] of queryClient.getQueriesData<HeldTimeline>({
+    queryKey: ['thread-timeline', workspaceId, threadId],
+  })) {
+    if (!data || data.requestUnavailable || data.runs.length === 0) continue;
+    kept = data;
+  }
+  return {
+    runs: kept?.runs ?? [],
+    beforeCursor: kept?.beforeCursor ?? null,
+    afterCursor: kept?.afterCursor ?? null,
+    anchor: kept?.anchor ?? null,
+    catchUpAnchor: kept?.catchUpAnchor ?? null,
+    itemWindow: kept?.itemWindow ?? null,
+    restrictedReferences: kept?.restrictedReferences ?? false,
+    requestUnavailable: true,
+    digest: kept?.digest,
+  };
 }
 
 /** The real client exposes the window read. Test doubles that omit it keep today's item path. */
@@ -74,12 +104,23 @@ export function useTimelineWindow(options: {
     queryKey: key,
     enabled: enabled && Boolean(options.workspaceId),
     queryFn: async () => {
-      const fresh = await client.operations['thread.timeline'](
-        openingInput(workspaceId, threadId, anchor)
-      );
-      const previous = queryClient.getQueryData<HeldTimeline>(key);
-      const held = previous ? absorbPoll(previous, fresh) : holdFromResponse(fresh);
-      return withDigest(held, fresh.digest);
+      try {
+        const fresh = await client.operations['thread.timeline'](
+          openingInput(workspaceId, threadId, anchor)
+        );
+        const previous = queryClient.getQueryData<HeldTimeline>(key);
+        const held = previous?.requestUnavailable
+          ? holdFromResponse(fresh)
+          : previous
+            ? absorbPoll(previous, fresh)
+            : holdFromResponse(fresh);
+        return withDigest(held, fresh.digest);
+      } catch (error) {
+        if (isRequestAnchor(anchor) && error instanceof ApiCallError && error.status === 404) {
+          return keptRequestWindow(queryClient, workspaceId, threadId);
+        }
+        throw error;
+      }
     },
     placeholderData: (previous, previousQuery) =>
       retainWindowWhileAnchorLoads(workspaceId, threadId, previous, previousQuery?.queryKey),

@@ -69,7 +69,7 @@ describe('timeline object resolver', () => {
     }
   });
 
-  it('opens a message on its item and a request on the run', () => {
+  it('opens a message on its item and a request through its timeline anchor', () => {
     const message = resolve(
       {
         kind: 'thread',
@@ -77,18 +77,31 @@ describe('timeline object resolver', () => {
         threadId: THREAD,
         turnId: TURN,
         itemId: 'it_1',
-        requestId: 'req_1',
       },
       threads(true)
     );
-    expect(message).toMatchObject({
-      path: `/tasks/${WS}/${THREAD}`,
-      focus: 'it_1',
-      notice: null,
-    });
     expect(hrefOf(message)).toContain('item=it_1');
     expect(hrefOf(message)).toContain('turn=tu_1');
-    expect(hrefOf(message)).not.toContain('request');
+
+    const approval = resolve(
+      {
+        kind: 'thread',
+        workspaceId: WS,
+        threadId: THREAD,
+        turnId: TURN,
+        itemId: 'it_1',
+        request: { kind: 'approval-request', approvalRequestId: 'apr_1' },
+      },
+      threads(true)
+    );
+    expect(approval).toMatchObject({
+      path: `/tasks/${WS}/${THREAD}`,
+      focus: null,
+      notice: null,
+    });
+    expect(hrefOf(approval)).toContain('approvalRequest=apr_1');
+    expect(hrefOf(approval)).not.toContain('item=');
+    expect(hrefOf(approval)).not.toContain('turn=');
 
     const request = resolve(
       {
@@ -96,15 +109,15 @@ describe('timeline object resolver', () => {
         workspaceId: WS,
         threadId: THREAD,
         turnId: TURN,
-        requestId: 'req_1',
+        request: { kind: 'user-input-request', userInputRequestId: 'uir_1' },
       },
       threads(true)
     );
     expect(request).toMatchObject({
-      focus: TURN,
-      notice: timelineNotices.opensRunNotRequest,
+      focus: null,
+      notice: null,
     });
-    expect(hrefOf(request)).toContain('request=req_1');
+    expect(hrefOf(request)).toContain('userInputRequest=uir_1');
     expect(hrefOf(request)).not.toContain('item=');
   });
 

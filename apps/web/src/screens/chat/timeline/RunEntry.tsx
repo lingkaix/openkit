@@ -1,10 +1,9 @@
-import { Fragment, type ReactNode, type Ref, useEffect, useRef, useState } from 'react';
+import { Fragment, type ReactNode, type Ref, useState } from 'react';
 import { Button } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
-import { focusTimelineItem } from './needs-you';
 import {
   formatRunDuration,
   groupSteps,
@@ -18,7 +17,7 @@ import type { TimelineEntry, TimelineTurn } from './source';
 import { PlanSegments, PolicyBadge } from './tb7';
 import { durationDateTime } from './time';
 import type { LensName } from './types';
-import { itemIdForRequest, type NarrativePreview, offersOpenAllSteps } from './window';
+import { type NarrativePreview, offersOpenAllSteps } from './window';
 
 function SummaryText({ summary, durationMs }: { summary: string; durationMs: number | null }) {
   if (durationMs == null || durationMs < 1000) return summary;
@@ -109,23 +108,6 @@ export function RunEntry({
   const visibleNotes = new Set(notes.visible);
   const steps = items.filter((item) => isStepItem(item));
   const groups = groupSteps(steps);
-  const locatedRequest = useRef<string | null>(null);
-  const askedForRequest = useRef(false);
-  useEffect(() => {
-    const requestId = new URLSearchParams(window.location.search).get('request');
-    if (!requestId || locatedRequest.current === requestId) return;
-    const itemId = itemIdForRequest(items, requestId);
-    if (!itemId) return;
-    const item = items.find((candidate) => candidate.id === itemId);
-    if (item && isStepItem(item) && runLens !== 'full') {
-      if (!askedForRequest.current) {
-        askedForRequest.current = true;
-        onStepsToggle?.(true);
-      }
-      return;
-    }
-    if (focusTimelineItem(itemId)) locatedRequest.current = requestId;
-  }, [items, onStepsToggle, runLens]);
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
   const [showEarlierNotes, setShowEarlierNotes] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);

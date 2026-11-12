@@ -13,6 +13,7 @@ import {
   type SheetKind,
   sheetDepthOf,
 } from './phone';
+import { RequestUnavailableNotice } from './request-anchor';
 
 export interface TimelineSheets {
   phone: boolean;
@@ -110,7 +111,8 @@ export function PhoneBar({
 }) {
   const nowText = now.kind === 'hidden' ? null : now.text;
   const label = phoneBarLabel(nowText, needsCount);
-  if (!label) return null;
+  const notice = <RequestUnavailableNotice />;
+  if (!label) return notice;
   const live = !reducedMotion && (now.kind === 'step' || now.kind === 'thinking') && now.live;
   const className = 'ok-meta flex min-h-11 w-full items-center gap-2 text-left';
   const body = (
@@ -121,15 +123,21 @@ export function PhoneBar({
   );
   if (!onOpen) {
     return (
-      <p data-phone-bar="true" className={className}>
-        {body}
-      </p>
+      <>
+        {notice}
+        <p data-phone-bar="true" className={className}>
+          {body}
+        </p>
+      </>
     );
   }
   return (
-    <button type="button" data-phone-bar="true" className={className} onClick={onOpen}>
-      {body}
-    </button>
+    <>
+      {notice}
+      <button type="button" data-phone-bar="true" className={className} onClick={onOpen}>
+        {body}
+      </button>
+    </>
   );
 }
 
