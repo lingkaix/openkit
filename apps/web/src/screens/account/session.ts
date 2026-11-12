@@ -221,8 +221,10 @@ export function useAccountMutation() {
       toastQueue.clear();
       resetToastPolicy();
       queryClient.removeQueries({ queryKey: ['items'] });
-      // Goal, attention, timeline, and open Item windows are account-owned reads.
-      // Cancel in-flight work first so a late response cannot publish after removal.
+      // Goal, attention, timeline, open Item windows, and the run-start clock
+      // are account-owned reads. Cancel in-flight work first so a late response
+      // cannot publish after removal. advanceAccountGeneration above qualifies
+      // any response that is already in flight.
       void queryClient.cancelQueries({ queryKey: ['goal'] });
       queryClient.removeQueries({ queryKey: ['goal'] });
       void queryClient.cancelQueries({ queryKey: ['attention'] });
@@ -231,6 +233,8 @@ export function useAccountMutation() {
       queryClient.removeQueries({ queryKey: ['thread-timeline'] });
       void queryClient.cancelQueries({ queryKey: ['thread-timeline-items'] });
       queryClient.removeQueries({ queryKey: ['thread-timeline-items'] });
+      void queryClient.cancelQueries({ queryKey: ['timeline-run-start'] });
+      queryClient.removeQueries({ queryKey: ['timeline-run-start'] });
       if (variables.operation === 'signOut') void retainShellCacheOnLogout();
       const mutationCache = queryClient.getMutationCache();
       for (const mutation of mutationCache.findAll({ mutationKey: accountChannelsKey }))

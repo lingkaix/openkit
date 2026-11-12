@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../../app/core-client';
 import { ToastProvider, toastQueue } from '../../../primitives';
 import { useWorkspaceStore } from '../../workspace-store';
+import { useSendTurn } from '../data';
 import { BackLink } from './BackLink';
 import { DecisionRowSheet } from './decision-sheet';
 import { NeedsYouBar } from './NeedsYouBar';
@@ -130,6 +131,29 @@ function toastClient(rows: () => readonly unknown[]) {
   } as unknown as CoreClient;
 }
 
+function HandoffSender() {
+  const send = useSendTurn();
+  return (
+    <button
+      type="button"
+      onClick={() =>
+        void send.mutate({
+          workspaceId: WORKSPACE,
+          threadId: THREAD,
+          draft: {
+            input: 'Continue this in a task',
+            targetRef: 'target',
+            artifactRefs: [],
+            requestId: 'req_00000000-0000-7000-8000-000000000001',
+          },
+        })
+      }
+    >
+      Send
+    </button>
+  );
+}
+
 async function primeToasts(rows: () => readonly unknown[]) {
   document.hasFocus = () => true;
   useWorkspaceStore.setState({ currentWorkspaceId: WORKSPACE, selectionUserKey: null });
@@ -212,33 +236,23 @@ describe('attention origin toasts', () => {
     }
   });
 
-  it('toasts a handoff only when the viewer caused it', async () => {
-    let items: ReturnType<typeof attentionRow>[] = [];
-    const queryClient = await primeToasts(() => items);
-    items = [
-      attentionRow({
-        id: 'handoff:1',
-        kind: 'budget',
-        title: 'Handed off the task',
-        summary: 'Another worker continues this task.',
-        severity: 'info',
-        source: {
-          type: 'protocol_item',
-          itemType: 'agent-handoff',
-          workspaceId: WORKSPACE,
-          threadId: THREAD,
-          turnId: TURN,
-          itemId: ITEM,
-        },
-        origin: origin(false, true),
-      }),
-    ];
-    await act(async () => {
-      await queryClient.invalidateQueries({ queryKey: ['attention', WORKSPACE] });
+  it('toasts a handoff from the admitted send response in this tab', async () => {
+    const user = userEvent.setup();
+    const receiving = 'th_00000000-0000-70a0-9cde-4561f64881c7';
+    const submit = vi.fn().mockResolvedValue({
+      outcome: 'task-handoff',
+      receivingWorkspaceId: WORKSPACE,
+      receivingThreadId: receiving,
     });
-    expect(
-      (await screen.findAllByText(/Handed off the task · Launch notes/)).length
-    ).toBeGreaterThan(0);
+    render(
+      <Harness client={{ operations: { 'conversation.submit': submit } } as unknown as CoreClient}>
+        <ToastProvider />
+        <HandoffSender />
+      </Harness>
+    );
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    expect(await screen.findByRole('alertdialog')).toHaveAccessibleName('Sent to a task');
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
   it('stays quiet when the viewer did not cause the handoff', async () => {

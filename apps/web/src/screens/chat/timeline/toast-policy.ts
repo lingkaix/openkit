@@ -111,9 +111,10 @@ export function attentionObjectId(row: {
 }
 
 /**
- * The three toast classes. Anything else stays in Action Center.
- * Failure and handoff require origin.viewerStartedRun or origin.viewerCausedHandoff.
- * Null, false, and a missing origin stay off. The caller does not infer either fact.
+ * Decision and failure toasts from an attention row. Anything else stays in Action Center.
+ * Failure requires origin.viewerStartedRun. Null, false, and a missing origin stay off.
+ * The caller does not infer that fact. An attention row never becomes a handoff toast.
+ * That toast comes only from the admitted confirm or selection response in this tab.
  */
 export function classifyAttentionEvent(
   row: {
@@ -135,13 +136,6 @@ export function classifyAttentionEvent(
   const unknownOutcome =
     row.source.type === 'execution_attempt' && row.source.disposition === 'unknown';
   if ((failed || unknownOutcome) && facts.viewerWaitsOn === true) return 'failure';
-  if (
-    row.source.type === 'protocol_item' &&
-    row.source.itemType === 'agent-handoff' &&
-    facts.viewerCaused === true
-  ) {
-    return 'handoff';
-  }
   return 'ignore';
 }
 
@@ -258,8 +252,15 @@ function mergeRows(
     if (insideWindow) {
       const existing = visible.find((toast) => !toast.overflow && toast.threadId === threadId);
       if (existing) {
-        const objectIds = uniqueIds([...existing.objectIds, ...group.map((row) => row.objectId)]);
+        // Decision toasts do not expire. A failure toast does, so a decision that
+        // replaces one counts only decisions and uses the decision lifetime.
+        const priorDecisions = existing.lifetimeMs === null ? existing.objectIds : [];
+        const objectIds = uniqueIds([...priorDecisions, ...group.map((row) => row.objectId)]);
         const threadName = group[0]?.threadName?.trim() || timelineNotices.untitledConversation;
+        if (priorDecisions.length === 0 && group.length === 1) {
+          revisions.push({ ...toastOf(group[0]!), id: existing.id, lifetimeMs: null });
+          continue;
+        }
         revisions.push({
           ...existing,
           message: fillCopy(timelineNotices.mergedDecisions, {
@@ -267,6 +268,7 @@ function mergeRows(
             thread: threadName,
           }),
           objectIds,
+          lifetimeMs: null,
         });
         continue;
       }

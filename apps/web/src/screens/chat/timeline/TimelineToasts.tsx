@@ -33,8 +33,9 @@ import {
 /**
  * Toasts from successive attention reads.
  * A failure toast requires origin.viewerStartedRun === true.
- * A handoff toast requires origin.viewerCausedHandoff === true.
  * Null, false, and a missing origin stay in Action Center.
+ * An attention row never becomes a handoff toast. That toast comes only from
+ * the admitted confirm or selection response in this tab.
  */
 export function TimelineToasts() {
   const workspaceId = useCurrentWorkspaceId();

@@ -1,9 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { flushSync } from 'react-dom';
 import { Link } from 'react-router-dom';
 import { useCoreClient } from '../../../app/core-client';
 import { accountGeneration } from '../../account/generation';
 import type { ThreadAudience } from './audience';
 import { fillCopy } from './copy';
+import { isDeniedRead } from './degraded';
 import { timelineNotices } from './notices';
 import { hrefOf, resolve } from './resolve';
 import { formatClockTime } from './time';
@@ -21,6 +24,7 @@ function useRecordedRunStart(
   audienceOpen: boolean
 ): string | null {
   const client = useCoreClient();
+  const [sourceDenied, setSourceDenied] = useState(false);
   const lookup =
     startedAt === undefined && audienceOpen && Boolean(workspaceId && threadId && turnId);
   const query = useQuery({
@@ -31,12 +35,26 @@ function useRecordedRunStart(
       const generation = accountGeneration();
       const read = client.operations['turn.read'];
       if (typeof read !== 'function' || !workspaceId || !threadId || !turnId) return null;
-      const turn = await read({ workspaceId, threadId, turnId });
-      if (generation !== accountGeneration()) {
-        throw new Error('Discarded an earlier account response.');
+      try {
+        const turn = await read({ workspaceId, threadId, turnId });
+        if (generation !== accountGeneration()) {
+          throw new Error('Discarded an earlier account response.');
+        }
+        const at = turn?.startedAt;
+        if (sourceDenied) setSourceDenied(false);
+        return typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : null;
+      } catch (error) {
+        if (generation !== accountGeneration()) {
+          throw new Error('Discarded an earlier account response.');
+        }
+        // A denied source cannot keep a clock that an earlier admission showed.
+        // The query notification is deferred, so publish the hide before this read settles.
+        if (isDeniedRead(error)) {
+          flushSync(() => setSourceDenied(true));
+          return null;
+        }
+        throw error;
       }
-      const at = turn?.startedAt;
-      return typeof at === 'string' && Number.isFinite(Date.parse(at)) ? at : null;
     },
   });
   if (startedAt !== undefined) {
@@ -44,6 +62,7 @@ function useRecordedRunStart(
       ? startedAt
       : null;
   }
+  if (sourceDenied || isDeniedRead(query.error) || isDeniedRead(query.failureReason)) return null;
   return query.data ?? null;
 }
 
