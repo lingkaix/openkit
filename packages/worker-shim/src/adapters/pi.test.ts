@@ -1927,7 +1927,9 @@ describe('Pi controlled channel faults', () => {
       expect(child.exitCode).toBeNull();
     }
     if (inspection) expect(await inspection).toEqual({ state: 'unknown' });
-    await new Promise((resolve) => setTimeout(resolve, 350));
+    // A refused stop leaves the child alive, but its delayed work can run late under load.
+    // A confirmed exit above proves that no delayed child work can still create the marker.
+    if (stop !== 'confirmed') await waitFor(() => existsSync(marker), 3_000);
     expect(existsSync(marker)).toBe(stop !== 'confirmed');
   };
   for (const row of ['malformed', 'inspect'].flatMap((kind) =>
