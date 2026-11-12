@@ -49,6 +49,12 @@
   min-width: 0;
 }
 
+/* The earlier-unread line is reserved on the divider's first paint. */
+.ok-earlier-unread {
+  flex: 1 0 100%;
+  min-height: 1.75rem;
+}
+
 .ok-voice-fact {
   border-left: 3px solid var(--ok-voice-fact);
   padding-left: 8px;

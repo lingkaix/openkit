@@ -50,6 +50,8 @@ export interface HeldTimeline {
   afterCursor: string | null;
   anchor: ThreadTimelineResponse['anchor'];
   catchUpAnchor: ThreadTimelineResponse['catchUpAnchor'];
+  /** Present, null, or omitted exactly as `thread.timeline` returned it. */
+  earlierUnread?: ThreadTimelineResponse['earlierUnread'];
   itemWindow: ThreadTimelineResponse['itemWindow'];
   restrictedReferences: boolean;
   /** True after the reader pages earlier. A latest poll must not drop that page. */
@@ -148,6 +150,7 @@ export function holdFromResponse(page: ThreadTimelineResponse): HeldTimeline {
     afterCursor: page.afterCursor,
     anchor: page.anchor,
     catchUpAnchor: page.catchUpAnchor,
+    earlierUnread: page.earlierUnread,
     itemWindow: page.itemWindow,
     restrictedReferences: page.restrictedReferences,
   };

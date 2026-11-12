@@ -8,7 +8,12 @@ export function RequestUnavailableNotice() {
   const client = useContext(QueryClientContext);
   const anchor = anchorFromSearch(typeof window === 'undefined' ? '' : window.location.search);
   if (!client) return null;
-  if (anchor.kind !== 'approval-request' && anchor.kind !== 'user-input-request') return null;
+  if (
+    anchor.kind !== 'approval-request' &&
+    anchor.kind !== 'user-input-request' &&
+    anchor.kind !== 'item'
+  )
+    return null;
   const missing = client
     .getQueriesData<HeldTimeline>({ queryKey: ['thread-timeline'] })
     .some(([key, data]) => data?.requestUnavailable === true && sameAnchor(key[3], anchor));

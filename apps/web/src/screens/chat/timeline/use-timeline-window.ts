@@ -21,12 +21,24 @@ import {
   windowPollMs,
 } from './window';
 
-function withDigest(held: HeldTimeline, digest: ThreadTimelineResponse['digest']) {
-  return { ...held, digest, requestUnavailable: undefined };
+function withDigest(
+  held: HeldTimeline,
+  page: Pick<ThreadTimelineResponse, 'digest' | 'earlierUnread'>
+) {
+  return {
+    ...held,
+    digest: page.digest,
+    earlierUnread: page.earlierUnread,
+    requestUnavailable: undefined,
+  };
 }
 
-function isRequestAnchor(anchor: TimelineAnchorRequest): boolean {
-  return anchor.kind === 'approval-request' || anchor.kind === 'user-input-request';
+function keepsCurrentView(anchor: TimelineAnchorRequest): boolean {
+  return (
+    anchor.kind === 'approval-request' ||
+    anchor.kind === 'user-input-request' ||
+    anchor.kind === 'item'
+  );
 }
 
 /** A missing request keeps the thread's current window instead of guessing a nearby Item. */
@@ -52,6 +64,7 @@ function keptRequestWindow(
     restrictedReferences: kept?.restrictedReferences ?? false,
     requestUnavailable: true,
     digest: kept?.digest,
+    earlierUnread: kept?.earlierUnread,
   };
 }
 
@@ -114,9 +127,9 @@ export function useTimelineWindow(options: {
           : previous
             ? absorbPoll(previous, fresh)
             : holdFromResponse(fresh);
-        return withDigest(held, fresh.digest);
+        return withDigest(held, fresh);
       } catch (error) {
-        if (isRequestAnchor(anchor) && error instanceof ApiCallError && error.status === 404) {
+        if (keepsCurrentView(anchor) && error instanceof ApiCallError && error.status === 404) {
           return keptRequestWindow(queryClient, workspaceId, threadId);
         }
         throw error;
@@ -144,7 +157,7 @@ export function useTimelineWindow(options: {
         const next = held
           ? absorbEdge(held, result.response, result.edge)
           : holdFromResponse(result.response);
-        return withDigest(next, result.response.digest);
+        return withDigest(next, result.response);
       });
     },
   });
