@@ -412,6 +412,7 @@ export function GoalScreen() {
                 ? plainName(candidate.summary)
                 : null;
             const capturedWork = completion?.success ? completion.data.unresolvedWork : [];
+            const capturedEvidence = completion?.success ? completion.data.evidence : [];
             return (
               <article
                 key={request.requestId}
@@ -430,6 +431,11 @@ export function GoalScreen() {
                 {summary ? <p>{summary}</p> : null}
                 {capturedWork.map((work) => (
                   <p key={work}>{work}</p>
+                ))}
+                {capturedEvidence.map((entry) => (
+                  <p key={`${entry.kind}:${entry.id}:${entry.digest}`} className="break-all">
+                    {entry.digest}
+                  </p>
                 ))}
                 {request.state === 'pending' && (
                   <>

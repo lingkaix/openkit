@@ -87,9 +87,15 @@ export function readRetryAfterSeconds(error: unknown, now = Date.now()): number 
   return 20;
 }
 
-/** True when the status is the server-busy pair. */
+/**
+ * A refresh this mount can keep. 504 is the same gateway outage as 503.
+ * A 500 still replaces the view; denial never stays on screen.
+ */
 export function isBusyStatus(error: unknown): boolean {
-  return error instanceof ApiCallError && (error.status === 429 || error.status === 503);
+  return (
+    error instanceof ApiCallError &&
+    (error.status === 429 || error.status === 503 || error.status === 504)
+  );
 }
 
 /** True when the stream cursor can no longer be resumed. */
