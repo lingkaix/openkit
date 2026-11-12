@@ -5,7 +5,7 @@ import type {
   TimelineRunEntry,
 } from '@openkit/app-api-schemas';
 import type { ThreadItem } from '../data';
-import { outcomeLine } from './present';
+import { outcomeLine, recordedCount } from './present';
 import type { AgentProfileId } from './profiles';
 import type { TimelineEntry } from './source';
 
@@ -449,6 +449,8 @@ export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
     run.status === 'failed'
       ? (run.error?.message ?? outcomeLine('failed'))
       : outcomeLine(run.status, run.error?.message);
+  const failedCommandCount = recordedCount(run.statistics.failedCommandCount);
+  const failedStepCount = recordedCount(run.statistics.failedStepCount);
   return {
     turnId: run.id,
     header: { copyKey: 'run-trigger' },
@@ -461,9 +463,8 @@ export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
     stats: {
       stepCount: run.statistics.steps,
       fileCount: run.statistics.filesChanged,
-      // The read does not count failures. Zero is the fallback, not a measured count.
-      failedCommandCount: 0,
-      failedStepCount: 0,
+      ...(failedCommandCount == null ? {} : { failedCommandCount }),
+      ...(failedStepCount == null ? {} : { failedStepCount }),
     },
     long: run.long,
     stepWindow: [],

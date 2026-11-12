@@ -8,6 +8,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { CatchUpDivider } from './CatchUpDivider';
+import { summaryLine } from './present';
 import type { AgentProfileId } from './profiles';
 import { RunEntry } from './RunEntry';
 import type { TimelineEntry } from './source';
@@ -455,5 +456,31 @@ describe('catch-up opening', () => {
     expect(screen.getByText('New since you were here')).toBeVisible();
     expect(screen.queryByRole('button', { name: /earlier unread/ })).toBeNull();
     expect(screen.queryByRole('list')).toBeNull();
+  });
+
+  it('copies server failure counts and leaves a missing field uncounted', () => {
+    const recorded = run(1, turnId);
+    recorded.statistics.failedStepCount = 3;
+    recorded.statistics.failedCommandCount = 1;
+    const stats = entryFromRun(recorded).stats;
+    expect(stats.failedStepCount).toBe(3);
+    expect(stats.failedCommandCount).toBe(1);
+    expect(summaryLine({ actor: 'Worker', running: false, durationMs: null, stats })).toContain(
+      '1 commands failed'
+    );
+    const {
+      failedStepCount: _steps,
+      failedCommandCount: _commands,
+      ...statistics
+    } = recorded.statistics;
+    const missing = entryFromRun({
+      ...recorded,
+      statistics: statistics as TimelineRunEntry['statistics'],
+    }).stats;
+    expect(missing.failedStepCount).toBeUndefined();
+    expect(missing.failedCommandCount).toBeUndefined();
+    expect(
+      summaryLine({ actor: 'Worker', running: false, durationMs: null, stats: missing })
+    ).not.toContain('commands failed');
   });
 });

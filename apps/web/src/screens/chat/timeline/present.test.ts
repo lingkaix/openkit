@@ -68,6 +68,35 @@ describe('long run projection', () => {
   });
 });
 
+describe('server failure counts', () => {
+  it('shows a recorded count and omits a missing field', () => {
+    const recorded = summaryLine({
+      actor: 'Worker',
+      running: false,
+      durationMs: null,
+      stats: { stepCount: 4, fileCount: 1, failedCommandCount: 2, failedStepCount: 3 },
+    });
+    expect(recorded).toContain('2 commands failed');
+    expect(stepsFoldLabel(4, 3)).toBe('4 steps · 3 failed');
+    const missing = summaryLine({
+      actor: 'Worker',
+      running: false,
+      durationMs: null,
+      stats: { stepCount: 4, fileCount: 1 },
+    });
+    expect(missing).not.toContain('commands failed');
+    expect(stepsFoldLabel(4)).toBe('4 steps');
+    const zero = summaryLine({
+      actor: 'Worker',
+      running: false,
+      durationMs: null,
+      stats: { stepCount: 4, fileCount: 1, failedCommandCount: 0, failedStepCount: 0 },
+    });
+    expect(zero).toContain('0 commands failed');
+    expect(stepsFoldLabel(4, 0)).toBe('4 steps');
+  });
+});
+
 describe('registry voice on an entry', () => {
   it('maps each category to itself and never gives fact to a claim', () => {
     for (const [kind, row] of Object.entries(TIMELINE_REGISTRY)) {

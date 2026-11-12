@@ -1,6 +1,6 @@
 import { groupItemsByTurn, type ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
-import { countSteps, isLongRun, isStepItem, outcomeLine } from './present';
+import { countSteps, isLongRun, isStepItem, outcomeLine, type StepStats } from './present';
 import type { EntryKind } from './registry';
 
 /**
@@ -14,12 +14,7 @@ export interface TimelineEntry {
   narrative: { kind: EntryKind; itemId: string }[];
   notes: { kind: 'assistant-message-earlier'; itemId: string }[];
   plan: { itemId: string } | null;
-  stats: {
-    stepCount: number;
-    fileCount: number;
-    failedCommandCount: number;
-    failedStepCount: number;
-  };
+  stats: StepStats;
   /** True for a running run, a run over 30 minutes, or a run with more than 100 steps. */
   long: boolean;
   stepWindow: { kind: EntryKind; itemId: string }[];

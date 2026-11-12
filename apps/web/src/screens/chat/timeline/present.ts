@@ -73,8 +73,15 @@ export function formatRunDuration(ms: number): string {
 export interface StepStats {
   stepCount: number;
   fileCount: number;
-  failedCommandCount: number;
-  failedStepCount: number;
+  /** Absent when the server statistics did not include the field. Never a stand-in zero. */
+  failedCommandCount?: number;
+  /** Absent when the server statistics did not include the field. Never a stand-in zero. */
+  failedStepCount?: number;
+}
+
+/** A recorded count, or nothing when the server field is absent. */
+export function recordedCount(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
 function toolFailed(item: ThreadItem): boolean {
@@ -85,7 +92,7 @@ function commandFailed(item: ThreadItem): boolean {
   return item.type === 'command-execution' && item.exitCode != null && item.exitCode !== 0;
 }
 
-/** Counts taken from the loaded items. Server statistics replace this after TB2. */
+/** Counts taken from the loaded items. The timeline window uses server statistics instead. */
 export function countSteps(items: readonly ThreadItem[]): StepStats {
   let stepCount = 0;
   let fileCount = 0;
@@ -116,13 +123,16 @@ export function summaryLine(input: {
         ? timelineCopy.statusRunning
         : timelineCopy.statusCompleted
       : `${input.running ? 'running' : 'worked'} ${formatRunDuration(input.durationMs)}`;
+  const commands = recordedCount(input.stats.failedCommandCount);
   return [
     input.actor,
     pace,
     fillCopy(timelineCopy.stepsFold, { count: input.stats.stepCount }),
     fillCopy(timelineCopy.filesChanged, { count: input.stats.fileCount }),
-    fillCopy(timelineCopy.commandsFailed, { count: input.stats.failedCommandCount }),
-  ].join(' · ');
+    commands == null ? null : fillCopy(timelineCopy.commandsFailed, { count: commands }),
+  ]
+    .filter((part) => part != null)
+    .join(' · ');
 }
 
 /**
@@ -251,8 +261,9 @@ export function plainActorName(
   return 'Worker';
 }
 
-export function stepsFoldLabel(count: number, failed: number): string {
+export function stepsFoldLabel(count: number, failed?: number): string {
   const base = fillCopy(timelineCopy.stepsFold, { count });
-  if (failed <= 0) return base;
-  return `${base} · ${fillCopy(timelineCopy.failedCount, { count: failed })}`;
+  const recorded = recordedCount(failed);
+  if (recorded == null || recorded <= 0) return base;
+  return `${base} · ${fillCopy(timelineCopy.failedCount, { count: recorded })}`;
 }
