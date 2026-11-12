@@ -2,8 +2,8 @@
 status: Superseded
 implementation: N/A
 status-changed: 2026-07-13
-current-guidance: "`docs/specs/20260713-openkit_agent_skill_interface.md`"
-decision-evidence: "`docs/specs/20260713-openkit_agent_skill_interface.md`"
+current-guidance: "`docs/specs/20260910-agent_operator_skill.md`"
+decision-evidence: "`docs/specs/20260910-agent_operator_skill.md`"
 ---
 # OpenKit AI Interface: Skill And MCP Control Surface
 

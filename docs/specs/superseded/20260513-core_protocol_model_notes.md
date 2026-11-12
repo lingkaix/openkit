@@ -2,8 +2,8 @@
 status: Superseded
 implementation: N/A
 status-changed: 2026-06-28
-current-guidance: "`docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`"
-decision-evidence: "`docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/permissions.md`, `docs/core/audit.md`, `docs/core/contract-evolution.md`"
+current-guidance: "`docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/policy.md`, `docs/core/evidence.md`, `docs/core/contract-evolution.md`"
+decision-evidence: "`docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/identity.md`, `docs/core/storage.md`, `docs/core/knowledge.md`, `docs/core/policy.md`, `docs/core/evidence.md`, `docs/core/contract-evolution.md`"
 date: 2026-05-13
 ---
 # Core Protocol Model Notes

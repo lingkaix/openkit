@@ -2,8 +2,8 @@
 status: Superseded
 implementation: N/A
 status-changed: 2026-07-18
-current-guidance: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/app-api.md`, `apps/nanocore/README.md`"
-decision-evidence: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260713-openkit_agent_skill_interface.md`, `docs/app-api.md`, `apps/nanocore/README.md`"
+current-guidance: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260910-agent_operator_skill.md`, `docs/app-api.md`, `apps/nanocore/README.md`"
+decision-evidence: "`docs/core/protocol.md`, `docs/core/communication.md`, `docs/core/contract-evolution.md`, `packages/protocol/README.md`, `docs/specs/20260528-core_client_boundary.md`, `docs/specs/20260704-app_api_openapi_projection.md`, `docs/specs/20260910-agent_operator_skill.md`, `docs/app-api.md`, `apps/nanocore/README.md`"
 ---
 # Protocol Contract Consolidation
 
