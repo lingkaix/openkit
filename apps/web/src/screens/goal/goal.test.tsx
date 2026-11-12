@@ -573,6 +573,39 @@ describe('Artifact Review S14', () => {
     expect(status).toHaveTextContent(PROPOSAL_REVIEW.contentDigest);
   });
 
+  it('selects the addressed review and version instead of the pending one', async () => {
+    const pending = {
+      ...PROPOSAL_REVIEW,
+      reviewId: 'review-new',
+      artifactVersion: 2,
+      decision: null,
+      contentDigest: `sha256:${'d'.repeat(64)}`,
+    };
+    const addressed = {
+      ...PROPOSAL_REVIEW,
+      reviewId: 'review-old',
+      artifactVersion: 1,
+      decision: 'accepted' as const,
+      decisionActorId: 'usr_00000000-0000-7706-800d-9f6504ae7325',
+      decidedAt: '2026-07-21T00:02:00.000Z',
+      contentDigest: `sha256:${'b'.repeat(64)}`,
+    };
+    const client = makeClient({
+      operations: {
+        'artifact.read': vi.fn().mockResolvedValue({ ...PROPOSAL_ARTIFACT, version: 2 }),
+        'artifact.review-list': vi.fn().mockResolvedValue({ reviews: [addressed, pending] }),
+      },
+    });
+    renderApp(
+      '/goals/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6/artifacts/ar_00000000-0000-7253-b8ba-33c62b659edd?review=review-old&version=1',
+      client
+    );
+    expect(await screen.findByText('Review version 1')).toBeInTheDocument();
+    expect(screen.getByText(/^approved$/i)).toBeInTheDocument();
+    expect(screen.queryByText('Review version 2')).not.toBeInTheDocument();
+    expect(screen.queryByText(/awaiting decision/i)).not.toBeInTheDocument();
+  });
+
   it('renders durable decision evidence without fabricating unavailable historical bytes', async () => {
     const newerArtifact = {
       ...PROPOSAL_ARTIFACT,

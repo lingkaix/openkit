@@ -133,7 +133,10 @@ test('opens and reloads the exact Artifact review from Action Center', async ({ 
   await page.goto(stack.webUrl);
   await page.getByRole('link', { name: 'Open goal' }).click();
   const expectedPath = `/goals/${encodeURIComponent(workspaceId)}/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(artifactId)}`;
-  await expect(page).toHaveURL(`${stack.webUrl}${expectedPath}`);
+  const params = new URLSearchParams();
+  params.set('review', reviewId);
+  params.set('version', '1');
+  await expect(page).toHaveURL(`${stack.webUrl}${expectedPath}?${params.toString()}`);
   await expect(page.getByText('Exact output bytes.', { exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByText('Exact output bytes.', { exact: true })).toBeVisible();

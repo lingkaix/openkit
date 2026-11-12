@@ -45,7 +45,7 @@ export function TimelineToasts() {
   const navigate = useNavigate();
   const audienceRef = useRef(audience);
   audienceRef.current = audience;
-  const shown = useRef(new Map<string, string>());
+  const shown = useRef(new Map<string, { key: string; message: string }>());
   const [focused, setFocused] = useState(
     () => document.visibilityState === 'visible' && document.hasFocus()
   );
@@ -54,7 +54,7 @@ export function TimelineToasts() {
 
   useEffect(() => {
     return subscribeToastSession(() => {
-      for (const key of shown.current.values()) clearToastLifetime(key);
+      for (const entry of shown.current.values()) clearToastLifetime(entry.key);
       shown.current.clear();
       clearAllToastLifetimes();
       toastQueue.clear();
@@ -96,6 +96,17 @@ export function TimelineToasts() {
     new URLSearchParams(location.search).has(key)
   );
   const denied = isDeniedRead(attention.error);
+  const admission = (attention.data ?? [])
+    .map((row) => {
+      const threadId =
+        row.threadId ??
+        ('threadId' in row.source && typeof row.source.threadId === 'string'
+          ? row.source.threadId
+          : '');
+      const source = threadId ? audience.sourceFor(threadId) : null;
+      return `${threadId}:${source?.status ?? 'none'}`;
+    })
+    .join('|');
 
   useEffect(() => {
     if (!denied) {
@@ -107,6 +118,8 @@ export function TimelineToasts() {
     resetToastPolicy();
   }, [denied]);
 
+  // A denied navigation refetch keeps the attention payload and is not pending.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: admission is that audience change, so a visible toast can close
   useEffect(() => {
     if (denied || !attention.data || audience.pending) return;
     const viewing = viewingThreadId(location.pathname);
@@ -122,6 +135,7 @@ export function TimelineToasts() {
     publishToastSession(step.session);
     syncVisibleToasts(step.session.visible, (href) => navigate(href), shown.current);
   }, [
+    admission,
     attention.data,
     audience.pending,
     denied,
@@ -180,17 +194,23 @@ function policyRow(
 function syncVisibleToasts(
   visible: readonly PolicyToast[],
   open: (href: string) => void,
-  shown: Map<string, string>
+  shown: Map<string, { key: string; message: string }>
 ) {
   const ids = new Set(visible.map((toast) => toast.id));
-  for (const [id, key] of shown) {
+  for (const [id, entry] of shown) {
     if (ids.has(id)) continue;
-    clearToastLifetime(key);
-    toastQueue.close(key);
+    clearToastLifetime(entry.key);
+    toastQueue.close(entry.key);
     shown.delete(id);
   }
   for (const toast of visible) {
-    if (shown.has(toast.id)) continue;
+    const previous = shown.get(toast.id);
+    if (previous?.message === toast.message) continue;
+    if (previous) {
+      clearToastLifetime(previous.key);
+      toastQueue.close(previous.key);
+      shown.delete(toast.id);
+    }
     let key = '';
     key = toastQueue.add({
       message: toast.message,
@@ -203,7 +223,7 @@ function syncVisibleToasts(
         publishToastSession(dismissToast(getToastSession(), toast.id));
       },
     });
-    shown.set(toast.id, key);
+    shown.set(toast.id, { key, message: toast.message });
     if (toast.lifetimeMs) {
       armToastLifetime(key, toast.lifetimeMs, (queueKey) => {
         toastQueue.close(queueKey);

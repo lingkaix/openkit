@@ -3,17 +3,9 @@ import type { ThreadAudience } from './audience';
 import { fillCopy } from './copy';
 import { timelineNotices } from './notices';
 import { hrefOf, resolve } from './resolve';
-import { formatClockTime } from './time';
 
 const linkClass =
   'inline-flex min-h-11 items-center text-xs font-bold text-accent outline-none hover:underline focus-visible:ring-2 focus-visible:ring-focus';
-
-/** Hour and minute from a recorded instant. An unparseable value is omitted. */
-export function runClock(iso: string | null | undefined): string | null {
-  if (!iso || !Number.isFinite(Date.parse(iso))) return null;
-  const clock = formatClockTime(iso);
-  return clock === iso ? null : clock;
-}
 
 /**
  * "From: <title> · run at hh:mm" after the audience check.
@@ -23,12 +15,15 @@ export function BackLink({
   workspaceId,
   threadId,
   turnId,
-  recordedAt,
   audience,
 }: {
   workspaceId: string | null;
   threadId: string | null;
   turnId?: string | null;
+  /**
+   * Kept so existing callers can pass an artifact, audit, or call time.
+   * That instant is not the run start, so it never becomes "run at".
+   */
   recordedAt?: string | null;
   audience: ThreadAudience;
 }) {
@@ -51,10 +46,8 @@ export function BackLink({
     return <p className="text-xs text-fg-muted">{timelineNotices.sourceNotAvailable}</p>;
   }
   const title = audience.name?.trim() || timelineNotices.untitledConversation;
-  const clock = turnId ? runClock(recordedAt) : null;
-  const label = clock
-    ? fillCopy(timelineNotices.backLink, { title, time: clock })
-    : fillCopy(timelineNotices.backLinkNoTime, { title });
+  // No read on this surface carries the run's startedAt. Do not guess it from recordedAt.
+  const label = fillCopy(timelineNotices.backLinkNoTime, { title });
   const href = hrefOf(resolved);
   if (!href) return null;
   return (

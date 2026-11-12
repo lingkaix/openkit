@@ -215,14 +215,33 @@ function mergedToast(rows: readonly PolicyRow[], now: number): PolicyToast {
   };
 }
 
+function uniqueIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const unique: string[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    unique.push(id);
+  }
+  return unique;
+}
+
 function mergeRows(
   rows: readonly PolicyRow[],
   now: number,
-  lastToastAtByThread: ReadonlyMap<string, number>
-): { toasts: PolicyToast[]; suppressedObjectIds: string[] } {
+  lastToastAtByThread: ReadonlyMap<string, number>,
+  visible: readonly PolicyToast[]
+): {
+  toasts: PolicyToast[];
+  suppressedObjectIds: string[];
+  revisions: PolicyToast[];
+  carriedObjectIds: string[];
+} {
   const decisions = new Map<string, PolicyRow[]>();
   const toasts: PolicyToast[] = [];
   const suppressedObjectIds: string[] = [];
+  const revisions: PolicyToast[] = [];
+  const carriedObjectIds: string[] = [];
   for (const row of rows) {
     if (row.event === 'decision' && row.threadId) {
       const group = decisions.get(row.threadId) ?? [];
@@ -234,30 +253,86 @@ function mergeRows(
   }
   for (const [threadId, group] of decisions) {
     const last = lastToastAtByThread.get(threadId);
-    if (last !== undefined && now - last < TOAST_MERGE_MS) {
+    const insideWindow = last !== undefined && now - last < TOAST_MERGE_MS;
+    if (insideWindow) {
+      const existing = visible.find((toast) => !toast.overflow && toast.threadId === threadId);
+      if (existing) {
+        const objectIds = uniqueIds([...existing.objectIds, ...group.map((row) => row.objectId)]);
+        const threadName = group[0]?.threadName?.trim() || timelineNotices.untitledConversation;
+        revisions.push({
+          ...existing,
+          message: fillCopy(timelineNotices.mergedDecisions, {
+            count: objectIds.length,
+            thread: threadName,
+          }),
+          objectIds,
+        });
+        continue;
+      }
+      // The thread toast was collapsed. Keep the new objects in "+N more".
+      if (visible.some((toast) => toast.overflow)) {
+        carriedObjectIds.push(...group.map((row) => row.objectId));
+        continue;
+      }
       suppressedObjectIds.push(...group.map((row) => row.objectId));
       continue;
     }
     toasts.push(group.length === 1 ? toastOf(group[0]!) : mergedToast(group, now));
   }
-  return { toasts, suppressedObjectIds };
+  return { toasts, suppressedObjectIds, revisions, carriedObjectIds };
 }
 
-function capToasts(toasts: readonly PolicyToast[], limit: number, now: number): PolicyToast[] {
-  if (toasts.length <= limit) return [...toasts];
+function capToasts(
+  toasts: readonly PolicyToast[],
+  limit: number,
+  now: number,
+  carriedIds: readonly string[]
+): PolicyToast[] {
+  const covered = new Set(toasts.flatMap((toast) => toast.objectIds));
+  const carried = carriedIds.filter((id) => !covered.has(id));
+  if (toasts.length <= limit && carried.length === 0) return [...toasts];
   const kept = Math.max(0, limit - 1);
-  const hidden = toasts.slice(kept);
+  const hiddenIds = uniqueIds([
+    ...toasts.slice(kept).flatMap((toast) => toast.objectIds),
+    ...carried,
+  ]);
+  if (hiddenIds.length === 0) return [...toasts];
   const collapse: PolicyToast = {
     id: `overflow-${now}`,
-    message: fillCopy(timelineNotices.moreToasts, { count: hidden.length }),
+    message: fillCopy(timelineNotices.moreToasts, { count: hiddenIds.length }),
     href: '/attention',
     actionLabel: 'View',
     lifetimeMs: null,
-    objectIds: hidden.flatMap((toast) => toast.objectIds),
+    objectIds: hiddenIds,
     threadId: null,
     overflow: true,
   };
   return [...toasts.slice(0, kept), collapse];
+}
+
+function objectDenied(objectId: string, rows: readonly PolicyRow[]): boolean {
+  const matched = rows.filter((row) => row.objectId === objectId);
+  return matched.length > 0 && matched.every((row) => row.audience === 'denied');
+}
+
+/** Drops a toast whose source is now denied. An overflow count loses only those objects. */
+function admitVisible(toasts: readonly PolicyToast[], rows: readonly PolicyRow[]): PolicyToast[] {
+  const visible: PolicyToast[] = [];
+  for (const toast of toasts) {
+    const denied = new Set(toast.objectIds.filter((id) => objectDenied(id, rows)));
+    if (denied.size === 0) {
+      visible.push(toast);
+      continue;
+    }
+    const objectIds = toast.objectIds.filter((id) => !denied.has(id));
+    if (objectIds.length === 0 || !toast.overflow) continue;
+    visible.push({
+      ...toast,
+      objectIds,
+      message: fillCopy(timelineNotices.moreToasts, { count: objectIds.length }),
+    });
+  }
+  return visible;
 }
 
 function rememberSeen(
@@ -292,7 +367,10 @@ export function stepToastPolicy(session: ToastSession, input: ToastPolicyInput):
     for (const row of fresh) {
       if (!queued.some((queuedRow) => queuedRow.objectId === row.objectId)) queued.push(row);
     }
-    const visible = session.visible.filter((toast) => !session.dismissedIds.has(toast.id));
+    const visible = admitVisible(
+      session.visible.filter((toast) => !session.dismissedIds.has(toast.id)),
+      input.rows
+    );
     return {
       retainedRowIds,
       visible,
@@ -308,20 +386,43 @@ export function stepToastPolicy(session: ToastSession, input: ToastPolicyInput):
     if (!ready.some((item) => item.objectId === row.objectId)) ready.push(row);
   }
   const lastToastAtByThread = new Map(session.lastToastAtByThread);
-  const { toasts, suppressedObjectIds } = mergeRows(ready, input.now, lastToastAtByThread);
+  const visibleNow = admitVisible(
+    session.visible.filter((toast) => !session.dismissedIds.has(toast.id)),
+    input.rows
+  );
+  const { toasts, suppressedObjectIds, revisions, carriedObjectIds } = mergeRows(
+    ready,
+    input.now,
+    lastToastAtByThread,
+    visibleNow
+  );
   const toastedObjectIds = new Set(session.toastedObjectIds);
   for (const id of suppressedObjectIds) toastedObjectIds.add(id);
+  for (const id of carriedObjectIds) toastedObjectIds.add(id);
+  for (const toast of revisions) {
+    for (const id of toast.objectIds) toastedObjectIds.add(id);
+  }
   for (const toast of toasts) {
     for (const id of toast.objectIds) toastedObjectIds.add(id);
     if (toast.threadId) lastToastAtByThread.set(toast.threadId, input.now);
   }
   const limit = input.phone ? PHONE_TOAST_LIMIT : DESKTOP_TOAST_LIMIT;
-  const keptVisible = session.visible.filter((toast) => !session.dismissedIds.has(toast.id));
+  const revisionById = new Map(revisions.map((toast) => [toast.id, toast]));
+  const revised = visibleNow.map((toast) => revisionById.get(toast.id) ?? toast);
+  const carried = [
+    ...revised.filter((toast) => toast.overflow).flatMap((toast) => toast.objectIds),
+    ...carriedObjectIds,
+  ];
   // A later read with no new events keeps the collapse. Recapping would drop "+N more".
   const visible =
-    toasts.length === 0
-      ? keptVisible
-      : capToasts([...keptVisible.filter((toast) => !toast.overflow), ...toasts], limit, input.now);
+    toasts.length === 0 && carriedObjectIds.length === 0
+      ? revised
+      : capToasts(
+          [...revised.filter((toast) => !toast.overflow), ...toasts],
+          limit,
+          input.now,
+          carried
+        );
   return {
     retainedRowIds,
     visible,

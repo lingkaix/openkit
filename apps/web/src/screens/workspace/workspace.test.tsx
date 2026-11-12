@@ -1813,7 +1813,7 @@ describe('Action Center (board 07)', () => {
     expect(await screen.findByText('Review worker output')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Open goal' })).toHaveAttribute(
       'href',
-      '/goals/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7bc1-aed1-ff6f35ab7b65/artifacts/ar_00000000-0000-74db-816f-1af8204a4ae4'
+      '/goals/ws_00000000-0000-73c3-900f-8d310e4ba201/th_00000000-0000-7bc1-aed1-ff6f35ab7b65/artifacts/ar_00000000-0000-74db-816f-1af8204a4ae4?review=rev1&version=1'
     );
     expect(screen.queryByRole('button', { name: 'Allow' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Accept review' })).not.toBeInTheDocument();

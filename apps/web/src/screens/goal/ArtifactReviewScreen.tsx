@@ -1,6 +1,6 @@
 import { ApiCallError, type GetArtifactResponse } from '@openkit/core-client';
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
 import {
@@ -43,8 +43,21 @@ export function ArtifactReviewScreen() {
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const artifact = useArtifact(workspaceId, artifactId);
   const reviews = useArtifactReviews(workspaceId, artifactId);
+  const [searchParams] = useSearchParams();
+  const addressedReviewId = searchParams.get('review');
+  const versionText = searchParams.get('version');
+  const addressedVersion =
+    versionText && /^[1-9]\d*$/.test(versionText) ? Number(versionText) : null;
+  const addressed = addressedReviewId !== null || addressedVersion !== null;
   const pendingReview = reviews.data?.find((review) => review.decision === null) ?? null;
-  const review = pendingReview ?? reviews.data?.at(-1) ?? null;
+  const addressedReview =
+    reviews.data?.find((review) => {
+      if (!addressed) return false;
+      if (addressedReviewId && review.reviewId !== addressedReviewId) return false;
+      if (addressedVersion !== null && review.artifactVersion !== addressedVersion) return false;
+      return true;
+    }) ?? null;
+  const review = addressed ? addressedReview : (pendingReview ?? reviews.data?.at(-1) ?? null);
 
   if (!workspaceId || reviews.isLoading || (artifact.isLoading && !review)) {
     return (

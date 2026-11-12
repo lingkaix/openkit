@@ -6346,6 +6346,18 @@ describe('conversation artifact inspection', () => {
     updatedAt: reference.createdAt,
   });
 
+  function retainedVersion(value: typeof artifact) {
+    return {
+      artifact: value,
+      version: {
+        workspaceId: value.workspaceId,
+        artifactId: value.id,
+        artifactVersion: value.version,
+        contentDigest: value.contentDigest,
+      },
+    };
+  }
+
   it('distinguishes saved outputs from file-change records in the side panel and stream', async () => {
     const user = userEvent.setup();
     const path = `src/${'long_file_name_'.repeat(12)}.ts`;
@@ -6393,22 +6405,23 @@ describe('conversation artifact inspection', () => {
 
   it('opens the referenced content from both the stream and side panel only on demand', async () => {
     const user = userEvent.setup();
-    const getArtifact = vi.fn().mockResolvedValue(artifact);
+    const readVersion = vi.fn().mockResolvedValue(retainedVersion(artifact));
     renderApp(
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
-        'artifact.read': getArtifact,
+        'artifact.version-read': readVersion,
       })
     );
     await screen.findAllByText(reference.title);
-    expect(getArtifact).not.toHaveBeenCalled();
+    expect(readVersion).not.toHaveBeenCalled();
     await user.click(screen.getAllByRole('button', { name: 'View content' })[0]);
     const dialog = await screen.findByRole('dialog', { name: reference.title });
     expect(await within(dialog).findByText(/Reviewed content/)).toBeInTheDocument();
-    expect(getArtifact).toHaveBeenCalledWith({
+    expect(readVersion).toHaveBeenCalledWith({
       workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
       artifactId: 'ar_00000000-0000-7494-9abc-bc7b8306139b',
+      artifactVersion: 1,
     });
     expect(within(dialog).getByText('Version 1')).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));
@@ -6421,17 +6434,22 @@ describe('conversation artifact inspection', () => {
     expect(await screen.findByRole('dialog', { name: reference.title })).toBeInTheDocument();
   });
 
-  it('shows load failure with retry and never labels a newer version as the referenced content', async () => {
+  it('shows load failure with retry and a version list when that version is not retained', async () => {
     const user = userEvent.setup();
-    const getArtifact = vi
+    const readVersion = vi
       .fn()
       .mockRejectedValueOnce(new Error('unavailable'))
-      .mockResolvedValue({ ...artifact, version: 2 });
+      .mockRejectedValueOnce(new ApiCallError(404, 'not retained'));
     renderApp(
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
-        'artifact.read': getArtifact,
+        'artifact.version-read': readVersion,
+        'artifact.read': vi.fn().mockResolvedValue({
+          ...artifact,
+          version: 2,
+          content: { format: 'text', body: 'Newer head only' },
+        }),
       })
     );
     await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);
@@ -6439,11 +6457,44 @@ describe('conversation artifact inspection', () => {
     expect(await within(dialog).findByText("Couldn't load that artifact.")).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: /Try again/i }));
     expect(
-      await within(dialog).findByText(
-        /This message references version 1, but the artifact is now version 2/
-      )
-    ).toBeInTheDocument();
+      await within(dialog).findByRole('link', { name: "Open the output's version list" })
+    ).toHaveAttribute(
+      'href',
+      '/artifacts?workspaceId=ws_00000000-0000-7b10-9af8-12fd37a880e0&artifact=ar_00000000-0000-7494-9abc-bc7b8306139b'
+    );
     expect(within(dialog).queryByText(/Reviewed content/)).not.toBeInTheDocument();
+    expect(within(dialog).queryByText(/Newer head only/)).not.toBeInTheDocument();
+  });
+
+  it('opens the retained exact version when the artifact head has moved on', async () => {
+    const user = userEvent.setup();
+    const historical = {
+      ...artifact,
+      version: 1,
+      content: { format: 'text' as const, body: 'Exact retained version' },
+    };
+    const readVersion = vi.fn().mockResolvedValue(retainedVersion(historical));
+    renderApp(
+      '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
+      makeClient({
+        'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
+        'artifact.version-read': readVersion,
+        'artifact.read': vi.fn().mockResolvedValue({
+          ...artifact,
+          version: 2,
+          content: { format: 'text', body: 'Newer head only' },
+        }),
+      })
+    );
+    await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText('Exact retained version')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Newer head only')).not.toBeInTheDocument();
+    expect(readVersion).toHaveBeenCalledWith({
+      workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+      artifactId: artifact.id,
+      artifactVersion: 1,
+    });
   });
   it('makes recorded workspace paths and patch readable without treating the snapshot as a current decision', async () => {
     const user = userEvent.setup();
@@ -6489,9 +6540,9 @@ describe('conversation artifact inspection', () => {
       '/chat/ws_00000000-0000-7b10-9af8-12fd37a880e0/th_00000000-0000-70a0-9cde-4561f64881c6',
       makeClient({
         'thread.items': vi.fn().mockResolvedValue({ items: [reference], nextCursor: null }),
-        'artifact.read': vi
+        'artifact.version-read': vi
           .fn()
-          .mockResolvedValue({ ...artifact, content: { format: 'json', body } }),
+          .mockResolvedValue(retainedVersion({ ...artifact, content: { format: 'json', body } })),
       })
     );
     await user.click((await screen.findAllByRole('button', { name: 'View content' }))[0]);

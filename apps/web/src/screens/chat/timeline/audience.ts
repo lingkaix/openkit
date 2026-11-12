@@ -1,6 +1,7 @@
 import { useQueries } from '@tanstack/react-query';
 import { useCoreClient } from '../../../app/core-client';
 import { chatKeys, type conversationThreadPath } from '../data';
+import { isDeniedRead } from './degraded';
 
 export type ThreadActivity = Parameters<typeof conversationThreadPath>[2];
 
@@ -29,7 +30,11 @@ export function useThreadAudience(workspaceIds: readonly (string | null | undefi
     })),
   });
   const rows = new Map<string, { activity: ThreadActivity; name: string | null }>();
+  let failed = false;
   for (const query of queries) {
+    // A 401/403 refetch keeps the previous page. That cache is not an audience.
+    if (isDeniedRead(query.error)) continue;
+    if (query.isError) failed = true;
     for (const item of query.data ?? []) {
       rows.set(item.thread.id, {
         activity: item.activity,
@@ -38,7 +43,6 @@ export function useThreadAudience(workspaceIds: readonly (string | null | undefi
     }
   }
   const pending = navigable && ids.length > 0 && queries.some((query) => query.isPending);
-  const failed = queries.some((query) => query.isError);
   return {
     pending,
     activityFor(threadId: string | null): ThreadActivity | 'pending' {

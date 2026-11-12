@@ -279,10 +279,13 @@ function resolveAttention(
     const versionFact = facts.versions?.get(
       versionFactKey(source.artifactId, source.artifactVersion)
     );
+    const params = new URLSearchParams();
+    params.set('review', source.reviewId);
+    params.set('version', String(source.artifactVersion));
     return {
       path: `/goals/${encodeURIComponent(source.workspaceId)}/${encodeURIComponent(source.threadId)}/artifacts/${encodeURIComponent(source.artifactId)}`,
-      search: '',
-      focus: null,
+      search: params.toString(),
+      focus: `review-${source.reviewId}`,
       notice:
         versionFact && versionFact.available === false
           ? fillCopy(timelineNotices.versionUnavailable, { version: source.artifactVersion })

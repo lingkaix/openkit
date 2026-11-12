@@ -176,7 +176,8 @@ describe('timeline object resolver', () => {
       },
       threads(true)
     );
-    expect(hrefOf(review)).toBe(`/goals/${WS}/${THREAD}/artifacts/art_1`);
+    expect(hrefOf(review)).toBe(`/goals/${WS}/${THREAD}/artifacts/art_1?review=rev&version=3`);
+    expect(review).toMatchObject({ focus: 'review-rev' });
     const recovery = resolve({
       kind: 'attention',
       workspaceId: WS,

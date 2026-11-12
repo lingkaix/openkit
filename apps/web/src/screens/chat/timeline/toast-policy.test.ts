@@ -147,4 +147,41 @@ describe('toast policy', () => {
     );
     expect(step.visible).toEqual([]);
   });
+
+  it('merges a later decision into the thread toast already on screen', () => {
+    const first = stepToastPolicy(primed(), input([decision('a')]));
+    expect(first.visible).toHaveLength(1);
+    expect(first.visible[0]?.objectIds).toEqual(['a']);
+    expect(first.visible[0]?.message).not.toContain('2 decisions');
+    const second = stepToastPolicy(
+      first.session,
+      input([decision('a'), decision('b')], { now: 2_000 })
+    );
+    expect(second.visible).toHaveLength(1);
+    expect(second.visible[0]?.objectIds).toEqual(['a', 'b']);
+    expect(second.visible[0]?.message).toBe('2 decisions need you in Launch notes');
+  });
+
+  it('keeps earlier overflow objects when another thread arrives', () => {
+    const rows = ['t1', 't2', 't3', 't4'].map((threadId) => decision(threadId, true, threadId));
+    const desktop = stepToastPolicy(primed(), input(rows));
+    expect(desktop.visible[2]?.objectIds).toEqual(['t3', 't4']);
+    const next = stepToastPolicy(
+      desktop.session,
+      input([...rows, decision('t5', true, 't5')], { now: 2_000 })
+    );
+    const overflow = next.visible.find((toast) => toast.message.includes('more'));
+    expect(overflow?.objectIds).toEqual(expect.arrayContaining(['t3', 't4', 't5']));
+    expect(overflow?.message).toBe('+3 more · Open Action Center');
+    expect(next.visible.filter((toast) => !toast.message.includes('more'))).toHaveLength(2);
+  });
+
+  it('removes a visible toast when its source becomes denied and leaves the row', () => {
+    const shown = stepToastPolicy(primed(), input([decision('ap_1')]));
+    expect(shown.visible).toHaveLength(1);
+    const denied = { ...decision('ap_1'), audience: 'denied' as const };
+    const next = stepToastPolicy(shown.session, input([denied], { now: 2_000 }));
+    expect(next.visible).toEqual([]);
+    expect(next.retainedRowIds).toEqual(['ap_1']);
+  });
 });
