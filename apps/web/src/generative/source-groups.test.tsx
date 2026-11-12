@@ -91,6 +91,75 @@ describe('exact source and presentation grouping', () => {
     ).toBeNull();
   });
 
+  it('settles a native record presentation when history arrays are rebuilt on render', async () => {
+    const native = {
+      ...presentation,
+      source: { kind: 'kernel-records' },
+    } as GenerativePresentation;
+    const client = {
+      operations: { 'generative-ui.get': vi.fn().mockResolvedValue(native) },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>{children}</CoreClientProvider>
+      </QueryClientProvider>
+    );
+    let renders = 0;
+    const hook = renderHook(
+      () => {
+        // Fail fast rather than let a self-sustaining render loop block the test runner.
+        if (++renders > 20) throw new Error('Source grouping did not settle.');
+        return useGenerativeSourceGroups([reference]);
+      },
+      { wrapper }
+    );
+    try {
+      await act(() => queryClient.refetchQueries());
+      expect(hook.result.current.size).toBe(0);
+      hook.rerender();
+      await act(async () => {});
+      expect(hook.result.current.size).toBe(0);
+    } finally {
+      hook.unmount();
+      queryClient.clear();
+    }
+  });
+
+  it('reads an exact source outside the timeline window and releases it on denial', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    const body = vi.fn().mockResolvedValue({ item: source });
+    const client = {
+      operations: {
+        'generative-ui.get': vi.fn().mockResolvedValue(presentation),
+        'thread.item-body': body,
+      },
+    } as unknown as CoreClient;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>
+        <CoreClientProvider client={client}>{children}</CoreClientProvider>
+      </QueryClientProvider>
+    );
+    const items: ThreadItem[] = [reference];
+    const hook = renderHook(() => useGenerativeSourceGroups(items), { wrapper });
+    try {
+      await waitFor(() => expect(hook.result.current.get(reference.id)).toEqual(source));
+      expect(body).toHaveBeenCalledWith({
+        workspaceId: presentation.workspaceId,
+        threadId: presentation.threadId,
+        turnId: presentation.turnId,
+        itemId: source.id,
+      });
+      body.mockRejectedValue(new Error('Source unavailable'));
+      await act(() => queryClient.refetchQueries());
+      await waitFor(() => expect(hook.result.current.size).toBe(0));
+    } finally {
+      hook.unmount();
+      queryClient.clear();
+    }
+  });
+
   it('releases source history when the presentation read is denied', async () => {
     vi.stubGlobal('crypto', webcrypto);
     const get = vi.fn().mockResolvedValue(presentation);

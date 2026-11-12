@@ -49,6 +49,28 @@ export function useGenerativeSourceGroups(
           : [];
       }),
   });
+  const sourceItems = useQueries({
+    queries: admitted.flatMap(({ item, presentation }) => {
+      const source = presentation.source;
+      if (source.kind !== 'item' || items.some((candidate) => candidate.id === source.itemId))
+        return [];
+      // A bounded timeline can omit a collapsed Tool step. Read only the exact source
+      // through its ordinary current-audience check, not the rest of the run history.
+      const selectors = {
+        workspaceId: presentation.workspaceId,
+        threadId: item.threadId,
+        turnId: item.turnId,
+        itemId: source.itemId,
+      };
+      return [
+        {
+          queryKey: ['generative-source-item', selectors],
+          queryFn: () => client.operations['thread.item-body'](selectors),
+        },
+      ];
+    }),
+    combine: (results) => results.flatMap((result) => (result.isSuccess ? [result.data.item] : [])),
+  });
   const [verified, setVerified] = useState<ReadonlyMap<string, GenerativeTextSource>>(new Map());
   useEffect(() => {
     // Ordinary history needs no asynchronous grouping commit; active IDs already exclude old matches.
@@ -56,24 +78,36 @@ export function useGenerativeSourceGroups(
     let current = true;
     void Promise.all(
       admitted.map(async ({ item, presentation }) => {
-        const source = await exactGenerativeSource(items, item, presentation);
+        const source = await exactGenerativeSource([...items, ...sourceItems], item, presentation);
         return source ? ([item.id, source] as const) : null;
       })
     ).then(
       (matches) => {
-        if (current) setVerified(new Map(matches.filter((match) => match !== null)));
+        if (!current) return;
+        const next = new Map(matches.filter((match) => match !== null));
+        // Timeline windows rebuild the history array on render. An unchanged result must
+        // not schedule another render and restart this asynchronous grouping effect.
+        setVerified((previous) =>
+          previous.size === next.size &&
+          [...next].every(([itemId, source]) => previous.get(itemId) === source)
+            ? previous
+            : next
+        );
       },
       () => {
-        if (current) setVerified(new Map());
+        if (current) setVerified((previous) => (previous.size === 0 ? previous : new Map()));
       }
     );
     return () => {
       current = false;
     };
-  }, [items, admitted]);
+  }, [items, admitted, sourceItems]);
   const active = new Set(admitted.map(({ item }) => item.id));
   return new Map(
-    [...verified].filter(([itemId, source]) => active.has(itemId) && items.includes(source))
+    [...verified].filter(
+      ([itemId, source]) =>
+        active.has(itemId) && (items.includes(source) || sourceItems.includes(source))
+    )
   );
 }
 
