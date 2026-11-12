@@ -40,6 +40,7 @@ import { timelineCopy } from './timeline/copy';
 import { classifySendFailure } from './timeline/degraded';
 import { readStoredLens, writeStoredLens } from './timeline/lens-store';
 import { contentAdmitted, historyModeForHref, turnIdFromSearch } from './timeline/navigation-state';
+import { OwnerRunError } from './timeline/owner-error';
 import { useTimelineSheets } from './timeline/PhoneChrome';
 import { selectAgentProfile } from './timeline/profiles';
 import { SendFailure, SendPending } from './timeline/SendState';
@@ -603,7 +604,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               />
             </div>
           ) : null}
-          {failedTurnMessage ? (
+          {failedTurn?.error?.presentation ? (
+            <div className="border-b border-separator px-6 py-3">
+              <OwnerRunError presentation={failedTurn.error.presentation} />
+            </div>
+          ) : failedTurnMessage ? (
             <div className="border-b border-separator px-6 py-3">
               <ErrorBanner message={failedTurnMessage} />
             </div>

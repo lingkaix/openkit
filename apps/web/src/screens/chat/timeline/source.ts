@@ -1,6 +1,7 @@
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { groupItemsByTurn, type ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
+import { recordedFailureText } from './owner-error';
 import { countSteps, isLongRun, isStepItem, outcomeLine, type StepStats } from './present';
 import type { EntryKind } from './registry';
 
@@ -104,7 +105,7 @@ export function projectTimeline(input: {
     const stats = countSteps(group.items);
     const failed =
       turn?.status === 'failed' && turn.id !== input.latestTurnId
-        ? (turn.error?.message ?? timelineCopy.runFailed)
+        ? recordedFailureText(turn.error, timelineCopy.runFailed)
         : null;
     const otherOutcome = failed || !turn ? null : outcomeLine(turn.status, turn.error?.message);
     return {

@@ -108,6 +108,7 @@ export const timelineCopy = {
   earlierNotes: 'Earlier notes ({count})',
   earlierPlans: 'Earlier plans ({count})',
   inspectRun: 'Inspect',
+  inspectRecordedRun: 'Inspect this run',
   closeInspector: 'Close inspector',
   inspectorLabel: 'Inspector',
   usedSources: 'Used {count} sources',

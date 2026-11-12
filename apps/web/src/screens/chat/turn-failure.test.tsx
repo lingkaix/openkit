@@ -1,7 +1,8 @@
 import type { CoreClient } from '@openkit/core-client';
 import { ItemSchema, ProductTurnSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -396,6 +397,80 @@ describe('task turn failure (dashboard reload)', () => {
     await waitFor(() => expect(client.operations['turn.start']).not.toHaveBeenCalled());
     expect(client.operations['conversation.submit']).not.toHaveBeenCalled();
     expect(client.operations['task.start']).not.toHaveBeenCalled();
+  });
+
+  it('shows the server owner error and only its inspect action', async () => {
+    const user = userEvent.setup();
+    const summary = 'OpenKit could not finish this run because a system operation failed.';
+    const turn = ProductTurnSchema.parse({
+      ...FAILED_DASHBOARD_TURN,
+      error: {
+        code: 'worker_governance_turn_failed',
+        message: FAILURE_MESSAGE,
+        presentation: {
+          class: 'system',
+          summary,
+          actions: [
+            {
+              kind: 'inspect',
+              owner: 'turn',
+              operation: 'turn.read',
+              input: {
+                workspaceId: workspaceIdForOwner(THREAD.owner),
+                threadId: THREAD.id,
+                turnId: FAILED_DASHBOARD_TURN.id,
+              },
+            },
+          ],
+        },
+      },
+    });
+    renderTask(
+      makeClient(
+        {},
+        { 'thread.dashboard': vi.fn().mockResolvedValue({ thread: THREAD, turns: [turn] }) }
+      )
+    );
+
+    const links = await screen.findAllByRole('link', { name: 'Inspect this run' });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute(
+        'href',
+        expect.stringContaining(`turn=${FAILED_DASHBOARD_TURN.id}`)
+      );
+    }
+    expect(screen.getAllByText(summary).length).toBeGreaterThan(0);
+    expect(screen.queryByText(FAILURE_MESSAGE)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+
+    await user.click(screen.getAllByRole('button', { name: 'Inspect' })[0]!);
+    const inspector = await screen.findByRole('complementary', { name: 'Inspector' });
+    expect(within(inspector).getByText(summary)).toBeInTheDocument();
+    expect(within(inspector).getByRole('link', { name: 'Inspect this run' })).toBeInTheDocument();
+  });
+
+  it('keeps an unclassified owner error neutral and invents no action', async () => {
+    const summary = 'This run ended with an error.';
+    const turn = ProductTurnSchema.parse({
+      ...FAILED_DASHBOARD_TURN,
+      error: {
+        code: 'not-a-known-code',
+        message: FAILURE_MESSAGE,
+        presentation: { class: 'unclassified', summary, actions: [] },
+      },
+    });
+    renderTask(
+      makeClient(
+        {},
+        { 'thread.dashboard': vi.fn().mockResolvedValue({ thread: THREAD, turns: [turn] }) }
+      )
+    );
+
+    const owner = await screen.findByText(summary);
+    expect(owner.closest('[data-owner-error="unclassified"]')).not.toBeNull();
+    expect(screen.queryByRole('link', { name: 'Inspect this run' })).not.toBeInTheDocument();
+    expect(screen.queryByText(FAILURE_MESSAGE)).not.toBeInTheDocument();
   });
 
   it('does not treat a completed dashboard Turn with an accepted status item as failed', async () => {

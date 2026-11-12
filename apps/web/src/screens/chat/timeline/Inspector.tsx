@@ -1,4 +1,5 @@
 import type { TimelineRunEntry } from '@openkit/app-api-schemas';
+import type { TurnErrorPresentation } from '@openkit/protocol';
 import type { ReactNode, Ref } from 'react';
 import { Link } from 'react-router-dom';
 import { Button, Icon } from '../../../primitives';
@@ -6,6 +7,7 @@ import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
 import { timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
+import { OwnerRunError } from './owner-error';
 import { isStepItem } from './present';
 import { auditUsageHref } from './resolve';
 import { captureCopy, coverageCopy, omittedActivityCopy } from './source';
@@ -41,10 +43,13 @@ export function Inspector({
   onExpand,
   usage = null,
   fallback = null,
+  presentation = null,
 }: {
   turnId: string;
   usage?: TimelineRunEntry['usage'];
   fallback?: TimelineRunEntry['fallback'];
+  /** Server owner error for this run. Absent reads render nothing here. */
+  presentation?: TurnErrorPresentation | null;
   items: readonly ThreadItem[];
   activity?: ReportedActivity | null;
   /** Today's read has no interrupt actor, so an interrupted run says so here. */
@@ -106,6 +111,7 @@ export function Inspector({
         </Button>
       </div>
       {sheet ? <RunEnvironment usage={usage} fallback={fallback} /> : null}
+      {presentation ? <OwnerRunError presentation={presentation} /> : null}
       <section className="mt-3" aria-label={timelineCopy.identifiersHeading}>
         <h3 className="text-xs font-semibold text-fg">{timelineCopy.identifiersHeading}</h3>
         <p className="mt-1 break-all text-xs text-fg-muted">{turnId}</p>

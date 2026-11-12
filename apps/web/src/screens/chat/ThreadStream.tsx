@@ -75,6 +75,7 @@ import {
   toNeedsYouRow,
 } from './timeline/needs-you';
 import { nowFromThread, nowStepFromDashboard } from './timeline/now';
+import { OwnerRunError } from './timeline/owner-error';
 import { PhoneBar, PhoneSheetFrame, type TimelineSheets } from './timeline/PhoneChrome';
 import { shortenProgress } from './timeline/phone';
 import { isStepItem, plainActorName, runDurationMs, taskSpecObjective } from './timeline/present';
@@ -1697,6 +1698,7 @@ export function ThreadStream({
       onExpand={() => setSheetExpanded((open) => !open)}
       usage={inspectedRun?.usage}
       fallback={inspectedRun?.fallback}
+      presentation={inspectedTurn?.error?.presentation ?? inspectedRun?.error?.presentation ?? null}
     />
   ) : null;
   const stepSource =
@@ -2151,7 +2153,11 @@ export function ThreadStream({
                     }
                   />
                   {groupTurn?.status === 'failed' ? (
-                    <p className="ok-meta">{classifyRunError(groupTurn.error?.code).text}</p>
+                    groupTurn.error?.presentation ? (
+                      <OwnerRunError presentation={groupTurn.error.presentation} />
+                    ) : (
+                      <p className="ok-meta">{classifyRunError(groupTurn.error?.code).text}</p>
+                    )
                   ) : null}
                   {historicalFailure ? <ErrorBanner message={historicalFailure} /> : null}
                   {windowRuns?.find((run) => run.id === group.turnId)?.restrictedReferences ||

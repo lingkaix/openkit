@@ -5,6 +5,7 @@ import type {
   TimelineRunEntry,
 } from '@openkit/app-api-schemas';
 import type { ThreadItem } from '../data';
+import { recordedFailureText } from './owner-error';
 import { outcomeLine, recordedCount } from './present';
 import type { AgentProfileId } from './profiles';
 import type { TimelineEntry } from './source';
@@ -463,7 +464,7 @@ export function mergeDisplayedItems(
 export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
   const failed =
     run.status === 'failed'
-      ? (run.error?.message ?? outcomeLine('failed'))
+      ? recordedFailureText(run.error, outcomeLine('failed'))
       : outcomeLine(run.status, run.error?.message);
   const failedCommandCount = recordedCount(run.statistics.failedCommandCount);
   const failedStepCount = recordedCount(run.statistics.failedStepCount);
