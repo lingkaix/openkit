@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   cpSync,
@@ -21,8 +22,10 @@ import {
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { ensureLayoutDirectory } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
@@ -323,10 +326,20 @@ export async function migrateWorkspaceStorage(
 
   assertNanoCoreStopped(input.dataRoot);
   assertExternalBackupDestination(input.dataRoot, input.backupRoot);
+  // Predecessor roots may lack this lock inode; do not initialize their successor layout.
+  ensureLayoutDirectory(resolveDataRootPath(input.dataRoot, 'server', 'runtime'));
+  // The successor marker admits normal boot before canonical scope verification finishes.
+  // Retain the existing physical root owner through every handle close and failure cleanup.
+  const lock = acquireDataRootLock(input.dataRoot, {
+    bootId: `workspace-storage-migration-${randomUUID()}`,
+  });
 
   try {
     marker = readPredecessorLayoutMarker(input.dataRoot);
-    const predecessorInventory = inventoryRegularFiles(input.dataRoot);
+    // The maintenance owner's changing diagnostic metadata is not predecessor data.
+    const predecessorInventory = inventoryRegularFiles(input.dataRoot).filter(
+      (entry) => resolve(input.dataRoot, entry.path) !== resolve(lock.path)
+    );
 
     const preflight = inspectSqliteCopy(
       input.dataRoot,
@@ -353,7 +366,11 @@ export async function migrateWorkspaceStorage(
     stage = 'backup';
     const backupStartedAt = now();
     const backupId = allocateEntityId('drb');
-    copyColdDataRoot({ backupRoot: input.backupRoot, dataRoot: input.dataRoot });
+    copyColdDataRoot({
+      backupRoot: input.backupRoot,
+      dataRoot: input.dataRoot,
+      omitActiveDataRootLock: true,
+    });
     const backupCompletedAt = now();
     backup = writeColdDataRootBackupManifest({
       backupRoot: input.backupRoot,
@@ -520,6 +537,8 @@ export async function migrateWorkspaceStorage(
     }
 
     throw error;
+  } finally {
+    lock.release();
   }
 }
 
