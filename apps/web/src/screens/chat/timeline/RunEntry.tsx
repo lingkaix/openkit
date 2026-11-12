@@ -2,6 +2,7 @@ import { Fragment, type ReactNode, type Ref, useEffect, useRef, useState } from 
 import { Button } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
+import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
 import { focusTimelineItem } from './needs-you';
 import {
@@ -210,6 +211,7 @@ export function RunEntry({
           {timelineCopy['run-trigger']} · {actorName}
         </p>
       ) : null}
+      {runLens === 'full' ? <RunEnvironment turnId={entry.turnId} /> : null}
       {runningStatus}
       {previewNodes('narrative', null)}
       {items.map((item) => (

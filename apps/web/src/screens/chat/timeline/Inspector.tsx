@@ -4,6 +4,7 @@ import { Button, Icon } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
 import { timelineCopy } from './copy';
+import { RunEnvironment } from './environment';
 import { isStepItem } from './present';
 import { auditUsageHref } from './resolve';
 import { captureCopy, coverageCopy, omittedActivityCopy } from './source';
@@ -99,6 +100,7 @@ export function Inspector({
           <Icon name="close" />
         </Button>
       </div>
+      {sheet ? <RunEnvironment turnId={turnId} /> : null}
       <section className="mt-3" aria-label={timelineCopy.identifiersHeading}>
         <h3 className="text-xs font-semibold text-fg">{timelineCopy.identifiersHeading}</h3>
         <p className="mt-1 break-all text-xs text-fg-muted">{turnId}</p>
