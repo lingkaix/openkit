@@ -244,6 +244,9 @@ import {
   type ControlBootAuditInput,
   ControlPhysicalForecastDecisionSchema,
   ControlPhysicalForecastSchema,
+  type ControlPolicyBridgeMessage,
+  ControlPolicyBridgeMessageSchema,
+  type ControlPolicyGrant,
   type ControlProductCohort,
   type ControlProvenanceInput,
   type ControlSchemaApplicationFacts,
@@ -439,6 +442,37 @@ interface WriterHost {
   pending: number;
   /** Disk forecasts survive failed transport until the worker actually exits. */
   readonly capacity: Set<NativeCapacityReservation>;
+  /** Resolves from the real exit event, never transport failure or a delayed terminate Promise. */
+  readonly exited: ReturnType<typeof Promise.withResolvers<void>>;
+  terminated: boolean;
+}
+
+interface PolicyCall {
+  id: number;
+  readonly core: Opening;
+  readonly borrower: Opening;
+  phase: 'new' | 'borrow' | 'granted' | 'return' | 'done' | 'refused';
+  returnPosted?: boolean;
+  returnAcknowledged?: boolean;
+  resource?: PolicyReadResource;
+  grant?: ControlPolicyGrant;
+  readonly borrowed: ReturnType<typeof Promise.withResolvers<ControlPolicyGrant>>;
+  readonly returned: ReturnType<typeof Promise.withResolvers<void>>;
+}
+
+/** A borrowed resource remains owned after its transport Promise is rejected. */
+interface PolicyReadResource {
+  readonly core: Opening;
+  readonly borrower: Opening;
+  /** Only actual borrower termination permits this cleanup continuation. */
+  readonly returnAfterExit: () => Promise<void>;
+  /** Requires the original native outer-commit/abort acknowledgement, not a savepoint. */
+  readonly returnAfterTermination: () => Promise<void>;
+  active: boolean;
+  remainingBytes: number;
+  workspaceBytes: number;
+  readonly settled: ReturnType<typeof Promise.withResolvers<void>>;
+  call?: PolicyCall;
 }
 
 /** A process-wide physical reservation, including a fresh scope awaiting native initialization. */
@@ -447,9 +481,11 @@ interface Opening {
   readonly host: WriterHost;
   readonly path: string;
   identity: string | undefined;
+  openingRequestId: number | undefined;
   /** True only after the original native ACK and physical identity validation. */
   acknowledged: boolean;
   readonly promise: Promise<void>;
+  readonly policyReads: Set<PolicyReadResource>;
   /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
   retirement?:
     | { operation: 'close'; promise: Promise<void>; settled?: true }
@@ -514,6 +550,7 @@ interface Pending {
     readonly capture: () => ControlSchemaApplicationFacts;
   };
   readonly closeout?: CapabilityCloseoutCredit | undefined;
+  readonly policyCall?: PolicyCall;
   readonly progressCopy?: { readonly credit: ProgressCopyCredit; readonly bytes: number };
   cohort?: PendingCohort;
   readonly resolve: (reply: Success) => void;
@@ -662,6 +699,8 @@ class ControlStoreWorkerClient {
       backing: new Map(),
       pending: 0,
       capacity: new Set(),
+      exited: Promise.withResolvers<void>(),
+      terminated: false,
     })
   );
   private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
@@ -697,6 +736,143 @@ class ControlStoreWorkerClient {
     string,
     { reservation: FileStorageReservation; users: number }
   >();
+
+  /** Keeps short native read resources and their funded returns after RPC settlement. */
+  private retainPolicyRead(
+    core: Opening,
+    borrower: Opening,
+    cleanupBytes: { core: number; workspace: number },
+    returnNative: () => Promise<void>
+  ): PolicyReadResource {
+    const database = core.command.database;
+    if (core.host.failed || borrower.host.failed)
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    // policyOpening binds both actual handles/root before posting. Native issuer and
+    // deciding SQL head own the repeated physical checks; do not cache their authority here.
+    if (
+      !core.acknowledged ||
+      !borrower.acknowledged ||
+      core.retirement ||
+      borrower.retirement ||
+      core.openingRequestId === undefined ||
+      borrower.openingRequestId === undefined
+    )
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    if (
+      !Number.isSafeInteger(cleanupBytes.core) ||
+      cleanupBytes.core <= 0 ||
+      !Number.isSafeInteger(cleanupBytes.workspace) ||
+      cleanupBytes.workspace <= 0 ||
+      this.reservedInputBytes(borrower.command.database) + cleanupBytes.workspace >
+        CONTROL_WORKER_LIMITS.pendingBytes ||
+      this.reservedInputBytes(database) + cleanupBytes.core > CONTROL_WORKER_LIMITS.pendingBytes ||
+      (this.outstanding.get(database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions
+    )
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    let returning: Promise<void> | undefined;
+    let exiting: Promise<void> | undefined;
+    const close = (exited: boolean) =>
+      (returning ??= (async () => {
+        if (exited) await borrower.host.exited.promise;
+        try {
+          if (core.host.failed) {
+            if (!exited) throw new ControlStoreWorkerError('unavailable', 'unknown');
+            await core.host.exited.promise;
+          } else await returnNative();
+        } catch (error) {
+          this.fail(core.host);
+          await Promise.all([core.host.exited.promise, borrower.host.exited.promise]);
+          this.releasePolicyRead(resource);
+          if (!exited) throw error;
+        }
+        // Wire close is cached independently of exit-owned lifetime release.
+        // Normal success retains bookings until the original slot consumes its ACK.
+      })());
+    const resource: PolicyReadResource = {
+      core,
+      borrower,
+      active: true,
+      remainingBytes: cleanupBytes.core,
+      workspaceBytes: cleanupBytes.workspace,
+      settled: Promise.withResolvers<void>(),
+      returnAfterTermination: () =>
+        borrower.host.failed ? resource.returnAfterExit() : close(false),
+      returnAfterExit: () =>
+        (exiting ??= (async () => {
+          await borrower.host.exited.promise;
+          try {
+            await close(true); // Reuse even a completed normal wire close; never repost.
+          } finally {
+            this.releasePolicyRead(resource);
+          }
+        })()),
+    };
+    core.policyReads.add(resource);
+    this.adjustBacking(database, cleanupBytes.core, 0, core.host);
+    this.adjustBacking(borrower.command.database, cleanupBytes.workspace, 0, borrower.host);
+    this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
+    core.host.worker?.ref();
+    borrower.host.worker?.ref();
+    return resource;
+  }
+
+  /** Retirement already excludes new pins. Unposted slots prove zero native handles. */
+  private async drainPolicyPreparations(opening: Opening | undefined): Promise<void> {
+    if (!opening) return;
+    for (const read of opening.policyReads) {
+      const pending = read.call && this.pending.get(read.call.id);
+      if (pending && !pending.posted)
+        this.complete(
+          pending.request.id,
+          undefined,
+          new ControlStoreWorkerError('precondition', 'not-committed')
+        );
+    }
+    await Promise.all([...opening.policyReads].map((read) => read.settled.promise));
+  }
+
+  /** UNKNOWN or lost transport cannot release a reader on the strength of a rejected Promise. */
+  private async abandonPolicyRead(resource: PolicyReadResource): Promise<void> {
+    this.fail(resource.borrower.host);
+    await resource.borrower.host.exited.promise;
+    await resource.returnAfterExit();
+  }
+
+  /** Called only after acknowledged return or joined native termination, never timeout. */
+  private releasePolicyRead(resource: PolicyReadResource): void {
+    if (!resource.active) return;
+    resource.active = false;
+    resource.core.policyReads.delete(resource);
+    if (!resource.core.host.failed)
+      this.adjustBacking(
+        resource.core.command.database,
+        -resource.remainingBytes,
+        0,
+        resource.core.host
+      );
+    if (!resource.borrower.host.failed)
+      this.adjustBacking(
+        resource.borrower.command.database,
+        -resource.workspaceBytes,
+        0,
+        resource.borrower.host
+      );
+    resource.remainingBytes = 0;
+    resource.workspaceBytes = 0;
+    resource.settled.resolve();
+    this.releaseOutstanding(resource.core.command.database);
+    for (const host of [resource.core.host, resource.borrower.host])
+      if (!host.pending && !this.hasPolicyReads(host)) host.worker?.unref();
+  }
+
+  private hasPolicyReads(host: WriterHost): boolean {
+    return [...this.openings.values()].some((opening) =>
+      [...opening.policyReads].some(
+        (resource) =>
+          resource.active && (resource.core.host === host || resource.borrower.host === host)
+      )
+    );
+  }
 
   /** Charges each database independently, with exact host ownership until ACK or actual exit. */
   private adjustBacking(
@@ -901,6 +1077,8 @@ class ControlStoreWorkerClient {
       host.backing.clear();
       for (const reservation of host.capacity) reservation.release();
       host.capacity.clear();
+      host.terminated = true;
+      host.exited.resolve();
     });
     host.worker.unref();
     return host.worker;
@@ -1550,19 +1728,22 @@ class ControlStoreWorkerClient {
       command: binding,
       ...physical,
       acknowledged: false,
+      openingRequestId: undefined,
+      policyReads: new Set(),
       promise: this.request(
         { ...binding, operation: 'open' },
         undefined,
         physical.host,
         false,
         recovery
-      ).then(() => {
+      ).then((reply) => {
         try {
           const current = statSync(physical.path);
           const identity = `${current.dev}:${current.ino}`;
           if (opening.identity !== undefined && opening.identity !== identity)
             throw new Error('Physical database changed.');
           opening.identity = identity;
+          opening.openingRequestId = reply.id;
           opening.acknowledged = true;
         } catch {
           this.fail(physical.host);
@@ -1896,6 +2077,77 @@ class ControlStoreWorkerClient {
     return RuntimePolicyPublicationResultSchema.parse(
       (reply as Extract<Success, { operation: 'runtime-policy-publication' }>).result
     );
+  }
+
+  /** The sole new ingress. The ordinary admission callback remains PREPOST. */
+  async activateHarnessLoginWithPolicyBorrow(
+    coreDb: CoreDb,
+    workspaceDb: WorkspaceDb,
+    record: ControlVaultMainInputMap['thread-login-activate'],
+    beforeSubmit?: () => void | Promise<void>
+  ): Promise<null> {
+    const { now, ...facts } = record;
+    const input = ControlVaultInputSchema.parse({
+      kind: 'thread-login-activate',
+      record: { ...facts, now: now() },
+    });
+    const core = await this.policyOpening(coreDb);
+    const borrower = await this.policyOpening(workspaceDb);
+    const [coreRoot, workspaceRoot] = await Promise.all([
+      realpath(coreDb.dataRoot),
+      realpath(workspaceDb.dataRoot),
+    ]);
+    if (coreRoot !== workspaceRoot)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const admission = beforeSubmit?.();
+    if (admission) await admission;
+    if (!coreDb.sqlite.open || !workspaceDb.sqlite.open)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const call: PolicyCall = {
+      id: -1,
+      core,
+      borrower,
+      phase: 'new',
+      borrowed: Promise.withResolvers<ControlPolicyGrant>(),
+      returned: Promise.withResolvers<void>(),
+    };
+    void call.borrowed.promise.catch(() => undefined);
+    void call.returned.promise.catch(() => undefined);
+    const reply = await this.request(
+      { operation: 'vault', database: borrower.command.database, input, policyRead: true },
+      undefined,
+      undefined,
+      false,
+      undefined,
+      [],
+      undefined,
+      call
+    );
+    if (reply.operation !== 'vault' || reply.result.kind !== 'thread-login-activate')
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
+    return reply.result.value;
+  }
+
+  private async policyOpening(db: CoreDb | WorkspaceDb): Promise<Opening> {
+    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const scope = nativeProductScope(
+      db.dataRoot,
+      db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId }
+    );
+    const database = `${db.scope === 'core' ? 'core' : 'workspace'}:${scope.path}`;
+    await this.open({
+      database,
+      path: scope.path,
+      create: false,
+      initialize: db.scope === 'core' ? 'core' : 'workspace',
+      dataRoot: db.dataRoot,
+      productOwner: scope.owner,
+      contentMount: scope.contentMount,
+    });
+    const opening = this.openings.get(database);
+    if (!opening?.acknowledged || opening.openingRequestId === undefined)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    return opening;
   }
 
   /** Opens the exact existing evidence database and publishes one original Vault stage after FULL acknowledgement. */
@@ -4361,6 +4613,7 @@ class ControlStoreWorkerClient {
           // Accepted ACK continuations can create an idle metadata reader before releasing their own.
           closeWorkspaceProductReadHandles(opening.path);
         }
+        await this.drainPolicyPreparations(opening);
         await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
         if (this.openings.get(database) === opening) this.openings.delete(database);
       } catch (error) {
@@ -4404,6 +4657,7 @@ class ControlStoreWorkerClient {
           // Accepted ACK continuations can create an idle metadata reader before releasing their own.
           closeWorkspaceProductReadHandles(opening.path);
         }
+        await this.drainPolicyPreparations(opening);
         const reply = await this.request(
           { operation: 'recovery-seal', database },
           undefined,
@@ -4598,7 +4852,8 @@ class ControlStoreWorkerClient {
     deferPost = false,
     recovery?: ControlFrozenNativeCall,
     preparedCapacity: readonly NativeCapacityReservation[] = [],
-    schemaApplicationFacts?: Pending['schemaApplicationFacts']
+    schemaApplicationFacts?: Pending['schemaApplicationFacts'],
+    policyCall?: PolicyCall
   ): Promise<Success> {
     if (command.operation !== 'shutdown') {
       try {
@@ -4870,12 +5125,22 @@ class ControlStoreWorkerClient {
         closeout,
         ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
         ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
+        ...(policyCall ? { policyCall } : {}),
         resolve,
         reject,
       };
+      if (policyCall) policyCall.id = id;
       this.pending.set(id, entry);
       if (database !== undefined && !borrowed)
         this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
+      if (policyCall) {
+        try {
+          this.retainPolicyCall(policyCall);
+        } catch (error) {
+          this.complete(id, undefined, error as ControlStoreWorkerError);
+          return; // Never posted: no native preparation or reader could exist.
+        }
+      }
       worker.ref();
       if (ready !== undefined) {
         void ready.then(
@@ -5051,9 +5316,23 @@ class ControlStoreWorkerClient {
       entry.closeout.borrowing = false;
       if (!entry.closeout.active) this.releaseOutstanding(entry.closeout.database);
     }
+    const policy = entry.policyCall;
+    const read = policy?.resource;
+    if (
+      read &&
+      (!entry.posted ||
+        policy?.phase === 'new' ||
+        policy?.phase === 'done' ||
+        policy?.phase === 'refused')
+    ) {
+      if (entry.posted && error instanceof ControlStoreWorkerError && error.commit === 'unknown') {
+        this.fail(entry.host);
+        void entry.host.exited.promise.then(() => this.releasePolicyRead(read));
+      } else this.releasePolicyRead(read);
+    }
     if (error !== undefined) entry.reject(error);
     else if (reply !== undefined) entry.resolve(reply);
-    if (entry.host.pending === 0) entry.host.worker?.unref();
+    if (entry.host.pending === 0 && !this.hasPolicyReads(entry.host)) entry.host.worker?.unref();
     this.completeBackupDrain();
   }
 
@@ -5192,8 +5471,321 @@ class ControlStoreWorkerClient {
     }
   }
 
+  private postPolicyFrame(host: WriterHost, frame: ControlPolicyBridgeMessage): void {
+    if (host.failed || !host.worker) throw new ControlStoreWorkerError('unavailable', 'unknown');
+    const call = this.findPolicyCall(frame.id);
+    if (!call || !('operation' in frame))
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const core = !('openingRequestId' in frame);
+    if (
+      host !== (core ? call.core.host : call.borrower.host) ||
+      frame.database !== (core ? call.core.command.database : call.borrower.command.database) ||
+      ('openingRequestId' in frame && frame.openingRequestId !== call.borrower.openingRequestId)
+    )
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    if (frame.operation === 'runtime-policy-return') {
+      if (
+        !call.resource?.active ||
+        !call.grant ||
+        !isDeepStrictEqual(frame.binding, call.grant.binding) ||
+        (core && call.phase !== 'return' && !call.borrower.host.terminated) ||
+        (!core && (!('decision' in frame) || frame.decision !== 'ack' || !call.returnAcknowledged))
+      )
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+    } else if (
+      core &&
+      (!call.resource?.active ||
+        call.phase !== 'borrow' ||
+        !('borrower' in frame) ||
+        !isDeepStrictEqual(frame.borrower, this.policyBorrower(call)) ||
+        frame.coreIdentity !== call.core.identity)
+    )
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    else if (
+      !core &&
+      'grant' in frame &&
+      (!call.resource?.active ||
+        call.phase !== 'granted' ||
+        !isDeepStrictEqual(frame.grant, call.grant))
+    )
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const budget = call.resource
+      ? core
+        ? call.resource.remainingBytes
+        : call.resource.workspaceBytes
+      : (this.pending.get(call.id)?.inputBytes ?? 0);
+    const parsed = ControlPolicyBridgeMessageSchema.parse(frame);
+    if (Buffer.byteLength(JSON.stringify(parsed)) + 64 > budget)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    host.worker.postMessage(parsed);
+  }
+
+  /** Physical custody starts at the original admitted id, before any native RO attempt. */
+  private retainPolicyCall(call: PolicyCall): void {
+    const base: { version: typeof CONTROL_WORKER_VERSION; id: number } = {
+      version: CONTROL_WORKER_VERSION,
+      id: call.id,
+    };
+    const coreIdentity = call.core.identity;
+    if (coreIdentity === undefined)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    const resource = this.retainPolicyRead(
+      call.core,
+      call.borrower,
+      this.policyFrameBudget(call, coreIdentity),
+      async () => {
+        if (call.phase === 'new' || call.phase === 'refused') return; // No CoreBorrow posted/issued.
+        if (!call.grant) throw new ControlStoreWorkerError('unavailable', 'unknown');
+        if (call.returnPosted) throw new ControlStoreWorkerError('unavailable', 'unknown');
+        call.returnPosted = true;
+        this.postPolicyFrame(call.core.host, {
+          ...base,
+          operation: 'runtime-policy-return',
+          database: call.core.command.database,
+          binding: call.grant.binding,
+        });
+        await call.returned.promise;
+      }
+    );
+    resource.call = call;
+    call.resource = resource;
+  }
+
+  private policyBorrower(call: PolicyCall): ControlPolicyGrant['binding']['borrower'] {
+    const scope = call.borrower.command.productOwner;
+    const openingRequestId = call.borrower.openingRequestId;
+    const host = this.hosts.indexOf(call.borrower.host);
+    if (scope?.kind !== 'workspace' || openingRequestId === undefined || host <= 0)
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    return {
+      host,
+      openingRequestId,
+      database: call.borrower.command.database,
+      requestId: call.id,
+      workspaceId: scope.workspaceId,
+    };
+  }
+
+  private findPolicyCall(id: number): PolicyCall | undefined {
+    const pending = this.pending.get(id)?.policyCall;
+    if (pending) return pending;
+    for (const opening of this.openings.values())
+      for (const resource of opening.policyReads)
+        if (resource.call?.id === id) return resource.call;
+    return undefined;
+  }
+
+  /** Dominating frozen frame forms bound both destinations and the retained native grant. */
+  private policyFrameBudget(
+    call: PolicyCall,
+    coreIdentity: string
+  ): { core: number; workspace: number } {
+    const uuid = '00000000-0000-4000-8000-000000000000';
+    const binding = {
+      coreDatabase: call.core.command.database,
+      coreIdentity,
+      openingId: uuid,
+      publisherId: uuid,
+      transitionId: uuid,
+      borrower: this.policyBorrower(call),
+    };
+    const grant = {
+      binding,
+      policy: {
+        serverRevision: `sha256:${'0'.repeat(64)}`,
+        workspaceRevision: `sha256:${'0'.repeat(64)}`,
+      },
+    };
+    const base = { version: CONTROL_WORKER_VERSION, id: call.id };
+    const workspace = {
+      ...base,
+      database: binding.borrower.database,
+      openingRequestId: binding.borrower.openingRequestId,
+    };
+    const size = (frame: unknown) => Buffer.byteLength(JSON.stringify(frame)) + 64;
+    // CoreReturn dominates CoreBorrow; granted replies dominate return ACKs.
+    // Workspace granted continuation/ReturnNeeded dominate ACK/Needed respectively.
+    // Fund raw/validated/outgoing copies plus the separately retained issued Grant.
+    return {
+      core:
+        3 *
+          Math.max(
+            size({
+              ...base,
+              operation: 'runtime-policy-return',
+              database: binding.coreDatabase,
+              binding,
+            }),
+            size({ ...base, status: 'runtime-policy-borrow-granted', grant })
+          ) +
+        size(grant),
+      workspace:
+        3 *
+        Math.max(
+          size({ ...workspace, operation: 'runtime-policy-borrow', decision: 'granted', grant }),
+          size({ ...workspace, status: 'runtime-policy-return-needed', binding })
+        ),
+    };
+  }
+
+  /** No generic request()/Pending for any bridge phase: correlation is the original slot. */
+  private async receivePolicyFrame(value: unknown, host: WriterHost): Promise<void> {
+    const frame = ControlPolicyBridgeMessageSchema.parse(value);
+    const call = this.findPolicyCall(frame.id);
+    if (!call) {
+      if (
+        'status' in frame &&
+        (frame.status === 'runtime-policy-returned' ||
+          frame.status === 'runtime-policy-return-refused')
+      )
+        return;
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    }
+    const base: { version: typeof CONTROL_WORKER_VERSION; id: number } = {
+      version: CONTROL_WORKER_VERSION,
+      id: call.id,
+    };
+    const borrower = this.policyBorrower(call);
+    const workspace = {
+      ...base,
+      database: borrower.database,
+      openingRequestId: borrower.openingRequestId,
+    };
+    if ('status' in frame && frame.status === 'runtime-policy-borrow-needed') {
+      if (
+        host !== call.borrower.host ||
+        call.phase !== 'new' ||
+        frame.database !== workspace.database ||
+        frame.openingRequestId !== workspace.openingRequestId ||
+        frame.coreIdentity !== call.core.identity
+      )
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      const resource = call.resource;
+      if (!resource?.active) throw new ControlStoreWorkerError('precondition', 'not-committed');
+      if (call.core.retirement) {
+        call.phase = 'refused'; // Physical retirement excludes late grant, not reader cleanup.
+        this.postPolicyFrame(host, {
+          ...workspace,
+          operation: 'runtime-policy-borrow',
+          decision: 'refused',
+          code: 'precondition',
+          commit: 'not-committed',
+        });
+        return;
+      }
+      try {
+        call.phase = 'borrow';
+        this.postPolicyFrame(call.core.host, {
+          ...base,
+          operation: 'runtime-policy-borrow',
+          database: call.core.command.database,
+          coreIdentity: frame.coreIdentity,
+          borrower,
+        });
+        const grant = await call.borrowed.promise;
+        if (!this.pending.has(call.id) || call.borrower.host.failed) {
+          await this.abandonPolicyRead(resource);
+          return;
+        }
+        call.phase = 'granted';
+        this.postPolicyFrame(host, {
+          ...workspace,
+          operation: 'runtime-policy-borrow',
+          decision: 'granted',
+          grant,
+        });
+      } catch (error) {
+        if (call.resource?.active && (call.phase as PolicyCall['phase']) !== 'refused') {
+          this.fail(call.core.host);
+          this.fail(host);
+        } else if (!host.failed)
+          this.postPolicyFrame(host, {
+            ...workspace,
+            operation: 'runtime-policy-borrow',
+            decision: 'refused',
+            code: error instanceof ControlStoreWorkerError ? error.code : 'precondition',
+            commit: 'not-committed',
+          });
+      }
+      return;
+    }
+    if ('status' in frame && frame.status === 'runtime-policy-return-needed') {
+      if (
+        host !== call.borrower.host ||
+        !call.grant ||
+        !call.resource ||
+        frame.database !== workspace.database ||
+        frame.openingRequestId !== workspace.openingRequestId ||
+        !isDeepStrictEqual(frame.binding, call.grant.binding)
+      )
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      if (call.phase === 'return' || call.phase === 'done') return; // Same cached close; no extra wire clone.
+      if (call.phase !== 'granted')
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      call.phase = 'return';
+      try {
+        await call.resource.returnAfterTermination();
+        call.phase = 'done';
+        this.postPolicyFrame(host, {
+          ...workspace,
+          operation: 'runtime-policy-return',
+          binding: call.grant.binding,
+          decision: 'ack',
+          outcome: 'returned',
+        });
+      } catch {
+        this.fail(host);
+      }
+      return;
+    }
+    if (host !== call.core.host || !('status' in frame))
+      throw new ControlStoreWorkerError('precondition', 'not-committed');
+    if (frame.status === 'runtime-policy-borrow-granted') {
+      const binding = frame.grant.binding;
+      if (
+        call.phase !== 'borrow' ||
+        binding.coreDatabase !== call.core.command.database ||
+        binding.coreIdentity !== call.core.identity ||
+        !isDeepStrictEqual(binding.borrower, borrower)
+      )
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      call.grant = structuredClone(frame.grant);
+      call.borrowed.resolve(call.grant);
+    } else if (frame.status === 'runtime-policy-borrow-refused') {
+      if (call.phase !== 'borrow')
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      call.phase = 'refused';
+      call.borrowed.reject(new ControlStoreWorkerError(frame.code, frame.commit));
+    } else if (
+      frame.status === 'runtime-policy-returned' ||
+      frame.status === 'runtime-policy-return-refused'
+    ) {
+      if (call.phase === 'done') return;
+      if (
+        !call.returnPosted ||
+        !call.grant ||
+        !isDeepStrictEqual(frame.binding, call.grant.binding)
+      )
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      if (frame.status === 'runtime-policy-returned') {
+        call.returnAcknowledged = true;
+        call.returned.resolve();
+      } else call.returned.reject(new ControlStoreWorkerError(frame.code, frame.commit));
+    } else throw new ControlStoreWorkerError('precondition', 'not-committed');
+  }
+
   /** Rejects unknown/miscorrelated wire meanings without falsely reporting rollback. */
   private receive(value: unknown, host: WriterHost): void {
+    if (
+      value &&
+      typeof value === 'object' &&
+      'status' in value &&
+      typeof value.status === 'string' &&
+      value.status.startsWith('runtime-policy-')
+    ) {
+      void this.receivePolicyFrame(value, host).catch(() => this.fail(host));
+      return;
+    }
     if (
       value !== null &&
       typeof value === 'object' &&
@@ -5220,6 +5812,14 @@ class ControlStoreWorkerClient {
       this.fail(host);
       return;
     }
+    if (
+      value.status === 'error' &&
+      entry.policyCall?.resource &&
+      entry.policyCall.phase !== 'done' &&
+      entry.policyCall.phase !== 'refused' &&
+      (entry.policyCall.phase !== 'new' || value.commit === 'unknown')
+    )
+      this.fail(host);
     // Main owns these disclosure inputs. A new report refused before physical admission
     // must not escape under a Policy that changed during released native computation.
     if (
@@ -5257,12 +5857,52 @@ class ControlStoreWorkerClient {
           : new ControlStoreWorkerError(value.code, value.commit, value.domain)
       );
     else this.complete(value.id, value);
+    // Native outer-commit uncertainty/integrity poison cannot leave dependent borrowers
+    // able to overlap a successor Core opening. Preserve the original reply above first.
+    if (
+      value.status === 'error' &&
+      (value.commit === 'unknown' || value.code === 'integrity') &&
+      'database' in entry.command &&
+      this.openings.get(entry.command.database)?.command.initialize === 'core' &&
+      (this.openings.get(entry.command.database)?.policyReads.size ?? 0) > 0
+    )
+      this.fail(host);
   }
 
   /** No reply, worker loss or protocol failure proves that a posted write did not commit. */
   private fail(host: WriterHost): void {
     if (host.failed) return;
     host.failed = true;
+    if (!host.worker) {
+      host.terminated = true;
+      host.exited.resolve();
+    }
+    for (const opening of this.openings.values())
+      for (const resource of opening.policyReads) {
+        if (resource.core.host === host || resource.borrower.host === host) {
+          resource.call?.borrowed.reject(new ControlStoreWorkerError('unavailable', 'unknown'));
+          if (resource.core.host === host || resource.call?.returnPosted)
+            resource.call?.returned.reject(new ControlStoreWorkerError('unavailable', 'unknown'));
+          if (
+            resource.call?.returnPosted &&
+            !resource.call.returnAcknowledged &&
+            resource.core.host !== host
+          )
+            this.fail(resource.core.host); // Never repost a valid return whose ACK was lost.
+        }
+        // A failed Core cannot leave a live dependent able to overlap a successor opening.
+        if (resource.core.host === host) {
+          this.fail(resource.borrower.host);
+          void Promise.all([host.exited.promise, resource.borrower.host.exited.promise]).then(() =>
+            this.releasePolicyRead(resource)
+          );
+        }
+        if (resource.borrower.host === host) {
+          void host.exited.promise.then(resource.returnAfterExit).catch(() => {
+            // No transport failure is promoted to an ACK; cleanup is exit-owned.
+          });
+        }
+      }
     for (const [id, entry] of this.pending) {
       if (entry.host !== host) continue;
       const posted = entry.posted;

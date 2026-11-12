@@ -13,6 +13,7 @@ import {
   deriveEntityId,
   ItemSchema,
   KnowledgeBaseIdSchema,
+  PolicyDigestV1Schema,
   PolicyDocumentV1Schema,
   RequestIdSchema,
   SseEventEnvelopeSchema,
@@ -430,6 +431,46 @@ import {
 /** Internal wire version; effect-bearing initialization requires matching peers, not a retained-format migration. */
 export const CONTROL_WORKER_VERSION = 97;
 
+/** Original admitted slot identity; the relay derives these from real host/opening bindings. */
+export const ControlPolicyBorrowerSchema = z
+  .object({
+    host: z
+      .number()
+      .int()
+      .positive()
+      .safe()
+      .refine((host) => host <= CONTROL_WORKER_LIMITS.workspaceWorkers),
+    database: z.string().min(1),
+    openingRequestId: z.number().int().nonnegative().safe(),
+    requestId: z.number().int().nonnegative().safe(),
+    workspaceId: WorkspaceIdSchema,
+  })
+  .strict();
+export const ControlPolicyBindingSchema = z
+  .object({
+    coreDatabase: z.string().min(1),
+    coreIdentity: z.string().regex(/^\d+:\d+$/),
+    openingId: z.uuid(),
+    publisherId: z.uuid(),
+    transitionId: z.uuid(),
+    borrower: ControlPolicyBorrowerSchema,
+  })
+  .strict();
+/** Issued by the actual Core publication owner, never reconstructed from inspect. */
+export const ControlPolicyGrantSchema = z
+  .object({
+    binding: ControlPolicyBindingSchema,
+    policy: z
+      .object({
+        serverRevision: PolicyDigestV1Schema,
+        workspaceRevision: PolicyDigestV1Schema.nullable(),
+      })
+      .strict(),
+  })
+  .strict();
+export type ControlPolicyBinding = z.infer<typeof ControlPolicyBindingSchema>;
+export type ControlPolicyGrant = z.infer<typeof ControlPolicyGrantSchema>;
+
 /** Non-retained inputs from the original Main Policy, Review and scope-admission owners. */
 const schemaApplicationActor = ControlCoreSharingActorSchema.transform(
   (actor): Actor => ({
@@ -786,7 +827,11 @@ export type ControlWorkerCommand =
           readonly operation: 'runtime-policy-publication';
           readonly input: RuntimePolicyPublicationInput;
         }
-      | { readonly operation: 'vault'; readonly input: ControlVaultInput }
+      | {
+          readonly operation: 'vault';
+          readonly input: ControlVaultInput;
+          readonly policyRead?: true;
+        }
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
@@ -2307,8 +2352,14 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       RuntimePolicyPublicationInputSchema.safeParse(value.input).success
     );
   if (value.operation === 'vault') {
-    if (!exactFields(value, [...scoped, 'input'])) return false;
+    if (
+      !exactFields(value, [...scoped, 'input'], ['policyRead']) ||
+      (value.policyRead !== undefined && value.policyRead !== true)
+    )
+      return false;
     const parsed = ControlVaultInputSchema.safeParse(value.input);
+    if (value.policyRead && (!parsed.success || parsed.data.kind !== 'thread-login-activate'))
+      return false;
     if (!parsed.success) return false;
     let boundedInput = value.input;
     if (parsed.data.kind === 'receipt-create' && parsed.data.record.workerAuthority) {
@@ -2721,3 +2772,75 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     exactFields(value, scoped)
   );
 }
+
+const policyFrame = z
+  .object({ version: z.literal(CONTROL_WORKER_VERSION), id: z.number().int().nonnegative().safe() })
+  .strict();
+const policyWorkspaceFrame = policyFrame.extend({
+  database: z.string().min(1),
+  openingRequestId: z.number().int().nonnegative().safe(),
+});
+const policyRefusal = {
+  code: z.enum(CONTROL_WORKER_FAILURE_CODES),
+  commit: z.literal('not-committed'),
+};
+const policyBorrow = z.literal('runtime-policy-borrow');
+const policyReturn = z.literal('runtime-policy-return');
+const policyBinding = { binding: ControlPolicyBindingSchema };
+const policyReturned = { ...policyBinding, outcome: z.literal('returned') };
+
+/** Strict original-slot continuations; binding mismatches are typed refusals, not parser failures. */
+export const ControlPolicyBridgeMessageSchema = z
+  .union([
+    policyWorkspaceFrame.extend({
+      status: z.literal('runtime-policy-borrow-needed'),
+      coreIdentity: z.string().regex(/^\d+:\d+$/),
+    }),
+    policyFrame.extend({
+      operation: policyBorrow,
+      database: z.string().min(1),
+      coreIdentity: z.string().regex(/^\d+:\d+$/),
+      borrower: ControlPolicyBorrowerSchema,
+    }),
+    policyFrame.extend({
+      status: z.literal('runtime-policy-borrow-granted'),
+      grant: ControlPolicyGrantSchema,
+    }),
+    policyFrame.extend({ status: z.literal('runtime-policy-borrow-refused'), ...policyRefusal }),
+    policyWorkspaceFrame.extend({
+      operation: policyBorrow,
+      decision: z.literal('granted'),
+      grant: ControlPolicyGrantSchema,
+    }),
+    policyWorkspaceFrame.extend({
+      operation: policyBorrow,
+      decision: z.literal('refused'),
+      ...policyRefusal,
+    }),
+    policyWorkspaceFrame.extend({
+      status: z.literal('runtime-policy-return-needed'),
+      ...policyBinding,
+    }),
+    policyFrame.extend({ operation: policyReturn, database: z.string().min(1), ...policyBinding }),
+    policyFrame.extend({ status: z.literal('runtime-policy-returned'), ...policyReturned }),
+    policyFrame.extend({
+      status: z.literal('runtime-policy-return-refused'),
+      ...policyBinding,
+      ...policyRefusal,
+    }),
+    policyWorkspaceFrame.extend({
+      operation: policyReturn,
+      decision: z.literal('ack'),
+      ...policyReturned,
+    }),
+    policyWorkspaceFrame.extend({
+      operation: policyReturn,
+      decision: z.literal('refused'),
+      ...policyBinding,
+      ...policyRefusal,
+    }),
+  ])
+  .refine(
+    (frame) => Buffer.byteLength(JSON.stringify(frame)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
+  );
+export type ControlPolicyBridgeMessage = z.infer<typeof ControlPolicyBridgeMessageSchema>;

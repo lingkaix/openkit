@@ -226,6 +226,10 @@ import {
   ControlPhysicalForecastDecisionSchema,
   type ControlPhysicalForecastFiles,
   ControlPhysicalForecastSchema,
+  type ControlPolicyBinding,
+  type ControlPolicyBridgeMessage,
+  ControlPolicyBridgeMessageSchema,
+  type ControlPolicyGrant,
   ControlSchemaApplicationRefusalSchema,
   type ControlSqlResult,
   type ControlSqlRow,
@@ -489,6 +493,17 @@ type WriteRequest = WriteCommand & {
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
   readonly preparedVaultRead?: PreparedControlVaultRead | undefined;
+  policyReadState?:
+    | {
+        /** Undefined after an attempted helper construction is not proof of no handle. */
+        reader?: Database.Database;
+        coreIdentity: string;
+        borrow: ReturnType<typeof Promise.withResolvers<ControlPolicyGrant>>;
+        returned: ReturnType<typeof Promise.withResolvers<void>>;
+        grant?: ControlPolicyGrant;
+        returning: boolean;
+      }
+    | undefined;
   readonly preparedMaterial?: ControlMaterialCommandInput | undefined;
   readonly preparedCapability?: ControlCapabilityCommandInput | undefined;
   readonly preparedReview?: PreparedControlReviewCommand | undefined;
@@ -503,6 +518,11 @@ type WriteRequest = WriteCommand & {
   readonly preparedDirectories?: readonly string[];
   readonly preparedPublications?: readonly string[];
 };
+
+/** Native owner resource, independent of its private wire projection. */
+interface NativePolicyRead {
+  readonly grant: ControlPolicyGrant;
+}
 
 /** One worker-owned writable connection and its finite, disposable pending work. */
 interface OwnedDatabase {
@@ -521,6 +541,10 @@ interface OwnedDatabase {
   readonly preparations: Set<Promise<void>>;
   /** Readiness belongs to this physical Core opening, not a process-level Policy cache. */
   readonly runtimePolicy: NativeRuntimePolicyPublication | undefined;
+  readonly openingRequestId: number;
+  /** Bounded by the original admitted borrowers, never retained authority. */
+  readonly policyReservations: Map<string, NativePolicyRead>;
+  policyDrain: ReturnType<typeof Promise.withResolvers<void>> | undefined;
   closing: boolean;
   timer: ReturnType<typeof setTimeout> | null;
   immediate: ReturnType<typeof setImmediate> | null;
@@ -540,6 +564,84 @@ type OpenRequest = Extract<ControlWorkerRequest, { operation: 'open' }> & {
 };
 const pendingIds = new Map<number, OpenRequest | null>();
 let stopping = false;
+
+/** Core alone issues this grant; the relay identifies an actual admitted Workspace slot. */
+function reserveNativePolicyRead(
+  owner: OwnedDatabase,
+  database: string,
+  coreIdentity: string,
+  borrower: ControlPolicyBinding['borrower']
+): ControlPolicyGrant {
+  const state = owner.runtimePolicy;
+  if (
+    stopping ||
+    owner.closing ||
+    owner.poisoned ||
+    !owner.sqlite.open ||
+    owner.sqlite.inTransaction ||
+    owner.scopeDb?.scope !== 'core' ||
+    !state ||
+    state.state !== 'active' ||
+    !state.identity ||
+    !state.publisherId ||
+    !state.transitionId ||
+    coreIdentity !== owner.identity ||
+    borrower.database !==
+      `workspace:${workspaceDbPath(owner.scopeDb.dataRoot, borrower.workspaceId)}` ||
+    owner.pending.some(
+      (entry) => entry.operation === 'runtime-policy-publication' && entry.input.kind === 'close'
+    ) ||
+    owner.policyReservations.has(String(borrower.requestId))
+  )
+    throw new ControlProductPreconditionError();
+  const physical = statSync(owner.path);
+  if (
+    realpathSync(owner.path) !== owner.path ||
+    `${physical.dev}:${physical.ino}` !== owner.identity
+  )
+    throw new ControlProductPreconditionError();
+  if (owner.policyReservations.size >= CONTROL_WORKER_LIMITS.pendingTransitions)
+    throw new ControlStoreBusyError();
+  const grant: ControlPolicyGrant = {
+    binding: {
+      coreDatabase: database,
+      coreIdentity: owner.identity,
+      openingId: state.openingId,
+      publisherId: state.publisherId,
+      transitionId: state.transitionId,
+      borrower,
+    },
+    policy: {
+      serverRevision: state.identity.serverRevision,
+      workspaceRevision:
+        state.identity.workspaceRevisions.find(
+          (entry) => entry.workspaceId === borrower.workspaceId
+        )?.revision ?? null,
+    },
+  };
+  owner.policyReservations.set(String(borrower.requestId), { grant });
+  return grant;
+}
+
+/** Absence uniformly refuses. Only an exact original binding can remove its reservation. */
+function releaseNativePolicyRead(owner: OwnedDatabase, binding: ControlPolicyBinding): void {
+  const actual = owner.policyReservations.get(String(binding.borrower.requestId));
+  if (
+    owner.scopeDb?.scope !== 'core' ||
+    !owner.runtimePolicy ||
+    binding.openingId !== owner.runtimePolicy.openingId ||
+    binding.coreIdentity !== owner.identity ||
+    !actual ||
+    !isDeepStrictEqual(actual.grant.binding, binding)
+  )
+    throw new ControlProductPreconditionError();
+  owner.policyReservations.delete(String(binding.borrower.requestId));
+  if (!owner.policyReservations.size) {
+    owner.policyDrain?.resolve();
+    owner.policyDrain = undefined;
+    if (owner.pending.length) owner.immediate ??= setImmediate(() => flush(owner));
+  }
+}
 
 /** Binds the admitted physical App to this exact existing owner connection. */
 function appDatabase(owner: OwnedDatabase): AppDb {
@@ -1824,6 +1926,62 @@ async function prepareAfterPredecessors(
 
 /** Removes one admitted slot only after its ordered response and wakes its dependent preparation. */
 function complete(owner: OwnedDatabase, request: WriteRequest, result: ControlWorkerReply): void {
+  const policy = request.policyReadState;
+  if (policy) {
+    if (policy.returning) return;
+    if (result.status === 'error' && result.commit === 'unknown') {
+      policy.returning = true;
+      request.ready = false;
+      reply(result); // Only actual borrower exit can settle opaque physical custody.
+      return;
+    }
+    // Outer SQL is terminal, but Core retirement also owns this exact physical reader.
+    // Never remove the grant while that handle can still keep Core authority alive.
+    try {
+      if (!policy.reader) throw new ControlProductPreconditionError();
+      policy.reader.close();
+      if (policy.reader.open) throw new ControlProductPreconditionError();
+    } catch {
+      policy.returning = true;
+      request.ready = false;
+      // Even a committed result is UNKNOWN to the caller on failed physical cleanup.
+      // Keep the original slot/grant parked: Main must join actual borrower exit
+      // before its first cleanup return. No return-needed or synthetic abort here.
+      reply(failure(request.id, 'unavailable', 'unknown'));
+      return;
+    }
+  }
+  if (policy?.grant) {
+    policy.returning = true;
+    request.ready = false;
+    // This request is still the original bounded slot. Nothing can replay its SQL
+    // while the covering outer-commit/abort waits for the funded return acknowledgement.
+    const closed = policy.returned.promise
+      .then(
+        () => {
+          request.policyReadState = undefined;
+          complete(owner, request, result);
+          schedule(owner);
+        },
+        () => {
+          request.policyReadState = undefined;
+          complete(owner, request, failure(request.id, 'unavailable', 'unknown'));
+          schedule(owner);
+        }
+      )
+      .finally(() => owner.preparations.delete(closed));
+    request.preparation = closed;
+    owner.preparations.add(closed);
+    port.postMessage({
+      version: CONTROL_WORKER_VERSION,
+      id: request.id,
+      status: 'runtime-policy-return-needed',
+      database: request.database,
+      openingRequestId: owner.openingRequestId,
+      binding: policy.grant.binding,
+    });
+    return;
+  }
   owner.pending.splice(owner.pending.indexOf(request), 1);
   // Later barriers retain predecessor metadata until settlement, never this consumed file body.
   if (request.operation === 'recovery-target-preparation')
@@ -1916,6 +2074,9 @@ function flush(owner: OwnedDatabase): void {
   const policy = effectivePendingHead(owner);
   if (policy?.operation === 'runtime-policy-publication') {
     if (!policy.ready) return;
+    // A queued close fences later borrowing; its ACK waits for actual borrower termination.
+    // Return continuations must remain dispatchable while this sole FIFO barrier is parked.
+    if (policy.input.kind === 'close' && owner.policyReservations.size) return;
     let outcome: ControlWorkerReply;
     try {
       if (policy.refusal || policy.predecessorFailed || owner.poisoned)
@@ -2108,9 +2269,34 @@ function flush(owner: OwnedDatabase): void {
   }
   // Re-sample only the selected request's canonical sources at the synchronous SQL head.
   for (const request of batch) {
-    if (!request.preparedVaultRead || request.refusal || request.predecessorFailed) continue;
+    if (
+      (!request.preparedVaultRead && !request.policyReadState) ||
+      request.refusal ||
+      request.predecessorFailed
+    )
+      continue;
     try {
-      request.preparedVaultRead.sampleHead();
+      const policy = request.policyReadState;
+      if (policy) {
+        if (!policy.reader) throw new ControlProductPreconditionError();
+        const physical = statSync(policy.reader.name);
+        const workspace = statSync(owner.path);
+        if (
+          `${workspace.dev}:${workspace.ino}` !== owner.identity ||
+          realpathSync(owner.path) !== owner.path
+        )
+          throw new ControlProductPreconditionError();
+        if (
+          !policy.grant ||
+          !policy.reader.open ||
+          !policy.reader.readonly ||
+          policy.reader.inTransaction ||
+          `${physical.dev}:${physical.ino}` !== policy.coreIdentity ||
+          policy.grant.binding.borrower.openingRequestId !== owner.openingRequestId
+        )
+          throw new ControlProductPreconditionError();
+      }
+      request.preparedVaultRead?.sampleHead();
     } catch (error) {
       const domain = domainRefusal(request.operation, error);
       request.refusal = domain
@@ -3312,7 +3498,7 @@ function schedule(owner: OwnedDatabase): void {
 
 /** Drains accepted local work before an ordered close or maintenance request. */
 async function drain(owner: OwnedDatabase): Promise<void> {
-  while (owner.pending.length || owner.preparations.size) {
+  while (owner.pending.length || owner.preparations.size || owner.policyReservations.size) {
     const count = owner.pending.length;
     if (owner.poisoned) refusePoisonedPending(owner);
     else flush(owner);
@@ -3323,6 +3509,10 @@ async function drain(owner: OwnedDatabase): Promise<void> {
       .map((request) => request.preparation!);
     if (preparing.length) await Promise.race(preparing);
     else if (owner.preparations.size) await Promise.all(owner.preparations);
+    else if (owner.policyReservations.size) {
+      owner.policyDrain ??= Promise.withResolvers<void>();
+      await owner.policyDrain.promise;
+    }
   }
   unschedule(owner);
 }
@@ -3911,6 +4101,9 @@ async function openDatabase(request: OpenRequest): Promise<void> {
           request.productOwner?.kind === 'server'
             ? createNativeRuntimePolicyPublication()
             : undefined,
+        openingRequestId: request.id,
+        policyReservations: new Map(),
+        policyDrain: undefined,
         closing: false,
         timer: null,
         immediate: null,
@@ -3932,8 +4125,107 @@ async function openDatabase(request: OpenRequest): Promise<void> {
   }
 }
 
+/** Original-slot continuations bypass the SQL FIFO, including its parked close barrier. */
+function receivePolicyBridge(frame: ControlPolicyBridgeMessage): void {
+  const base = { version: CONTROL_WORKER_VERSION, id: frame.id };
+  if ('borrower' in frame) {
+    let grant: ControlPolicyGrant;
+    try {
+      const owner = databases.get(frame.database);
+      if (!owner || frame.id !== frame.borrower.requestId)
+        throw new ControlProductPreconditionError();
+      grant = reserveNativePolicyRead(owner, frame.database, frame.coreIdentity, frame.borrower);
+    } catch (error) {
+      port.postMessage({
+        ...base,
+        status: 'runtime-policy-borrow-refused',
+        code: error instanceof ControlStoreBusyError ? 'busy' : 'precondition',
+        commit: 'not-committed',
+      });
+      return;
+    }
+    // A failed post after registration is UNKNOWN, never a false no-grant refusal.
+    port.postMessage({ ...base, status: 'runtime-policy-borrow-granted', grant });
+    return;
+  }
+  if (
+    'operation' in frame &&
+    frame.operation === 'runtime-policy-return' &&
+    !('openingRequestId' in frame)
+  ) {
+    try {
+      const owner = databases.get(frame.database);
+      if (
+        !owner ||
+        frame.database !== frame.binding.coreDatabase ||
+        frame.id !== frame.binding.borrower.requestId
+      )
+        throw new ControlProductPreconditionError();
+      releaseNativePolicyRead(owner, frame.binding);
+    } catch {
+      port.postMessage({
+        ...base,
+        status: 'runtime-policy-return-refused',
+        binding: frame.binding,
+        code: 'precondition',
+        commit: 'not-committed',
+      });
+      return;
+    }
+    port.postMessage({
+      ...base,
+      status: 'runtime-policy-returned',
+      binding: frame.binding,
+      outcome: 'returned',
+    });
+    return;
+  }
+  if (!('openingRequestId' in frame) || !('operation' in frame))
+    throw new ControlProductPreconditionError();
+  const owner = databases.get(frame.database);
+  const request = owner?.pending.find((entry) => entry.id === frame.id);
+  const policy = request?.policyReadState;
+  if (!owner || !request || !policy) return; // Never revive an already terminal original slot.
+  if (owner.openingRequestId !== frame.openingRequestId)
+    throw new ControlProductPreconditionError();
+  if (frame.operation === 'runtime-policy-borrow') {
+    if (frame.decision === 'refused')
+      policy.borrow.reject(
+        frame.code === 'busy' ? new ControlStoreBusyError() : new ControlProductPreconditionError()
+      );
+    else {
+      const binding = frame.grant.binding;
+      if (
+        binding.borrower.requestId !== request.id ||
+        binding.borrower.database !== request.database ||
+        binding.borrower.openingRequestId !== owner.openingRequestId ||
+        owner.scopeDb?.scope !== 'workspace' ||
+        binding.borrower.workspaceId !== owner.scopeDb.workspaceId ||
+        binding.coreDatabase !== `core:${coreDbPath(owner.scopeDb.dataRoot)}` ||
+        binding.coreIdentity !== policy.coreIdentity
+      )
+        throw new ControlProductPreconditionError();
+      policy.borrow.resolve(frame.grant);
+    }
+  } else {
+    if (!policy.grant || !isDeepStrictEqual(policy.grant.binding, frame.binding))
+      throw new ControlProductPreconditionError();
+    if (frame.decision === 'ack') policy.returned.resolve();
+    else policy.returned.reject(new ControlProductPreconditionError());
+  }
+}
+
 /** Routes trusted protocol messages without transporting connections or executing caller code. */
 function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
+  if (
+    value &&
+    typeof value === 'object' &&
+    'operation' in value &&
+    (value.operation === 'runtime-policy-borrow' || value.operation === 'runtime-policy-return')
+  ) {
+    receivePolicyBridge(ControlPolicyBridgeMessageSchema.parse(value));
+    return;
+  }
   if (
     value &&
     typeof value === 'object' &&
@@ -4175,6 +4467,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           cohort,
           barrier:
             value.operation === 'runtime-policy-publication' ||
+            (value.operation === 'vault' && value.policyRead === true) ||
             value.operation === 'recovery-target-registration' ||
             value.operation === 'recovery-target-preparation' ||
             value.operation === 'workspace-capture' ||
@@ -4593,6 +4886,41 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             }
             if (owner.poisoned || databases.get(value.database) !== owner)
               throw new ControlProductPreconditionError();
+            if (value.operation === 'vault' && value.policyRead) {
+              await prepareAfterPredecessors(owner, queued, earlier);
+              if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
+              const corePath = coreDbPath(owner.scopeDb.dataRoot);
+              const before = statSync(corePath);
+              const policy: NonNullable<WriteRequest['policyReadState']> = {
+                coreIdentity: `${before.dev}:${before.ino}`,
+                borrow: Promise.withResolvers<ControlPolicyGrant>(),
+                returned: Promise.withResolvers<void>(),
+                returning: false,
+              };
+              // Main already holds this original slot's physical pin. Record the
+              // attempt before the helper: a throw can hide an unclosed native handle.
+              queued.policyReadState = policy;
+              const reader = openSupportedScopeReadOnlySqlite(corePath, 'core');
+              policy.reader = reader;
+              const physical = statSync(corePath);
+              if (
+                reader.name !== corePath ||
+                before.dev !== physical.dev ||
+                before.ino !== physical.ino
+              )
+                throw new ControlProductPreconditionError();
+              port.postMessage({
+                version: CONTROL_WORKER_VERSION,
+                id: queued.id,
+                status: 'runtime-policy-borrow-needed',
+                database: queued.database,
+                openingRequestId: owner.openingRequestId,
+                coreIdentity: policy.coreIdentity,
+              });
+              policy.grant = await policy.borrow.promise;
+              if (owner.poisoned || queued.predecessorFailed)
+                throw new ControlProductPreconditionError();
+            }
             Object.assign(queued, {
               ready: true,
               preparedWorkspaceCapture,
