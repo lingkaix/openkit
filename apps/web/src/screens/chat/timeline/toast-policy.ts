@@ -112,7 +112,8 @@ export function attentionObjectId(row: {
 
 /**
  * The three toast classes. Anything else stays in Action Center.
- * Failure and handoff require a caller-supplied relationship. The live read does not carry one.
+ * Failure and handoff require origin.viewerStartedRun or origin.viewerCausedHandoff.
+ * Null, false, and a missing origin stay off. The caller does not infer either fact.
  */
 export function classifyAttentionEvent(
   row: {

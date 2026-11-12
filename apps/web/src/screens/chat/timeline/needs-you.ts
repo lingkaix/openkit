@@ -1,6 +1,8 @@
 import type { HumanAttentionRow } from '@openkit/app-api-schemas';
 import { fillCopy, timelineCopy } from './copy';
+import { timelineNotices } from './notices';
 import { looksLikeIdentifier } from './present';
+import { formatClockTime } from './time';
 
 const GENERIC_ATTENTION_TITLE = new Set(['Answer required', 'Approval required']);
 const GENERIC_ATTENTION_SUMMARY = new Set([
@@ -45,11 +47,33 @@ export interface NeedsYouRow {
   blocking: boolean;
   ageSeconds?: number;
   createdAt: string;
+  /** Recorded run start from origin.startedAt. Null or absent means no run clock. */
+  startedAt?: string | null;
   threadId?: string;
   turnId?: string;
   itemId?: string;
   taskLabel?: string;
   surfaceHref?: string | null;
+}
+
+/** "run at hh:mm" for a recorded run start. Any other instant stays unlabeled. */
+export function attentionRunClock(startedAt: string | null | undefined): string | null {
+  if (!startedAt || !Number.isFinite(Date.parse(startedAt))) return null;
+  return fillCopy(timelineNotices.runAt, { time: formatClockTime(startedAt) });
+}
+
+/**
+ * Question text for a row whose request Item is not loaded.
+ * A truncation flag stays visible. Null keeps the generic title.
+ */
+function unloadedQuestionTitle(
+  summary: { text: string; truncated: boolean } | null | undefined
+): string | null {
+  const text = summary?.text;
+  if (!text) return null;
+  const marked = summary.truncated && !text.endsWith('…') ? `${text}…` : text;
+  const line = shortenAttentionText(marked);
+  return line.length > 0 ? line : null;
 }
 
 /** Blocking rows first, then oldest. Both facts are already on the row. */
@@ -181,18 +205,32 @@ export function openDecisionsAfter<T extends { id: string }>(
 export function toNeedsYouRow(
   row: Pick<
     HumanAttentionRow,
-    'id' | 'title' | 'blocking' | 'ageSeconds' | 'createdAt' | 'threadId' | 'turnId' | 'itemId'
+    | 'id'
+    | 'title'
+    | 'blocking'
+    | 'ageSeconds'
+    | 'createdAt'
+    | 'threadId'
+    | 'turnId'
+    | 'itemId'
+    | 'origin'
+    | 'questionSummary'
   > & { summary?: string | null },
   surfaceHref: string | null,
   taskLabel?: string,
   question?: string | null
 ): NeedsYouRow {
+  const loaded = question?.replace(/\s+/g, ' ').trim();
+  const summaryTitle = loaded ? null : unloadedQuestionTitle(row.questionSummary);
+  const title = summaryTitle ?? attentionDisplayTitle(row.title, row.summary, question);
+  const runAt = attentionRunClock(row.origin?.startedAt);
   return {
     id: row.id,
-    title: attentionDisplayTitle(row.title, row.summary, question),
+    title: runAt ? `${title} · ${runAt}` : title,
     blocking: row.blocking === true,
     ageSeconds: row.ageSeconds,
     createdAt: row.createdAt,
+    startedAt: row.origin?.startedAt ?? null,
     threadId: row.threadId,
     turnId: row.turnId,
     itemId: row.itemId,

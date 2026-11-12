@@ -13,8 +13,7 @@ export const RESOLVE_READ_GAPS = [
   'A knowledge page and revision have no URL anchor.',
   'The environment has no user surface; it stays in the inspector.',
   'A request Item outside the loaded window has no timeline anchor.',
-  'Attention rows do not say the viewer started the run, sent the latest message, or caused a handoff.',
-  'Attention rows do not carry the run start time.',
+  'Attention rows do not say whether the viewer sent the latest message.',
 ] as const;
 
 export type ConversationActivity = 'chat' | 'task' | 'goal' | 'unknown';

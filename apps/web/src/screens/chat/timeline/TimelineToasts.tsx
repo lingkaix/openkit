@@ -32,8 +32,9 @@ import {
 
 /**
  * Toasts from successive attention reads.
- * Failure and handoff stay in Action Center: the attention read does not say
- * whether the viewer started the run or caused the handoff.
+ * A failure toast requires origin.viewerStartedRun === true.
+ * A handoff toast requires origin.viewerCausedHandoff === true.
+ * Null, false, and a missing origin stay in Action Center.
  */
 export function TimelineToasts() {
   const workspaceId = useCurrentWorkspaceId();
@@ -166,6 +167,8 @@ function policyRow(
       ? new Map([[threadId, { activity: source.activity, name: source.name }]])
       : undefined;
   const resolved = resolve(attentionRefFromRow(row), threads ? { threads } : {});
+  const viewerWaitsOn = row.origin?.viewerStartedRun === true;
+  const viewerCaused = row.origin?.viewerCausedHandoff === true;
   return {
     id: row.id,
     objectId: attentionObjectId(row),
@@ -182,12 +185,12 @@ function policyRow(
         : source?.status === 'denied'
           ? 'denied'
           : 'unknown',
-    event: open ? classifyAttentionEvent(row) : 'ignore',
+    event: open ? classifyAttentionEvent(row, { viewerWaitsOn, viewerCaused }) : 'ignore',
     title: row.title,
     ageLabel: attentionAgeLabel(row.ageSeconds),
     href: hrefOf(resolved),
-    viewerWaitsOn: false,
-    viewerCaused: false,
+    viewerWaitsOn,
+    viewerCaused,
   };
 }
 

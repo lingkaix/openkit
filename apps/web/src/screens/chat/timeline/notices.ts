@@ -12,6 +12,7 @@ export const timelineNotices = {
   openVersionList: "Open the output's version list",
   backLink: 'From: {title} · run at {time}',
   backLinkNoTime: 'From: {title}',
+  runAt: 'run at {time}',
   mergedDecisions: '{count} decisions need you in {thread}',
   moreToasts: '+{count} more · Open Action Center',
   opensRunNotMessage: 'Opens the run (not the exact message)',

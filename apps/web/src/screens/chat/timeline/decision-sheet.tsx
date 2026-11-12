@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button, TextField } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { fillCopy, timelineCopy } from './copy';
+import { attentionRunClock } from './needs-you';
 import { PhoneSheetFrame } from './PhoneChrome';
 import { TimelineTime } from './TimelineTime';
 
@@ -150,6 +151,7 @@ export function DecisionSheet({
 export function DecisionRowSheet({
   title,
   createdAt,
+  startedAt,
   blocking,
   more,
   onNext,
@@ -157,11 +159,14 @@ export function DecisionRowSheet({
 }: {
   title: string;
   createdAt: string;
+  /** Recorded run start. Null or absent shows no run clock. */
+  startedAt?: string | null;
   blocking: boolean;
   more: number;
   onNext?: () => void;
   onClose: () => void;
 }) {
+  const runAt = attentionRunClock(startedAt);
   return (
     <PhoneSheetFrame
       label={timelineCopy.decisionSheet}
@@ -179,6 +184,7 @@ export function DecisionRowSheet({
     >
       <div data-decision-body="" className="flex flex-col gap-3">
         <p className="text-base font-medium text-fg">{title}</p>
+        {runAt ? <p className="ok-meta">{runAt}</p> : null}
         <p className="ok-meta">
           <TimelineTime iso={createdAt} />
         </p>
