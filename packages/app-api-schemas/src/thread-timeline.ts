@@ -42,6 +42,9 @@ export const THREAD_TIMELINE_LIMITS = {
   previewBytes: 4_096,
   runs: 31,
   items: 50,
+  digestRuns: 31,
+  digestRevisions: 256,
+  digestItemBytes: 65_536,
 } as const;
 const cursor = z.string().min(1).max(4096);
 const position = z.object({ turnId: TurnIdSchema, itemId: ItemIdSchema.optional() });
@@ -173,6 +176,28 @@ export const TimelineRunEntrySchema = z.object({
   restrictedReferences: z.boolean(),
 });
 
+/** Deterministic counts over a bounded retained window after B; partial counts are lower bounds. */
+export const TimelineDigestSchema = z.object({
+  lines: z
+    .array(
+      z.object({
+        kind: z.enum([
+          'needs-you',
+          'runs-finished',
+          'outputs',
+          'plan-steps-finished',
+          'problems',
+          'decisions-by-others',
+          'new-messages',
+        ]),
+        count: z.number().int().positive(),
+        anchor: ThreadTimelineAnchorSchema,
+      })
+    )
+    .max(7),
+  coverage: z.enum(['complete', 'partial']),
+});
+
 /** A single source snapshot per window; cursors are positions and confer no authorization. */
 export const ThreadTimelineResponseSchema = z
   .object({
@@ -193,6 +218,7 @@ export const ThreadTimelineResponseSchema = z
       .nullable(),
     anchor: position.nullable(),
     catchUpAnchor: position.nullable(),
+    digest: TimelineDigestSchema,
     restrictedReferences: z.boolean(),
   })
   .refine(

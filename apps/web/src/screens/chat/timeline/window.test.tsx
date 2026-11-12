@@ -124,6 +124,7 @@ describe('timeline window anchors', () => {
       itemWindow: null,
       anchor: null,
       catchUpAnchor: null,
+      digest: { lines: [], coverage: 'complete' },
       restrictedReferences: false,
     });
     expect(held).not.toHaveProperty('digest');
@@ -153,6 +154,7 @@ describe('timeline cursor paging', () => {
       itemWindow: null,
       anchor: null,
       catchUpAnchor: null,
+      digest: { lines: [], coverage: 'complete' },
       restrictedReferences: false,
     });
     const absorbed = absorbEdge(

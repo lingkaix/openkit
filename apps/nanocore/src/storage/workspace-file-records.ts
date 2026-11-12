@@ -959,6 +959,32 @@ export function readNativeThreadItem(
   }
 }
 
+/** Verifies one addressed historical Item revision without opening another read cut. */
+function readTimelineRevision(
+  scope: NativeProductScope,
+  threadId: string,
+  turnId: string,
+  entry: { id: string; content: Parameters<typeof readImmutableProductJson>[2] }
+): Item | null {
+  // Digest history reads never load an unbounded command output or plan body.
+  if (entry.content.byteLength > 65_536) return null;
+  const value = readImmutableProductJson(scope.contentMount, scope.owner, entry.content);
+  const item = readRetainedV1(value, StoredItemPayloadV1Schema.parse);
+  if (scope.owner.kind === 'workspace') assertWorkspaceWorkOwner(item, scope.owner.workspaceId);
+  if (
+    !isDeepStrictEqual(item.owner, scope.owner) ||
+    item.id !== entry.id ||
+    item.threadId !== threadId ||
+    item.turnId !== turnId ||
+    (value &&
+      typeof value === 'object' &&
+      'requiredFeatures' in value &&
+      (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length > 0))
+  )
+    throw new Error('Native Item content lineage is recovery_required.');
+  return item;
+}
+
 /** Returns kind counts from one Turn's original Item identities, without reading body content. */
 export function readNativeTurnItemCounts(
   scope: NativeProductScope,
@@ -988,6 +1014,16 @@ export interface ThreadTimelineSnapshot {
   item(itemId: string): Item | undefined;
   itemHead(turnId: string): number;
   counts(turnId: string): Partial<Record<Item['type'], number>>;
+  /** Indexed tail of all revisions, not only first-publication positions. */
+  revisionHead(turnId: string): number;
+  /** Bounded append positions include revisions, so a changed plan after B is not lost. */
+  revisions(
+    turnId: string,
+    after: number,
+    limit: number
+  ): Array<{ sequence: number; revision: number; item: Item | null }>;
+  /** An exact predecessor lookup is independent of the number of later revisions. */
+  revision(turnId: string, itemId: string, revision: number): Item | null | undefined;
   catchUp(userId: string, receipts: readonly string[]): ThreadItemPosition | undefined;
   currentPositions(input: CurrentThreadItems): ThreadItemPosition[];
   turnRanks(turnId: string): ReturnType<typeof readThreadTurnRanks>;
@@ -1026,6 +1062,41 @@ export function withNativeThreadTimelineSnapshot<T>(
         item: (itemId) => readNativeThreadItem(scope, threadId, itemId, reader),
         itemHead: (turnId) => readTurnItemHead(reader.sqlite, threadId, turnId),
         counts: (turnId) => reader.turnItemCounts(threadId, turnId) ?? {},
+        revisionHead: (turnId) => {
+          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return 0;
+          return (
+            reader.sqlite
+              .prepare(`SELECT coalesce(max(sequence),0) AS head
+            FROM control_product_entries WHERE kind='item' AND turn_id=?`)
+              .get(turnId) as { head: number }
+          ).head;
+        },
+        revisions: (turnId, after, limit) => {
+          const turn = readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId);
+          if (!turn) return [];
+          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64)
+            throw new TypeError('Invalid timeline revision window.');
+          return reader.entries(turnId, 'item', after, limit).map((entry) => ({
+            sequence: entry.sequence,
+            revision: entry.revision,
+            item: readTimelineRevision(scope, threadId, turnId, entry),
+          }));
+        },
+        revision: (turnId, itemId, revision) => {
+          if (!Number.isSafeInteger(revision) || revision < 1)
+            throw new TypeError('Invalid timeline revision.');
+          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId))
+            return undefined;
+          const row = reader.sqlite
+            .prepare(`SELECT sequence FROM control_product_entries
+            WHERE kind='item' AND id=? AND turn_id=? AND revision=?`)
+            .get(itemId, turnId, revision) as { sequence: number } | undefined;
+          if (!row) return undefined;
+          const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0];
+          if (!entry || entry.id !== itemId || entry.revision !== revision)
+            throw new Error('Native Item revision lineage is recovery_required.');
+          return readTimelineRevision(scope, threadId, turnId, entry);
+        },
         catchUp: (userId, receipts) =>
           readThreadCatchUpPosition(reader.sqlite, threadId, userId, receipts),
       })

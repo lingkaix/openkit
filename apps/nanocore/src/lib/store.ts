@@ -5971,11 +5971,24 @@ export class FsStore {
       admissionOrder: index + 1,
       record: { ...turn, items: [] },
     }));
+    const revisionCounts = new Map<string, number>();
+    const sequenceCounts = new Map<string, number>();
+    const revisions = this.itemRevisions
+      .filter((item) => item.threadId === threadId)
+      .map((item) => {
+        const sequence = (sequenceCounts.get(item.turnId) ?? 0) + 1;
+        const revision = (revisionCounts.get(item.id) ?? 0) + 1;
+        sequenceCounts.set(item.turnId, sequence);
+        revisionCounts.set(item.id, revision);
+        return { item, sequence, revision };
+      });
+    const digestItem = (item: Item): Item | null =>
+      Buffer.byteLength(JSON.stringify(writeRetainedV1(item))) > 65_536 ? null : item;
     const positions = turns.flatMap((turn, index) =>
-      turn.items.map((item, ordinal) => ({
+      turn.items.map((item) => ({
         itemId: item.id,
         turnId: turn.id,
-        sequence: ordinal + 1,
+        sequence: revisions.find((entry) => entry.item.id === item.id)!.sequence,
         admissionOrder: index + 1,
       }))
     );
@@ -6053,7 +6066,21 @@ export class FsStore {
         const row = positions.find((row) => row.itemId === itemId);
         return row ? this.items.get(itemId) : undefined;
       },
-      itemHead: (turnId) => turns.find((turn) => turn.id === turnId)?.items.length ?? 0,
+      itemHead: (turnId) =>
+        Math.max(0, ...positions.filter((row) => row.turnId === turnId).map((row) => row.sequence)),
+      revisionHead: (turnId) => sequenceCounts.get(turnId) ?? 0,
+      revisions: (turnId, after, limit) =>
+        revisions
+          .filter((entry) => entry.item.turnId === turnId && entry.sequence > after)
+          .slice(0, limit)
+          .map((entry) => ({ ...entry, item: digestItem(entry.item) })),
+      revision: (turnId, itemId, revision) => {
+        const item = revisions.find(
+          (entry) =>
+            entry.item.turnId === turnId && entry.item.id === itemId && entry.revision === revision
+        )?.item;
+        return item ? digestItem(item) : undefined;
+      },
       counts: (turnId) => {
         const counts: Partial<Record<Item['type'], number>> = {};
         for (const item of turns.find((turn) => turn.id === turnId)?.items ?? [])

@@ -33,6 +33,7 @@ import type {
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
 import { readThreadReceiptMembership } from './thread-read-state.js';
+import { readTimelineDigest } from './thread-timeline-digest.js';
 import { projectTurnErrorPresentation, turnErrorInspectAction } from './turn-error-presentation.js';
 
 const CursorSchema = z
@@ -557,6 +558,7 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
         ? { turnId: anchor.turnId, ...(anchor.itemId ? { itemId: anchor.itemId } : {}) }
         : null,
       catchUpAnchor: catchUp ? { turnId: catchUp.turnId, itemId: catchUp.itemId } : null,
+      digest: readTimelineDigest(owner, snapshot, catchUp),
       restrictedReferences: false,
     };
     if (result.view === 'items' || (anchor && 'sequence' in anchor)) {

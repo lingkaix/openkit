@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   THREAD_TIMELINE_PLACEMENT,
   ThreadTimelineInputSchema,
+  TimelineDigestSchema,
   TimelineItemDetailSchema,
 } from './thread-timeline.js';
 
@@ -53,6 +54,24 @@ describe('bounded Thread timeline contract', () => {
       { userId: 'another-viewer' },
     ])
       expect(ThreadTimelineInputSchema.safeParse({ ...selector, ...invalid }).success).toBe(false);
+  });
+
+  it('bounds deterministic digest lines and requires positive counts with real anchor kinds', () => {
+    const line = {
+      kind: 'new-messages',
+      count: 2,
+      anchor: { kind: 'item', itemId: 'it_00000000-0000-7000-8000-000000000001' },
+    };
+    expect(TimelineDigestSchema.safeParse({ lines: [line], coverage: 'complete' }).success).toBe(
+      true
+    );
+    for (const invalid of [
+      { lines: Array(8).fill(line), coverage: 'complete' },
+      { lines: [{ ...line, count: 0 }], coverage: 'complete' },
+      { lines: [{ ...line, anchor: { kind: 'unknown' } }], coverage: 'partial' },
+      { lines: [line], coverage: 'guessed' },
+    ])
+      expect(TimelineDigestSchema.safeParse(invalid).success).toBe(false);
   });
 
   it('bounds preview UTF-8 bytes rather than JavaScript code units', () => {

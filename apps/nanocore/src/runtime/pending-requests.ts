@@ -620,12 +620,15 @@ export function listOpenThreadPendingRequests(
   sqlite: Database.Database,
   workspaceId: string,
   threadId: string,
-  onUnreadable?: (requestId: string) => void
+  onUnreadable?: (requestId: string) => void,
+  limit?: number
 ): PendingRequestRecord[] {
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 64))
+    throw new TypeError('Invalid open Pending Request window.');
   const rows = sqlite
     .prepare(`SELECT ${SELECT_COLUMNS} FROM pending_requests
-    WHERE workspace_id=? AND thread_id=? AND state='pending' ORDER BY created_at,request_id`)
-    .all(workspaceId, threadId) as PendingRequestRow[];
+    WHERE workspace_id=? AND thread_id=? AND state='pending' ORDER BY created_at,request_id LIMIT ?`)
+    .all(workspaceId, threadId, limit ?? -1) as PendingRequestRow[];
   return rows.flatMap((row) => {
     try {
       return [parsePendingRequestRow(row)];

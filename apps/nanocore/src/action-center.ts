@@ -40,6 +40,8 @@ interface BuildHumanAttentionRowsInput {
   /** Explicit admitted Thread scope for bounded per-Thread/Goal projections. */
   threadIds?: readonly string[];
   reviewLimit?: number;
+  /** Optional bounded read projection; the full Action Center retains its existing selection. */
+  pendingLimit?: number;
   reviewCandidates?: ReturnType<typeof listArtifactReviews>;
   /** Authenticated actor requesting the projection. */
   actor?: Actor | undefined;
@@ -392,7 +394,13 @@ export function readScopedHumanAttention(
         compareCodeUnits(a.createdAt, b.createdAt) ||
         compareCodeUnits(a.id, b.id)
     );
-  return { items, pendingRequests: pending.pendingRequests, more: reviewCandidates.length >= 33 };
+  return {
+    items,
+    pendingRequests: pending.pendingRequests,
+    more:
+      reviewCandidates.length >= 33 ||
+      (input.pendingLimit !== undefined && pending.pendingRequests.length >= input.pendingLimit),
+  };
 }
 
 /** Exact indexed associations feed the unchanged canonical validator and blocking rule. */
@@ -487,7 +495,8 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
             resolution: null,
             ending: null,
             disposition: null,
-          })
+          }),
+        input.pendingLimit
       );
     } catch {
       continue;

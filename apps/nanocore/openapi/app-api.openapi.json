@@ -64548,6 +64548,140 @@
               }
             ]
           },
+          "digest": {
+            "type": "object",
+            "properties": {
+              "lines": {
+                "maxItems": 7,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "needs-you",
+                        "runs-finished",
+                        "outputs",
+                        "plan-steps-finished",
+                        "problems",
+                        "decisions-by-others",
+                        "new-messages"
+                      ]
+                    },
+                    "count": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "anchor": {
+                      "oneOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "latest"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "turn"
+                            },
+                            "turnId": {
+                              "type": "string",
+                              "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "turnId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "item"
+                            },
+                            "itemId": {
+                              "type": "string",
+                              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "itemId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "attention"
+                            },
+                            "rowId": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 512
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "rowId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "catch-up"
+                            }
+                          },
+                          "required": [
+                            "kind"
+                          ],
+                          "additionalProperties": false
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "count",
+                    "anchor"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "coverage": {
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "partial"
+                ]
+              }
+            },
+            "required": [
+              "lines",
+              "coverage"
+            ],
+            "additionalProperties": false
+          },
           "restrictedReferences": {
             "type": "boolean"
           }
@@ -64563,6 +64697,7 @@
           "itemWindow",
           "anchor",
           "catchUpAnchor",
+          "digest",
           "restrictedReferences"
         ],
         "additionalProperties": false
@@ -178072,5 +178207,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:bef71b41e85350ff0457ba0d249de11ae61aa432fb0fa7ffc63efbd369d20913"
+  "x-openkit-source-digest": "sha256:0bbc0c03d0e6cf3e36f4f98ec86872a3f029352e5cac0d92faf964cd87caa4e9"
 }
