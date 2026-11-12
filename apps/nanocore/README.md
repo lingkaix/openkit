@@ -1,5 +1,7 @@
 # nanocore
 
+Timeline budget tests use `src/storage/budget-test-limit.ts` to log the measured p95, asserted limit and mode. Shared local and hosted runs use a 2x gross-regression tripwire by default while the [timeline budgets](../../docs/specs/20261108-conversation_timeline.md#risks--mitigations) await calibration; that limit is not the product budget. Only `OPENKIT_LATENCY_BUDGET=product` enforces the product budget for deliberate quiet-host checks or package 7 qualification. The timeline fixture, payload, counts, forbidden-scan checks and dashboard assertions remain unchanged.
+
 Human-facing built-in prompts append shared role-specific reporting guidance within the unchanged 3000-code-point cap. New Task requests carry fixed `reporting-v1` text in their existing immutable `instructions.md`; the package manifest and logical trace verify its separate digest against original request bytes. Goal model Tools cannot supply that field. Retained packages without reporting metadata stay readable and unchanged. Delivery verification and per-adapter/model compliance sampling are separate proofs.
 
 

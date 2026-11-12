@@ -9,6 +9,7 @@ import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
+import { testBudgetLimit } from './budget-test-limit.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -128,7 +129,7 @@ it('keeps timeline and dashboard windows bounded as native history and unrelated
       'TB2 window budget',
       JSON.stringify({ runs: 5_000, latestRunItems: 10_000, samples, p95 })
     );
-    expect(p95).toBeLessThanOrEqual(150);
+    expect(p95).toBeLessThanOrEqual(testBudgetLimit(p95, 150));
     const forbidden = [
       'listThreadTurns',
       'listThreadItems',
