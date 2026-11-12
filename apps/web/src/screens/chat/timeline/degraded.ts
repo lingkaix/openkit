@@ -101,17 +101,15 @@ export function isBusyStatus(error: unknown): boolean {
 /**
  * An ordinary timeline window this mount already admitted stays up through a
  * recoverable refresh. Denial and a missing source do not. The busy label stays narrower.
+ *
+ * Recoverable is a dropped network (TypeError or HTTP 0), a request timeout (408),
+ * a rate limit (429), or any server failure (5xx). 401, 403, and 404 never qualify.
  */
 export function retainsAdmittedHistory(error: unknown): boolean {
   if (error instanceof TypeError) return true;
-  return (
-    error instanceof ApiCallError &&
-    (error.status === 429 ||
-      error.status === 500 ||
-      error.status === 502 ||
-      error.status === 503 ||
-      error.status === 504)
-  );
+  if (!(error instanceof ApiCallError)) return false;
+  const status = error.status;
+  return status === 0 || status === 408 || status === 429 || status >= 500;
 }
 
 /** True when the stream cursor can no longer be resumed. */

@@ -62,6 +62,7 @@ export interface ServerBootstrapOwner {
 export async function startIsolatedWebStack(
   options: IsolatedWebStackOptions = {}
 ): Promise<IsolatedWebStack> {
+  await assertRetrievalKernel();
   await assertNanoCoreBuilt();
 
   const corePort = await findOpenPort();
@@ -272,6 +273,76 @@ export async function completeServerBootstrap(
     throw new Error('Public server bootstrap did not return a created owner.');
   }
   return ownerUserId;
+}
+
+/** One in-flight kernel build. A later stack waits for it instead of starting another. */
+let retrievalKernelPreflight: Promise<void> | null = null;
+
+/**
+ * The executable NanoCore resolves: a packaged binary, otherwise the workspace
+ * debug build from `pnpm --filter @openkit/retrieval-kernel build`.
+ */
+function retrievalKernelCandidates(): string[] {
+  return ['/usr/local/bin/retrieval-kernel', join(repoRoot, 'target', 'debug', 'retrieval-kernel')];
+}
+
+/** True when NanoCore can spawn the retrieval executable. */
+async function retrievalKernelReady(): Promise<boolean> {
+  for (const candidate of retrievalKernelCandidates()) {
+    try {
+      await access(candidate);
+      return true;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return false;
+}
+
+/**
+ * Builds the retrieval kernel once when isolated e2e has no executable.
+ * A missing kernel makes task.start return 409 recovery_required.
+ *
+ * @throws {Error} When the existing package build fails or still produces no executable.
+ */
+async function assertRetrievalKernel(): Promise<void> {
+  if (await retrievalKernelReady()) return;
+  retrievalKernelPreflight ??= buildRetrievalKernel().finally(() => {
+    retrievalKernelPreflight = null;
+  });
+  await retrievalKernelPreflight;
+  if (await retrievalKernelReady()) return;
+  throw new Error(
+    'Retrieval kernel executable is missing after `pnpm --filter @openkit/retrieval-kernel build`. Isolated e2e cannot start.'
+  );
+}
+
+/** Runs the repository's retrieval-kernel package build and stops on a non-zero exit. */
+function buildRetrievalKernel(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('pnpm', ['--filter', '@openkit/retrieval-kernel', 'build'], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+    });
+    child.once('error', () => {
+      reject(
+        new Error(
+          'Could not start `pnpm --filter @openkit/retrieval-kernel build`. Isolated e2e cannot start without the retrieval executable.'
+        )
+      );
+    });
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(
+        new Error(
+          `Retrieval kernel build failed (${signal ?? `exit ${code ?? 'unknown'}`}). Isolated e2e cannot start.`
+        )
+      );
+    });
+  });
 }
 
 /**

@@ -363,7 +363,14 @@ test('TW9VERIFY keeps cumulative CLS at most 0.05 from navigation through divide
       'Navigation + catch-up divider opening + 30 s streaming must stay within U8'
     ).toBeLessThanOrEqual(0.05);
   } finally {
-    await stack.stop();
+    // Stop interception before the server. An in-flight dashboard fetch must
+    // finish or be dropped while the server is still listening.
+    try {
+      await page.unrouteAll({ behavior: 'wait' });
+      await page.close();
+    } finally {
+      await stack.stop();
+    }
   }
 });
 
