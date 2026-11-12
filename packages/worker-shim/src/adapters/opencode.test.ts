@@ -4433,6 +4433,144 @@ describe('W4 round-five proof regressions', () => {
     expect(result.status).toBe('completed');
     expect(Buffer.byteLength(result.assistantText ?? '')).toBe(RESULT_LIMIT);
   }, 120_000);
+  it('projects the exact admitted binding after native provider and model configuration', async () => {
+    const layout = makeRoots();
+    vi.stubEnv('OPENKIT_OPENCODE_CONFIG', '');
+    mkdirSync(join(layout.controlRoot, 'plugin'));
+    mkdirSync(join(layout.controlRoot, 'config'));
+    mkdirSync(join(layout.controlRoot, 'loopback'));
+    writeFileSync(
+      join(layout.controlRoot, 'loopback', 'inference-base'),
+      'http://127.0.0.1:9999/v1'
+    );
+    writeFileSync(
+      join(layout.controlRoot, 'loopback', 'inference-bearer'),
+      'synthetic-current-relay'
+    );
+    writeFileSync(
+      join(layout.controlRoot, 'config', 'openkit.json'),
+      JSON.stringify({
+        providers: {
+          [OPENCODE_PROVIDER_ID]: {
+            canonical: OPENCODE_PROVIDER_ID,
+            package: '@ai-sdk/openai-compatible',
+            models: {
+              'prompt-model': {
+                name: 'prompt-model',
+                modelID: 'prompt-model',
+                disabled: false,
+                limit: { context: 32000, output: 4000 },
+                capabilities: { tools: true, input: ['text'], output: ['text'] },
+              },
+            },
+          },
+        },
+      })
+    );
+    const modulePath = join(layout.controlRoot, 'plugin', 'projection.mjs');
+    writeFileSync(modulePath, OPENCODE_PLUGIN_SOURCE);
+    const plugin = (await import(modulePath)).default;
+    const provider: Record<string, unknown> = {
+      id: OPENCODE_PROVIDER_ID,
+      name: 'native',
+      canonical: 'openai',
+      package: 'synthetic-foreign-sdk',
+      headers: { authorization: 'synthetic-native' },
+    };
+    let sourceModels: unknown[] = ['unadmitted'];
+    const models = new Map<string, Record<string, unknown>>([
+      [
+        'prompt-model',
+        {
+          id: 'prompt-model',
+          providerID: OPENCODE_PROVIDER_ID,
+          modelID: 'foreign-model',
+          headers: { native: 'header' },
+        },
+      ],
+      ['unadmitted', { id: 'unadmitted', providerID: OPENCODE_PROVIDER_ID }],
+    ]);
+    const providerEditor = {
+      update: (_id: string, change: (value: Record<string, unknown>) => void) => change(provider),
+      remove: () => {
+        for (const key of Object.keys(provider)) delete provider[key];
+        sourceModels = [];
+      },
+      add: (value: { info: Record<string, unknown>; models: unknown[] }) => {
+        Object.assign(provider, value.info);
+        sourceModels = value.models;
+      },
+      models: {
+        set: (_id: string, values: unknown[]) => {
+          sourceModels = values;
+        },
+      },
+    };
+    const modelEditor = {
+      list: () => [...models.values()],
+      remove: (_provider: string, id: string) => models.delete(id),
+      update: (
+        providerID: string,
+        id: string,
+        change: (value: Record<string, unknown>) => void
+      ) => {
+        const value = models.get(id) ?? { id, providerID, modelID: id };
+        change(value);
+        models.set(id, value);
+      },
+    };
+    const hooks = new Map<string, (event: unknown) => void | Promise<void>>();
+    let firstRequest: { baseURL: string; authorization: string | null } | undefined;
+    await plugin.setup({
+      provider: { transform: async (apply: (editor: unknown) => void) => apply(providerEditor) },
+      model: {
+        transform: async (apply: (editor: unknown) => void) => {
+          apply(modelEditor);
+          // Registry reads are live during setup; its first reader can build a native request.
+          const event = { baseURL: 'http://native.invalid/foreign' };
+          await hooks.get('model.request')?.(event);
+          const request = new Request(event.baseURL, {
+            headers: { authorization: 'Bearer synthetic-native' },
+          });
+          await hooks.get('http.request')?.({ request });
+          firstRequest = {
+            baseURL: event.baseURL,
+            authorization: request.headers.get('authorization'),
+          };
+        },
+      },
+      tool: { transform: async () => undefined },
+      session: {
+        hook: async (name: string, callback: (event: unknown) => void | Promise<void>) => {
+          hooks.set(name, callback);
+        },
+      },
+    });
+    expect(firstRequest).toEqual({
+      baseURL: 'http://127.0.0.1:9999/v1',
+      authorization: 'Bearer synthetic-current-relay',
+    });
+    expect(models.get('prompt-model')?.modelID).toBe('prompt-model');
+    expect([...models.keys()]).toEqual(['prompt-model']);
+    expect(sourceModels).toMatchObject([
+      { id: 'prompt-model', modelID: 'prompt-model', providerID: OPENCODE_PROVIDER_ID },
+    ]);
+    expect(provider).toMatchObject({
+      canonical: OPENCODE_PROVIDER_ID,
+      activation: 'enabled',
+      package: '@opencode/ai/providers/openai-compatible',
+    });
+    expect(provider).not.toHaveProperty('headers');
+    expect(models.get('prompt-model')).toMatchObject({
+      enabled: true,
+      package: '@opencode/ai/providers/openai-compatible',
+      limit: { context: 32000, output: 4000 },
+      capabilities: { tools: true, input: ['text'], output: ['text'] },
+      variants: [],
+    });
+    expect(models.get('prompt-model')).not.toHaveProperty('headers');
+  });
+
   it('R1 lends the MCP bearer only to the exact admitted id and URL', async () => {
     const layout = makeRoots();
     vi.stubEnv('OPENKIT_OPENCODE_CONFIG', '');
@@ -4466,6 +4604,8 @@ describe('W4 round-five proof regressions', () => {
     writeFileSync(modulePath, OPENCODE_PLUGIN_SOURCE);
     const plugin = (await import(modulePath)).default;
     const ctx = {
+      provider: { transform: async () => undefined },
+      model: { transform: async () => undefined },
       tool: { transform: async () => undefined },
       session: { hook: async () => undefined },
       mcp: {

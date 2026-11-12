@@ -15,6 +15,18 @@ export default {
   async setup(ctx) {
     // Refresh the final native inline layer from the credential-free private configuration.
     process.env.OPENKIT_OPENCODE_CONFIG = readFileSync(join(root, '..', 'config', 'openkit.json'), 'utf8');
+    const catalog = () => JSON.parse(readFileSync(join(root, '..', 'config', 'openkit.json'), 'utf8')).providers;
+    const sdkPackage = '@opencode/ai/providers/openai-compatible';
+    // The pin's Model.Info.default metadata, with only the current private overrides.
+    const models = (providerID, binding) => Object.entries(binding.models)
+      .filter(([, model]) => model.disabled !== true)
+      .map(([id, { disabled, ...definition }]) => ({
+        name: id, variants: [], time: { released: 0 }, cost: [], status: 'active',
+        ...definition,
+        id, providerID, modelID: id, package: sdkPackage, enabled: true,
+        capabilities: { tools: true, input: ['text', 'image'], output: ['text'], ...definition.capabilities },
+        limit: { context: 200_000, output: 32_000, ...definition.limit },
+      }));
     // The pin debounces MCP tool-registry reloads after connection. Publish only a
     // location-specific generation, never tool names, so the adapter can await that reload.
     let generation = 0;
@@ -54,6 +66,29 @@ export default {
         }
       });
     }
+    // Registry reads are live during setup.
+    // Publish current private bindings after relay policies, never a preceding inline definition.
+    await ctx.provider.transform((editor) => {
+      for (const [id, binding] of Object.entries(catalog())) {
+        const { models: inventory, ...metadata } = binding;
+        editor.remove(id);
+        editor.add({
+          info: { id, name: id, activation: 'enabled', ...metadata, package: sdkPackage },
+          models: models(id, binding),
+        });
+      }
+    });
+    await ctx.model.transform((editor) => {
+      for (const [providerID, binding] of Object.entries(catalog())) {
+        for (const model of editor.list(providerID)) editor.remove(providerID, model.id);
+        for (const definition of models(providerID, binding)) {
+          editor.update(providerID, definition.id, (model) => {
+            for (const key of Object.keys(model)) delete model[key];
+            Object.assign(model, definition);
+          });
+        }
+      }
+    });
   },
 };
 `;

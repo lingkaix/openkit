@@ -164,6 +164,11 @@ it('live steer qualification: native idle steering can start new work and theref
     },
   });
   const f = await fixture(adapter);
+  // Qualify idle steering after actual Workspace readiness, not during cold native setup.
+  const initial = await client.session.list({});
+  await client.session.move({ sessionID: initial.data[0]!.id, directory: work });
+  await client.experimental.session.wait({ sessionID: initial.data[0]!.id });
+  expect(f.inference.requests).toHaveLength(0);
   const original = await f.session.startTurn(f.turn());
   expect((await original.settled).status).toBe('completed');
   expect(original.steer).toBeUndefined();
