@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { THREAD_TIMELINE_PLACEMENT } from '@openkit/app-api-schemas';
-import type { Item } from '@openkit/protocol';
+import { canonicalJsonText, type Item } from '@openkit/protocol';
 import { boundedJsonText } from './bounded-read-text.js';
 import type {
   ThreadTimelineSnapshot,
@@ -8,6 +9,23 @@ import type {
 } from './storage/workspace-file-records.js';
 
 type Badge = NonNullable<TimelineItem['policy']>;
+
+/** Hashes complete recorded inputs before preview clipping; outcomes and clocks do not identify a retry. */
+export function timelineArgumentDigest(item: Item): string | null {
+  const input =
+    item.type === 'tool-call' && item.arguments !== null
+      ? { type: item.type, server: item.server, tool: item.tool, arguments: item.arguments }
+      : item.type === 'command-execution'
+        ? { type: item.type, command: item.command, cwd: item.cwd }
+        : null;
+  if (!input) return null;
+  try {
+    return `sha256:${createHash('sha256').update(canonicalJsonText(input)).digest('hex')}`;
+  } catch {
+    // Retained strings can be valid JSON but not canonical Unicode; no identity is safer than a collision.
+    return null;
+  }
+}
 
 /** Exact recorded relations only: execution status, names and clocks never supply a verdict. */
 export function projectTimelinePolicy(

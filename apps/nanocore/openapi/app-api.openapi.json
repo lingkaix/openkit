@@ -55039,6 +55039,17 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "argumentDigest": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^sha256:[a-f0-9]{64}$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -58147,6 +58158,17 @@
                                 "connectionRef"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "argumentDigest": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
                             },
                             {
                               "type": "null"
@@ -61718,6 +61740,17 @@
                       "type": "null"
                     }
                   ]
+                },
+                "argumentDigest": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^sha256:[a-f0-9]{64}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -64860,6 +64893,17 @@
                                 "connectionRef"
                               ],
                               "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "argumentDigest": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "pattern": "^sha256:[a-f0-9]{64}$"
                             },
                             {
                               "type": "null"
@@ -74253,6 +74297,17 @@
                           "connectionRef"
                         ],
                         "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "argumentDigest": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^sha256:[a-f0-9]{64}$"
                       },
                       {
                         "type": "null"
@@ -179132,5 +179187,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:05e85ced0cd4c292a2ddf79e1c393bd127db0af6c59d164533a95196651b9bd1"
+  "x-openkit-source-digest": "sha256:40f9bc76eb25ccaad741562a65d873ddcdb75f65ae419c10eb13be6b3a0af7a8"
 }

@@ -169,6 +169,12 @@ export const TimelineItemSchema = z.object({
   detail: TimelineItemDetailSchema,
   steer: TimelineSteerStateSchema.nullable(),
   policy: TimelinePolicyBadgeSchema.nullable().optional(),
+  /** Complete recorded call inputs, including target identity; never a digest of a display preview. */
+  argumentDigest: z
+    .string()
+    .regex(/^sha256:[a-f0-9]{64}$/)
+    .nullable()
+    .optional(),
 });
 
 /** Counts come from original identities; source-derived counts remain restricted until their owner admits them. */

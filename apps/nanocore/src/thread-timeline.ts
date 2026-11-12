@@ -35,7 +35,11 @@ import type {
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
 import { readThreadReceiptMembership, receiptMessageItemIds } from './thread-read-state.js';
-import { projectTimelinePolicy, readTimelinePlanSegments } from './thread-timeline-attributes.js';
+import {
+  projectTimelinePolicy,
+  readTimelinePlanSegments,
+  timelineArgumentDigest,
+} from './thread-timeline-attributes.js';
 import { readTimelineDigest } from './thread-timeline-digest.js';
 import { projectTurnErrorPresentation, turnErrorInspectAction } from './turn-error-presentation.js';
 
@@ -143,6 +147,7 @@ export function projectTimelineItem(
     createdAt: item.createdAt,
     completedAt: item.completedAt,
     actor: 'actor' in item ? item.actor : null,
+    argumentDigest: timelineArgumentDigest(item),
     policy:
       item.type === 'tool-call' &&
       snapshot &&
