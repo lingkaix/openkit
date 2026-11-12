@@ -51540,6 +51540,42 @@
                 "properties": {
                   "kind": {
                     "type": "string",
+                    "const": "approval-request"
+                  },
+                  "approvalRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "approvalRequestId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "user-input-request"
+                  },
+                  "userInputRequestId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "userInputRequestId"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
                     "const": "attention"
                   },
                   "rowId": {
@@ -64894,6 +64930,42 @@
                           "required": [
                             "kind",
                             "itemId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "approval-request"
+                            },
+                            "approvalRequestId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "approvalRequestId"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "user-input-request"
+                            },
+                            "userInputRequestId": {
+                              "type": "string",
+                              "minLength": 1
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "userInputRequestId"
                           ],
                           "additionalProperties": false
                         },
@@ -178897,5 +178969,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b7935df9a122fdf94f98f3514c4a293efa2925396c6089c4ce7d4e5a8c7a946c"
+  "x-openkit-source-digest": "sha256:cf2c0b71b0856e45b871bb0b3c6e4a11076c9ab9f5c5b0603f0b6737c406b0bc"
 }

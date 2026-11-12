@@ -15,7 +15,7 @@ import {
   TurnRecordSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { readHumanAttention } from './action-center.js';
+import { pendingProjectionFacts, readHumanAttention } from './action-center.js';
 import { readTurnInterruptAudit } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
@@ -25,6 +25,7 @@ import { admitGenerativePresentationRead } from './generative-ui/commands.js';
 import { commandRequestKey, type FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
+import { readPendingRequest } from './runtime/pending-requests.js';
 import { readTaskSteerState } from './runtime/task-steer-receipt.js';
 import type {
   ControlThreadTurnSnapshot,
@@ -255,6 +256,43 @@ function cursorFor(
     upperOrder: snapshot.upperOrder,
     ...value,
   });
+}
+
+/** Historical navigation proves the original request/Item, not current response or receipt authority. */
+function requestAnchor(
+  owner: ThreadTimelineReadInput
+): { turnId: string; itemId: string } | undefined {
+  const { anchor } = owner.input;
+  if (anchor?.kind !== 'approval-request' && anchor?.kind !== 'user-input-request')
+    return undefined;
+  let workspaceDb: WorkspaceDb | undefined;
+  try {
+    workspaceDb = owner.repositoryWorkspaceDb?.(owner.input.workspaceId);
+    if (!workspaceDb) return missing();
+    const requestId =
+      anchor.kind === 'approval-request' ? anchor.approvalRequestId : anchor.userInputRequestId;
+    const record = readPendingRequest(workspaceDb.sqlite, requestId);
+    if (
+      !record ||
+      record.workspaceId !== owner.input.workspaceId ||
+      record.threadId !== owner.input.threadId ||
+      record.kind !== (anchor.kind === 'approval-request' ? 'approval' : 'user-input')
+    )
+      return missing();
+    // Retained history is bounded by the existing association owner. Ephemeral command receipts
+    // are not enumerated: this read grants no response right and makes no receipt validity claim.
+    const { contradiction } = pendingProjectionFacts(
+      { ...owner, workspaceId: owner.input.workspaceId, workspaceDb },
+      record,
+      false
+    );
+    if (contradiction) return missing();
+    return { turnId: record.raisingTurnId, itemId: record.requestItemId };
+  } catch {
+    return missing();
+  } finally {
+    workspaceDb?.sqlite.close();
+  }
 }
 
 /** The explicit row resolves through the existing attention owner, including response and source permissions. */
@@ -556,7 +594,7 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
         threadId: input.threadId,
       })
     : [];
-  const addressedAttention = attentionAnchor(owner);
+  const addressedAttention = requestAnchor(owner) ?? attentionAnchor(owner);
   return owner.store.readThreadTimelineSnapshot(input.workspaceId, input.threadId, (snapshot) => {
     const cursor = input.cursor ? decode(input.cursor, input) : undefined;
     const catchUp = snapshot.catchUp(owner.actor.userId, retained);

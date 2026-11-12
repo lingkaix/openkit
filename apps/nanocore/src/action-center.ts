@@ -467,7 +467,8 @@ export function readScopedHumanAttention(
 /** Exact indexed associations feed the unchanged canonical validator and blocking rule. */
 export function pendingProjectionFacts(
   input: BuildHumanAttentionRowsInput,
-  record: PendingRequestRecord
+  record: PendingRequestRecord,
+  includeReceipts = true
 ) {
   return input.store.readThreadTimelineSnapshot(input.workspaceId, record.threadId, (snapshot) => {
     const positions = snapshot.pendingAssociations(record.requestId, record.requestItemId);
@@ -526,7 +527,9 @@ export function pendingProjectionFacts(
         : validateCanonicalLoad(
             record,
             turns,
-            readPendingCommandRequestRecords(input.workspaceDb!.sqlite, record.requestId)
+            includeReceipts
+              ? readPendingCommandRequestRecords(input.workspaceDb!.sqlite, record.requestId)
+              : []
           ),
       presentation: {
         ...pendingRequestPresentation(record, presentationTurns),

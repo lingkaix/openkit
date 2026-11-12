@@ -27,11 +27,13 @@ describe('bounded Thread timeline contract', () => {
     expect(THREAD_TIMELINE_PLACEMENT['command-execution']).toBe('step');
   });
 
-  it('accepts latest, run, Item, attention and catch-up anchors and bounded Item windows', () => {
+  it('accepts latest, run, Item, exact request, attention and catch-up anchors and bounded Item windows', () => {
     for (const anchor of [
       { kind: 'latest' },
       { kind: 'turn', turnId: 'tu_00000000-0000-7000-8000-000000000001' },
       { kind: 'item', itemId: 'it_00000000-0000-7000-8000-000000000001' },
+      { kind: 'approval-request', approvalRequestId: 'original-approval' },
+      { kind: 'user-input-request', userInputRequestId: 'original-question' },
       { kind: 'attention', rowId: 'question:request' },
       { kind: 'catch-up' },
     ])
@@ -55,6 +57,9 @@ describe('bounded Thread timeline contract', () => {
       { cursor: 'position', anchor: { kind: 'latest' } },
       { view: 'runs', placement: 'step' },
       { userId: 'another-viewer' },
+      { anchor: { kind: 'approval-request', approvalRequestId: 'a', userInputRequestId: 'q' } },
+      { anchor: { kind: 'user-input-request', approvalRequestId: 'a' } },
+      { anchor: { kind: 'approval-request', approvalRequestId: '' } },
     ])
       expect(ThreadTimelineInputSchema.safeParse({ ...selector, ...invalid }).success).toBe(false);
   });

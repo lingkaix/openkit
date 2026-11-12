@@ -1,6 +1,7 @@
 import {
   ActorRefSchema,
   AgentIdSchema,
+  ApprovalRequestIdSchema,
   CapabilityCallIdSchema,
   ItemIdSchema,
   ItemSchema,
@@ -13,6 +14,7 @@ import {
   TurnErrorPresentationSchema,
   TurnIdSchema,
   TurnStatusSchema,
+  UserInputRequestIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -56,6 +58,12 @@ export const ThreadTimelineAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('latest') }).strict(),
   z.object({ kind: z.literal('turn'), turnId: TurnIdSchema }).strict(),
   z.object({ kind: z.literal('item'), itemId: ItemIdSchema }).strict(),
+  z
+    .object({ kind: z.literal('approval-request'), approvalRequestId: ApprovalRequestIdSchema })
+    .strict(),
+  z
+    .object({ kind: z.literal('user-input-request'), userInputRequestId: UserInputRequestIdSchema })
+    .strict(),
   z.object({ kind: z.literal('attention'), rowId: z.string().min(1).max(512) }).strict(),
   z.object({ kind: z.literal('catch-up') }).strict(),
 ]);
