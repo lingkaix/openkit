@@ -672,7 +672,9 @@ export function useThreadItems(
   workspaceId: string | null,
   threadId: string,
   poll = false,
-  enabled = true
+  enabled = true,
+  /** Timeline keeps its own 10/s snapshot. This observer must not commit per delta. */
+  quiet = false
 ) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
@@ -697,6 +699,7 @@ export function useThreadItems(
     enabled: Boolean(workspaceId) && enabled,
     refetchInterval: poll ? 5_000 : false,
     refetchIntervalInBackground: false,
+    ...(quiet ? { notifyOnChangeProps: [] as Array<'data'> } : {}),
   });
 }
 

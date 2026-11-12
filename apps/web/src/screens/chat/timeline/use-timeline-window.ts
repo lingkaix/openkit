@@ -118,9 +118,18 @@ function itemsKey(
   threadId: string,
   turnId: string,
   placement: 'all' | 'narrative' | 'step',
-  cursor: string | null
+  cursor: string | null,
+  seedKey: string | null
 ) {
-  return ['thread-timeline-items', workspaceId, threadId, turnId, placement, cursor] as const;
+  return [
+    'thread-timeline-items',
+    workspaceId,
+    threadId,
+    turnId,
+    placement,
+    cursor,
+    seedKey,
+  ] as const;
 }
 
 /** Level-2 pages for one open run. A seed keeps the anchored window and its cursors. */
@@ -134,6 +143,8 @@ export function useRunItemWindow(options: {
   cursor?: string | null;
   /** Anchored Level-2 window. Paging continues from its cursors. */
   seed?: HeldItems | null;
+  /** Changes the cache identity when a new Item anchor replaces the seed. */
+  seedKey?: string | null;
 }) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
@@ -142,10 +153,12 @@ export function useRunItemWindow(options: {
   const placement = options.placement ?? 'step';
   const cursor = options.cursor ?? null;
   const seed = options.seed ?? null;
-  const key = itemsKey(workspaceId, threadId, turnId ?? '', placement, cursor);
+  const seedKey = options.seedKey ?? null;
+  const key = itemsKey(workspaceId, threadId, turnId ?? '', placement, cursor, seedKey);
   const query = useQuery({
     queryKey: key,
     enabled: enabled && Boolean(options.workspaceId && turnId),
+    placeholderData: seed ?? undefined,
     queryFn: async () => {
       const cached = queryClient.getQueryData<HeldItems>(key);
       if (cached) return cached;
@@ -160,7 +173,7 @@ export function useRunItemWindow(options: {
   });
   const page = useMutation({
     mutationFn: async (edge: 'before' | 'after') => {
-      const held = queryClient.getQueryData<HeldItems>(key);
+      const held = queryClient.getQueryData<HeldItems>(key) ?? seed;
       const edgeCursor = edge === 'before' ? held?.beforeCursor : held?.afterCursor;
       if (!edgeCursor) return null;
       const response = await client.operations['thread.timeline'](
@@ -196,6 +209,69 @@ export function useRunItemWindow(options: {
     pageLater,
     paging: page.isPending,
   };
+}
+
+function sameQueryKey(left: readonly unknown[], right: readonly unknown[]): boolean {
+  return left.length === right.length && left.every((part, index) => Object.is(part, right[index]));
+}
+
+/**
+ * One query's data, committed at most ten times a second.
+ * The cache may update on every event. This hook is what the timeline renders.
+ */
+export function useCoalescedQueryItems<T>(
+  queryKey: readonly unknown[],
+  enabled: boolean
+): readonly T[] {
+  const queryClient = useQueryClient();
+  const keyRef = useRef(queryKey);
+  keyRef.current = queryKey;
+  const identity = queryKey.map((part) => String(part)).join('\u0000');
+  const latest = useRef<readonly T[]>([]);
+  const [shown, setShown] = useState<readonly T[]>([]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: identity resubscribes when the query key string changes; the effect reads keyRef.
+  useEffect(() => {
+    if (!enabled) return;
+    let frame = 0;
+    let timer = 0;
+    let stopped = false;
+    let lastFlush = performance.now();
+    const flush = () => {
+      frame = 0;
+      if (stopped) return;
+      lastFlush = performance.now();
+      const next = latest.current;
+      setShown((current) => (current === next ? current : next));
+    };
+    const schedule = () => {
+      if (stopped || frame || timer) return;
+      const wait = TEXT_RENDER_INTERVAL_MS - (performance.now() - lastFlush);
+      if (wait <= 0) {
+        frame = requestAnimationFrame(flush);
+        return;
+      }
+      timer = window.setTimeout(() => {
+        timer = 0;
+        if (stopped) return;
+        frame = requestAnimationFrame(flush);
+      }, wait);
+    };
+    const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== 'updated') return;
+      if (!sameQueryKey(event.query.queryKey, keyRef.current)) return;
+      const next = (event.query.state.data as readonly T[] | undefined) ?? [];
+      if (next === latest.current) return;
+      latest.current = next;
+      schedule();
+    });
+    return () => {
+      stopped = true;
+      unsubscribe();
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+    };
+  }, [enabled, identity, queryClient]);
+  return shown;
 }
 
 /**

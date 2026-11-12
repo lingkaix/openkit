@@ -1,3 +1,4 @@
+import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { createRequestId } from '@openkit/core-client';
 import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import {
@@ -7,6 +8,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -91,6 +93,7 @@ import type { LensName } from './timeline/types';
 import {
   timelineReadAvailable,
   useCoalescedItems,
+  useCoalescedQueryItems,
   useRunItemWindow,
   useTimelineWindow,
 } from './timeline/use-timeline-window';
@@ -103,11 +106,13 @@ import {
   itemAnchorHasLevel2,
   keepsUnreadMark,
   mergeDisplayedItems,
+  mergeRuns,
   narrativePreviews,
   newContentExceedsScreen,
   openingInput,
   runHasDecision,
   runStaysNew,
+  scrollCorrection,
   showCatchUpDivider,
   showJumpToLatest,
   type TimelineAnchorRequest,
@@ -120,6 +125,92 @@ function itemBodyText(item: ThreadItem): string {
   if ('content' in item && typeof item.content === 'string') return item.content;
   if ('result' in item && typeof item.result === 'string') return item.result;
   return '';
+}
+
+function liveItemSignature(items: readonly ThreadItem[]): string {
+  return items
+    .map((item) => {
+      const command = 'command' in item && typeof item.command === 'string' ? item.command : '';
+      return `${item.id}\u0000${item.status}\u0000${itemBodyText(item)}\u0000${command}`;
+    })
+    .join('\n');
+}
+
+/** Narrative previews plus Level-2 and plan previews the run read kept beside them. */
+function displayedPreviews(
+  narrative: readonly TimelineItem[],
+  plan: TimelineItem | null,
+  level2Items: readonly TimelineItem[]
+) {
+  const planPreview = plan?.detail.kind === 'preview' ? [plan] : [];
+  return narrativePreviews([...narrative, ...level2Items, ...planPreview]);
+}
+
+/**
+ * Full loads one bounded step page per run. The parent window covers the open run.
+ * Each other run uses the same Level-2 read.
+ */
+function FullRunLevel2({
+  workspaceId,
+  threadId,
+  turnId,
+  enabled,
+  onItems,
+}: {
+  workspaceId: string | null;
+  threadId: string;
+  turnId: string;
+  enabled: boolean;
+  onItems: (turnId: string, items: readonly ThreadItem[]) => void;
+}) {
+  const level2 = useRunItemWindow({
+    workspaceId,
+    threadId,
+    turnId,
+    enabled,
+    placement: 'all',
+  });
+  const signature = liveItemSignature(level2.completeItems);
+  const itemsRef = useRef(level2.completeItems);
+  itemsRef.current = level2.completeItems;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: signature is the item snapshot; the effect reads the latest items from the ref.
+  useEffect(() => {
+    onItems(turnId, itemsRef.current);
+  }, [onItems, signature, turnId]);
+  return null;
+}
+
+/** Focus the run that contains an addressed note when that note has no item target. */
+function focusEntry(turnId: string): boolean {
+  const element = document.querySelector<HTMLElement>(
+    `[data-timeline-entry="${CSS.escape(turnId)}"]`
+  );
+  if (!element) return false;
+  element.tabIndex = -1;
+  element.scrollIntoView?.({ block: 'center' });
+  element.focus();
+  return document.activeElement === element || element.contains(document.activeElement);
+}
+
+/**
+ * Focus the step row inside the open Steps sheet.
+ * The sheet chrome focuses its first button; that button does not contain the step.
+ */
+function focusDialogItem(itemId: string): boolean {
+  const element = document.querySelector<HTMLElement>(
+    `[role="dialog"] #${CSS.escape(`timeline-item-${itemId}`)}`
+  );
+  const dialog = element?.closest<HTMLElement>('[role="dialog"]');
+  if (!element || !dialog) return false;
+  element.tabIndex = -1;
+  element.focus();
+  const active = document.activeElement;
+  return (
+    active instanceof HTMLElement &&
+    active !== document.body &&
+    dialog.contains(active) &&
+    (active === element || active.contains(element) || element.contains(active))
+  );
 }
 
 function mergeUnique(current: readonly ThreadItem[], extra: readonly ThreadItem[]): ThreadItem[] {
@@ -324,6 +415,10 @@ export function ThreadStream({
   const settleOpening = onOpeningSettle ?? setLocalSettled;
   const [followNew, setFollowNew] = useState({ count: 0, decision: false });
   const following = useRef(windowAnchor.kind === 'latest');
+  const paintedRuns = useRef<TimelineRunEntry[] | null>(null);
+  const retainedView = useRef<{ id: string; top: number } | null>(null);
+  const retainArmed = useRef(false);
+  const retainScope = useRef<string | null>(null);
   const knownRunIds = useRef<Set<string>>(new Set());
   const [localDecision, setLocalDecision] = useState<string | null>(null);
   const [localSteps, setLocalSteps] = useState<string | null>(null);
@@ -360,8 +455,13 @@ export function ThreadStream({
   const connection = useConnection();
   const queryClient = useQueryClient();
   useThreadHistoryPaint(queryClient, workspaceId, threadId);
-  const items = useThreadItems(workspaceId, threadId, false, !timelineOn);
-  const liveSnapshot = useCoalescedItems(timelineOn ? items.data : undefined);
+  const items = useThreadItems(workspaceId, threadId, false, !timelineOn, timelineOn);
+  const coalescedOffline = useCoalescedItems(timelineOn ? undefined : items.data);
+  const streamedItems = useCoalescedQueryItems<ThreadItem>(
+    ['items', workspaceId ?? '', threadId],
+    timelineOn
+  );
+  const liveSnapshot = timelineOn ? streamedItems : coalescedOffline;
   const timelineWindow = useTimelineWindow({
     workspaceId,
     threadId,
@@ -382,10 +482,15 @@ export function ThreadStream({
   const level2TurnId = timelineOn
     ? (stepsTurnId ?? expandedTurnId ?? fullTurnId ?? anchoredWindow?.turnId ?? null)
     : null;
-  const level2Seed =
-    anchoredWindow && anchoredWindow.turnId === level2TurnId
-      ? holdItems(anchoredWindow.items, anchoredWindow.beforeCursor, anchoredWindow.afterCursor)
-      : null;
+  const level2Seed = useMemo(
+    () =>
+      anchoredWindow && anchoredWindow.turnId === level2TurnId
+        ? holdItems(anchoredWindow.items, anchoredWindow.beforeCursor, anchoredWindow.afterCursor)
+        : null,
+    [anchoredWindow, level2TurnId]
+  );
+  const level2SeedId =
+    level2Seed && timelineWindow.data?.anchor?.itemId ? timelineWindow.data.anchor.itemId : null;
   const level2Run = timelineWindow.data?.runs.find((run) => run.id === level2TurnId);
   const level2Placement = stepsTurnId || expandedTurnId ? 'step' : 'all';
   const level2 = useRunItemWindow({
@@ -396,7 +501,17 @@ export function ThreadStream({
     placement: level2Placement,
     cursor: level2Seed || level2Placement === 'step' ? null : (level2Run?.narrativeCursor ?? null),
     seed: level2Seed,
+    seedKey: level2SeedId,
   });
+  const [fullRunItems, setFullRunItems] = useState<Record<string, readonly ThreadItem[]>>({});
+  const acceptFullRunItems = useCallback((turnId: string, next: readonly ThreadItem[]) => {
+    setFullRunItems((current) => {
+      if (next.length === 0 && current[turnId] === undefined) return current;
+      const previous = current[turnId];
+      if (previous && liveItemSignature(previous) === liveItemSignature(next)) return current;
+      return { ...current, [turnId]: next };
+    });
+  }, []);
   useLayoutEffect(() => {
     if (!measureOpeningActive || openingMeasured.current) return;
     if (!timelineWindow.isSuccess || !timelineWindow.data) return;
@@ -437,6 +552,10 @@ export function ThreadStream({
   if (seenScope !== scopeKey) {
     setSeenScope(scopeKey);
     knownRunIds.current = new Set();
+    paintedRuns.current = null;
+    retainedView.current = null;
+    retainArmed.current = false;
+    following.current = windowAnchor.kind === 'latest';
     setFollowNew({ count: 0, decision: false });
     setLocalSettled(null);
     localJumped.current = false;
@@ -557,13 +676,62 @@ export function ThreadStream({
   const baselineReady =
     baseline.workspaceId === workspaceId && baseline.threadId === threadId && baseline.ready;
   const windowRuns = timelineOn && timelineWindow.data ? timelineWindow.data.runs : null;
+  const retainKey = `${scopeKey}:${JSON.stringify(windowAnchor)}`;
+  if (retainScope.current !== retainKey) {
+    retainScope.current = retainKey;
+    paintedRuns.current = null;
+    retainedView.current = null;
+    retainArmed.current = false;
+    following.current = windowAnchor.kind === 'latest';
+  }
+  // A reader who left the tail keeps runs a latest poll would otherwise slide off screen.
+  if (!windowRuns || following.current) paintedRuns.current = windowRuns;
+  const shownRuns =
+    windowRuns && paintedRuns.current && !following.current
+      ? mergeRuns(paintedRuns.current, windowRuns)
+      : windowRuns;
+  if (shownRuns && !following.current) paintedRuns.current = shownRuns;
+  const retainedOlder = Boolean(
+    shownRuns?.length && windowRuns?.length && shownRuns[0]?.id !== windowRuns[0]?.id
+  );
+  const retainedHeadId = retainedOlder ? (shownRuns?.[0]?.id ?? null) : null;
+  if (!retainedOlder) {
+    retainArmed.current = false;
+    retainedView.current = null;
+  } else if (!retainArmed.current && retainedHeadId && typeof document !== 'undefined') {
+    retainArmed.current = true;
+    const head = document.querySelector<HTMLElement>(
+      `[data-timeline-entry="${CSS.escape(retainedHeadId)}"]`
+    );
+    const port = head ? scrollParent(head) : null;
+    if (head && port && head.getBoundingClientRect().top >= port.getBoundingClientRect().top - 2) {
+      retainedView.current = { id: retainedHeadId, top: head.getBoundingClientRect().top };
+    }
+  }
+  useLayoutEffect(() => {
+    const saved = retainedView.current;
+    if (!saved || following.current) return;
+    retainedView.current = null;
+    const entry = document.querySelector<HTMLElement>(
+      `[data-timeline-entry="${CSS.escape(saved.id)}"]`
+    );
+    if (!entry) return;
+    const scroller = scrollParent(entry);
+    const delta = scrollCorrection(saved.top, entry.getBoundingClientRect().top);
+    if (delta !== 0) scroller.scrollTop += delta;
+  });
   const anchoredItems = timelineWindow.data?.itemWindow
     ? completeDetails(timelineWindow.data.itemWindow.items)
     : [];
-  const feedItems = windowRuns
-    ? mergeUnique(mergeDisplayedItems(windowRuns, liveSnapshot), [
+  const historicalFullItems =
+    lens === 'full' && shownRuns
+      ? shownRuns.flatMap((run) => (run.id === level2TurnId ? [] : (fullRunItems[run.id] ?? [])))
+      : [];
+  const feedItems = shownRuns
+    ? mergeUnique(mergeDisplayedItems(shownRuns, liveSnapshot), [
         ...anchoredItems,
         ...level2.completeItems,
+        ...historicalFullItems,
       ])
     : (items.data ?? []);
   const sourceGroups = useGenerativeSourceGroups(feedItems);
@@ -594,23 +762,67 @@ export function ThreadStream({
   // biome-ignore lint/correctness/useExhaustiveDependencies: rememberExpanded is recreated each render; openedAnchor records the one expand.
   useEffect(() => {
     if (!anchoredItemId || historyLoading || feedItems.length === 0) return;
-    if (itemLocated.current === anchoredItemId) {
-      if (anchoredElement.current?.isConnected) return;
-      if (document.activeElement && document.activeElement !== document.body) return;
-    }
     const item = feedItems.find((candidate) => candidate.id === anchoredItemId);
-    if (item && isStepItem(item) && expandedTurnId !== item.turnId && lens !== 'full') {
-      if (openedAnchor.current !== anchoredItemId) {
-        openedAnchor.current = anchoredItemId;
-        rememberExpanded(item.turnId);
+    const sheetStep = Boolean(item && isStepItem(item) && lens !== 'full' && phone);
+    if (itemLocated.current === anchoredItemId) {
+      const sheetNode = document.querySelector<HTMLElement>(
+        `[role="dialog"] #${CSS.escape(`timeline-item-${anchoredItemId}`)}`
+      );
+      const active = document.activeElement;
+      const sheetOwns =
+        sheetNode instanceof HTMLElement &&
+        active instanceof HTMLElement &&
+        active !== document.body &&
+        (active === sheetNode || active.contains(sheetNode) || sheetNode.contains(active));
+      if (sheetOwns) return;
+      if (!sheetStep) {
+        if (anchoredElement.current?.isConnected) return;
+        if (active && active !== document.body) return;
       }
-      return;
     }
-    if (focusTimelineItem(anchoredItemId)) {
+    if (item && isStepItem(item) && lens !== 'full') {
+      if (phone) {
+        if (stepsTurnId !== item.turnId) {
+          if (openedAnchor.current !== anchoredItemId) {
+            openedAnchor.current = anchoredItemId;
+            openSheet('steps', item.turnId);
+          }
+          return;
+        }
+        const place = () => {
+          if (!focusDialogItem(anchoredItemId)) return false;
+          itemLocated.current = anchoredItemId;
+          anchoredElement.current = document.querySelector<HTMLElement>(
+            `[role="dialog"] #${CSS.escape(`timeline-item-${anchoredItemId}`)}`
+          );
+          return true;
+        };
+        place();
+        const handle = requestAnimationFrame(() => {
+          place();
+        });
+        return () => cancelAnimationFrame(handle);
+      }
+      if (expandedTurnId !== item.turnId) {
+        if (openedAnchor.current !== anchoredItemId) {
+          openedAnchor.current = anchoredItemId;
+          rememberExpanded(item.turnId);
+        }
+        return;
+      }
+    }
+    const focused = focusTimelineItem(anchoredItemId) || (item ? focusEntry(item.turnId) : false);
+    if (focused) {
       itemLocated.current = anchoredItemId;
-      anchoredElement.current = document.getElementById(`timeline-item-${anchoredItemId}`);
+      anchoredElement.current =
+        document.getElementById(`timeline-item-${anchoredItemId}`) ??
+        (item
+          ? document.querySelector<HTMLElement>(
+              `[data-timeline-entry="${CSS.escape(item.turnId)}"]`
+            )
+          : null);
     }
-  }, [anchoredItemId, expandedTurnId, feedItems, historyLoading, lens]);
+  }, [anchoredItemId, expandedTurnId, feedItems, historyLoading, lens, phone, stepsTurnId]);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
@@ -717,17 +929,20 @@ export function ThreadStream({
       ? dashboard
       : undefined;
   const selectedTurn = focusedDashboard?.turns.find((turn) => turn.id === focusTurnId);
+  const windowRun = windowRuns?.find((run) => run.id === focusTurnId) ?? null;
+  const addressedRunId = selectedTurn?.id ?? windowRun?.id ?? null;
   const focusKey = JSON.stringify([workspaceId, threadId, focusTurnId]);
   useEffect(() => {
-    if (!selectedTurn || historyLoading || historyError || !focusedElement.current) {
+    if (!addressedRunId || historyLoading || historyError || !focusedElement.current) {
       if (located.current !== focusKey) located.current = null;
       return;
     }
     if (located.current === focusKey) return;
     focusedElement.current.scrollIntoView({ block: 'center' });
+    focusedElement.current.focus();
     located.current = focusKey;
-  }, [focusKey, historyError, historyLoading, selectedTurn]);
-  const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !selectedTurn);
+  }, [addressedRunId, focusKey, historyError, historyLoading]);
+  const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !addressedRunId);
   useEffect(() => {
     setPortalNode(!phone && inspectedTurnId ? (panelHost?.current ?? null) : null);
   }, [inspectedTurnId, panelHost, phone]);
@@ -772,13 +987,13 @@ export function ThreadStream({
   const activityByTurn = new Map(
     live.isError ? [] : dashboard?.runtimeActivity?.map((activity) => [activity.turnId, activity])
   );
-  const timeline = windowRuns
+  const timeline = shownRuns
     ? {
-        groups: windowRuns.map((run) => ({
+        groups: shownRuns.map((run) => ({
           turnId: run.id,
           items: feedItems.filter((item) => item.turnId === run.id),
         })),
-        entries: windowRuns.map((run) => entryFromRun(run)),
+        entries: shownRuns.map((run) => entryFromRun(run)),
       }
     : projectTimeline({
         items: feedItems,
@@ -1265,6 +1480,20 @@ export function ThreadStream({
         disabled={controlsReadOnly || live.isError}
       >
         <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
+          {lens === 'full'
+            ? (windowRuns ?? [])
+                .filter((run) => run.id !== level2TurnId)
+                .map((run) => (
+                  <FullRunLevel2
+                    key={run.id}
+                    workspaceId={workspaceId}
+                    threadId={threadId}
+                    turnId={run.id}
+                    enabled={timelineWindow.isFetched}
+                    onItems={acceptFullRunItems}
+                  />
+                ))
+            : null}
           {fresh || retainedStale ? (
             <p role="status" className="ok-meta">
               {fresh ?? retainedStale}
@@ -1323,12 +1552,12 @@ export function ThreadStream({
           ) : null}
           <TimelineFrame
             windowed={Boolean(windowRuns)}
-            topEntryId={windowRuns?.[0]?.id ?? null}
+            topEntryId={shownRuns?.[0]?.id ?? null}
             initiallyFollowing={
               windowAnchor.kind === 'latest' && restoredNavigation.current == null
             }
             restoreTop={restoredNavigation.current?.scrollTop ?? null}
-            canEarlier={Boolean(timelineWindow.data?.beforeCursor)}
+            canEarlier={!retainedOlder && Boolean(timelineWindow.data?.beforeCursor)}
             canLater={Boolean(timelineWindow.data?.afterCursor)}
             paging={timelineWindow.paging}
             onEarlier={timelineWindow.pageEarlier}
@@ -1407,6 +1636,9 @@ export function ThreadStream({
                   outcome: null,
                 } as const);
               const timelineRun = windowRuns?.find((run) => run.id === group.turnId);
+              const addressedHere =
+                addressedRunId === group.turnId &&
+                groups.findIndex((candidate) => candidate.turnId === group.turnId) === index;
               const staysNew = runStaysNew({
                 status: timelineRun?.status ?? groupTurn?.status ?? '',
                 messages:
@@ -1424,16 +1656,13 @@ export function ThreadStream({
                   data-timeline-entry={group.turnId}
                   data-run-status={timelineRun?.status ?? groupTurn?.status}
                   className="flex flex-col gap-4"
-                  ref={
-                    selectedTurn?.id === group.turnId &&
-                    groups.findIndex((candidate) => candidate.turnId === group.turnId) === index
-                      ? focusedElement
-                      : undefined
-                  }
+                  ref={addressedHere ? focusedElement : undefined}
+                  tabIndex={addressedHere ? -1 : undefined}
                 >
-                  {selectedTurn?.id === group.turnId &&
-                  groups.findIndex((candidate) => candidate.turnId === group.turnId) === index ? (
-                    <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
+                  {addressedHere ? (
+                    <p className="text-sm text-fg-muted">
+                      {selectedRunLabel(selectedTurn?.status ?? timelineRun?.status)}
+                    </p>
                   ) : null}
                   {index > 0 ? (
                     <TurnSeparator
@@ -1535,7 +1764,11 @@ export function ThreadStream({
                     workerCue={
                       Boolean(activity && activity.entries.length > 0) && runLens === 'work'
                     }
-                    previews={narrativePreviews(timelineRun?.narrative ?? []).map((preview) =>
+                    previews={displayedPreviews(
+                      timelineRun?.narrative ?? [],
+                      timelineRun?.plan ?? null,
+                      level2TurnId === group.turnId ? (level2.data?.items ?? []) : []
+                    ).map((preview) =>
                       fullText[preview.id]
                         ? {
                             ...preview,
