@@ -211,6 +211,19 @@ function entryIsRevealed(element: HTMLElement): boolean {
   return element.offsetParent === null;
 }
 
+/**
+ * Placement cannot land while the run is inert or a dialog or menu holds focus.
+ * Those interactions end by removing inert or moving focus; they are not a frame retry.
+ */
+function placementHeld(target: HTMLElement): boolean {
+  if (target.inert) return true;
+  const active = document.activeElement;
+  if (!(active instanceof Element) || active === document.body) return false;
+  if (active === target || target.contains(active)) return false;
+  const owner = active.closest('[role="dialog"], [role="menu"]');
+  return owner !== null && !owner.contains(target);
+}
+
 /** Focus the run that contains an addressed note when that note has no item target. */
 function focusEntry(turnId: string): boolean {
   const element = document.querySelector<HTMLElement>(
@@ -1067,13 +1080,69 @@ export function ThreadStream({
     if (located.current === focusKey) return;
     let frame = 0;
     let stopped = false;
-    const place = () => {
-      if (stopped || located.current === focusKey) return;
-      const node = focusedElement.current;
-      if (!node || !entryIsRevealed(node)) {
-        frame = requestAnimationFrame(place);
-        return;
+    let skipped = false;
+    let waiting = false;
+    let gestured = false;
+    let observer: MutationObserver | null = null;
+    const scrollers: HTMLElement[] = [];
+    const scrollBaseline = new Map<HTMLElement, { left: number; top: number }>();
+
+    const scrollMoved = () => {
+      for (const scroller of scrollers) {
+        const baseline = scrollBaseline.get(scroller);
+        if (!baseline) continue;
+        if (scroller.scrollTop !== baseline.top || scroller.scrollLeft !== baseline.left) {
+          return true;
+        }
       }
+      return false;
+    };
+    const onTimeline = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return false;
+      return scrollers.some((scroller) => scroller === target || scroller.contains(target));
+    };
+    const noteGesture = (event: Event) => {
+      if (!onTimeline(event)) return;
+      if (event.type === 'keydown') {
+        const key = (event as KeyboardEvent).key;
+        if (![' ', 'ArrowDown', 'ArrowUp', 'End', 'Home', 'PageDown', 'PageUp'].includes(key)) {
+          return;
+        }
+      }
+      gestured = true;
+    };
+    const stopWaiting = () => {
+      if (!waiting) return;
+      waiting = false;
+      document.removeEventListener('focusin', resume);
+      document.removeEventListener('wheel', noteGesture, true);
+      document.removeEventListener('touchmove', noteGesture, true);
+      document.removeEventListener('keydown', noteGesture, true);
+      observer?.disconnect();
+      observer = null;
+      for (const scroller of scrollers) scroller.removeEventListener('scroll', markScroll);
+      scrollers.length = 0;
+      scrollBaseline.clear();
+    };
+    const markScroll = () => {
+      if (gestured && scrollMoved()) skipped = true;
+    };
+    const watchScroll = (node: HTMLElement) => {
+      let parent = node.parentElement;
+      while (parent) {
+        const style = getComputedStyle(parent);
+        const overflow = `${style.overflow} ${style.overflowX} ${style.overflowY}`;
+        if (/(auto|scroll|overlay)/.test(overflow)) {
+          scrollBaseline.set(parent, { left: parent.scrollLeft, top: parent.scrollTop });
+          parent.addEventListener('scroll', markScroll, { passive: true });
+          scrollers.push(parent);
+        }
+        parent = parent.parentElement;
+      }
+    };
+    const placeOnce = (node: HTMLElement) => {
+      if (skipped) return;
       node.scrollIntoView({ block: 'center' });
       node.focus();
       const active = document.activeElement;
@@ -1081,12 +1150,64 @@ export function ThreadStream({
         located.current = focusKey;
         return;
       }
-      frame = requestAnimationFrame(place);
+      if (placementHeld(node)) hold(node);
+    };
+    function hold(node: HTMLElement) {
+      if (waiting || stopped || skipped) return;
+      cancelAnimationFrame(frame);
+      frame = 0;
+      waiting = true;
+      watchScroll(node);
+      document.addEventListener('focusin', resume);
+      document.addEventListener('wheel', noteGesture, true);
+      document.addEventListener('touchmove', noteGesture, true);
+      document.addEventListener('keydown', noteGesture, true);
+      observer = new MutationObserver(resume);
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['inert'],
+        subtree: true,
+      });
+    }
+    function resume() {
+      if (stopped || located.current === focusKey) return;
+      const node = focusedElement.current;
+      if (!node?.isConnected) {
+        skipped = true;
+        stopWaiting();
+        return;
+      }
+      if (skipped) {
+        stopWaiting();
+        return;
+      }
+      if (!entryIsRevealed(node)) {
+        stopWaiting();
+        frame = requestAnimationFrame(place);
+        return;
+      }
+      if (placementHeld(node)) return;
+      stopWaiting();
+      placeOnce(node);
+    }
+    const place = () => {
+      if (stopped || skipped || waiting || located.current === focusKey) return;
+      const node = focusedElement.current;
+      if (!node || !entryIsRevealed(node)) {
+        frame = requestAnimationFrame(place);
+        return;
+      }
+      if (placementHeld(node)) {
+        hold(node);
+        return;
+      }
+      placeOnce(node);
     };
     place();
     return () => {
       stopped = true;
       cancelAnimationFrame(frame);
+      stopWaiting();
     };
   }, [addressedListed, addressedRunId, focusKey, historyError, historyLoading, holdContent]);
   const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !addressedRunId);
