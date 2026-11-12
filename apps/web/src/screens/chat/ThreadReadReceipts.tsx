@@ -12,6 +12,43 @@ import { useCoreClient } from '../../app/core-client';
 import { Button, ErrorBanner } from '../../primitives';
 import { chatKeys, type ThreadItem } from './data';
 
+/** Eligibility key shared by the receipt banner and the timeline unread marks. */
+export function readStateQueryKey(
+  workspaceId: string | null,
+  threadId: string,
+  viewerUserId: string | null | undefined,
+  items: readonly ThreadItem[]
+) {
+  const completedIds = items
+    .filter(
+      (item) =>
+        item.status === 'completed' &&
+        (item.type === 'assistant-message' || item.type === 'user-message')
+    )
+    .map((item) => item.id);
+  return ['thread-read-state', workspaceId, threadId, viewerUserId, completedIds] as const;
+}
+
+/** Receipt unread set. Items before the catch-up anchor stay in the set. */
+export function useThreadUnreadIds(
+  workspaceId: string | null,
+  threadId: string,
+  viewerUserId: string | null | undefined,
+  items: readonly ThreadItem[],
+  disabled: boolean
+): ReadonlySet<string> {
+  const client = useCoreClient();
+  const state = useQuery({
+    queryKey: readStateQueryKey(workspaceId, threadId, viewerUserId, items),
+    queryFn: () => client.operations['thread.read-state']({ workspaceId: workspaceId!, threadId }),
+    enabled: Boolean(workspaceId && viewerUserId && !disabled),
+  });
+  return useMemo(
+    () => new Set(state.isSuccess && !disabled ? state.data.unreadItemIds : []),
+    [disabled, state.data, state.isSuccess]
+  );
+}
+
 /** Display callbacks exist only beneath the current authenticated Thread receipt read. */
 const ReadReceiptContext = createContext<{
   unreadIds: ReadonlySet<string>;
@@ -41,15 +78,8 @@ export function ThreadReadReceipts({
     [workspaceId, threadId, viewerUserId]
   );
   // A new completed message requires a fresh eligibility read; streaming token changes do not.
-  const completedIds = items
-    .filter(
-      (item) =>
-        item.status === 'completed' &&
-        (item.type === 'assistant-message' || item.type === 'user-message')
-    )
-    .map((item) => item.id);
   const state = useQuery({
-    queryKey: [...queryPrefix, completedIds],
+    queryKey: readStateQueryKey(workspaceId, threadId, viewerUserId, items),
     queryFn: () => client.operations['thread.read-state']({ workspaceId: workspaceId!, threadId }),
     enabled: Boolean(workspaceId && viewerUserId && !disabled),
   });

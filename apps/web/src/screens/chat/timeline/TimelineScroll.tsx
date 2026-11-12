@@ -42,6 +42,8 @@ export function TimelineScroll({
   decisionNew,
   onFollowChange,
   onCatchUp,
+  pinDivider,
+  pinKey,
   children,
 }: {
   topEntryId: string | null;
@@ -57,6 +59,10 @@ export function TimelineScroll({
   decisionNew: boolean;
   onFollowChange: (following: boolean) => void;
   onCatchUp: () => void;
+  /** Keep the catch-up row at the top of the window once, then leave scroll alone. */
+  pinDivider?: boolean;
+  /** Changing this arms the pin again. A prepend does not. */
+  pinKey?: string;
   children: ReactNode;
 }) {
   const frame = useRef<HTMLDivElement>(null);
@@ -65,6 +71,8 @@ export function TimelineScroll({
   const pending = useRef<{ id: string; top: number } | null>(null);
   const [following, setFollowing] = useState(initiallyFollowing);
   const followingRef = useRef(initiallyFollowing);
+  const pinnedDivider = useRef(false);
+  const pinToken = useRef(pinKey);
 
   function setFollow(next: boolean) {
     followingRef.current = next;
@@ -136,11 +144,35 @@ export function TimelineScroll({
     pending.current = null;
   });
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opening settles onto follow once; setFollow reads the latest callback.
+  useLayoutEffect(() => {
+    if (!initiallyFollowing || followingRef.current) return;
+    setFollow(true);
+  }, [initiallyFollowing]);
+
   useLayoutEffect(() => {
     if (followingRef.current) pending.current = null;
-    if (!followingRef.current || pending.current) return;
+    if (pinDivider || !followingRef.current || pending.current) return;
     const scroller = scrollParent(frame.current);
     scroller.scrollTop = scroller.scrollHeight;
+  });
+
+  useLayoutEffect(() => {
+    if (pinToken.current !== pinKey) {
+      pinToken.current = pinKey;
+      pinnedDivider.current = false;
+    }
+    if (!pinDivider) {
+      pinnedDivider.current = false;
+      return;
+    }
+    if (pinnedDivider.current) return;
+    const scroller = scrollParent(frame.current);
+    const divider = scroller.querySelector<HTMLElement>('[data-catch-up-divider]');
+    if (!divider) return;
+    const delta = divider.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (Math.abs(delta) > 1) scroller.scrollTop += delta;
+    pinnedDivider.current = true;
   });
 
   function remember() {

@@ -5,6 +5,7 @@ import {
   type ReactNode,
   type RefObject,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from 'react';
@@ -33,8 +34,9 @@ import {
 } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { ItemView } from './ItemView';
-import { ThreadReadReceipts } from './ThreadReadReceipts';
+import { ThreadReadReceipts, useThreadUnreadIds } from './ThreadReadReceipts';
 import { AlignmentHeader } from './timeline/AlignmentHeader';
+import { CatchUpDivider } from './timeline/CatchUpDivider';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
 import { classifyRunError, freshnessCopy, isDeniedRead } from './timeline/degraded';
 import { openDecisionIds, planEmphasis } from './timeline/emphasis';
@@ -67,7 +69,7 @@ import {
   projectTimeline,
   runSeparatorCopy,
 } from './timeline/source';
-import { TimelineScroll } from './timeline/TimelineScroll';
+import { scrollParent, TimelineScroll } from './timeline/TimelineScroll';
 import { TimelineTime } from './timeline/TimelineTime';
 import {
   durationDateTime,
@@ -84,10 +86,17 @@ import {
   useTimelineWindow,
 } from './timeline/use-timeline-window';
 import {
+  type CatchUpItemRef,
   completeDetails,
+  dividerPlacement,
+  earlierUnread,
   entryFromRun,
+  keepsUnreadMark,
   mergeDisplayedItems,
+  newContentExceedsScreen,
   runHasDecision,
+  runStaysNew,
+  showCatchUpDivider,
   showJumpToLatest,
   type TimelineAnchorRequest,
 } from './timeline/window';
@@ -156,8 +165,8 @@ export interface ThreadStreamProps {
   panelHost?: RefObject<HTMLDivElement | null>;
   /** Header-owned lens. When omitted, the stream shows the switch and remembers it. */
   lens?: LensName;
-  /** Chat or task framing. Task adds the alignment header. */
-  mode?: 'chat' | 'task';
+  /** Chat, task, or goal framing. Task adds the alignment header. */
+  mode?: 'chat' | 'task' | 'goal';
   /** Stop was pressed and the run has not reached a final state. */
   stopPending?: boolean;
   /** Item anchor from a Needs you jump. */
@@ -170,6 +179,12 @@ export interface ThreadStreamProps {
   pending?: boolean;
   /** Clears an Item, run, or catch-up anchor after Jump to latest. */
   onJumpToLatest?: () => void;
+  /** Replace-history jump to one loaded item. Parents own the router. */
+  onJumpToItem?: (itemId: string) => void;
+  /** Profile opening is still measuring the tail. The parent owns the anchor. */
+  measureOpening?: boolean;
+  /** Settles the opening read on catch-up or latest. */
+  onOpeningSettle?: (anchor: TimelineAnchorRequest) => void;
   /** Open a row's owning surface. Same-thread anchors scroll instead. */
   onOpen?: (href: string) => void;
   /**
@@ -207,6 +222,9 @@ export function ThreadStream({
   running,
   pending,
   onJumpToLatest,
+  onJumpToItem,
+  measureOpening,
+  onOpeningSettle,
   onOpen,
   narrativeOnly,
   sheets,
@@ -227,7 +245,24 @@ export function ThreadStream({
     setAnchorKey(nextAnchorKey);
     setAnchorOverride(null);
   }
-  const windowAnchor = anchorOverride ?? anchor;
+  const parentOpening = onOpeningSettle !== undefined;
+  const [localSettled, setLocalSettled] = useState<TimelineAnchorRequest | null>(null);
+  const localJumped = useRef(false);
+  const openingMeasured = useRef(false);
+  const uncontrolledCatchUp =
+    !parentOpening &&
+    Boolean(narrativeOnly) &&
+    anchor.kind === 'latest' &&
+    !localJumped.current &&
+    localSettled === null;
+  const baseAnchor: TimelineAnchorRequest = parentOpening
+    ? anchor
+    : localJumped.current
+      ? { kind: 'latest' }
+      : (localSettled ?? (uncontrolledCatchUp ? { kind: 'catch-up' } : anchor));
+  const windowAnchor = anchorOverride ?? baseAnchor;
+  const measureOpeningActive = parentOpening ? Boolean(measureOpening) : uncontrolledCatchUp;
+  const settleOpening = onOpeningSettle ?? setLocalSettled;
   const [allStepsTurnId, setAllStepsTurnId] = useState<string | null>(null);
   const [followNew, setFollowNew] = useState({ count: 0, decision: false });
   const following = useRef(windowAnchor.kind === 'latest');
@@ -264,6 +299,40 @@ export function ThreadStream({
     turnId: level2TurnId,
     enabled: timelineOn && Boolean(level2TurnId),
   });
+  useLayoutEffect(() => {
+    if (!measureOpeningActive || openingMeasured.current) return;
+    if (!timelineWindow.isSuccess || !timelineWindow.data) return;
+    const catchUp = timelineWindow.data.catchUpAnchor;
+    if (!catchUp) {
+      openingMeasured.current = true;
+      settleOpening({ kind: 'latest' });
+      return;
+    }
+    const continues = Boolean(
+      timelineWindow.data.afterCursor || timelineWindow.data.itemWindow?.afterCursor
+    );
+    if (continues) {
+      openingMeasured.current = true;
+      settleOpening({ kind: 'catch-up' });
+      return;
+    }
+    const divider = document.querySelector<HTMLElement>('[data-catch-up-divider]');
+    if (!divider) return;
+    const scroller = scrollParent(divider);
+    if (scroller.clientHeight <= 0) return;
+    const top =
+      divider.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop;
+    const contentAfterPx = Math.max(0, scroller.scrollHeight - top - divider.offsetHeight);
+    const longer = newContentExceedsScreen({
+      continues: false,
+      contentAfterPx,
+      viewportPx: scroller.clientHeight,
+    });
+    openingMeasured.current = true;
+    settleOpening(longer ? { kind: 'catch-up' } : { kind: 'latest' });
+  });
   const [fullText, setFullText] = useState<Record<string, string>>({});
   const scopeKey = `${workspaceId ?? ''}:${threadId}`;
   const [seenScope, setSeenScope] = useState(scopeKey);
@@ -271,6 +340,9 @@ export function ThreadStream({
     setSeenScope(scopeKey);
     knownRunIds.current = new Set();
     setFollowNew({ count: 0, decision: false });
+    setLocalSettled(null);
+    localJumped.current = false;
+    openingMeasured.current = false;
   }
   useEffect(() => {
     if (!timelineOn) return;
@@ -430,6 +502,13 @@ export function ThreadStream({
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
   const controlsReadOnly = Boolean(readOnly || !workspaceId || !connection.connected);
+  const unreadIds = useThreadUnreadIds(
+    workspaceId,
+    threadId,
+    dashboard?.viewerUserId,
+    feedItems,
+    controlsReadOnly || live.isError
+  );
   const itemsDenied = historyDenied;
   const [missedRefreshes, setMissedRefreshes] = useState(0);
   const seenRefreshError = useRef(0);
@@ -942,6 +1021,46 @@ export function ThreadStream({
       ? level2.completeItems
       : feedItems;
   const stepItems = stepSource.filter((item) => item.turnId === stepsTurnId && isStepItem(item));
+  const catchUp = timelineOn ? (timelineWindow.data?.catchUpAnchor ?? null) : null;
+  const catchUpRefs: CatchUpItemRef[] = windowRuns
+    ? windowRuns.flatMap((run) =>
+        run.narrative.map((item, index) => ({
+          id: item.id,
+          turnId: run.id,
+          index,
+          type: item.type,
+        }))
+      )
+    : [];
+  const runOrder = new Map((windowRuns ?? []).map((run) => [run.id, run.admissionOrder]));
+  const hasUnreadAnswer = catchUpRefs.some(
+    (item) => item.type === 'assistant-message' && unreadIds.has(item.id)
+  );
+  const dividerShown = showCatchUpDivider({
+    profile: profileId,
+    catchUp,
+    hasUnreadAnswer,
+  });
+  const placement = dividerShown
+    ? dividerPlacement({
+        runs: windowRuns ?? [],
+        items: catchUpRefs,
+        catchUp,
+      })
+    : null;
+  const earlier = earlierUnread({
+    items: catchUpRefs,
+    unreadIds,
+    catchUp: dividerShown ? catchUp : null,
+    runOrder,
+  });
+  const catchUpOrder = catchUp ? (runOrder.get(catchUp.turnId) ?? null) : null;
+  function jumpToEarlierUnread() {
+    const itemId = earlier.oldestId;
+    if (!itemId) return;
+    if (onJumpToItem) onJumpToItem(itemId);
+    else setAnchorOverride({ kind: 'item', itemId });
+  }
 
   return (
     <TimelineNowProvider now={clock}>
@@ -1022,6 +1141,8 @@ export function ThreadStream({
             onLater={timelineWindow.pageLater}
             showJump={showJumpToLatest(windowAnchor, timelineWindow.data?.afterCursor ?? null)}
             onJump={() => {
+              localJumped.current = true;
+              setLocalSettled({ kind: 'latest' });
               setAnchorOverride({ kind: 'latest' });
               setFollowNew({ count: 0, decision: false });
               following.current = true;
@@ -1034,11 +1155,15 @@ export function ThreadStream({
               if (next) setFollowNew({ count: 0, decision: false });
             }}
             onCatchUp={() => {
+              localJumped.current = true;
+              setLocalSettled({ kind: 'latest' });
               setAnchorOverride({ kind: 'latest' });
               setFollowNew({ count: 0, decision: false });
               following.current = true;
               onJumpToLatest?.();
             }}
+            pinDivider={windowAnchor.kind === 'catch-up'}
+            pinKey={scopeKey}
           >
             {groups.map((group, index) => {
               const groupTurn = dashboard?.turns.find((turn) => turn.id === group.turnId);
@@ -1078,11 +1203,23 @@ export function ThreadStream({
                   stepWindow: [],
                   outcome: null,
                 } as const);
+              const timelineRun = windowRuns?.find((run) => run.id === group.turnId);
+              const staysNew = runStaysNew({
+                status: timelineRun?.status ?? groupTurn?.status ?? '',
+                messages:
+                  timelineRun?.statistics.messages ??
+                  group.items.filter(
+                    (item) => item.type === 'user-message' || item.type === 'assistant-message'
+                  ).length,
+                admissionOrder: timelineRun?.admissionOrder ?? -1,
+                catchUpOrder,
+              });
 
               return (
                 <div
                   key={group.turnId}
                   data-timeline-entry={group.turnId}
+                  data-run-status={timelineRun?.status ?? groupTurn?.status}
                   className="flex flex-col gap-4"
                   ref={
                     selectedTurn?.id === group.turnId &&
@@ -1096,6 +1233,14 @@ export function ThreadStream({
                     <p className="text-sm text-fg-muted">{selectedRunLabel(selectedTurn.status)}</p>
                   ) : null}
                   {index > 0 ? <TurnSeparator label={runSeparatorCopy(index + 1)} /> : null}
+                  {staysNew ? (
+                    <p data-still-new="true" data-voice="fact" className="ok-voice-fact ok-meta">
+                      {timelineCopy.stillNew}
+                    </p>
+                  ) : null}
+                  {placement?.turnId === group.turnId && placement.afterItemId === null ? (
+                    <CatchUpDivider count={earlier.count} onEarlierUnread={jumpToEarlierUnread} />
+                  ) : null}
                   <RunEntry
                     entry={entry}
                     items={group.items}
@@ -1113,7 +1258,29 @@ export function ThreadStream({
                     omitTrigger={Boolean(firstViewerMessage)}
                     durationMs={runDurationMs(groupTurn, Date.now())}
                     hiddenIds={groupedSourceIds}
-                    renderItem={(item) => renderTimelineItem(item)}
+                    renderItem={(item) => {
+                      const node = renderTimelineItem(item);
+                      if (node == null) return node;
+                      const unread =
+                        (item.type === 'assistant-message' || item.type === 'user-message') &&
+                        keepsUnreadMark(item.id, unreadIds);
+                      return (
+                        <>
+                          {unread ? (
+                            <p data-unread="true" data-voice="fact" className="ok-meta">
+                              {timelineCopy.unreadMark}
+                            </p>
+                          ) : null}
+                          {node}
+                          {placement?.afterItemId === item.id ? (
+                            <CatchUpDivider
+                              count={earlier.count}
+                              onEarlierUnread={jumpToEarlierUnread}
+                            />
+                          ) : null}
+                        </>
+                      );
+                    }}
                     inspectRef={activeInspectId === group.turnId ? inspectButtonRef : undefined}
                     inspected={activeInspectId === group.turnId}
                     onInspect={() => {

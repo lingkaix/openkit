@@ -1,7 +1,7 @@
 import type { GoalCard, GoalRecord, GoalView } from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import { useSurfaceParams } from '../../app/route-params';
 import {
@@ -21,6 +21,7 @@ import { focusGoalCard } from '../chat/timeline/needs-you';
 import { useTimelineSheets } from '../chat/timeline/PhoneChrome';
 import { looksLikeIdentifier } from '../chat/timeline/present';
 import { selectAgentProfile } from '../chat/timeline/profiles';
+import { timelineJump } from '../chat/timeline/window';
 import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
 
 const EDIT_CONSEQUENCE = 'goal-edit-consequence';
@@ -161,6 +162,7 @@ export function GoalScreen() {
   const { workspaceId: routeWorkspaceId = '', threadId = '' } = useSurfaceParams('goal');
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = useGoalView(workspaceId, threadId);
   const command = useGoalCommand(workspaceId ?? '', threadId);
@@ -522,8 +524,17 @@ export function GoalScreen() {
         workspaceId={workspaceId}
         threadId={goal.threadId}
         narrativeOnly
+        mode="goal"
         emptyTitle={timelineCopy.emptyGoalTitle}
         sheets={sheets}
+        onJumpToItem={(itemId) => {
+          const target = timelineJump({
+            pathname: location.pathname,
+            search: location.search,
+            jump: { kind: 'item', itemId },
+          });
+          navigate({ pathname: target.pathname, search: target.search }, { replace: true });
+        }}
       />
     </main>
   );

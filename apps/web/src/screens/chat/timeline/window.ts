@@ -6,6 +6,7 @@ import type {
 } from '@openkit/app-api-schemas';
 import type { ThreadItem } from '../data';
 import { outcomeLine } from './present';
+import type { AgentProfileId } from './profiles';
 import type { TimelineEntry } from './source';
 
 /** Distance from the end that keeps follow mode on. */
@@ -379,4 +380,163 @@ export function windowPollMs(state: {
   if (state.hidden) return false;
   if (state.running || state.pending) return RUNNING_POLL_MS;
   return IDLE_POLL_MS;
+}
+
+const MEASURED_OPENING = new Set<AgentProfileId>(['task', 'default', 'goal', 'knowledge']);
+
+/** Task, goal, knowledge, and default open at B when the new tail is long. */
+export function wantsMeasuredOpening(profile: AgentProfileId): boolean {
+  return MEASURED_OPENING.has(profile);
+}
+
+/**
+ * First read when the URL has no anchor.
+ * An explicit anchor wins. Assistant and administration open at the end.
+ * The other profiles start at the catch-up anchor so the tail can be measured.
+ */
+export function provisionalOpeningAnchor(
+  profile: AgentProfileId,
+  explicit: TimelineAnchorRequest
+): TimelineAnchorRequest {
+  if (explicit.kind !== 'latest') return explicit;
+  if (wantsMeasuredOpening(profile)) return { kind: 'catch-up' };
+  return { kind: 'latest' };
+}
+
+/** After that measurement. A short tail follows the end. */
+export function settledOpeningAnchor(
+  profile: AgentProfileId,
+  explicit: TimelineAnchorRequest,
+  longerThanScreen: boolean
+): TimelineAnchorRequest {
+  if (explicit.kind !== 'latest') return explicit;
+  if (!wantsMeasuredOpening(profile)) return { kind: 'latest' };
+  return longerThanScreen ? { kind: 'catch-up' } : { kind: 'latest' };
+}
+
+/**
+ * New content is longer than one screen when the loaded tail already is,
+ * or when the read still has a continuation after B.
+ */
+export function newContentExceedsScreen(input: {
+  continues: boolean;
+  contentAfterPx: number;
+  viewportPx: number;
+}): boolean {
+  if (input.continues) return true;
+  return input.contentAfterPx > input.viewportPx;
+}
+
+/** Administration has no divider. Assistant shows one only for an unread answer. */
+export function showCatchUpDivider(input: {
+  profile: AgentProfileId;
+  catchUp: { turnId: string } | null;
+  hasUnreadAnswer: boolean;
+}): boolean {
+  if (!input.catchUp) return false;
+  if (input.profile === 'administration') return false;
+  if (input.profile === 'assistant') return input.hasUnreadAnswer;
+  return true;
+}
+
+export interface CatchUpItemRef {
+  id: string;
+  turnId: string;
+  index: number;
+  type: string;
+}
+
+/**
+ * The divider sits just after B. Inside that run when B's item is loaded;
+ * otherwise at the start of B's run. Absent when that run is not loaded.
+ */
+export function dividerPlacement(input: {
+  runs: readonly { id: string }[];
+  items: readonly CatchUpItemRef[];
+  catchUp: { turnId: string; itemId?: string } | null;
+}): { turnId: string; afterItemId: string | null } | null {
+  if (!input.catchUp) return null;
+  if (!input.runs.some((run) => run.id === input.catchUp?.turnId)) return null;
+  const itemId = input.catchUp.itemId;
+  if (
+    itemId &&
+    input.items.some((item) => item.id === itemId && item.turnId === input.catchUp?.turnId)
+  ) {
+    return { turnId: input.catchUp.turnId, afterItemId: itemId };
+  }
+  return { turnId: input.catchUp.turnId, afterItemId: null };
+}
+
+/**
+ * Unread messages before B, in window order. The receipt set is not trimmed.
+ * Ids the loaded window does not place are omitted; the read does not order them against B.
+ */
+export function earlierUnread(input: {
+  items: readonly CatchUpItemRef[];
+  unreadIds: ReadonlySet<string>;
+  catchUp: { turnId: string; itemId?: string } | null;
+  runOrder: ReadonlyMap<string, number>;
+}): { count: number; oldestId: string | null } {
+  if (!input.catchUp) return { count: 0, oldestId: null };
+  const anchorOrder = input.runOrder.get(input.catchUp.turnId);
+  if (anchorOrder === undefined) return { count: 0, oldestId: null };
+  const anchorIndex = input.catchUp.itemId
+    ? (input.items.find((item) => item.id === input.catchUp?.itemId)?.index ?? null)
+    : null;
+  const ids = input.items
+    .filter((item) => {
+      if (item.type !== 'user-message' && item.type !== 'assistant-message') return false;
+      if (!input.unreadIds.has(item.id)) return false;
+      const order = input.runOrder.get(item.turnId);
+      if (order === undefined) return false;
+      if (order < anchorOrder) return true;
+      if (order > anchorOrder) return false;
+      if (anchorIndex === null) return false;
+      return item.index < anchorIndex;
+    })
+    .map((item) => item.id);
+  return { count: ids.length, oldestId: ids[0] ?? null };
+}
+
+/** Receipt membership is the mark. Position relative to B does not clear it. */
+export function keepsUnreadMark(itemId: string, unreadIds: ReadonlySet<string>): boolean {
+  return unreadIds.has(itemId);
+}
+
+const ENDED_RUN = new Set(['completed', 'failed', 'interrupted', 'cancelled']);
+
+/** A run that ended with no message stays new until a seen-through marker exists. */
+export function runStaysNew(input: {
+  status: string;
+  messages: number;
+  admissionOrder: number;
+  catchUpOrder: number | null;
+}): boolean {
+  if (input.catchUpOrder === null) return false;
+  if (!ENDED_RUN.has(input.status)) return false;
+  if (input.messages !== 0) return false;
+  return input.admissionOrder > input.catchUpOrder;
+}
+
+/** Jumps inside the timeline replace history, so Back leaves the thread. */
+export function timelineJump(input: {
+  pathname: string;
+  search: string;
+  jump: { kind: 'item'; itemId: string } | { kind: 'catch-up' } | { kind: 'latest' };
+}): { pathname: string; search: string; replace: true } {
+  const params = new URLSearchParams(
+    input.search.startsWith('?') ? input.search.slice(1) : input.search
+  );
+  params.delete('item');
+  params.delete('attention');
+  params.delete('turnId');
+  params.delete('catchUp');
+  if (input.jump.kind === 'item') params.set('item', input.jump.itemId);
+  if (input.jump.kind === 'catch-up') params.set('catchUp', '1');
+  const search = params.toString();
+  return {
+    pathname: input.pathname,
+    search: search ? `?${search}` : '',
+    replace: true,
+  };
 }

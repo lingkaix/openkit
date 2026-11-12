@@ -36,6 +36,15 @@
   overflow-wrap: anywhere;
 }
 
+.ok-catch-up {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .ok-voice-fact {
   border-left: 3px solid var(--ok-voice-fact);
   padding-left: 8px;

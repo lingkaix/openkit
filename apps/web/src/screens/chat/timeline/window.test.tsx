@@ -6,6 +6,8 @@ import {
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
+import { CatchUpDivider } from './CatchUpDivider';
+import type { AgentProfileId } from './profiles';
 import { RunEntry } from './RunEntry';
 import type { TimelineEntry } from './source';
 import {
@@ -16,21 +18,31 @@ import {
   anchorFromSearch,
   anchorInput,
   cursorInput,
+  dividerPlacement,
+  earlierUnread,
   entryFromRun,
   holdFromResponse,
   holdItems,
   isFollowing,
   itemAnchorHasLevel2,
+  keepsUnreadMark,
   level2Input,
   mergeItemPage,
   mergeRuns,
+  newContentExceedsScreen,
   offersOpenAllSteps,
   openingInput,
+  provisionalOpeningAnchor,
+  runStaysNew,
   scrollCorrection,
+  settledOpeningAnchor,
   shouldPageEdge,
+  showCatchUpDivider,
   showJumpToLatest,
   TIMELINE_READ_GAPS,
   textFrames,
+  timelineJump,
+  wantsMeasuredOpening,
   windowPollMs,
 } from './window';
 
@@ -252,5 +264,174 @@ describe('Open all steps', () => {
     expect(screen.getByRole('button', { name: '501 steps' })).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Open all steps' }));
     expect(onOpenAllSteps).toHaveBeenCalledOnce();
+  });
+});
+
+const profiles: readonly AgentProfileId[] = [
+  'assistant',
+  'task',
+  'goal',
+  'knowledge',
+  'administration',
+  'default',
+];
+const measured: readonly AgentProfileId[] = ['task', 'goal', 'knowledge', 'default'];
+
+describe('catch-up opening', () => {
+  it('lets an explicit anchor win for every profile', () => {
+    const explicit = [
+      { kind: 'item' as const, itemId },
+      { kind: 'turn' as const, turnId },
+      { kind: 'attention' as const, rowId: 'row-1' },
+      { kind: 'catch-up' as const },
+    ];
+    for (const profile of profiles) {
+      for (const anchor of explicit) {
+        expect(provisionalOpeningAnchor(profile, anchor)).toEqual(anchor);
+        expect(settledOpeningAnchor(profile, anchor, true)).toEqual(anchor);
+        expect(settledOpeningAnchor(profile, anchor, false)).toEqual(anchor);
+      }
+    }
+  });
+
+  it('opens a long tail at the divider and a short tail at the end, following', () => {
+    for (const profile of measured) {
+      expect(wantsMeasuredOpening(profile)).toBe(true);
+      expect(provisionalOpeningAnchor(profile, { kind: 'latest' })).toEqual({ kind: 'catch-up' });
+      expect(settledOpeningAnchor(profile, { kind: 'latest' }, true)).toEqual({ kind: 'catch-up' });
+      const short = settledOpeningAnchor(profile, { kind: 'latest' }, false);
+      expect(short).toEqual({ kind: 'latest' });
+      expect(short.kind === 'latest' && isFollowing(0)).toBe(true);
+    }
+    for (const profile of ['assistant', 'administration'] as const) {
+      expect(wantsMeasuredOpening(profile)).toBe(false);
+      expect(provisionalOpeningAnchor(profile, { kind: 'latest' })).toEqual({ kind: 'latest' });
+      expect(settledOpeningAnchor(profile, { kind: 'latest' }, true)).toEqual({ kind: 'latest' });
+    }
+    expect(newContentExceedsScreen({ continues: true, contentAfterPx: 0, viewportPx: 800 })).toBe(
+      true
+    );
+    expect(
+      newContentExceedsScreen({ continues: false, contentAfterPx: 100, viewportPx: 100 })
+    ).toBe(false);
+    expect(
+      newContentExceedsScreen({ continues: false, contentAfterPx: 101, viewportPx: 100 })
+    ).toBe(true);
+  });
+
+  it('places the divider after B inside that run', () => {
+    const running = { id: turnId };
+    const loaded = [
+      { id: 'older', turnId, index: 0, type: 'user-message' },
+      { id: itemId, turnId, index: 1, type: 'assistant-message' },
+    ];
+    expect(
+      dividerPlacement({
+        runs: [running],
+        items: loaded,
+        catchUp: { turnId, itemId },
+      })
+    ).toEqual({ turnId, afterItemId: itemId });
+    expect(
+      dividerPlacement({
+        runs: [running],
+        items: [{ id: 'older', turnId, index: 0, type: 'user-message' }],
+        catchUp: { turnId, itemId },
+      })
+    ).toEqual({ turnId, afterItemId: null });
+    expect(
+      dividerPlacement({
+        runs: [{ id: 'other' }],
+        items: loaded,
+        catchUp: { turnId, itemId },
+      })
+    ).toBeNull();
+  });
+
+  it('keeps an unread mark before B and names the oldest jump', () => {
+    const unread = new Set(['before', itemId, 'after']);
+    expect(keepsUnreadMark('before', unread)).toBe(true);
+    expect(keepsUnreadMark('read', unread)).toBe(false);
+    const found = earlierUnread({
+      items: [
+        { id: 'before', turnId: 'earlier', index: 0, type: 'user-message' },
+        { id: 'same', turnId, index: 0, type: 'assistant-message' },
+        { id: itemId, turnId, index: 1, type: 'assistant-message' },
+        { id: 'after', turnId, index: 2, type: 'user-message' },
+      ],
+      unreadIds: new Set(['before', 'same', itemId, 'after']),
+      catchUp: { turnId, itemId },
+      runOrder: new Map([
+        ['earlier', 1],
+        [turnId, 2],
+      ]),
+    });
+    expect(found).toEqual({ count: 2, oldestId: 'before' });
+    expect(
+      showCatchUpDivider({ profile: 'assistant', catchUp: { turnId }, hasUnreadAnswer: false })
+    ).toBe(false);
+    expect(
+      showCatchUpDivider({ profile: 'assistant', catchUp: { turnId }, hasUnreadAnswer: true })
+    ).toBe(true);
+    expect(
+      showCatchUpDivider({ profile: 'administration', catchUp: { turnId }, hasUnreadAnswer: true })
+    ).toBe(false);
+    expect(
+      showCatchUpDivider({ profile: 'task', catchUp: { turnId }, hasUnreadAnswer: false })
+    ).toBe(true);
+  });
+
+  it('leaves a silent ended run new and replaces a divider jump', () => {
+    expect(
+      runStaysNew({ status: 'completed', messages: 0, admissionOrder: 4, catchUpOrder: 2 })
+    ).toBe(true);
+    for (const status of ['failed', 'interrupted', 'cancelled']) {
+      expect(runStaysNew({ status, messages: 0, admissionOrder: 4, catchUpOrder: 2 })).toBe(true);
+    }
+    expect(
+      runStaysNew({ status: 'running', messages: 0, admissionOrder: 4, catchUpOrder: 2 })
+    ).toBe(false);
+    expect(
+      runStaysNew({ status: 'completed', messages: 1, admissionOrder: 4, catchUpOrder: 2 })
+    ).toBe(false);
+    expect(
+      runStaysNew({ status: 'completed', messages: 0, admissionOrder: 2, catchUpOrder: 2 })
+    ).toBe(false);
+    expect(
+      runStaysNew({ status: 'completed', messages: 0, admissionOrder: 4, catchUpOrder: null })
+    ).toBe(false);
+    const itemJump = timelineJump({
+      pathname: '/tasks/ws/th',
+      search: `?turnId=${turnId}&attention=row&catchUp=1`,
+      jump: { kind: 'item', itemId },
+    });
+    expect(itemJump).toEqual({
+      pathname: '/tasks/ws/th',
+      search: `?item=${itemId}`,
+      replace: true,
+    });
+    expect(
+      timelineJump({ pathname: '/chat/ws/th', search: '', jump: { kind: 'catch-up' } })
+    ).toEqual({ pathname: '/chat/ws/th', search: '?catchUp=1', replace: true });
+    expect(
+      timelineJump({ pathname: '/chat/ws/th', search: `?item=${itemId}`, jump: { kind: 'latest' } })
+    ).toEqual({ pathname: '/chat/ws/th', search: '', replace: true });
+  });
+
+  it('offers the earlier-unread jump and no digest list', async () => {
+    const user = userEvent.setup();
+    const onEarlierUnread = vi.fn();
+    render(<CatchUpDivider count={2} onEarlierUnread={onEarlierUnread} />);
+    expect(screen.getByText('New since you were here')).toBeVisible();
+    expect(screen.queryByRole('list')).toBeNull();
+    await user.click(screen.getByRole('button', { name: '2 earlier unread ›' }));
+    expect(onEarlierUnread).toHaveBeenCalledOnce();
+  });
+
+  it('hides the jump when nothing earlier is unread', () => {
+    render(<CatchUpDivider count={0} onEarlierUnread={() => undefined} />);
+    expect(screen.getByText('New since you were here')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /earlier unread/ })).toBeNull();
+    expect(screen.queryByRole('list')).toBeNull();
   });
 });

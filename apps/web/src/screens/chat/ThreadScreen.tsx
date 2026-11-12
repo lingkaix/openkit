@@ -44,7 +44,14 @@ import { selectAgentProfile } from './timeline/profiles';
 import { SendFailure, SendPending } from './timeline/SendState';
 import type { LensName } from './timeline/types';
 import { timelineReadAvailable, useTimelineWindow } from './timeline/use-timeline-window';
-import { anchorFromSearch, turnHasCompletedAnswer } from './timeline/window';
+import {
+  anchorFromSearch,
+  provisionalOpeningAnchor,
+  type TimelineAnchorRequest,
+  timelineJump,
+  turnHasCompletedAnswer,
+  wantsMeasuredOpening,
+} from './timeline/window';
 import { composerVoice } from './voice';
 
 export interface ThreadScreenProps {
@@ -82,11 +89,45 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const waitingTurn = dashboard.data?.turns.some((turn) => turn.status === 'pending');
   const client = useCoreClient();
   const timelineOn = timelineReadAvailable(client);
-  const searchAnchor = anchorFromSearch(location.search);
+  const explicitAnchor = anchorFromSearch(location.search);
+  const openingProfile = selectAgentProfile({
+    entryPath: thread.data?.entryPath,
+    mode,
+    loadFailed:
+      thread.isError &&
+      (thread.data?.entryPath === 'administration' ||
+        thread.data?.entryPath === 'knowledge-manager'),
+  });
+  const openingProfileId =
+    openingProfile.state === 'ready'
+      ? openingProfile.profile.id
+      : mode === 'task'
+        ? 'task'
+        : 'assistant';
+  const [settledAnchor, setSettledAnchor] = useState<TimelineAnchorRequest | null>(null);
+  const [openingThread, setOpeningThread] = useState(threadId);
+  const jumpedToLatest = useRef(false);
+  if (openingThread !== threadId) {
+    setOpeningThread(threadId);
+    setSettledAnchor(null);
+    jumpedToLatest.current = false;
+  }
+  if (explicitAnchor.kind !== 'latest') jumpedToLatest.current = false;
+  const windowAnchor =
+    explicitAnchor.kind !== 'latest'
+      ? explicitAnchor
+      : jumpedToLatest.current
+        ? { kind: 'latest' as const }
+        : (settledAnchor ?? provisionalOpeningAnchor(openingProfileId, explicitAnchor));
+  const measureOpening =
+    explicitAnchor.kind === 'latest' &&
+    !jumpedToLatest.current &&
+    settledAnchor === null &&
+    wantsMeasuredOpening(openingProfileId);
   const timelineWindow = useTimelineWindow({
     workspaceId,
     threadId,
-    anchor: searchAnchor,
+    anchor: windowAnchor,
     enabled: timelineOn,
     running: Boolean(activeTurn),
     pending: Boolean(waitingTurn) && !activeTurn,
@@ -238,14 +279,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const renameButtonRef = useRef<HTMLButtonElement>(null);
 
   const title = thread.data?.name ?? thread.data?.preview ?? (mode === 'task' ? 'Task' : 'Chat');
-  const profile = selectAgentProfile({
-    entryPath: thread.data?.entryPath,
-    mode,
-    loadFailed:
-      thread.isError &&
-      (thread.data?.entryPath === 'administration' ||
-        thread.data?.entryPath === 'knowledge-manager'),
-  });
+  const profile = openingProfile;
   const [renameDrafts, setRenameDrafts] = useState<
     {
       workspaceId: string;
@@ -537,20 +571,28 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
               readOnly={disconnected}
               focusTurnId={new URLSearchParams(location.search).get('turnId')}
               focusItemId={new URLSearchParams(location.search).get('item')}
-              anchor={searchAnchor}
+              anchor={windowAnchor}
+              measureOpening={measureOpening}
+              onOpeningSettle={setSettledAnchor}
               running={Boolean(activeTurn)}
               pending={Boolean(waitingTurn) && !activeTurn}
               onJumpToLatest={() => {
-                const params = new URLSearchParams(location.search);
-                params.delete('item');
-                params.delete('attention');
-                params.delete('turnId');
-                params.delete('catchUp');
-                const search = params.toString();
-                navigate(
-                  { pathname: location.pathname, search: search ? `?${search}` : '' },
-                  { replace: true }
-                );
+                jumpedToLatest.current = true;
+                setSettledAnchor({ kind: 'latest' });
+                const target = timelineJump({
+                  pathname: location.pathname,
+                  search: location.search,
+                  jump: { kind: 'latest' },
+                });
+                navigate({ pathname: target.pathname, search: target.search }, { replace: true });
+              }}
+              onJumpToItem={(itemId) => {
+                const target = timelineJump({
+                  pathname: location.pathname,
+                  search: location.search,
+                  jump: { kind: 'item', itemId },
+                });
+                navigate({ pathname: target.pathname, search: target.search }, { replace: true });
               }}
               emptyTitle={mode === 'task' ? 'This task has no activity yet' : 'No messages yet'}
               panelHost={panelHost}
