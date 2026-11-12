@@ -348,6 +348,7 @@ export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDa
             : null,
       };
       const result = {
+        serverTime: new Date().toISOString(),
         viewerUserId: actor.userId,
         participants,
         thread: {

@@ -250,6 +250,8 @@ const DashboardPlanSchema: z.ZodType<TimelineItem> = TimelineItemSchema;
 /** Thread dashboard response payload. */
 export const ThreadDashboardResponseSchema = z
   .object({
+    /** Server UTC sampled during this admitted read, not a retained event or a liveness claim. */
+    serverTime: TimestampSchema.optional(),
     /** Bounded current source coverage; absence never proves that unread history is empty. */
     coverage: z
       .object({

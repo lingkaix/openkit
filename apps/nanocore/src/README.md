@@ -81,6 +81,8 @@ The private administration entry provisions a current administrator bearer's own
 
 ## Supporting Directories
 
+The admitted `thread.dashboard` response samples `serverTime` as current server UTC just before response budgeting. Web can use that sample with request timing to correct local clock skew. It is release metadata only: no event time, run time, receipt or liveness fact changes, and the complete dashboard still fits 32 KiB.
+
 Timeline Items expose nullable `argumentDigest` from the complete recorded Tool inputs (including server and tool) or command plus working directory, before preview clipping. The shared canonical JSON digest ignores object key order but preserves arrays, values and whitespace. Output, status and time are excluded so exact retries retain identity. Missing Tool arguments, non-call kinds and non-canonical input yield null. The digest grants no access and does not prove the executed environment or unrecorded inputs.
 
 Timeline runs expose nullable `reportedActivity` after independent Workspace and Audit admission. The projection uses one existing native observation page (the first 128 records for the exact run), emits at most 50 structural Worker reports, and reads no retained body or whole-history activity view. Child labels are local ordinals from recorded parent relations. Every result is explicitly worker-reported and partial or unavailable, never a heartbeat; raw runtime identities and text stay private. The activity consumes at most 8 KiB or one third of its run allowance, whichever is smaller. Known omissions concern that prefix only.

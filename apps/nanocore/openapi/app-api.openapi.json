@@ -71136,6 +71136,10 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
         "properties": {
+          "serverTime": {
+            "type": "string",
+            "minLength": 1
+          },
           "coverage": {
             "type": "object",
             "properties": {
@@ -179270,5 +179274,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:987bbf64d081041dd292867f7d2c7414fdafefcff355258ff847161ad433cd08"
+  "x-openkit-source-digest": "sha256:e60ce618792f272a6d68d9d1949f12e415a7f9389d0d64cc0a0ab38fd9e28eb1"
 }
