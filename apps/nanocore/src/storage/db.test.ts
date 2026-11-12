@@ -377,13 +377,16 @@ describe('scoped storage databases', () => {
         .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
         .all();
       if ('activatesKnowledge' in factory) {
-        expect(reopenedMigrations).toHaveLength(retainedMigrations.length + 5);
+        expect(reopenedMigrations).toHaveLength(retainedMigrations.length + 6);
         expect(reopenedMigrations.slice(0, retainedMigrations.length)).toEqual(retainedMigrations);
-        expect(reopenedMigrations.at(-5)).toMatchObject({ created_at: 1793415600000 });
-        expect(reopenedMigrations.at(-4)).toMatchObject({ created_at: 1794141000000 });
-        expect(reopenedMigrations.at(-3)).toMatchObject({ created_at: 1794157800000 });
-        expect(reopenedMigrations.at(-2)).toMatchObject({ created_at: 1794161400000 });
-        expect(reopenedMigrations.at(-1)).toMatchObject({ created_at: 1794165000000 });
+        expect(listMigrationIds(sqlite, 'workspace').slice(retainedMigrations.length)).toEqual([
+          'workspace_0019_knowledge_authority',
+          'workspace_0020_thread_turn_reads',
+          'workspace_0021_timeline_windows',
+          'workspace_0022_thread_dashboard',
+          'workspace_0023_task_steer',
+          'workspace_0024_thread_failure_counts',
+        ]);
       } else expect(reopenedMigrations).toEqual(retainedMigrations);
       expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
       expect(sqlite.pragma('synchronous', { simple: true }), 'reopened connection FULL').toBe(2);
