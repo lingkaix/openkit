@@ -1,8 +1,12 @@
-import { existsSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { type BigIntStats, existsSync, readdirSync, statSync } from 'node:fs';
+import { lstat, realpath, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { compareCodeUnits } from '@openkit/protocol';
+import { copyFileForCut, createPrivateTree, removePrivateTree } from '@openkit/storage';
 import Database from 'better-sqlite3';
 
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { listAppliedNativeMigrationIds, type StorageMigrationScope } from './migrate.js';
 
@@ -83,22 +87,29 @@ export interface StorageLayoutReport {
 }
 
 /**
- * Creates a read-only report for the target storage baseline.
+ * Creates a read-only report from private file cuts of the target storage baseline.
+ * Live callers retain the native posting hold until this promise settles; no source SQLite is opened.
  *
  * @param dataRoot Data root to inspect.
+ * @param fileAdmission Existing configured physical capacity owner.
  * @returns Storage layout report with database ledgers and quarantine entries.
  */
-export function createStorageLayoutReport(dataRoot: string): StorageLayoutReport {
-  const users = listDirectories(join(dataRoot, 'users')).map((userId) =>
-    createUserReport(dataRoot, userId)
-  );
-  const workspaces = listDirectories(join(dataRoot, 'workspaces'))
-    .filter((workspaceId) => workspaceId !== '.staging')
-    .map((workspaceId) => createWorkspaceReport(dataRoot, workspaceId));
+export async function createStorageLayoutReport(
+  dataRoot: string,
+  fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n)
+): Promise<StorageLayoutReport> {
+  const users: StorageUserReport[] = [];
+  const workspaces: StorageWorkspaceReport[] = [];
+  for (const userId of listDirectories(join(dataRoot, 'users')))
+    users.push(await createUserReport(dataRoot, userId, fileAdmission));
+  for (const workspaceId of listDirectories(join(dataRoot, 'workspaces'))) {
+    if (workspaceId !== '.staging')
+      workspaces.push(await createWorkspaceReport(dataRoot, workspaceId, fileAdmission));
+  }
 
   return {
     dataRoot,
-    serverDb: createDatabaseReport(dataRoot, coreDbPath(dataRoot), 'core'),
+    serverDb: await createDatabaseReport(dataRoot, coreDbPath(dataRoot), 'core', fileAdmission),
     users,
     workspaces,
     quarantineEntries: createQuarantineEntries(dataRoot, users, workspaces),
@@ -110,12 +121,22 @@ export function createStorageLayoutReport(dataRoot: string): StorageLayoutReport
  *
  * @param dataRoot Data root to inspect.
  * @param userId User directory name.
+ * @param fileAdmission Existing configured physical capacity owner.
  * @returns User storage report.
  */
-function createUserReport(dataRoot: string, userId: string): StorageUserReport {
+async function createUserReport(
+  dataRoot: string,
+  userId: string,
+  fileAdmission: FileStorageAdmission
+): Promise<StorageUserReport> {
   return {
     userId,
-    userDb: createDatabaseReport(dataRoot, userDbPath(dataRoot, userId), 'user'),
+    userDb: await createDatabaseReport(
+      dataRoot,
+      userDbPath(dataRoot, userId),
+      'user',
+      fileAdmission
+    ),
   };
 }
 
@@ -124,17 +145,23 @@ function createUserReport(dataRoot: string, userId: string): StorageUserReport {
  *
  * @param dataRoot Data root to inspect.
  * @param workspaceId Workspace directory name.
+ * @param fileAdmission Existing configured physical capacity owner.
  * @returns Workspace storage report.
  */
-function createWorkspaceReport(dataRoot: string, workspaceId: string): StorageWorkspaceReport {
+async function createWorkspaceReport(
+  dataRoot: string,
+  workspaceId: string,
+  fileAdmission: FileStorageAdmission
+): Promise<StorageWorkspaceReport> {
   const indexesPath = join(dataRoot, 'workspaces', workspaceId, 'indexes');
 
   return {
     workspaceId,
-    workspaceDb: createDatabaseReport(
+    workspaceDb: await createDatabaseReport(
       dataRoot,
       workspaceDbPath(dataRoot, workspaceId),
-      'workspace'
+      'workspace',
+      fileAdmission
     ),
     indexesDir: createDirectoryReport(dataRoot, indexesPath),
   };
@@ -146,28 +173,143 @@ function createWorkspaceReport(dataRoot: string, workspaceId: string): StorageWo
  * @param dataRoot Data root used for relative output paths.
  * @param dbPath SQLite file path.
  * @param scope Native journal scope used to name exact matched applied ids.
+ * @param fileAdmission Existing configured physical capacity owner.
  * @returns Database status and applied migration ids.
  */
-function createDatabaseReport(
+async function createDatabaseReport(
   dataRoot: string,
   dbPath: string,
-  scope: StorageMigrationScope
-): StorageDatabaseReport {
-  if (!existsSync(dbPath)) {
-    return { path: toReportPath(dataRoot, dbPath), exists: false, appliedMigrations: [] };
+  scope: StorageMigrationScope,
+  fileAdmission: FileStorageAdmission
+): Promise<StorageDatabaseReport> {
+  const reportPath = toReportPath(dataRoot, dbPath);
+  if (!existsSync(dbPath)) return { path: reportPath, exists: false, appliedMigrations: [] };
+
+  const [root, parent, scratchParent] = await Promise.all([
+    realpath(dataRoot),
+    realpath(dirname(dbPath)),
+    realpath(tmpdir()),
+  ]);
+  const [rootIdentity, parentIdentity] = await Promise.all([
+    stat(root, { bigint: true }),
+    stat(parent, { bigint: true }),
+  ]);
+  const scratchRelative = relative(root, scratchParent);
+  if (
+    !scratchRelative ||
+    (!isAbsolute(scratchRelative) &&
+      scratchRelative !== '..' &&
+      !scratchRelative.startsWith(`..${sep}`))
+  )
+    throw new Error('Storage report scratch must be outside the data root.');
+
+  // A readonly source WAL open still creates sidecars. Only private bytes reach SQLite.
+  const inputs = await Promise.all(
+    ['', '-wal', '-journal'].map(async (suffix) => ({
+      suffix,
+      metadata: await reportInputMetadata(`${dbPath}${suffix}`),
+    }))
+  );
+  for (const { suffix, metadata } of inputs) {
+    if (!metadata && suffix) continue;
+    if (
+      !metadata?.isFile() ||
+      metadata.nlink !== 1n ||
+      metadata.size > BigInt(Number.MAX_SAFE_INTEGER)
+    )
+      throw new Error('Storage report source is not an admitted regular file.');
   }
-
-  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
-
+  const bytes = inputs.reduce((total, { metadata }) => total + (metadata?.size ?? 0n), 0n);
+  const reservation = fileAdmission.forPath(scratchParent).reserve({
+    stagingBytes: bytes * 2n + 98_304n,
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 0n,
+  });
+  let scratch: string | undefined;
+  let result: StorageDatabaseReport;
   try {
-    return {
-      path: toReportPath(dataRoot, dbPath),
+    scratch = await createPrivateTree(scratchParent, 'openkit-layout-inspection-');
+    const copy = join(scratch, 'inspection');
+    for (const { suffix, metadata } of inputs) {
+      if (!metadata) continue;
+      await copyFileForCut({
+        sourcePath: `${dbPath}${suffix}`,
+        destinationPath: `${copy}${suffix}`,
+        maxBytes: Number(metadata.size),
+        mode: 0o600,
+      });
+    }
+    result = {
+      path: reportPath,
       exists: true,
-      appliedMigrations: listAppliedNativeMigrationIds(db, scope),
+      appliedMigrations: readPrivateReportLedger(copy, scope),
     };
+  } finally {
+    if (scratch) await removePrivateTree(scratch);
+    reservation.release();
+  }
+  // Copy and cleanup yield. Reject a changed logical binding or input set before returning the ledger.
+  const [currentRoot, currentParent, currentRootPath, currentParentPath] = await Promise.all([
+    stat(dataRoot, { bigint: true }),
+    stat(dirname(dbPath), { bigint: true }),
+    realpath(dataRoot),
+    realpath(dirname(dbPath)),
+  ]);
+  if (
+    currentRootPath !== root ||
+    currentParentPath !== parent ||
+    currentRoot.dev !== rootIdentity.dev ||
+    currentRoot.ino !== rootIdentity.ino ||
+    currentParent.dev !== parentIdentity.dev ||
+    currentParent.ino !== parentIdentity.ino
+  )
+    throw new Error('Storage report source binding changed.');
+  for (const { suffix, metadata } of inputs) {
+    const current = await reportInputMetadata(`${dbPath}${suffix}`);
+    if (!sameReportSource(metadata, current)) throw new Error('Storage report source changed.');
+  }
+  return result;
+}
+
+/** Reads the original ledger projection only on an already copied private database. */
+function readPrivateReportLedger(dbPath: string, scope: StorageMigrationScope): string[] {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+  try {
+    db.pragma('query_only = ON');
+    return listAppliedNativeMigrationIds(db, scope);
   } finally {
     db.close();
   }
+}
+
+/** Observes an optional retained input without moving filesystem work onto Main. */
+async function reportInputMetadata(path: string): Promise<BigIntStats | undefined> {
+  try {
+    return await lstat(path, { bigint: true });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')
+      return undefined;
+    throw error;
+  }
+}
+
+/** Compares every retained input fact after asynchronous private inspection and cleanup. */
+function sameReportSource(
+  before: BigIntStats | undefined,
+  after: BigIntStats | undefined
+): boolean {
+  if (!before || !after) return before === after;
+  return (
+    after.isFile() &&
+    before.dev === after.dev &&
+    before.ino === after.ino &&
+    before.size === after.size &&
+    before.mtimeNs === after.mtimeNs &&
+    before.ctimeNs === after.ctimeNs &&
+    before.nlink === after.nlink &&
+    before.mode === after.mode
+  );
 }
 
 /**

@@ -27,7 +27,7 @@ function createDataRoot(): string {
 }
 
 describe('storage layout report', () => {
-  it('T1 reports Workspace0012 only for its native owner and leaves Core0014 intact', ({
+  it('T1 reports Workspace0012 only for its native owner and leaves Core0014 intact', async ({
     skip,
   }) => {
     const root = createDataRoot();
@@ -49,7 +49,7 @@ describe('storage layout report', () => {
         skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual([{ name: 'control_execution_steps' }, { name: 'control_executions' }]);
       const before = workspace.sqlite.serialize();
-      const report = createStorageLayoutReport(root);
+      const report = await createStorageLayoutReport(root);
       expect(report.workspaces).toHaveLength(1);
       expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
       expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-8)).toEqual([
@@ -84,7 +84,7 @@ describe('storage layout report', () => {
     }
   });
 
-  it('reports target database ledgers', () => {
+  it('reports target database ledgers', async () => {
     const dataRoot = createDataRoot();
     const coreDb = openCoreDb(dataRoot);
     const userDb = openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b');
@@ -95,7 +95,7 @@ describe('storage layout report', () => {
       applyScopedMigrations(userDb);
       applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
 
-      const report = createStorageLayoutReport(dataRoot);
+      const report = await createStorageLayoutReport(dataRoot);
 
       expect(report.serverDb.exists).toBe(true);
       expect(report.serverDb.appliedMigrations).toEqual([
@@ -184,7 +184,7 @@ describe('storage layout report', () => {
     }
   });
 
-  it('reports quarantined storage files for operator inspection', () => {
+  it('reports quarantined storage files for operator inspection', async () => {
     const dataRoot = createDataRoot();
     mkdirSync(join(dataRoot, 'server', 'quarantine'), { recursive: true });
     mkdirSync(join(dataRoot, 'users', 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b', 'quarantine'), {
@@ -216,7 +216,7 @@ describe('storage layout report', () => {
       'workspace'
     );
 
-    const report = createStorageLayoutReport(dataRoot);
+    const report = await createStorageLayoutReport(dataRoot);
 
     expect(report.quarantineEntries).toEqual([
       {

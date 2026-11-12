@@ -11,7 +11,9 @@ import {
 } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { OperationError } from '../operation-error.js';
+import { FileAdmissionError, type FileStorageAdmission } from './artifacts/file-admission.js';
 import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import {
   type VerifiedDataRootBackupManifest,
   verifyDataRootBackupManifest,
@@ -54,15 +56,47 @@ type DataRootImplementations = {
   ) => OperationOutput<K> | Promise<OperationOutput<K>>;
 };
 
-/** Joins the admitted deployment administration operations to existing storage and backup mechanics. */
-export function createDataRootAdminOperationImplementations(dataRoot: string | null) {
+/**
+ * Joins deployment administration to existing storage and backup mechanics.
+ * @param dataRoot Admitted storage root, or null when unavailable.
+ * @param fileAdmission Existing configured file capacity owner.
+ */
+export function createDataRootAdminOperationImplementations(
+  dataRoot: string | null,
+  fileAdmission?: FileStorageAdmission
+) {
   return {
-    'storage.layout-report': () => {
+    'storage.layout-report': async () => {
       if (!dataRoot) {
         return failure('Storage layout report is unavailable.', 'storage_layout_unavailable', 503);
       }
 
-      return StorageLayoutReportResponseSchema.parse(createStorageLayoutReport(dataRoot));
+      try {
+        const resume = await getControlStoreWorkerClient().pauseForDataRootBackup();
+        try {
+          return StorageLayoutReportResponseSchema.parse(
+            await createStorageLayoutReport(dataRoot, fileAdmission)
+          );
+        } finally {
+          resume();
+        }
+      } catch (error) {
+        if (error instanceof FileAdmissionError && error.code === 'storage_capacity_unavailable')
+          throw new OperationError(
+            'operation_storage_no_space',
+            'Storage capacity is unavailable.',
+            507,
+            { cause: error }
+          );
+        if (error instanceof ControlStoreWorkerError && error.code === 'unavailable')
+          throw new OperationError(
+            'storage_layout_unavailable',
+            'Storage layout report is unavailable.',
+            503,
+            { cause: error }
+          );
+        throw error;
+      }
     },
 
     'backup.create': async () => {

@@ -318,7 +318,10 @@ export function createOperationImplementations(dependencies: OperationInvocation
         ? { sessionAuthority: dependencies.nanoHostSessionAuthority }
         : {}),
     }),
-    createDataRootAdminOperationImplementations(dependencies.dataRoot ?? null)
+    createDataRootAdminOperationImplementations(
+      dependencies.dataRoot ?? null,
+      dependencies.fileAdmission
+    )
   ) satisfies OperationImplementations;
 }
 

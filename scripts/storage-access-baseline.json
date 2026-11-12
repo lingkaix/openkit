@@ -303,7 +303,7 @@
   "moduleDomains": {
     "artifacts": {
       "exports": 29,
-      "crossDirectoryImports": 60
+      "crossDirectoryImports": 62
     },
     "artifact-zip-snapshots": {
       "exports": 10,
