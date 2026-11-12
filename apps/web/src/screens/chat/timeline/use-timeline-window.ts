@@ -4,7 +4,6 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../../app/core-client';
 import type { ThreadItem } from '../data';
-import { publishTimelineDigest } from './digest';
 import {
   absorbEdge,
   absorbItemEdge,
@@ -111,10 +110,6 @@ export function useTimelineWindow(options: {
 
   const pageEarlier = useCallback(() => page.mutate('before'), [page.mutate]);
   const pageLater = useCallback(() => page.mutate('after'), [page.mutate]);
-  useEffect(() => {
-    if (!query.isFetched) return;
-    publishTimelineDigest(query.data?.digest ?? null);
-  }, [query.data, query.isFetched]);
   return { ...query, pageEarlier, pageLater, paging: page.isPending };
 }
 

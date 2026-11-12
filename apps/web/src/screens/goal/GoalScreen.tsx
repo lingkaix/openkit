@@ -21,7 +21,7 @@ import { focusGoalCard } from '../chat/timeline/needs-you';
 import { useTimelineSheets } from '../chat/timeline/PhoneChrome';
 import { looksLikeIdentifier } from '../chat/timeline/present';
 import { selectAgentProfile } from '../chat/timeline/profiles';
-import { timelineJump } from '../chat/timeline/window';
+import { anchorFromSearch, timelineJump } from '../chat/timeline/window';
 import { useCurrentWorkspaceId, useGoalCommand, useGoalView } from './data';
 
 const EDIT_CONSEQUENCE = 'goal-edit-consequence';
@@ -527,6 +527,8 @@ export function GoalScreen() {
         mode="goal"
         emptyTitle={timelineCopy.emptyGoalTitle}
         sheets={sheets}
+        anchor={anchorFromSearch(location.search)}
+        focusItemId={searchParams.get('item')}
         onJumpToItem={(itemId) => {
           const target = timelineJump({
             pathname: location.pathname,

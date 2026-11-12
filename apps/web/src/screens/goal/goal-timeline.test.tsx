@@ -184,7 +184,11 @@ function threadRecord(threadId: string) {
   };
 }
 
-function mount(data = view(), entry = `/goals/${WS}/${GOAL_THREAD}`) {
+function mount(
+  data = view(),
+  entry = `/goals/${WS}/${GOAL_THREAD}`,
+  timeline?: (input: { anchor?: { kind?: string; itemId?: string } }) => unknown
+) {
   const threadItems = vi.fn(async ({ threadId }: { threadId: string }) => {
     const text = threadId === TASK_A ? ALPHA : threadId === TASK_B ? BETA : '';
     if (!text) return { items: [], nextCursor: null };
@@ -264,6 +268,12 @@ function mount(data = view(), entry = `/goals/${WS}/${GOAL_THREAD}`) {
     'conversation.targets': vi.fn().mockResolvedValue({ targets: [], defaultTargetRef: null }),
     'artifact.list': vi.fn().mockResolvedValue({ items: [] }),
     'worker-environment.list': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+    ...(timeline
+      ? {
+          'thread.timeline': vi.fn(timeline),
+          'thread.read-state': vi.fn(async () => ({ readItemIds: [], unreadItemIds: [] })),
+        }
+      : {}),
   };
   const client = {
     core: { meta: vi.fn().mockResolvedValue({}), subscribeTurnEvents: vi.fn() },
@@ -289,6 +299,7 @@ function mount(data = view(), entry = `/goals/${WS}/${GOAL_THREAD}`) {
 afterEach(() => {
   cleanup();
   localStorage.removeItem('openkit.timeline.lens');
+  vi.unstubAllGlobals();
 });
 
 it('keeps identifiers and banned words out of the Goal screen in Work', async () => {
@@ -394,4 +405,90 @@ it('accepts completion without a confirmation dialog', async () => {
   await user.click(button);
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   await waitFor(() => expect(operations['goal.completion.accept']).toHaveBeenCalled());
+});
+
+const GOAL_ITEM = 'it_00000000-0000-7da3-a7fc-80982f9b21aa';
+const GOAL_TURN = 'tu_00000000-0000-7da3-a7fc-80982f9b21aa';
+const GOAL_NOTE = 'Goal narrative follows this note';
+
+it('moves the Goal narrative to the item named in the link', async () => {
+  vi.stubGlobal(
+    'IntersectionObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+      takeRecords() {
+        return [];
+      }
+    }
+  );
+  const timeline = vi.fn(async (input: { anchor?: { kind?: string; itemId?: string } }) => ({
+    workspaceId: WS,
+    threadId: GOAL_THREAD,
+    view: 'runs',
+    runs: [
+      {
+        id: GOAL_TURN,
+        admissionOrder: 1,
+        status: 'completed',
+        narrative: [
+          {
+            id: GOAL_ITEM,
+            turnId: GOAL_TURN,
+            type: 'assistant-message',
+            placement: 'narrative',
+            status: 'completed',
+            createdAt: at,
+            completedAt: at,
+            actor: null,
+            steer: null,
+            detail: {
+              kind: 'complete',
+              value: {
+                id: GOAL_ITEM,
+                threadId: GOAL_THREAD,
+                turnId: GOAL_TURN,
+                type: 'assistant-message',
+                status: 'completed',
+                text: GOAL_NOTE,
+                createdAt: at,
+              },
+            },
+          },
+        ],
+        plan: null,
+        noteItemIds: [],
+        long: false,
+        error: null,
+        interruptedBy: { visibility: 'available', actor: null },
+        restrictedReferences: false,
+        statistics: {
+          steps: 0,
+          failedStepCount: 0,
+          failedCommandCount: 0,
+          filesChanged: 0,
+          messages: 1,
+          itemCounts: {},
+          coverage: 'complete',
+        },
+      },
+    ],
+    items: [],
+    beforeCursor: null,
+    afterCursor: null,
+    itemWindow: null,
+    anchor: null,
+    catchUpAnchor: null,
+    digest: { lines: [], coverage: 'complete' },
+    restrictedReferences: false,
+    echoedAnchor: input.anchor ?? null,
+  }));
+  mount(view(), `/goals/${WS}/${GOAL_THREAD}?item=${GOAL_ITEM}`, timeline);
+  await waitFor(() => expect(screen.getByText(GOAL_NOTE)).toBeVisible());
+  await waitFor(() => expect(document.activeElement?.id).toBe(`timeline-item-${GOAL_ITEM}`));
+  expect(timeline.mock.calls.map((call) => call[0].anchor)).toContainEqual({
+    kind: 'item',
+    itemId: GOAL_ITEM,
+  });
 });

@@ -37,6 +37,13 @@ import { ItemView } from './ItemView';
 import { ThreadReadReceipts, useThreadUnreadIds } from './ThreadReadReceipts';
 import { AlignmentHeader } from './timeline/AlignmentHeader';
 import { CatchUpDivider } from './timeline/CatchUpDivider';
+import {
+  catchUpItemRefs,
+  EARLIER_UNREAD_LOCATE_LIMIT,
+  itemRefFromTimeline,
+  type LocatedUnreadRef,
+  unplacedUnreadIds,
+} from './timeline/catch-up';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
 import { DecisionRowSheet, DecisionSheet } from './timeline/decision-sheet';
 import { classifyRunError, freshnessCopy, isDeniedRead } from './timeline/degraded';
@@ -86,7 +93,6 @@ import {
   useTimelineWindow,
 } from './timeline/use-timeline-window';
 import {
-  type CatchUpItemRef,
   completeDetails,
   dividerPlacement,
   earlierUnread,
@@ -97,6 +103,7 @@ import {
   mergeDisplayedItems,
   narrativePreviews,
   newContentExceedsScreen,
+  openingInput,
   runHasDecision,
   runStaysNew,
   showCatchUpDivider,
@@ -269,9 +276,11 @@ export function ThreadStream({
     localSettled === null;
   const baseAnchor: TimelineAnchorRequest = parentOpening
     ? anchor
-    : localJumped.current
-      ? { kind: 'latest' }
-      : (localSettled ?? (uncontrolledCatchUp ? { kind: 'catch-up' } : anchor));
+    : anchor.kind !== 'latest'
+      ? anchor
+      : localJumped.current
+        ? { kind: 'latest' }
+        : (localSettled ?? (uncontrolledCatchUp ? { kind: 'catch-up' } : anchor));
   const windowAnchor = anchorOverride ?? baseAnchor;
   const measureOpeningActive = parentOpening ? Boolean(measureOpening) : uncontrolledCatchUp;
   const settleOpening = onOpeningSettle ?? setLocalSettled;
@@ -529,6 +538,7 @@ export function ThreadStream({
   );
   const [clock, setClock] = useState(() => Date.now());
   const itemLocated = useRef<string | null>(null);
+  const anchoredElement = useRef<HTMLElement | null>(null);
   const openedAnchor = useRef<string | null>(null);
   useEffect(() => {
     const timer = setInterval(
@@ -545,7 +555,10 @@ export function ThreadStream({
   // biome-ignore lint/correctness/useExhaustiveDependencies: rememberExpanded is recreated each render; openedAnchor records the one expand.
   useEffect(() => {
     if (!anchoredItemId || historyLoading || feedItems.length === 0) return;
-    if (itemLocated.current === anchoredItemId) return;
+    if (itemLocated.current === anchoredItemId) {
+      if (anchoredElement.current?.isConnected) return;
+      if (document.activeElement && document.activeElement !== document.body) return;
+    }
     const item = feedItems.find((candidate) => candidate.id === anchoredItemId);
     if (item && isStepItem(item) && expandedTurnId !== item.turnId && lens !== 'full') {
       if (openedAnchor.current !== anchoredItemId) {
@@ -554,7 +567,10 @@ export function ThreadStream({
       }
       return;
     }
-    if (focusTimelineItem(anchoredItemId)) itemLocated.current = anchoredItemId;
+    if (focusTimelineItem(anchoredItemId)) {
+      itemLocated.current = anchoredItemId;
+      anchoredElement.current = document.getElementById(`timeline-item-${anchoredItemId}`);
+    }
   }, [anchoredItemId, expandedTurnId, feedItems, historyLoading, lens]);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
@@ -567,6 +583,39 @@ export function ThreadStream({
     feedItems,
     controlsReadOnly || live.isError
   );
+  const catchUpRefs = catchUpItemRefs(windowRuns ?? [], timelineWindow.data?.itemWindow ?? null);
+  const [locatedUnread, setLocatedUnread] = useState<LocatedUnreadRef[]>([]);
+  const missingUnread = unplacedUnreadIds(catchUpRefs, unreadIds);
+  const locateKey =
+    missingUnread.length === 0 || missingUnread.length > EARLIER_UNREAD_LOCATE_LIMIT
+      ? ''
+      : [...missingUnread].sort().join('\n');
+  useEffect(() => {
+    if (!timelineOn || !workspaceId || locateKey.length === 0) {
+      setLocatedUnread((current) => (current.length === 0 ? current : []));
+      return;
+    }
+    const itemIds = locateKey.split('\n');
+    let cancelled = false;
+    void (async () => {
+      const found: LocatedUnreadRef[] = [];
+      for (const itemId of itemIds) {
+        try {
+          const page = await client.operations['thread.timeline'](
+            openingInput(workspaceId, threadId, { kind: 'item', itemId })
+          );
+          const ref = itemRefFromTimeline(page, itemId);
+          if (ref) found.push(ref);
+        } catch {
+          // This anchor read did not place the item.
+        }
+      }
+      if (!cancelled) setLocatedUnread(found);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [client, locateKey, threadId, timelineOn, workspaceId]);
   const itemsDenied = historyDenied;
   const [missedRefreshes, setMissedRefreshes] = useState(0);
   const seenRefreshError = useRef(0);
@@ -641,7 +690,7 @@ export function ThreadStream({
 
   if (holdContent) {
     return (
-      <div className="flex flex-col gap-5" aria-busy="true">
+      <div className="flex min-h-dvh flex-col gap-5" aria-busy="true">
         <div className="ok-run-skeleton" aria-hidden="true">
           <Skeleton lines={3} />
         </div>
@@ -651,7 +700,7 @@ export function ThreadStream({
 
   if (historyLoading) {
     return (
-      <div className="flex flex-col gap-5" aria-busy="true">
+      <div className="flex min-h-dvh flex-col gap-5" aria-busy="true">
         <div className="ok-bar-slot" aria-hidden="true" />
         <div className="ok-run-skeleton" aria-hidden="true">
           <Skeleton lines={3} />
@@ -813,7 +862,7 @@ export function ThreadStream({
     : undefined;
   const barTarget = barDecisionTarget(decisionWalk, openDecisionItemIds);
   const chrome = narrativeOnly ? null : (
-    <div className="sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2">
+    <div className="ok-timeline-chrome sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2">
       {phone ? (
         <>
           {alignment?.objective ? <p className="ok-prose truncate">{alignment.objective}</p> : null}
@@ -836,15 +885,19 @@ export function ThreadStream({
       ) : (
         <>
           <AlignmentHeader model={alignment} />
-          <NowLine model={nowModel} emphasize={emphasis.now} reducedMotion={reducedMotion} />
-          <NeedsYouBar
-            rows={scoped}
-            threadId={threadId}
-            emphasize={emphasis.bar}
-            reducedMotion={reducedMotion}
-            now={clock}
-            onOpen={onOpen}
-          />
+          <div className="ok-bar-slot">
+            <NowLine model={nowModel} emphasize={emphasis.now} reducedMotion={reducedMotion} />
+          </div>
+          <div className="ok-bar-slot">
+            <NeedsYouBar
+              rows={scoped}
+              threadId={threadId}
+              emphasize={emphasis.bar}
+              reducedMotion={reducedMotion}
+              now={clock}
+              onOpen={onOpen}
+            />
+          </div>
         </>
       )}
     </div>
@@ -1114,17 +1167,10 @@ export function ThreadStream({
       : feedItems;
   const stepItems = stepSource.filter((item) => item.turnId === stepsTurnId && isStepItem(item));
   const catchUp = timelineOn ? (timelineWindow.data?.catchUpAnchor ?? null) : null;
-  const catchUpRefs: CatchUpItemRef[] = windowRuns
-    ? windowRuns.flatMap((run) =>
-        run.narrative.map((item, index) => ({
-          id: item.id,
-          turnId: run.id,
-          index,
-          type: item.type,
-        }))
-      )
-    : [];
   const runOrder = new Map((windowRuns ?? []).map((run) => [run.id, run.admissionOrder]));
+  for (const item of locatedUnread) {
+    if (!runOrder.has(item.turnId)) runOrder.set(item.turnId, item.admissionOrder);
+  }
   const hasUnreadAnswer = catchUpRefs.some(
     (item) => item.type === 'assistant-message' && unreadIds.has(item.id)
   );
@@ -1140,11 +1186,14 @@ export function ThreadStream({
         catchUp,
       })
     : null;
+  const locatedIds = new Set(locatedUnread.map((item) => item.id));
+  const earlierUnreadUnresolved = missingUnread.some((id) => !locatedIds.has(id));
   const earlier = earlierUnread({
     items: catchUpRefs,
     unreadIds,
     catchUp: dividerShown ? catchUp : null,
     runOrder,
+    located: locatedUnread,
   });
   const catchUpOrder = catchUp ? (runOrder.get(catchUp.turnId) ?? null) : null;
   function jumpToEarlierUnread() {
@@ -1297,7 +1346,12 @@ export function ThreadStream({
                   narrative: [],
                   notes: [],
                   plan: null,
-                  stats: { stepCount: 0, fileCount: 0, failedCommandCount: 0, failedStepCount: 0 },
+                  stats: {
+                    stepCount: 0,
+                    fileCount: 0,
+                    failedCommandCount: 0,
+                    failedStepCount: 0,
+                  },
                   long: false,
                   stepWindow: [],
                   outcome: null,
@@ -1342,7 +1396,12 @@ export function ThreadStream({
                     </p>
                   ) : null}
                   {placement?.turnId === group.turnId && placement.afterItemId === null ? (
-                    <CatchUpDivider count={earlier.count} onEarlierUnread={jumpToEarlierUnread} />
+                    <CatchUpDivider
+                      count={earlier.count}
+                      onEarlierUnread={jumpToEarlierUnread}
+                      digest={timelineWindow.data?.digest ?? null}
+                      earlierUnreadUnresolved={earlierUnreadUnresolved}
+                    />
                   ) : null}
                   <RunEntry
                     entry={entry}
@@ -1377,6 +1436,8 @@ export function ThreadStream({
                             <CatchUpDivider
                               count={earlier.count}
                               onEarlierUnread={jumpToEarlierUnread}
+                              digest={timelineWindow.data?.digest ?? null}
+                              earlierUnreadUnresolved={earlierUnreadUnresolved}
                             />
                           ) : null}
                         </>

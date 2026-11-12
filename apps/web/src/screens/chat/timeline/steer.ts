@@ -210,6 +210,20 @@ export function steerReceipts(
   return map;
 }
 
+/** Receipts from every held window of this thread. The first window that has one wins. */
+export function steerReceiptsFromWindows(
+  windows: readonly unknown[]
+): ReadonlyMap<string, SteerReceiptView> {
+  const map = new Map<string, SteerReceiptView>();
+  for (const held of windows) {
+    if (held != null && typeof held !== 'object') continue;
+    for (const [id, receipt] of steerReceipts(held as Parameters<typeof steerReceipts>[0])) {
+      if (!map.has(id)) map.set(id, receipt);
+    }
+  }
+  return map;
+}
+
 /** True when this request already has a timeline receipt, so the banner is not a second source. */
 export function receiptCoversRequest(
   receipts: ReadonlyMap<string, SteerReceiptView>,

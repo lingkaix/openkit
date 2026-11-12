@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { type ReactNode, useCallback, useMemo } from 'react';
+import { type ReactNode, useCallback, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import { useCoreClient } from '../../../app/core-client';
 import {
@@ -21,7 +21,7 @@ import {
   type SteerFailureView,
   steerErrorCode,
   steerReasonSentence,
-  steerReceipts,
+  steerReceiptsFromWindows,
 } from './steer';
 import { timelineReadAvailable, useTimelineWindow } from './use-timeline-window';
 import { anchorFromSearch } from './window';
@@ -49,7 +49,43 @@ export function SteerProvider({ mode, children }: { mode: 'chat' | 'task'; child
     running: Boolean(runningTurn),
     pending: waiting && !runningTurn,
   });
-  const receipts = useMemo(() => steerReceipts(timeline.data), [timeline.data]);
+  const ownerKey = ownerId ?? '';
+  // The stream keys its window by the route workspace. The store id can still be unresolved.
+  const receiptVersion = useRef(0);
+  const readReceiptVersion = useCallback(() => receiptVersion.current, []);
+  const cachedReceiptVersion = useSyncExternalStore(
+    useCallback(
+      (onChange: () => void) =>
+        queryClient.getQueryCache().subscribe((event) => {
+          if (event.type !== 'added' && event.type !== 'updated' && event.type !== 'removed') {
+            return;
+          }
+          const key = event.query.queryKey;
+          if (key[0] !== 'thread-timeline' || key[2] !== threadId) return;
+          const workspaceKey = String(key[1] ?? '');
+          if (workspaceKey !== routeWorkspaceId && workspaceKey !== ownerKey) return;
+          receiptVersion.current += 1;
+          onChange();
+        }),
+      [ownerKey, queryClient, routeWorkspaceId, threadId]
+    ),
+    readReceiptVersion,
+    readReceiptVersion
+  );
+  // cachedReceiptVersion is the timeline-cache tick. The callback does not read it; the dependency recomputes receipts.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cachedReceiptVersion changes when a matching timeline query is written
+  const receipts = useMemo(() => {
+    const workspaceIds = [routeWorkspaceId, ownerKey].filter(
+      (id, index, all) => id.length > 0 && all.indexOf(id) === index
+    );
+    const windows = workspaceIds.flatMap((id) =>
+      queryClient
+        .getQueriesData({ queryKey: ['thread-timeline', id, threadId] })
+        .map((entry) => entry[1])
+    );
+    if (timeline.data && !windows.includes(timeline.data)) windows.push(timeline.data);
+    return steerReceiptsFromWindows(windows);
+  }, [cachedReceiptVersion, ownerKey, queryClient, routeWorkspaceId, threadId, timeline.data]);
   const qualified = readSteerQualification(targets.data?.targets);
   const live = composerLiveMode({
     task: mode === 'task',

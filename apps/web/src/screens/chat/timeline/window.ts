@@ -587,21 +587,35 @@ export function dividerPlacement(input: {
 
 /**
  * Unread messages before B, in window order. The receipt set is not trimmed.
- * Ids the loaded window does not place are omitted; the read does not order them against B.
+ * An unread id that neither the loaded items nor `located` places has no order,
+ * so the result is empty instead of a nearer loaded message.
  */
 export function earlierUnread(input: {
   items: readonly CatchUpItemRef[];
   unreadIds: ReadonlySet<string>;
   catchUp: { turnId: string; itemId?: string } | null;
   runOrder: ReadonlyMap<string, number>;
+  /** Placements from item-anchor reads for ids outside `items`. */
+  located?: readonly CatchUpItemRef[];
 }): { count: number; oldestId: string | null } {
   if (!input.catchUp) return { count: 0, oldestId: null };
+  const located = input.located ?? [];
+  const byId = new Map<string, CatchUpItemRef>();
+  for (const item of input.items) byId.set(item.id, item);
+  for (const item of located) if (!byId.has(item.id)) byId.set(item.id, item);
+  for (const id of input.unreadIds) {
+    if (!byId.has(id)) return { count: 0, oldestId: null };
+  }
   const anchorOrder = input.runOrder.get(input.catchUp.turnId);
   if (anchorOrder === undefined) return { count: 0, oldestId: null };
-  const anchorIndex = input.catchUp.itemId
-    ? (input.items.find((item) => item.id === input.catchUp?.itemId)?.index ?? null)
-    : null;
-  const ids = input.items
+  const anchorIndex = input.catchUp.itemId ? (byId.get(input.catchUp.itemId)?.index ?? null) : null;
+  const ordered = [...byId.values()].sort((left, right) => {
+    const leftOrder = input.runOrder.get(left.turnId) ?? Number.MAX_SAFE_INTEGER;
+    const rightOrder = input.runOrder.get(right.turnId) ?? Number.MAX_SAFE_INTEGER;
+    if (leftOrder !== rightOrder) return leftOrder - rightOrder;
+    return left.index - right.index;
+  });
+  const ids = ordered
     .filter((item) => {
       if (item.type !== 'user-message' && item.type !== 'assistant-message') return false;
       if (!input.unreadIds.has(item.id)) return false;

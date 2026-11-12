@@ -1,14 +1,7 @@
-import { useSyncExternalStore } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { Button } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
-import {
-  digestAnchorLocation,
-  readTimelineDigest,
-  subscribeTimelineDigest,
-  type TimelineDigest,
-  visibleDigest,
-} from './digest';
+import { digestAnchorLocation, type TimelineDigest, visibleDigest } from './digest';
 import { timelineJump } from './window';
 
 /**
@@ -18,15 +11,17 @@ import { timelineJump } from './window';
 export function CatchUpDivider({
   count,
   onEarlierUnread,
-  digest,
+  digest = null,
+  earlierUnreadUnresolved = false,
 }: {
   count: number;
   onEarlierUnread: () => void;
-  /** Test double. The screen reads the published timeline digest when this is omitted. */
+  /** Digest from the timeline window that renders this divider. */
   digest?: TimelineDigest | null;
+  /** Unread ids this read cannot place, so no count or oldest is shown. */
+  earlierUnreadUnresolved?: boolean;
 }) {
-  const published = useSyncExternalStore(subscribeTimelineDigest, readTimelineDigest, () => null);
-  const shown = digest === undefined ? published : digest;
+  const shown = digest;
   const location = useLocation();
   const catchUp = timelineJump({
     pathname: location.pathname,
@@ -54,6 +49,8 @@ export function CatchUpDivider({
         <Button variant="quiet" size="sm" onPress={onEarlierUnread}>
           {fillCopy(timelineCopy.earlierUnread, { count })}
         </Button>
+      ) : earlierUnreadUnresolved ? (
+        <p className="ok-meta">{timelineCopy.earlierUnreadUnknown}</p>
       ) : null}
       {shown ? <DigestLines digest={shown} /> : null}
     </fieldset>

@@ -71,6 +71,7 @@ export const timelineCopy = {
   newUpdates: '↓ {count} new',
   newSinceHere: 'New since you were here',
   earlierUnread: '{count} earlier unread ›',
+  earlierUnreadUnknown: 'Earlier unread is not in this window.',
   stillNew: 'This run is still new.',
   unreadMark: 'Unread',
   openAllSteps: 'Open all steps',

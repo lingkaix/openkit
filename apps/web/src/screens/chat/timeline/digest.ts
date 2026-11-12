@@ -59,7 +59,8 @@ export function visibleDigest(
 /**
  * Opens a digest anchor with the same URL selectors as the timeline jump.
  * Item, catch-up, and latest go through `timelineJump`. Turn and attention
- * clear the same keys and set the selector `anchorFromSearch` already reads.
+ * clear both canonical selectors and their aliases, then set the selector
+ * `anchorFromSearch` already reads.
  */
 export function digestAnchorLocation(input: {
   pathname: string;
@@ -85,29 +86,13 @@ export function digestAnchorLocation(input: {
   );
   params.delete('item');
   params.delete('attention');
+  params.delete('row');
   params.delete('turnId');
+  params.delete('turn');
   params.delete('catchUp');
+  params.delete('request');
   if (input.anchor.kind === 'turn') params.set('turnId', input.anchor.turnId);
   if (input.anchor.kind === 'attention') params.set('attention', input.anchor.rowId);
   const search = params.toString();
   return { pathname: input.pathname, search: search ? `?${search}` : '', replace: true };
-}
-
-let snapshot: TimelineDigest | null = null;
-const listeners = new Set<() => void>();
-
-/** The latest timeline read's digest. Null until that read returns. */
-export function readTimelineDigest(): TimelineDigest | null {
-  return snapshot;
-}
-
-export function subscribeTimelineDigest(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-export function publishTimelineDigest(next: TimelineDigest | null): void {
-  if (snapshot === next) return;
-  snapshot = next;
-  for (const listener of listeners) listener();
 }

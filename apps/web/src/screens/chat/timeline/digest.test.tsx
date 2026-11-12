@@ -4,15 +4,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { CatchUpDivider } from './CatchUpDivider';
 import { timelineCopy } from './copy';
-import {
-  type DigestAnchor,
-  type DigestLine,
-  digestAnchorLocation,
-  publishTimelineDigest,
-  readTimelineDigest,
-  subscribeTimelineDigest,
-  visibleDigest,
-} from './digest';
+import { type DigestAnchor, type DigestLine, digestAnchorLocation, visibleDigest } from './digest';
 import { anchorFromSearch } from './window';
 
 const itemId = 'it_00000000-0000-7000-8000-000000000001';
@@ -111,7 +103,7 @@ describe('catch-up digest lines', () => {
     for (const anchor of cases) {
       const target = digestAnchorLocation({
         pathname: '/tasks/ws/th',
-        search: '?turnId=old&item=old&attention=old&catchUp=1',
+        search: '?turn=old&turnId=old&row=old&attention=old&item=old&catchUp=1',
         anchor,
       });
       expect(target.replace).toBe(true);
@@ -155,17 +147,33 @@ describe('catch-up digest lines', () => {
     expect(screen.getByText(timelineCopy.digestPartial)).toBeVisible();
   });
 
-  it('publishes the read digest without copying it', () => {
-    const digest = {
-      lines: [line('runs-finished', 1, { kind: 'turn' as const, turnId })],
+  it('shows only the digest passed by the window that renders the divider', () => {
+    const first = {
+      lines: [line('new-messages', 4, itemAnchor)],
       coverage: 'complete' as const,
     };
-    const seen: unknown[] = [];
-    const stop = subscribeTimelineDigest(() => seen.push(readTimelineDigest()));
-    publishTimelineDigest(digest);
-    stop();
-    publishTimelineDigest(null);
-    expect(seen).toEqual([digest]);
-    expect(readTimelineDigest()).toBeNull();
+    const second = {
+      lines: [line('problems', 1, { kind: 'turn' as const, turnId })],
+      coverage: 'complete' as const,
+    };
+    const { rerender } = render(
+      <MemoryRouter>
+        <CatchUpDivider count={0} onEarlierUnread={() => undefined} digest={first} />
+      </MemoryRouter>
+    );
+    expect(screen.getByRole('button', { name: '4 new messages' })).toBeVisible();
+    rerender(
+      <MemoryRouter>
+        <CatchUpDivider count={0} onEarlierUnread={() => undefined} digest={null} />
+      </MemoryRouter>
+    );
+    expect(screen.queryByRole('button', { name: '4 new messages' })).toBeNull();
+    rerender(
+      <MemoryRouter>
+        <CatchUpDivider count={0} onEarlierUnread={() => undefined} digest={second} />
+      </MemoryRouter>
+    );
+    expect(screen.getByRole('button', { name: '1 problem' })).toBeVisible();
+    expect(screen.queryByRole('button', { name: '4 new messages' })).toBeNull();
   });
 });
