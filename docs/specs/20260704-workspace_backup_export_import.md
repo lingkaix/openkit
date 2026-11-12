@@ -518,7 +518,7 @@ The public App API, Core Client, transport-neutral operation catalog and adminis
 
 Catalog export of `agent.resource-catalog.v1` is implemented on V3: every export from this change includes required feature `agent.resource-catalog.v1` and `records/agent-resource-catalog.json`, even when empty. Retained Skill trees travel as `skill-payloads/<skillId>/<digestHex>.json`. Original plugin roots and `catalog/mcp-data/` remain non-portable. Full data-root backup continues to preserve same-deployment catalog snapshots.
 
-Archive, inventory, SQLite capture, and canonical publication code are candidates, not ready operational APIs. Use the backup verifier and staged registration/quarantine, not global pause, whole-root replacement, or analytical compensation/remint. Preserve existing analytical/whole-server behavior/tests.
+Local capture, restore, export and archive download are implemented operation joins, as this projection records above. Live MOVE-in, source reactivation and busy capture remain incomplete. Use the backup verifier and staged registration/quarantine, not global pause, whole-root replacement, or analytical compensation/remint. Preserve existing analytical/whole-server behavior/tests.
 
 ## Alternatives Considered
 

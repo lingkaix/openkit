@@ -190,7 +190,7 @@ The client retains exact text, target, model, optional effort, Artifact referenc
 
 ## Current Implementation Projection
 
-The explicit live-input action and exact-Turn/qualified-availability fields are accepted targets awaiting implementation; the existing Composer and conversation operations below do not qualify live steer. This added gap makes implementation alignment Partial.
+The explicit live-input action uses the implemented `task.steer` operation, its receipt and the qualified-availability source. Adapter and runtime qualification remain separate, so this specification stays Partial.
 
 NanoCore implements `POST /api/app/operations/conversation.targets` and `POST /api/app/operations/conversation.submit` with strict target, logical-model, Artifact-reference, command-receipt, replay, and recovery behavior. The catalog includes Assistant, Knowledge Manager, active Coordinator, warm Worker, running Worker, and new Task Worker choices when their owning resources are available. Submission reuses existing Assistant, Knowledge, Goal, Worker, Task, Thread, Turn, Item, Artifact, and scheduler owners and adds no Shard record or second workflow engine.
 

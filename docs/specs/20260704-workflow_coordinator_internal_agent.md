@@ -13,7 +13,7 @@ Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordi
 ## Owns
 
 - The reusable Workflow Coordinator Internal Core Role contract.
-- Conversational request classification across Chat Mode, Goal handoff, review, refinement, retry, and unsupported requests; explicit Task delegation selects and composes without semantic reclassification.
+- Trusted explicit Task selection and composition. The Assistant owns conversation. This role does not classify Chat, Task, or Goal from prose.
 - Worker selection, routing decisions, semantic structured-worker-request composition, and delegation drafts for Chat and Task.
 - The structured boundary by which mode services supply knowledge, readiness, context, and evidence summaries and consume Coordinator decisions.
 
@@ -38,7 +38,7 @@ Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordi
 
 ## Summary
 
-Workflow Coordinator is the deterministic Internal Core Role that turns caller-supplied intent and authorized summaries into structured coordination decisions. It classifies conversational requests into Chat, Task, or a Goal handoff. For explicit Task delegation it selects eligible workers and composes bounded worker requests from the preserved instruction and authorized context without a second semantic vote. It does not draft a Goal Plan or produce a Goal stop. The model Coordinator is a separate role owned by `docs/specs/20261002-goal.md` over the shared internal Agent runtime. That role does not convert Workflow Coordinator into a provider-backed service.
+Workflow Coordinator is the deterministic Internal Core Role that turns caller-supplied intent and authorized summaries into structured coordination decisions. It accepts trusted explicit Task selection, selects eligible workers, and composes bounded worker requests from the preserved instruction and authorized context. The Assistant owns conversation. This role does not classify Chat, Task, or Goal from prose. It does not draft a Goal Plan or produce a Goal stop. The model Coordinator is a separate role owned by `docs/specs/20261002-goal.md` over the shared internal Agent runtime. That role does not convert Workflow Coordinator into a provider-backed service.
 
 It is not a worker runtime. It does not execute shell commands, edit files, push commits, or maintain the Knowledge Store directly. It coordinates NanoCore services and worker agents through existing contracts.
 
@@ -46,7 +46,7 @@ It is not a worker runtime. It does not execute shell commands, edit files, push
 
 ### Goals
 
-- Give Chat and Task one shared routing and worker-request contract. Goal handoff is a classification only.
+- Compose an explicit Task request. The Assistant owns conversation, including Goal handoff.
 - Make Coordinator decisions structured, testable, and explainable.
 - Preserve caller-supplied context references in worker delegation.
 - Prevent mode-specific implementations from inventing parallel worker-selection or routing logic.

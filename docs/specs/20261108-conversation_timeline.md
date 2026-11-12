@@ -684,24 +684,24 @@ These needs add no durable records or owners. They reuse attention `blocking`, `
 
 ## Current Implementation Projection
 
-Implementation is In Progress: TW0 is underway; no other slice has landed. The facts below describe the code when this specification was written and move to the relevant local guide as slices land.
+Implementation is In Progress. Bounded server and Web timeline slices have landed, including several Extended reads. One landed slice is not completion of this specification. The notes below name what is current and what stays open.
 
-- **History reads.** The Web caller of `thread.items` (`apps/web/src/screens/chat/data.ts`) reads it unbounded and refetches every 5 s while idle. The server loads every Turn page of the Workspace, keeps this Thread's Turns, flattens their Items and slices by offset (`apps/nanocore/src/thread-operation-implementations.ts`, `apps/nanocore/src/lib/store.ts`). "Load earlier" never appears.
-- **Dashboard.** `thread.dashboard` is polled every 5 s. It embeds every Turn with its Items, reads the Items again, lists Workspace outputs and scans every Turn of every Thread for request validation (`apps/nanocore/src/app-dashboard.ts`). Cost is estimated, not measured, to grow with Threads × Turns. Runs sort by `startedAt ?? ''` (`apps/nanocore/src/lib/store.ts`, `apps/nanocore/src/app-dashboard.ts`). The dashboard's `workStatus` (`packages/app-api-schemas/src/dashboard.ts`) is unused by Web.
-- **Events.** One SSE stream exists, for the running Turn (`packages/core-client/src/events.ts`), with resume by `since`. Item events carry complete Items (`packages/protocol/src/events/envelope.ts`), and Web installs them into its cache. Full bodies are inline in reads (`packages/protocol/src/models/item.ts`).
-- **Rendering.** The Details panel renders every step of the Thread (`apps/web/src/screens/chat/ThreadScreen.tsx`). Per-kind logic to move into the registry: the `switch (item.type)` in `apps/web/src/screens/chat/ItemView.tsx`, `isTimelineDetail` in `apps/web/src/screens/chat/data.ts` and ad hoc rendering in `GoalScreen.tsx`. Internal words to remove: "Recorded Turn {id}" and the coverage sentences in `ThreadStream.tsx`, "Turn N" separators and identifiers on the Goal screen. Thread links today support only `?turnId=`.
+- **History reads.** `thread.timeline` and `thread.items` use bounded pages. Web earlier pages continue from the returned cursor (`apps/web/src/screens/chat/data.ts`). Pending-Turn polling is separate from an idle Thread. The server read is `apps/nanocore/src/thread-timeline.ts`.
+- **Dashboard.** `thread.dashboard` returns one active or latest run header and no Items. Indexed Now and latest-plan fields stay with that bounded read. The storage guide records the covering indexes.
+- **Events.** Ordinary SSE replaces an Item payload above the preview bound with `item-preview` and a body selector. Turn update and terminal events carry headers and empty Items. Clients request a complete body through `thread.item-body`.
+- **Rendering.** The timeline registry, lenses, run windows and resolver live under `apps/web/src/screens/chat/timeline/`. Remaining presentation polish is open. This is not an absence of the timeline surface.
 - **Registry projection.** The protocol has 17 Item types (`ItemTypeSchema` in `packages/protocol/src/models/item.ts`). The registry is declared `satisfies Record<EntryKind, RegistryRow>`, and the completeness test iterates `ItemTypeSchema.options`. The placement table lives in `packages/app-api-schemas` next to the timeline read schema. `Thread.entryPath` is in `packages/protocol/src/models/thread.ts`.
 - **Attention.** Rows with `blocking`, `ageSeconds` and `turnsSince`, and the Workspace review and recovery rows without a required Thread, are in `packages/app-api-schemas/src/action-center.ts`; runtime attention rows are raised in `apps/nanocore/src/action-center.ts`. `attention.list` accepts only a Workspace (`attention-operations.ts`). The existing handoff toast is in `apps/web/src/screens/chat/data.ts`.
-- **Environment and policy sources.** Runtime evidence records (`packages/app-api-schemas/src/runtime-evidence.ts`), route lineage and CapabilityCall status (`packages/protocol/src/models/capability.ts`), usage records with `turnId` (`packages/protocol/src/models/usage.ts`), `policyInvocation` (`audit.ts`, `policy-v1.ts`). `usage.read`, `audit.workspace-list` and `audit.server-list` accept only Workspace, limit and cursor (`packages/app-api-schemas/src/governance-operations.ts`). Runtime activity is in `packages/app-api-schemas/src/dashboard.ts`.
+- **Environment and policy sources.** `usage.read`, `audit.workspace-list` and `audit.server-list` accept intersecting `turnId`, `capabilityCallId` and `itemId` selectors. Filtering precedes pagination, and a continuation keeps the original selectors. Runtime activity on the bounded dashboard remains a separate, narrower read.
 - **Artifacts and errors.** `artifact.version-read` is in `packages/app-api-schemas/src/artifact-operations.ts`; Artifact origin fields are in `packages/protocol/src/models/artifact.ts`. A Turn `error` is `{code, message}` (`packages/protocol/src/models/turn.ts`).
-- **Steer.** `task.steer` is absent from `packages/app-api-schemas` and the adapters; the Pi host test asserts that `steer` is rejected (`packages/pi-runtime-host/src/channel.test.ts`). Adapter hooks at the pinned versions: Codex App Server 0.166.0 `turn/steer` with `expectedTurnId`; Pi SDK 1.4.0 `AgentSession.steer`, where input handled by an extension must report not delivered; OpenCode 2.2.5 steering mode of `session.prompt` with its inbox, which must prove no spill into later runs; DeepSeek dsh 0.2.1-rc.5 has none.
-- **Reporting rules.** Built-in prompts are in `apps/nanocore/src/internal-agents/builtin-prompts.ts`, where `INTERNAL_CONTINUITY_INSTRUCTIONS` shows the append pattern. Approximate prompt sizes by string-literal count: goal-orchestrator 2,800, administration 2,370, knowledge-manager 1,610 and quick-chat 1,390 code points, against the 3,000 cap. Workers receive their structured delegation request (`apps/nanocore/src/internal-agents/delegation.ts`) as `extensions.openkit.turnInput` (`packages/worker-shim/src/turn.ts`), with no reporting guidance.
+- **Steer.** `task.steer`, its receipt and the qualified-availability source exist. Adapter and runtime qualification are separate. That is not acceptance of every adapter. Codex, Pi, OpenCode and DeepSeek still need their own delivery proof.
+- **Reporting rules.** New Task requests carry fixed `reporting-v1` text. The package manifest and trace digest are checked separately. Sampling proof remains separate.
 - **Web primitives.** Semantic tokens are in `apps/web/src/styles/tokens.css`; the visual language is projected in `DESIGN.md`. Toasts use React Aria's `UNSTABLE_ToastQueue` (`apps/web/src/primitives/Toast.tsx`). The raw-color rule is in `apps/web/AGENTS.md`.
 
 | Ref | Route today | Anchor today |
 | --- | --- | --- |
-| thread | `/chat`, `/tasks` or `/goals` + `/:workspaceId/:threadId` | `?turnId=` only |
-| artifact | `/artifacts?workspaceId=&artifact=`; Goal review `/goals/:ws/:thread/artifacts/:id` | No version |
+| thread | `/chat`, `/tasks` or `/goals` + `/:workspaceId/:threadId` | `turn`, `turnId`, `item` and `request` in `apps/web/src/screens/chat/timeline/resolve.ts` |
+| artifact | `/artifacts?workspaceId=&artifact=`; Goal review `/goals/:ws/:thread/artifacts/:id` | exact `version` when the address has one |
 | audit | `/workspace/usage`; `/settings/server-audit` | None |
 | attention | `/attention` (Action Center); owning review or recovery surface | None |
 | knowledge | `/knowledge` | Not verified |
@@ -709,6 +709,8 @@ Implementation is In Progress: TW0 is underway; no other slice has landed. The f
 | connection | `/workspace/vault` | None |
 | gateway | `/settings/gateway` | None |
 | goal-card | Goal route | None |
+
+Audit, attention, knowledge, connection, gateway and goal-card anchors in this table remain unresolved. Thread and Artifact addresses above do not close those gaps.
 
 ## Alternatives Considered
 
