@@ -274,6 +274,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261030-independent_doc_audit_review_part3.md` — Independent Documentation Audit: Team Review Of Part 3
 - `docs/audits/20261030-independent_doc_audit_review_part4.md` — Independent Documentation Audit: Team Review Of Part 4
 - `docs/audits/20261030-independent_doc_audit_review_part5.md` — Independent Documentation Audit: Team Review Of Part 5
+- `docs/audits/20261112-frozen_archive_navigation.md` — Frozen Archive Navigation
 
 ## Platform References
 
