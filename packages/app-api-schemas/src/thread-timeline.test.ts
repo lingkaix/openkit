@@ -5,6 +5,8 @@ import {
   ThreadTimelineInputSchema,
   TimelineDigestSchema,
   TimelineItemDetailSchema,
+  TimelinePlanSegmentsSchema,
+  TimelinePolicyBadgeSchema,
   TimelineStatisticsSchema,
 } from './thread-timeline.js';
 
@@ -91,6 +93,49 @@ describe('bounded Thread timeline contract', () => {
     expect(TimelineStatisticsSchema.safeParse({ ...statistics, failedStepCount: -1 }).success).toBe(
       false
     );
+  });
+
+  it('requires exact typed policy references and a recorded outcome', () => {
+    const badge = {
+      outcome: 'waiting-approval',
+      permissionDecisionId: 'pd_00000000-0000-7000-8000-000000000001',
+      capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+      connectionRef: null,
+    };
+    expect(TimelinePolicyBadgeSchema.safeParse(badge).success).toBe(true);
+    expect(
+      TimelinePolicyBadgeSchema.safeParse({ ...badge, outcome: 'probably-allowed' }).success
+    ).toBe(false);
+    expect(
+      TimelinePolicyBadgeSchema.safeParse({ ...badge, permissionDecisionId: 'missing' }).success
+    ).toBe(false);
+  });
+
+  it('bounds plan intervals and rejects negative counts', () => {
+    const segment = {
+      planItemId: 'it_00000000-0000-7000-8000-000000000001',
+      planRevision: 1,
+      stepId: 'first',
+      title: 'First',
+      startSequence: 1,
+      endSequence: null,
+      steps: 0,
+    };
+    expect(
+      TimelinePlanSegmentsSchema.safeParse({ segments: [segment], coverage: 'complete' }).success
+    ).toBe(true);
+    expect(
+      TimelinePlanSegmentsSchema.safeParse({
+        segments: Array(9).fill(segment),
+        coverage: 'partial',
+      }).success
+    ).toBe(false);
+    expect(
+      TimelinePlanSegmentsSchema.safeParse({
+        segments: [{ ...segment, steps: -1 }],
+        coverage: 'complete',
+      }).success
+    ).toBe(false);
   });
 
   it('bounds preview UTF-8 bytes rather than JavaScript code units', () => {

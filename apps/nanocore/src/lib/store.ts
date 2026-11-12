@@ -5997,6 +5997,24 @@ export class FsStore {
     );
     return read({
       upperOrder: metadata.length,
+      policyEvidence: () => null,
+      planRevisions: (turnId) =>
+        revisions
+          .filter((entry) => entry.item.turnId === turnId && entry.item.type === 'plan')
+          .slice(-10)
+          .map((entry) => ({ ...entry, item: digestItem(entry.item) })),
+      segmentCounts: (turnId, after, before) => {
+        const counts: Partial<Record<Item['type'], number>> = {};
+        for (const entry of revisions)
+          if (
+            entry.item.turnId === turnId &&
+            entry.revision === 1 &&
+            entry.sequence > after &&
+            (before === null || entry.sequence < before)
+          )
+            counts[entry.item.type] = (counts[entry.item.type] ?? 0) + 1;
+        return counts;
+      },
       activeTurn: () =>
         metadata.find((row) => row.record.status === 'pending' || row.record.status === 'running'),
       agentSession: (sessionId) => {

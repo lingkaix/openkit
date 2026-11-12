@@ -1,11 +1,13 @@
 import {
   ActorRefSchema,
   AgentIdSchema,
+  CapabilityCallIdSchema,
   ItemIdSchema,
   ItemSchema,
   ItemStatusSchema,
   type ItemType,
   ItemTypeSchema,
+  PermissionDecisionIdSchema,
   ThreadIdSchema,
   TimestampSchema,
   TurnErrorPresentationSchema,
@@ -119,6 +121,32 @@ export const TimelineSteerStateSchema = z.object({
   reason: z.string().max(512).nullable(),
 });
 
+/** Recorded MCP policy only; absence is not permission and a pending approval is not denial. */
+export const TimelinePolicyBadgeSchema = z.object({
+  outcome: z.enum(['allowed', 'denied', 'waiting-approval']),
+  permissionDecisionId: PermissionDecisionIdSchema,
+  capabilityCallId: CapabilityCallIdSchema,
+  connectionRef: z.string().max(512).nullable(),
+});
+
+/** One recorded plan-step interval, counted by original publication positions rather than clocks. */
+export const TimelinePlanSegmentsSchema = z.object({
+  segments: z
+    .array(
+      z.object({
+        planItemId: ItemIdSchema,
+        planRevision: z.number().int().positive(),
+        stepId: z.string().min(1).max(128),
+        title: z.string().max(256),
+        startSequence: z.number().int().positive(),
+        endSequence: z.number().int().positive().nullable(),
+        steps: z.number().int().nonnegative(),
+      })
+    )
+    .max(8),
+  coverage: z.enum(['complete', 'partial']),
+});
+
 /** An addressed Item's exact lineage accompanies both complete and bounded representations. */
 export const TimelineItemSchema = z.object({
   id: ItemIdSchema,
@@ -131,6 +159,7 @@ export const TimelineItemSchema = z.object({
   actor: ActorRefSchema.nullable(),
   detail: TimelineItemDetailSchema,
   steer: TimelineSteerStateSchema.nullable(),
+  policy: TimelinePolicyBadgeSchema.nullable().optional(),
 });
 
 /** Counts come from original identities; source-derived counts remain restricted until their owner admits them. */
@@ -171,6 +200,7 @@ export const TimelineRunEntrySchema = z.object({
   finalItemId: ItemIdSchema.nullable(),
   narrativeCursor: cursor.nullable(),
   statistics: TimelineStatisticsSchema,
+  planSegments: TimelinePlanSegmentsSchema.optional(),
   interruptedBy: z.discriminatedUnion('visibility', [
     z.object({ visibility: z.literal('restricted') }),
     z.object({ visibility: z.literal('available'), actor: ActorRefSchema.nullable() }),

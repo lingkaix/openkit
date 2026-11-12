@@ -54957,6 +54957,52 @@
                             "type": "null"
                           }
                         ]
+                      },
+                      "policy": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "outcome": {
+                                "type": "string",
+                                "enum": [
+                                  "allowed",
+                                  "denied",
+                                  "waiting-approval"
+                                ]
+                              },
+                              "permissionDecisionId": {
+                                "type": "string",
+                                "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "capabilityCallId": {
+                                "type": "string",
+                                "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                              },
+                              "connectionRef": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "maxLength": 512
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "outcome",
+                              "permissionDecisionId",
+                              "capabilityCallId",
+                              "connectionRef"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
                       }
                     },
                     "required": [
@@ -58024,6 +58070,52 @@
                               "type": "null"
                             }
                           ]
+                        },
+                        "policy": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "outcome": {
+                                  "type": "string",
+                                  "enum": [
+                                    "allowed",
+                                    "denied",
+                                    "waiting-approval"
+                                  ]
+                                },
+                                "permissionDecisionId": {
+                                  "type": "string",
+                                  "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "capabilityCallId": {
+                                  "type": "string",
+                                  "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "connectionRef": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "maxLength": 512
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "outcome",
+                                "permissionDecisionId",
+                                "capabilityCallId",
+                                "connectionRef"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
                         }
                       },
                       "required": [
@@ -58149,6 +58241,82 @@
                     "filesChanged",
                     "messages",
                     "itemCounts",
+                    "coverage"
+                  ],
+                  "additionalProperties": false
+                },
+                "planSegments": {
+                  "type": "object",
+                  "properties": {
+                    "segments": {
+                      "maxItems": 8,
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "planItemId": {
+                            "type": "string",
+                            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "planRevision": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "stepId": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 128
+                          },
+                          "title": {
+                            "type": "string",
+                            "maxLength": 256
+                          },
+                          "startSequence": {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          "endSequence": {
+                            "anyOf": [
+                              {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "steps": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        },
+                        "required": [
+                          "planItemId",
+                          "planRevision",
+                          "stepId",
+                          "title",
+                          "startSequence",
+                          "endSequence",
+                          "steps"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "coverage": {
+                      "type": "string",
+                      "enum": [
+                        "complete",
+                        "partial"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "segments",
                     "coverage"
                   ],
                   "additionalProperties": false
@@ -61356,6 +61524,52 @@
                       "type": "null"
                     }
                   ]
+                },
+                "policy": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "outcome": {
+                          "type": "string",
+                          "enum": [
+                            "allowed",
+                            "denied",
+                            "waiting-approval"
+                          ]
+                        },
+                        "permissionDecisionId": {
+                          "type": "string",
+                          "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "capabilityCallId": {
+                          "type": "string",
+                          "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                        },
+                        "connectionRef": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "maxLength": 512
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "outcome",
+                        "permissionDecisionId",
+                        "capabilityCallId",
+                        "connectionRef"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -64450,6 +64664,52 @@
                                 "requestId",
                                 "state",
                                 "reason"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "policy": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "outcome": {
+                                  "type": "string",
+                                  "enum": [
+                                    "allowed",
+                                    "denied",
+                                    "waiting-approval"
+                                  ]
+                                },
+                                "permissionDecisionId": {
+                                  "type": "string",
+                                  "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "capabilityCallId": {
+                                  "type": "string",
+                                  "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "connectionRef": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "maxLength": 512
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "outcome",
+                                "permissionDecisionId",
+                                "capabilityCallId",
+                                "connectionRef"
                               ],
                               "additionalProperties": false
                             },
@@ -73710,6 +73970,52 @@
                           "requestId",
                           "state",
                           "reason"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "policy": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "outcome": {
+                            "type": "string",
+                            "enum": [
+                              "allowed",
+                              "denied",
+                              "waiting-approval"
+                            ]
+                          },
+                          "permissionDecisionId": {
+                            "type": "string",
+                            "pattern": "^pd_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "capabilityCallId": {
+                            "type": "string",
+                            "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                          },
+                          "connectionRef": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 512
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "outcome",
+                          "permissionDecisionId",
+                          "capabilityCallId",
+                          "connectionRef"
                         ],
                         "additionalProperties": false
                       },
@@ -178255,5 +178561,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:b86c13afc4dc9ad274dc1a41d691d7bf90b44472f6f85c728409d67782d6c42b"
+  "x-openkit-source-digest": "sha256:d4690b949a0951250e42fc327de6871ec501ddda0699d7d048976a421462587b"
 }

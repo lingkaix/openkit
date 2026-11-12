@@ -107,6 +107,8 @@ import {
   ItemTypeSchema,
   isSealedTurnTerminal,
   KnowledgeNotebookPageSchema,
+  PermissionDecisionIdSchema,
+  PolicyDecisionV1Schema,
   readRetainedV1,
   responsibleUserIdForActor,
   type ServerTurnEventEnvelope,
@@ -1000,9 +1002,191 @@ export function readNativeTurnItemCounts(
   }
 }
 
+/** Bounded, version-checked observations; these values confer no execution authority. */
+export interface TimelinePolicyEvidence {
+  callId: string;
+  providerRef: string | null;
+  serviceRef: string | null;
+  decisions: Array<{
+    decision: {
+      decisionId: string;
+      ownerScope: string;
+      workspaceId: string | null;
+      action: string;
+      result: string;
+      contextSummary: Record<string, unknown> | null;
+      resourceSummary: Record<string, unknown> | null;
+      mediation: z.infer<typeof PolicyDecisionV1Schema> | undefined;
+      approvalId: string | null;
+      auditEventId: string;
+    };
+    audit: {
+      workspaceId: string | null;
+      threadId: string | null;
+      turnId: string | null;
+      itemId: string | null;
+      capabilityCallId: string | null;
+      permissionDecisionId: string | null;
+    };
+    pending: Array<{
+      requestId: string;
+      workspaceId: string;
+      threadId: string;
+      turnId: string;
+      policyDecisionId: string | null;
+      serverId: string | null;
+      toolName: string | null;
+      state: string;
+      responsibleUserId: string;
+      requestItem: Item | null;
+    }>;
+  }>;
+}
+
+/** Exact reciprocal MCP lineage, selected by call PK before bounded policy metadata reads. */
+function readTimelinePolicyEvidence(
+  scope: NativeProductScope,
+  reader: ControlStoreProductReadHandle,
+  threadId: string,
+  item: Item
+): TimelinePolicyEvidence | null {
+  if (scope.owner.kind !== 'workspace' || item.type !== 'tool-call' || !item.causationId)
+    return null;
+  const workspaceId = scope.owner.workspaceId;
+  const call = reader.sqlite
+    .prepare(`SELECT schema_version,call_id,provider_ref,service_ref FROM capability_calls
+    WHERE call_id=? AND workspace_id=? AND thread_id=? AND turn_id=? AND item_id=?
+      AND family='mcp' AND capability_id='mcp.call-tool' AND operation='mcp.call-tool'`)
+    .get(item.causationId, workspaceId, threadId, item.turnId, item.id) as
+    | {
+        schema_version: number;
+        call_id: string;
+        provider_ref: string | null;
+        service_ref: string | null;
+      }
+    | undefined;
+  if (!call) return null;
+  readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
+  const selected = reader.sqlite
+    .prepare(`SELECT d.decision_id,
+    coalesce(length(CAST(d.subject_summary_json AS BLOB)),0)+coalesce(length(CAST(d.resource_summary_json AS BLOB)),0)+
+    coalesce(length(CAST(d.context_summary_json AS BLOB)),0)+coalesce(length(CAST(d.mediation_json AS BLOB)),0) AS bytes
+    FROM audit_events a JOIN permission_decisions d ON d.audit_event_id=a.audit_event_id
+    WHERE a.capability_call_id=? AND a.workspace_id=? AND a.thread_id=? AND a.turn_id=?
+    AND d.workspace_id=? AND d.action='tool.use' LIMIT 17`)
+    .all(call.call_id, workspaceId, threadId, item.turnId, workspaceId) as Array<{
+    decision_id: string;
+    bytes: number;
+  }>;
+  if (selected.length > 16 || selected.some((row) => row.bytes > 65_536)) return null;
+  return {
+    callId: call.call_id,
+    providerRef: call.provider_ref,
+    serviceRef: call.service_ref,
+    decisions: selected.map(({ decision_id }) => {
+      const row = reader.sqlite
+        .prepare(`SELECT schema_version,decision_id,owner_scope,workspace_id,action,result,
+        context_summary_json,resource_summary_json,mediation_json,approval_id,audit_event_id
+        FROM permission_decisions WHERE decision_id=?`)
+        .get(decision_id) as Record<string, unknown>;
+      const decision = readRetainedV1({ schemaVersion: row.schema_version }, () => ({
+        decisionId: PermissionDecisionIdSchema.parse(row.decision_id),
+        ownerScope: z.string().parse(row.owner_scope),
+        workspaceId: WorkspaceIdSchema.nullable().parse(row.workspace_id),
+        action: z.string().parse(row.action),
+        result: z.string().parse(row.result),
+        contextSummary: z
+          .record(z.string(), z.unknown())
+          .nullable()
+          .parse(JSON.parse(String(row.context_summary_json))),
+        resourceSummary: z
+          .record(z.string(), z.unknown())
+          .nullable()
+          .parse(JSON.parse(String(row.resource_summary_json))),
+        mediation:
+          row.mediation_json == null
+            ? undefined
+            : PolicyDecisionV1Schema.parse(JSON.parse(String(row.mediation_json))),
+        approvalId: z.string().nullable().parse(row.approval_id),
+        auditEventId: z.string().parse(row.audit_event_id),
+      }));
+      const audit = reader.sqlite
+        .prepare(`SELECT schema_version,workspace_id,thread_id,turn_id,item_id,capability_call_id,permission_decision_id
+        FROM audit_events WHERE audit_event_id=?`)
+        .get(decision.auditEventId) as {
+        schema_version: number;
+        workspace_id: string | null;
+        thread_id: string | null;
+        turn_id: string | null;
+        item_id: string | null;
+        capability_call_id: string | null;
+        permission_decision_id: string | null;
+      };
+      readRetainedV1({ schemaVersion: audit.schema_version }, () => undefined);
+      const pending = reader.sqlite
+        .prepare(`SELECT schema_version,request_id,workspace_id,thread_id,raising_turn_id,request_item_id,
+        policy_decision_id,server_id,tool_name,state,responsible_user_id FROM pending_requests
+        WHERE workspace_id=? AND thread_id=? AND raising_turn_id=? AND policy_decision_id=? AND kind='approval' LIMIT 2`)
+        .all(workspaceId, threadId, item.turnId, decision.decisionId) as Array<{
+        schema_version: number;
+        request_id: string;
+        workspace_id: string;
+        thread_id: string;
+        raising_turn_id: string;
+        request_item_id: string;
+        policy_decision_id: string | null;
+        server_id: string | null;
+        tool_name: string | null;
+        state: string;
+        responsible_user_id: string;
+      }>;
+      return {
+        decision,
+        audit: {
+          workspaceId: audit.workspace_id,
+          threadId: audit.thread_id,
+          turnId: audit.turn_id,
+          itemId: audit.item_id,
+          capabilityCallId: audit.capability_call_id,
+          permissionDecisionId: audit.permission_decision_id,
+        },
+        pending: pending.map((row) => {
+          readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+          const entry = reader.threadItem(threadId, row.request_item_id);
+          return {
+            requestId: row.request_id,
+            workspaceId: row.workspace_id,
+            threadId: row.thread_id,
+            turnId: row.raising_turn_id,
+            policyDecisionId: row.policy_decision_id,
+            serverId: row.server_id,
+            toolName: row.tool_name,
+            state: row.state,
+            responsibleUserId: row.responsible_user_id,
+            requestItem:
+              entry && entry.turnId === item.turnId
+                ? readTimelineRevision(scope, threadId, item.turnId, {
+                    id: row.request_item_id,
+                    content: entry.content,
+                  })
+                : null,
+          };
+        }),
+      };
+    }),
+  };
+}
+
 /** Specialized read capabilities bound to one Thread and one SQLite snapshot. */
 export interface ThreadTimelineSnapshot {
   readonly upperOrder: number;
+  policyEvidence(item: Item): TimelinePolicyEvidence | null;
+  planRevisions(turnId: string): Array<{ sequence: number; revision: number; item: Item | null }>;
+  segmentCounts(
+    turnId: string,
+    after: number,
+    before: number | null
+  ): Partial<Record<Item['type'], number>>;
   activeTurn(): ControlThreadTurnSnapshot | undefined;
   agentSession(sessionId: string): ControlProductSnapshot | undefined;
   turns(window: ThreadTurnWindow): ControlThreadTurnSnapshot[];
@@ -1048,6 +1232,32 @@ export function withNativeThreadTimelineSnapshot<T>(
     return reader.sqlite.transaction(() =>
       read({
         upperOrder: readThreadAdmissionHead(reader.sqlite, threadId),
+        policyEvidence: (item) => readTimelinePolicyEvidence(scope, reader, threadId, item),
+        planRevisions: (turnId) => {
+          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return [];
+          const rows = reader.sqlite
+            .prepare(`SELECT sequence,revision FROM control_product_entries
+            WHERE kind='item' AND turn_id=? AND json_extract(identity_json,'$.type')='plan'
+            ORDER BY sequence DESC LIMIT 10`)
+            .all(turnId) as Array<{ sequence: number; revision: number }>;
+          return rows.reverse().map((row) => {
+            const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0]!;
+            return {
+              sequence: row.sequence,
+              revision: row.revision,
+              item: readTimelineRevision(scope, threadId, turnId, entry),
+            };
+          });
+        },
+        segmentCounts: (turnId, after, before) => {
+          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return {};
+          const rows = reader.sqlite
+            .prepare(`SELECT json_extract(identity_json,'$.type') AS type,count(*) AS count
+            FROM control_product_entries WHERE kind='item' AND turn_id=? AND revision=1 AND sequence>?
+            AND (? IS NULL OR sequence<?) GROUP BY json_extract(identity_json,'$.type')`)
+            .all(turnId, after, before, before) as Array<{ type: Item['type']; count: number }>;
+          return Object.fromEntries(rows.map((row) => [ItemTypeSchema.parse(row.type), row.count]));
+        },
         activeTurn: () => readActiveThreadTurnSnapshot(reader.sqlite, scope.owner, threadId),
         agentSession: (sessionId) => {
           const row = readNativeProduct(scope, 'agent-session', sessionId, reader);

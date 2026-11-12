@@ -33,6 +33,7 @@ import type {
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
 import { readThreadReceiptMembership } from './thread-read-state.js';
+import { projectTimelinePolicy, readTimelinePlanSegments } from './thread-timeline-attributes.js';
 import { readTimelineDigest } from './thread-timeline-digest.js';
 import { projectTurnErrorPresentation, turnErrorInspectAction } from './turn-error-presentation.js';
 
@@ -127,7 +128,8 @@ export function itemBodyText(item: Item): {
 export function projectTimelineItem(
   item: Item,
   budget: number,
-  owner: ThreadTimelineReadInput
+  owner: ThreadTimelineReadInput,
+  snapshot?: ThreadTimelineSnapshot
 ): TimelineItem {
   item = ItemSchema.parse(item);
   const base = {
@@ -139,6 +141,16 @@ export function projectTimelineItem(
     createdAt: item.createdAt,
     completedAt: item.completedAt,
     actor: 'actor' in item ? item.actor : null,
+    policy:
+      item.type === 'tool-call' &&
+      snapshot &&
+      owner.coreDb &&
+      isWorkspaceOperationAuthorized(owner.coreDb, owner.actor, owner.input.workspaceId, {
+        policyOperation: 'audit.read',
+        mutating: false,
+      })
+        ? projectTimelinePolicy(item, snapshot.policyEvidence(item))
+        : null,
     steer: readTaskSteerState(owner.store, owner.input.workspaceId, owner.input.threadId, item, {
       coreDb: owner.coreDb,
       inputHash:
@@ -305,7 +317,7 @@ function itemWindow(
       restricted = true;
       return [];
     }
-    return [projectTimelineItem(item, itemBudget, owner)];
+    return [projectTimelineItem(item, itemBudget, owner, snapshot)];
   });
   const first = positions[0]?.sequence,
     last = positions.at(-1)?.sequence;
@@ -422,6 +434,11 @@ function runEntry(
     interruptedBy: { visibility: 'restricted' },
     restrictedReferences: false,
   };
+  base.planSegments = readTimelinePlanSegments(
+    snapshot,
+    turn.id,
+    Math.max(128, Math.min(1536, Math.floor(budget / 3)))
+  );
   let remaining = Math.max(512, budget - bytes(base) - 128);
   const allowance = Math.max(
     384,
@@ -440,7 +457,7 @@ function runEntry(
       restricted = true;
       return;
     }
-    const projected = projectTimelineItem(item, Math.min(allowance, remaining), owner);
+    const projected = projectTimelineItem(item, Math.min(allowance, remaining), owner, snapshot);
     if (bytes(projected) > remaining) return;
     remaining -= bytes(projected) + 1;
     if (isPlan) base.plan = projected;
