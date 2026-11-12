@@ -74119,6 +74119,158 @@
                       "type": "string",
                       "minLength": 1
                     },
+                    "origin": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "startedBy": {
+                              "anyOf": [
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "user"
+                                    },
+                                    "id": {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "id"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "enum": [
+                                        "agent",
+                                        "integration",
+                                        "system"
+                                      ]
+                                    },
+                                    "id": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "responsibleUserId": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "id",
+                                    "responsibleUserId"
+                                  ],
+                                  "additionalProperties": false
+                                },
+                                {
+                                  "type": "object",
+                                  "properties": {
+                                    "kind": {
+                                      "type": "string",
+                                      "const": "automation"
+                                    },
+                                    "id": {
+                                      "type": "string",
+                                      "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    "responsibleUserId": {
+                                      "anyOf": [
+                                        {
+                                          "type": "string",
+                                          "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "kind",
+                                    "id",
+                                    "responsibleUserId"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              ]
+                            },
+                            "startedAt": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "viewerStartedRun": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            },
+                            "viewerCausedHandoff": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "startedBy",
+                            "startedAt",
+                            "viewerStartedRun",
+                            "viewerCausedHandoff"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "questionSummary": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "text": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "truncated": {
+                              "type": "boolean"
+                            }
+                          },
+                          "required": [
+                            "text",
+                            "truncated"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
                     "severity": {
                       "type": "string",
                       "enum": [
@@ -126012,6 +126164,158 @@
                 "summary": {
                   "type": "string",
                   "minLength": 1
+                },
+                "origin": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "startedBy": {
+                          "anyOf": [
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "user"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "agent",
+                                    "integration",
+                                    "system"
+                                  ]
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "const": "automation"
+                                },
+                                "id": {
+                                  "type": "string",
+                                  "pattern": "^auto_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                },
+                                "responsibleUserId": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "id",
+                                "responsibleUserId"
+                              ],
+                              "additionalProperties": false
+                            }
+                          ]
+                        },
+                        "startedAt": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "viewerStartedRun": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "viewerCausedHandoff": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "startedBy",
+                        "startedAt",
+                        "viewerStartedRun",
+                        "viewerCausedHandoff"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "questionSummary": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "text": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "text",
+                        "truncated"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 },
                 "severity": {
                   "type": "string",
@@ -178593,5 +178897,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:a7d9ef822cfacd69fa868914c8d57d11fc3af5a74720a8ba1594c663dc73271c"
+  "x-openkit-source-digest": "sha256:b7935df9a122fdf94f98f3514c4a293efa2925396c6089c4ce7d4e5a8c7a946c"
 }

@@ -252,6 +252,29 @@ export const HumanAttentionRowSchema = z
     taskId: z.string().min(1).optional(),
     title: z.string().min(1),
     summary: z.string().min(1),
+    /** Exact admitted source run; unknown relationships remain nullable. */
+    origin: z
+      .object({
+        startedBy: ActorRefSchema,
+        startedAt: TimestampSchema.nullable(),
+        viewerStartedRun: z.boolean().nullable(),
+        viewerCausedHandoff: z.boolean().nullable(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    /** Ordered actual question text, never prompt/options or answer values. */
+    questionSummary: z
+      .object({
+        text: z
+          .string()
+          .min(1)
+          .refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= 1024),
+        truncated: z.boolean(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
     severity: HumanAttentionSeveritySchema,
     createdAt: z.string().min(1),
     ageSeconds: z.number().int().nonnegative().optional(),

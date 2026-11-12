@@ -119,7 +119,7 @@ function buildHumanAttentionRows(input: BuildHumanAttentionRowsInput): HumanAtte
   ];
 
   return rows
-    .map(boundedAttentionRow)
+    .map((row) => boundedAttentionRow(row, input))
     .sort(
       (left, right) =>
         compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.id, right.id)
@@ -343,10 +343,71 @@ function visibleWorkspaceReviewOrigin(
   return { threadId: artifact.origin.threadId, turnId: artifact.origin.turnId };
 }
 
+/** Current source read permission is independent from a row's response/action permission. */
+function attentionSourceReadable(input: BuildHumanAttentionRowsInput, threadId: string): boolean {
+  return (
+    !!input.actor &&
+    !!input.coreDb &&
+    isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+      policyOperation: 'thread.read',
+      mutating: false,
+    }) &&
+    isThreadIdVisible(
+      input.store,
+      input.workspaceId,
+      threadId,
+      input.actor.userId,
+      input.administratorEligible
+    )
+  );
+}
+
+/** One exact source Turn, never latest work or accountability substituted for human initiation. */
+function attentionOrigin(
+  input: BuildHumanAttentionRowsInput,
+  row: HumanAttentionRow
+): HumanAttentionRow['origin'] {
+  if (
+    !row.threadId ||
+    !row.turnId ||
+    row.workspaceId !== input.workspaceId ||
+    !attentionSourceReadable(input, row.threadId)
+  )
+    return null;
+  if (
+    ('threadId' in row.source && row.source.threadId !== row.threadId) ||
+    ('turnId' in row.source && row.source.turnId !== row.turnId)
+  )
+    return null;
+  try {
+    const turn = input.store.getTurnMetadata(input.workspaceId, row.threadId, row.turnId);
+    if (Buffer.byteLength(JSON.stringify(turn.triggerActor), 'utf8') > 512) return null;
+    const human =
+      turn.triggerActor.kind === 'user' ? turn.triggerActor.id === input.actor!.userId : null;
+    return {
+      startedBy: turn.triggerActor,
+      startedAt: turn.startedAt,
+      viewerStartedRun: human,
+      viewerCausedHandoff: turn.triggerSource
+        ? turn.triggerSource.kind === 'handoff'
+          ? human
+          : false
+        : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** Shared descriptive display bounds leave source identities and exact decision detail with their owners. */
-function boundedAttentionRow(row: HumanAttentionRow): HumanAttentionRow {
+function boundedAttentionRow(
+  row: HumanAttentionRow,
+  input: BuildHumanAttentionRowsInput
+): HumanAttentionRow {
   return {
     ...row,
+    origin: row.origin === undefined ? attentionOrigin(input, row) : row.origin,
+    questionSummary: row.questionSummary ?? null,
     title: boundedJsonText(row.title, 512),
     summary: boundedJsonText(row.summary, 1024),
     ...(row.recommendedAction
@@ -387,7 +448,7 @@ export function readScopedHumanAttention(
     ...pending.items,
     ...(review ? artifactReviewRows({ ...input, reviewCandidates }) : []),
   ]
-    .map(boundedAttentionRow)
+    .map((row) => boundedAttentionRow(row, input))
     .sort(
       (a, b) =>
         Number(b.blocking === true) - Number(a.blocking === true) ||
@@ -448,12 +509,18 @@ export function pendingProjectionFacts(
         : [];
     });
     const raising = turns.find((turn) => turn.id === record.raisingTurnId);
+    const requestItem = raising?.items.find((item) => item.id === record.requestItemId);
     const latest = snapshot.turns({ upper: snapshot.upperOrder, direction: 'before', limit: 1 })[0];
     const presentationTurns = raising ? [raising] : [];
     if (latest && latest.record.id !== raising?.id)
       presentationTurns.push(TurnRecordSchema.parse({ ...latest.record, items: [] }) as Turn);
     const rank = snapshot.turnRanks(record.raisingTurnId);
     return {
+      questionTexts:
+        requestItem?.type === 'user-input-request' &&
+        !requestItem.questions.some((question) => question.isSecret === true)
+          ? requestItem.questions.map((question) => question.question)
+          : null,
       contradiction: foreign
         ? { requestId: record.requestId, reason: 'request-item-lineage' }
         : validateCanonicalLoad(
@@ -509,7 +576,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
         !input.administratorEligible
       )
         continue;
-      const { contradiction, presentation } = pendingProjectionFacts(input, record);
+      const { contradiction, presentation, questionTexts } = pendingProjectionFacts(input, record);
       pendingRequests.push({
         requestId: record.requestId,
         state: contradiction ? 'inspect-only' : record.state,
@@ -522,6 +589,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
       if (record.kind === 'approval') {
         rows.push({
           id: `approval:${record.requestId}`,
+          ...(contradiction ? { origin: null } : {}),
           kind: 'approval',
           workspaceId: record.workspaceId,
           threadId: record.threadId,
@@ -571,6 +639,7 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
       }
       rows.push({
         id: `question:${record.requestId}`,
+        ...(contradiction ? { origin: null } : {}),
         kind: 'question',
         workspaceId: record.workspaceId,
         threadId: record.threadId,
@@ -578,6 +647,17 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
         itemId: record.requestItemId,
         title: 'Answer required',
         summary: 'Answer the question on its pending request.',
+        questionSummary:
+          !contradiction &&
+          !secret &&
+          attentionSourceReadable(input, record.threadId) &&
+          questionTexts?.length
+            ? (() => {
+                const full = questionTexts.join('\n\n');
+                const text = boundedJsonText(full, 1024);
+                return { text, truncated: text !== full };
+              })()
+            : null,
         severity: 'needs_input',
         createdAt: record.createdAt,
         ageSeconds: presentation.ageSeconds,

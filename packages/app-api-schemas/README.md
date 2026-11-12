@@ -65,6 +65,8 @@ The [Core Client Boundary](../../docs/specs/20260528-core_client_boundary.md) pe
 
 These schemas are shared by `apps/nanocore` and `@openkit/core-client` while the App API remains an implementation projection over the stable Core protocol.
 
+Shared attention rows add nullable `origin` (`startedBy`, `startedAt`, `viewerStartedRun`, `viewerCausedHandoff`) from the exact readable source Turn. Unknown human causation stays null; non-human accountability is not initiation. Nullable `questionSummary: { text, truncated }` contains the canonical decision Item's ordered question text (paragraph-separated), never prompt, option labels or answers, bounded to 1,024 serialized UTF-8 bytes. Source-read denial, contradiction, missing content or secret questions yields no summary. These optional read fields do not alter row actionability.
+
 Scheduler admission denials exclude the retired generic target-health variant. Pool, queue, policy and request denials remain shared by attention, dashboard and Web readers.
 
 `src/pending-request.ts` validates the derived approval-effect preview for App read models. User-input answer and pending-request withdrawal commands and their outcome belong to `@openkit/protocol`. NanoCore owns the durable request, grant, execution, and delivery lifecycle; a completed raising Turn does not close its request.
