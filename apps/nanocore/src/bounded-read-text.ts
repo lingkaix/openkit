@@ -7,7 +7,7 @@ export function previewUtf8(encoded: Buffer, side: 'head' | 'tail', maximum: num
     side === 'head' ? encoded.subarray(0, maximum) : encoded.subarray(encoded.length - maximum);
   for (;;) {
     try {
-      return new TextDecoder('utf8', { fatal: true }).decode(selected);
+      return new TextDecoder('utf8', { fatal: true, ignoreBOM: true }).decode(selected);
     } catch {
       selected = side === 'head' ? selected.subarray(0, -1) : selected.subarray(1);
     }

@@ -44,7 +44,7 @@ export function createTaskConversationOperationImplementations(
                 dependencies.coreDb,
                 publicOperationActor(context),
                 target.workspaceId,
-                { policyOperation: 'turn.run', mutating: false }
+                { policyOperation: 'turn.run', mutating: true }
               )
             )
               return { availability: 'unavailable', reason: 'steer_not_authorized' };
