@@ -1,13 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { realpath, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
   type WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS,
   WorkspaceSnapshotReportSchema,
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
-import { publishDurableFile, removeDurableFile } from '@openkit/storage';
+import { sha256Hex } from '@openkit/protocol/digest';
+import {
+  copyVerifiedFile,
+  createPrivateTree,
+  publishDurableFile,
+  removeDurableFile,
+  removePrivateTree,
+} from '@openkit/storage';
 import type { Actor } from '../auth/identity.js';
 import {
   isScopeAdmitted,
@@ -33,7 +42,10 @@ import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { workspaceRecoveryCandidateDigest as candidateDigest } from './data-root-backup.js';
+import {
+  workspaceRecoveryCandidateDigest as candidateDigest,
+  inventoryRegularFiles,
+} from './data-root-backup.js';
 import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
@@ -189,13 +201,23 @@ async function finishTarget(
   const final = join(core.dataRoot, 'workspaces', workspaceId);
   const predecessor = workspaceRecoveryPredecessorRoot(owned);
   const candidate = existsSync(owned.candidate_ref) ? owned.candidate_ref : final;
-  if (!owned.proof.candidateDigest || candidateDigest(candidate) !== owned.proof.candidateDigest)
+  const inventory = inventoryRegularFiles(candidate);
+  if (
+    !owned.proof.candidateDigest ||
+    sha256Hex(JSON.stringify(inventory)) !== owned.proof.candidateDigest
+  )
     refuseRecovery('recovery-required');
-  const db = openRecoveryDatabase(join(candidate, 'db/workspace.sqlite'));
-  try {
-    if (db.pragma('integrity_check', { simple: true }) !== 'ok') refuseRecovery('invalid-database');
-  } finally {
-    db.close();
+  if (owner.native && candidate === final) {
+    await inspectSelectedTarget(owner, owned, candidate, inventory);
+  } else {
+    // Unpublished candidates and stopped root-lock inspection keep their original physical owner.
+    const db = openRecoveryDatabase(join(candidate, 'db/workspace.sqlite'));
+    try {
+      if (db.pragma('integrity_check', { simple: true }) !== 'ok')
+        refuseRecovery('invalid-database');
+    } finally {
+      db.close();
+    }
   }
   if (candidate !== final) {
     deps.atBoundary?.('before-target-rename');
@@ -232,6 +254,82 @@ async function finishTarget(
     deps.atBoundary?.('after-registration-commit');
     return report;
   });
+}
+
+/** Checks the exact retained target on private bytes without acquiring a published Main writer. */
+async function inspectSelectedTarget(
+  owner: TargetCoreOwner,
+  owned: RecoveryAdmission,
+  candidate: string,
+  inventory: ReturnType<typeof inventoryRegularFiles>
+): Promise<void> {
+  const inputs = ['', '-wal', '-journal'].flatMap((suffix) => {
+    const entry = inventory.find((file) => file.path === `db/workspace.sqlite${suffix}`);
+    if (!entry && !suffix) refuseRecovery('workspace-unavailable');
+    return entry ? [{ suffix, entry }] : [];
+  });
+  const [root, scratchParent, identity] = await Promise.all([
+    realpath(candidate),
+    realpath(tmpdir()),
+    stat(candidate, { bigint: true }),
+  ]);
+  assertTargetRecoveryOwner(owner, owner.core.dataRoot, owned.workspace_id);
+  if (root !== resolve(candidate)) refuseRecovery('unsafe-path');
+  for (const source of [resolve(owner.core.dataRoot), root]) {
+    const inside = relative(source, scratchParent);
+    if (!inside || (!isAbsolute(inside) && inside !== '..' && !inside.startsWith(`..${sep}`)))
+      refuseRecovery('unsafe-path');
+  }
+  const admission =
+    owner.fileAdmission ?? new FileStorageAdmission(owner.core.dataRoot, () => 1_000_000_000n);
+  const bytes = inputs.reduce((sum, { entry }) => sum + BigInt(entry.bytes), 0n);
+  const reservation = admission.forPath(scratchParent).reserve({
+    stagingBytes: bytes * 2n + 98_304n,
+    extractionBytes: 0n,
+    derivativeBytes: 0n,
+    publicationBytes: 0n,
+  });
+  let scratch: string | undefined;
+  try {
+    scratch = await createPrivateTree(scratchParent, 'openkit-recovery-inspection-');
+    assertTargetRecoveryOwner(owner, owner.core.dataRoot, owned.workspace_id);
+    const copy = join(scratch, 'inspection');
+    for (const { suffix, entry } of inputs) {
+      await copyVerifiedFile({
+        sourcePath: join(root, entry.path),
+        destinationPath: `${copy}${suffix}`,
+        expectedBytes: entry.bytes,
+        expectedSha256: entry.digest,
+        maxBytes: entry.bytes,
+        mode: 0o600,
+      });
+      assertTargetRecoveryOwner(owner, owner.core.dataRoot, owned.workspace_id);
+    }
+    // The original physical opener is confined to unpublished bytes; source files never reach SQLite.
+    const db = openRecoveryDatabase(copy);
+    try {
+      if (db.pragma('integrity_check', { simple: true }) !== 'ok')
+        refuseRecovery('invalid-database');
+    } finally {
+      db.close();
+    }
+  } finally {
+    if (scratch) await removePrivateTree(scratch);
+    // Cleanup failure retains its physical forecast and prevents placement.
+    reservation.release();
+  }
+  const [currentRoot, currentIdentity] = await Promise.all([
+    realpath(candidate),
+    stat(candidate, { bigint: true }),
+  ]);
+  assertTargetRecoveryOwner(owner, owner.core.dataRoot, owned.workspace_id);
+  if (
+    currentRoot !== root ||
+    currentIdentity.dev !== identity.dev ||
+    currentIdentity.ino !== identity.ino ||
+    candidateDigest(candidate) !== owned.proof.candidateDigest
+  )
+    refuseRecovery('recovery-required');
 }
 
 /** Keeps every stopped native Core effect joined or terminated before the original root lock releases. */

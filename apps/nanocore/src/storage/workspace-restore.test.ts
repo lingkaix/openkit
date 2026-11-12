@@ -16,9 +16,10 @@ import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
-import { type Worker as NativeWorker, Worker } from 'node:worker_threads';
+import { isMainThread, type Worker as NativeWorker, Worker } from 'node:worker_threads';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
+import { copyFileForCut } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import {
@@ -84,8 +85,10 @@ import { nativeProductScope, readNativeTurnHistory } from './workspace-file-reco
 import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
+  openRecoveryDatabase,
   readRecoveryAdmission,
   resumeWorkspaceRecoveryOwner,
+  workspaceRecoveryPredecessorRoot,
 } from './workspace-recovery-admissions.js';
 import {
   runWorkspaceRecoveryCli,
@@ -99,6 +102,58 @@ import {
   admitWorkspaceBackupAtCore,
   finishWorkspaceRecoveryAtCore,
 } from './workspace-restore.js';
+
+/** Passive Q05 observation keeps the real SQLite constructor, native SQL and replies. */
+const recoveryInspectionObservation = vi.hoisted(() => ({
+  beforeConstruct: undefined as ((path: unknown) => Q05InputBinding | undefined) | undefined,
+  onConstruct: undefined as
+    | ((sqlite: import('better-sqlite3').Database, before?: Q05InputBinding) => void)
+    | undefined,
+  native: undefined as
+    | {
+        corePath: string;
+        inspectedPath: string;
+        inspectedInode: string;
+        inputs: Q05InputBinding['inputs'];
+        admissionId: string;
+        workspaceId: string;
+        gate: SharedArrayBuffer;
+      }
+    | undefined,
+  posts: [] as { id: number; database: string; admissionId: string; workspaceId: string }[],
+  replies: [] as { id: number; status: string; operation: string }[],
+  shutdownReplies: [] as number[],
+  workerEntries: 0,
+  privateNative: [] as Array<{
+    path: string;
+    inode: string;
+    beforeConstructor: Q05InputBinding;
+    sourceBeforeIntegrity: Q05InputBinding;
+    readonly: boolean;
+    queryOnly: number;
+    inTransaction: boolean;
+    result: unknown;
+    order: number;
+  }>,
+  boundaries: [] as Array<{ edge: string; order: number; integrityOrder: number }>,
+}));
+
+// A transparent constructor observer, not a SQLite double. Prototype method
+// observation below also sees actual connections obtained through CommonJS.
+vi.mock('better-sqlite3', async (load) => {
+  const actual = await load<{ default: typeof Database }>();
+  return {
+    ...actual,
+    default: new Proxy(actual.default, {
+      construct(target, args, newTarget) {
+        const before = recoveryInspectionObservation.beforeConstruct?.(args[0]);
+        const sqlite = Reflect.construct(target, args, newTarget);
+        recoveryInspectionObservation.onConstruct?.(sqlite, before);
+        return sqlite;
+      },
+    }),
+  };
+});
 
 const registrationInterception = vi.hoisted(() => ({
   selected: undefined as
@@ -120,10 +175,149 @@ vi.mock('node:worker_threads', async (load) => {
   return {
     ...actual,
     Worker: class extends actual.Worker {
+      override emit(event: string | symbol, ...args: unknown[]): boolean {
+        const message = args[0] as
+          | {
+              __openkitQ05PrivateIntegrity?: (typeof recoveryInspectionObservation.privateNative)[number];
+            }
+          | undefined;
+        if (event === 'message' && message?.__openkitQ05PrivateIntegrity) {
+          // Observer metadata is consumed here, never presented as an unknown reply to the real client.
+          recoveryInspectionObservation.privateNative.push(message.__openkitQ05PrivateIntegrity);
+          return true;
+        }
+        return super.emit(event, ...args);
+      }
       constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
         const selected = registrationInterception.selected;
         if (!selected) {
-          super(filename, options);
+          const inspection = recoveryInspectionObservation.native;
+          if (!inspection) {
+            super(filename, options);
+            return;
+          }
+          const prelude = `
+            const { workerData, parentPort } = require('node:worker_threads');
+            const fs = require('node:fs');
+            const { createHash } = require('node:crypto');
+            const Module = require('node:module');
+            const facts = workerData.q05Inspection;
+            const gate = new Int32Array(facts.gate);
+            const bindings = new WeakMap();
+            const inputBinding = (path) => {
+              if (typeof path !== 'string' || !fs.existsSync(path) || !fs.statSync(path).isFile()) return;
+              const file = fs.statSync(path);
+              const inputs = Object.fromEntries(['', '-wal', '-journal'].map(suffix => {
+                const name = path + suffix;
+                return [suffix, fs.existsSync(name) ? {bytes:fs.statSync(name).size,sha256:createHash('sha256').update(fs.readFileSync(name)).digest('hex')} : null];
+              }));
+              return {path,inode:file.dev+':'+file.ino,inputs};
+            };
+            const sameInputs = (a,b) => JSON.stringify(a) === JSON.stringify(b);
+            const databaseModule = require.resolve(workerData.q05DatabaseModule);
+            if (require.cache[databaseModule]) throw new Error('Q05 driver loaded before its constructor observer.');
+            const loadJs = Module._extensions['.js'];
+            const hook = function(mod, filename) {
+              loadJs(mod, filename);
+              if (filename !== databaseModule) return;
+              const Driver = mod.exports;
+              mod.exports = new Proxy(Driver, {construct(target,args,newTarget) {
+                const before = inputBinding(args[0]);
+                const source = before && inputBinding(facts.inspectedPath);
+                const selected = before && before.inode === facts.inspectedInode;
+                const privateCopy = before && !selected && source?.inode === facts.inspectedInode && sameInputs(before.inputs,facts.inputs) && sameInputs(source.inputs,facts.inputs);
+                const sqlite = Reflect.construct(target,args,newTarget);
+                if (selected || privateCopy) bindings.set(sqlite,{before,privateCopy});
+                return sqlite;
+              }});
+              if (Module._extensions['.js'] === hook) Module._extensions['.js'] = loadJs;
+            };
+            Module._extensions['.js'] = hook;
+            const Database = require(databaseModule);
+            const pragma = Database.prototype.pragma;
+            const execute = Database.prototype.exec;
+            Database.prototype.pragma = function(sql, ...args) {
+              const binding = bindings.get(this);
+              const sourceBeforeIntegrity = binding?.privateCopy && inputBinding(facts.inspectedPath);
+              const result = pragma.call(this, sql, ...args);
+              if (/^integrity_check(?:\\s|$)/i.test(sql) && binding) {
+                if (result !== 'ok') throw new Error('Q05 native integrity observation was not ok.');
+                const current = inputBinding(this.name);
+                if (current?.inode !== binding.before.inode) throw new Error('Q05 actual native inspection binding changed.');
+                const order = Atomics.add(gate,3,1)+1;
+                Atomics.compareExchange(gate,4,0,order);
+                if (binding.privateCopy) {
+                  if (sourceBeforeIntegrity?.inode !== facts.inspectedInode || !sameInputs(sourceBeforeIntegrity.inputs,facts.inputs)) throw new Error('Q05 private native source bytes changed.');
+                  Atomics.add(gate,5,1);
+                  parentPort.postMessage({__openkitQ05PrivateIntegrity:{path:this.name,inode:binding.before.inode,beforeConstructor:binding.before,sourceBeforeIntegrity,readonly:this.readonly,queryOnly:pragma.call(this,'query_only',{simple:true}),inTransaction:this.inTransaction,result,order}});
+                } else Atomics.add(gate,0,1);
+              }
+              return result;
+            };
+            Database.prototype.exec = function(sql) {
+              const result = execute.call(this, sql);
+              if (/^COMMIT$/i.test(sql) && this.name === facts.corePath) {
+                const row = this.prepare(
+                  'SELECT state,workspace_id FROM workspace_recovery_admissions WHERE admission_id=?'
+                ).get(facts.admissionId);
+                if (row?.state === 'finished' && row.workspace_id === facts.workspaceId) {
+                  if (this.inTransaction) throw new Error('Q05 covering COMMIT is still active.');
+                  Atomics.store(gate,2,pragma.call(this,'synchronous',{simple:true}));
+                  Atomics.add(gate,1,1);
+                }
+              }
+              return result;
+            };
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          const require = createRequire(import.meta.url);
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              q05Inspection: inspection,
+              q05DatabaseModule: require.resolve('better-sqlite3'),
+            },
+          });
+          recoveryInspectionObservation.workerEntries += 1;
+          const post = this.postMessage.bind(this);
+          const selectedIds = new Set<number>();
+          this.postMessage = (message, ...args) => {
+            if (
+              message.operation === 'recovery-target-registration' &&
+              message.database === `core:${inspection.corePath}` &&
+              message.input?.admissionId === inspection.admissionId &&
+              message.input?.workspaceId === inspection.workspaceId
+            ) {
+              const gate = new Int32Array(inspection.gate);
+              recoveryInspectionObservation.boundaries.push({
+                edge: 'registration-post',
+                order: Atomics.add(gate, 3, 1) + 1,
+                integrityOrder: Atomics.load(gate, 4),
+              });
+              selectedIds.add(message.id);
+              recoveryInspectionObservation.posts.push({
+                id: message.id,
+                database: message.database,
+                admissionId: message.input.admissionId,
+                workspaceId: message.input.workspaceId,
+              });
+            }
+            return post(message, ...args);
+          };
+          this.on('message', (reply) => {
+            if (selectedIds.has(reply.id))
+              recoveryInspectionObservation.replies.push({
+                id: reply.id,
+                status: reply.status,
+                operation: reply.operation,
+              });
+            if (reply.status === 'ok' && reply.operation === 'shutdown')
+              recoveryInspectionObservation.shutdownReplies.push(reply.id);
+          });
           return;
         }
         const prelude = `
@@ -2768,5 +2962,595 @@ describe('Recovery readmission joins bound native Policy publication', () => {
         publication.mockRestore();
       }
     }
+  );
+});
+
+/** Reads an independent stopped byte copy, never opens the selected source to prepare an oracle. */
+function q05RetainedRows(root: string, source: string, label: string) {
+  const copy = join(root, `q05-${label}.sqlite`);
+  copyFileSync(source, copy);
+  if (existsSync(`${source}-wal`)) copyFileSync(`${source}-wal`, `${copy}-wal`);
+  const db = new Database(copy, { readonly: true, fileMustExist: true });
+  try {
+    return Object.fromEntries(
+      [
+        'control_workspaces',
+        'control_threads',
+        'control_turns',
+        'control_product_entries',
+        'idempotency_requests',
+        'audit_events',
+        'pending_requests',
+      ].map((table) => [
+        table,
+        // Row contents, including sequence/revision/lineage, stay exact. Rowid is not an owner.
+        db
+          .prepare(`SELECT * FROM "${table}"`)
+          .all()
+          .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+      ])
+    );
+  } finally {
+    db.close();
+  }
+}
+
+/** Exact byte inputs, captured before SQLite can create or recover its own sidecars. */
+function q05InputBinding(path: string) {
+  if (!existsSync(path) || !statSync(path).isFile()) return undefined;
+  const file = statSync(path);
+  const inputs = Object.fromEntries(
+    ['', '-wal', '-journal'].map((suffix) => {
+      const name = path + suffix;
+      return [
+        suffix,
+        existsSync(name) ? { bytes: statSync(name).size, sha256: sha(readFileSync(name)) } : null,
+      ];
+    })
+  );
+  return { path, inode: `${file.dev}:${file.ino}`, inputs };
+}
+type Q05InputBinding = NonNullable<ReturnType<typeof q05InputBinding>>;
+function q05SameInputs(left: Q05InputBinding['inputs'], right: Q05InputBinding['inputs']) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+/** A shared sequence orders actual completed integrity before the original placement/registration edges. */
+function q05IntegrityOrder(gate: Int32Array) {
+  const order = Atomics.add(gate, 3, 1) + 1;
+  Atomics.compareExchange(gate, 4, 0, order);
+  return order;
+}
+
+/** Observes source handles and independently byte-bound private inspections without requiring either strategy. */
+function q05ObserveMain(
+  inspectedPath: string,
+  inspectInode: string,
+  probeWrite: boolean,
+  gate: Int32Array
+) {
+  const source = q05InputBinding(inspectedPath)!;
+  expect(source.inode).toBe(inspectInode);
+  const connections = new Map<
+    Database.Database,
+    {
+      path: string;
+      inode: string;
+      readonly: boolean;
+      firstEdge: string;
+      queryOnlyAtClose?: number;
+      physicallyClosed?: boolean;
+    }
+  >();
+  const inspections: {
+    path: string;
+    inode: string;
+    readonly: boolean;
+    queryOnly: number;
+    inTransaction: boolean;
+    order?: number;
+    result?: unknown;
+    protectedUpdate?: { allowed: boolean; code: string | null; rolledBack: boolean };
+  }[] = [];
+  const privateInspections: {
+    path: string;
+    inode: string;
+    beforeConstructor: Q05InputBinding;
+    sourceBeforeIntegrity: Q05InputBinding;
+    readonly: boolean;
+    queryOnly: number;
+    inTransaction: boolean;
+    order: number;
+    result: unknown;
+  }[] = [];
+  let privateBindings = new WeakMap<Database.Database, Q05InputBinding>();
+  let active = false,
+    calibrating = false,
+    calibratingPrivate = false,
+    probing = false;
+  let calibrationConstructors = 0,
+    calibrationIntegrity = 0,
+    privateCalibrationConstructors = 0,
+    privateCalibrationIntegrity = 0;
+  const pragma = Database.prototype.pragma,
+    prepare = Database.prototype.prepare,
+    execute = Database.prototype.exec,
+    close = Database.prototype.close;
+  const sourceStillExact = () => {
+    const current = q05InputBinding(inspectedPath);
+    return current?.inode === inspectInode && q05SameInputs(current.inputs, source.inputs);
+  };
+  const note = (sqlite: Database.Database, edge: string) => {
+    if (!active || probing || !isMainThread || !sqlite.open || !existsSync(sqlite.name)) return;
+    const file = statSync(sqlite.name),
+      inode = `${file.dev}:${file.ino}`;
+    if (inode !== inspectInode) return;
+    if (!connections.has(sqlite))
+      connections.set(sqlite, {
+        path: sqlite.name,
+        inode,
+        readonly: sqlite.readonly,
+        firstEdge: edge,
+      });
+    return connections.get(sqlite);
+  };
+  recoveryInspectionObservation.beforeConstruct = (path) => {
+    if ((!active && !calibratingPrivate) || typeof path !== 'string') return undefined;
+    const binding = q05InputBinding(path);
+    if (
+      !binding ||
+      binding.inode === inspectInode ||
+      !q05SameInputs(binding.inputs, source.inputs) ||
+      !sourceStillExact()
+    )
+      return undefined;
+    return binding;
+  };
+  recoveryInspectionObservation.onConstruct = (sqlite, before) => {
+    if (calibrating && sqlite.name === ':memory:') calibrationConstructors += 1;
+    if (before) {
+      const current = q05InputBinding(sqlite.name);
+      if (current?.inode !== before.inode)
+        throw new Error('Q05 private inspection constructor binding changed.');
+      privateBindings.set(sqlite, before);
+      if (calibratingPrivate) privateCalibrationConstructors += 1;
+    }
+    note(sqlite, 'constructor');
+  };
+  const pragmaObservation = vi.spyOn(Database.prototype, 'pragma').mockImplementation(function (
+    this: Database.Database,
+    ...args: Parameters<Database.Database['pragma']>
+  ) {
+    const observed = note(this, 'pragma'),
+      integrity = /^integrity_check(?:\s|$)/i.test(args[0]);
+    if (calibrating && this.name === ':memory:' && integrity) calibrationIntegrity += 1;
+    const inspection =
+      observed && integrity
+        ? ({
+            path: observed.path,
+            inode: observed.inode,
+            readonly: this.readonly,
+            queryOnly: Number(pragma.call(this, 'query_only', { simple: true })),
+            inTransaction: this.inTransaction,
+          } as (typeof inspections)[number])
+        : undefined;
+    if (inspection && probeWrite && !inspection.inTransaction) {
+      probing = true;
+      let allowed = false,
+        code: string | null = null,
+        rolledBack = false;
+      try {
+        execute.call(this, 'SAVEPOINT q05_inspection_capability');
+        try {
+          prepare
+            .call(this, 'UPDATE control_workspaces SET revision=revision WHERE id=?')
+            .run(workspaceId);
+          allowed = true;
+        } catch (error) {
+          code = (error as { code?: string }).code ?? 'unknown';
+        } finally {
+          execute.call(
+            this,
+            'ROLLBACK TO q05_inspection_capability; RELEASE q05_inspection_capability'
+          );
+          rolledBack = !this.inTransaction;
+        }
+      } finally {
+        probing = false;
+      }
+      inspection.protectedUpdate = { allowed, code, rolledBack };
+    }
+    const privateBinding = integrity ? privateBindings.get(this) : undefined;
+    const sourceBeforeIntegrity = privateBinding ? q05InputBinding(inspectedPath) : undefined;
+    const result = pragma.apply(this, args);
+    if (inspection) {
+      inspection.result = result;
+      if (result === 'ok') inspection.order = q05IntegrityOrder(gate);
+      inspections.push(inspection);
+    }
+    if (privateBinding && integrity) {
+      expect(sourceBeforeIntegrity).toEqual(source);
+      expect(q05InputBinding(this.name)?.inode).toBe(privateBinding.inode);
+      expect(result).toBe('ok');
+      if (calibratingPrivate) privateCalibrationIntegrity += 1;
+      else if (active)
+        privateInspections.push({
+          path: this.name,
+          inode: privateBinding.inode,
+          beforeConstructor: privateBinding,
+          sourceBeforeIntegrity: sourceBeforeIntegrity!,
+          readonly: this.readonly,
+          queryOnly: Number(pragma.call(this, 'query_only', { simple: true })),
+          inTransaction: this.inTransaction,
+          order: q05IntegrityOrder(gate),
+          result,
+        });
+    }
+    return result;
+  });
+  const prepareObservation = vi.spyOn(Database.prototype, 'prepare').mockImplementation(function (
+    this: Database.Database,
+    ...args: Parameters<Database.Database['prepare']>
+  ) {
+    note(this, 'prepare');
+    return prepare.apply(this, args);
+  });
+  const executeObservation = vi.spyOn(Database.prototype, 'exec').mockImplementation(function (
+    this: Database.Database,
+    ...args: Parameters<Database.Database['exec']>
+  ) {
+    note(this, 'exec');
+    return execute.apply(this, args);
+  });
+  const closeObservation = vi.spyOn(Database.prototype, 'close').mockImplementation(function (
+    this: Database.Database,
+    ...args: Parameters<Database.Database['close']>
+  ) {
+    const observed = note(this, 'close');
+    if (observed)
+      observed.queryOnlyAtClose = Number(pragma.call(this, 'query_only', { simple: true }));
+    const result = close.apply(this, args);
+    if (observed) observed.physicallyClosed = !this.open;
+    return result;
+  });
+  return {
+    connections,
+    inspections,
+    privateInspections,
+    source,
+    async calibrate(root: string) {
+      calibrating = true;
+      try {
+        const calibration = new Database(':memory:');
+        try {
+          expect(calibration.pragma('integrity_check', { simple: true })).toBe('ok');
+        } finally {
+          calibration.close();
+        }
+        expect(calibrationConstructors).toBe(1);
+        expect(calibrationIntegrity).toBe(1);
+      } finally {
+        calibrating = false;
+      }
+      const scratch = mkdtempSync(join(root, 'q05-private-inspection-calibration-'));
+      calibratingPrivate = true;
+      try {
+        for (const [index, fullIntegrity] of [true, false].entries()) {
+          const path = join(scratch, `independent-${index}`);
+          for (const suffix of ['', '-wal', '-journal']) {
+            const file = source.inputs[suffix];
+            if (file)
+              await copyFileForCut({
+                sourcePath: inspectedPath + suffix,
+                destinationPath: path + suffix,
+                maxBytes: file.bytes,
+                mode: 0o600,
+              });
+          }
+          const db = openRecoveryDatabase(path);
+          try {
+            if (fullIntegrity) expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
+          } finally {
+            db.close();
+          }
+          expect(privateCalibrationConstructors).toBe(index + 1);
+          // A constructor-only byte-identical copy is not an integrity witness.
+          expect(privateCalibrationIntegrity).toBe(1);
+        }
+      } finally {
+        calibratingPrivate = false;
+        privateBindings = new WeakMap();
+        rmSync(scratch, { recursive: true, force: true });
+      }
+      expect(inspections).toEqual([]);
+      expect(privateInspections).toEqual([]);
+      expect(connections.size).toBe(0);
+      expect(Atomics.load(gate, 4)).toBe(0);
+    },
+    start() {
+      active = true;
+    },
+    stop() {
+      active = false;
+    },
+    calibration() {
+      return {
+        constructors: calibrationConstructors,
+        integrity: calibrationIntegrity,
+        privateConstructors: privateCalibrationConstructors,
+        privateIntegrity: privateCalibrationIntegrity,
+        constructorOnlyContribution: 0,
+      };
+    },
+    restore() {
+      active = false;
+      recoveryInspectionObservation.beforeConstruct = undefined;
+      recoveryInspectionObservation.onConstruct = undefined;
+      pragmaObservation.mockRestore();
+      prepareObservation.mockRestore();
+      executeObservation.mockRestore();
+      closeObservation.mockRestore();
+    },
+  };
+}
+
+describe('Q05 live selected recovery inspection policy', () => {
+  it.each(['before-target-rename', 'after-target-rename'] as const)(
+    'Q05 reaches the real live finish after %s and preserves its exact retained result',
+    async (interruption) => {
+      expect(isMainThread).toBe(true);
+      const f = await readmissionFixture(false, interruption);
+      // The existing fixture has a genuine prepared admission and native live freeze.
+      // Restart only its physical native hosts, as the existing lost-reply case does.
+      await shutdownControlStoreWorkerClient();
+      const core = f.owner.core;
+      const before = readRecoveryAdmission(core, f.requestId)!;
+      const canonical = workspaceDbPath(f.dataRoot, workspaceId);
+      const placed = interruption === 'after-target-rename';
+      const selectedRoot = existsSync(before.candidate_ref)
+        ? before.candidate_ref
+        : join(f.dataRoot, 'workspaces', workspaceId);
+      const selectedPath = join(selectedRoot, 'db/workspace.sqlite');
+      const selectedStat = statSync(selectedPath);
+      const selectedInode = `${selectedStat.dev}:${selectedStat.ino}`;
+      const canonicalBefore = statSync(canonical);
+      const canonicalBeforeInode = `${canonicalBefore.dev}:${canonicalBefore.ino}`;
+      expect(before.state).toBe('prepared');
+      expect(before.proof.result.disposition).toBe('quarantined');
+      expect(existsSync(before.candidate_ref)).toBe(!placed);
+      expect(selectedPath === canonical).toBe(placed);
+      expect(selectedInode === canonicalBeforeInode).toBe(placed);
+      expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+      expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+      const retained = q05RetainedRows(f.root, selectedPath, 'selected-before');
+      const predecessor = !placed
+        ? q05RetainedRows(f.root, canonical, 'predecessor-before')
+        : undefined;
+      const registry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
+      const members = rows(coreDbPath(f.dataRoot), 'workspace_members');
+      const sibling = rows(workspaceDbPath(f.dataRoot, f.sibling.id), 'control_workspaces');
+      core.sqlite.pragma('query_only = ON');
+      expect(() =>
+        core.sqlite
+          .prepare(
+            'UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?'
+          )
+          .run(f.requestId)
+      ).toThrow(/readonly/i);
+      const gate = new Int32Array(new SharedArrayBuffer(24));
+      recoveryInspectionObservation.posts = [];
+      recoveryInspectionObservation.replies = [];
+      recoveryInspectionObservation.shutdownReplies = [];
+      recoveryInspectionObservation.workerEntries = 0;
+      recoveryInspectionObservation.privateNative = [];
+      recoveryInspectionObservation.boundaries = [];
+      recoveryInspectionObservation.native = {
+        corePath: coreDbPath(f.dataRoot),
+        inspectedPath: selectedPath,
+        inspectedInode: selectedInode,
+        inputs: q05InputBinding(selectedPath)!.inputs,
+        admissionId: f.requestId,
+        workspaceId,
+        gate: gate.buffer as SharedArrayBuffer,
+      };
+      const main = q05ObserveMain(selectedPath, selectedInode, placed, gate);
+      let authorityChecks = 0;
+      let completed = false;
+      let nativeRegistrationVerified = false;
+      let retainedRowsVerified = false;
+      try {
+        await main.calibrate(f.root);
+        const owner = {
+          ...f.owner,
+          currentAuthority: () => {
+            authorityChecks += 1;
+            // Match the live recovery fixture's actual Kernel administrator operation.
+            requireAdministratorOperation(core, f.owner.actor, 'api.call');
+          },
+        };
+        const selection = { kind: 'admission' as const, requestId: f.requestId };
+        main.start();
+        let result: Awaited<ReturnType<typeof finishWorkspaceRecoveryAtCore>>;
+        try {
+          // This is the admitted live interface, never finishWorkspaceRecovery/CLI.
+          result = await finishWorkspaceRecoveryAtCore(
+            owner,
+            {
+              dataRoot: f.dataRoot,
+              workspaceId,
+              selection,
+              expectedRelease: f.manifest.release,
+            },
+            {
+              atBoundary: (point) => {
+                if (point === 'before-target-rename')
+                  recoveryInspectionObservation.boundaries.push({
+                    edge: point,
+                    order: Atomics.add(gate, 3, 1) + 1,
+                    integrityOrder: Atomics.load(gate, 4),
+                  });
+              },
+            }
+          );
+        } finally {
+          main.stop();
+        }
+        completed = true;
+        expect(authorityChecks).toBeGreaterThan(0);
+        expect(result).toMatchObject({
+          command: 'finish',
+          disposition: 'restored',
+          workspaceId,
+          selection,
+          nextAction: 'none',
+        });
+        const finished = readRecoveryAdmission(core, f.requestId)!;
+        expect(finished).toMatchObject({
+          admission_id: before.admission_id,
+          workspace_id: workspaceId,
+          state: 'finished',
+          revision: before.revision + 1,
+          candidate_ref: before.candidate_ref,
+        });
+        expect(finished.proof).toEqual({
+          ...before.proof,
+          result: {
+            ...before.proof.result,
+            disposition: 'restored',
+            droppedSourceMemberIds: [],
+            nextAction: 'none',
+          },
+        });
+        expect(existsSync(before.candidate_ref)).toBe(false);
+        const canonicalAfter = statSync(canonical);
+        expect(`${canonicalAfter.dev}:${canonicalAfter.ino}`).toBe(selectedInode);
+        expect(q05RetainedRows(f.root, canonical, 'selected-after')).toEqual(retained);
+        if (predecessor)
+          expect(
+            q05RetainedRows(
+              f.root,
+              join(workspaceRecoveryPredecessorRoot(finished), 'db/workspace.sqlite'),
+              'predecessor-after'
+            )
+          ).toEqual(predecessor);
+        expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
+        expect(rows(coreDbPath(f.dataRoot), 'workspace_members')).toEqual(members);
+        expect(rows(workspaceDbPath(f.dataRoot, f.sibling.id), 'control_workspaces')).toEqual(
+          sibling
+        );
+        retainedRowsVerified = true;
+        expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+        expect(recoveryInspectionObservation.posts).toHaveLength(1);
+        expect(recoveryInspectionObservation.replies).toEqual([
+          {
+            id: recoveryInspectionObservation.posts[0]!.id,
+            status: 'ok',
+            operation: 'recovery-target-registration',
+          },
+        ]);
+        expect(Atomics.load(gate, 1)).toBeGreaterThan(0);
+        expect(Atomics.load(gate, 2)).toBe(2);
+        expect(recoveryInspectionObservation.workerEntries).toBeGreaterThan(0);
+        nativeRegistrationVerified = true;
+        // Original integrity cannot disappear merely to remove its Main constructor.
+        // A future native inspection can supply this witness without a Main handle.
+        expect(
+          main.inspections.length +
+            Atomics.load(gate, 0) +
+            main.privateInspections.length +
+            Atomics.load(gate, 5)
+        ).toBeGreaterThan(0);
+        expect(recoveryInspectionObservation.privateNative).toHaveLength(Atomics.load(gate, 5));
+        for (const inspection of [
+          ...main.privateInspections,
+          ...recoveryInspectionObservation.privateNative,
+        ]) {
+          expect(inspection.inode).not.toBe(selectedInode);
+          expect(inspection.beforeConstructor.inode).toBe(inspection.inode);
+          expect(inspection.beforeConstructor.inputs).toEqual(main.source.inputs);
+          expect(inspection.sourceBeforeIntegrity).toEqual(main.source);
+          expect(inspection.result).toBe('ok');
+          expect(inspection.inTransaction).toBe(false);
+          expect(inspection.order).toBeGreaterThan(0);
+        }
+        expect(recoveryInspectionObservation.boundaries.map((boundary) => boundary.edge)).toEqual(
+          placed ? ['registration-post'] : ['before-target-rename', 'registration-post']
+        );
+        for (const boundary of recoveryInspectionObservation.boundaries) {
+          expect(boundary.integrityOrder).toBeGreaterThan(0);
+          expect(boundary.integrityOrder).toBeLessThan(boundary.order);
+        }
+        for (const inspection of main.inspections) {
+          expect(inspection.inode).toBe(selectedInode);
+          expect(inspection.result).toBe('ok');
+          expect(inspection.inTransaction).toBe(false);
+          if (inspection.protectedUpdate) expect(inspection.protectedUpdate.rolledBack).toBe(true);
+        }
+        await expect(
+          finishWorkspaceRecoveryAtCore(owner, {
+            dataRoot: f.dataRoot,
+            workspaceId,
+            selection,
+            expectedRelease: f.manifest.release,
+          })
+        ).resolves.toEqual(result);
+        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(recoveryInspectionObservation.posts).toHaveLength(1);
+      } finally {
+        main.stop();
+        await shutdownControlStoreWorkerClient();
+        console.log(
+          'Q05_ORACLE ' +
+            JSON.stringify({
+              interruption,
+              placed,
+              selectedPath,
+              selectedInode,
+              canonical,
+              canonicalBeforeInode,
+              preparedAdmissionId: before.admission_id,
+              actualLiveNativeOwner: true,
+              authorityChecks,
+              completed,
+              retainedRowsVerified,
+              nativeRegistrationVerified,
+              calibration: main.calibration(),
+              mainConnections: [...main.connections.values()],
+              mainInspections: main.inspections,
+              exactSelectedInputs: main.source,
+              privateMainInspections: main.privateInspections,
+              privateNativeInspections: recoveryInspectionObservation.privateNative,
+              integrityOrdering: recoveryInspectionObservation.boundaries,
+              firstIntegrityOrder: Atomics.load(gate, 4),
+              nativeIntegrity: Atomics.load(gate, 0),
+              nativeRegistrationCommits: Atomics.load(gate, 1),
+              nativeSynchronous: Atomics.load(gate, 2),
+              posts: recoveryInspectionObservation.posts,
+              replies: recoveryInspectionObservation.replies,
+              realShutdownReplies: recoveryInspectionObservation.shutdownReplies,
+            })
+        );
+        main.restore();
+        recoveryInspectionObservation.native = undefined;
+      }
+      expect(recoveryInspectionObservation.shutdownReplies.length).toBeGreaterThan(0);
+      if (placed) {
+        // Core Storage SQLite Layers: no writable Main handle on a published database.
+        // Empty Main observations are valid only with the preceding real integrity,
+        // native FULL/reply, canonical-inode and retained-result witnesses.
+        expect(
+          [...main.connections.values()].filter((connection) => !connection.readonly),
+          'Q05 canonical published Workspace must not acquire a writable Main inspection handle'
+        ).toEqual([]);
+        expect(
+          main.inspections.map(({ readonly, queryOnly }) => ({ readonly, queryOnly }))
+        ).toEqual(main.inspections.map(() => ({ readonly: true, queryOnly: 1 })));
+        for (const connection of main.connections.values()) {
+          expect(connection.queryOnlyAtClose).toBe(1);
+          expect(connection.physicallyClosed).toBe(true);
+        }
+      }
+    },
+    120_000
   );
 });
