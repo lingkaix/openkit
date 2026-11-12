@@ -1650,9 +1650,7 @@ export async function runWorkspaceCaptureWorker(
         },
       },
     },
-    (phase) => {
-      control({ kind: 'phase', phase, at: performance.timeOrigin + performance.now() });
-    },
+    (phase) => control({ kind: 'phase', phase, at: performance.timeOrigin + performance.now() }),
     (proof, admission) =>
       withSourceRecoveryProofFile(dataRoot, selected.backupId, proof, admission, (file) => {
         control({ kind: 'source-proof', file });
@@ -2005,6 +2003,68 @@ async function runWorkspaceCapture(
                     captureFreeze = undefined;
                   }
                 }
+                if (value.phase === 'finish' && input.purpose === 'backup' && !live.freezeOwner) {
+                  // The fresh capture released its freeze at cut. Reuse the native
+                  // first-terminal owner after the Worker verified and published its seal.
+                  const client = getControlStoreWorkerClient(live.mutationAdmission);
+                  const scope = nativeProductScope(live.dataRoot, {
+                    kind: 'workspace',
+                    workspaceId: targetWorkspaceId,
+                  });
+                  const database = `workspace:${scope.path}`;
+                  let opened = false;
+                  let finishAttempted = false;
+                  try {
+                    await client.open({
+                      database,
+                      path: scope.path,
+                      dataRoot: live.dataRoot,
+                      create: false,
+                      initialize: 'workspace',
+                      productOwner: scope.owner,
+                      contentMount: scope.contentMount,
+                    });
+                    opened = true;
+                    live.currentAuthority?.();
+                    finishAttempted = true;
+                    await client.recoveryCapture(database, {
+                      workspaceId: targetWorkspaceId,
+                      captureId: input.backupId,
+                      state: 'finished',
+                    });
+                    reply = 1;
+                    live.currentAuthority?.();
+                  } catch (error) {
+                    authorityError ??= error;
+                    reply = finishAttempted ? 2 : 0;
+                    // No terminal request was offered before OPEN/current-authority refusal.
+                    // An unknown posted request can still commit after an active read.
+                    // Inspect only after proved non-commit; otherwise retain the seal.
+                    if (
+                      finishAttempted &&
+                      opened &&
+                      error instanceof ControlStoreWorkerError &&
+                      error.commit === 'not-committed'
+                    ) {
+                      try {
+                        const retained = openWorkspaceReadDb(live.dataRoot, targetWorkspaceId);
+                        try {
+                          const decision = inspectCapture(
+                            retained,
+                            targetWorkspaceId,
+                            input.backupId
+                          );
+                          if (decision?.state === 'active' || decision?.state === 'abandoned')
+                            reply = 0;
+                        } finally {
+                          retained.sqlite.close();
+                        }
+                      } catch {
+                        // Unreadable or missing truth leaves the sealed generation unknown.
+                      }
+                    }
+                  }
+                }
               }
             } catch (error) {
               ok = false;
@@ -2105,7 +2165,7 @@ async function runWorkspaceCapture(
  */
 async function captureWorkspaceBackup(
   input: CaptureInput,
-  phase?: (phase: WorkspaceCapturePhase) => void,
+  phase?: (phase: WorkspaceCapturePhase) => number | undefined,
   prepareSource?: (proof: RecoveryProof, admission: CaptureInput['admission']) => Promise<void>
 ): Promise<WorkspaceBackupCreateResult> {
   let lock: DataRootLock | undefined;
@@ -2113,6 +2173,7 @@ async function captureWorkspaceBackup(
   let reservation: FileStorageReservation | undefined;
   let ownedOutput = false;
   let captureFinished = false;
+  let startedAt: string | undefined;
   let captureDb: ReturnType<typeof bindWorkspaceSqlite> | undefined;
   const live = input.source.kind === 'live-workspace';
   const cutMetadata = new Map<string, { bytes: number; mode: number }>();
@@ -2318,9 +2379,9 @@ async function captureWorkspaceBackup(
       captureDb = captureDatabase(sourceRoot, input.workspaceId);
       // A lost acknowledgement can still leave an active MOVE pin. Unknown completion keeps its fence.
       phase?.('pin');
-      protectCapture(captureDb, input.workspaceId, input.backupId, {
+      startedAt = protectCapture(captureDb, input.workspaceId, input.backupId, {
         origin: input.origin ?? 'manual',
-      });
+      }).createdAt;
       phase?.('pin-end');
     }
     phase?.('mutable-copy');
@@ -2377,10 +2438,16 @@ async function captureWorkspaceBackup(
     }
     if (verifiedParent) {
       captureDb = captureDatabase(staging.container, input.workspaceId);
-      protectCapture(captureDb, input.workspaceId, input.backupId);
+      startedAt = protectCapture(captureDb, input.workspaceId, input.backupId).createdAt;
     }
     // All mutable bytes are independent. Only exactly protected create-only native objects remain live-dependent.
-    if (live) phase?.('cut');
+    if (live) {
+      // Keep the writable cleanup owner until every SQLite backup reader closes,
+      // then retire it before ordinary native publication resumes at the cut.
+      captureDb?.sqlite.close();
+      captureDb = undefined;
+      phase?.('cut');
+    }
     phase?.('post-cut-validation');
     // Canonical readers resolve native file-backed bodies inside the private cut.
     // Materialize protected bytes only after release; pool publication still reuses
@@ -2475,7 +2542,7 @@ async function captureWorkspaceBackup(
     }
     if (verifiedParent && !isDeepStrictEqual(verifiedParent, parent(sourceRoot)))
       refuse('parent-backup-invalid');
-    const startedAt = inspectCapture(captureDb!, input.workspaceId, input.backupId)!.createdAt;
+    if (!startedAt) refuse('invalid-database');
     // Close before inventory: no WAL/SHM or active SQLite handle travels.
     captureDb?.sqlite.close();
     captureDb = undefined;
@@ -2608,8 +2675,13 @@ async function captureWorkspaceBackup(
       phase?.('authority');
     } else publishCanonicalPath(staging.workspaceRoot, output);
     if (input.purpose === 'backup') {
-      phase?.('finish');
-      if (!verifiedParent) {
+      const finish = phase?.('finish');
+      if (live && finish !== undefined) {
+        // Only the original native FULL acknowledgement establishes finished. Unknown
+        // completion retains the seal for inspection; a proved active decision does not.
+        captureFinished = finish !== 0;
+        if (finish !== 1) refuse('recovery-required');
+      } else if (!verifiedParent) {
         const writer = captureDatabase(sourceRoot, input.workspaceId);
         try {
           try {

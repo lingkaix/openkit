@@ -173,6 +173,11 @@ vi.mock('node:fs/promises', async (importOriginal) => {
 const captureWorkerProbe = vi.hoisted(() => ({
   gate: undefined as SharedArrayBuffer | undefined,
   script: undefined as string | undefined,
+  // Current capture ids have the existing fixed UUID grammar; arming refuses truncation.
+  nativeFinishSelection: new SharedArrayBuffer('wsbak_00000000-0000-7000-8000-000000000000'.length),
+  nativeFinishFault: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+  nativeFinishArming: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
+  nativeFinishGate: new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT),
   observe: undefined as
     | undefined
     | ((message: { kind: string; workspaceId?: string; captureId?: string }) => void),
@@ -196,7 +201,104 @@ vi.mock('node:worker_threads', async (load) => {
     Worker: class extends actual.Worker {
       constructor(filename: string | URL, options?: import('node:worker_threads').WorkerOptions) {
         const capture = String(filename).includes('workspace-backup-worker');
-        if (capture && (captureWorkerProbe.payloadHex || captureWorkerProbe.script)) {
+        const native = String(filename).includes('control-store-worker');
+        if (native) {
+          // Native hosts can predate captureRecordBoundary. Install inactive wrappers before
+          // loading the real entry; the existing helper arms only its exact later capture id.
+          const prelude = `
+            const { parentPort, threadId, isMainThread, workerData } = require('node:worker_threads');
+            const selectedFault = workerData.__captureNativeFinishOracle;
+            delete workerData.__captureNativeFinishOracle;
+            const NativeDatabase = require(${JSON.stringify(createRequire(import.meta.url).resolve('better-sqlite3'))});
+            const fault = new Int32Array(selectedFault.fault);
+            const gate = new Int32Array(selectedFault.gate);
+            const arming = new Int32Array(selectedFault.arming);
+            const selection = new Uint8Array(selectedFault.selection);
+            const post = parentPort.postMessage.bind(parentPort);
+            const pragma = NativeDatabase.prototype.pragma;
+            let pendingFinish;
+            function currentArm(arm) {
+              return Atomics.load(arming, 0) === arm.generation &&
+                Atomics.load(fault, 0) === arm.mode &&
+                Buffer.from(selection).toString('utf8') === arm.captureId;
+            }
+            function nativeObserved(facts, boundary, arm) {
+              if (!currentArm(arm) || Atomics.load(gate, 0) !== arm.version) return false;
+              post({ __captureOracle: true, kind: 'finish', device: 'native-finish',
+                phase: 'finish', threadId, isMainThread, boundary, armingGeneration: arm.generation,
+                gateVersion: arm.version, ...facts });
+              // Arm/disarm advances this captured version before notifying. A release
+              // that precedes wait therefore returns not-equal instead of being lost.
+              Atomics.wait(gate, 0, arm.version);
+              return currentArm(arm) && Atomics.load(gate, 0) === ((arm.version + 1) | 0);
+            }
+            const prepare = NativeDatabase.prototype.prepare;
+            NativeDatabase.prototype.prepare = function(sql, ...args) {
+              const statement = prepare.call(this, sql, ...args);
+              if (!/UPDATE\\s+workspace_capture_records\\s+SET\\s+state/i.test(sql)) return statement;
+              const run = statement.run;
+              statement.run = function(...values) {
+                const generation = Atomics.load(arming, 0);
+                const version = Atomics.load(gate, 0);
+                const mode = Atomics.load(fault, 0);
+                const arm = { generation, version, mode, captureId: values[2] };
+                if (!mode || values[0] !== 'finished' || !currentArm(arm) ||
+                    Atomics.load(gate, 0) !== version)
+                  return run.apply(this, values);
+                const database = statement.database;
+                const facts = { captureId: values[2], workspaceId: values[3], path: database.name,
+                  readonly: database.readonly, synchronous: pragma.call(database, 'synchronous', { simple: true }),
+                  inTransaction: database.inTransaction };
+                if (mode === 1) {
+                  if (nativeObserved(facts, 'before-update', arm))
+                    throw new Error('Injected capture decision before commit.');
+                  return run.apply(this, values);
+                }
+                const result = run.apply(this, values);
+                pendingFinish = { database, facts: { ...facts, changes: result.changes }, arm };
+                return result;
+              };
+              return statement;
+            };
+            const execute = NativeDatabase.prototype.exec;
+            NativeDatabase.prototype.exec = function(sql, ...args) {
+              let result;
+              try {
+                result = execute.call(this, sql, ...args);
+              } catch (error) {
+                if (pendingFinish?.database === this) pendingFinish = undefined;
+                throw error;
+              }
+              if (/^\\s*ROLLBACK\\b/i.test(sql) && pendingFinish?.database === this)
+                pendingFinish = undefined;
+              if (/^\\s*COMMIT\\s*;?\\s*$/i.test(sql) && pendingFinish?.database === this) {
+                const finished = pendingFinish;
+                pendingFinish = undefined;
+                const observed = nativeObserved({ ...finished.facts, inTransaction: this.inTransaction,
+                  synchronous: pragma.call(this, 'synchronous', { simple: true }) }, 'after-real-commit', finished.arm);
+                if (observed && finished.arm.mode === 2)
+                  throw new Error('Injected lost acknowledgement after capture decision COMMIT.');
+              }
+              return result;
+            };
+          `;
+          const entry = options?.eval
+            ? String(filename)
+            : `import(${JSON.stringify(String(filename))});`;
+          super(prelude + entry, {
+            ...options,
+            eval: true,
+            workerData: {
+              ...options?.workerData,
+              __captureNativeFinishOracle: {
+                selection: captureWorkerProbe.nativeFinishSelection,
+                fault: captureWorkerProbe.nativeFinishFault,
+                arming: captureWorkerProbe.nativeFinishArming,
+                gate: captureWorkerProbe.nativeFinishGate,
+              },
+            },
+          });
+        } else if (capture && (captureWorkerProbe.payloadHex || captureWorkerProbe.script)) {
           const prelude = `
             const { parentPort, threadId, workerData } = require('node:worker_threads');
             const oracleGate = workerData?.__captureOracleGate ? new Int32Array(workerData.__captureOracleGate) : undefined;
@@ -305,6 +407,54 @@ function captureRecordBoundary(
   fault: 'observe' | 'before-commit' | 'lost-ack',
   observed: (message: { kind: string; workspaceId?: string; captureId?: string }) => void
 ) {
+  if (decision === 'finish') {
+    const selection = new Uint8Array(captureWorkerProbe.nativeFinishSelection);
+    const encoded = Buffer.from(captureId, 'utf8');
+    if (encoded.length !== selection.length)
+      throw new Error(
+        'Capture finish fault requires the existing exact capture identifier grammar.'
+      );
+    const mode = new Int32Array(captureWorkerProbe.nativeFinishFault);
+    const arming = new Int32Array(captureWorkerProbe.nativeFinishArming);
+    const gate = new Int32Array(captureWorkerProbe.nativeFinishGate);
+    Atomics.store(mode, 0, 0);
+    const generation = (Atomics.add(arming, 0, 1) + 1) | 0;
+    Atomics.add(gate, 0, 1);
+    Atomics.notify(gate, 0);
+    selection.set(encoded);
+    captureWorkerProbe.observe = (message) => {
+      if (
+        !('armingGeneration' in message) ||
+        !('gateVersion' in message) ||
+        message.armingGeneration !== generation ||
+        Atomics.load(arming, 0) !== generation ||
+        message.gateVersion !== Atomics.load(gate, 0)
+      )
+        return;
+      try {
+        console.info('Actual native capture record boundary', message);
+        observed(message);
+      } finally {
+        if (
+          Atomics.load(arming, 0) === generation &&
+          message.gateVersion === Atomics.load(gate, 0)
+        ) {
+          Atomics.add(gate, 0, 1);
+          Atomics.notify(gate, 0);
+        }
+      }
+    };
+    Atomics.store(mode, 0, fault === 'before-commit' ? 1 : fault === 'lost-ack' ? 2 : 3);
+    return {
+      mockRestore: () => {
+        Atomics.store(mode, 0, 0);
+        Atomics.add(arming, 0, 1);
+        Atomics.add(gate, 0, 1);
+        Atomics.notify(gate, 0);
+        captureWorkerProbe.observe = undefined;
+      },
+    };
+  }
   const gate = new Int32Array(new SharedArrayBuffer(4));
   captureWorkerProbe.gate = gate.buffer;
   captureWorkerProbe.observe = (message) => {
@@ -594,6 +744,11 @@ async function refusal(f: Fixture, input = f.input()) {
 }
 
 afterEach(async () => {
+  Atomics.store(new Int32Array(captureWorkerProbe.nativeFinishFault), 0, 0);
+  Atomics.add(new Int32Array(captureWorkerProbe.nativeFinishArming), 0, 1);
+  const nativeGate = new Int32Array(captureWorkerProbe.nativeFinishGate);
+  Atomics.add(nativeGate, 0, 1);
+  Atomics.notify(nativeGate, 0);
   namespaceSyncFault.beforeSync = undefined;
   captureWorkerProbe.gate = undefined;
   captureWorkerProbe.script = undefined;
