@@ -13,6 +13,8 @@ Timeline run errors carry the shared optional Protocol error presentation: close
 
 Timeline Items may carry nullable `policy: { outcome, permissionDecisionId, capabilityCallId, connectionRef }`. Outcomes are recorded `allowed`, `denied` or `waiting-approval`, never inferred from execution. Missing/null means no admitted complete lineage, not permission. NanoCore currently returns null connection references rather than guessing an owner. Run `planSegments` carries at most eight original-position intervals and explicit complete/partial coverage; partial windows must not be presented as complete history. Neither projection changes a retained record or grants authority.
 
+Conversation targets separately carry `activeTurnId`, four-state `steerAvailability` and nullable `steerUnavailableReason`. Available requires an exact running-Worker target and no reason; ordinary busy availability does not imply or prevent qualified live input. The additive fields may be absent on non-current fixture data, which cannot enable Steer. Core produces them from existing admitted live owners; they grant no dispatch authority or queue.
+
 `LIGHT_APP_CAPABILITIES` in `src/light-apps.ts` owns the existing fixed Kernel admission values and descriptive operation vocabulary. Schema and native admission reuse those values; app-get capability projections require the complete vocabulary. This descriptive response grants no operation or authority.
 
 Provider-subscription create accepts a supplied slot string so the existing account owner returns its stable slot-syntax error. Non-string slots and unknown request fields retain common strict-input refusal; response slot syntax is unchanged.

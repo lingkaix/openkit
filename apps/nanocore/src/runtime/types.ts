@@ -125,10 +125,20 @@ export interface TaskSteerTarget {
   readonly inputDigest: string;
 }
 
+/** Advisory existing-owner facts, never a dispatch or readiness authority. */
+export interface TaskSteerAvailability {
+  readonly availability: 'available' | 'busy' | 'unsupported' | 'unavailable';
+  readonly reason: string | null;
+}
+/** Exact existing run; unlike a command this carries no new input or execution authority. */
+export type TaskSteerRunTarget = Pick<TaskSteerTarget, 'workspaceId' | 'threadId' | 'turnId'>;
+
 /**
  * Abstraction used by the HTTP layer to execute and interrupt turns.
  */
 export interface TurnExecutor {
+  /** Reads actual support/pin and live ownership without preparing an operation or reserving a slot. */
+  readSteerAvailability?(store: FsStore, target: TaskSteerRunTarget): TaskSteerAvailability;
   /** Uses the existing private slot for qualified native same-Turn input; absence is unsupported. */
   steerTurn?(store: FsStore, target: TaskSteerTarget, control: TaskSteerControl): Promise<void>;
   /** Existing Vault operations are the sole caller of reference-only binding lifecycle effects. */

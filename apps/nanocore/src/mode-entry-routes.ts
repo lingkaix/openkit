@@ -2622,7 +2622,10 @@ export function createConversationService({
     store: FsStore,
     workspaceId: string,
     requestedThreadId: string | null,
-    userId: string
+    userId: string,
+    readSteer?: (
+      target: import('./runtime/types.js').TaskSteerRunTarget
+    ) => import('./runtime/types.js').TaskSteerAvailability
   ): z.infer<typeof ConversationTargetCatalogSchema> {
     const snapshot = runtimeConfig();
     const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
@@ -2725,6 +2728,13 @@ export function createConversationService({
       });
     }
 
+    const activeTask = requestedThreadId
+      ? store.readThreadTimelineSnapshot(
+          workspaceId,
+          requestedThreadId,
+          (cut) => cut.activeTurn()?.record
+        )
+      : undefined;
     for (const session of requestedThreadId
       ? store.listThreadAgentSessions(workspaceId, requestedThreadId)
       : []) {
@@ -2741,9 +2751,21 @@ export function createConversationService({
       }).setup;
       const ready = !session.stale && ['ready', 'idle'].includes(session.status) && setup;
       const busy = !session.stale && session.status === 'busy';
+      const activeTurnId =
+        activeTask?.agentSessionId === session.id ? (activeTask.id as string) : null;
+      const steer =
+        activeTurnId && session.threadId && readSteer
+          ? readSteer({ workspaceId, threadId: session.threadId, turnId: activeTurnId })
+          : {
+              availability: 'unavailable' as const,
+              reason: activeTurnId ? 'steer_capability_unavailable' : 'steer_no_running_task',
+            };
       targets.push({
         targetRef: `running-worker:${encodeURIComponent(session.threadId)}:${encodeURIComponent(session.agentId)}`,
         kind: 'running-worker',
+        activeTurnId,
+        steerAvailability: steer.availability,
+        steerUnavailableReason: steer.reason,
         label: `${manifest.displayName} · This conversation`,
         description: 'Continue work in this conversation.',
         availability: busy ? 'busy' : ready ? 'available' : 'unavailable',
@@ -2810,7 +2832,13 @@ export function createConversationService({
     return ConversationTargetCatalogSchema.parse({
       workspaceId,
       threadId: requestedThreadId,
-      targets: uniqueTargets,
+      targets: uniqueTargets.map((target) => ({
+        activeTurnId: null,
+        steerAvailability: target.kind === 'goal-coordinator' ? 'unsupported' : 'unavailable',
+        steerUnavailableReason:
+          target.kind === 'goal-coordinator' ? 'steer_unsupported' : 'steer_no_running_task',
+        ...target,
+      })),
       defaultTargetRef,
       ...(transcription.configured
         ? {
@@ -2829,14 +2857,18 @@ export function createConversationService({
   function targets(
     store: FsStore,
     input: { workspaceId: string; threadId?: string | undefined },
-    actor: Actor
+    actor: Actor,
+    readSteer?: (
+      target: import('./runtime/types.js').TaskSteerRunTarget
+    ) => import('./runtime/types.js').TaskSteerAvailability
   ) {
     store.getWorkspace(input.workspaceId);
     return conversationTargetCatalog(
       store,
       input.workspaceId,
       input.threadId ?? null,
-      actor.userId
+      actor.userId,
+      readSteer
     );
   }
 

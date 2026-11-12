@@ -1,5 +1,36 @@
 import { expect, it } from 'vitest';
-import { ConversationModelChoiceSchema, SubmitConversationRequestSchema } from './chat-mode.js';
+import {
+  ConversationModelChoiceSchema,
+  ConversationTargetSchema,
+  SubmitConversationRequestSchema,
+} from './chat-mode.js';
+
+it('separates live-steer facts from ordinary busy target availability', () => {
+  const target = {
+    targetRef: 'running-worker:thread:agent',
+    kind: 'running-worker',
+    label: 'Worker',
+    description: null,
+    availability: 'busy',
+    unavailableReason: 'Worker is busy.',
+    threadId: 'th_00000000-0000-7000-8000-000000000001',
+    profileId: null,
+    logicalModels: [],
+    defaultLogicalModelId: null,
+    activeTurnId: 'tu_00000000-0000-7000-8000-000000000001',
+    steerAvailability: 'available',
+    steerUnavailableReason: null,
+  };
+  expect(ConversationTargetSchema.safeParse(target).success).toBe(true);
+  for (const invalid of [
+    { ...target, steerAvailability: 'queued' },
+    { ...target, activeTurnId: null },
+    { ...target, kind: 'goal-coordinator' },
+    { ...target, steerUnavailableReason: 'stale' },
+    { ...target, steerAvailability: 'busy', steerUnavailableReason: null },
+  ])
+    expect(ConversationTargetSchema.safeParse(invalid).success).toBe(false);
+});
 
 it('admits canonical submission effort and optional advertised control levels', () => {
   const input = {

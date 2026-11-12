@@ -186,7 +186,13 @@ import {
 } from './nanohost-session-dispatch.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { taskSteerRefusal } from './task-steer-receipt.js';
-import type { TaskSteerControl, TaskSteerTarget, TurnExecutor } from './types.js';
+import type {
+  TaskSteerAvailability,
+  TaskSteerControl,
+  TaskSteerRunTarget,
+  TaskSteerTarget,
+  TurnExecutor,
+} from './types.js';
 import {
   getWorkerBackendSession,
   type WorkerBackendSessionRecord,
@@ -6055,6 +6061,110 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  private hasQualifiedSteerPin(session: NanoHostBackendTurnSession): boolean {
+    return (
+      (session.sharedHarness.adapterId === 'codex' &&
+        session.sharedHarness.adapterVersion === '0.166.0') ||
+      (session.sharedHarness.adapterId === 'pi' && session.sharedHarness.adapterVersion === '1.4.0')
+    );
+  }
+
+  /** Same exact native binding read used by delivery; no operation is prepared or reserved. */
+  private readSteerBinding(packageSnapshotId: string, target: TaskSteerRunTarget) {
+    const session = this.sessions.get(packageSnapshotId);
+    if (!session) return undefined;
+    return this.coreDb.sqlite
+      .prepare(`SELECT b.schema_version AS bindingVersion,h.schema_version AS harnessVersion,
+      h.lifecycle_state AS lifecycle,h.drain_state AS drain,
+      h.operation_state AS state,h.result_fingerprint AS fingerprint,
+      CASE WHEN length(CAST(h.result_json AS BLOB))<=65536 THEN h.result_json ELSE NULL END AS result,
+      h.result_json IS NOT NULL AS hasResult
+      FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+      WHERE b.agent_session_runtime_binding_id=? AND b.harness_instance_id=? AND b.agent_session_id=?
+        AND b.workspace_id=? AND b.thread_id=? AND b.current_turn_id=? AND b.current_attempt_id=? AND b.lifecycle_state='active'`)
+      .get(
+        session.agentSessionRuntimeBindingId,
+        session.harnessInstanceId,
+        session.environmentPackage.scope.agentSessionId,
+        target.workspaceId,
+        target.threadId,
+        target.turnId,
+        session.attemptId
+      ) as
+      | {
+          bindingVersion: number;
+          harnessVersion: number;
+          lifecycle: string;
+          drain: string;
+          state: string;
+          fingerprint: string | null;
+          result: string | null;
+          hasResult: number;
+        }
+      | undefined;
+  }
+
+  /** Advisory current adopted pin/binding/slot facts; send still repeats all original checks. */
+  public readSteerAvailability(
+    packageSnapshotId: string,
+    target: TaskSteerRunTarget
+  ): TaskSteerAvailability {
+    const unavailable = { availability: 'unavailable' as const, reason: 'steer_target_stale' };
+    const session = this.sessions.get(packageSnapshotId);
+    if (!session) return unavailable;
+    if (!this.hasQualifiedSteerPin(session))
+      return { availability: 'unsupported', reason: 'steer_unsupported' };
+    try {
+      const native = requireNanoHostExecutionAttempt(this.coreDb, session.attemptId);
+      const deadline =
+        native.lastAcceptedHeartbeatAt === null ? native.startupDeadline : native.heartbeatDeadline;
+      if (
+        !session.turnStarted ||
+        session.turnStopSettlement ||
+        native.phase !== 'open' ||
+        native.recoveryState !== null ||
+        !deadline ||
+        deadline <= new Date().toISOString() ||
+        session.environmentPackage.scope.workspaceId !== target.workspaceId ||
+        session.environmentPackage.scope.threadId !== target.threadId ||
+        session.environmentPackage.scope.turnId !== target.turnId ||
+        (session.sharedHarness.bindings.get(session.environmentPackage.scope.agentSessionId)
+          ?.nextTurnSequence ?? 0) < 1
+      )
+        return unavailable;
+      assertCurrentWorkerCredentialAuthority(this.coreDb, session.environmentPackage);
+      const binding = this.readSteerBinding(packageSnapshotId, target);
+      if (
+        !binding ||
+        binding.bindingVersion !== 1 ||
+        binding.harnessVersion !== 1 ||
+        binding.lifecycle !== 'open' ||
+        binding.drain !== 'accepting'
+      )
+        return unavailable;
+      if (
+        session.pendingHarnessOperation ||
+        this.harnessOperationSettlements.has(session.harnessInstanceId) ||
+        !['idle', 'settled'].includes(binding.state)
+      )
+        return { availability: 'busy', reason: 'steer_busy' };
+      if (binding.state === 'idle' && !binding.hasResult && binding.fingerprint === null)
+        return { availability: 'available', reason: null };
+      if (!binding.result)
+        return { availability: 'unavailable', reason: 'steer_slot_evidence_unavailable' };
+      const {
+        consumption: _consumption,
+        consumerContext: _context,
+        ...result
+      } = JSON.parse(binding.result);
+      if (!readConsumedNanoHostHarnessResult(this.coreDb, result as NanoHostHarnessResult))
+        return { availability: 'busy', reason: 'steer_busy' };
+      return { availability: 'available', reason: null };
+    } catch {
+      return unavailable;
+    }
+  }
+
   /** Uses the existing slot without backlog, preparing exact correlation before admitting its ordinary Item. */
   public async steerTurn(
     packageSnapshotId: string,
@@ -6068,14 +6178,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'The exact live worker has not been adopted by this runtime owner.',
         409
       );
-    if (
-      !(
-        (session.sharedHarness.adapterId === 'codex' &&
-          session.sharedHarness.adapterVersion === '0.166.0') ||
-        (session.sharedHarness.adapterId === 'pi' &&
-          session.sharedHarness.adapterVersion === '1.4.0')
-      )
-    )
+    if (!this.hasQualifiedSteerPin(session))
       throw new OperationError(
         'steer_unsupported',
         'This runtime pin has no qualified live-steer boundary.',
@@ -6102,19 +6205,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           'The exact worker attempt is no longer live.',
           409
         );
-      const binding = this.coreDb.sqlite
-        .prepare(`SELECT 1 FROM agent_session_runtime_bindings
-        WHERE agent_session_runtime_binding_id=? AND harness_instance_id=? AND agent_session_id=?
-          AND workspace_id=? AND thread_id=? AND current_turn_id=? AND current_attempt_id=? AND lifecycle_state='active'`)
-        .get(
-          session.agentSessionRuntimeBindingId,
-          session.harnessInstanceId,
-          session.environmentPackage.scope.agentSessionId,
-          target.workspaceId,
-          target.threadId,
-          target.turnId,
-          session.attemptId
-        );
+      const binding = this.readSteerBinding(packageSnapshotId, target);
       if (!binding || this.sessions.get(packageSnapshotId) !== session)
         throw new OperationError(
           'steer_target_stale',

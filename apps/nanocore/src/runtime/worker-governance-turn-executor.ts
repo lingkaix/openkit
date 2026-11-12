@@ -189,7 +189,9 @@ import type {
   RuntimeCapabilities,
   RuntimeEventFamily,
   RuntimeItemType,
+  TaskSteerAvailability,
   TaskSteerControl,
+  TaskSteerRunTarget,
   TaskSteerTarget,
   TurnCommandRuntimeContext,
   TurnExecutor,
@@ -4390,6 +4392,62 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     }
     throw new Error('Attempt release remains incomplete.');
+  }
+
+  /** Projects exact current ownership; the backend alone interprets its adopted live adapter pin. */
+  public readSteerAvailability(store: FsStore, target: TaskSteerRunTarget): TaskSteerAvailability {
+    const unavailable = { availability: 'unavailable' as const, reason: 'steer_target_stale' };
+    if (!this.coreDb || !this.workerControlGateway || !this.backend.readSteerAvailability)
+      return { availability: 'unavailable', reason: 'steer_capability_unavailable' };
+    try {
+      const turn = store.getTurnMetadata(target.workspaceId, target.threadId, target.turnId);
+      if (turn.agentId === 'goal-coordinator')
+        return { availability: 'unsupported', reason: 'steer_unsupported' };
+      const session = turn.agentSessionId ? store.getAgentSession(turn.agentSessionId) : null;
+      const packageSnapshotId = session?.environmentPackageSnapshotId;
+      const snapshot = packageSnapshotId
+        ? this.workerControlGateway.getSessionSnapshot(packageSnapshotId)
+        : null;
+      if (
+        turn.status !== 'running' ||
+        !session ||
+        session.stale ||
+        session.status !== 'busy' ||
+        session.workspaceId !== target.workspaceId ||
+        session.threadId !== target.threadId ||
+        !packageSnapshotId ||
+        !snapshot ||
+        snapshot.workspaceId !== target.workspaceId ||
+        snapshot.threadId !== target.threadId ||
+        snapshot.turnId !== target.turnId ||
+        snapshot.agentSessionId !== session.id
+      )
+        return unavailable;
+      const attempts = listSchedulerExecutionAttemptsForTurn(this.coreDb, target).filter(
+        (attempt) => attempt.phase !== 'closed'
+      );
+      if (
+        attempts.length !== 1 ||
+        attempts[0]!.phase !== 'open' ||
+        attempts[0]!.agentSessionId !== session.id ||
+        attempts[0]!.inputRef !== packageSnapshotId
+      )
+        return unavailable;
+      const db = openAdmittedWorkspaceReadDb(this.coreDb.dataRoot, target.workspaceId);
+      try {
+        readGoalTaskPolicyContext({
+          coreDb: this.coreDb,
+          store,
+          db,
+          lineage: { ...target, agentSessionId: session.id, packageSnapshotId },
+        });
+      } finally {
+        db.sqlite.close();
+      }
+      return this.backend.readSteerAvailability(packageSnapshotId, target);
+    } catch {
+      return unavailable;
+    }
   }
 
   /** Rechecks the exact Task worker and current Goal bounds without changing its execution authority. */

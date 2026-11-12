@@ -6,6 +6,7 @@ import {
   ReasoningEffortSchema,
   ThreadIdSchema,
   TurnFileInputsSchema,
+  TurnIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
@@ -54,12 +55,37 @@ export const ConversationTargetSchema = z
     unavailableReason: z.string().min(1).nullable(),
     threadId: ThreadIdSchema.nullable(),
     profileId: z.string().min(1).nullable(),
+    /** Exact current Task only; a capability projection never authorizes dispatch. */
+    activeTurnId: TurnIdSchema.nullable().optional(),
+    steerAvailability: z.enum(['available', 'busy', 'unsupported', 'unavailable']).optional(),
+    steerUnavailableReason: z.string().min(1).max(512).nullable().optional(),
     logicalModels: z.array(ConversationModelChoiceSchema),
     defaultLogicalModelId: z.string().min(1).nullable(),
     /** This target discloses selected files and the exact brief into new shared Worker work. */
     requiresFileHandoffConfirmation: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((target, context) => {
+    if (
+      target.steerAvailability === 'available' &&
+      (target.kind !== 'running-worker' ||
+        !target.activeTurnId ||
+        target.steerUnavailableReason !== null)
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Available live steer requires an exact Worker Turn and no refusal reason.',
+      });
+    if (
+      target.steerAvailability &&
+      target.steerAvailability !== 'available' &&
+      target.steerUnavailableReason === null
+    )
+      context.addIssue({
+        code: 'custom',
+        message: 'Unavailable live steer requires its safe reason.',
+      });
+  });
 
 /** Context-sensitive target catalog returned to the shared Composer. */
 export const ConversationTargetCatalogSchema = z

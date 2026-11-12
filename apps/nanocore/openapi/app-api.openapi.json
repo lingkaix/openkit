@@ -115114,6 +115114,38 @@
                     }
                   ]
                 },
+                "activeTurnId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "steerAvailability": {
+                  "type": "string",
+                  "enum": [
+                    "available",
+                    "busy",
+                    "unsupported",
+                    "unavailable"
+                  ]
+                },
+                "steerUnavailableReason": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 512
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "logicalModels": {
                   "type": "array",
                   "items": {
@@ -178561,5 +178593,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d4690b949a0951250e42fc327de6871ec501ddda0699d7d048976a421462587b"
+  "x-openkit-source-digest": "sha256:a7d9ef822cfacd69fa868914c8d57d11fc3af5a74720a8ba1594c663dc73271c"
 }

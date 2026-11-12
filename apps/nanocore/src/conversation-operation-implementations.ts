@@ -5,7 +5,10 @@ import type {
 } from '@openkit/app-api-schemas';
 import { HumanAttentionReadError, readHumanAttention } from './action-center.js';
 import { ConversationNavigationReadError, readConversationNavigation } from './app-dashboard.js';
-import { isCurrentDeploymentAdministrator } from './auth/operation-authorizer.js';
+import {
+  isCurrentDeploymentAdministrator,
+  isWorkspaceOperationAuthorized,
+} from './auth/operation-authorizer.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
@@ -33,7 +36,25 @@ export function createTaskConversationOperationImplementations(
         return await dependencies.conversationService!.targets(
           store,
           input,
-          publicOperationActor(context)
+          publicOperationActor(context),
+          (target) => {
+            if (
+              !dependencies.coreDb ||
+              !isWorkspaceOperationAuthorized(
+                dependencies.coreDb,
+                publicOperationActor(context),
+                target.workspaceId,
+                { policyOperation: 'turn.run', mutating: false }
+              )
+            )
+              return { availability: 'unavailable', reason: 'steer_not_authorized' };
+            return (
+              dependencies.turnExecutor?.readSteerAvailability?.(store, target) ?? {
+                availability: 'unavailable',
+                reason: 'steer_capability_unavailable',
+              }
+            );
+          }
         );
       } catch (error) {
         if (

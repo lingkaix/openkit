@@ -177,8 +177,12 @@ describe('Task steer command receipt and Item boundaries', () => {
     'refuses %s before Item or native admission',
     async (state) => {
       const f = await fixture(state === 'terminal');
-      if (state === 'unsupported')
-        f.dependencies.turnExecutor = new SimulatedTurnExecutor() as typeof f.turnExecutor;
+      if (state === 'unsupported') {
+        // This is an absent-capability fixture, not a cold instance of the now-capable simulator.
+        const unsupported = new SimulatedTurnExecutor();
+        Object.defineProperty(unsupported, 'steerTurn', { value: undefined });
+        f.dependencies.turnExecutor = unsupported as typeof f.turnExecutor;
+      }
       if (state === 'pending') await f.store.updateTurn(f.turn.id, { status: 'pending' });
       if (state === 'coordinator')
         await f.store.updateTurn(f.turn.id, { agentId: 'goal-coordinator' });

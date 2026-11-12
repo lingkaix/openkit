@@ -17,6 +17,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
+import { OperationError } from '../operation-error.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
@@ -60,6 +61,10 @@ import type {
   RuntimeEventFamily,
   RuntimeItemDeltaKind,
   RuntimeItemType,
+  TaskSteerAvailability,
+  TaskSteerControl,
+  TaskSteerRunTarget,
+  TaskSteerTarget,
   TurnCommandRuntimeContext,
   TurnExecutor,
   TurnStartRuntimeContext,
@@ -569,6 +574,73 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       status: 'closed',
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  /** The simulator's actual existing execution owner is its support and live-pin oracle. */
+  public readSteerAvailability(store: FsStore, target: TaskSteerRunTarget): TaskSteerAvailability {
+    try {
+      const turn = store.getTurnMetadata(target.workspaceId, target.threadId, target.turnId);
+      if (turn.agentId === 'goal-coordinator')
+        return { availability: 'unsupported', reason: 'steer_unsupported' };
+      const session = turn.agentSessionId ? store.getAgentSession(turn.agentSessionId) : null;
+      if (
+        !this.activeTurnExecutions.has(target.turnId) ||
+        turn.status !== 'running' ||
+        !session ||
+        session.stale ||
+        session.workspaceId !== target.workspaceId ||
+        session.threadId !== target.threadId
+      )
+        return { availability: 'unavailable', reason: 'steer_target_stale' };
+      return { availability: 'available', reason: null };
+    } catch {
+      return { availability: 'unavailable', reason: 'steer_target_stale' };
+    }
+  }
+
+  /** Accepts exact same-run input through the real public Item/receipt callbacks, without a queue. */
+  public async steerTurn(
+    store: FsStore,
+    target: TaskSteerTarget,
+    control: TaskSteerControl
+  ): Promise<void> {
+    const assertCurrent = () => {
+      const status = this.readSteerAvailability(store, target);
+      if (status.availability !== 'available')
+        throw new OperationError(
+          status.reason ?? 'steer_target_stale',
+          'The exact simulated Task is not accepting live input.',
+          409
+        );
+    };
+    await control.recheck();
+    assertCurrent();
+    const turn = store.getTurnMetadata(target.workspaceId, target.threadId, target.turnId);
+    // These are this simulator's real local operation/execution identities, not fabricated Harness proof.
+    const correlation = {
+      operationId: commandInputHash({ operation: 'simulator.task.steer', ...target }),
+      executionId: `simulator:${turn.id}:${turn.agentSessionId}`,
+    };
+    await control.admit(correlation);
+    await control.recheck();
+    assertCurrent();
+    const input = store.readThreadTimelineSnapshot(
+      target.workspaceId,
+      target.threadId,
+      (snapshot) => snapshot.item(target.inputItemId)
+    );
+    if (
+      !input ||
+      input.type !== 'user-message' ||
+      input.turnId !== target.turnId ||
+      createHash('sha256').update(input.text).digest('hex') !== target.inputDigest
+    )
+      throw new OperationError(
+        'steer_target_stale',
+        'The exact simulated input is unavailable.',
+        409
+      );
+    await control.complete({ disposition: 'accepted', reason: null });
   }
 
   /** Keeps maintenance from taking over this executor's live closeout owner. */
