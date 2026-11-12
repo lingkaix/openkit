@@ -1,16 +1,31 @@
 import type { TimelineRunEntry } from '@openkit/app-api-schemas';
 import type { TurnErrorPresentation } from '@openkit/protocol';
+import { QueryClientContext } from '@tanstack/react-query';
 import type { ReactNode, Ref } from 'react';
+import { useContext } from 'react';
 import { Link } from 'react-router-dom';
+import { useOptionalCoreClient } from '../../../app/core-client';
 import { Button, Icon } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
+import { reportedActivityFor } from './argument-digest';
 import { timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { OwnerRunError } from './owner-error';
 import { isStepItem } from './present';
+import { ReportedActivityView } from './reported-activity';
 import { auditUsageHref } from './resolve';
 import { captureCopy, coverageCopy, omittedActivityCopy } from './source';
+
+function scopeOf(items: readonly ThreadItem[]): { workspaceId: string; threadId: string } | null {
+  for (const item of items) {
+    const owner = item.owner;
+    if (owner?.kind === 'workspace' && item.threadId) {
+      return { workspaceId: owner.workspaceId, threadId: item.threadId };
+    }
+  }
+  return null;
+}
 
 /** Worker-reported activity as today's dashboard returns it. */
 export interface ReportedActivity {
@@ -61,6 +76,12 @@ export function Inspector({
   expanded?: boolean;
   onExpand?: () => void;
 }) {
+  const core = useOptionalCoreClient();
+  const queryClient = useContext(QueryClientContext);
+  const reported =
+    core && queryClient
+      ? reportedActivityFor(queryClient, turnId, scopeOf(items))
+      : { state: 'absent' as const };
   return (
     <aside
       ref={panelRef}
@@ -145,7 +166,9 @@ export function Inspector({
           {timelineCopy.auditRecords}
         </Link>
       </p>
-      {activity ? (
+      {reported.state !== 'absent' ? (
+        <ReportedActivityView activity={reported.state === 'present' ? reported.activity : null} />
+      ) : activity ? (
         <section aria-label="Runtime activity" aria-live="polite" className="mt-4 text-sm">
           <h3 className="font-semibold text-fg">Runtime activity</h3>
           {activity.entries.length > 0 ? (

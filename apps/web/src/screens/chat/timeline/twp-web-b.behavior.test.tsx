@@ -326,3 +326,137 @@ describe('exact repetition and retry groups', () => {
     expect(screen.getAllByText('npm test').length).toBeGreaterThan(0);
   });
 });
+
+const reported = {
+  reportedBy: 'worker' as const,
+  contentCapture: 'off' as const,
+  coverage: 'partial' as const,
+  omittedEntryCount: 2,
+  entries: [
+    {
+      sequence: 1,
+      observedAt: at(1),
+      kind: 'progress' as const,
+      label: 'Child 1',
+    },
+    {
+      sequence: 4,
+      observedAt: at(4),
+      kind: 'result' as const,
+      label: 'Child 1',
+    },
+    {
+      sequence: 3,
+      observedAt: at(3),
+      kind: 'failure' as const,
+      label: 'Child 2',
+    },
+  ],
+};
+
+function renderReported(activity: typeof reported | null, staleText: string | null) {
+  const page = ThreadTimelineResponseSchema.parse({
+    ...timeline,
+    runs: [{ ...timeline.runs[0], reportedActivity: activity }],
+  });
+  const board = ThreadDashboardResponseSchema.parse({
+    ...dashboard,
+    ...(staleText
+      ? {
+          runtimeActivity: [
+            {
+              turnId: TURN,
+              contentCapture: 'on' as const,
+              coverage: 'partial' as const,
+              omittedEntryCount: 0,
+              entries: [
+                {
+                  sequence: 1,
+                  observedAt: at(1),
+                  kind: 'failure' as const,
+                  text: staleText,
+                  textTruncated: false,
+                },
+              ],
+            },
+          ],
+        }
+      : {}),
+  });
+  const api = {
+    core: {
+      meta: async () => ({}),
+      subscribeTurnEvents: () => ({
+        [Symbol.asyncIterator]() {
+          return { next: () => new Promise(() => {}) };
+        },
+      }),
+    },
+    operations: {
+      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.dashboard': async () => board,
+      'thread.timeline': async (input: { view?: string }) => {
+        if (input.view === 'items') {
+          return ThreadTimelineResponseSchema.parse({
+            ...page,
+            view: 'items',
+            runs: [],
+            items: [],
+          });
+        }
+        return page;
+      },
+      'thread.items': async () => ({ items: records, nextCursor: null }),
+    },
+  } as unknown as CoreClient;
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <CoreClientProvider client={api}>
+        <MemoryRouter>
+          <ThreadStream workspaceId={WS} threadId={THREAD} lens="full" />
+        </MemoryRouter>
+      </CoreClientProvider>
+    </QueryClientProvider>
+  );
+}
+
+describe('bounded reported activity', () => {
+  it('groups worker labels in Full and the inspector and drops the older activity text', async () => {
+    const user = userEvent.setup();
+    renderReported(reported, 'stale activity body');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+
+    const region = screen.getByRole('region', { name: 'Reported activity' });
+    expect(region).not.toHaveAttribute('aria-live');
+    expect(region).toHaveTextContent('Activity coverage is partial.');
+    expect(region).toHaveTextContent('2 earlier activity entries not shown.');
+    expect(region).toHaveTextContent('Child 1 · 2 updates · latest: result');
+    expect(region).toHaveTextContent('Child 2 · 1 update · latest: failure');
+    expect(region).toHaveTextContent('reported by the worker');
+    expect(region.querySelectorAll('[data-activity-group]')).toHaveLength(2);
+    expect(screen.queryByText('stale activity body')).not.toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Runtime activity' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Inspect' }));
+    const inspector = await screen.findByRole('complementary', { name: 'Inspector' });
+    const inspected = within(inspector).getByRole('region', { name: 'Reported activity' });
+    expect(inspected).not.toHaveAttribute('aria-live');
+    expect(inspected).toHaveTextContent('Child 1 · 2 updates · latest: result');
+    expect(inspected).toHaveTextContent('Child 2 · 1 update · latest: failure');
+    expect(within(inspector).queryByText('stale activity body')).not.toBeInTheDocument();
+  });
+
+  it('says coverage is unavailable when the bounded read is null', async () => {
+    renderReported(null, 'stale activity body');
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    });
+    const region = screen.getByRole('region', { name: 'Reported activity' });
+    expect(region).toHaveTextContent('Activity coverage is unavailable.');
+    expect(region.querySelector('[data-activity-group]')).toBeNull();
+    expect(screen.queryByText('stale activity body')).not.toBeInTheDocument();
+  });
+});

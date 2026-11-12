@@ -5,7 +5,11 @@ import { useOptionalCoreClient } from '../../../app/core-client';
 import { Button } from '../../../primitives';
 import { type ThreadItem, useThreadDashboard } from '../data';
 import { ItemView } from '../ItemView';
-import { argumentDigestsFor } from './argument-digest';
+import {
+  argumentDigestsFor,
+  type ReportedActivityRead,
+  reportedActivityFor,
+} from './argument-digest';
 import { fillCopy, timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
@@ -23,6 +27,7 @@ import {
   summaryLine,
   voiceClass,
 } from './present';
+import { ReportedActivityView } from './reported-activity';
 import type { TimelineEntry, TimelineTurn } from './source';
 import { PlanSegments, PolicyBadge } from './tb7';
 
@@ -177,6 +182,7 @@ function RunEntryBody({
   viewerUserId,
   names,
   digests,
+  reported,
 }: {
   entry: TimelineEntry;
   items: readonly ThreadItem[];
@@ -210,6 +216,8 @@ function RunEntryBody({
   names: ReadonlyMap<string, string>;
   /** Recorded argument digests from the timeline read. Missing ids stay ungrouped. */
   digests?: ReadonlyMap<string, string | null>;
+  /** Bounded reported activity for this run. Absence keeps the dashboard activity line. */
+  reported?: ReportedActivityRead;
 }) {
   const runLens: LensName = lens === 'full' || expanded ? 'full' : 'work';
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -578,7 +586,11 @@ function RunEntryBody({
           {timelineCopy.reportedByWorker}
         </p>
       ) : null}
-      {showActivity ? activityLine : null}
+      {runLens === 'full' && reported && reported.state !== 'absent' ? (
+        <ReportedActivityView activity={reported.state === 'present' ? reported.activity : null} />
+      ) : showActivity ? (
+        activityLine
+      ) : null}
       <Button
         ref={inspectRef}
         variant="quiet"
@@ -622,18 +634,29 @@ function AdmittedRequests({
 function RecordedDigests({
   workspaceId,
   threadId,
+  turnId,
   children,
 }: {
   workspaceId: string;
   threadId: string;
-  children: (digests: ReadonlyMap<string, string | null>) => ReactNode;
+  turnId: string;
+  children: (facts: {
+    digests: ReadonlyMap<string, string | null>;
+    reported: ReportedActivityRead;
+  }) => ReactNode;
 }) {
   const queryClient = useQueryClient();
-  return children(argumentDigestsFor(queryClient, workspaceId, threadId));
+  return children({
+    digests: argumentDigestsFor(queryClient, workspaceId, threadId),
+    reported: reportedActivityFor(queryClient, turnId, { workspaceId, threadId }),
+  });
 }
 
 export function RunEntry(
-  props: Omit<Parameters<typeof RunEntryBody>[0], 'requests' | 'viewerUserId' | 'names' | 'digests'>
+  props: Omit<
+    Parameters<typeof RunEntryBody>[0],
+    'requests' | 'viewerUserId' | 'names' | 'digests' | 'reported'
+  >
 ) {
   const client = useOptionalCoreClient();
   const scope = workspaceOf(props.items);
@@ -651,8 +674,12 @@ export function RunEntry(
   return (
     <AdmittedRequests workspaceId={scope.workspaceId} threadId={scope.threadId}>
       {(lifecycle) => (
-        <RecordedDigests workspaceId={scope.workspaceId} threadId={scope.threadId}>
-          {(digests) => <RunEntryBody {...props} {...lifecycle} digests={digests} />}
+        <RecordedDigests
+          workspaceId={scope.workspaceId}
+          threadId={scope.threadId}
+          turnId={props.entry.turnId}
+        >
+          {(facts) => <RunEntryBody {...props} {...lifecycle} {...facts} />}
         </RecordedDigests>
       )}
     </AdmittedRequests>
