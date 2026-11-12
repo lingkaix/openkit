@@ -1,4 +1,7 @@
-import type { GOVERNANCE_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import {
+  type GOVERNANCE_OPERATION_DEFINITIONS,
+  TimelineEvidenceFilterSchema,
+} from '@openkit/app-api-schemas';
 import {
   type AuditEvent,
   AuditEventIdSchema,
@@ -40,7 +43,9 @@ export function createGovernanceOperationImplementations(
 
         try {
           const position = decodeUsageReadCursor(input.cursor, workspaceId);
+          const filters = selectTimelineEvidenceFilter(input, position?.filters);
           const visibleCalls = listWorkspaceCapabilityCalls(workspaceDb, workspaceId)
+            .filter((call) => matchesTimelineEvidence(call, filters, call.id))
             .filter(
               (call) =>
                 !call.threadId ||
@@ -84,17 +89,19 @@ export function createGovernanceOperationImplementations(
                   : {}),
               };
             });
-          const visibleUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId).filter(
-            (usage) =>
-              !usage.threadId ||
-              isThreadIdVisible(
-                dependencies.store!,
-                workspaceId,
-                usage.threadId,
-                publicOperationActor(context).userId,
-                isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
-              )
-          );
+          const visibleUsage = listWorkspaceUsageRecords(workspaceDb, workspaceId)
+            .filter((usage) => matchesTimelineEvidence(usage, filters))
+            .filter(
+              (usage) =>
+                !usage.threadId ||
+                isThreadIdVisible(
+                  dependencies.store!,
+                  workspaceId,
+                  usage.threadId,
+                  publicOperationActor(context).userId,
+                  isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
+                )
+            );
           const remainingCalls = !position
             ? visibleCalls
             : position.call === null
@@ -129,6 +136,7 @@ export function createGovernanceOperationImplementations(
                     JSON.stringify([
                       'usage.read',
                       workspaceId,
+                      filters,
                       hasMoreCalls
                         ? [capabilityCalls.at(-1)!.startedAt ?? '', capabilityCalls.at(-1)!.id]
                         : null,
@@ -152,18 +160,21 @@ export function createGovernanceOperationImplementations(
         const workspaceDb = repositoryWorkspaceDb!(workspaceId);
 
         try {
-          const visibleEvents = listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb).filter(
-            (event) =>
-              !event.threadId ||
-              isThreadIdVisible(
-                dependencies.store!,
-                workspaceId,
-                event.threadId,
-                publicOperationActor(context).userId,
-                isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
-              )
-          );
           const position = decodeWorkspaceAuditCursor(input.cursor, workspaceId);
+          const filters = selectTimelineEvidenceFilter(input, position?.filters);
+          const visibleEvents = listWorkspaceAuditEvents(workspaceDb, workspaceId, coreDb)
+            .filter((event) => matchesTimelineEvidence(event, filters))
+            .filter(
+              (event) =>
+                !event.threadId ||
+                isThreadIdVisible(
+                  dependencies.store!,
+                  workspaceId,
+                  event.threadId,
+                  publicOperationActor(context).userId,
+                  isCurrentDeploymentAdministrator(coreDb!, publicOperationActor(context))
+                )
+            );
           const remaining = visibleEvents
             .sort(compareWorkspaceAuditPositions)
             .filter((event) => !position || compareWorkspaceAuditPositions(event, position) > 0);
@@ -179,6 +190,7 @@ export function createGovernanceOperationImplementations(
                     JSON.stringify([
                       'audit.workspace-list',
                       workspaceId,
+                      filters,
                       last.createdAt ?? '',
                       last.id,
                     ])
@@ -203,7 +215,9 @@ export function createGovernanceOperationImplementations(
         }
 
         const position = decodeServerAuditCursor(input.cursor);
+        const filters = selectTimelineEvidenceFilter(input, position?.filters);
         const remaining = listServerAuditEvents(coreDb)
+          .filter((event) => matchesTimelineEvidence(event, filters))
           .sort(compareWorkspaceAuditPositions)
           .filter((event) => !position || compareWorkspaceAuditPositions(event, position) > 0);
         const auditEvents = input.limit === undefined ? remaining : remaining.slice(0, input.limit);
@@ -213,7 +227,7 @@ export function createGovernanceOperationImplementations(
           nextCursor:
             last && auditEvents.length < remaining.length
               ? Buffer.from(
-                  JSON.stringify(['audit.server-list', last.createdAt ?? '', last.id])
+                  JSON.stringify(['audit.server-list', filters, last.createdAt ?? '', last.id])
                 ).toString('base64url')
               : null,
         };
@@ -323,16 +337,54 @@ export function createGovernanceOperationImplementations(
   } satisfies FamilyImplementations<typeof GOVERNANCE_OPERATION_DEFINITIONS>;
 }
 
+type TimelineEvidenceFilter = z.infer<typeof TimelineEvidenceFilterSchema>;
+
+/** Continuations retain their original narrowing selectors; a supplied selector cannot widen or replace them. */
+function selectTimelineEvidenceFilter(
+  input: TimelineEvidenceFilter,
+  retained?: TimelineEvidenceFilter
+): TimelineEvidenceFilter {
+  const supplied = TimelineEvidenceFilterSchema.parse({
+    turnId: input.turnId,
+    capabilityCallId: input.capabilityCallId,
+    itemId: input.itemId,
+  });
+  if (!retained) return supplied;
+  for (const key of ['turnId', 'capabilityCallId', 'itemId'] as const)
+    if (supplied[key] !== undefined && supplied[key] !== retained[key])
+      throw new OperationError(
+        'invalid_request',
+        'An evidence continuation cannot change its selectors.',
+        400
+      );
+  return retained;
+}
+
+/** Exact retained identifiers intersect before pagination; a call's own identity is its call selector. */
+function matchesTimelineEvidence(
+  row: { turnId?: string | null; itemId?: string | null; capabilityCallId?: string | null },
+  filter: TimelineEvidenceFilter,
+  callId = row.capabilityCallId
+): boolean {
+  return (
+    (!filter.turnId || row.turnId === filter.turnId) &&
+    (!filter.itemId || row.itemId === filter.itemId) &&
+    (!filter.capabilityCallId || callId === filter.capabilityCallId)
+  );
+}
+
 /** A continuation is a scoped position, not a retained anchor or an authorization grant. */
 const workspaceAuditCursorSchema = z.tuple([
   z.literal('audit.workspace-list'),
   WorkspaceIdSchema,
+  TimelineEvidenceFilterSchema,
   z.union([z.string().datetime(), z.literal('')]),
   AuditEventIdSchema,
 ]);
 
 const serverAuditCursorSchema = z.tuple([
   z.literal('audit.server-list'),
+  TimelineEvidenceFilterSchema,
   z.union([z.string().datetime(), z.literal('')]),
   AuditEventIdSchema,
 ]);
@@ -354,10 +406,11 @@ const usageReadCursorSchema = z
   .tuple([
     z.literal('usage.read'),
     WorkspaceIdSchema,
+    TimelineEvidenceFilterSchema,
     z.tuple([z.union([z.string().datetime(), z.literal('')]), CapabilityCallIdSchema]).nullable(),
     z.tuple([z.string().datetime(), UsageRecordIdSchema]).nullable(),
   ])
-  .refine((value) => value[2] !== null || value[3] !== null);
+  .refine((value) => value[3] !== null || value[4] !== null);
 
 /** Descending canonical pair order; historical absent timestamps occupy the minimum position. */
 function compareWorkspaceAuditPositions(
@@ -390,7 +443,7 @@ function decodeWorkspaceAuditCursor(cursor: string | undefined, workspaceId: str
     if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
       throw new Error('Invalid audit continuation.');
     }
-    return { createdAt: position[2], id: position[3] };
+    return { filters: position[2], createdAt: position[3], id: position[4] };
   } catch {
     throw new OperationError('invalid_request', 'Invalid audit continuation.', 400);
   }
@@ -405,7 +458,7 @@ function decodeServerAuditCursor(cursor: string | undefined) {
     if (bytes.toString('base64url') !== cursor) {
       throw new Error('Invalid audit continuation.');
     }
-    return { createdAt: position[1], id: position[2] };
+    return { filters: position[1], createdAt: position[2], id: position[3] };
   } catch {
     throw new OperationError('invalid_request', 'Invalid audit continuation.', 400);
   }
@@ -450,7 +503,7 @@ function decodeUsageReadCursor(cursor: string | undefined, workspaceId: string) 
     if (bytes.toString('base64url') !== cursor || position[1] !== workspaceId) {
       throw new Error('Invalid usage continuation.');
     }
-    return { call: position[2], usage: position[3] };
+    return { filters: position[2], call: position[3], usage: position[4] };
   } catch {
     throw new OperationError('invalid_request', 'Invalid usage continuation.', 400);
   }

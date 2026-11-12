@@ -286,6 +286,35 @@ describe('administration catalog application client', () => {
   });
 });
 
+describe('timeline evidence client', () => {
+  it('preserves exact run, call and Item selectors without minting a command identity', async () => {
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const requests: Request[] = [];
+    const client = createCoreClient({
+      baseUrl: 'http://nanocore.test',
+      fetch: async (url, init) => {
+        requests.push(new Request(url, init));
+        return Response.json({
+          workspaceId,
+          capabilityCalls: [],
+          usageRecords: [],
+          nextCursor: null,
+        });
+      },
+    });
+    const input = {
+      workspaceId,
+      turnId: 'tu_00000000-0000-7000-8000-000000000001',
+      capabilityCallId: 'cap_00000000-0000-7000-8000-000000000001',
+      itemId: 'it_00000000-0000-7000-8000-000000000001',
+      limit: 1,
+    };
+    await client.operations['usage.read'](input);
+    expect(await requests[0]!.json()).toEqual(input);
+    expect(requests[0]!.headers.get('x-openkit-request-id')).toBeNull();
+  });
+});
+
 describe('bounded timeline client', () => {
   it('uses the shared read operation and preserves its logical anchor without a mutation identity', async () => {
     const selector = {

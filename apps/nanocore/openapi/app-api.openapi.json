@@ -15932,7 +15932,7 @@
         "tags": [
           "usage"
         ],
-        "summary": "Read capability-call and usage evidence for one workspace.",
+        "summary": "Read capability-call and usage evidence for one workspace, optionally narrowed by exact run, call or Item.",
         "security": [
           {
             "bearerAuth": []
@@ -15953,7 +15953,7 @@
         },
         "responses": {
           "200": {
-            "description": "Read capability-call and usage evidence for one workspace.",
+            "description": "Read capability-call and usage evidence for one workspace, optionally narrowed by exact run, call or Item.",
             "content": {
               "application/json": {
                 "schema": {
@@ -141300,6 +141300,18 @@
           "cursor": {
             "type": "string",
             "minLength": 1
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "capabilityCallId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "itemId": {
+            "type": "string",
+            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           }
         },
         "required": [
@@ -142106,6 +142118,18 @@
           "cursor": {
             "type": "string",
             "minLength": 1
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "capabilityCallId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "itemId": {
+            "type": "string",
+            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           }
         },
         "required": [
@@ -143348,6 +143372,18 @@
           "cursor": {
             "type": "string",
             "minLength": 1
+          },
+          "turnId": {
+            "type": "string",
+            "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "capabilityCallId": {
+            "type": "string",
+            "pattern": "^cap_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "itemId": {
+            "type": "string",
+            "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           }
         },
         "additionalProperties": false
@@ -178219,5 +178255,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:664bffbfe8961fb70e1991896eee55e767bd9e2c4234698290afbd7ccb046470"
+  "x-openkit-source-digest": "sha256:b86c13afc4dc9ad274dc1a41d691d7bf90b44472f6f85c728409d67782d6c42b"
 }

@@ -1,4 +1,9 @@
-import { WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  CapabilityCallIdSchema,
+  ItemIdSchema,
+  TurnIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import {
   ListServerAuditEventsResponseSchema,
@@ -19,11 +24,21 @@ const publicCredentials = [
   'deployment-administrator',
 ] as const;
 
+/** Narrowing selectors over exact retained lineage; identifiers grant no source admission. */
+export const TimelineEvidenceFilterSchema = z
+  .object({
+    turnId: TurnIdSchema.optional(),
+    capabilityCallId: CapabilityCallIdSchema.optional(),
+    itemId: ItemIdSchema.optional(),
+  })
+  .strict();
+
 /** Complete logical inputs and retained redacted outputs for the governance reads. */
 export const GOVERNANCE_OPERATION_DEFINITIONS = {
   'usage.read': {
     stability: 'release-coupled',
-    description: 'Read capability-call and usage evidence for one workspace.',
+    description:
+      'Read capability-call and usage evidence for one workspace, optionally narrowed by exact run, call or Item.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -32,6 +47,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
         workspaceId: WorkspaceIdSchema,
         limit: z.number().int().positive().optional(),
         cursor: z.string().min(1).optional(),
+        ...TimelineEvidenceFilterSchema.shape,
       })
       .strict(),
     outputSchema: CapabilityUsageResponseSchema,
@@ -52,6 +68,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
         workspaceId: WorkspaceIdSchema,
         limit: z.number().int().positive().optional(),
         cursor: z.string().min(1).optional(),
+        ...TimelineEvidenceFilterSchema.shape,
       })
       .strict(),
     outputSchema: ListWorkspaceAuditEventsResponseSchema,
@@ -71,6 +88,7 @@ export const GOVERNANCE_OPERATION_DEFINITIONS = {
       .object({
         limit: z.number().int().positive().optional(),
         cursor: z.string().min(1).optional(),
+        ...TimelineEvidenceFilterSchema.shape,
       })
       .strict(),
     outputSchema: ListServerAuditEventsResponseSchema,

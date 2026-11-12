@@ -13,6 +13,8 @@ Dashboard work status contains selected Agent, active Turn status, pending atten
 
 The bounded dashboard declares current-run and referenced-window coverage. Historical `taskInputs` objectives and complete runtime activity are unavailable in this projection; the client does not infer their absence or reconstruct them from message JSON. Their source owners retain full verification.
 
+Governance reads forward optional `turnId`, `capabilityCallId` and `itemId` selectors to the same shared read operations. Pass the returned cursor to continue the original filtered list; the client does not count or filter a loaded page as if it were a complete server result, and the read mints no mutation identity.
+
 `client.operations` exposes the ten Goal definitions with strict input and output codecs and automatic missing request-id insertion. `goal.read` returns current intent and cards, exact proposed and active Plan versions, shared request state and claim, linked ordinary Tasks and disposition. Human decision operations resolve exact Pending Requests; grant consumption belongs to the Goal owner and does not launch work. Retired Goal SDK methods and routes have no aliases.
 
 `@openkit/core-client` is the composed typed HTTP and SSE client used by the SPA and protocol integration tests.
