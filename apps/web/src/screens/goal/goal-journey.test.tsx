@@ -252,7 +252,14 @@ it('accepts only the exact captured completion request and sends revision-bound 
     ...data.requests[0]!,
     operation: 'goal.completion.accept',
     exactIntent: {
-      candidate: { summary: 'Review release evidence', unresolvedWork: ['Publication remains'] },
+      candidate: {
+        intentRevision: 0,
+        intent: 'Review release evidence',
+        planVersionId: 'plan-one',
+        evidence: [],
+        unresolvedWork: ['Publication remains'],
+        summary: 'Review release evidence',
+      },
     },
   } as (typeof data.requests)[number];
   const operations = mount(data);

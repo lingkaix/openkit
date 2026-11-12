@@ -393,7 +393,16 @@ it('accepts completion without a confirmation dialog', async () => {
   data.requests[0] = {
     ...data.requests[0]!,
     operation: 'goal.completion.accept',
-    exactIntent: { candidate: { summary: 'Review release evidence' } },
+    exactIntent: {
+      candidate: {
+        intentRevision: 0,
+        intent: 'Review release evidence',
+        planVersionId: 'plan-one',
+        evidence: [],
+        unresolvedWork: ['Publication remains'],
+        summary: 'Review release evidence',
+      },
+    },
   } as (typeof data.requests)[number];
   const { operations } = mount(data);
   const user = userEvent.setup();

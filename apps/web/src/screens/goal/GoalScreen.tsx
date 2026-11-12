@@ -1,4 +1,9 @@
-import type { GoalCard, GoalRecord, GoalView } from '@openkit/app-api-schemas';
+import {
+  type GoalCard,
+  GoalCompletionCandidateSchema,
+  type GoalRecord,
+  type GoalView,
+} from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
@@ -398,6 +403,7 @@ export function GoalScreen() {
             const approve = request.operation === 'goal.plan.approve';
             const actor = plainName(request.decidingActorId);
             const candidate = request.exactIntent.candidate;
+            const completion = approve ? null : GoalCompletionCandidateSchema.safeParse(candidate);
             const summary =
               candidate &&
               typeof candidate === 'object' &&
@@ -405,6 +411,7 @@ export function GoalScreen() {
               typeof candidate.summary === 'string'
                 ? plainName(candidate.summary)
                 : null;
+            const capturedWork = completion?.success ? completion.data.unresolvedWork : [];
             return (
               <article
                 key={request.requestId}
@@ -421,6 +428,9 @@ export function GoalScreen() {
                 {request.disposition ? <p>Decision outcome recorded.</p> : null}
                 {actor ? <p>Decision by {actor}</p> : null}
                 {summary ? <p>{summary}</p> : null}
+                {capturedWork.map((work) => (
+                  <p key={work}>{work}</p>
+                ))}
                 {request.state === 'pending' && (
                   <>
                     <p id={approve ? APPROVE_CONSEQUENCE : ACCEPT_CONSEQUENCE}>
@@ -431,7 +441,7 @@ export function GoalScreen() {
                     <p id={DENY_CONSEQUENCE}>{timelineCopy.denyConsequence}</p>
                     <Button
                       aria-describedby={approve ? APPROVE_CONSEQUENCE : ACCEPT_CONSEQUENCE}
-                      isDisabled={writesDisabled}
+                      isDisabled={writesDisabled || (!approve && !completion?.success)}
                       onPress={() =>
                         command.mutate({
                           operation: approve ? 'goal.plan.approve' : 'goal.completion.accept',

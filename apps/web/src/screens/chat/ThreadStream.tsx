@@ -1,13 +1,15 @@
 import { createRequestId } from '@openkit/core-client';
-import { useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useQueryClient } from '@tanstack/react-query';
 import {
   type ComponentProps,
   type ReactNode,
   type RefObject,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { usePersistentNavigation } from '../../app/AppShell';
@@ -46,7 +48,7 @@ import {
 } from './timeline/catch-up';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
 import { DecisionRowSheet, DecisionSheet } from './timeline/decision-sheet';
-import { classifyRunError, freshnessCopy, isDeniedRead } from './timeline/degraded';
+import { classifyRunError, freshnessCopy, isBusyStatus, isDeniedRead } from './timeline/degraded';
 import { openDecisionIds, planEmphasis } from './timeline/emphasis';
 import { buildAlignment } from './timeline/header';
 import { Inspector } from './timeline/Inspector';
@@ -160,6 +162,42 @@ function carriedQuestion(
   if (item?.type !== 'user-input-request') return undefined;
   const question = item.questions.find((entry) => !entry.isSecret);
   return question?.question || item.prompt;
+}
+
+/**
+ * Repaint when this thread's history read changes.
+ * React Query delivers that change on a later timer tick. A denied read must
+ * drop the admitted view in the same turn, while it is still the current result.
+ */
+function useThreadHistoryPaint(
+  queryClient: QueryClient,
+  workspaceId: string | null,
+  threadId: string
+): void {
+  const owner = workspaceId ?? '';
+  const subscribe = useCallback(
+    (onChange: () => void) =>
+      queryClient.getQueryCache().subscribe((event) => {
+        const key = event.query.queryKey;
+        if (key[0] !== 'thread-timeline' && key[0] !== 'thread-timeline-items') return;
+        if (key[1] !== owner || key[2] !== threadId) return;
+        // A cache write can happen while another stream is rendering. Deliver
+        // the repaint after that render, still before the next timer tick.
+        queueMicrotask(onChange);
+      }),
+    [owner, queryClient, threadId]
+  );
+  const getSnapshot = useCallback(() => {
+    let version = 0;
+    const cache = queryClient.getQueryCache();
+    for (const head of ['thread-timeline', 'thread-timeline-items'] as const) {
+      for (const query of cache.findAll({ queryKey: [head, owner, threadId] })) {
+        version += query.state.dataUpdateCount + query.state.errorUpdateCount;
+      }
+    }
+    return version;
+  }, [owner, queryClient, threadId]);
+  useSyncExternalStore(subscribe, getSnapshot);
 }
 
 export interface ThreadStreamProps {
@@ -321,6 +359,7 @@ export function ThreadStream({
   const [portalNode, setPortalNode] = useState<HTMLElement | null>(null);
   const connection = useConnection();
   const queryClient = useQueryClient();
+  useThreadHistoryPaint(queryClient, workspaceId, threadId);
   const items = useThreadItems(workspaceId, threadId, false, !timelineOn);
   const liveSnapshot = useCoalescedItems(timelineOn ? items.data : undefined);
   const timelineWindow = useTimelineWindow({
@@ -655,7 +694,18 @@ export function ThreadStream({
     ),
     clock
   );
-  const holdReason = fresh ?? undefined;
+  const admissionHold = controlsReadOnly
+    ? 'Reconnect to respond to this approval.'
+    : live.isError
+      ? 'Approval status could not be loaded. Reload this conversation to try again.'
+      : undefined;
+  const holdReason = admissionHold ?? fresh ?? undefined;
+  const admittedHistory = Boolean(timelineOn ? timelineWindow.data : items.data);
+  const historyBusy = isBusyStatus(timelineOn ? timelineWindow.error : items.error);
+  const retainHistory = historyError && historyBusy && admittedHistory && !historyDenied;
+  const retainedStale = retainHistory
+    ? freshnessCopy(3, timelineOn ? timelineWindow.dataUpdatedAt : items.dataUpdatedAt, clock)
+    : null;
   const focusedElement = useRef<HTMLDivElement>(null);
   const located = useRef<string | null>(null);
   const focusedDashboard =
@@ -709,7 +759,7 @@ export function ThreadStream({
     );
   }
 
-  if (historyDenied || historyError) {
+  if (historyDenied || (historyError && !retainHistory)) {
     return (
       <ErrorBanner
         message={historyDenied ? timelineCopy.deniedRead : "Couldn't load this thread."}
@@ -1215,9 +1265,9 @@ export function ThreadStream({
         disabled={controlsReadOnly || live.isError}
       >
         <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
-          {fresh ? (
+          {fresh || retainedStale ? (
             <p role="status" className="ok-meta">
-              {fresh}
+              {fresh ?? retainedStale}
             </p>
           ) : null}
           {lensProp === undefined ? (
@@ -1629,6 +1679,21 @@ export function ThreadStream({
                 submitAnswers.variables?.userInputRequestId === openItem.userInputRequestId
           }
           holdReason={holdReason}
+          failed={
+            openItem.type === 'approval-request' &&
+            respond.isError &&
+            respond.variables?.approvalRequestId === openItem.approvalRequestId
+          }
+          onRetry={
+            openItem.type === 'approval-request' &&
+            respond.isError &&
+            respond.variables?.approvalRequestId === openItem.approvalRequestId
+              ? () => {
+                  const variables = respond.variables;
+                  if (variables) respond.mutate(variables);
+                }
+              : undefined
+          }
           more={decisionsAfter}
           onApprove={
             openItem.type === 'approval-request'
