@@ -157,8 +157,9 @@ export function barDecisionTarget<T extends { id: string }>(
 }
 
 /**
- * Later open decisions after the one on screen.
- * A row with no loaded request does not count and is not the next sheet.
+ * Later attention rows after the one on screen.
+ * A loaded request counts only while it is still open.
+ * A row whose request is outside the window still counts; the sheet shows that row's title.
  */
 export function openDecisionsAfter<T extends { id: string }>(
   walk: readonly AttentionWalkEntry<T>[],
@@ -171,7 +172,7 @@ export function openDecisionsAfter<T extends { id: string }>(
     (entry) => entry.key === openId || entry.itemId === openId || entry.rowId === openId
   );
   const rest = (index >= 0 ? walk.slice(index + 1) : []).filter(
-    (entry) => entry.item != null && open.has(entry.item.id)
+    (entry) => entry.item == null || open.has(entry.item.id)
   );
   return { count: rest.length, nextKey: rest[0]?.key ?? null };
 }

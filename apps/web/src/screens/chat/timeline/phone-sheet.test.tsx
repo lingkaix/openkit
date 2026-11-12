@@ -43,6 +43,19 @@ describe('phone bar decision target', () => {
       nextKey: null,
     });
   });
+
+  it('offers a later attention row whose request is not loaded', () => {
+    expect(
+      openDecisionsAfter(
+        [
+          { key: 'it_question', rowId: 'question:1', itemId: 'it_question', item: question },
+          { key: 'it_unloaded', rowId: 'question:2', itemId: 'it_unloaded', item: null },
+        ],
+        'it_question',
+        ['it_question']
+      )
+    ).toEqual({ count: 1, nextKey: 'it_unloaded' });
+  });
 });
 
 describe('steps sheet', () => {
