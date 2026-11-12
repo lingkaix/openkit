@@ -3045,17 +3045,6 @@ class ControlStoreWorkerClient {
     }
   }
 
-  /** Joins only pending User initialization before the original synchronous Workspace-create receipt lookup.
-   * Undefined preserves the original no-file lookup without yielding or creating a scope early.
-   */
-  workspaceCreationReceiptOpening(dataRoot: string, userId: string): Promise<void> | undefined {
-    const path = userDbPath(dataRoot, userId);
-    const database = `user:${path}`;
-    const opening = this.openings.get(database);
-    if (!opening || opening.acknowledged) return undefined;
-    return this.open({ database, path, create: opening.command.create, initialize: 'user' });
-  }
-
   /** Retains each closed public command's original receipt and separate maintenance FULL stages. */
   async recordWorkspaceCommandReceipt(
     dataRoot: string,

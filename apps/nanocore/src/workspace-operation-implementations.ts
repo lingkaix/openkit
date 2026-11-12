@@ -28,7 +28,7 @@ import {
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
-import type { CoreDb } from './storage/db.js';
+import type { CoreDb, UserDb } from './storage/db.js';
 import { publishWorkspaceOwnerMembership } from './workspace-membership.js';
 import {
   readAuthorizedWorkspaceRelation,
@@ -102,18 +102,28 @@ async function createWorkspace(
   input: z.infer<typeof CreateWorkspaceRequestSchema>,
   dependencies: WorkspaceCommandDependencies,
   actor: Actor,
-  administratorEligible: boolean
+  administratorEligible: boolean,
+  recheckAdmission?: () => Promise<void>
 ) {
   const { store, coreDb, inflightCommands } = dependencies;
+  let receiptDb: UserDb | undefined;
   try {
     const dataRoot = store.getDataRoot();
     const opening =
       dataRoot === null
         ? undefined
-        : getControlStoreWorkerClient().workspaceCreationReceiptOpening(dataRoot, actor.userId);
-    if (opening) await opening;
+        : getControlStoreWorkerClient().openInitializedUserReadDb(dataRoot, actor.userId, {
+            existingOnly: true,
+          });
+    // Missing first-use scopes retain the original effect order without yielding.
+    // Existing receipts stay inside their acknowledged native owner's reader lifetime.
+    if (opening) {
+      receiptDb = await opening;
+      await recheckAdmission?.();
+    }
     const workspace = await runIdempotentCommand({
       store,
+      ...(receiptDb ? { receiptDb } : {}),
       inflightCommands,
       command: 'workspace.create',
       requestId: input.requestId,
@@ -161,6 +171,8 @@ async function createWorkspace(
     }
   } catch (error) {
     workspaceCommandFailure(error, 'workspace_create_failed');
+  } finally {
+    receiptDb?.sqlite.close();
   }
 }
 
@@ -249,7 +261,8 @@ export function createWorkspaceOperationImplementations(
         input,
         workspaceDependencies,
         publicOperationActor(context),
-        administrator(context)
+        administrator(context),
+        context.recheckAdmission
       ),
     'workspace.read': (input, context) => {
       const actor = publicOperationActor(context);
