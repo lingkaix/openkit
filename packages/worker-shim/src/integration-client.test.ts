@@ -12,6 +12,7 @@ import { zstdCompressSync, zstdDecompressSync } from 'node:zlib';
 import { describe, expect, it, vi } from 'vitest';
 import { WORKER_ADAPTERS } from './adapter-registry.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
+import * as integrationModule from './integration-client.js';
 import {
   openSandboxIntegration,
   SANDBOX_INTEGRATION_ROUTE_NAMESPACES,
@@ -19,6 +20,7 @@ import {
   SANDBOX_NATIVE_INFERENCE_TARGET,
   SandboxIntegrationClient,
 } from './integration-client.js';
+import { openEphemeralSandboxIntegration } from './test-support/ephemeral-integration.js';
 
 describe('Sandbox Integration', () => {
   it.each(['complete', 'incomplete'] as const)(
@@ -39,8 +41,7 @@ describe('Sandbox Integration', () => {
           else stream.write(commandBody.slice(0, 10));
         });
       });
-      const integration = await openSandboxIntegration();
-      const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+      const { integration, integrationTarget: target } = await openEphemeralSandboxIntegration();
       const socket = connectSocket(Number(target.port), target.hostname);
       socket.on('error', () => undefined);
       bridge.emit('connection', socket);
@@ -143,11 +144,19 @@ describe('Sandbox Integration', () => {
         }
         return write(chunk);
       }) as typeof process.stdout.write);
+      let integrationTarget!: URL;
+      const open = vi
+        .spyOn(integrationModule, 'openSandboxIntegration')
+        .mockImplementation(async (options) => {
+          const fixture = await openEphemeralSandboxIntegration(options);
+          integrationTarget = fixture.integrationTarget;
+          return fixture.integration;
+        });
       const run = runWorkerHarness({ signal: stop.signal }).catch((error: unknown) => error);
       let socket: ReturnType<typeof connectSocket> | undefined;
       try {
         await entered;
-        socket = connectSocket(17891, '127.0.0.1');
+        socket = connectSocket(Number(integrationTarget.port), integrationTarget.hostname);
         socket.on('error', () => undefined);
         bridge.emit('connection', socket);
         await headersSeen;
@@ -167,6 +176,7 @@ describe('Sandbox Integration', () => {
         stop.abort(new Error('fixture-complete'));
         slowStream?.close();
         await run;
+        open.mockRestore();
         request.mockRestore();
         handle.mockRestore();
         stdout.mockRestore();
@@ -232,8 +242,12 @@ describe('Sandbox Integration', () => {
         stream.end('{}');
       });
     });
-    const integration = await openSandboxIntegration();
-    const supervisorSocket = connectSocket(17891, '127.0.0.1');
+    const { integration, integrationTarget, nativeTarget } =
+      await openEphemeralSandboxIntegration();
+    const supervisorSocket = connectSocket(
+      Number(integrationTarget.port),
+      integrationTarget.hostname
+    );
     bridge.emit('connection', supervisorSocket);
     try {
       await integration.ready;
@@ -255,7 +269,7 @@ describe('Sandbox Integration', () => {
         const request = requestHttp(
           {
             host: '127.0.0.1',
-            port: 17892,
+            port: Number(nativeTarget.port),
             method: 'POST',
             path: '/inference/v1/responses',
             headers: {
@@ -302,6 +316,35 @@ describe('Sandbox Integration', () => {
       bridgeSession?.destroy();
       supervisorSocket.destroy();
       await new Promise<void>((resolve) => bridge.close(() => resolve()));
+    }
+  });
+
+  it('keeps overlapping Integration fixtures on distinct live loopback listeners', async () => {
+    const first = await openEphemeralSandboxIntegration();
+    void first.integration.ready.catch(() => undefined);
+    let second: Awaited<ReturnType<typeof openEphemeralSandboxIntegration>> | undefined;
+    try {
+      second = await openEphemeralSandboxIntegration();
+      void second.integration.ready.catch(() => undefined);
+      expect(
+        new Set([
+          first.integrationTarget.port,
+          first.nativeTarget.port,
+          second.integrationTarget.port,
+          second.nativeTarget.port,
+        ]).size
+      ).toBe(4);
+      for (const fixture of [first, second]) {
+        const response = await fetch(new URL('/inference/v1/responses', fixture.nativeTarget), {
+          method: 'POST',
+          body: '{}',
+        });
+        expect(response.status).toBe(503);
+        await response.text();
+      }
+    } finally {
+      await second?.integration.close();
+      await first.integration.close();
     }
   });
 
@@ -364,8 +407,7 @@ describe('Sandbox Integration', () => {
       });
     });
 
-    const integration = await openSandboxIntegration();
-    const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+    const { integration, integrationTarget: target } = await openEphemeralSandboxIntegration();
     const socket = connectSocket(Number(target.port), target.hostname);
     socket.on('error', () => undefined);
     bridge.emit('connection', socket);
@@ -649,9 +691,8 @@ describe('Sandbox Integration', () => {
       });
     });
 
-    const integration = await openSandboxIntegration();
-    const integrationTarget = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
-    const nativeTarget = new URL('http://127.0.0.1:17892');
+    const { integration, integrationTarget, nativeTarget } =
+      await openEphemeralSandboxIntegration();
     let supervisorSocket: ReturnType<typeof connectSocket> | undefined;
     const nativeRequest = async (
       target: URL,
@@ -1006,9 +1047,8 @@ describe('Sandbox Integration', () => {
         stream.end(String(headers.authorization));
       });
     });
-    const integration = await openSandboxIntegration();
-    const integrationTarget = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
-    const nativeTarget = new URL(`http://${SANDBOX_NATIVE_INFERENCE_TARGET}`);
+    const { integration, integrationTarget, nativeTarget } =
+      await openEphemeralSandboxIntegration();
     const socket = connectSocket(Number(integrationTarget.port), integrationTarget.hostname);
     socket.on('error', () => undefined);
     bridge.emit('connection', socket);

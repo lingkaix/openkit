@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { Duplex } from 'node:stream';
@@ -71,7 +72,8 @@ function harnessFor(
   root: string,
   hostCommand: readonly string[] = [process.execPath, '--no-warnings', HOST_BIN],
   observeChannel?: (channel: Duplex) => void,
-  observeControl?: (url: string, body: unknown) => void
+  observeControl?: (url: string, body: unknown) => void,
+  nativeTarget?: URL
 ) {
   const sandboxRoot = join(root, 'openkit');
   const nativeRoot = join(root, 'sandbox', 'native');
@@ -79,7 +81,24 @@ function harnessFor(
   mkdirSync(sandboxRoot, { recursive: true });
   mkdirSync(nativeRoot, { recursive: true });
   const harness = new WorkerHarness({
-    adapters: { pi: createPiResidentAdapter({ hostCommand, observeChannel }) },
+    adapters: {
+      pi: {
+        openSession(input) {
+          return createPiResidentAdapter({ hostCommand, observeChannel }).openSession({
+            ...input,
+            loopback: {
+              ...input.loopback,
+              ...(nativeTarget
+                ? {
+                    capabilityBaseUrl: new URL('/capabilities', nativeTarget).href,
+                    inferenceBaseUrl: new URL('/inference/v1', nativeTarget).href,
+                  }
+                : {}),
+            },
+          });
+        },
+      },
+    },
     environment: { HOME: join(root, 'home'), PATH: process.env.PATH ?? '' },
     integration: fakeIntegration(finalStatuses, observeControl),
     threadRootDirectory: nativeRoot,
@@ -205,8 +224,9 @@ describe('Pi Harness integration', () => {
       });
       await new Promise<void>((resolve, reject) => {
         proxy.once('error', reject);
-        proxy.listen(17892, '127.0.0.1', resolve);
+        proxy.listen(0, '127.0.0.1', resolve);
       });
+      const nativeTarget = new URL(`http://127.0.0.1:${(proxy.address() as AddressInfo).port}`);
       try {
         const harness = harnessFor(
           root,
@@ -304,7 +324,8 @@ describe('Pi Harness integration', () => {
                   ) ?? 'unknown',
               });
             }
-          }
+          },
+          nativeTarget
         );
         expect((await harness.open('as_00000000-0000-7f03-8682-76a52604a84a')).disposition).toBe(
           'succeeded'

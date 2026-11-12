@@ -12,11 +12,8 @@ import { fileURLToPath } from 'node:url';
 import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkerHarness } from '../harness.js';
-import {
-  openSandboxIntegration,
-  SANDBOX_INTEGRATION_TARGET,
-  type SandboxIntegrationClient,
-} from '../integration-client.js';
+import type { SandboxIntegrationClient } from '../integration-client.js';
+import { openEphemeralSandboxIntegration } from '../test-support/ephemeral-integration.js';
 import { startSyntheticCapability } from '../test-support/pi-capability.js';
 import { waitForPiHostReadiness } from '../test-support/pi-host-readiness.js';
 import {
@@ -96,6 +93,7 @@ function credential(seed: string): string {
 function harnessFor(
   root: string,
   integration: SandboxIntegrationClient,
+  nativeTarget: URL,
   options: PiResidentAdapterOptions = {}
 ) {
   const workspaceId = allocateEntityId('ws');
@@ -116,7 +114,14 @@ function harnessFor(
               options.observeChannel?.(channel);
               readiness = waitForPiHostReadiness(channel);
             },
-          }).openSession(input)) as PiResidentBinding;
+          }).openSession({
+            ...input,
+            loopback: {
+              ...input.loopback,
+              capabilityBaseUrl: new URL('/capabilities', nativeTarget).href,
+              inferenceBaseUrl: new URL('/inference/v1', nativeTarget).href,
+            },
+          })) as PiResidentBinding;
           bindings.push(binding);
           await readiness;
           return binding;
@@ -335,8 +340,11 @@ async function fixture(
       request.end(body);
     });
   });
-  const integration = await openSandboxIntegration();
-  const target = new URL(`http://${SANDBOX_INTEGRATION_TARGET}`);
+  const {
+    integration,
+    integrationTarget: target,
+    nativeTarget,
+  } = await openEphemeralSandboxIntegration();
   const socket = connect(Number(target.port), target.hostname);
   await new Promise<void>((resolve) => socket.once('connect', resolve));
   bridge.emit('connection', socket);
@@ -353,7 +361,7 @@ async function fixture(
     events.push('drain-end');
     return cuts;
   };
-  const harness = harnessFor(root, integration, options);
+  const harness = harnessFor(root, integration, nativeTarget, options);
   const close = async () => {
     for (const binding of harness.bindings) await binding.close().catch(() => undefined);
     for (const child of children.splice(0)) {
@@ -372,6 +380,7 @@ async function fixture(
   return {
     ...harness,
     root,
+    nativeTarget,
     events,
     finalStatuses,
     upstream,
@@ -493,7 +502,7 @@ describe('Pi real Integration lifecycle', () => {
         `Bearer ${credential(`inference-token-${'tu_00000000-0000-7e49-8268-e35715b55d0c'}`)}`,
         `Bearer ${credential(`inference-token-${'tu_00000000-0000-7fe3-9c5f-b9c81a62a0b4'}`)}`,
       ]);
-      const idle = await fetch('http://127.0.0.1:17892/inference/v1/chat/completions', {
+      const idle = await fetch(new URL('/inference/v1/chat/completions', f.nativeTarget), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${credential('inference-as_00000000-0000-7f03-8682-76a52604a84a')}`,
@@ -501,7 +510,7 @@ describe('Pi real Integration lifecycle', () => {
         body: '{}',
       });
       expect(idle.status).toBe(403);
-      const sibling = await fetch('http://127.0.0.1:17892/inference/v1/chat/completions', {
+      const sibling = await fetch(new URL('/inference/v1/chat/completions', f.nativeTarget), {
         method: 'POST',
         headers: {
           authorization: `Bearer ${credential('inference-as_00000000-0000-7ccb-a600-607d092dffc8')}`,
