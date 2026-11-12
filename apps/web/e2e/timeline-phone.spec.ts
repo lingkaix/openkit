@@ -149,8 +149,14 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
       const stopBox = await stop.boundingBox();
       expect(stopBox!.y).toBeGreaterThanOrEqual(740 * 0.6);
     }
-    await expect(page.getByRole('button', { name: 'Steer' })).toBeDisabled();
-    await expect(page.getByText("Steering isn't available yet.")).toBeVisible();
+    await expect(page.getByText("Steering isn't available yet.")).toHaveCount(0);
+    if (sawStop) {
+      await expect(page.getByText("This worker can't take notes while running.")).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Keep draft' })).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Steer' })).toHaveCount(0);
+    } else {
+      await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
+    }
 
     const goalRequestId = randomUUID();
     let goalThreadId = '';

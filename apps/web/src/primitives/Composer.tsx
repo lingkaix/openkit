@@ -27,10 +27,13 @@ import {
   Text,
 } from 'react-aria-components';
 import { setUnsentDraft } from '../pwa/unsent-draft';
+import { SteerOutcome } from '../screens/chat/timeline/SteerOutcome';
+import { steerCopy } from '../screens/chat/timeline/steer';
 import { Dialog as ConfirmationDialog } from './Dialog';
 import { Icon } from './Icon';
 import { Select as FieldSelect } from './Select';
 import { ErrorBanner } from './states';
+import { useSteerController } from './steer-context';
 import { appendTranscript, VoiceInputControl, type VoiceTranscribe } from './voice-input';
 
 type ConversationTarget = ConversationTargetCatalog['targets'][number];
@@ -159,11 +162,21 @@ export interface ComposerProps {
     unavailableReason?: string | null;
   };
   /**
+   * Task run controls. Steer sends into the running run. Keep draft does not send.
+   * Absent means ordinary Send.
+   */
+  liveInput?: {
+    mode: 'steer' | 'keep-draft';
+    turnId: string;
+    consequence: string;
+    actionLabel: string;
+  };
+  /**
    * Phone run controls. Stop is present only while a run is in progress.
-   * Steer stays disabled until an adapter can take it.
+   * The placeholder Steer control is replaced by liveInput.
    */
   phoneRun?: {
-    steerReason: string;
+    steerReason?: string;
     stop?: {
       label: string;
       pending: boolean;
@@ -192,6 +205,7 @@ export function Composer({
   onSubmit,
   voice,
   phoneRun,
+  liveInput,
 }: ComposerProps) {
   const [value, setValue] = useState(initialDraft?.input ?? '');
   const [targetRef, setTargetRef] = useState(initialDraft?.targetRef ?? '');
@@ -308,6 +322,32 @@ export function Composer({
     Boolean(value.trim() || selectedArtifacts.length || files.length) &&
     selectedTarget?.availability === 'available' &&
     (!logicalModelId || selectedTarget.logicalModels.some((model) => model.id === logicalModelId));
+  const steerApi = useSteerController();
+  const live = liveInput ?? steerApi?.live ?? null;
+  const steerExtras =
+    files.length > 0 ||
+    selectedArtifacts.length > 0 ||
+    selectedEnvironment !== null ||
+    Boolean(effortChoice?.value);
+  const steerPending = Boolean(steerApi?.pending) && live?.mode === 'steer';
+  const canSteer =
+    live?.mode === 'steer' &&
+    !disabledReason &&
+    !voiceBusy &&
+    !fileHandoff &&
+    !pending &&
+    !isSubmitting &&
+    !steerPending &&
+    !steerExtras &&
+    Boolean(value.trim());
+
+  function clearSteerExtras() {
+    setFiles([]);
+    setSelectedArtifacts([]);
+    setSelectedEnvironment(null);
+    setEffortChoice(null);
+    setEffortSubmitted(false);
+  }
 
   /** Starts a fresh request after acceptance without resetting agent/model preferences. */
   const clearSentDraft = useCallback(() => {
@@ -401,6 +441,31 @@ export function Composer({
 
   async function submit(event?: FormEvent) {
     event?.preventDefault();
+    if (live?.mode === 'keep-draft') return;
+    if (live?.mode === 'steer') {
+      if (!canSteer) return;
+      setPending(true);
+      try {
+        if (steerApi) {
+          await steerApi.submit({ turnId: live.turnId, requestId, text: value });
+        } else if (onSubmit) {
+          await onSubmit({
+            input: value,
+            targetRef,
+            requestId,
+            artifactRefs: [],
+          });
+        } else {
+          return;
+        }
+        clearSentDraft();
+      } catch {
+        // The receipt or the failure line owns the result. The draft and request id stay.
+      } finally {
+        setPending(false);
+      }
+      return;
+    }
     if (!canSubmit || !onSubmit) return;
     const draft: ComposerDraft = {
       ...(files.length ? { files: [...files] } : {}),
@@ -490,7 +555,7 @@ export function Composer({
         // A submission in flight only locks the text. Disabling the focused field would drop focus
         // to the page (and on a phone close the keyboard) on every Send.
         disabled={Boolean(disabledReason) || fileHandoff !== null}
-        readOnly={isSubmitting || pending}
+        readOnly={isSubmitting || pending || steerPending}
         onChange={(event) => setValue(event.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={disabledReason ?? placeholder}
@@ -663,34 +728,69 @@ export function Composer({
           onBusyChange={onVoiceBusy}
           onText={(text) => setValue((current) => appendTranscript(current, text))}
         />
-        <AriaButton
-          type="submit"
-          isDisabled={!canSubmit}
-          aria-label="Send message"
-          // Keep Message focused through the press. On a phone, blurring it
-          // brings the sections bar back and moves this control before pointerup.
-          onMouseDown={(event) => {
-            event.preventDefault();
-          }}
-          className="flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
-        >
-          <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
-        </AriaButton>
+        {live ? null : (
+          <AriaButton
+            type="submit"
+            isDisabled={!canSubmit}
+            aria-label="Send message"
+            // Keep Message focused through the press. On a phone, blurring it
+            // brings the sections bar back and moves this control before pointerup.
+            onMouseDown={(event) => {
+              event.preventDefault();
+            }}
+            className="flex size-11 min-h-11 min-w-11 shrink-0 items-center justify-center rounded-full bg-accent text-on-accent outline-none transition-colors hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 disabled:bg-disabled-bg disabled:text-disabled-fg"
+          >
+            <Icon name={pending || isSubmitting ? 'spinner' : 'send'} />
+          </AriaButton>
+        )}
       </div>
-      {phoneRun ? (
-        <div className="mt-2 flex flex-col gap-2">
-          <p id="steer-reason">{phoneRun.steerReason}</p>
-          {phoneRun.stop ? <p id="composer-stop-why">{phoneRun.stop.consequence}</p> : null}
-          {phoneRun.stop?.pending ? (
+      {live ? (
+        <div className="mt-2 flex max-w-full flex-col gap-2" data-composer-action={live.mode}>
+          <p
+            id="steer-consequence"
+            className="break-words text-base leading-normal"
+            style={{ overflowWrap: 'anywhere' }}
+          >
+            {live.consequence}
+          </p>
+          {live.mode === 'steer' && steerExtras ? (
+            <div className="flex flex-col items-start gap-2">
+              <p id="steer-inapplicable" className="break-words text-base leading-normal">
+                {steerCopy.inapplicable}
+              </p>
+              <button type="button" className="min-h-11 underline" onClick={clearSteerExtras}>
+                {steerCopy.clearExtras}
+              </button>
+            </div>
+          ) : null}
+          {steerPending ? (
+            <p role="status" data-steer-state="sending">
+              {steerCopy.sending}
+            </p>
+          ) : null}
+          {steerApi?.failure && live.mode === 'steer' ? (
+            <SteerOutcome
+              onReplay={steerApi.replay}
+              receipt={{
+                requestId: steerApi.failure.replay.requestId,
+                turnId: steerApi.failure.replay.turnId,
+                text: steerApi.failure.replay.text,
+                state: steerApi.failure.kind,
+                reason: steerApi.failure.reason,
+              }}
+            />
+          ) : null}
+          {phoneRun?.stop ? <p id="composer-stop-why">{phoneRun.stop.consequence}</p> : null}
+          {phoneRun?.stop?.pending ? (
             <p id="composer-stop-wait" role="status">
               {phoneRun.stop.waitReason}
             </p>
           ) : null}
-          <div className="flex gap-2">
-            {phoneRun.stop ? (
+          <div className="flex flex-wrap gap-2">
+            {phoneRun?.stop ? (
               <button
                 type="button"
-                className="min-h-11 flex-1 rounded-full border border-negative-fg px-3 text-sm font-bold text-negative-fg"
+                className="min-h-11 rounded-full border border-negative-fg px-3 text-sm font-bold text-negative-fg"
                 disabled={phoneRun.stop.pending}
                 aria-describedby={
                   phoneRun.stop.pending ? 'composer-stop-wait' : 'composer-stop-why'
@@ -700,13 +800,45 @@ export function Composer({
                 {phoneRun.stop.label}
               </button>
             ) : null}
+            {live.mode === 'steer' ? (
+              <button
+                type="submit"
+                className="min-h-11 rounded-full bg-accent px-3 text-sm font-bold text-on-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
+                disabled={!canSteer}
+                aria-describedby={steerExtras ? 'steer-inapplicable' : 'steer-consequence'}
+              >
+                {live.actionLabel}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="min-h-11 rounded-full border border-border px-3 text-sm font-bold text-fg"
+                aria-describedby="steer-consequence"
+                onClick={() => textareaRef.current?.focus()}
+              >
+                {live.actionLabel}
+              </button>
+            )}
+          </div>
+        </div>
+      ) : null}
+      {phoneRun?.stop && !live ? (
+        <div className="mt-2 flex flex-col gap-2">
+          <p id="composer-stop-why">{phoneRun.stop.consequence}</p>
+          {phoneRun.stop.pending ? (
+            <p id="composer-stop-wait" role="status">
+              {phoneRun.stop.waitReason}
+            </p>
+          ) : null}
+          <div className="flex gap-2">
             <button
               type="button"
-              className="min-h-11 flex-1 rounded-full border border-border px-3 text-sm font-bold text-fg"
-              disabled
-              aria-describedby="steer-reason"
+              className="min-h-11 flex-1 rounded-full border border-negative-fg px-3 text-sm font-bold text-negative-fg"
+              disabled={phoneRun.stop.pending}
+              aria-describedby={phoneRun.stop.pending ? 'composer-stop-wait' : 'composer-stop-why'}
+              onClick={phoneRun.stop.onStop}
             >
-              Steer
+              {phoneRun.stop.label}
             </button>
           </div>
         </div>

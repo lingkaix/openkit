@@ -5,7 +5,9 @@ import { EmptyState, Page, PageHeader } from '../primitives';
 import { AccountBoundary, AccountScreen } from '../screens/account';
 import { ArtifactsScreen } from '../screens/artifacts';
 import { AutomationsScreen } from '../screens/automations';
-import { ChatStarter, ThreadScreen } from '../screens/chat';
+import { ChatStarter } from '../screens/chat';
+import { SteerFixtureScreen } from '../screens/chat/timeline/SteerFixtureScreen';
+import { SteerThreadScreen } from '../screens/chat/timeline/steer-screen';
 import { TimelineFixtureScreen } from '../screens/chat/timeline/TimelineFixtureScreen';
 import { GenerativeScreen } from '../screens/generative';
 import { ArtifactReviewScreen, GoalScreen } from '../screens/goal';
@@ -87,8 +89,8 @@ export const SURFACE_ELEMENTS: Record<string, ReactNode> = {
   'workspace-access-recovery': <WorkspaceAccessRecoveryScreen />,
   'disable-user': <DisableUserScreen />,
   chat: <ChatStarter />,
-  'chat-thread': <ThreadScreen mode="chat" />,
-  'task-thread': <ThreadScreen mode="task" />,
+  'chat-thread': <SteerThreadScreen mode="chat" />,
+  'task-thread': <SteerThreadScreen mode="task" />,
   goal: <GoalScreen />,
   'artifact-review': <ArtifactReviewScreen />,
   material: <MaterialScreen />,
@@ -151,6 +153,9 @@ export function AppRoutes() {
       <Routes>
         {import.meta.env.DEV ? (
           <Route path="/__timeline-fixture" element={<TimelineFixtureScreen />} />
+        ) : null}
+        {import.meta.env.DEV ? (
+          <Route path="/__steer-fixture" element={<SteerFixtureScreen />} />
         ) : null}
         <Route element={<AppShell />}>
           <Route element={<AssistantHome />}>

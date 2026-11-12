@@ -9,12 +9,14 @@ import {
   TextField,
   UserMessage,
 } from '../../primitives';
+import { useSteerController } from '../../primitives/steer-context';
 import { ArtifactReference } from '../artifacts/ArtifactReference';
 import type { ThreadItem } from './data';
 import { GenerativePresentationView } from './GenerativePresentationView';
 import { useDisplayedMessageBody } from './ThreadReadReceipts';
 import { timelineCopy } from './timeline/copy';
 import { visibleStatusSummary, visibleStatusTitle } from './timeline/present';
+import { SteerOutcome } from './timeline/SteerOutcome';
 import { contextSummaryCopy } from './timeline/source';
 import { TimelineTime } from './timeline/TimelineTime';
 import { durationDateTime, formatDuration } from './timeline/time';
@@ -379,6 +381,8 @@ export function ItemView({
   holdReason,
 }: ItemViewProps) {
   const bodyRef = useDisplayedMessageBody(item.id);
+  const steer = useSteerController();
+  const steerReceipt = steer?.receipt(item.id) ?? null;
   switch (item.type) {
     case 'user-message': {
       // Core retains exact outcome input for S39 verification; S59 publishes its human decision separately.
@@ -391,13 +395,16 @@ export function ItemView({
         item.text
       );
       return item.actor.kind === 'user' ? (
-        <UserMessage
-          author={authorName ?? item.actor.id}
-          isSelf={item.actor.id === viewerUserId}
-          bodyRef={bodyRef}
-        >
-          {body}
-        </UserMessage>
+        <>
+          <UserMessage
+            author={authorName ?? item.actor.id}
+            isSelf={item.actor.id === viewerUserId}
+            bodyRef={bodyRef}
+          >
+            {body}
+          </UserMessage>
+          {steerReceipt ? <SteerOutcome onReplay={steer?.replay} receipt={steerReceipt} /> : null}
+        </>
       ) : (
         <AssistantMessage
           hue="scout"
