@@ -12,6 +12,8 @@ import { type FamilyImplementations, publicOperationActor } from './operation-co
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-request-error.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import type { UserDb } from './storage/db.js';
 import { markThreadRead, readThreadReadState } from './thread-read-state.js';
 import { archiveThread, createThread, updateThread } from './thread-routes.js';
 import { readThreadItemBody, readThreadTimeline } from './thread-timeline.js';
@@ -102,8 +104,20 @@ export function createThreadOperationImplementations(
       }
     },
     // Page only the admitted public read; internal callers retain complete chronological history.
-    'thread.timeline': (input, context) => {
+    'thread.timeline': async (input, context) => {
+      let reader: UserDb | undefined;
       try {
+        const actor = publicOperationActor(context);
+        const core = dependencies.coreDb;
+        const opening = core
+          ? getControlStoreWorkerClient().openInitializedUserReadDb(core.dataRoot, actor.userId, {
+              existingOnly: true,
+            })
+          : undefined;
+        if (opening) {
+          reader = await opening;
+          await context.recheckAdmission?.();
+        }
         return readThreadTimeline({
           input,
           store: dependencies.store!,
@@ -118,6 +132,8 @@ export function createThreadOperationImplementations(
         });
       } catch (error) {
         threadCommandFailure(error, 'not_found');
+      } finally {
+        reader?.sqlite.close();
       }
     },
     'thread.item-body': (input, context) => {

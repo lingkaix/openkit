@@ -18,6 +18,7 @@ import {
   type ControlLocalIdentity,
   ControlLocalIdentityResultSchema,
 } from '../auth/local-identity-codecs.js';
+import { assertScopeAdmitted } from '../bootstrap/readiness.js';
 import {
   type ControlDiscordChannelInput,
   ControlDiscordChannelInputSchema,
@@ -2939,84 +2940,108 @@ class ControlStoreWorkerClient {
     return result;
   }
 
-  /** Native ownership precedes a cold readonly User handle; an ACKed/current read needs no healthy writer. */
-  async openInitializedUserReadDb(dataRoot: string, userId: string): Promise<UserDb> {
-    ensureUserLayout(dataRoot, userId);
-    const path = userDbPath(dataRoot, userId);
-    const releaseAcquisition = reserveMainScopeReadAcquisition(path);
+  /**
+   * Native ownership precedes cold reads; acknowledged current reads need no healthy writer.
+   * Existing-only callers return synchronously for a missing scope and never create it.
+   */
+  openInitializedUserReadDb(dataRoot: string, userId: string): Promise<UserDb>;
+  openInitializedUserReadDb(
+    dataRoot: string,
+    userId: string,
+    options: { readonly existingOnly: true }
+  ): Promise<UserDb> | undefined;
+  openInitializedUserReadDb(
+    dataRoot: string,
+    userId: string,
+    options: { readonly existingOnly?: true } = {}
+  ): Promise<UserDb> | undefined {
     try {
+      if (options.existingOnly) assertScopeAdmitted(dataRoot, 'user', userId);
+      else ensureUserLayout(dataRoot, userId);
+      const path = userDbPath(dataRoot, userId);
       const database = `user:${path}`;
       const opening = this.openings.get(database);
-      if (opening?.retirement) throw new ControlStoreWorkerError('busy', 'not-committed');
-      if (opening) {
-        if (
-          !isDeepStrictEqual(opening.command, {
-            database,
-            path,
-            create: opening.command.create,
-            initialize: 'user',
-          })
-        )
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        // Never infer first-create readiness from the file or repair an unknown original opening.
-        if (!opening.acknowledged) await opening.promise;
+      // Select a missing scope without yielding, so its original no-file read cannot
+      // race the first native initialization. A pending original OPEN still owns readiness.
+      const existing = opening || statSync(path, { throwIfNoEntry: false });
+      if (options.existingOnly && !existing) return undefined;
+      return (async () => {
+        const releaseAcquisition = reserveMainScopeReadAcquisition(path);
         try {
-          const current = statSync(path);
-          if (
-            realpathSync(path) !== opening.path ||
-            `${current.dev}:${current.ino}` !== opening.identity
-          )
-            throw new Error('User database binding changed.');
-        } catch {
-          throw new ControlStoreWorkerError('precondition', 'not-committed');
+          if (opening?.retirement) throw new ControlStoreWorkerError('busy', 'not-committed');
+          if (opening) {
+            if (
+              !isDeepStrictEqual(opening.command, {
+                database,
+                path,
+                create: opening.command.create,
+                initialize: 'user',
+              })
+            )
+              throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+            // Never infer first-create readiness from the file or repair an unknown original opening.
+            if (!opening.acknowledged) await opening.promise;
+            try {
+              const current = statSync(path);
+              if (
+                realpathSync(path) !== opening.path ||
+                `${current.dev}:${current.ino}` !== opening.identity
+              )
+                throw new Error('User database binding changed.');
+            } catch {
+              throw new ControlStoreWorkerError('precondition', 'not-committed');
+            }
+          }
+          if (opening && statSync(path, { throwIfNoEntry: false })) {
+            const reader = openUserReadDb(dataRoot, userId);
+            try {
+              if (!hasPendingUserMigrations(reader.sqlite)) return reader;
+            } catch (error) {
+              reader.sqlite.close();
+              throw error;
+            }
+            reader.sqlite.close();
+            throw new ControlStoreWorkerError('precondition', 'not-committed');
+          }
+          // Cold readonly WAL connections create sidecars without owning their final cleanup.
+          // Admit the existing native owner first, including when the file is already current.
+          try {
+            await this.open({
+              database,
+              path,
+              create: !options.existingOnly && !existing,
+              initialize: 'user',
+            });
+          } catch (error) {
+            // Cold ownership must preserve the User read API's unsupported-history refusal.
+            if (
+              error instanceof ControlStoreWorkerError &&
+              error.code === 'migration_unsupported_user'
+            ) {
+              const refusal = new BootConfigError(
+                error.code,
+                'Unsupported user native Drizzle ledger identity.'
+              );
+              refusal.cause = error;
+              throw refusal;
+            }
+            throw error;
+          }
+          const reader = openUserReadDb(dataRoot, userId);
+          try {
+            if (hasPendingUserMigrations(reader.sqlite))
+              throw new ControlStoreWorkerError('precondition', 'not-committed');
+            return reader;
+          } catch (error) {
+            reader.sqlite.close();
+            throw error;
+          }
+        } finally {
+          releaseAcquisition();
         }
-      }
-      if (opening && statSync(path, { throwIfNoEntry: false })) {
-        const reader = openUserReadDb(dataRoot, userId);
-        try {
-          if (!hasPendingUserMigrations(reader.sqlite)) return reader;
-        } catch (error) {
-          reader.sqlite.close();
-          throw error;
-        }
-        reader.sqlite.close();
-        throw new ControlStoreWorkerError('precondition', 'not-committed');
-      }
-      // Cold readonly WAL connections create sidecars without owning their final cleanup.
-      // Admit the existing native owner first, including when the file is already current.
-      try {
-        await this.open({
-          database,
-          path,
-          create: !statSync(path, { throwIfNoEntry: false }),
-          initialize: 'user',
-        });
-      } catch (error) {
-        // Cold ownership must preserve the User read API's unsupported-history refusal.
-        if (
-          error instanceof ControlStoreWorkerError &&
-          error.code === 'migration_unsupported_user'
-        ) {
-          const refusal = new BootConfigError(
-            error.code,
-            'Unsupported user native Drizzle ledger identity.'
-          );
-          refusal.cause = error;
-          throw refusal;
-        }
-        throw error;
-      }
-      const reader = openUserReadDb(dataRoot, userId);
-      try {
-        if (hasPendingUserMigrations(reader.sqlite))
-          throw new ControlStoreWorkerError('precondition', 'not-committed');
-        return reader;
-      } catch (error) {
-        reader.sqlite.close();
-        throw error;
-      }
-    } finally {
-      releaseAcquisition();
+      })();
+    } catch (error) {
+      return Promise.reject(error);
     }
   }
 
