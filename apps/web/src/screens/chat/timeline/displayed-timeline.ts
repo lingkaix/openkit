@@ -7,8 +7,9 @@ export interface DisplayedTimeline {
   data: HeldTimeline | null;
 }
 
-interface Claim extends DisplayedTimeline {
+interface Claim {
   ticket: number;
+  snapshot: DisplayedTimeline;
 }
 
 let issued = 0;
@@ -19,17 +20,35 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
-/** Record the stream's own window. Returns a ticket that only that claim may clear. */
+function sameWindow(snapshot: DisplayedTimeline, next: DisplayedTimeline): boolean {
+  return (
+    snapshot.workspaceId === next.workspaceId &&
+    snapshot.threadId === next.threadId &&
+    snapshot.data === next.data
+  );
+}
+
+/**
+ * Record the stream's own window. Returns a new ticket that only that claim may clear.
+ * An unchanged window keeps the exposed snapshot and does not notify. The ticket stays private.
+ */
 export function publishDisplayedTimeline(next: DisplayedTimeline): number {
   issued += 1;
   const ticket = issued;
-  const changed =
-    current === null ||
-    current.workspaceId !== next.workspaceId ||
-    current.threadId !== next.threadId ||
-    current.data !== next.data;
-  current = { ticket, ...next };
-  if (changed) notify();
+  const previous = current?.snapshot;
+  if (previous && sameWindow(previous, next)) {
+    current = { ticket, snapshot: previous };
+    return ticket;
+  }
+  current = {
+    ticket,
+    snapshot: {
+      workspaceId: next.workspaceId,
+      threadId: next.threadId,
+      data: next.data,
+    },
+  };
+  notify();
   return ticket;
 }
 
@@ -48,5 +67,5 @@ export function subscribeDisplayedTimeline(listener: () => void): () => void {
 }
 
 export function getDisplayedTimeline(): DisplayedTimeline | null {
-  return current;
+  return current?.snapshot ?? null;
 }

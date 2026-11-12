@@ -213,11 +213,12 @@ function entryIsRevealed(element: HTMLElement): boolean {
 }
 
 /**
- * Placement cannot land while the run is inert or a dialog or menu holds focus.
+ * Placement cannot land while the run is inert, including inertness inherited from
+ * an ancestor, or while a dialog or menu holds focus.
  * Those interactions end by removing inert or moving focus; they are not a frame retry.
  */
 function placementHeld(target: HTMLElement): boolean {
-  if (target.inert) return true;
+  if (target.closest('[inert]')) return true;
   const active = document.activeElement;
   if (!(active instanceof Element) || active === document.body) return false;
   if (active === target || target.contains(active)) return false;
