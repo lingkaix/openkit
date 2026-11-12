@@ -2,6 +2,7 @@ import { ApiCallError, type CoreClient, createRequestId } from '@openkit/core-cl
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Checkbox, CheckboxGroup } from 'react-aria-components';
+import { useSearchParams } from 'react-router-dom';
 import { useConnection, useCoreClient } from '../../app/core-client';
 import {
   Button,
@@ -33,10 +34,12 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
   const client = useCoreClient();
   const queryClient = useQueryClient();
   const connection = useConnection();
-  const [open, setOpen] = useState(false);
+  const [searchParams] = useSearchParams();
+  const addressedRevision = searchParams.get('revision');
+  const [open, setOpen] = useState(Boolean(addressedRevision));
   const [editingPath, setEditingPath] = useState<string | null>(null);
   const [editMessage, setEditMessage] = useState<string | null>(null);
-  const [cursor, setCursor] = useState<string | null>(null);
+  const [cursor, setCursor] = useState<string | null>(addressedRevision);
   const [fromRevision, setFromRevision] = useState<string | null>(null);
   const [forRestore, setForRestore] = useState(false);
   const [previewPageIds, setPreviewPageIds] = useState<string[] | null>(null);
@@ -213,7 +216,8 @@ function NotebookHistory({ workspaceId }: { workspaceId: string }) {
                   .filter((revision) => revision.availability === 'unavailable')
                   .map((revision) => (
                     <p key={revision.revision} className="text-sm text-fg-muted">
-                      Unavailable revision
+                      {revision.revision}
+                      {revision.parentRevision ? ` ${revision.parentRevision}` : ''} Unavailable
                     </p>
                   ))}
                 {history.data.revisions.length === 0 ? (

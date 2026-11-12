@@ -1307,7 +1307,10 @@ function register_notebook_history_test_tsx_3() {
       });
       f.denyHistory();
       await user.click(screen.getByRole('button', { name: 'Refresh history' }));
-      await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
+      await waitFor(() => {
+        expect(screen.getByText(`${BASE} Unavailable`)).toBeVisible();
+        expect(screen.getByText(`${FROM} Unavailable`)).toBeVisible();
+      });
       expect(
         screen.queryByRole('region', { name: 'Historical notes/one.md' })
       ).not.toBeInTheDocument();
@@ -1336,7 +1339,7 @@ function register_notebook_history_test_tsx_3() {
       expect(screen.getByRole('region', { name: 'Restored notes/one.md' })).toHaveTextContent(
         'review_state: user-authored'
       );
-      expect(screen.getByText('Unavailable revision')).toBeVisible();
+      expect(screen.getByText(`${'d'.repeat(40)} Unavailable`)).toBeVisible();
       expect(f.restores).toHaveLength(0);
       expect(f.diffs.find((diff) => diff.forRestore === true)).toMatchObject({
         workspaceId: WORKSPACE,
@@ -1511,7 +1514,10 @@ function register_notebook_history_test_tsx_3() {
       expect(screen.queryByText('PRIVATE-DRAFT-MARKER')).not.toBeInTheDocument();
       expect(screen.queryByText('Current exact text.')).not.toBeInTheDocument();
       expect(screen.queryByRole('textbox', { name: 'Page text/Markdown' })).not.toBeInTheDocument();
-      await waitFor(() => expect(screen.getAllByText('Unavailable revision')).toHaveLength(2));
+      await waitFor(() => {
+        expect(screen.getByText(`${BASE} Unavailable`)).toBeVisible();
+        expect(screen.getByText(`${FROM} Unavailable`)).toBeVisible();
+      });
       expect(f.updates).toHaveLength(1);
       expect(screen.queryByText('DENIED-DRAFT-MARKER')).not.toBeInTheDocument();
       expect(f.updates[0]).toMatchObject({ workspaceId: OTHER });

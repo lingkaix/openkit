@@ -1,5 +1,6 @@
 import type { ApprovalEffectPreview } from '@openkit/app-api-schemas';
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   AssistantMessage,
   Button,
@@ -634,43 +635,58 @@ export function ItemView({
     case 'status': {
       const title = visibleStatusTitle(item.title);
       const summary = visibleStatusSummary(item.summary);
+      const revision = item.knowledgeMaintenanceResult?.notebookRevision;
+      const revisionLink: ReactNode = revision ? (
+        <Link to={`/knowledge?revision=${encodeURIComponent(revision)}`}>
+          Published notebook revision
+        </Link>
+      ) : null;
       if (title === timelineCopy.runAccepted) {
         return (
-          <p data-voice="fact" data-status="fact" className="ok-voice-fact ok-meta">
-            <span>{title}</span>
-            {summary ? (
-              <>
-                <span> · </span>
-                <span>{summary}</span>
-              </>
-            ) : null}
-          </p>
+          <>
+            <p data-voice="fact" data-status="fact" className="ok-voice-fact ok-meta">
+              <span>{title}</span>
+              {summary ? (
+                <>
+                  <span> · </span>
+                  <span>{summary}</span>
+                </>
+              ) : null}
+            </p>
+            {revisionLink}
+          </>
         );
       }
       const knownProblem =
         title === timelineCopy.runFailedTitle || title === timelineCopy.runStoppedTitle;
       if (item.level === 'warning' && !knownProblem) {
         return (
-          <p data-voice="fact" data-status="unknown" className="ok-voice-fact ok-meta">
-            <span className="text-notice-fg" aria-hidden="true">
-              {timelineCopy.unknownMark}
-            </span>{' '}
-            <span>{title}</span>
-            {summary ? (
-              <>
-                <span> · </span>
-                <span>{summary}</span>
-              </>
-            ) : null}
-          </p>
+          <>
+            <p data-voice="fact" data-status="unknown" className="ok-voice-fact ok-meta">
+              <span className="text-notice-fg" aria-hidden="true">
+                {timelineCopy.unknownMark}
+              </span>{' '}
+              <span>{title}</span>
+              {summary ? (
+                <>
+                  <span> · </span>
+                  <span>{summary}</span>
+                </>
+              ) : null}
+            </p>
+            {revisionLink}
+          </>
         );
       }
       return (
-        <ItemCard
-          kind={item.level === 'info' ? 'informative' : 'neutral'}
-          title={title}
-          meta={summary ?? undefined}
-        />
+        <>
+          <ItemCard
+            kind={item.level === 'info' ? 'informative' : 'neutral'}
+            title={title}
+            meta={summary ?? undefined}
+          />
+          {revisionLink}
+        </>
       );
     }
 
