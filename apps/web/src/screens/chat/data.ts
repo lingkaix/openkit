@@ -36,6 +36,7 @@ import { accountGeneration } from '../account/generation';
 import { useWorkspaceStore } from '../workspace-store';
 import { submitConversationDraft } from './file-drafts';
 import { watchPageVisibility } from './stream-visibility';
+import { publishDashboardClockSample } from './timeline/clock-offset';
 import {
   backoffDelayMs,
   isBusyStatus,
@@ -603,6 +604,28 @@ export function useThread(workspaceId: string | null, threadId: string) {
   });
 }
 
+/** One admitted dashboard read. The round-trip midpoint is the only clock sample. */
+async function readThreadDashboard(client: CoreClient, workspaceId: string, threadId: string) {
+  const generation = accountGeneration();
+  const sentAtMs = Date.now();
+  const dashboard = await client.operations['thread.dashboard']({
+    workspaceId,
+    threadId,
+  });
+  const receivedAtMs = Date.now();
+  if (generation !== accountGeneration()) {
+    throw new Error('Discarded an earlier account response.');
+  }
+  publishDashboardClockSample({
+    workspaceId,
+    threadId,
+    serverTime: dashboard.serverTime,
+    sentAtMs,
+    receivedAtMs,
+  });
+  return dashboard;
+}
+
 /**
  * Load the authoritative dashboard projection for one thread.
  *
@@ -620,17 +643,7 @@ export function useThreadDashboard(
   const client = useCoreClient();
   return useQuery({
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
-    queryFn: async () => {
-      const generation = accountGeneration();
-      const dashboard = await client.operations['thread.dashboard']({
-        workspaceId: workspaceId as string,
-        threadId: threadId,
-      });
-      if (generation !== accountGeneration()) {
-        throw new Error('Discarded an earlier account response.');
-      }
-      return dashboard;
-    },
+    queryFn: () => readThreadDashboard(client, workspaceId as string, threadId),
     enabled: Boolean(workspaceId) && enabled,
     // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
     staleTime: poll ? 5_000 : 0,
@@ -1116,11 +1129,7 @@ export function useLiveThreadItems(
               void queryClient
                 .fetchQuery({
                   queryKey: dashboardKey,
-                  queryFn: () =>
-                    client.operations['thread.dashboard']({
-                      workspaceId: workspaceId,
-                      threadId: threadId,
-                    }),
+                  queryFn: () => readThreadDashboard(client, workspaceId, threadId),
                   staleTime: 0,
                 })
                 .catch(() => undefined);

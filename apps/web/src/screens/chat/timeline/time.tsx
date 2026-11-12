@@ -1,4 +1,12 @@
-import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
+import {
+  createContext,
+  type ReactNode,
+  useContext,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from 'react';
+import { correctedNow, readDashboardClockOffset, subscribeDashboardClock } from './clock-offset';
 import { fillCopy, timelineCopy } from './copy';
 
 /** Relative copy stays inside this window. At and beyond it, the time is absolute. */
@@ -69,7 +77,7 @@ export function formatTimelineTime(
 
 /**
  * Duration for a run or a step. Steps under 1 second omit it.
- * // TB4: no server clock offset is on the dashboard. Callers pass the client clock.
+ * Callers pass the timeline clock. That clock includes the admitted server offset when a sample exists.
  */
 export function formatDuration(ms: number): string | null {
   if (!Number.isFinite(ms) || ms < 1000) return null;
@@ -130,6 +138,40 @@ export function useTimelineNow(): number {
   const value = useContext(TimelineClockContext);
   const [mounted] = useState(() => Date.now());
   return value ?? mounted;
+}
+
+/** Admitted offset for one Thread. Null means the client clock stands. */
+export function useDashboardClockOffset(
+  workspaceId: string | null,
+  threadId: string
+): number | null {
+  return useSyncExternalStore(
+    subscribeDashboardClock,
+    () => readDashboardClockOffset(workspaceId, threadId),
+    () => null
+  );
+}
+
+/**
+ * Timeline clock for one Thread.
+ * Relative times, Now, and the 40-minute step rule all read this instant.
+ * Without an admitted `serverTime` sample it is the client clock, and it says nothing about a correction.
+ */
+export function useCorrectedTimelineNow(
+  workspaceId: string | null,
+  threadId: string,
+  live: boolean
+): number {
+  const offset = useDashboardClockOffset(workspaceId, threadId);
+  const [clientNow, setClientNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(
+      () => setClientNow(Date.now()),
+      live ? NOW_ELAPSED_CLOCK_MS : TIMELINE_CLOCK_MS
+    );
+    return () => clearInterval(timer);
+  }, [live]);
+  return correctedNow(clientNow, offset);
 }
 
 /** True when the person asked for reduced motion. Missing matchMedia means motion is allowed. */

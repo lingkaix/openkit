@@ -92,9 +92,8 @@ import { scrollParent, TimelineScroll } from './timeline/TimelineScroll';
 import { TimelineTime } from './timeline/TimelineTime';
 import {
   durationDateTime,
-  NOW_ELAPSED_CLOCK_MS,
-  TIMELINE_CLOCK_MS,
   TimelineNowProvider,
+  useCorrectedTimelineNow,
   useReducedMotion,
 } from './timeline/time';
 import type { LensName } from './timeline/types';
@@ -820,17 +819,10 @@ export function ThreadStream({
   const liveElapsed = Boolean(
     dashboard?.turns.some((turn) => turn.status === 'running' || turn.status === 'pending')
   );
-  const [clock, setClock] = useState(() => Date.now());
+  const clock = useCorrectedTimelineNow(workspaceId, threadId, liveElapsed);
   const itemLocated = useRef<string | null>(null);
   const anchoredElement = useRef<HTMLElement | null>(null);
   const openedAnchor = useRef<string | null>(null);
-  useEffect(() => {
-    const timer = setInterval(
-      () => setClock(Date.now()),
-      liveElapsed ? NOW_ELAPSED_CLOCK_MS : TIMELINE_CLOCK_MS
-    );
-    return () => clearInterval(timer);
-  }, [liveElapsed]);
   const anchoredItemId =
     focusItemId ??
     timelineWindow.data?.anchor?.itemId ??
