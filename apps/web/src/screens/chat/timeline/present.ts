@@ -183,7 +183,11 @@ export interface StepGroup {
   key: string;
   label: string;
   items: ThreadItem[];
+  /** Shared recorded digest, only when every member has that same non-null value. */
+  digest: string | null;
 }
+
+const ARGUMENT_DIGEST = /^sha256:[a-f0-9]{64}$/;
 
 function singleStepLabel(item: ThreadItem): string {
   if (item.type === 'tool-call') return item.tool;
@@ -193,34 +197,105 @@ function singleStepLabel(item: ThreadItem): string {
   return timelineCopy['tool-call'];
 }
 
+function recordedDigest(
+  item: ThreadItem,
+  digests: ReadonlyMap<string, string | null> | undefined
+): string | null {
+  const value = digests?.get(item.id);
+  return typeof value === 'string' && ARGUMENT_DIGEST.test(value) ? value : null;
+}
+
+function stepFailed(item: ThreadItem): boolean {
+  return toolFailed(item) || commandFailed(item);
+}
+
+/** A recorded success. Unknown, running, and missing outcomes are not success. */
+function stepSucceeded(item: ThreadItem): boolean {
+  if (item.type === 'tool-call') return item.status === 'completed' && !item.error;
+  if (item.type === 'command-execution') return item.status === 'completed' && item.exitCode === 0;
+  return false;
+}
+
+function callName(item: ThreadItem): string {
+  if (item.type === 'tool-call') return item.tool;
+  if (item.type === 'command-execution') return item.command;
+  return singleStepLabel(item);
+}
+
+/** Span of the recorded timestamps. Missing clocks add no duration. */
+function recordedSpan(items: readonly ThreadItem[]): string | null {
+  const start = Date.parse(items[0]?.createdAt ?? '');
+  const endItem = items.at(-1);
+  const end = Date.parse(endItem?.completedAt ?? endItem?.createdAt ?? '');
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  if (end - start < 60_000) return null;
+  return formatRunDuration(end - start);
+}
+
 /**
- * R2 and R4 over a loaded step list.
- * // TB2: argument digests for R3, and exact windows, arrive with the timeline read.
+ * Exact repeat or retry label. The count is this group's membership, not a run total.
+ * A retry is named only when an earlier member failed and the last member succeeded.
  */
-export function groupSteps(items: readonly ThreadItem[]): StepGroup[] {
+function exactLabel(items: ThreadItem[]): string {
+  const name = callName(items[0]!);
+  if (items.length < 2) return name;
+  const earlierFailed = items.slice(0, -1).some((entry) => stepFailed(entry));
+  if (earlierFailed && stepSucceeded(items.at(-1)!)) {
+    return fillCopy(timelineCopy.triedSucceeded, { count: items.length });
+  }
+  const head = fillCopy(timelineCopy.exactRepeats, { name, count: items.length });
+  const span = recordedSpan(items);
+  const withSpan = span ? `${head} · ${fillCopy(timelineCopy.overSpan, { duration: span })}` : head;
+  return stepFailed(items.at(-1)!) ? `${withSpan} · ${timelineCopy.lastFailing}` : withSpan;
+}
+
+/**
+ * R2 stays a same-tool or same-file count when the digest is null.
+ * R3/R4 group only consecutive steps that share one non-null argumentDigest.
+ * A null digest never joins an exact group, and a preview is never an identity.
+ */
+export function groupSteps(
+  items: readonly ThreadItem[],
+  digests?: ReadonlyMap<string, string | null>
+): StepGroup[] {
   const groups: StepGroup[] = [];
   for (const item of items) {
     if (!isStepItem(item)) continue;
+    const digest = recordedDigest(item, digests);
     const last = groups.at(-1);
     const lastItem = last?.items[0];
-    const sameFiles = item.type === 'file-change' && lastItem?.type === 'file-change';
+    if (digest && last?.digest === digest) {
+      last.items.push(item);
+      last.label = exactLabel(last.items);
+      continue;
+    }
+    const sameFiles =
+      item.type === 'file-change' && lastItem?.type === 'file-change' && last?.digest == null;
     const sameTool =
-      item.type === 'tool-call' && lastItem?.type === 'tool-call' && lastItem.tool === item.tool;
+      digest == null &&
+      item.type === 'tool-call' &&
+      last?.digest == null &&
+      lastItem?.type === 'tool-call' &&
+      lastItem.tool === item.tool;
     if (last && (sameFiles || sameTool)) {
       last.items.push(item);
       if (sameFiles) {
         last.label = fillCopy(timelineCopy.filesChanged, { count: last.items.length });
       } else if (lastItem?.type === 'tool-call') {
-        const failedEarlier = last.items.slice(0, -1).some((entry) => toolFailed(entry));
-        const succeeded = !toolFailed(item);
-        last.label =
-          failedEarlier && succeeded
-            ? `Tried ${last.items.length}×, succeeded on the last`
-            : `${lastItem.tool} × ${last.items.length}`;
+        last.label = fillCopy(timelineCopy.exactRepeats, {
+          name: lastItem.tool,
+          count: last.items.length,
+        });
       }
       continue;
     }
-    groups.push({ key: item.id, label: singleStepLabel(item), items: [item] });
+    groups.push({
+      key: item.id,
+      label: singleStepLabel(item),
+      items: [item],
+      digest:
+        digest && (item.type === 'tool-call' || item.type === 'command-execution') ? digest : null,
+    });
   }
   return groups;
 }

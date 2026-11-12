@@ -1,9 +1,11 @@
 import type { ThreadDashboardResponse } from '@openkit/app-api-schemas';
+import { useQueryClient } from '@tanstack/react-query';
 import { Fragment, type ReactNode, type Ref, useState } from 'react';
 import { useOptionalCoreClient } from '../../../app/core-client';
 import { Button } from '../../../primitives';
 import { type ThreadItem, useThreadDashboard } from '../data';
 import { ItemView } from '../ItemView';
+import { argumentDigestsFor } from './argument-digest';
 import { fillCopy, timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
@@ -174,6 +176,7 @@ function RunEntryBody({
   requests,
   viewerUserId,
   names,
+  digests,
 }: {
   entry: TimelineEntry;
   items: readonly ThreadItem[];
@@ -205,6 +208,8 @@ function RunEntryBody({
   requests: readonly AdmittedRequest[] | undefined;
   viewerUserId: string | null;
   names: ReadonlyMap<string, string>;
+  /** Recorded argument digests from the timeline read. Missing ids stay ungrouped. */
+  digests?: ReadonlyMap<string, string | null>;
 }) {
   const runLens: LensName = lens === 'full' || expanded ? 'full' : 'work';
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -215,7 +220,7 @@ function RunEntryBody({
   );
   const visibleNotes = new Set(notes.visible);
   const steps = items.filter((item) => isStepItem(item));
-  const groups = groupSteps(steps);
+  const groups = groupSteps(steps, digests);
   const [openGroups, setOpenGroups] = useState<ReadonlySet<string>>(new Set());
   const [showEarlierNotes, setShowEarlierNotes] = useState(false);
   const [stepsOpen, setStepsOpen] = useState(false);
@@ -513,7 +518,7 @@ function RunEntryBody({
             <ul data-fold-depth="2" className="mt-2 flex flex-col gap-2">
               {groups.map((group) =>
                 group.items.length > 1 ? (
-                  <li key={group.key}>
+                  <li key={group.key} data-step-members={group.digest ?? group.key}>
                     <Button
                       variant="quiet"
                       size="sm"
@@ -536,6 +541,7 @@ function RunEntryBody({
                             id={`timeline-item-${item.id}`}
                             tabIndex={-1}
                             data-voice="process"
+                            data-step-member={item.id}
                             className="ok-step"
                           >
                             {renderItem(item, 'ok-step')}
@@ -613,17 +619,42 @@ function AdmittedRequests({
   });
 }
 
+function RecordedDigests({
+  workspaceId,
+  threadId,
+  children,
+}: {
+  workspaceId: string;
+  threadId: string;
+  children: (digests: ReadonlyMap<string, string | null>) => ReactNode;
+}) {
+  const queryClient = useQueryClient();
+  return children(argumentDigestsFor(queryClient, workspaceId, threadId));
+}
+
 export function RunEntry(
-  props: Omit<Parameters<typeof RunEntryBody>[0], 'requests' | 'viewerUserId' | 'names'>
+  props: Omit<Parameters<typeof RunEntryBody>[0], 'requests' | 'viewerUserId' | 'names' | 'digests'>
 ) {
   const client = useOptionalCoreClient();
   const scope = workspaceOf(props.items);
   if (!client || !scope) {
-    return <RunEntryBody {...props} requests={undefined} viewerUserId={null} names={new Map()} />;
+    return (
+      <RunEntryBody
+        {...props}
+        requests={undefined}
+        viewerUserId={null}
+        names={new Map()}
+        digests={new Map()}
+      />
+    );
   }
   return (
     <AdmittedRequests workspaceId={scope.workspaceId} threadId={scope.threadId}>
-      {(lifecycle) => <RunEntryBody {...props} {...lifecycle} />}
+      {(lifecycle) => (
+        <RecordedDigests workspaceId={scope.workspaceId} threadId={scope.threadId}>
+          {(digests) => <RunEntryBody {...props} {...lifecycle} digests={digests} />}
+        </RecordedDigests>
+      )}
     </AdmittedRequests>
   );
 }
