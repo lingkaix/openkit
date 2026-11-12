@@ -1,4 +1,8 @@
 import { TurnStartValidationError } from '../operation-error.js';
+import {
+  applyPreparedHarnessLoginSelection,
+  type PreparedHarnessLoginSelection,
+} from './harness-login-selection.js';
 
 export { TurnStartValidationError } from '../operation-error.js';
 
@@ -41,6 +45,8 @@ export interface StartTurnInput
     AgentSetupResolverDependencies,
     'providerCredentialConfigured' | 'subscriptionAccounts'
   > {
+  /** Exact transient selection from the Scheduler preparation owner. */
+  harnessLoginSelection?: PreparedHarnessLoginSelection;
   /** Original initiating command facts when this call creates the native Turn. */
   commandReceipt?: IdempotentCommandReceipt;
   /** Exact durable execution attempt for the accepted pending Turn. */
@@ -310,6 +316,13 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     );
   }
 
+  if (input.harnessLoginSelection) {
+    if (!agentSetupResult.setup) throw new Error('Login selection requires canonical Agent setup.');
+    agentSetupResult.setup = applyPreparedHarnessLoginSelection(
+      agentSetupResult.setup,
+      input.harnessLoginSelection
+    );
+  }
   const readiness = computeReadiness(selectedAgent);
   if (!isAgentLaunchable(readiness)) {
     throw new TurnStartValidationError(
@@ -386,6 +399,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),
     ...(input.agentSessionId ? { agentSessionId: input.agentSessionId } : {}),
     ...(agentSetupResult.setup ? { agentSetup: agentSetupResult.setup } : {}),
+    ...(input.harnessLoginSelection ? { harnessLoginSelection: input.harnessLoginSelection } : {}),
     requestId: input.requestId ?? null,
     ...(input.sessionCompatibilityKey
       ? { sessionCompatibilityKey: input.sessionCompatibilityKey }

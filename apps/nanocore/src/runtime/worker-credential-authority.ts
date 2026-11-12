@@ -79,7 +79,7 @@ export function requireDeclarationReference(
  * @param reference Vault reference authorized by the grant.
  * @throws Error when authorization metadata does not match the requested injection.
  */
-export function assertCredentialGrantMatchesDeclaration(
+export function assertCredentialGrantShapeMatchesDeclaration(
   input: {
     readonly agentId: string;
     readonly agentSessionId: string;
@@ -100,8 +100,7 @@ export function assertCredentialGrantMatchesDeclaration(
       reference.ownerScope !== 'user' ||
       !reference.userId ||
       reference.secretKind !== 'codex-auth-json' ||
-      reference.login?.provider !== 'codex' ||
-      reference.login.quarantined)
+      reference.login?.provider !== 'codex')
   )
     throw new TurnStartValidationError(
       'credential_declaration_invalid',
@@ -146,6 +145,21 @@ export function assertCredentialGrantMatchesDeclaration(
   if (grant.expiresAt && grant.expiresAt <= input.now()) {
     throw new TurnStartValidationError('vault_grant_expired', 'Credential grant has expired.');
   }
+}
+
+/** Checks candidate shape and then rejects quarantine at every live-use boundary. */
+export function assertCredentialGrantMatchesDeclaration(
+  input: Parameters<typeof assertCredentialGrantShapeMatchesDeclaration>[0],
+  declaration: AgentEnvironmentCredentialDeclaration,
+  grant: VaultGrantRecord,
+  reference: VaultReferenceRecord
+): void {
+  assertCredentialGrantShapeMatchesDeclaration(input, declaration, grant, reference);
+  if (declaration.visibility === 'runtime-token' && reference.login?.quarantined)
+    throw new TurnStartValidationError(
+      'credential_declaration_invalid',
+      'Credential declaration does not match a current User Login.'
+    );
 }
 
 /**

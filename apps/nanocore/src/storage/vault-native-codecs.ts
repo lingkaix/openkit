@@ -212,6 +212,38 @@ export function listVaultReferences(coreDb: CoreDb): VaultReferenceRecord[] {
 }
 
 /**
+ * Reads account-wide exhaustion without granting use or disclosing another Login's inventory.
+ *
+ * @param coreDb Canonical Login observation owner.
+ * @param accountIds Trusted account keys from independently authorized Codex candidates.
+ * @returns Only input accounts with a family's current-generation exhaustion observation.
+ */
+export function readCurrentExhaustedLoginAccounts(
+  coreDb: CoreDb,
+  accountIds: ReadonlySet<string>
+): ReadonlySet<string> {
+  const exhausted = new Set<string>();
+  if (accountIds.size === 0) return exhausted;
+  const query = coreDb.sqlite.prepare(
+    `${vaultReferenceSelectSql()}
+    WHERE owner_scope = 'user' AND login_provider = 'codex' AND login_account_id = ?`
+  );
+  for (const accountId of accountIds) {
+    const references = (query.all(accountId) as VaultReferenceRow[]).map(mapVaultReferenceRow);
+    // A grant controls use, not the validity of an already accepted observation on its family.
+    if (
+      references.some(
+        (reference) =>
+          reference.login?.observations?.state === 'exhausted' &&
+          reference.login.observations.materialGeneration === reference.currentVersion
+      )
+    )
+      exhausted.add(accountId);
+  }
+  return exhausted;
+}
+
+/**
  * Lists workspace-owned vault references in deterministic order.
  *
  * @param coreDb Open Core database handle.

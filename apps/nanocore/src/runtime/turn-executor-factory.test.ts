@@ -259,6 +259,7 @@ import {
   workerCredentialFileBinding,
 } from './worker-governance-backend.js';
 import {
+  agentSessionCompatibilityKeyFromPackage,
   prepareWorkerTurnJournalIntents,
   type WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
@@ -22605,6 +22606,13 @@ describe('inert initial private Login exchange through the concrete backend sess
     'same-family-refresh-revoked-before-native-receipt',
     'same-family-refresh-observe',
     'product-feature-propagation',
+    'product-login-alternate-composition',
+    'product-login-alternate-acknowledgement',
+    'new-turn-preference-preview-eligible',
+    'new-turn-preference-preview-ineligible',
+    'new-turn-account-exhaustion-other-session',
+    'new-turn-account-exhaustion-different-account',
+    'new-turn-account-exhaustion-after-preparation',
   ] as const)(
     'joins authenticated acquire and complete without completing startup (%s)',
     async (ending) => {
@@ -22628,6 +22636,9 @@ describe('inert initial private Login exchange through the concrete backend sess
       const accountId = randomUUID();
       const refreshMaterials = [randomUUID(), randomUUID(), randomUUID()];
       const sameFamilyRefresh = ending.startsWith('same-family-refresh');
+      const preferencePreview = ending.startsWith('new-turn-preference-preview-');
+      const accountEvidence = ending.startsWith('new-turn-account-exhaustion-');
+      const evidenceSessionId = accountEvidence ? testEntityId('as', randomUUID()) : undefined;
       if (sameFamilyRefresh) refreshMaterials.push(randomUUID());
       const accessMaterials = refreshMaterials.map((_, generation) =>
         [
@@ -22658,6 +22669,7 @@ describe('inert initial private Login exchange through the concrete backend sess
       let removalRecord: unknown;
       let modeledDepartureEntered = false;
       let releaseModeledRefreshTerminal: (() => void) | undefined;
+      let alternateStartReady = false;
       let departureCloseout: Promise<unknown> | undefined;
       let departureTimers = false;
       let observeClose: { mockRestore(): void } | undefined;
@@ -22665,6 +22677,7 @@ describe('inert initial private Login exchange through the concrete backend sess
       let heldStart: harnessRecords.NanoHostHarnessCommand | undefined;
       const acquireAbort = new AbortController();
       let refreshCalls = 0;
+      let earlyBootstrapCalls = 0;
       let acquireSettled = false;
       let startupSettled = false;
       let startup: Promise<void> | undefined;
@@ -22672,6 +22685,7 @@ describe('inert initial private Login exchange through the concrete backend sess
       let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
       let acceptStart: { mockRestore(): void } | undefined;
       let observeDeliveryFailure: { mockRestore(): void } | undefined;
+      let observeSchedulerDispatch: { mockRestore(): void } | undefined;
       let nativePublication: { mockRestore(): void } | undefined;
       let client: ReturnType<typeof connectHttp2> | undefined;
       const authority = createNanoHostTransportSessionAuthority();
@@ -22688,6 +22702,9 @@ describe('inert initial private Login exchange through the concrete backend sess
       let refreshPeerOrigin: string | undefined;
       let refreshPeerCalls = 0;
       const fetchLoopback = globalThis.fetch;
+      let alternateBootstrap:
+        | { inputRefresh: string; outputRefresh: string; outputAccess: string }
+        | undefined;
       const upstream = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
         const request = new Request(input, init);
         expect(request.url === 'https://auth.openai.com/oauth/token').toBe(true);
@@ -22695,10 +22712,24 @@ describe('inert initial private Login exchange through the concrete backend sess
         const body = await request.text();
         const form = new URLSearchParams(body);
         expect(form.get('grant_type') === 'refresh_token').toBe(true);
-        expect(form.get('refresh_token') === refreshMaterials[refreshCalls]).toBe(true);
+        if (alternateBootstrap && form.get('refresh_token') === alternateBootstrap.inputRefresh) {
+          const alternate = alternateBootstrap;
+          alternateBootstrap = undefined;
+          refreshCalls += 1;
+          if (ending === 'new-turn-account-exhaustion-after-preparation')
+            earlyBootstrapCalls += 1;
+          return Response.json({
+            access_token: alternate.outputAccess,
+            refresh_token: alternate.outputRefresh,
+            expires_in: 3600,
+          });
+        }
+        expect(form.get('refresh_token') === refreshMaterials[refreshCalls - earlyBootstrapCalls])
+          .toBe(true);
         refreshCalls += 1;
-        if (refreshCalls > 2) {
-          if (!sameFamilyRefresh || refreshCalls !== 3 || !refreshPeerOrigin)
+        const familyRefreshCalls = refreshCalls - earlyBootstrapCalls;
+        if (familyRefreshCalls > 2) {
+          if (!sameFamilyRefresh || familyRefreshCalls !== 3 || !refreshPeerOrigin)
             throw new Error('Unexpected extra stock Login refresh.');
           return fetchLoopback(`${refreshPeerOrigin}/oauth/token`, {
             method: request.method,
@@ -22708,7 +22739,7 @@ describe('inert initial private Login exchange through the concrete backend sess
           });
         }
         if (
-          refreshCalls === 2 &&
+          familyRefreshCalls === 2 &&
           (ending === 'cancelled-during-refresh' || ending === 'physical-loss-during-refresh')
         ) {
           const aborted = () => refreshAborted.resolve();
@@ -22725,8 +22756,8 @@ describe('inert initial private Login exchange through the concrete backend sess
           }
         }
         return Response.json({
-          access_token: accessMaterials[refreshCalls],
-          refresh_token: refreshMaterials[refreshCalls],
+          access_token: accessMaterials[familyRefreshCalls],
+          refresh_token: refreshMaterials[familyRefreshCalls],
           expires_in: 3600,
         });
       });
@@ -22795,6 +22826,7 @@ describe('inert initial private Login exchange through the concrete backend sess
               ownerScope: 'workspace',
               lifetime: 'workspace',
               injectionPath: 'runtime-token',
+              ...(evidenceSessionId ? { targetAgentSessionId: evidenceSessionId } : {}),
               expiresAt: '2099-01-01T00:00:00.000Z',
             },
           },
@@ -22877,7 +22909,49 @@ describe('inert initial private Login exchange through the concrete backend sess
           localInferenceSetup.logicalModels.allowed.map((model) => model.id)
         );
         admitTestNativeEnvironment(coreDb, setup.manifest);
-        if (ending === 'product-feature-propagation') {
+        let preferenceManager: ReturnType<typeof createRuntimeConfigManager> | undefined;
+        if (preferencePreview) {
+          // Initialize canonical A sources before the one native publication owner is bound.
+          const authored = AuthoredAgentConfigSchema.parse({
+            ...setup.manifest,
+            requiredFeatures: ['worker.harness-login.v1'],
+            sandbox: { ...setup.manifest.sandbox, credentialDeclarations: [{
+              id: 'reviewed-login', requirementId: 'reviewed-login',
+              purpose: 'Use the reviewed synthetic Codex Login.', required: true,
+              visibility: 'runtime-token', consumer: 'codex-login',
+            }] },
+          });
+          const workspace = manager.current().workspaceConfigs.find(
+            (value) => value.workspaceId === DEMO_WORKSPACE_ID
+          );
+          const provider = providerRegistry.get(privateRoute.providerProfileId);
+          if (!workspace || !provider) throw new Error('Canonical source inputs are absent.');
+          const writeConfig = (path: string, value: unknown) => {
+            mkdirSync(dirname(path), { recursive: true });
+            writeFileSync(path, JSON.stringify(value));
+          };
+          writeConfig(join(coreDb.dataRoot, 'config/agents/codex.agent.jsonc'), authored);
+          writeConfig(join(coreDb.dataRoot, 'config/providers/login.provider.jsonc'), {
+            ...provider, schemaVersion: 1,
+            extensions: { openkit: { subscriptionAccount: {
+              accountSlotId: 'synthetic-unconfigured',
+            } } },
+          });
+          writeConfig(join(coreDb.dataRoot, 'config/gateway.jsonc'),
+            createTestGatewayConfig({ privateRoute }));
+          writeConfig(workspace.path, WorkspaceConfigSchema.parse({
+            ...workspace.config,
+            workspace: { ...workspace.config.workspace, agents: [{ agentId: authored.id,
+              credentialBindings: [{ requirementId: 'reviewed-login', vaultGrantId: issued.grantId }],
+            }] },
+          }));
+          preferenceManager = createRuntimeConfigManager({ dataRoot: coreDb.dataRoot });
+        }
+        if (
+          ending === 'product-feature-propagation' ||
+          ending === 'product-login-alternate-composition' ||
+          ending === 'product-login-alternate-acknowledgement'
+        ) {
           const feature = 'worker.harness-login.v1';
           const authored = AuthoredAgentConfigSchema.parse({
             ...setup.manifest,
@@ -23050,6 +23124,142 @@ describe('inert initial private Login exchange through the concrete backend sess
             setup.manifest.sandbox?.credentialDeclarations
           );
 
+          let alternate:
+            | {
+                grantId: string;
+                referenceId: string;
+                authoredWorkspace: string;
+                stockEntries: number;
+                uses: ReturnType<typeof listVaultUseRecords>;
+              }
+            | undefined;
+          let prepareAlternateRefresh: (() => void) | undefined;
+          if (ending === 'product-login-alternate-composition' ||
+              ending === 'product-login-alternate-acknowledgement') {
+            const alternateAccount = randomUUID();
+            const alternateAccess = (generation: number) =>
+              [
+                Buffer.from('{}').toString('base64'),
+                Buffer.from(
+                  JSON.stringify({
+                    generation,
+                    'https://api.openai.com/auth': { chatgpt_account_id: alternateAccount },
+                  })
+                ).toString('base64'),
+                'synthetic-signature',
+              ].join('.');
+            const alternateSeed = randomUUID();
+            alternateBootstrap = {
+              inputRefresh: alternateSeed,
+              outputRefresh: randomUUID(),
+              outputAccess: alternateAccess(1),
+            };
+            if (ending === 'product-login-alternate-acknowledgement') {
+              const bootstrapOutput = alternateBootstrap;
+              prepareAlternateRefresh = () => {
+                alternateBootstrap = {
+                  inputRefresh: bootstrapOutput.outputRefresh,
+                  outputRefresh: randomUUID(),
+                  outputAccess: alternateAccess(2),
+                };
+              };
+            }
+            const secondLogin = await invoke(
+              'vault.bootstrap-codex-auth',
+              {
+                authJsonBase64: Buffer.from(
+                  JSON.stringify({
+                    tokens: {
+                      access_token: alternateAccess(0),
+                      refresh_token: alternateSeed,
+                      account_id: alternateAccount,
+                    },
+                  })
+                ).toString('base64'),
+              },
+              entry
+            );
+            expect(refreshCalls).toBe(2);
+            expect(secondLogin.referenceId === login.referenceId).toBe(false);
+            expect(getVaultReference(coreDb, secondLogin.referenceId)).toMatchObject({
+              ownerScope: 'user',
+              userId: ownerUserId,
+              currentVersion: 1,
+              status: 'active',
+            });
+            const secondConsent = await store.createThread(
+              DEMO_WORKSPACE_ID,
+              'Review the alternate Login grant'
+            );
+            const secondRequest = await invoke(
+              'vault.grant-request',
+              {
+                workspaceId: input.workspaceId,
+                threadId: secondConsent.id,
+                requestId: randomUUID(),
+                terms: {
+                  referenceId: secondLogin.referenceId,
+                  ownerScope: 'workspace',
+                  lifetime: 'workspace',
+                  injectionPath: 'runtime-token',
+                  expiresAt: '2099-01-01T00:00:00.000Z',
+                },
+              },
+              entry
+            );
+            await invoke(
+              'approval.respond',
+              {
+                workspaceId: input.workspaceId,
+                threadId: secondRequest.threadId,
+                turnId: secondRequest.raisingTurnId,
+                approvalRequestId: secondRequest.approvalRequestId,
+                decision: 'granted',
+                requestId: randomUUID(),
+              },
+              entry
+            );
+            const secondGrant = await invoke(
+              'vault.grant-issue',
+              {
+                workspaceId: input.workspaceId,
+                threadId: secondRequest.threadId,
+                approvalRequestId: secondRequest.approvalRequestId,
+              },
+              entry
+            );
+            expect(getVaultGrant(coreDb, secondGrant.grantId)).toMatchObject({
+              vaultReferenceId: secondLogin.referenceId,
+              ownerScope: 'workspace',
+              workspaceId: input.workspaceId,
+              issuance: 'target',
+              lifetime: 'workspace',
+              targetAgentId: null,
+              targetAgentSessionId: null,
+              targetCapabilityId: null,
+              allowedInjectionPaths: ['runtime-token'],
+              approvalId: secondRequest.approvalRequestId,
+              policyDecisionId: expect.any(String),
+              status: 'active',
+            });
+            await invoke(
+              'vault.grant-withdraw',
+              { workspaceId: input.workspaceId, grantId: issued.grantId },
+              entry
+            );
+            expect(getVaultGrant(coreDb, issued.grantId)?.status).toBe('revoked');
+            expect(getVaultGrant(coreDb, secondGrant.grantId)?.status).toBe('active');
+            expect(store.listThreadAgentSessions(input.workspaceId, input.threadId)).toEqual([]);
+            expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+            alternate = {
+              grantId: secondGrant.grantId,
+              referenceId: secondLogin.referenceId,
+              authoredWorkspace: readFileSync(workspace.path, 'utf8'),
+              stockEntries: upstream.mock.calls.length,
+              uses: listVaultUseRecords(repositoryWorkspaceDb(input.workspaceId)),
+            };
+          }
+
           const accept = runtime.acceptNanoHostHarnessCommand.bind(runtime);
           const failDelivery = runtime.failNanoHostHarnessDelivery.bind(runtime);
           observeDeliveryFailure = vi
@@ -23068,12 +23278,26 @@ describe('inert initial private Login exchange through the concrete backend sess
               const wire = await accept(command);
               if (wire?.operation === 'turn.start' && wire.body.threadId === thread.id) {
                 heldStart = wire;
+                if (ending === 'product-login-alternate-acknowledgement') {
+                  // Arm cleanup before held-start assertions: a failed assertion must not leave
+                  // the modeled terminal pending and hide its cause behind the test timeout.
+                  const execution = native!.executionFor(wire.body.turnId);
+                  releaseModeledRefreshTerminal = () => execution.completion.resolve();
+                }
                 startEntered.resolve(wire);
                 await stopStart.promise;
+                // A body failure before Login completion must use the original refusal cleanup.
+                if (ending === 'product-login-alternate-acknowledgement' && alternateStartReady)
+                  return wire;
                 throw new Error('Module peer did not complete the original pending startup.');
               }
               return wire;
             });
+          // Observe the actual public Scheduler return; the original pending start stays held.
+          const schedulerDispatch = alternate
+            ? vi.spyOn(schedulerOwners, 'runSchedulerDispatchLoop')
+            : undefined;
+          observeSchedulerDispatch = schedulerDispatch;
           const product = start();
           startup = product
             .then(() => undefined)
@@ -23131,6 +23355,187 @@ describe('inert initial private Login exchange through the concrete backend sess
             input.workspaceId,
             String(wire.body.packageSnapshotId)
           ).snapshot;
+          if (alternate) {
+            const declaration = {
+              id: 'reviewed-login',
+              requirementId: 'reviewed-login',
+              visibility: 'runtime-token',
+              consumer: 'codex-login',
+              vaultGrantId: alternate.grantId,
+            };
+            expect(pkg).toMatchObject({
+              schemaVersion: 4,
+              scope: {
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                turnId: admission.turnId,
+                agentSessionId: attempt.agentSessionId,
+              },
+              llm: { mode: 'harness' },
+            });
+            expect(pkg.credentials.declarations).toEqual([declaration]);
+            expect(pkg.vault.grants.map((grant) => [grant.id, grant.vaultRefId])).toEqual([
+              [alternate.grantId, alternate.referenceId],
+            ]);
+            expect(pkg.vault.references.map((reference) => reference.id)).toEqual([
+              alternate.referenceId,
+            ]);
+            expect(
+              requireResolvedAgentSetup(db, input.workspaceId, `ras_${admission.turnId}`).setup
+                .manifest.sandbox.credentialDeclarations
+            ).toEqual([
+              {
+                // Retained setup evidence has four fields; id belongs to the live AEP only.
+                requirementId: declaration.requirementId,
+                visibility: declaration.visibility,
+                consumer: declaration.consumer,
+                vaultGrantId: declaration.vaultGrantId,
+              },
+            ]);
+            expect(listVaultInjectionPlans(coreDb)).toEqual([
+              expect.objectContaining({
+                planId: `plan_${pkg.snapshotId}_${declaration.id}`,
+                grantId: alternate.grantId,
+                injectionVisibility: 'runtime-token',
+              }),
+            ]);
+            expect(
+              coreDb.sqlite
+                .prepare(
+                  'SELECT operation_id AS operationId, operation_state AS state FROM harness_instance_records WHERE harness_instance_id = ?'
+                )
+                .get(wire.harnessInstanceId)
+            ).toEqual({ operationId: wire.operationId, state: 'dispatched' });
+            expect(!startupSettled && runtime.isTurnExecutionActive(admission.turnId)).toBe(true);
+            expect(store.getAgentSession(pkg.scope.agentSessionId).sessionCompatibilityKey).toBe(
+              agentSessionCompatibilityKeyFromPackage(pkg)
+            );
+            for (const referenceId of [login.referenceId, alternate.referenceId]) {
+              expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(1);
+              expect(vault.backend().listReferences({ referenceId })[0]?.currentVersion).toBe(1);
+            }
+            expect(readFileSync(workspace.path, 'utf8') === alternate.authoredWorkspace).toBe(true);
+            expect(upstream.mock.calls.length).toBe(alternate.stockEntries);
+            expect(isDeepStrictEqual(listVaultUseRecords(db), alternate.uses)).toBe(true);
+            expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+            expect(
+              readProduct(
+                db.sqlite,
+                { kind: 'workspace', workspaceId: input.workspaceId },
+                'thread',
+                input.threadId
+              )?.record.login
+            ).toBeUndefined();
+            if (ending === 'product-login-alternate-acknowledgement') {
+              // All original held-start/material-free checks above run before this continuation.
+              await cold.bindNativePolicyPublication(coreDb);
+              const target = await recordTestNativeRuntimeTarget(coreDb);
+              server.listen(0, '127.0.0.1');
+              await once(server, 'listening');
+              const address = server.address();
+              if (!address || typeof address === 'string') throw new Error('H2 address is absent.');
+              client = connectHttp2(`http://127.0.0.1:${address.port}`);
+              const stream = client.request({ ':method': 'POST', ':path': '/' });
+              const ended = once(stream, 'end');
+              stream.resume();
+              stream.end();
+              const physical = await connected.promise;
+              await ended;
+              authority.admit({ identityId: target.identityId,
+                connectionGeneration: target.connectionGeneration, physicalConnection: physical });
+              if (!dispatch.readiness || !dispatch.harnessLogin || !prepareAlternateRefresh)
+                throw new Error('The actual private Login path is unavailable.');
+              await dispatch.readiness(physical,
+                Buffer.from(JSON.stringify({ physicalEpoch: target.physicalEpoch })), {
+                  coreDb, targetId: target.targetId, deploymentId: target.deploymentId,
+                  identityId: target.identityId,
+                });
+              const authenticated = HarnessLoginContextSchema.parse({
+                workspaceId: wire.body.workspaceId, threadId: wire.body.threadId,
+                agentSessionId: wire.body.agentSessionId,
+                agentSessionRuntimeBindingId: wire.body.agentSessionRuntimeBindingId,
+                packageSnapshotId: wire.body.packageSnapshotId, turnId: wire.body.turnId,
+                leaseId: wire.body.leaseId, turnSequence: wire.body.turnSequence,
+                runtimeTargetId: target.targetId, physicalEpoch: target.physicalEpoch,
+                connectionGeneration: target.connectionGeneration,
+              });
+              const { runtimeTargetId: _target, physicalEpoch: _epoch,
+                connectionGeneration: _generation, ...bodyLineage } = authenticated;
+              const loginCall = (body: Record<string, unknown>) => dispatch.harnessLogin!(physical,
+                new Request('http://module.invalid/worker-control/harness/login', {
+                  method: 'POST', headers: { 'content-type': 'application/json',
+                    authorization: `Bearer ${String(wire.body.workerControlToken)}` },
+                  body: JSON.stringify({ ...bodyLineage, ...body }),
+                }));
+              prepareAlternateRefresh();
+              acquisition = loginCall({ kind: 'acquire', reason: 'activate' });
+              const acquired = await acquisition;
+              expect(acquired.status).toBe(200);
+              const supplied = await acquired.json() as {
+                receiptId: string; materialGeneration: number;
+              };
+              expect(supplied.receiptId).toBe(`receipt_${pkg.snapshotId}_${declaration.id}`);
+              expect(supplied.materialGeneration).toBe(2);
+              expect((await loginCall({ kind: 'complete', receiptId: supplied.receiptId,
+                materialGeneration: supplied.materialGeneration })).status).toBe(204);
+              expect(listVaultInjectionReceipts(coreDb)).toEqual([
+                expect.objectContaining({ receiptId: supplied.receiptId, grantId: alternate.grantId,
+                  planId: `plan_${pkg.snapshotId}_${declaration.id}`, revocationStatus: 'active' }),
+              ]);
+              expect(NativeThreadLoginSchema.parse(readProduct(db.sqlite,
+                { kind: 'workspace', workspaceId: input.workspaceId }, 'thread', input.threadId
+              )!.record.login).referenceId).toBe(alternate.referenceId);
+              let consumedStart: harnessRecords.NanoHostHarnessResult | undefined;
+              const acceptResult = runtime.acceptNanoHostHarnessResult.bind(runtime);
+              const observeStart = vi.spyOn(runtime, 'acceptNanoHostHarnessResult')
+                .mockImplementation(async (result, settlement) => {
+                  await acceptResult(result, settlement);
+                  if (result.harnessInstanceId === wire.harnessInstanceId &&
+                      result.operationId === wire.operationId && result.sequence === wire.sequence &&
+                      result.disposition === 'succeeded') consumedStart = result;
+                });
+              try {
+                const execution = native.executionFor(admission.turnId);
+                releaseModeledRefreshTerminal = () => execution.completion.resolve();
+                alternateStartReady = true;
+                stopStart.resolve();
+                expect(await Promise.race([
+                  execution.launched.promise.then(() => true),
+                  product.then(() => false, () => false),
+                ])).toBe(true);
+                if (!consumedStart) throw new Error('Original modeled start was not consumed.');
+                expect(harnessRecords.readConsumedNanoHostHarnessResult(coreDb, consumedStart)
+                  ?.operations).toEqual(['turn.start']);
+                expect(schedulerDispatch).toHaveBeenCalledTimes(1);
+                const actualReturn = schedulerDispatch?.mock.results[0];
+                expect(actualReturn?.type).toBe('return');
+                if (!actualReturn || actualReturn.type !== 'return')
+                  throw new Error('The original Scheduler return is required.');
+                const earlyAcknowledgement = await actualReturn.value;
+                expect(earlyAcknowledgement.startedTurns).toHaveLength(1);
+                const acknowledged = earlyAcknowledgement.startedTurns[0];
+                expect(acknowledged?.dispatch.attempt).toMatchObject({
+                  attemptId: attempt.attemptId, phase: 'open', disposition: 'accepted',
+                  deadline: expect.any(String),
+                });
+                expect(acknowledged?.handle.turn.id).toBe(admission.turnId);
+                expect(acknowledged?.handle.agentSetupRecordId).toBe(`ras_${admission.turnId}`);
+                const expectedDeclarations = [{ id: declaration.id,
+                  requirementId: declaration.requirementId,
+                  visibility: declaration.visibility, consumer: declaration.consumer,
+                  vaultGrantId: alternate.grantId }];
+                // R1 now decides only after actual submit settlement, while terminal stays held.
+                expect(acknowledged?.handle.agentSetup?.manifest.sandbox?.credentialDeclarations)
+                  .toEqual(expectedDeclarations);
+                expect(acknowledged?.handle.agent.sandbox?.credentialDeclarations)
+                  .toEqual(expectedDeclarations);
+                expect(runtime.isTurnExecutionActive(admission.turnId)).toBe(true);
+              } finally {
+                observeStart.mockRestore();
+              }
+            }
+            return;
+          }
           expect(pkg).toMatchObject({
             schemaVersion: 4,
             scope: {
@@ -23167,7 +23572,7 @@ describe('inert initial private Login exchange through the concrete backend sess
             captureCoverage: { scope: 'server', value: 'off' },
           }
         );
-        const agentSessionId = testEntityId('as', randomUUID());
+        const agentSessionId = evidenceSessionId ?? testEntityId('as', randomUUID());
         const requestId = randomUUID();
         const attemptId = testEntityId('attempt', randomUUID());
         const admissionEntry = createSchedulerAdmissionEntry(coreDb, {
@@ -23183,7 +23588,7 @@ describe('inert initial private Login exchange through the concrete backend sess
         });
         const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
         native = await createNativeTaskAdmissionFixture(coreDb, store, {
-          readRuntimeConfig: () => manager.current(),
+          readRuntimeConfig: () => (preferenceManager ?? manager).current(),
           vaultBackend: () => vault.backend(),
           policyInterception: () => interception,
           workspaceMutationAdmission: mutation,
@@ -23217,7 +23622,9 @@ describe('inert initial private Login exchange through the concrete backend sess
           })
         );
         const handler = createHarnessLoginExchange({
-          operations,
+          operations: preferenceManager
+            ? { ...operations, runtimeConfigManager: preferenceManager }
+            : operations,
           gateway: native.workerControlGateway,
           runtime: native.runtime,
         });
@@ -23251,7 +23658,7 @@ describe('inert initial private Login exchange through the concrete backend sess
             message: expect.stringContaining('backend-local-inference'),
           })
         );
-        await manager.bindNativePolicyPublication(coreDb);
+        await (preferenceManager ?? manager).bindNativePolicyPublication(coreDb);
         const target = await recordTestNativeRuntimeTarget(coreDb);
         server.listen(0, '127.0.0.1');
         await once(server, 'listening');
@@ -23308,6 +23715,89 @@ describe('inert initial private Login exchange through the concrete backend sess
             }
             return wire;
           });
+        // These are new real owner-issued grants, never seeded inventory or AEP records.
+        const reviewedAlternative = async (title: string, candidateAccount = randomUUID()) => {
+          const candidateRefresh = randomUUID();
+          const candidateAccess = (generation: number) => [
+            Buffer.from('{}').toString('base64'),
+            Buffer.from(JSON.stringify({ generation,
+              'https://api.openai.com/auth': { chatgpt_account_id: candidateAccount },
+            })).toString('base64'),
+            'synthetic-signature',
+          ].join('.');
+          alternateBootstrap = {
+            inputRefresh: candidateRefresh,
+            outputRefresh: randomUUID(),
+            outputAccess: candidateAccess(1),
+          };
+          const candidateLogin = await invoke('vault.bootstrap-codex-auth', {
+            authJsonBase64: Buffer.from(JSON.stringify({ tokens: {
+              access_token: candidateAccess(0), refresh_token: candidateRefresh,
+              account_id: candidateAccount,
+            } })).toString('base64'),
+          }, entry);
+          const consentThread = await store.createThread(DEMO_WORKSPACE_ID, title);
+          const request = await invoke('vault.grant-request', {
+            workspaceId: DEMO_WORKSPACE_ID, threadId: consentThread.id, requestId: randomUUID(),
+            terms: { referenceId: candidateLogin.referenceId, ownerScope: 'workspace',
+              lifetime: 'workspace', injectionPath: 'runtime-token',
+              expiresAt: '2099-01-01T00:00:00.000Z' },
+          }, entry);
+          await invoke('approval.respond', {
+            workspaceId: DEMO_WORKSPACE_ID, threadId: request.threadId,
+            turnId: request.raisingTurnId, approvalRequestId: request.approvalRequestId,
+            decision: 'granted', requestId: randomUUID(),
+          }, entry);
+          const grant = await invoke('vault.grant-issue', {
+            workspaceId: DEMO_WORKSPACE_ID, threadId: request.threadId,
+            approvalRequestId: request.approvalRequestId,
+          }, entry);
+          expect(getVaultGrant(coreDb, grant.grantId)).toMatchObject({
+            vaultReferenceId: candidateLogin.referenceId, ownerScope: 'workspace',
+            workspaceId: DEMO_WORKSPACE_ID, issuance: 'target', lifetime: 'workspace',
+            approvalId: request.approvalRequestId, policyDecisionId: expect.any(String),
+            targetAgentId: null, targetAgentSessionId: null, targetCapabilityId: null,
+            allowedInjectionPaths: ['runtime-token'], status: 'active',
+          });
+          return { grantId: grant.grantId, referenceId: candidateLogin.referenceId };
+        };
+        const createAccountTarget = async () => {
+          const sameAccount = ending !== 'new-turn-account-exhaustion-different-account';
+          const candidate = await reviewedAlternative('Review independently authorized Login B',
+            sameAccount ? accountId : randomUUID());
+          expect(candidate.referenceId).not.toBe(login.referenceId);
+          const nextThread = await store.createThread(DEMO_WORKSPACE_ID, 'Account evidence target');
+          const nextTurn = await store.createTurn(DEMO_WORKSPACE_ID, nextThread.id,
+            'Prepare independent Login B', { kind: 'user', id: ownerUserId }, null, {
+              executorKind: 'worker', agentId: setup.manifest.id,
+              captureCoverage: { scope: 'server', value: 'off' },
+            });
+          const nextRequestId = randomUUID();
+          const nextAdmission = createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost', queueEntryId: `queue:${nextTurn.id}`,
+            requestId: nextRequestId, requestedAgentId: setup.manifest.id,
+            workspaceId: DEMO_WORKSPACE_ID, threadId: nextThread.id, turnId: nextTurn.id,
+            turnInput: 'Prepare independent Login B', triggerActor: nextTurn.triggerActor,
+          });
+          const nextSetup = createTestAgentSetup({
+            privateRoute, requiredCapabilities: ['trusted-worker-inference-relay'],
+            credentialDeclarations: [{ id: 'reviewed-login', requirementId: 'reviewed-login',
+              visibility: 'runtime-token', consumer: 'codex-login', vaultGrantId: candidate.grantId }],
+          });
+          nextSetup.logicalModels = setup.logicalModels;
+          const freshAgentSessionId = testEntityId('as', randomUUID());
+          const nextPreparation = { agentSetup: nextSetup, freshAgentSessionId,
+            requestId: nextRequestId, turn: nextTurn, turnInput: 'Prepare independent Login B',
+            workspaceCwd: '/workspace', workspaceRoots: [] };
+          return { sameAccount, candidate, nextThread, nextTurn, nextAdmission, nextPreparation };
+        };
+        // Capture B before C occupies this fixture's one physical Sandbox. Preparation is read-only.
+        const earlyAccountTarget = ending === 'new-turn-account-exhaustion-after-preparation'
+          ? await createAccountTarget() : undefined;
+        const earlyAccountProposal = earlyAccountTarget
+          ? await native.executor.prepareAgentSessionForTurn(store, earlyAccountTarget.nextPreparation)
+          : undefined;
+        expect(earlyBootstrapCalls).toBe(earlyAccountTarget ? 1 : 0);
         const preparation = {
           agentSetup: setup,
           freshAgentSessionId: agentSessionId,
@@ -23533,7 +24023,7 @@ describe('inert initial private Login exchange through the concrete backend sess
         );
         expect(access.materialGeneration).toBe(login.currentVersion + 1);
         expect(access.receiptId).toBe(`receipt_${pkg.snapshotId}_reviewed-login`);
-        expect(refreshCalls).toBe(2);
+        expect(refreshCalls).toBe(2 + earlyBootstrapCalls);
         expect(getVaultReference(coreDb, login.referenceId)?.currentVersion).toBe(
           access.materialGeneration
         );
@@ -23624,7 +24114,7 @@ describe('inert initial private Login exchange through the concrete backend sess
               decision.mediation?.role === 'final'
           )
         ).toHaveLength(1);
-        expect(refreshCalls).toBe(2);
+        expect(refreshCalls).toBe(2 + earlyBootstrapCalls);
         expect(startupSettled).toBe(false);
         expect(native.runtime.isTurnExecutionActive(turn.id)).toBe(true);
         expect(
@@ -23640,6 +24130,283 @@ describe('inert initial private Login exchange through the concrete backend sess
               !JSON.stringify({ receipts, affinity: privateThread().login }).includes(value)
           )
         ).toBe(true);
+        if (accountEvidence) {
+          // C is the actual active Login above. Its grant cannot authorize the fresh B Session.
+          expect(getVaultGrant(coreDb, issued.grantId)?.targetAgentSessionId).toBe(agentSessionId);
+          const { sameAccount, candidate, nextThread, nextTurn, nextAdmission, nextPreparation } =
+            earlyAccountTarget ?? await createAccountTarget();
+          const observeExhaustion = async () => {
+            const observed = await call({ kind: 'observe', receiptId: access.receiptId,
+              materialGeneration: access.materialGeneration, observation: {
+                state: 'exhausted', source: 'native-read', windows: [{ kind: 'primary',
+                  usedPercent: 100, durationMinutes: null, resetsAt: null }],
+              } });
+            expect(observed.status).toBe(204);
+            expect(getVaultReference(coreDb, login.referenceId)?.login?.observations).toMatchObject({
+              state: 'exhausted', source: 'native-read',
+              materialGeneration: access.materialGeneration,
+              bindingId: context.agentSessionRuntimeBindingId,
+            });
+          };
+          const before = () => ({ plans: listVaultInjectionPlans(coreDb),
+            receipts: listVaultInjectionReceipts(coreDb), uses: listVaultUseRecords(db),
+            stockEntries: upstream.mock.calls.length,
+            candidate: getVaultReference(coreDb, candidate.referenceId),
+            sessions: store.listThreadAgentSessions(DEMO_WORKSPACE_ID, nextThread.id),
+          });
+          if (ending === 'new-turn-account-exhaustion-after-preparation') {
+            const proposal = earlyAccountProposal;
+            if (!proposal) throw new Error('The original pre-C B proposal is absent.');
+            expect(proposal.harnessLoginSelection).toMatchObject({
+              grantId: candidate.grantId, referenceId: candidate.referenceId,
+            });
+            const nextAttemptId = testEntityId('attempt', randomUUID());
+            recordTestExecutionAttempt(coreDb, { entry: nextAdmission, attemptId: nextAttemptId,
+              agentSessionId: proposal.agentSessionId,
+              inputRef: `aepsnap_${nextTurn.id}_${proposal.agentSessionId}`,
+              bindingRef: `attempt-binding:${nextAttemptId}`,
+              sessionCompatibilityKey: proposal.sessionCompatibilityKey,
+              now: () => new Date().toISOString(),
+            });
+            const frozen = structuredClone(proposal.harnessLoginSelection);
+            // Native acknowledgement is a real wait between proposal and exact-target commit.
+            await observeExhaustion();
+            const execution = native.executionFor(turn.id);
+            releaseModeledRefreshTerminal = () => execution.completion.resolve();
+            stopStart.resolve();
+            await execution.launched.promise;
+            execution.completion.resolve();
+            await startup;
+            expect(store.getTurnById(turn.id).status).toBe('completed');
+            expect(getVaultReference(coreDb, login.referenceId)?.login?.observations?.state)
+              .toBe('exhausted');
+            const unchanged = before();
+            await expect(native.executor.commitPreparedAgentSessionForTurn(store, {
+              attemptId: nextAttemptId, prepared: proposal, preparation: nextPreparation,
+            })).rejects.toMatchObject({ code: 'harness_login_unavailable' });
+            expect(proposal.harnessLoginSelection).toEqual(frozen);
+            expect(before()).toEqual(unchanged);
+          } else {
+            await observeExhaustion();
+            // This fixture has one physical Sandbox. Complete C through its actual peer before
+            // inspecting incompatible B capacity; C's canonical observation remains retained.
+            const execution = native.executionFor(turn.id);
+            releaseModeledRefreshTerminal = () => execution.completion.resolve();
+            stopStart.resolve();
+            await execution.launched.promise;
+            execution.completion.resolve();
+            await startup;
+            expect(store.getTurnById(turn.id).status).toBe('completed');
+            expect(getVaultReference(coreDb, login.referenceId)?.login?.observations?.state)
+              .toBe('exhausted');
+            const unchanged = before();
+            const preparing = native.executor.prepareAgentSessionForTurn(store, nextPreparation);
+            if (sameAccount) {
+              // Decides only after real canonical C observation; C is outside this Session's grants.
+              await expect(preparing).rejects.toMatchObject({ code: 'harness_login_unavailable' });
+            } else {
+              expect((await preparing).harnessLoginSelection).toMatchObject({
+                grantId: candidate.grantId, referenceId: candidate.referenceId,
+              });
+            }
+            expect(before()).toEqual(unchanged);
+          }
+          return;
+        }
+        if (preferencePreview) {
+          // Let the existing external peer consume this exact start and terminal result.
+          let originalStart: harnessRecords.NanoHostHarnessResult | undefined;
+          const acceptResult = native.runtime.acceptNanoHostHarnessResult.bind(native.runtime);
+          const observeStart = vi.spyOn(native.runtime, 'acceptNanoHostHarnessResult')
+            .mockImplementation(async (result, settlement) => {
+              await acceptResult(result, settlement);
+              if (result.harnessInstanceId === wire.harnessInstanceId &&
+                  result.operationId === wire.operationId && result.sequence === wire.sequence &&
+                  result.disposition === 'succeeded') originalStart = result;
+            });
+          try {
+            const execution = native.executionFor(turn.id);
+            releaseModeledRefreshTerminal = () => execution.completion.resolve();
+            stopStart.resolve();
+            expect(await Promise.race([
+              execution.launched.promise.then(() => true),
+              startup.then(() => false, () => false),
+            ])).toBe(true);
+            if (!originalStart) throw new Error('The actual original start was not consumed.');
+            expect(harnessRecords.readConsumedNanoHostHarnessResult(coreDb, originalStart)
+              ?.operations).toEqual(['turn.start']);
+            execution.completion.resolve();
+            await startup;
+          } finally {
+            observeStart.mockRestore();
+          }
+          expect(store.getTurnById(turn.id).status).toBe('completed');
+          expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId).phase).toBe('closed');
+          expect(store.getAgentSession(agentSessionId).status).toBe('idle');
+          expect(NativeThreadLoginSchema.parse(privateThread().login).referenceId).toBe(
+            login.referenceId
+          );
+          expect(listVaultInjectionReceipts(coreDb).find((value) =>
+            value.receiptId === access.receiptId)?.revocationStatus).toBe('active');
+
+          const preferred = await reviewedAlternative('Review preferred Login B');
+          const fallback = await reviewedAlternative('Review fallback Login C');
+          expect(new Set([login.referenceId, preferred.referenceId, fallback.referenceId]).size)
+            .toBe(3);
+
+          const cold = preferenceManager;
+          if (!cold) throw new Error('The original preference Policy owner is absent.');
+          const authored = cold.current().agentManifests.find(
+            (value) => value.id === setup.manifest.id
+          );
+          const workspace = cold.current().workspaceConfigs.find(
+            (value) => value.workspaceId === DEMO_WORKSPACE_ID
+          );
+          if (!authored || !workspace) throw new Error('Canonical preference sources are absent.');
+          const capturedA = cold.current();
+          const resolveLoaded = (snapshot: ReturnType<typeof cold.current>) => {
+            const manifest = snapshot.agentManifests.find((value) => value.id === authored.id);
+            const workspaceConfig = snapshot.workspaceConfigs.find(
+              (value) => value.workspaceId === DEMO_WORKSPACE_ID
+            )?.config;
+            if (!manifest || !workspaceConfig) throw new Error('Canonical loaded setup is absent.');
+            const resolved = resolveAgentSetup(manifest, {
+              supportedRequiredFeatures: dispatch.supportsHarnessLogin?.() === true
+                ? ['worker.harness-login.v1'] : [],
+              gatewayConfig: snapshot.gatewayConfig, providerRegistry: snapshot.providerRegistry,
+              workspaceId: DEMO_WORKSPACE_ID, workspaceConfig,
+            });
+            expect(dispatch.supportsHarnessLogin?.()).toBe(true);
+            expect(resolved.diagnostics).toEqual([]);
+            if (!resolved.setup) throw new Error('The actual loaded Agent is not ready.');
+            return resolved.setup;
+          };
+          const canonicalA = resolveLoaded(capturedA);
+          expect(canonicalA.manifest.sandbox?.credentialDeclarations).toEqual(
+            setup.manifest.sandbox?.credentialDeclarations
+          );
+          const app = appOwner.createApp({ coreDb, dataRoot: coreDb.dataRoot, store,
+            mode: 'local', localUserId: ownerUserId, runtimeConfigManager: cold,
+            turnExecutor: native.executor, workerControlGateway: native.workerControlGateway,
+            workspaceMutationAdmission: mutation,
+          });
+          const fileId = `workspaces/${DEMO_WORKSPACE_ID}/workspace.jsonc`;
+          const readResponse = await app.request(...operationRequest('runtime.file-read', {
+            id: fileId,
+          }));
+          expect(readResponse.status).toBe(200);
+          const read = await readResponse.json() as { file: { revision: string }; content: string };
+          const nextDocument = JSON.parse(read.content);
+          nextDocument.workspace.agents[0].credentialBindings[0].vaultGrantId = preferred.grantId;
+          const preferredBytes = JSON.stringify(nextDocument);
+          const save = await app.request(...operationRequest('runtime.file-update', {}, {
+            method: 'PUT', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: fileId, kind: 'workspace',
+              expectedRevision: read.file.revision, content: preferredBytes }),
+          }));
+          expect(save.status).toBe(200);
+          expect(readFileSync(workspace.path, 'utf8')).toBe(preferredBytes);
+          expect(cold.current()).toBe(capturedA);
+          const reload = await app.request(...operationRequest('runtime.reload', {}, {
+            body: JSON.stringify({ mode: 'safe' }),
+          }));
+          expect(reload.status).toBe(200);
+          expect(await reload.json()).toMatchObject({ status: 'applied' });
+          const installedB = cold.current();
+          expect(installedB.version).not.toBe(capturedA.version);
+          const canonicalB = resolveLoaded(installedB);
+          expect(canonicalB.manifest.sandbox?.credentialDeclarations).toEqual([{
+            id: 'reviewed-login', requirementId: 'reviewed-login',
+            visibility: 'runtime-token', consumer: 'codex-login',
+            vaultGrantId: preferred.grantId,
+          }]);
+          expect(resolveLoaded(capturedA).manifest.sandbox?.credentialDeclarations).toEqual(
+            setup.manifest.sandbox?.credentialDeclarations
+          );
+          if (ending === 'new-turn-preference-preview-ineligible') {
+            await invoke('vault.grant-withdraw', {
+              workspaceId: DEMO_WORKSPACE_ID, grantId: preferred.grantId,
+            }, entry);
+            expect(getVaultGrant(coreDb, preferred.grantId)?.status).toBe('revoked');
+          } else expect(getVaultGrant(coreDb, preferred.grantId)?.status).toBe('active');
+          expect(getVaultGrant(coreDb, issued.grantId)?.status).toBe('active');
+          expect(getVaultGrant(coreDb, fallback.grantId)?.status).toBe('active');
+          const expectedGrant = ending === 'new-turn-preference-preview-eligible'
+            ? preferred.grantId : issued.grantId;
+          const expectedReference = ending === 'new-turn-preference-preview-eligible'
+            ? preferred.referenceId : login.referenceId;
+          const nextTurn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id,
+            'Preview the installed preferred Login', { kind: 'user', id: ownerUserId },
+            installedB.version, { executorKind: 'worker', agentId: authored.id,
+              captureCoverage: { scope: 'server', value: 'off' } });
+          expect(nextTurn.id).not.toBe(turn.id);
+          const previewRequestId = randomUUID();
+          // Selection requires the next Turn's own admitted authority, not A's old admission.
+          createSchedulerAdmissionEntry(coreDb, {
+            backendId: 'nanohost', queueEntryId: `queue:${nextTurn.id}`,
+            requestId: previewRequestId, requestedAgentId: authored.id,
+            workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id, turnId: nextTurn.id,
+            turnInput: 'Preview the installed preferred Login', triggerActor: nextTurn.triggerActor,
+          });
+          const beforePreview = () => ({
+            references: [login.referenceId, preferred.referenceId, fallback.referenceId].map(
+              (id) => getVaultReference(coreDb, id)),
+            backend: [login.referenceId, preferred.referenceId, fallback.referenceId].map(
+              (referenceId) => vault.backend().listReferences({ referenceId })),
+            plans: listVaultInjectionPlans(coreDb), receipts: listVaultInjectionReceipts(coreDb),
+            affinity: privateThread().login, uses: listVaultUseRecords(db),
+            stockEntries: upstream.mock.calls.length,
+          });
+          const unchanged = beforePreview();
+          const originalPackage = requireAgentEnvironmentPackageSnapshot(
+            db, DEMO_WORKSPACE_ID, pkg.snapshotId
+          ).contentDigest;
+          if (!('inspectMaterializationCapacity' in backend) ||
+              typeof backend.inspectMaterializationCapacity !== 'function')
+            throw new Error('The actual backend capacity reader is absent.');
+          const capacity = vi.spyOn(backend, 'inspectMaterializationCapacity');
+          try {
+            const freshAgentSessionId = testEntityId('as', randomUUID());
+            const proposal = await native.executor.prepareAgentSessionForTurn(store, {
+              agentSetup: canonicalB, freshAgentSessionId, requestId: previewRequestId,
+              turn: nextTurn, turnInput: 'Preview the installed preferred Login',
+              workspaceCwd: '/workspace', workspaceRoots: [],
+            });
+            // R2 deciding assertion follows real A completion, reviewed alternatives and installed B.
+            expect(proposal.harnessLoginSelection).toMatchObject({
+              authored: { vaultGrantId: preferred.grantId }, grantId: expectedGrant,
+              referenceId: expectedReference, predecessorGrantId: issued.grantId,
+              threadLogin: NativeThreadLoginSchema.parse(privateThread().login),
+            });
+            expect(proposal.currentAgentSession?.id).toBe(agentSessionId);
+            if (ending === 'new-turn-preference-preview-eligible') {
+              expect(proposal.replacementRequired).toBe(true);
+              expect(proposal.agentSessionId).toBe(freshAgentSessionId);
+              expect(proposal.sessionCompatibilityKey).not.toBe(
+                store.getAgentSession(agentSessionId).sessionCompatibilityKey
+              );
+            }
+            const previews = capacity.mock.calls.map(([value]) => value);
+            const effective = previews.find((value) =>
+              value.scope.agentSessionId === proposal.agentSessionId);
+            expect(effective).toBeDefined();
+            if (!effective) throw new Error('Actual selected compatibility preview is absent.');
+            expect(effective.credentials.declarations.map((value: { vaultGrantId: string }) =>
+              value.vaultGrantId)).toEqual([expectedGrant]);
+            expect(agentSessionCompatibilityKeyFromPackage(effective)).toBe(
+              proposal.sessionCompatibilityKey
+            );
+            expect(isDeepStrictEqual(beforePreview(), unchanged)).toBe(true);
+            expect(requireAgentEnvironmentPackageSnapshot(db, DEMO_WORKSPACE_ID, pkg.snapshotId)
+              .contentDigest).toBe(originalPackage);
+            expect(store.getAgentSession(agentSessionId).status).toBe('idle');
+            expect(store.getTurnById(turn.id).status).toBe('completed');
+            expect(native.runtime.isTurnExecutionActive(nextTurn.id)).toBe(false);
+          } finally {
+            capacity.mockRestore();
+          }
+          return;
+        }
         if (sameFamilyRefresh) {
           const initialGeneration = access.materialGeneration;
           const originalAffinity = JSON.stringify(privateThread().login);
@@ -24538,6 +25305,7 @@ describe('inert initial private Login exchange through the concrete backend sess
         observeClose?.mockRestore();
         acceptStart?.mockRestore();
         observeDeliveryFailure?.mockRestore();
+        observeSchedulerDispatch?.mockRestore();
         nativePublication?.mockRestore();
         upstream.mockRestore();
         refreshPeer?.closeAllConnections();

@@ -17,6 +17,7 @@ import type { z } from 'zod';
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
 import type { SchedulerWorkerStorageChoice } from '../scheduler-records.js';
+import type { PreparedHarnessLoginSelection } from './harness-login-selection.js';
 
 type Agent = z.infer<typeof AgentSchema>;
 
@@ -254,6 +255,8 @@ export interface TurnExecutor {
 
 /** Static future-Turn inputs required for pre-lease AgentSession preparation. */
 export interface PrepareAgentSessionForTurnInput {
+  /** Transient exact Login proposal; not part of retained or public shapes. */
+  readonly harnessLoginSelection?: PreparedHarnessLoginSelection;
   /** Exact attempt persisted before preparation effects. */
   readonly attemptId?: string;
   /** Complete selected agent setup used by the final AEP resolution. */
@@ -300,6 +303,8 @@ export interface PreparedCurrentAgentSession {
 
 /** Runtime-owned AgentSession identity and exact key accepted before lease acquisition. */
 export interface PreparedAgentSessionForTurn {
+  /** Transient exact Login proposal; not part of retained or public shapes. */
+  readonly harnessLoginSelection?: PreparedHarnessLoginSelection;
   /** Reused or fresh AgentSession id authorized for the future Turn. */
   readonly agentSessionId: string;
   /** Exact authored or native-continuation selection captured before slot planning. */
@@ -390,6 +395,8 @@ export interface AgentSessionReadModel {
  * Runtime context captured when one turn is accepted.
  */
 export interface TurnStartRuntimeContext {
+  /** Transient exact Login proposal; not part of retained or public shapes. */
+  readonly harnessLoginSelection?: PreparedHarnessLoginSelection;
   /** Exact attempt that owns preparation and native submission. */
   /** Ends the existing preparation claim after the exact submit operation settles. */
   readonly onSubmissionSettled?: () => void;

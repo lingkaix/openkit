@@ -59,6 +59,7 @@ import {
   externalTriggerTurnPublicationComplete,
   readExternalTriggerPollSource,
 } from './external-trigger-source.js';
+import { applyPreparedHarnessLoginSelection } from './harness-login-selection.js';
 import {
   type StartTurnDependencies,
   startTurn,
@@ -518,6 +519,10 @@ async function dispatchSchedulerAdmission(
     });
     if (prepared.replacementRequired && !input.turnExecutor.commitPreparedAgentSessionForTurn)
       throw new Error('Configured executor has no AgentSession replacement owner.');
+    // Echo the same frozen grant that startTurn checks against its canonical setup and ledger.
+    const effectiveSetup = prepared.harnessLoginSelection
+      ? applyPreparedHarnessLoginSelection(setup, prepared.harnessLoginSelection)
+      : setup;
     const current = requireSchedulerAdmissionEntry(input.coreDb, entry.queueEntryId);
     if (!currentSchedulerDispatchAuthority(input, current)) throw authorityDenial;
     const admittedDb = openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
@@ -538,12 +543,12 @@ async function dispatchSchedulerAdmission(
               dispatch: { status: 'dispatched', entry: current, attempt: settled },
               handle: {
                 turn: input.store.getTurnById(entry.turnId),
-                agent: setup.manifest,
-                agentSetup: setup,
+                agent: effectiveSetup.manifest,
+                agentSetup: effectiveSetup,
                 agentSetupRecordId: `ras_${entry.turnId}`,
                 agentSetupDiagnostics: [],
-                modelId: setup.logicalModels.preferredLogicalModelId ?? null,
-                readiness: computeReadiness(setup.manifest),
+                modelId: effectiveSetup.logicalModels.preferredLogicalModelId ?? null,
+                readiness: computeReadiness(effectiveSetup.manifest),
               },
             },
           ],
@@ -569,6 +574,9 @@ async function dispatchSchedulerAdmission(
       subscriptionAccounts: input.subscriptionAccounts,
       requestId: entry.requestId,
       sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+      ...(prepared.harnessLoginSelection
+        ? { harnessLoginSelection: prepared.harnessLoginSelection }
+        : {}),
       store: input.store,
       threadId: entry.threadId,
       triggerActor: entry.triggerActor,

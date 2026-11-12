@@ -42,6 +42,86 @@ describe('harness Login default selection', () => {
     ).toEqual({ kind: 'target', referenceId: 'candidate' });
   });
 
+  // Owner: Vault Secret Injection, account-wide exhaustion restricts independently authorized use.
+  it.each([
+    { name: 'missing', observation: undefined },
+    { name: 'unknown', observation: quota('unknown') },
+    { name: 'available', observation: quota('available') },
+  ])(
+    'restricts canonical account exhaustion without rewriting own $name quota',
+    ({ observation }) => {
+      const original = login('candidate', observation ? { quota: observation } : {});
+      const unchanged = structuredClone(original);
+      const restricted = { ...original, accountExhausted: true as const };
+      const fallback = login('fallback', { ownership: 'workspace-shared' });
+      for (const threadBinding of [null, { referenceId: original.referenceId }]) {
+        expect(
+          selectHarnessLogin({
+            eligible: [restricted, fallback],
+            threadBinding,
+            trigger: 'use',
+            preferredReferenceId: original.referenceId,
+            now,
+          })
+        ).toEqual({ kind: 'target', referenceId: fallback.referenceId });
+        expect(
+          selectHarnessLogin({
+            eligible: [restricted],
+            threadBinding,
+            trigger: 'use',
+            now,
+          })
+        ).toEqual({ kind: 'unavailable' });
+      }
+      expect(restricted.quota).toBe(original.quota);
+      expect(original).toEqual(unchanged);
+      expect('accountExhausted' in original).toBe(false);
+    }
+  );
+
+  it('never widens selectable identities when any subset gains the account restriction', () => {
+    const eligible = [
+      login('own'),
+      login('shared', { ownership: 'workspace-shared' }),
+      login('quarantined', { quarantined: true }),
+      login('busy', { refreshBusy: true }),
+      login('exhausted', { quota: quota('exhausted') }),
+    ];
+    const unchanged = structuredClone(eligible);
+    const originallySelectable = new Set(
+      eligible
+        .filter(
+          (candidate) =>
+            selectHarnessLogin({ eligible: [candidate], threadBinding: null, trigger: 'use', now })
+              .kind === 'target'
+        )
+        .map((candidate) => candidate.referenceId)
+    );
+    expect([...originallySelectable]).toEqual(['own', 'shared']);
+    for (let mask = 0; mask < 2 ** eligible.length; mask += 1) {
+      const restricted = eligible.map((candidate, index) =>
+        mask & (1 << index) ? { ...candidate, accountExhausted: true as const } : candidate
+      );
+      const result = selectHarnessLogin({
+        eligible: restricted,
+        threadBinding: null,
+        trigger: 'explicit-request',
+        now,
+      });
+      if (result.kind !== 'unavailable') {
+        expect(originallySelectable.has(result.referenceId)).toBe(true);
+        expect(
+          restricted.find((candidate) => candidate.referenceId === result.referenceId)
+            ?.accountExhausted
+        ).toBeUndefined();
+      }
+      expect(restricted.map((candidate) => candidate.referenceId)).toEqual(
+        eligible.map((candidate) => candidate.referenceId)
+      );
+    }
+    expect(eligible).toEqual(unchanged);
+  });
+
   it.each([
     { name: 'no authorized candidates', eligible: [] },
     { name: 'quarantined', eligible: [login('candidate', { quarantined: true })] },
@@ -280,5 +360,111 @@ describe('harness Login default selection', () => {
     });
     expect(selectHarnessLogin(input)).toEqual({ kind: 'target', referenceId: 'own' });
     expect(input).toEqual(before);
+  });
+
+  it.each([
+    {
+      name: 'eligible shared preference at the re-entry boundary',
+      preferredReferenceId: 'preferred',
+      candidates: [login('preferred', { ownership: 'workspace-shared', lastLeftAt: now - 60_000 })],
+      expectedReferenceId: 'preferred',
+    },
+    {
+      name: 'preference absent from the authorized set',
+      preferredReferenceId: 'preferred',
+      candidates: [],
+      expectedReferenceId: 'own-fallback',
+    },
+    {
+      name: 'refresh-busy preference',
+      preferredReferenceId: 'preferred',
+      candidates: [login('preferred', { refreshBusy: true })],
+      expectedReferenceId: 'own-fallback',
+    },
+    {
+      name: 'preference one millisecond before re-entry',
+      preferredReferenceId: 'preferred',
+      candidates: [login('preferred', { lastLeftAt: now - 59_999 })],
+      expectedReferenceId: 'own-fallback',
+    },
+    {
+      name: 'quarantined preference',
+      preferredReferenceId: 'preferred',
+      candidates: [login('preferred', { quarantined: true })],
+      expectedReferenceId: 'own-fallback',
+    },
+    {
+      name: 'exhausted preference',
+      preferredReferenceId: 'preferred',
+      candidates: [login('preferred', { quota: quota('exhausted') })],
+      expectedReferenceId: 'own-fallback',
+    },
+    {
+      name: 'preferred account exhausted by another authorized family',
+      preferredReferenceId: 'preferred',
+      candidates: [
+        login('preferred', { accountId: 'same-account', quota: quota('available') }),
+        login('exhausted-family', { accountId: 'same-account', quota: quota('exhausted') }),
+      ],
+      expectedReferenceId: 'own-fallback',
+    },
+    {
+      name: 'outgoing Login is the preference',
+      preferredReferenceId: 'outgoing',
+      candidates: [],
+      expectedReferenceId: 'own-fallback',
+    },
+  ])('applies preference before normal replacement order: $name', (row) => {
+    const input: SelectionInput = {
+      eligible: [
+        login('shared-fallback', { ownership: 'workspace-shared' }),
+        login('own-fallback'),
+        login('outgoing'),
+        ...row.candidates,
+      ],
+      threadBinding: { referenceId: 'outgoing' },
+      trigger: 'explicit-request',
+      now,
+    };
+    expect(selectHarnessLogin(input)).toEqual({ kind: 'target', referenceId: 'own-fallback' });
+    // This transient owner input is structural so OLD reaches the actual selector.
+    const preferred: SelectionInput & { readonly preferredReferenceId: string } = {
+      ...input,
+      preferredReferenceId: row.preferredReferenceId,
+    };
+    expect(selectHarnessLogin(preferred)).toEqual({
+      kind: 'target',
+      referenceId: row.expectedReferenceId,
+    });
+  });
+
+  it('keeps working use affinity ahead of another eligible preference', () => {
+    const input: SelectionInput & { readonly preferredReferenceId: string } = {
+      eligible: [
+        login('preferred'),
+        login('bound', { ownership: 'workspace-shared', lastLeftAt: now - 59_999 }),
+      ],
+      threadBinding: { referenceId: 'bound' },
+      trigger: 'use',
+      preferredReferenceId: 'preferred',
+      now,
+    };
+    expect(selectHarnessLogin(input)).toEqual({ kind: 'keep', referenceId: 'bound' });
+  });
+
+  it('falls back to shared order when the preference and own candidates are unusable', () => {
+    const input: SelectionInput & { readonly preferredReferenceId: string } = {
+      eligible: [
+        login('shared-first', { ownership: 'workspace-shared' }),
+        login('own', { refreshBusy: true }),
+        login('preferred', { quarantined: true }),
+        login('shared-next', { ownership: 'workspace-shared' }),
+      ],
+      threadBinding: null,
+      trigger: 'explicit-request',
+      preferredReferenceId: 'preferred',
+      now,
+    };
+    expect(selectHarnessLogin(input)).toEqual({ kind: 'target', referenceId: 'shared-first' });
   });
 });

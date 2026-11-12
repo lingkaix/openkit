@@ -166,6 +166,11 @@ import type {
   ExecutionStepRef,
 } from './execution-step-journal.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
+import {
+  applyPreparedHarnessLoginSelection,
+  assertPreparedHarnessLoginSelection,
+  prepareHarnessLoginSelection,
+} from './harness-login-selection.js';
 import { commandInputHash } from './idempotent-command.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -1274,6 +1279,63 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         );
       }
     }
+    const hasLogin = input.agentSetup.manifest.sandbox?.credentialDeclarations.some(
+      (declaration) => declaration.visibility === 'runtime-token'
+    );
+    let predecessor: AgentEnvironmentPackage | null = null;
+    if (hasLogin && current) {
+      if (!this.coreDb || !current.environmentPackageSnapshotId)
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'Login predecessor package is unavailable.',
+          409
+        );
+      const db = openAdmittedWorkspaceReadDb(
+        this.coreDb.dataRoot,
+        workspaceIdForOwner(input.turn.owner)
+      );
+      try {
+        predecessor = requireAgentEnvironmentPackageSnapshot(
+          db,
+          workspaceIdForOwner(input.turn.owner),
+          current.environmentPackageSnapshotId
+        ).snapshot;
+        if (
+          predecessor.scope.agentSessionId !== current.id ||
+          predecessor.scope.threadId !== input.turn.threadId
+        )
+          throw new TurnStartValidationError(
+            'recovery_required',
+            'Login predecessor identity is inconsistent.',
+            409
+          );
+      } finally {
+        db.sqlite.close();
+      }
+    }
+    if (hasLogin && !this.coreDb) throw new Error('Login preparation requires Core storage.');
+    const harnessLoginSelection = hasLogin
+      ? prepareHarnessLoginSelection(
+          this.coreDb!,
+          input,
+          predecessor,
+          (referenceId) => activeLoginRefreshes.has(`${this.coreDb!.dataRoot}\0${referenceId}`),
+          this.currentTime()
+        )
+      : undefined;
+    if (harnessLoginSelection)
+      input = {
+        ...input,
+        harnessLoginSelection,
+        agentSetup: applyPreparedHarnessLoginSelection(input.agentSetup, harnessLoginSelection),
+      };
+    const loginReplacement =
+      !!harnessLoginSelection &&
+      !!current &&
+      (harnessLoginSelection.predecessorGrantId !== harnessLoginSelection.grantId ||
+        harnessLoginSelection.threadLogin?.referenceId !== harnessLoginSelection.referenceId);
+    const checkLogin = (agentSessionId: string) => this.recheckPreparedLogin(input, agentSessionId);
+    checkLogin(loginReplacement || !current ? input.freshAgentSessionId : current.id);
     if (current && current.nativeHandleDigest === null) {
       if (!this.backend.prepareAgentSessionContinuity) {
         throw new TurnStartValidationError(
@@ -1312,6 +1374,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
+      checkLogin(loginReplacement ? input.freshAgentSessionId : current.id);
       current = store.getAgentSession(current.id);
       workerStorageChoice = this.selectContinuationStorage(store, input, workerStorageChoice);
       input = { ...input, ...(workerStorageChoice ? { workerStorageChoice } : {}) };
@@ -1333,6 +1396,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         input
       );
       await this.requireMaterializationCapacity(input.freshAgentSessionId, input);
+      checkLogin(input.freshAgentSessionId);
       let disposition: WorkerGovernanceAgentSessionContinuityDisposition;
       try {
         disposition = await this.backend.prepareAgentSessionContinuity({
@@ -1352,6 +1416,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           409
         );
       }
+      checkLogin(input.freshAgentSessionId);
       if (workerGovernanceContinuityDisposition(disposition) !== 'absent') {
         throw new TurnStartValidationError(
           'recovery_required',
@@ -1361,16 +1426,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       return {
         ...(workerStorageChoice ? { workerStorageChoice } : {}),
+        ...(harnessLoginSelection ? { harnessLoginSelection } : {}),
         agentSessionId: input.freshAgentSessionId,
         currentAgentSession: null,
         replacementRequired: false,
         sessionCompatibilityKey,
       };
     }
-    const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(current.id, input);
-    const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, input);
-    await this.requireMaterializationCapacity(current.id, input);
+    // A prospective Session grant must never be projected onto the predecessor.
+    const currentCompatibilityKey = loginReplacement
+      ? current.sessionCompatibilityKey
+      : this.previewAgentSessionCompatibilityKey(current.id, input);
+    if (!currentCompatibilityKey)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Predecessor compatibility identity is unavailable.',
+        409
+      );
+    const currentEnvironmentPackage = loginReplacement
+      ? undefined
+      : this.previewAgentEnvironmentPackage(current.id, input);
+    if (!loginReplacement) await this.requireMaterializationCapacity(current.id, input);
+    checkLogin(loginReplacement ? input.freshAgentSessionId : current.id);
     const reuseAllowed =
+      !loginReplacement &&
       current.status === 'idle' &&
       !current.stale &&
       current.agentId === input.agentSetup.manifest.id &&
@@ -1388,7 +1467,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       disposition = await this.backend.prepareAgentSessionContinuity({
         agentSessionCompatibilityKey: currentCompatibilityKey,
         agentSessionId: current.id,
-        environmentPackage: currentEnvironmentPackage,
+        ...(currentEnvironmentPackage ? { environmentPackage: currentEnvironmentPackage } : {}),
         recordNativeHandleDigest: (digest, retainedStorage) =>
           this.recordNativeHandleDigest(store, current.id, digest, retainedStorage),
         reuseAllowed: true,
@@ -1403,6 +1482,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
+    checkLogin(loginReplacement ? input.freshAgentSessionId : current.id);
     const currentAgentSession: PreparedCurrentAgentSession = {
       agentId: current.agentId,
       id: current.id,
@@ -1423,6 +1503,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       }
       return {
         ...(workerStorageChoice ? { workerStorageChoice } : {}),
+        ...(harnessLoginSelection ? { harnessLoginSelection } : {}),
         agentSessionId: current.id,
         currentAgentSession,
         replacementRequired: false,
@@ -1440,13 +1521,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
+    checkLogin(input.freshAgentSessionId);
     const freshCompatibilityKey = this.previewAgentSessionCompatibilityKey(
       input.freshAgentSessionId,
       input
     );
     await this.requireMaterializationCapacity(input.freshAgentSessionId, input);
+    checkLogin(input.freshAgentSessionId);
     return {
       ...(workerStorageChoice ? { workerStorageChoice } : {}),
+      ...(harnessLoginSelection ? { harnessLoginSelection } : {}),
       agentSessionId: input.freshAgentSessionId,
       currentAgentSession,
       replacementRequired: true,
@@ -1461,6 +1545,15 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   ): Promise<SchedulerWorkerStorageChoice | undefined> {
     const { prepared } = input;
     if (!this.coreDb) throw new Error('Attempt preparation requires Core storage.');
+    this.recheckPreparedLogin(
+      {
+        ...input.preparation,
+        ...(prepared.harnessLoginSelection
+          ? { harnessLoginSelection: prepared.harnessLoginSelection }
+          : {}),
+      },
+      prepared.agentSessionId
+    );
     await bindNanoHostAttemptPreparation(this.coreDb, {
       attemptId: input.attemptId,
       agentSessionId: prepared.agentSessionId,
@@ -1476,8 +1569,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     );
     const preparation = {
       ...input.preparation,
+      ...(prepared.harnessLoginSelection
+        ? {
+            harnessLoginSelection: prepared.harnessLoginSelection,
+            agentSetup: applyPreparedHarnessLoginSelection(
+              input.preparation.agentSetup,
+              prepared.harnessLoginSelection
+            ),
+          }
+        : {}),
       ...(workerStorageChoice ? { workerStorageChoice } : {}),
     };
+    const checkLogin = () => this.recheckPreparedLogin(preparation, prepared.agentSessionId);
+    checkLogin();
+    const loginReplacement = !!prepared.harnessLoginSelection && prepared.replacementRequired;
     const currentSessions = store
       .listThreadAgentSessions(
         workspaceIdForOwner(preparation.turn.owner),
@@ -1494,19 +1599,24 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const inspectBackendContinuity = async (
       agentSessionId: string,
       agentSessionCompatibilityKey: string,
-      environmentPackage: AgentEnvironmentPackagePreview,
+      environmentPackage: AgentEnvironmentPackagePreview | undefined,
       reuseAllowed: boolean
     ) => {
       try {
-        return await this.backend.prepareAgentSessionContinuity!({
+        checkLogin();
+        const result = await this.backend.prepareAgentSessionContinuity!({
           admissionAgentSessionId: prepared.agentSessionId,
           admissionAttemptId: input.attemptId,
           agentSessionCompatibilityKey,
           agentSessionId,
-          environmentPackage:
-            environmentPackage.scope.agentSessionId === prepared.agentSessionId
-              ? environmentPackage
-              : this.previewAgentEnvironmentPackage(prepared.agentSessionId, preparation),
+          ...(environmentPackage
+            ? {
+                environmentPackage:
+                  environmentPackage.scope.agentSessionId === prepared.agentSessionId
+                    ? environmentPackage
+                    : this.previewAgentEnvironmentPackage(prepared.agentSessionId, preparation),
+              }
+            : {}),
           recordNativeHandleDigest: (digest, retainedStorage) =>
             this.recordNativeHandleDigest(store, agentSessionId, digest, retainedStorage),
           reuseAllowed,
@@ -1516,6 +1626,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           threadId: preparation.turn.threadId,
           workspaceId: workspaceIdForOwner(preparation.turn.owner),
         });
+        checkLogin();
+        return result;
       } catch (error) {
         if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
         throw new TurnStartValidationError(
@@ -1627,11 +1739,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
-    const currentCompatibilityKey = this.previewAgentSessionCompatibilityKey(
-      current.id,
-      preparation
-    );
-    const currentEnvironmentPackage = this.previewAgentEnvironmentPackage(current.id, preparation);
+    const currentCompatibilityKey = loginReplacement
+      ? current.sessionCompatibilityKey
+      : this.previewAgentSessionCompatibilityKey(current.id, preparation);
+    if (!currentCompatibilityKey)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Predecessor compatibility identity is unavailable.',
+        409
+      );
+    const currentEnvironmentPackage = loginReplacement
+      ? undefined
+      : this.previewAgentEnvironmentPackage(current.id, preparation);
     const reuseAllowed =
       current.agentId === preparation.agentSetup.manifest.id &&
       current.policySnapshotId === WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID &&
@@ -1776,6 +1895,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     }
+    checkLogin();
     return committedWorkerStorageChoice;
   }
 
@@ -1955,11 +2075,29 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
   }
 
+  /** Rechecks only the captured Login target; no await may silently select an alternate. */
+  private recheckPreparedLogin(
+    input: PrepareAgentSessionForTurnInput,
+    agentSessionId: string
+  ): void {
+    if (!input.harnessLoginSelection) return;
+    if (!this.coreDb) throw new Error('Login preparation requires Core storage.');
+    assertPreparedHarnessLoginSelection(
+      this.coreDb,
+      input,
+      input.harnessLoginSelection,
+      agentSessionId,
+      (referenceId) => activeLoginRefreshes.has(`${this.coreDb!.dataRoot}\0${referenceId}`),
+      this.currentTime()
+    );
+  }
+
   /** Resolves one complete secret-free AEP for admission without backend or Store effects. */
   private previewAgentEnvironmentPackage(
     agentSessionId: string,
     input: PrepareAgentSessionForTurnInput
   ): AgentEnvironmentPackagePreview {
+    this.recheckPreparedLogin(input, agentSessionId);
     const resolvePackage = (workSlotRef: string) =>
       resolveAgentEnvironmentPackageMetadata({
         agentSessionId,
@@ -2182,6 +2320,48 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           receipt.revocationStatus === 'active'
       );
       if (declaration.visibility === 'runtime-token') {
+        // New-AEP composition is not replacement activation. Until the Login replace arm
+        // owns predecessor correlation, a changed completed binding cannot use deliver.
+        // Same-family refresh keeps its existing exact plan/receipt checks below.
+        if (input.action === 'deliver' && !input.loginRefresh) {
+          const previousSessions = new Set(
+            store
+              .listThreadAgentSessions(input.workspaceId, input.threadId)
+              .filter((session) => session.id !== original.scope.agentSessionId)
+              .map((session) => session.id)
+          );
+          for (const receipt of listVaultInjectionReceipts(coreDb)) {
+            if (
+              !receipt.agentSessionId ||
+              !previousSessions.has(receipt.agentSessionId) ||
+              receipt.grantId === declaration.vaultGrantId
+            )
+              continue;
+            const priorPlan = getVaultInjectionPlan(coreDb, receipt.planId);
+            if (priorPlan?.injectionVisibility !== 'runtime-token' || !priorPlan.packageSnapshotId)
+              continue;
+            const prior = requireAgentEnvironmentPackageSnapshot(
+              db,
+              input.workspaceId,
+              priorPlan.packageSnapshotId
+            ).snapshot;
+            if (
+              prior.scope.threadId === input.threadId &&
+              prior.credentials.declarations.some(
+                (value) =>
+                  value.visibility === 'runtime-token' &&
+                  value.id === declaration.id &&
+                  value.requirementId === declaration.requirementId &&
+                  value.vaultGrantId === receipt.grantId
+              )
+            )
+              throw new OperationError(
+                'credential_binding_unavailable',
+                'Login replacement requires governed replacement activation.',
+                409
+              );
+          }
+        }
         const deliverAccess = this.backend.deliverCredentialAccess?.bind(this.backend);
         const refresh = input.loginRefresh;
         const previousReceiptId = refresh?.previousReceiptId;
@@ -2988,6 +3168,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       agentSessionId = resolvedAgentSessionId;
       const captureCoverage = this.requireTurnCaptureCoverage(turn);
       const launchPreparation: PrepareAgentSessionForTurnInput = {
+        ...(context.harnessLoginSelection
+          ? { harnessLoginSelection: context.harnessLoginSelection }
+          : {}),
         agentSetup: context.agentSetup,
         freshAgentSessionId: resolvedAgentSessionId,
         requestId,
@@ -3116,6 +3299,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
       const credentialReceipts: CreateVaultInjectionReceiptInput[] = [];
+      this.recheckPreparedLogin(launchPreparation, resolvedAgentSessionId);
       const resolvedEnvironmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage,
         ...(this.readRuntimeConfig ? { readRuntimeConfig: this.readRuntimeConfig } : {}),
@@ -3158,6 +3342,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ? { workspaceSourceRefs: context.workspaceSourceRefs }
           : {}),
       });
+      this.recheckPreparedLogin(launchPreparation, resolvedAgentSessionId);
       environmentPackage = preparedWorkerContext
         ? {
             ...resolvedEnvironmentPackage,
@@ -3310,6 +3495,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
         });
         // Durable package bytes must precede every Session or journal reference to this snapshot.
+        this.recheckPreparedLogin(launchPreparation, resolvedAgentSessionId);
         if (workspaceDb) {
           recordAgentEnvironmentPackageSnapshot(workspaceDb, {
             createdAt: preparedWorkerContext ? timestamp : this.currentTime(),
@@ -3642,8 +3828,14 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               ? { credentialBindings: runtimeFileCredentials.map(workerCredentialFileBinding) }
               : {}),
           });
+          const accepted = await acceptSchedulerExecutionObservation(this.coreDb!, observation);
+          if (!accepted || observation.disposition !== 'accepted')
+            throw new Error(
+              'Native submission is unresolved; inspect its original operation without replay.'
+            );
         } finally {
-          // The durable attempt holds only its own exclusion after a definite or unknown submission.
+          // Publish the accepted observation before the Scheduler inspects its exact attempt.
+          // Definite and unknown failures still release this invocation's preparation claim.
           context.onSubmissionSettled?.();
         }
       } catch (error) {
@@ -3655,11 +3847,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         throw error;
       }
       workspaceDb = this.openWorkspaceDb(submissionWorkspaceId);
-      const accepted = await acceptSchedulerExecutionObservation(this.coreDb!, observation);
-      if (!accepted || observation.disposition !== 'accepted')
-        throw new Error(
-          'Native submission is unresolved; inspect its original operation without replay.'
-        );
       if (workspaceDb)
         await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
           action: 'delivery-prove',

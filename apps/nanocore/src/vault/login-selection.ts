@@ -24,6 +24,8 @@ export interface HarnessLoginCandidate {
   readonly quarantined: boolean;
   /** Conflicting refresh ownership, never concurrent access-only use. */
   readonly refreshBusy: boolean;
+  /** Restriction from canonical same-account evidence; absence does not prove availability. */
+  readonly accountExhausted?: true;
   /** Last departure from this Login by this Thread, in epoch milliseconds. */
   readonly lastLeftAt?: number;
   /** Current observation, or unknown when absent. */
@@ -46,6 +48,8 @@ export interface HarnessLoginSelectionInput {
   readonly threadBinding: { readonly referenceId: string } | null;
   /** The use or replacement signal evaluated for the outgoing binding. */
   readonly trigger: HarnessLoginSelectionTrigger;
+  /** Authored preferred Login; an ineligible preference follows the ordinary replacement order. */
+  readonly preferredReferenceId?: string;
   /** Caller-supplied current time in epoch milliseconds. */
   readonly now: number;
 }
@@ -86,20 +90,28 @@ export function selectHarnessLogin(input: HarnessLoginSelectionInput): HarnessLo
   }
 
   const usable = (candidate: HarnessLoginCandidate): boolean =>
-    !candidate.quarantined && !candidate.refreshBusy && !exhaustedAccounts.has(candidate.accountId);
+    !candidate.quarantined &&
+    !candidate.refreshBusy &&
+    !candidate.accountExhausted &&
+    !exhaustedAccounts.has(candidate.accountId);
 
   // An existing working binding is not a re-entry and does not consume a cooldown.
   if (input.trigger === 'use' && current && usable(current)) {
     return { kind: 'keep', referenceId: current.referenceId };
   }
 
+  const reenterable = (candidate: HarnessLoginCandidate): boolean =>
+    candidate.referenceId !== input.threadBinding?.referenceId &&
+    usable(candidate) &&
+    (candidate.lastLeftAt === undefined || input.now - candidate.lastLeftAt >= 60_000);
+  const preferred = input.eligible.find(
+    (candidate) => candidate.referenceId === input.preferredReferenceId && reenterable(candidate)
+  );
+  if (preferred) return { kind: 'target', referenceId: preferred.referenceId };
+
   for (const ownership of ['own', 'workspace-shared'] as const) {
     const target = input.eligible.find(
-      (candidate) =>
-        candidate.ownership === ownership &&
-        candidate.referenceId !== input.threadBinding?.referenceId &&
-        usable(candidate) &&
-        (candidate.lastLeftAt === undefined || input.now - candidate.lastLeftAt >= 60_000)
+      (candidate) => candidate.ownership === ownership && reenterable(candidate)
     );
     if (target) return { kind: 'target', referenceId: target.referenceId };
   }
