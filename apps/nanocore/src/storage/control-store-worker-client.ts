@@ -449,6 +449,10 @@ interface Opening {
   /** True only after the original native ACK and physical identity validation. */
   acknowledged: boolean;
   readonly promise: Promise<void>;
+  /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
+  retirement?:
+    | { operation: 'close'; promise: Promise<void>; settled?: true }
+    | { operation: 'seal'; promise: Promise<string | null>; settled?: true };
 }
 
 /** The existing posting hold and its FIFO release boundary, without another request queue. */
@@ -922,6 +926,8 @@ class ControlStoreWorkerClient {
     progressCopy?: ProgressCopyCredit
   ): Promise<T> {
     this.assertAccepting();
+    const reservedDatabase = typeof reservation === 'string' ? reservation : reservation?.database;
+    if (reservedDatabase !== undefined) this.assertScopeProducerAdmission(reservedDatabase);
     if (
       closeout &&
       (this.outstanding.get(closeout.database) ?? 0) >= CONTROL_WORKER_LIMITS.pendingTransitions
@@ -934,7 +940,7 @@ class ControlStoreWorkerClient {
       active: true,
       publication,
       progressCopy,
-      reservation: typeof reservation === 'string' ? reservation : reservation?.database,
+      reservation: reservedDatabase,
       closeout: credit ?? (typeof reservation === 'object' ? reservation.closeout : undefined),
     };
     // Register before invoking the producer: its synchronous Core commit may expose this identity.
@@ -982,6 +988,7 @@ class ControlStoreWorkerClient {
     progressPublication?: ControlProgressPublication
   ): Promise<T> {
     this.assertAccepting();
+    this.assertScopeProducerAdmission(database);
     const context = this.operationContext.getStore();
     const credit = context?.closeout;
     const closeout =
@@ -1172,6 +1179,12 @@ class ControlStoreWorkerClient {
   private assertAccepting(): void {
     if (this.closed || (this.stopping && !this.operationContext.getStore()?.active))
       throw new ControlStoreWorkerShutdownError();
+  }
+
+  /** Refuses a new producer before its reservation, tail or active context can enter a retiring scope. */
+  private assertScopeProducerAdmission(database: string): void {
+    if (this.openings.get(database)?.retirement)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
   }
 
   /** Reserves physical identity before posting; unrelated openings never wait for another native ACK. */
@@ -1456,6 +1469,21 @@ class ControlStoreWorkerClient {
     }
   }
 
+  /** Uses the already reserved canonical paths to exclude a late child during its parent's close. */
+  private assertParentOpenAdmission(command: Omit<OpenCommand, 'operation'>, path: string): void {
+    if (!command.physicalScope) return;
+    const workspaceRoot = dirname(dirname(dirname(path)));
+    for (const parent of this.openings.values()) {
+      if (
+        parent.retirement &&
+        parent.command.productOwner?.kind === 'workspace' &&
+        parent.command.productOwner.workspaceId === command.physicalScope.workspaceId &&
+        dirname(dirname(parent.path)) === workspaceRoot
+      )
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+    }
+  }
+
   /**
    * Opens an admitted physical scope and optionally applies its existing native journal.
    *
@@ -1490,6 +1518,14 @@ class ControlStoreWorkerClient {
     const existing = this.openings.get(command.database);
     if (existing) {
       if (existing.host.failed) throw new ControlStoreWorkerError('unavailable', 'not-committed');
+      if (existing.retirement) {
+        // Only preparation admitted before retirement may finish through its original scope drain.
+        // New reserved operations and Turn publications are refused before acquiring this context.
+        const context = this.operationContext.getStore();
+        if (!context?.active || context.reservation !== command.database)
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+      }
+      this.assertParentOpenAdmission(command, existing.path);
       if (
         !isDeepStrictEqual(existing.command, command) &&
         !(
@@ -1508,6 +1544,7 @@ class ControlStoreWorkerClient {
     }
     const binding = structuredClone(command);
     const physical = this.reserveOpening(binding);
+    this.assertParentOpenAdmission(binding, physical.path);
     const opening: Opening = {
       command: binding,
       ...physical,
@@ -2910,6 +2947,7 @@ class ControlStoreWorkerClient {
     try {
       const database = `user:${path}`;
       const opening = this.openings.get(database);
+      if (opening?.retirement) throw new ControlStoreWorkerError('busy', 'not-committed');
       if (opening) {
         if (
           !isDeepStrictEqual(opening.command, {
@@ -4273,43 +4311,61 @@ class ControlStoreWorkerClient {
     if (failed?.status === 'rejected') throw failed.reason;
   }
 
-  /** Closes a scope only after its previously accepted preparation and writes have finished. */
+  /** Closes one exact generation after its accepted preparation, children and readers finish. */
   async close(database: string, recovery?: ControlRecoveryNativeCall): Promise<void> {
     this.assertFrozenCall({ operation: 'close', database }, recovery);
     const opening = this.openings.get(database);
-    if (opening?.command.productOwner?.kind === 'workspace') {
-      const workspaceId = opening.command.productOwner.workspaceId;
-      const children = [...this.openings.values()].filter(
-        (entry) =>
-          entry.command.physicalScope?.workspaceId === workspaceId &&
-          entry.command.dataRoot !== undefined &&
-          opening.command.dataRoot !== undefined &&
-          realpathSync(entry.command.dataRoot) === realpathSync(opening.command.dataRoot)
-      );
-      for (const child of children) {
-        await child.promise;
-        await this.close(child.command.database, recovery);
-      }
+    if (opening?.retirement && !opening.retirement.settled) {
+      if (opening.retirement.operation !== 'close')
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      return opening.retirement.promise;
     }
+    const pending = (async () => {
+      try {
+        // The existing drain/request path already joins accepted OPEN and publication dependencies.
+        if (opening?.command.productOwner?.kind === 'workspace') {
+          const workspaceId = opening.command.productOwner.workspaceId;
+          const children = [...this.openings.values()].filter(
+            (entry) =>
+              entry.command.physicalScope?.workspaceId === workspaceId &&
+              entry.command.dataRoot !== undefined &&
+              opening.command.dataRoot !== undefined &&
+              realpathSync(entry.command.dataRoot) === realpathSync(opening.command.dataRoot)
+          );
+          for (const child of children) {
+            await child.promise;
+            const current = this.openings.get(child.command.database);
+            if (current !== undefined && current !== child)
+              throw new ControlStoreWorkerError('precondition', 'not-committed');
+            if (current === child) await this.close(child.command.database, recovery);
+          }
+        }
+        await this.drainScopePublications(opening);
+        if (opening) {
+          closeWorkspaceProductReadHandles(opening.path);
+          await drainMainScopeReadHandles([opening.path]);
+          // Accepted ACK continuations can create an idle metadata reader before releasing their own.
+          closeWorkspaceProductReadHandles(opening.path);
+        }
+        await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
+        if (this.openings.get(database) === opening) this.openings.delete(database);
+      } catch (error) {
+        if (opening?.command.initialize === 'core') {
+          this.fail(opening.host);
+          await opening.host.worker?.terminate();
+        }
+        throw error;
+      } finally {
+        if (opening) closeWorkspaceProductReadHandles(opening.path);
+      }
+    })();
+    if (opening) opening.retirement = { operation: 'close', promise: pending };
     try {
-      await this.drainScopePublications(opening);
-      // Idle readers must not prevent the writer's final close from checkpointing at rest.
-      if (opening) {
-        closeWorkspaceProductReadHandles(opening.path);
-        await drainMainScopeReadHandles([opening.path]);
-        // Accepted ACK continuations can create an idle metadata reader before releasing their own.
-        closeWorkspaceProductReadHandles(opening.path);
-      }
-      await this.request({ operation: 'close', database }, undefined, undefined, false, recovery);
-      if (this.openings.get(database) === opening) this.openings.delete(database);
+      await pending;
     } catch (error) {
-      if (opening?.command.initialize === 'core') {
-        this.fail(opening.host);
-        await opening.host.worker?.terminate();
-      }
+      // Keep late acquisitions excluded. Only an explicit later retirement may inspect the original failure again.
+      if (opening?.retirement?.promise === pending) opening.retirement.settled = true;
       throw error;
-    } finally {
-      if (opening) closeWorkspaceProductReadHandles(opening.path);
     }
   }
 
@@ -4320,25 +4376,39 @@ class ControlStoreWorkerClient {
   ): Promise<string | null> {
     this.assertFrozenCall({ operation: 'recovery-seal', database }, recovery);
     const opening = this.openings.get(database);
-    try {
-      await this.drainScopePublications(opening);
-      if (opening) {
-        closeWorkspaceProductReadHandles(opening.path);
-        await drainMainScopeReadHandles([opening.path]);
-        // Accepted ACK continuations can create an idle metadata reader before releasing their own.
-        closeWorkspaceProductReadHandles(opening.path);
+    if (opening?.retirement && !opening.retirement.settled) {
+      if (opening.retirement.operation !== 'seal')
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      return opening.retirement.promise;
+    }
+    const pending = (async () => {
+      try {
+        await this.drainScopePublications(opening);
+        if (opening) {
+          closeWorkspaceProductReadHandles(opening.path);
+          await drainMainScopeReadHandles([opening.path]);
+          // Accepted ACK continuations can create an idle metadata reader before releasing their own.
+          closeWorkspaceProductReadHandles(opening.path);
+        }
+        const reply = await this.request(
+          { operation: 'recovery-seal', database },
+          undefined,
+          undefined,
+          false,
+          recovery
+        );
+        if (this.openings.get(database) === opening) this.openings.delete(database);
+        return (reply as Extract<Success, { operation: 'recovery-seal' }>).digest;
+      } finally {
+        if (opening) closeWorkspaceProductReadHandles(opening.path);
       }
-      const reply = await this.request(
-        { operation: 'recovery-seal', database },
-        undefined,
-        undefined,
-        false,
-        recovery
-      );
-      if (this.openings.get(database) === opening) this.openings.delete(database);
-      return (reply as Extract<Success, { operation: 'recovery-seal' }>).digest;
-    } finally {
-      if (opening) closeWorkspaceProductReadHandles(opening.path);
+    })();
+    if (opening) opening.retirement = { operation: 'seal', promise: pending };
+    try {
+      return await pending;
+    } catch (error) {
+      if (opening?.retirement?.promise === pending) opening.retirement.settled = true;
+      throw error;
     }
   }
 
