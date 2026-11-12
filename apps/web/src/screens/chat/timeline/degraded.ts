@@ -88,13 +88,29 @@ export function readRetryAfterSeconds(error: unknown, now = Date.now()): number 
 }
 
 /**
- * A refresh this mount can keep. 504 is the same gateway outage as 503.
- * A 500 still replaces the view; denial never stays on screen.
+ * The busy label. 504 is the same gateway outage as 503.
+ * This is not the retention rule: a 500 or a dropped network stays off this label.
  */
 export function isBusyStatus(error: unknown): boolean {
   return (
     error instanceof ApiCallError &&
     (error.status === 429 || error.status === 503 || error.status === 504)
+  );
+}
+
+/**
+ * An ordinary timeline window this mount already admitted stays up through a
+ * recoverable refresh. Denial and a missing source do not. The busy label stays narrower.
+ */
+export function retainsAdmittedHistory(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  return (
+    error instanceof ApiCallError &&
+    (error.status === 429 ||
+      error.status === 500 ||
+      error.status === 502 ||
+      error.status === 503 ||
+      error.status === 504)
   );
 }
 

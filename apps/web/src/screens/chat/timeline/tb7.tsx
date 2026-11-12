@@ -32,11 +32,32 @@ function recordedItems(value: unknown): TimelineItem[] {
   return found;
 }
 
+function isHeldKey(queryKey: readonly unknown[]): boolean {
+  const head = queryKey[0];
+  return head === 'thread-timeline' || head === 'thread-timeline-items';
+}
+
+/**
+ * Fields come from the window this mount is reading.
+ * An older cached window is not a substitute when the current one is on screen.
+ * A run rendered from `setQueryData` alone still reads that cache.
+ */
 function heldRows(client: QueryClient): unknown[] {
-  return [
-    ...client.getQueriesData({ queryKey: ['thread-timeline'] }),
-    ...client.getQueriesData({ queryKey: ['thread-timeline-items'] }),
-  ].map(([, data]) => data);
+  const matches = client
+    .getQueryCache()
+    .findAll()
+    .filter((query) => isHeldKey(query.queryKey));
+  const active = matches.filter((query) => query.isActive());
+  const chosen = active.length > 0 ? active : matches;
+  return chosen
+    .slice()
+    .sort((left, right) => {
+      const leftWindow = left.queryKey[0] === 'thread-timeline' ? 0 : 1;
+      const rightWindow = right.queryKey[0] === 'thread-timeline' ? 0 : 1;
+      if (leftWindow !== rightWindow) return leftWindow - rightWindow;
+      return right.state.dataUpdatedAt - left.state.dataUpdatedAt;
+    })
+    .map((query) => query.state.data);
 }
 
 /** Empty when a run renders outside the timeline query. No badge and no segments. */
@@ -61,7 +82,7 @@ function segmentsFor(rows: readonly unknown[], turnId: string): RecordedPlan | n
       row as { runs?: { id?: string; planSegments?: TimelineRunEntry['planSegments'] }[] }
     ).runs;
     const match = runs?.find((run) => run.id === turnId)?.planSegments;
-    if (match && match.segments.length > 0) return match;
+    if (match) return match;
   }
   return null;
 }
@@ -95,15 +116,18 @@ export function PolicyBadge({ itemId }: { itemId: string }) {
 export function PlanSegments({ turnId }: { turnId: string }) {
   const recorded = segmentsFor(useHeldRows(), turnId);
   if (!recorded) return null;
+  if (recorded.segments.length === 0 && recorded.coverage !== 'partial') return null;
   return (
     <div data-plan-coverage={recorded.coverage}>
-      <ul aria-label={timelineCopy.planSegments}>
-        {recorded.segments.map((segment) => (
-          <li key={`${segment.planItemId}:${segment.stepId}:${segment.startSequence}`}>
-            {fillCopy(timelineCopy.segmentSteps, { title: segment.title, count: segment.steps })}
-          </li>
-        ))}
-      </ul>
+      {recorded.segments.length > 0 ? (
+        <ul aria-label={timelineCopy.planSegments}>
+          {recorded.segments.map((segment) => (
+            <li key={`${segment.planItemId}:${segment.stepId}:${segment.startSequence}`}>
+              {fillCopy(timelineCopy.segmentSteps, { title: segment.title, count: segment.steps })}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {recorded.coverage === 'partial' ? <p>{timelineCopy.segmentsPartial}</p> : null}
     </div>
   );

@@ -107,7 +107,7 @@ describe('steer qualification', () => {
     expect(
       composerLiveMode({
         task: true,
-        runningTurnId: TURN,
+        runningTurnId: 'tu_exact',
         targets: [worker('available', 'tu_exact', null)],
       })
     ).toMatchObject({
@@ -115,6 +115,13 @@ describe('steer qualification', () => {
       turnId: 'tu_exact',
       consequence: steerCopy.consequence,
     });
+    expect(
+      composerLiveMode({
+        task: true,
+        runningTurnId: TURN,
+        targets: [worker('available', 'tu_exact', null)],
+      })
+    ).toMatchObject({ mode: 'keep-draft' });
     expect(
       composerLiveMode({
         task: true,
@@ -394,7 +401,7 @@ describe('steer availability on the composer', () => {
   it('sends task.steer for the catalog Turn when the server says available', async () => {
     const user = userEvent.setup();
     const steer = renderCatalog({
-      turns: [{ id: TURN, status: 'running' }],
+      turns: [{ id: LIVE, status: 'running' }],
       targets: [worker('available', LIVE, null)],
     });
     expect(await screen.findByText('Catalog loaded')).toBeTruthy();

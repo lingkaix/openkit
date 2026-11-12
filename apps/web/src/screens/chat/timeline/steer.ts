@@ -122,7 +122,7 @@ function exactTurnId(value: string | null | undefined): string | null {
 
 /**
  * Composer action while a Task run is open.
- * Steer only when the running Worker read says available and names the exact Turn.
+ * Steer only when the catalog and the dashboard name the same Turn and the Worker is available.
  * After the run ends, a leftover activeTurnId does not keep Steer on screen.
  * The Coordinator is never a steer target. A missing field keeps the draft.
  */
@@ -135,7 +135,12 @@ export function composerLiveMode(input: {
   const worker = input.targets?.find((target) => target.kind === 'running-worker');
   const availability = steerState(worker?.steerAvailability);
   const activeTurnId = exactTurnId(worker?.activeTurnId);
-  if (worker && availability === 'available' && activeTurnId) {
+  if (
+    worker &&
+    availability === 'available' &&
+    activeTurnId &&
+    activeTurnId === input.runningTurnId
+  ) {
     return {
       mode: 'steer',
       turnId: activeTurnId,

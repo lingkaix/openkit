@@ -50,7 +50,13 @@ import {
 } from './timeline/catch-up';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
 import { DecisionRowSheet, DecisionSheet } from './timeline/decision-sheet';
-import { classifyRunError, freshnessCopy, isBusyStatus, isDeniedRead } from './timeline/degraded';
+import {
+  classifyRunError,
+  freshnessCopy,
+  isBusyStatus,
+  isDeniedRead,
+  retainsAdmittedHistory,
+} from './timeline/degraded';
 import { openDecisionIds, planEmphasis } from './timeline/emphasis';
 import { buildAlignment } from './timeline/header';
 import { Inspector } from './timeline/Inspector';
@@ -966,8 +972,15 @@ export function ThreadStream({
       : undefined;
   const holdReason = admissionHold ?? fresh ?? undefined;
   const admittedHistory = Boolean(timelineOn ? timelineWindow.data : items.data);
-  const historyBusy = isBusyStatus(timelineOn ? timelineWindow.error : items.error);
-  const retainHistory = historyError && historyBusy && admittedHistory && !historyDenied;
+  const historyFault = timelineOn ? timelineWindow.error : items.error;
+  const historyBusy = isBusyStatus(historyFault);
+  // Administration items reads stay strict. Only the ordinary timeline window
+  // keeps a recoverable non-denial failure, and that does not widen the busy label.
+  const retainHistory =
+    historyError &&
+    admittedHistory &&
+    !historyDenied &&
+    (historyBusy || (timelineOn && retainsAdmittedHistory(historyFault)));
   const retainedStale = retainHistory
     ? freshnessCopy(3, timelineOn ? timelineWindow.dataUpdatedAt : items.dataUpdatedAt, clock)
     : null;

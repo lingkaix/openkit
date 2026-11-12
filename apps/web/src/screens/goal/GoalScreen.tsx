@@ -434,7 +434,7 @@ export function GoalScreen() {
                 ))}
                 {capturedEvidence.map((entry) => (
                   <p key={`${entry.kind}:${entry.id}:${entry.digest}`} className="break-all">
-                    {entry.digest}
+                    {entry.kind} {entry.id} {entry.digest}
                   </p>
                 ))}
                 {request.state === 'pending' && (
