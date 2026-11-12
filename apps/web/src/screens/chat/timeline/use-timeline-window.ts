@@ -1,8 +1,10 @@
+import type { ThreadTimelineResponse } from '@openkit/app-api-schemas';
 import type { CoreClient } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../../app/core-client';
 import type { ThreadItem } from '../data';
+import { publishTimelineDigest } from './digest';
 import {
   absorbEdge,
   absorbItemEdge,
@@ -18,6 +20,10 @@ import {
   type TimelineAnchorRequest,
   windowPollMs,
 } from './window';
+
+function withDigest(held: HeldTimeline, digest: ThreadTimelineResponse['digest']) {
+  return { ...held, digest };
+}
 
 /** The real client exposes the window read. Test doubles that omit it keep today's item path. */
 export function timelineReadAvailable(client: CoreClient): boolean {
@@ -72,7 +78,8 @@ export function useTimelineWindow(options: {
         openingInput(workspaceId, threadId, anchor)
       );
       const previous = queryClient.getQueryData<HeldTimeline>(key);
-      return previous ? absorbPoll(previous, fresh) : holdFromResponse(fresh);
+      const held = previous ? absorbPoll(previous, fresh) : holdFromResponse(fresh);
+      return withDigest(held, fresh.digest);
     },
     refetchInterval: () => windowPollMs({ hidden: !visible, running, pending }),
     refetchIntervalInBackground: false,
@@ -90,14 +97,21 @@ export function useTimelineWindow(options: {
     },
     onSuccess: (result) => {
       if (!result) return;
-      queryClient.setQueryData<HeldTimeline>(key, (held) =>
-        held ? absorbEdge(held, result.response, result.edge) : holdFromResponse(result.response)
-      );
+      queryClient.setQueryData(key, (held: HeldTimeline | undefined) => {
+        const next = held
+          ? absorbEdge(held, result.response, result.edge)
+          : holdFromResponse(result.response);
+        return withDigest(next, result.response.digest);
+      });
     },
   });
 
   const pageEarlier = useCallback(() => page.mutate('before'), [page.mutate]);
   const pageLater = useCallback(() => page.mutate('after'), [page.mutate]);
+  useEffect(() => {
+    if (!query.isFetched) return;
+    publishTimelineDigest(query.data?.digest ?? null);
+  }, [query.data, query.isFetched]);
   return { ...query, pageEarlier, pageLater, paging: page.isPending };
 }
 

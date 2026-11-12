@@ -213,6 +213,7 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
           itemWindow: null,
           anchor: null,
           catchUpAnchor: null,
+          digest: { lines: [], coverage: 'complete' as const },
           restrictedReferences: false,
         };
       }
@@ -228,6 +229,7 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
           itemWindow: null,
           anchor: null,
           catchUpAnchor: null,
+          digest: { lines: [], coverage: 'complete' as const },
           restrictedReferences: false,
         };
       }
@@ -250,6 +252,7 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
           : null,
         anchor: itemAnchor ? { turnId: anchored.turnId, itemId: anchored.itemId } : null,
         catchUpAnchor: null,
+        digest: { lines: [], coverage: 'complete' as const },
         restrictedReferences: false,
       };
     };

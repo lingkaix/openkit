@@ -322,6 +322,7 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
               ? { turnId: shortTurnId, itemId: shortCatchUpId }
               : null,
           catchUpAnchor: { turnId: shortTurnId, itemId: shortCatchUpId },
+          digest: { lines: [], coverage: 'complete' as const },
           restrictedReferences: false,
         };
       }
@@ -337,6 +338,21 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
           itemWindow: null,
           anchor: null,
           catchUpAnchor: { turnId: runningTurnId, itemId: catchUpId },
+          digest: {
+            lines: [
+              {
+                kind: 'new-messages' as const,
+                count: 4,
+                anchor: { kind: 'item' as const, itemId: freshId },
+              },
+              {
+                kind: 'problems' as const,
+                count: 1,
+                anchor: { kind: 'turn' as const, turnId: runningTurnId },
+              },
+            ],
+            coverage: 'complete' as const,
+          },
           restrictedReferences: false,
         };
       }
@@ -359,6 +375,21 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
           ? { turnId: unread.turnId, itemId: unread.itemId }
           : { turnId: runningTurnId, itemId: catchUpId },
         catchUpAnchor: { turnId: runningTurnId, itemId: catchUpId },
+        digest: {
+          lines: [
+            {
+              kind: 'new-messages' as const,
+              count: 4,
+              anchor: { kind: 'item' as const, itemId: freshId },
+            },
+            {
+              kind: 'problems' as const,
+              count: 1,
+              anchor: { kind: 'turn' as const, turnId: runningTurnId },
+            },
+          ],
+          coverage: 'complete' as const,
+        },
         restrictedReferences: false,
       };
     };
@@ -421,7 +452,10 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
       const divider = page.locator('[data-catch-up-divider]');
       await expect(divider).toBeVisible({ timeout: 40_000 });
       await expect(divider).toContainText('New since you were here');
-      await expect(divider.getByRole('list')).toHaveCount(0);
+      await expect(divider.getByRole('button', { name: '4 new messages' })).toBeVisible();
+      await expect(divider.getByRole('button', { name: '1 problem' })).toBeVisible();
+      await expect(divider.getByRole('button', { name: /need you/ })).toHaveCount(0);
+      await expect(divider.getByText(/lower bound/)).toHaveCount(0);
       await expect(page.locator('[data-agent-profile="task"]')).toBeVisible();
       const runStatus = await divider.evaluate(
         (node) => node.closest('[data-timeline-entry]')?.getAttribute('data-run-status') ?? ''
@@ -459,7 +493,7 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
         fullPage: false,
       });
       await page.screenshot({
-        path: join(shotsDir, `${viewport.name}-no-digest.png`),
+        path: join(shotsDir, `${viewport.name}-digest.png`),
         fullPage: false,
       });
 
@@ -497,6 +531,18 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
         path: join(shotsDir, `${viewport.name}-earlier-unread.png`),
         fullPage: false,
       });
+      await page.goto(`${stack.webUrl}/tasks/${workspaceId}/${longThread.id}`);
+      const digestDivider = page.locator('[data-catch-up-divider]');
+      await expect(digestDivider).toBeVisible({ timeout: 40_000 });
+      const digestHistory = await page.evaluate(() => history.length);
+      await digestDivider.getByRole('button', { name: '4 new messages' }).click();
+      await expect(page).toHaveURL(new RegExp(`item=${freshId}`));
+      expect(await page.evaluate(() => history.length)).toBe(digestHistory);
+      await page.screenshot({
+        path: join(shotsDir, `${viewport.name}-digest-anchor.png`),
+        fullPage: false,
+      });
+
       if (viewport.width === 360) {
         const widths = await page.evaluate(() => ({
           scroll: document.documentElement.scrollWidth,
