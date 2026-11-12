@@ -38,6 +38,7 @@ import { readThreadReceiptMembership, receiptMessageItemIds } from './thread-rea
 import {
   projectTimelinePolicy,
   readTimelinePlanSegments,
+  readTimelineReportedActivity,
   timelineArgumentDigest,
 } from './thread-timeline-attributes.js';
 import { readTimelineDigest } from './thread-timeline-digest.js';
@@ -436,8 +437,8 @@ function earlierUnread(
   return turns.length > 32 ? null : { count, capped: false, oldest };
 }
 
-function recordedEnvironment(owner: ThreadTimelineReadInput, turnId: string, budget: number) {
-  const unavailable = { usage: null, fallback: null };
+function recordedRunFacts(owner: ThreadTimelineReadInput, turnId: string, budget: number) {
+  const unavailable = { usage: null, fallback: null, reportedActivity: null };
   const allowance = Math.min(1024, Math.max(0, Math.floor(budget / 4)));
   if (bytes(unavailable) > allowance) return {};
   const coreDb = owner.coreDb;
@@ -464,7 +465,15 @@ function recordedEnvironment(owner: ThreadTimelineReadInput, turnId: string, bud
       facts.usage.measurements.pop();
       if (!facts.usage.measurements.length) facts.usage = null;
     }
-    return facts;
+    return {
+      ...facts,
+      reportedActivity: readTimelineReportedActivity(
+        db,
+        owner.input.threadId,
+        turnId,
+        Math.min(8192, Math.floor(budget / 3))
+      ),
+    };
   } finally {
     db.sqlite.close();
   }
@@ -568,7 +577,7 @@ function runEntry(
     },
     interruptedBy: { visibility: 'restricted' },
     restrictedReferences: false,
-    ...recordedEnvironment(owner, turn.id, budget),
+    ...recordedRunFacts(owner, turn.id, budget),
   };
   base.planSegments = readTimelinePlanSegments(
     snapshot,

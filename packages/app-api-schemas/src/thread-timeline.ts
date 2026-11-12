@@ -188,6 +188,25 @@ export const TimelineStatisticsSchema = z.object({
   coverage: z.enum(['complete', 'partial']),
 });
 
+/** Bounded structural Worker reports, never a runtime heartbeat or complete execution history. */
+export const TimelineReportedActivitySchema = z.object({
+  reportedBy: z.literal('worker'),
+  contentCapture: z.enum(['off', 'on', 'unknown']),
+  coverage: z.enum(['partial', 'unavailable']),
+  entries: z
+    .array(
+      z.object({
+        sequence: z.number().int().positive(),
+        observedAt: TimestampSchema,
+        kind: z.enum(['child-started', 'progress', 'result', 'failure']),
+        label: z.string().min(1).max(80),
+      })
+    )
+    .max(50),
+  /** Known omissions within the fixed source prefix, not a whole-history total. */
+  omittedEntryCount: z.number().int().nonnegative(),
+});
+
 /** One admission-ordered run with a budgeted narrative, plan, notes and immutable-position continuation. */
 export const TimelineRunEntrySchema = z.object({
   id: TurnIdSchema,
@@ -216,6 +235,7 @@ export const TimelineRunEntrySchema = z.object({
   narrativeCursor: cursor.nullable(),
   statistics: TimelineStatisticsSchema,
   planSegments: TimelinePlanSegmentsSchema.optional(),
+  reportedActivity: TimelineReportedActivitySchema.nullable().optional(),
   /** Recorded call-linked lower bounds; units and metric sources are never conflated. */
   usage: z
     .object({

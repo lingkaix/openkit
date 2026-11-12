@@ -58379,6 +58379,89 @@
                   ],
                   "additionalProperties": false
                 },
+                "reportedActivity": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "reportedBy": {
+                          "type": "string",
+                          "const": "worker"
+                        },
+                        "contentCapture": {
+                          "type": "string",
+                          "enum": [
+                            "off",
+                            "on",
+                            "unknown"
+                          ]
+                        },
+                        "coverage": {
+                          "type": "string",
+                          "enum": [
+                            "partial",
+                            "unavailable"
+                          ]
+                        },
+                        "entries": {
+                          "maxItems": 50,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "sequence": {
+                                "type": "integer",
+                                "exclusiveMinimum": 0,
+                                "maximum": 9007199254740991
+                              },
+                              "observedAt": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "child-started",
+                                  "progress",
+                                  "result",
+                                  "failure"
+                                ]
+                              },
+                              "label": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 80
+                              }
+                            },
+                            "required": [
+                              "sequence",
+                              "observedAt",
+                              "kind",
+                              "label"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "omittedEntryCount": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "reportedBy",
+                        "contentCapture",
+                        "coverage",
+                        "entries",
+                        "omittedEntryCount"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "usage": {
                   "anyOf": [
                     {
@@ -179187,5 +179270,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:40f9bc76eb25ccaad741562a65d873ddcdb75f65ae419c10eb13be6b3a0af7a8"
+  "x-openkit-source-digest": "sha256:987bbf64d081041dd292867f7d2c7414fdafefcff355258ff847161ad433cd08"
 }

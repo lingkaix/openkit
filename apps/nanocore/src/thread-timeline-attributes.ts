@@ -2,7 +2,13 @@ import { createHash } from 'node:crypto';
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { THREAD_TIMELINE_PLACEMENT } from '@openkit/app-api-schemas';
 import { canonicalJsonText, type Item } from '@openkit/protocol';
+import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
 import { boundedJsonText } from './bounded-read-text.js';
+import type { WorkspaceDb } from './storage/db.js';
+import {
+  readControlWorkObservations,
+  readControlWorkObservationTurnBinding,
+} from './storage/work-observations.js';
 import type {
   ThreadTimelineSnapshot,
   TimelinePolicyEvidence,
@@ -23,6 +29,80 @@ export function timelineArgumentDigest(item: Item): string | null {
     return `sha256:${createHash('sha256').update(canonicalJsonText(input)).digest('hex')}`;
   } catch {
     // Retained strings can be valid JSON but not canonical Unicode; no identity is safer than a collision.
+    return null;
+  }
+}
+
+/** Uses one existing native observation page; body capture and whole-history readers stay out of this projection. */
+export function readTimelineReportedActivity(
+  db: WorkspaceDb,
+  threadId: string,
+  turnId: string,
+  budget: number
+): NonNullable<TimelineRunEntry['reportedActivity']> | null {
+  try {
+    return db.sqlite.transaction(() => {
+      const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
+      const input = { threadId, turnId, limit: 128 };
+      const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, input);
+      const rows = readControlWorkObservations(db.sqlite, owner, input).flatMap((row) =>
+        row.type === 'runtime.observed' && row.obs === 'worker-shim'
+          ? [{ row, fact: WorkerObservationDataSchema.parse(row.payload).fact }]
+          : []
+      );
+      // Child names are local display ordinals from this exact admitted prefix, not native identities.
+      const children = new Map<string, number>();
+      for (const { fact } of rows) {
+        if (
+          fact.kind === 'origin' &&
+          fact.parentRuntimeOriginRef &&
+          fact.runtimeOriginRef &&
+          !children.has(fact.runtimeOriginRef)
+        )
+          children.set(fact.runtimeOriginRef, children.size + 1);
+      }
+      const displayed = new Set<string>();
+      const entries: NonNullable<TimelineRunEntry['reportedActivity']>['entries'] = [];
+      for (const { row, fact } of rows) {
+        if (!['origin', 'assistant', 'tool'].includes(fact.kind)) continue;
+        const child = fact.runtimeOriginRef ? children.get(fact.runtimeOriginRef) : undefined;
+        const phase = fact.phase ?? 'observed';
+        const started =
+          fact.kind === 'origin' &&
+          child !== undefined &&
+          !displayed.has(fact.runtimeOriginRef!) &&
+          ['started', 'observed'].includes(phase);
+        if (started) displayed.add(fact.runtimeOriginRef!);
+        entries.push({
+          sequence: row.seq,
+          observedAt: row.ts,
+          kind: ['failed', 'interrupted'].includes(phase)
+            ? 'failure'
+            : ['completed', 'closed'].includes(phase)
+              ? 'result'
+              : started
+                ? 'child-started'
+                : 'progress',
+          label: child === undefined ? 'Worker' : `Child ${child}`,
+        });
+      }
+      const result: NonNullable<TimelineRunEntry['reportedActivity']> = {
+        reportedBy: 'worker',
+        contentCapture: binding.coverage?.value ?? 'unknown',
+        // A finite observation prefix can never certify full reporting coverage or current liveness.
+        coverage: entries.length ? 'partial' : 'unavailable',
+        entries: entries.slice(-50),
+        omittedEntryCount: Math.max(0, entries.length - 50),
+      };
+      while (Buffer.byteLength(JSON.stringify(result)) > budget) {
+        if (!result.entries.length) return null;
+        result.entries.shift();
+        result.omittedEntryCount++;
+      }
+      return result;
+    })();
+  } catch {
+    // Missing or contradictory native authority is unavailable, never an ordinary-Item fallback.
     return null;
   }
 }
