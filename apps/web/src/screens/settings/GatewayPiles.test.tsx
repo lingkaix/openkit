@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { parse } from 'jsonc-parser';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AiInterfaceScreen } from './AiInterfaceScreen';
@@ -459,7 +460,9 @@ function renderScreen(
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <CoreClientProvider client={client}>
-        <AiInterfaceScreen />
+        <MemoryRouter>
+          <AiInterfaceScreen />
+        </MemoryRouter>
       </CoreClientProvider>
     </QueryClientProvider>
   );

@@ -4,7 +4,7 @@ import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { writeRetainedV1 } from '@openkit/protocol';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { applyEdits, modify, type ParseError, parse } from 'jsonc-parser';
-import { useEffect, useRef, useState } from 'react';
+import { type Ref, useEffect, useRef, useState } from 'react';
 import {
   Dialog as AriaDialog,
   Modal as AriaModal,
@@ -13,6 +13,7 @@ import {
   ModalOverlay,
   TextArea,
 } from 'react-aria-components';
+import { useSearchParams } from 'react-router-dom';
 import {
   Button,
   Card,
@@ -1244,6 +1245,7 @@ function LogicalModelCard({
   registry,
   slotNames,
   metadataProfiles,
+  anchorRef,
   onEditRoute,
   onEditMetadata,
 }: {
@@ -1251,6 +1253,7 @@ function LogicalModelCard({
   registry: ProviderRegistryEntry[];
   slotNames: Readonly<Record<string, string>>;
   metadataProfiles: ProviderRegistryEntry[];
+  anchorRef?: Ref<HTMLElement>;
   onEditRoute: () => void;
   onEditMetadata: (target: { type: 'metadata'; key: string; model: string }) => void;
 }) {
@@ -1258,7 +1261,13 @@ function LogicalModelCard({
   const failover = failoverCopy(model.autoFailover);
   return (
     <Card>
-      <section aria-label={model.displayName} className="flex min-w-0 flex-col gap-3">
+      <section
+        id={`gateway-model-${model.id}`}
+        ref={anchorRef}
+        tabIndex={anchorRef ? -1 : undefined}
+        aria-label={model.displayName}
+        className="flex min-w-0 flex-col gap-3 outline-none"
+      >
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <h3 className="text-lg font-bold text-fg-strong">{model.displayName}</h3>
           <p className="text-sm text-fg">{logicalModelAvailability(model)}</p>
@@ -1642,6 +1651,20 @@ export function GatewayConfiguration({
   /** Display names keyed by `subscriptionProviderId/accountSlotId`. */
   slotNames?: Readonly<Record<string, string>>;
 }) {
+  const [searchParams] = useSearchParams();
+  const requestedModel = searchParams.get('model')?.trim() ?? '';
+  const listed =
+    requestedModel.length > 0 &&
+    diagnostics.gateway.models.some((model) => model.id === requestedModel);
+  const anchorRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!requestedModel || !diagnostics.gateway.models.some((model) => model.id === requestedModel))
+      return;
+    const node = anchorRef.current;
+    if (!node) return;
+    node.scrollIntoView?.({ block: 'nearest' });
+    node.focus({ preventScroll: true });
+  }, [requestedModel, diagnostics.gateway.models]);
   const [editing, setEditing] = useState<GatewayEdit | null>(null);
   const phone = usePhoneSheet();
   const registry = diagnostics.providers.registry;
@@ -1712,6 +1735,11 @@ export function GatewayConfiguration({
       </Card>
       <LocalSpeechCard client={client} disconnected={disconnected} onChanged={onChanged} />
       <LocalSmallLlmCard client={client} disconnected={disconnected} onChanged={onChanged} />
+      {requestedModel && !listed ? (
+        <p role="status" className="text-sm text-fg">
+          That model is not listed.
+        </p>
+      ) : null}
       {cards.length === 0 ? (
         <EmptyState
           icon="connect"
@@ -1726,6 +1754,7 @@ export function GatewayConfiguration({
             registry={registry}
             slotNames={slotNames}
             metadataProfiles={metadataProfiles}
+            anchorRef={model.id === requestedModel ? anchorRef : undefined}
             onEditRoute={() => setEditing({ type: 'routing', id: model.id })}
             onEditMetadata={setEditing}
           />

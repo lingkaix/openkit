@@ -17,7 +17,6 @@ export const timelineNotices = {
   opensRunNotMessage: 'Opens the run (not the exact message)',
   opensRunNotRequest: 'Opens the run (not the request)',
   opensKnowledge: 'Opens Knowledge (not the page)',
-  gatewayModelText: 'Gateway does not open one model',
   opensWorkspaceChanges: 'Opens Workspace changes (not the row)',
   inspectorOnly: 'Shown in the inspector',
   connectionUnavailable: 'No connection anchor is recorded',

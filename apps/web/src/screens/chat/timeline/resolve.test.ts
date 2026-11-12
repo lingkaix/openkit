@@ -218,10 +218,15 @@ describe('timeline object resolver', () => {
     expect(resolve({ kind: 'environment', workspaceId: WS, turnId: TURN })).toEqual({
       unavailable: timelineNotices.inspectorOnly,
     });
-    expect(resolve({ kind: 'gateway', logicalModelId: 'model_1' })).toEqual({
-      unavailable: timelineNotices.gatewayModelText,
+    expect(resolve({ kind: 'gateway', logicalModelId: 'model_1' })).toMatchObject({
+      path: '/settings/gateway',
+      search: 'model=model_1',
+      focus: 'gateway-model-model_1',
+      notice: null,
     });
-    expect(hrefOf(resolve({ kind: 'gateway', logicalModelId: 'model_1' }))).toBeNull();
+    expect(hrefOf(resolve({ kind: 'gateway', logicalModelId: 'model_1' }))).toBe(
+      '/settings/gateway?model=model_1'
+    );
     expect(resolve({ kind: 'gateway' })).toMatchObject({
       path: '/settings/gateway',
       search: '',

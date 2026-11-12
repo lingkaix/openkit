@@ -11,7 +11,6 @@ export const RESOLVE_READ_GAPS = [
   'Audit and usage reads have no filter, so those links open Usage & audit unfiltered.',
   'No connection read lists one connection by connectionRef. Shared MCP selects a server id and Vault lists credential references, so the reference stays text.',
   'A knowledge page and revision have no URL anchor.',
-  'Gateway lists models from the diagnostics read and has no model query, so a model reference stays text.',
   'The environment has no user surface; it stays in the inspector.',
   'Message and request anchors on a run are not opened.',
   'Attention rows do not say the viewer started the run, sent the latest message, or caused a handoff.',
@@ -335,8 +334,17 @@ function resolveConnection(): Resolved {
 }
 
 function resolveGateway(ref: Extract<ObjectRef, { kind: 'gateway' }>): Resolved {
-  if (ref.logicalModelId) return { unavailable: timelineNotices.gatewayModelText };
-  return { path: '/settings/gateway', search: '', focus: null, notice: null };
+  if (!ref.logicalModelId) {
+    return { path: '/settings/gateway', search: '', focus: null, notice: null };
+  }
+  const params = new URLSearchParams();
+  params.set('model', ref.logicalModelId);
+  return {
+    path: '/settings/gateway',
+    search: params.toString(),
+    focus: `gateway-model-${ref.logicalModelId}`,
+    notice: null,
+  };
 }
 
 function resolveEnvironment(): Resolved {
