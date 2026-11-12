@@ -7,7 +7,6 @@ import { lintCopyText } from './copy';
  */
 export const timelineNotices = {
   sourceNotAvailable: 'Source not available to you',
-  auditUnfiltered: 'Opens Usage & audit (not filtered)',
   versionUnavailable: 'Version {version} unavailable',
   openVersionList: "Open the output's version list",
   backLink: 'From: {title} · run at {time}',

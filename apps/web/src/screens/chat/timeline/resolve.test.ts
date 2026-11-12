@@ -148,14 +148,18 @@ describe('timeline object resolver', () => {
     expect(hrefOf(missing)).not.toContain('version=');
   });
 
-  it('opens usage and audit without a filter', () => {
-    const result = resolve({ kind: 'audit', workspaceId: WS, scope: { turnId: TURN } });
-    expect(result).toEqual({
-      path: '/workspace/usage',
-      search: '',
-      focus: null,
-      notice: 'Opens Usage & audit (not filtered)',
-    });
+  it('opens usage and audit filtered by the run, call, or item', () => {
+    expect(hrefOf(resolve({ kind: 'audit', workspaceId: WS, scope: { turnId: TURN } }))).toBe(
+      `/workspace/usage?turnId=${TURN}`
+    );
+    expect(
+      hrefOf(resolve({ kind: 'audit', workspaceId: WS, scope: { capabilityCallId: 'call_1' } }))
+    ).toBe('/workspace/usage?capabilityCallId=call_1');
+    expect(hrefOf(resolve({ kind: 'audit', workspaceId: WS, scope: { itemId: 'it_1' } }))).toBe(
+      '/workspace/usage?itemId=it_1'
+    );
+    const opened = resolve({ kind: 'audit', workspaceId: WS, scope: { turnId: TURN } });
+    expect('notice' in opened && opened.notice).toBeNull();
   });
 
   it('resolves an attention row from its own source', () => {

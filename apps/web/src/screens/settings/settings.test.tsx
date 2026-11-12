@@ -1968,6 +1968,85 @@ describe('Usage and audit settings (board 17)', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
+  it('sends the run, call, and item selectors on the first page and the continuation', async () => {
+    const user = userEvent.setup();
+    const selectors = {
+      turnId: 'tu_00000000-0000-7000-8000-00000000f117',
+      capabilityCallId: 'cap_00000000-0000-7000-8000-00000000f117',
+      itemId: 'it_00000000-0000-7000-8000-00000000f117',
+    };
+    const auditCursor = 'opaque-filtered-audit-cursor';
+    const usageCursor = 'opaque-filtered-usage-cursor';
+    const older = {
+      ...WORKSPACE_AUDIT_EVENTS.auditEvents[0],
+      id: 'aud_00000000-0000-70e2-abff-6e1084ebf071',
+      action: 'workspace.inspect',
+      category: 'workspace',
+      summary: 'Older filtered audit page.',
+    };
+    const listWorkspaceAuditEvents = vi.fn(async (input: { cursor?: string }) =>
+      input.cursor === auditCursor
+        ? { workspaceId: WORKSPACE.id, auditEvents: [older], nextCursor: null }
+        : { ...WORKSPACE_AUDIT_EVENTS, nextCursor: auditCursor }
+    );
+    const readUsage = vi.fn(async (input: { cursor?: string }) =>
+      input.cursor === usageCursor
+        ? {
+            workspaceId: WORKSPACE.id,
+            capabilityCalls: [],
+            usageRecords: [],
+            nextCursor: null,
+          }
+        : { ...CAPABILITY_USAGE, nextCursor: usageCursor }
+    );
+    const client = makeClient({
+      operations: {
+        'audit.workspace-list': listWorkspaceAuditEvents,
+        'usage.read': readUsage,
+      },
+    });
+    renderApp(
+      `/workspace/usage?turnId=${selectors.turnId}&capabilityCallId=${selectors.capabilityCallId}&itemId=${selectors.itemId}`,
+      client
+    );
+
+    await openRecords();
+    expect(screen.getByText('Model request completed.', { exact: true })).toBeVisible();
+    expect(listWorkspaceAuditEvents).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      ...selectors,
+      limit: 50,
+    });
+    expect(readUsage).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      ...selectors,
+      limit: 50,
+    });
+    expect(vi.mocked(client.operations['permission.workspace-list'])).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      limit: 50,
+    });
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Older filtered audit page.', { exact: true })).toBeVisible();
+    expect(listWorkspaceAuditEvents).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      ...selectors,
+      limit: 50,
+      cursor: auditCursor,
+    });
+    expect(readUsage).toHaveBeenCalledWith({
+      workspaceId: WORKSPACE.id,
+      ...selectors,
+      limit: 50,
+      cursor: usageCursor,
+    });
+    for (const [input] of vi.mocked(client.operations['permission.workspace-list']).mock.calls) {
+      expect(input).not.toHaveProperty('turnId');
+      expect(input).not.toHaveProperty('capabilityCallId');
+      expect(input).not.toHaveProperty('itemId');
+    }
+  });
+
   it('stops when a Workspace Audit cursor repeats and does not render that cursor', async () => {
     const user = userEvent.setup();
     const cursor = 'opaque-workspace-audit-cursor';

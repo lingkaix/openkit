@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -23,37 +24,40 @@ function renderFixture(
     latestTurnId: fixture.turn.id,
   });
   const entry = timeline.entries[0]!;
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
-      <div data-timeline-lens={lens}>
-        <RunEntry
-          entry={entry}
-          items={fixture.items}
-          turn={fixture.turn}
-          lens={lens}
-          expanded={false}
-          actorName="Worker"
-          omitTrigger={false}
-          durationMs={3 * 60 * 60 * 1000}
-          hiddenIds={new Set()}
-          renderItem={(item) => {
-            if (item.type === 'assistant-message') return <p className="ok-prose">{item.text}</p>;
-            if (item.type === 'user-message')
-              return <p className="ok-prose">Check the export dates</p>;
-            if (item.type === 'approval-request') return <p>{item.title}</p>;
-            if (item.type === 'tool-call') return <p>{item.tool}</p>;
-            if (item.type === 'file-change') return <p>{item.path}</p>;
-            if (item.type === 'command-execution') return <p>{item.command}</p>;
-            return null;
-          }}
-          inspected={false}
-          onInspect={() => {}}
-          showActivity={false}
-          previews={extras?.previews}
-          onShowFullText={extras?.onShowFullText}
-        />
-      </div>
-    </MemoryRouter>
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>
+        <div data-timeline-lens={lens}>
+          <RunEntry
+            entry={entry}
+            items={fixture.items}
+            turn={fixture.turn}
+            lens={lens}
+            expanded={false}
+            actorName="Worker"
+            omitTrigger={false}
+            durationMs={3 * 60 * 60 * 1000}
+            hiddenIds={new Set()}
+            renderItem={(item) => {
+              if (item.type === 'assistant-message') return <p className="ok-prose">{item.text}</p>;
+              if (item.type === 'user-message')
+                return <p className="ok-prose">Check the export dates</p>;
+              if (item.type === 'approval-request') return <p>{item.title}</p>;
+              if (item.type === 'tool-call') return <p>{item.tool}</p>;
+              if (item.type === 'file-change') return <p>{item.path}</p>;
+              if (item.type === 'command-execution') return <p>{item.command}</p>;
+              return null;
+            }}
+            inspected={false}
+            onInspect={() => {}}
+            showActivity={false}
+            previews={extras?.previews}
+            onShowFullText={extras?.onShowFullText}
+          />
+        </div>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 

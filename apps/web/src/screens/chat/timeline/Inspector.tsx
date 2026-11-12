@@ -5,6 +5,7 @@ import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
 import { timelineCopy } from './copy';
 import { isStepItem } from './present';
+import { auditUsageHref } from './resolve';
 import { captureCopy, coverageCopy, omittedActivityCopy } from './source';
 
 /** Worker-reported activity as today's dashboard returns it. */
@@ -127,8 +128,7 @@ export function Inspector({
         </div>
       </section>
       <p className="mt-4 text-sm">
-        {/* TB7: audit is not filtered by run. The route exists; the link carries no identifier. */}
-        <Link to="/workspace/usage" className="text-accent-content underline">
+        <Link to={auditUsageHref({ turnId })} className="text-accent-content underline">
           {timelineCopy.auditRecords}
         </Link>
       </p>

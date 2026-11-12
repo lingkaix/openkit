@@ -8,7 +8,6 @@ import { timelineNotices } from './notices';
  * The resolver renders the documented fallback and does not invent the anchor.
  */
 export const RESOLVE_READ_GAPS = [
-  'Audit and usage reads have no filter, so those links open Usage & audit unfiltered.',
   'No connection read lists one connection by connectionRef. Shared MCP selects a server id and Vault lists credential references, so the reference stays text.',
   'A knowledge page and revision have no URL anchor.',
   'The environment has no user surface; it stays in the inspector.',
@@ -222,12 +221,27 @@ function resolveArtifact(
   };
 }
 
-function resolveAudit(): Resolved {
+type AuditScope = Extract<ObjectRef, { kind: 'audit' }>['scope'];
+
+/** Usage & audit filtered by one server selector. The page continues that same read. */
+export function auditUsageHref(scope: AuditScope): string {
+  const params = new URLSearchParams();
+  if ('turnId' in scope && scope.turnId.length > 0) params.set('turnId', scope.turnId);
+  else if ('capabilityCallId' in scope && scope.capabilityCallId.length > 0) {
+    params.set('capabilityCallId', scope.capabilityCallId);
+  } else if ('itemId' in scope && scope.itemId.length > 0) params.set('itemId', scope.itemId);
+  const search = params.toString();
+  return search.length > 0 ? `/workspace/usage?${search}` : '/workspace/usage';
+}
+
+function resolveAudit(ref: Extract<ObjectRef, { kind: 'audit' }>): Resolved {
+  const href = auditUsageHref(ref.scope);
+  const query = href.indexOf('?');
   return {
-    path: '/workspace/usage',
-    search: '',
+    path: query === -1 ? href : href.slice(0, query),
+    search: query === -1 ? '' : href.slice(query + 1),
     focus: null,
-    notice: timelineNotices.auditUnfiltered,
+    notice: null,
   };
 }
 
@@ -387,7 +401,7 @@ function resolveGoalCard(
 const RESOLVERS: Record<ObjectRef['kind'], Resolver> = {
   thread: (ref, facts) => (ref.kind === 'thread' ? resolveThread(ref, facts) : unreachable()),
   artifact: (ref, facts) => (ref.kind === 'artifact' ? resolveArtifact(ref, facts) : unreachable()),
-  audit: () => resolveAudit(),
+  audit: (ref) => (ref.kind === 'audit' ? resolveAudit(ref) : unreachable()),
   attention: (ref, facts) =>
     ref.kind === 'attention' ? resolveAttention(ref, facts) : unreachable(),
   knowledge: () => resolveKnowledge(),

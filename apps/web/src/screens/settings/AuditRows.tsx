@@ -165,17 +165,19 @@ export function AuditEventRow({
 export function PermissionDecisionRow({ decision }: { decision: PermissionDecisionDisplayRow }) {
   const status = evidenceStatus(decision.result);
   return (
-    <ListRow>
-      <div className="min-w-0 flex-1">
-        <p className="text-sm font-bold text-fg-strong">{decision.action}</p>
-        {decision.createdAt ? (
-          <p className="break-all text-xs text-fg-muted">{decision.createdAt}</p>
-        ) : null}
-        <RecordedTime value={decision.createdAt} />
-      </div>
-      <StatusChip tone={status.tone} dot>
-        {status.label}
-      </StatusChip>
-    </ListRow>
+    <div id={`decision-${decision.decisionId}`} tabIndex={-1}>
+      <ListRow>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-bold text-fg-strong">{decision.action}</p>
+          {decision.createdAt ? (
+            <p className="break-all text-xs text-fg-muted">{decision.createdAt}</p>
+          ) : null}
+          <RecordedTime value={decision.createdAt} />
+        </div>
+        <StatusChip tone={status.tone} dot>
+          {status.label}
+        </StatusChip>
+      </ListRow>
+    </div>
   );
 }

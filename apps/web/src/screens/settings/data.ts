@@ -60,6 +60,33 @@ type GovernanceCursors = {
   permission?: string | null;
 };
 
+/** Server selectors for one evidence read. A continuation repeats these exact fields. */
+export type EvidenceSelectors = {
+  turnId?: string;
+  capabilityCallId?: string;
+  itemId?: string;
+};
+
+export function evidenceSelectors(search: string): EvidenceSelectors {
+  const params = new URLSearchParams(search);
+  const turnId = params.get('turnId')?.trim() ?? '';
+  const capabilityCallId = params.get('capabilityCallId')?.trim() ?? '';
+  const itemId = params.get('itemId')?.trim() ?? '';
+  return {
+    ...(turnId.length > 0 ? { turnId } : {}),
+    ...(capabilityCallId.length > 0 ? { capabilityCallId } : {}),
+    ...(itemId.length > 0 ? { itemId } : {}),
+  };
+}
+
+function wireSelectors(selectors: EvidenceSelectors) {
+  return {
+    ...(selectors.turnId ? { turnId: selectors.turnId } : {}),
+    ...(selectors.capabilityCallId ? { capabilityCallId: selectors.capabilityCallId } : {}),
+    ...(selectors.itemId ? { itemId: selectors.itemId } : {}),
+  };
+}
+
 /** Re-export workspace selection for General settings. */
 export { useCurrentWorkspaceId, useWorkspaces };
 
@@ -1141,10 +1168,11 @@ export function useAepSnapshotDetail(workspaceId: string | null, snapshotId: str
  * @param workspaceId Validated selected Workspace identity, or null before discovery resolves.
  * @returns TanStack query for the selected-Workspace projection.
  */
-export function useUsageAndAudit(workspaceId: string | null) {
+export function useUsageAndAudit(workspaceId: string | null, selectors: EvidenceSelectors = {}) {
   const client = useCoreClient();
+  const filter = wireSelectors(selectors);
   const query = useInfiniteQuery({
-    queryKey: settingsKeys.usage(workspaceId ?? ''),
+    queryKey: [...settingsKeys.usage(workspaceId ?? ''), filter],
     initialPageParam: {
       usage: undefined,
       audit: undefined,
@@ -1162,12 +1190,14 @@ export function useUsageAndAudit(workspaceId: string | null) {
             }
           : client.operations['usage.read']({
               workspaceId: selectedWorkspaceId,
+              ...filter,
               ...governancePageInput(pageParam.usage),
             }),
         pageParam.audit === null
           ? { workspaceId: selectedWorkspaceId, auditEvents: [], nextCursor: null }
           : client.operations['audit.workspace-list']({
               workspaceId: selectedWorkspaceId,
+              ...filter,
               ...governancePageInput(pageParam.audit),
             }),
         pageParam.permission === null

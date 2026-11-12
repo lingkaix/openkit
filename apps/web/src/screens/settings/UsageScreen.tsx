@@ -1,3 +1,5 @@
+import { useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useConnection } from '../../app/core-client';
 import {
   Button,
@@ -23,6 +25,7 @@ import {
 } from './AuditRows';
 import {
   type CapabilityUsageCallRow,
+  evidenceSelectors,
   type UsageRecordRow,
   useCurrentWorkspaceId,
   useUsageAndAudit,
@@ -39,10 +42,17 @@ import { projectSafeValue } from './secret-safe';
 
 /** Live, read-only selected-Workspace usage and governance projection for board 17. */
 export function UsageScreen() {
+  const [searchParams] = useSearchParams();
+  const selectors = evidenceSelectors(searchParams.toString());
+  const decisionId = searchParams.get('decision')?.trim() ?? '';
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId();
   const workspace = workspaces.data?.find((candidate) => candidate.id === workspaceId) ?? null;
-  const evidence = useUsageAndAudit(workspaceId);
+  const evidence = useUsageAndAudit(workspaceId, selectors);
+  useEffect(() => {
+    if (decisionId.length === 0 || !evidence.isSuccess || evidence.dataUpdatedAt === 0) return;
+    document.getElementById(`decision-${decisionId}`)?.focus();
+  }, [decisionId, evidence.isSuccess, evidence.dataUpdatedAt]);
   const activity = useThreadActivity([
     workspaceId,
     ...(evidence.data?.auditEvents.map((event) => event.workspaceId) ?? []),
