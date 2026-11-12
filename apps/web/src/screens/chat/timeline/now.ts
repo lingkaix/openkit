@@ -101,11 +101,60 @@ function quietThreshold(facts: NowFacts): number {
   return QUIET_HIGH_MS;
 }
 
-function elapsed(iso: string | null | undefined, now: number): number | null {
+function finiteTime(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const parsed = Date.parse(iso);
-  if (!Number.isFinite(parsed)) return null;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function elapsed(iso: string | null | undefined, now: number): number | null {
+  const parsed = finiteTime(iso);
+  if (parsed == null) return null;
   return Math.max(0, now - parsed);
+}
+
+/** Newest created or completed instant on one loaded item. */
+function itemEventTime(item: NowItem): number | null {
+  const times = [finiteTime(item.createdAt), finiteTime(item.completedAt)].filter(
+    (value): value is number => value != null
+  );
+  return times.length > 0 ? Math.max(...times) : null;
+}
+
+/** A dashboard.now step, already the open step of the running turn. */
+export function nowStepFromDashboard(
+  step: { kind: string; title?: string | null; startedAt: string } | null | undefined
+): NowStep | null {
+  if (!step) return null;
+  if (step.kind === 'command-execution') {
+    return { kind: 'command', inProgress: true, startedAt: step.startedAt };
+  }
+  if (step.kind === 'tool-call') {
+    return { kind: 'tool', inProgress: true, startedAt: step.startedAt, title: step.title };
+  }
+  return null;
+}
+
+/**
+ * Last activity of this run.
+ * An item older than a running turn's start is history in the window, not live activity.
+ * A supplied live event is used when it is not older than that start.
+ */
+export function liveRunEventAt(input: {
+  status?: string;
+  startedAt?: string | null;
+  liveEventAt?: string | null;
+  items: readonly NowItem[];
+}): string | null {
+  const started = input.status === 'running' ? finiteTime(input.startedAt) : null;
+  const live = finiteTime(input.liveEventAt);
+  if (live != null && (started == null || live >= started)) return new Date(live).toISOString();
+  const times = input.items
+    .map(itemEventTime)
+    .filter((value): value is number => value != null)
+    .filter((value) => started == null || value >= started);
+  if (times.length === 0) return null;
+  return new Date(Math.max(...times)).toISOString();
 }
 
 function withDuration(label: string, ms: number | null): string {
@@ -177,7 +226,8 @@ function hidden(turn: NowTurn | null | undefined, now: number): NowModel {
 /**
  * Every Now state. The timeline does not invent queue position, effort, or last-event time.
  * // TB4: queue position is not on thread.dashboard. Pass `queueAhead` only when a caller has it.
- * // TB4: last-event time is not a dashboard field. Quiet is omitted when `lastEventAt` is missing.
+ * // A running turn ignores window items older than its start. Quiet is omitted when no live time remains.
+ * // Pass `liveEventAt` from dashboard.now.lastEventAt when that read is present.
  * // TB4: effort is the turn's reasoningEffort when the turn carries it.
  * // TB4: "steps reported only when they finish" is not on the dashboard. The 30-minute Working
  * // threshold applies only when `stepsReportedWhenFinished` is already known.
@@ -296,11 +346,10 @@ function openStep(item: NowItem): NowStep | null {
 }
 
 /**
- * Project today's dashboard and loaded items into Now.
- * // TB4: queue position is not on thread.dashboard, so the ahead count is omitted.
- * // TB4: last-event time is the newest loaded item `createdAt`. Quiet is omitted when no item has one.
- * // TB4: the 30-minute Working threshold is not applied, because the dashboard does not say
- * // whether steps are reported only when they finish.
+ * Project the loaded run into Now.
+ * Last activity is the live event when it belongs to this run, otherwise an item of this run
+ * that is not older than the run's start. Quiet is omitted when no such time remains.
+ * Queue position and finish-only steps stay omitted until the caller passes them.
  */
 export function nowFromThread(input: {
   now: number;
@@ -310,17 +359,35 @@ export function nowFromThread(input: {
   items: readonly NowItem[];
   blockingCount: number;
   lastKnown?: { status: string; at: string } | null;
+  /** dashboard.now.lastEventAt. Omitted when that read is absent. */
+  liveEventAt?: string | null;
+  /** dashboard.now.queuePosition. Omitted when that read is absent. */
+  queueAhead?: number | null;
+  /** Set when dashboard.now.stepsReportedLive is false. */
+  stepsReportedWhenFinished?: boolean;
+  /** dashboard.now.step, used when the loaded window has no open step of this run. */
+  liveStep?: NowStep | null;
 }): NowModel {
   const turn =
     [...input.turns].reverse().find((candidate) => candidate.status === 'running') ??
     input.turns.at(-1) ??
     null;
   const mine = turn?.id ? input.items.filter((item) => item.turnId === turn.id) : input.items;
-  const steps = mine.map(openStep).filter((step): step is NowStep => step != null);
-  const times = mine
-    .map((item) => (item.createdAt ? Date.parse(item.createdAt) : Number.NaN))
-    .filter((value) => Number.isFinite(value));
-  const lastEventAt = times.length > 0 ? new Date(Math.max(...times)).toISOString() : null;
+  const started = turn?.status === 'running' ? finiteTime(turn.startedAt) : null;
+  const current = mine.filter((item) => {
+    if (started == null) return true;
+    const time = itemEventTime(item);
+    return time == null || time >= started;
+  });
+  const fromItems = current.map(openStep).filter((step): step is NowStep => step != null);
+  const steps =
+    fromItems.length > 0 ? fromItems : input.liveStep?.inProgress ? [input.liveStep] : [];
+  const lastEventAt = liveRunEventAt({
+    status: turn?.status,
+    startedAt: turn?.startedAt,
+    liveEventAt: input.liveEventAt,
+    items: mine,
+  });
   return deriveNow({
     now: input.now,
     readFailed: input.readFailed,
@@ -330,5 +397,7 @@ export function nowFromThread(input: {
     lastEventAt,
     blockingCount: input.blockingCount,
     lastKnown: input.lastKnown,
+    queueAhead: input.queueAhead,
+    stepsReportedWhenFinished: input.stepsReportedWhenFinished,
   });
 }

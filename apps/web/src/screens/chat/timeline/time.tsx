@@ -51,7 +51,9 @@ export function formatRelativeAge(deltaMs: number): string {
 }
 
 /**
- * Visible instant. Relative within 24 hours, absolute at and beyond that, and absolute when the clock is ahead.
+ * Visible instant. Relative within 24 hours either way.
+ * A timestamp a little ahead of the clock still reads as just now.
+ * Absolute at and beyond 24 hours. Hover and long press keep the absolute title.
  */
 export function formatTimelineTime(
   iso: string,
@@ -61,8 +63,8 @@ export function formatTimelineTime(
   const title = formatAbsolute(iso);
   if (!Number.isFinite(parsed)) return { text: title, dateTime: iso, title };
   const delta = now - parsed;
-  if (delta < 0 || delta >= RELATIVE_WINDOW_MS) return { text: title, dateTime: iso, title };
-  return { text: formatRelativeAge(delta), dateTime: iso, title };
+  if (Math.abs(delta) >= RELATIVE_WINDOW_MS) return { text: title, dateTime: iso, title };
+  return { text: formatRelativeAge(Math.max(0, delta)), dateTime: iso, title };
 }
 
 /**

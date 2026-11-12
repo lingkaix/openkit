@@ -496,9 +496,7 @@ test('pages the timeline window and keeps a scrolled reader still', async ({ pag
       const openAll = page.getByRole('button', { name: 'Open all steps' });
       await openAll.focus();
       await page.keyboard.press('Enter');
-      await expect(
-        page.getByRole('dialog', { name: viewport.width < 800 ? 'Steps' : 'Open all steps' })
-      ).toBeVisible();
+      await expect(page.getByRole('dialog', { name: 'Steps' })).toBeVisible();
       await page.screenshot({
         path: join(shotsDir, `${viewport.name}-steps.png`),
         fullPage: false,

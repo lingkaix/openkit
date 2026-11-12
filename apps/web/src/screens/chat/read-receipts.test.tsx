@@ -135,7 +135,12 @@ describe('displayed conversation receipts', () => {
     await waitFor(() => expect(readIds.has('first')).toBe(true));
     expect(readIds.has('second')).toBe(false);
     await waitFor(() => expect(screen.getByRole('button', { name: 'Mark read' })).toBeEnabled());
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Mark read' }));
+    const markRead = screen.getByRole('button', { name: 'Mark read' });
+    const dock = markRead.closest('[data-read-dock="bar"]');
+    expect(dock).not.toBeNull();
+    expect(dock).toHaveClass('justify-start');
+    expect(markRead.className).toContain('self-start');
+    await userEvent.setup().click(markRead);
     await waitFor(() =>
       expect(mark).toHaveBeenCalledWith({ workspaceId: 'workspace', threadId: 'thread' })
     );

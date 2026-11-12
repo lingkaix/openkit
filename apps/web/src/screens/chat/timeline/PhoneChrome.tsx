@@ -1,10 +1,9 @@
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { flushSync } from 'react-dom';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { usePersistentNavigation } from '../../../app/AppShell';
-import { Button, Icon, TextField } from '../../../primitives';
-import type { ThreadItem } from '../data';
-import { fillCopy, timelineCopy } from './copy';
+import { Button, Icon } from '../../../primitives';
+import { timelineCopy } from './copy';
 import type { NowModel } from './now';
 import {
   closeSheetSearch,
@@ -14,7 +13,6 @@ import {
   type SheetKind,
   sheetDepthOf,
 } from './phone';
-import { TimelineTime } from './TimelineTime';
 
 export interface TimelineSheets {
   phone: boolean;
@@ -198,150 +196,4 @@ export function PhoneSheetFrame({
   );
 }
 
-/** Full-height decision. Approve stays off until the exact effect is shown. */
-export function DecisionSheet({
-  item,
-  actor,
-  blocking,
-  effectText,
-  pending,
-  holdReason,
-  more,
-  onApprove,
-  onDeny,
-  onSubmitAnswers,
-  onNext,
-  onClose,
-}: {
-  item: Extract<ThreadItem, { type: 'approval-request' | 'user-input-request' }>;
-  actor: string;
-  blocking: boolean;
-  effectText: string | null;
-  pending?: boolean;
-  holdReason?: string;
-  more: number;
-  onApprove?: () => void;
-  onDeny?: () => void;
-  onSubmitAnswers?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
-  onNext?: () => void;
-  onClose: () => void;
-}) {
-  const question = item.type === 'user-input-request';
-  const missing = !question && !effectText;
-  const approveId = `sheet-approve-${item.id}`;
-  const denyId = `sheet-deny-${item.id}`;
-  const missingId = `sheet-missing-${item.id}`;
-  return (
-    <PhoneSheetFrame
-      label={timelineCopy.decisionSheet}
-      mode="full"
-      onClose={onClose}
-      footer={
-        <>
-          <p id={question ? `sheet-answer-${item.id}` : approveId}>
-            {question ? timelineCopy.answerConsequence : timelineCopy.approveConsequence}
-          </p>
-          {!question ? <p id={denyId}>{timelineCopy.denyConsequence}</p> : null}
-          {missing ? <p id={missingId}>{timelineCopy.exactEffectMissing}</p> : null}
-          {holdReason ? <p>{holdReason}</p> : null}
-          {question ? (
-            <QuestionActions item={item} pending={Boolean(pending)} onSubmit={onSubmitAnswers} />
-          ) : (
-            <div className="flex gap-2">
-              <Button
-                variant="negative-outline"
-                className="min-h-11 flex-1"
-                isDisabled={Boolean(pending)}
-                aria-describedby={denyId}
-                onPress={onDeny}
-              >
-                Deny
-              </Button>
-              <Button
-                variant="accent"
-                className="min-h-11 flex-1"
-                isDisabled={missing || Boolean(pending)}
-                aria-describedby={missing ? missingId : approveId}
-                onPress={onApprove}
-              >
-                Approve
-              </Button>
-            </div>
-          )}
-          {more > 0 && onNext ? (
-            <button type="button" className="min-h-11 text-left" onClick={onNext}>
-              {fillCopy(timelineCopy.nextDecision, { count: more })}
-            </button>
-          ) : null}
-        </>
-      }
-    >
-      <p className="text-base font-medium text-fg">{question ? item.prompt : item.title}</p>
-      <p className="ok-meta mt-2">
-        <span>{actor}</span>
-        <span aria-hidden="true"> · </span>
-        <TimelineTime iso={item.createdAt} />
-      </p>
-      <p className="ok-meta mt-2">
-        {blocking ? timelineCopy.workIsWaiting : timelineCopy.workContinues}
-      </p>
-      {question ? (
-        <div className="mt-4 flex flex-col gap-3">
-          {item.questions.map((entry) => (
-            <p key={entry.id}>{entry.question}</p>
-          ))}
-        </div>
-      ) : effectText ? (
-        <section className="mt-4" aria-label="Complete exact effect">
-          <pre className="overflow-auto whitespace-pre-wrap break-all">{effectText}</pre>
-        </section>
-      ) : (
-        <p className="mt-4">{timelineCopy.exactEffectMissing}</p>
-      )}
-    </PhoneSheetFrame>
-  );
-}
-
-function QuestionActions({
-  item,
-  pending,
-  onSubmit,
-}: {
-  item: Extract<ThreadItem, { type: 'user-input-request' }>;
-  pending: boolean;
-  onSubmit?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
-}) {
-  const [answers, setAnswers] = useState<Record<string, string>>({});
-  const complete = item.questions.every((entry) => Boolean(answers[entry.id]?.trim()));
-  const why = `sheet-answer-${item.id}`;
-  return (
-    <div className="flex flex-col gap-3">
-      {item.questions.map((entry) => (
-        <TextField
-          key={entry.id}
-          label={entry.header}
-          isDisabled={pending}
-          value={answers[entry.id] ?? ''}
-          onChange={(value) => setAnswers((current) => ({ ...current, [entry.id]: value }))}
-        />
-      ))}
-      {!complete && !pending ? <p id={`${why}-wait`}>Answer every question first.</p> : null}
-      <Button
-        className="min-h-11"
-        isDisabled={!complete || pending || !onSubmit}
-        aria-describedby={!complete || pending ? `${why}-wait` : why}
-        onPress={() => {
-          if (!onSubmit || !complete) return;
-          onSubmit(
-            item.userInputRequestId,
-            Object.fromEntries(
-              item.questions.map((entry) => [entry.id, [answers[entry.id] as string]])
-            )
-          );
-        }}
-      >
-        {pending ? 'Submitting answers' : 'Submit answers'}
-      </Button>
-    </div>
-  );
-}
+export { DecisionSheet } from './decision-sheet';

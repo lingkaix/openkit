@@ -78,6 +78,7 @@ export interface ThreadScreenProps {
 export function ThreadScreen({ mode }: ThreadScreenProps) {
   const navigate = useNavigate();
   const location = useLocation();
+  const [updatesHost, setUpdatesHost] = useState<HTMLDivElement | null>(null);
   const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
@@ -652,6 +653,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   })
                 }
                 sheets={sheets}
+                updatesHost={updatesHost}
               />
             )}
             {feedbackTurn ? (
@@ -688,6 +690,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             ) : null}
           </div>
         </div>
+
+        <div ref={setUpdatesHost} data-new-updates-dock="bar" className="flex justify-center" />
 
         <div
           data-composer-dock="true"

@@ -157,24 +157,27 @@ export function ThreadReadReceipts({
           ) : null}
           {state.isSuccess ? (
             unreadIds.size > 0 ? (
-              <Button
-                variant="quiet"
-                size="sm"
-                isDisabled={mark.isPending}
-                onPress={() =>
-                  mark.mutate(
-                    {},
-                    {
-                      onSuccess: () => {
-                        pending.current.clear();
-                        failed.current = false;
-                      },
-                    }
-                  )
-                }
-              >
-                Mark read
-              </Button>
+              <div data-read-dock="bar" className="flex justify-start">
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  className="self-start"
+                  isDisabled={mark.isPending}
+                  onPress={() =>
+                    mark.mutate(
+                      {},
+                      {
+                        onSuccess: () => {
+                          pending.current.clear();
+                          failed.current = false;
+                        },
+                      }
+                    )
+                  }
+                >
+                  Mark read
+                </Button>
+              </div>
             ) : (
               <p className="text-xs text-fg-muted">All replies read</p>
             )

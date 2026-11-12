@@ -8,13 +8,14 @@ import { buildAlignment } from './header';
 import { NeedsYouBar } from './NeedsYouBar';
 import {
   attentionDisplayTitle,
+  attentionWalk,
   type NeedsYouRow,
   needsYouActivation,
   needsYouSummary,
   orderNeedsYou,
   toNeedsYouRow,
 } from './needs-you';
-import { deriveNow, nowFromThread } from './now';
+import { deriveNow, nowFromThread, nowStepFromDashboard } from './now';
 import { TimelineTime } from './TimelineTime';
 import { formatDuration, formatTimelineTime, stalenessLabel } from './time';
 
@@ -254,6 +255,92 @@ describe('Now', () => {
     expect(model.text).not.toContain('no activity');
   });
 
+  it('does not treat historical window items as live activity of a running turn', () => {
+    const started = new Date(NOW - 15_000).toISOString();
+    const historical = new Date(NOW - 60 * 60 * 60 * 1000).toISOString();
+    const model = nowFromThread({
+      now: NOW,
+      readFailed: false,
+      stopPending: false,
+      blockingCount: 0,
+      turns: [{ id: 'tu', status: 'running', startedAt: started, reasoningEffort: 'medium' }],
+      items: [
+        {
+          type: 'command-execution',
+          turnId: 'tu',
+          status: 'in_progress',
+          createdAt: historical,
+          exitCode: null,
+          completedAt: null,
+        },
+        { type: 'note', turnId: 'tu', status: 'completed', createdAt: historical },
+      ],
+    });
+    expect(model.kind).toBe('thinking');
+    expect(model.text).toBe('Thinking · 15 s');
+    expect(model.text).not.toMatch(/no activity/);
+  });
+
+  it('uses the live event of this run when the window items are older than the run', () => {
+    const started = new Date(NOW - 10 * 60 * 1000).toISOString();
+    const historical = new Date(NOW - 60 * 60 * 60 * 1000).toISOString();
+    const model = nowFromThread({
+      now: NOW,
+      readFailed: false,
+      stopPending: false,
+      blockingCount: 0,
+      turns: [{ id: 'tu', status: 'running', startedAt: started, reasoningEffort: 'medium' }],
+      liveEventAt: new Date(NOW - 6 * 60 * 1000).toISOString(),
+      items: [{ type: 'note', turnId: 'tu', status: 'completed', createdAt: historical }],
+    });
+    expect(model.kind).toBe('quiet');
+    expect(model.text).toContain('no activity for 6 min');
+    expect(model.text).not.toMatch(/60 h/);
+  });
+
+  it('uses the dashboard step and queue when the window does not have them', () => {
+    const started = new Date(NOW - 15_000).toISOString();
+    const historical = new Date(NOW - 60 * 60 * 60 * 1000).toISOString();
+    const step = nowStepFromDashboard({
+      kind: 'command-execution',
+      title: 'npm test',
+      startedAt: new Date(NOW - 10_000).toISOString(),
+    });
+    const model = nowFromThread({
+      now: NOW,
+      readFailed: false,
+      stopPending: false,
+      blockingCount: 0,
+      turns: [{ id: 'tu', status: 'running', startedAt: started, reasoningEffort: 'medium' }],
+      items: [
+        {
+          type: 'command-execution',
+          turnId: 'tu',
+          status: 'in_progress',
+          createdAt: historical,
+          exitCode: null,
+          completedAt: null,
+        },
+      ],
+      liveStep: step,
+    });
+    expect(model.kind).toBe('step');
+    expect(model.text).toBe('Running a command · 10 s');
+    expect(model.text).not.toMatch(/no activity|60 h/);
+    expect(
+      nowFromThread({
+        now: NOW,
+        readFailed: false,
+        stopPending: false,
+        blockingCount: 0,
+        turns: [{ id: 'tu', status: 'pending' }],
+        items: [],
+        queueAhead: 2,
+      }).text
+    ).toBe('Waiting for a free worker · 2 ahead');
+    expect(nowStepFromDashboard({ kind: 'file-change', startedAt: started })).toBeNull();
+  });
+
   it('says the run is waiting for you when a blocking request exists', () => {
     const model = deriveNow({
       ...base,
@@ -432,6 +519,26 @@ describe('alignment header', () => {
   });
 });
 
+describe('attention walk', () => {
+  it('keeps every attention row, including one whose item is not loaded', () => {
+    const rows = [
+      { id: 'row-1', itemId: 'it_loaded' },
+      { id: 'row-2', itemId: 'it_missing' },
+      { id: 'row-3' },
+      { id: 'row-4', itemId: 'it_other' },
+    ];
+    const walk = attentionWalk(rows, [{ id: 'it_loaded' }]);
+    expect(walk).toHaveLength(rows.length);
+    expect(walk.filter((entry) => entry.item != null)).toHaveLength(1);
+    expect(walk.map((entry) => entry.key)).toEqual([
+      'it_loaded',
+      'it_missing',
+      'row-3',
+      'it_other',
+    ]);
+  });
+});
+
 describe('U2 emphasis budget', () => {
   it('folds extra decision rows into the bar count', () => {
     const plan = planEmphasis({
@@ -461,6 +568,11 @@ describe('U5 time', () => {
     expect(inside.text).toMatch(/ago$/);
     expect(beyond.text).not.toMatch(/ago$/);
     expect(beyond.dateTime).toContain('2026-11-07');
+    const ahead = formatTimelineTime(new Date(NOW + 30_000).toISOString(), NOW);
+    expect(ahead.text).toBe('0 s ago');
+    expect(ahead.title).not.toBe(ahead.text);
+    const dayAhead = formatTimelineTime(new Date(NOW + 24 * 60 * 60 * 1000).toISOString(), NOW);
+    expect(dayAhead.text).not.toMatch(/ago$/);
     expect(formatDuration(999)).toBeNull();
     expect(formatDuration(1000)).toBe('1 s');
     expect(formatDuration(60_000)).toBe('1 min');

@@ -115,6 +115,31 @@ function focusElement(id: string): boolean {
   return true;
 }
 
+export interface AttentionWalkEntry<TItem> {
+  /** Loaded item id when the row names one, otherwise the row's own id. */
+  key: string;
+  rowId: string;
+  itemId?: string;
+  item: TItem | null;
+}
+
+/**
+ * The bar count and the decision walk are this list.
+ * A row stays when its item is outside the loaded window. No id is invented.
+ */
+export function attentionWalk<TItem extends { id: string }>(
+  rows: readonly { id: string; itemId?: string }[],
+  items: readonly TItem[]
+): AttentionWalkEntry<TItem>[] {
+  const byId = new Map(items.map((item) => [item.id, item]));
+  return rows.map((row) => ({
+    key: row.itemId ?? row.id,
+    rowId: row.id,
+    itemId: row.itemId,
+    item: row.itemId ? (byId.get(row.itemId) ?? null) : null,
+  }));
+}
+
 /** Map one Action Center row. Age and blocking are copied, not derived. */
 export function toNeedsYouRow(
   row: Pick<

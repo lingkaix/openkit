@@ -38,6 +38,7 @@ import { ThreadReadReceipts, useThreadUnreadIds } from './ThreadReadReceipts';
 import { AlignmentHeader } from './timeline/AlignmentHeader';
 import { CatchUpDivider } from './timeline/CatchUpDivider';
 import { selectedRunLabel, timelineCopy } from './timeline/copy';
+import { DecisionRowSheet, DecisionSheet } from './timeline/decision-sheet';
 import { classifyRunError, freshnessCopy, isDeniedRead } from './timeline/degraded';
 import { openDecisionIds, planEmphasis } from './timeline/emphasis';
 import { buildAlignment } from './timeline/header';
@@ -47,18 +48,14 @@ import { NeedsYouBar, useTimelineAttention } from './timeline/NeedsYouBar';
 import { NowLine } from './timeline/NowLine';
 import { readTimelineHistory, writeTimelineHistory } from './timeline/navigation-state';
 import {
+  attentionWalk,
   focusTimelineItem,
   orderNeedsYou,
   scopeNeedsYou,
   toNeedsYouRow,
 } from './timeline/needs-you';
-import { nowFromThread } from './timeline/now';
-import {
-  DecisionSheet,
-  PhoneBar,
-  PhoneSheetFrame,
-  type TimelineSheets,
-} from './timeline/PhoneChrome';
+import { nowFromThread, nowStepFromDashboard } from './timeline/now';
+import { PhoneBar, PhoneSheetFrame, type TimelineSheets } from './timeline/PhoneChrome';
 import { shortenProgress } from './timeline/phone';
 import { isStepItem, plainActorName, runDurationMs, taskSpecObjective } from './timeline/present';
 import { selectAgentProfile } from './timeline/profiles';
@@ -193,8 +190,10 @@ export interface ThreadStreamProps {
    * This stream does not add a second one, and it has no Steer control.
    */
   narrativeOnly?: boolean;
-  /** URL-backed phone sheets. Desktop ignores steps and the inspector here. */
+  /** URL-backed sheets. Desktop ignores the inspector here. Steps open on both. */
   sheets?: TimelineSheets;
+  /** Host for the new-updates control, outside the scrolling entries. */
+  updatesHost?: HTMLElement | null;
   /**
    * A stale dashboard is already cached. Hide runs until this mount's read succeeds.
    * A pending read with no cache still shows its own checking state.
@@ -234,6 +233,7 @@ export function ThreadStream({
   onOpen,
   narrativeOnly,
   sheets,
+  updatesHost,
   holdContent = false,
 }: ThreadStreamProps) {
   const phone = !usePersistentNavigation();
@@ -270,7 +270,6 @@ export function ThreadStream({
   const windowAnchor = anchorOverride ?? baseAnchor;
   const measureOpeningActive = parentOpening ? Boolean(measureOpening) : uncontrolledCatchUp;
   const settleOpening = onOpeningSettle ?? setLocalSettled;
-  const [allStepsTurnId, setAllStepsTurnId] = useState<string | null>(null);
   const [followNew, setFollowNew] = useState({ count: 0, decision: false });
   const following = useRef(windowAnchor.kind === 'latest');
   const knownRunIds = useRef<Set<string>>(new Set());
@@ -317,9 +316,8 @@ export function ThreadStream({
     running: Boolean(running),
     pending: Boolean(pending),
   });
-  const level2TurnId = timelineOn
-    ? (allStepsTurnId ?? expandedTurnId ?? sheets?.stepsTurnId ?? localSteps)
-    : null;
+  const stepsTurnId = sheets?.stepsTurnId ?? localSteps;
+  const level2TurnId = timelineOn ? (stepsTurnId ?? expandedTurnId) : null;
   const level2 = useRunItemWindow({
     workspaceId,
     threadId,
@@ -680,6 +678,7 @@ export function ThreadStream({
     toNeedsYouRow(row, openHrefForRow(row), undefined, carriedQuestion(feedItems, row.itemId))
   );
   const latestTurn = dashboard?.turns.at(-1);
+  const dashboardNow = dashboard?.now;
   const lastKnownAt = latestTurn?.completedAt ?? latestTurn?.startedAt;
   const nowModel = nowFromThread({
     now: clock,
@@ -696,6 +695,13 @@ export function ThreadStream({
     items: feedItems,
     blockingCount: scoped.filter((row) => row.blocking).length,
     lastKnown: latestTurn && lastKnownAt ? { status: latestTurn.status, at: lastKnownAt } : null,
+    liveEventAt: dashboardNow?.lastEventAt,
+    queueAhead:
+      dashboardNow?.queuePosition != null && dashboardNow.queuePosition > 1
+        ? dashboardNow.queuePosition - 1
+        : undefined,
+    stepsReportedWhenFinished: dashboardNow?.stepsReportedLive === false,
+    liveStep: nowStepFromDashboard(dashboardNow?.status === 'running' ? dashboardNow.step : null),
   });
   const emphasis = planEmphasis({
     needsYou: scoped.length > 0,
@@ -719,7 +725,6 @@ export function ThreadStream({
     awaitingDecision: scoped.length > 0,
   });
   const decisionId = sheets?.decisionId ?? (phone ? localDecision : null);
-  const stepsTurnId = phone ? (sheets?.stepsTurnId ?? localSteps) : null;
   function openSheet(
     kind: 'decision' | 'steps' | 'inspect',
     id: string,
@@ -743,7 +748,26 @@ export function ThreadStream({
     setLocalSteps(null);
     setLocalInspect(null);
   }
-  const nextDecisionId = scoped.find((row) => row.itemId)?.itemId;
+  const decisionItems = feedItems.filter(
+    (item): item is Extract<ThreadItem, { type: 'approval-request' | 'user-input-request' }> =>
+      item.type === 'approval-request' || item.type === 'user-input-request'
+  );
+  const decisionWalk = attentionWalk(scoped, decisionItems);
+  const openEntry =
+    decisionId == null
+      ? null
+      : (decisionWalk.find(
+          (entry) =>
+            entry.key === decisionId || entry.itemId === decisionId || entry.rowId === decisionId
+        ) ?? null);
+  const decisionIndex = openEntry
+    ? decisionWalk.findIndex((entry) => entry.key === openEntry.key)
+    : -1;
+  const decisionsAfter = decisionIndex >= 0 ? decisionWalk.length - decisionIndex - 1 : 0;
+  const nextWalk = decisionIndex >= 0 ? decisionWalk[decisionIndex + 1] : undefined;
+  const openRow = openEntry ? scoped.find((row) => row.id === openEntry.rowId) : undefined;
+  const openItem = openEntry?.item ?? null;
+  const firstDecision = decisionWalk[0];
   const chrome = narrativeOnly ? null : (
     <div className="sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2">
       {phone ? (
@@ -754,12 +778,12 @@ export function ThreadStream({
           ) : null}
           <PhoneBar
             now={nowModel}
-            needsCount={scoped.length}
+            needsCount={decisionWalk.length}
             reducedMotion={reducedMotion}
             onOpen={
-              nextDecisionId
+              firstDecision
                 ? () => {
-                    openSheet('decision', nextDecisionId);
+                    openSheet('decision', firstDecision.key);
                   }
                 : undefined
             }
@@ -1040,19 +1064,6 @@ export function ThreadStream({
       onExpand={() => setSheetExpanded((open) => !open)}
     />
   ) : null;
-  const decisionItems = feedItems.filter(
-    (item): item is Extract<ThreadItem, { type: 'approval-request' | 'user-input-request' }> =>
-      item.type === 'approval-request' || item.type === 'user-input-request'
-  );
-  const decisionQueue = scoped.flatMap((row) => {
-    const match = decisionItems.find((item) => item.id === row.itemId);
-    return match ? [match] : [];
-  });
-  const openDecision = decisionItems.find((item) => item.id === decisionId) ?? null;
-  const decisionIndex = openDecision
-    ? decisionQueue.findIndex((item) => item.id === openDecision.id)
-    : -1;
-  const decisionsAfter = decisionIndex >= 0 ? decisionQueue.length - decisionIndex - 1 : 0;
   const stepSource =
     timelineOn && stepsTurnId && level2TurnId === stepsTurnId && level2.completeItems.length > 0
       ? level2.completeItems
@@ -1190,6 +1201,7 @@ export function ThreadStream({
             }}
             newCount={followNew.count}
             decisionNew={followNew.decision}
+            updatesHost={updatesHost ?? null}
             onFollowChange={(next) => {
               following.current = next;
               if (next) setFollowNew({ count: 0, decision: false });
@@ -1291,10 +1303,7 @@ export function ThreadStream({
                     stepsSheetOpen={stepsTurnId === group.turnId}
                     onStepsToggle={(open) => rememberExpanded(open ? group.turnId : null)}
                     onOpenSteps={() => openSheet('steps', group.turnId)}
-                    onOpenAllSteps={() => {
-                      setAllStepsTurnId(group.turnId);
-                      if (phone) openSheet('steps', group.turnId);
-                    }}
+                    onOpenAllSteps={() => openSheet('steps', group.turnId)}
                     actorName={actorName}
                     omitTrigger={Boolean(firstViewerMessage)}
                     durationMs={runDurationMs(groupTurn, Date.now())}
@@ -1470,47 +1479,47 @@ export function ThreadStream({
       </ThreadReadReceipts>
       {inspector && !phone ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
       {phone && inspector}
-      {openDecision ? (
+      {openItem ? (
         <DecisionSheet
-          item={openDecision}
-          actor={plainActorName(authorFor(openDecision), 'worker')}
-          blocking={scoped.some((row) => row.itemId === openDecision.id && row.blocking)}
+          item={openItem}
+          actor={plainActorName(authorFor(openItem), 'worker')}
+          blocking={openRow?.blocking ?? false}
           effectText={
-            openDecision.type === 'approval-request'
+            openItem.type === 'approval-request'
               ? approvalEffectText(
                   dashboard?.pendingRequests?.find(
-                    (row) => row.requestId === openDecision.approvalRequestId
+                    (row) => row.requestId === openItem.approvalRequestId
                   )?.approvalEffect
                 )
               : null
           }
           pending={
-            openDecision.type === 'approval-request'
+            openItem.type === 'approval-request'
               ? respond.isPending &&
-                respond.variables?.approvalRequestId === openDecision.approvalRequestId
+                respond.variables?.approvalRequestId === openItem.approvalRequestId
               : submitAnswers.isPending &&
-                openDecision.type === 'user-input-request' &&
-                submitAnswers.variables?.userInputRequestId === openDecision.userInputRequestId
+                openItem.type === 'user-input-request' &&
+                submitAnswers.variables?.userInputRequestId === openItem.userInputRequestId
           }
           holdReason={holdReason}
           more={decisionsAfter}
           onApprove={
-            openDecision.type === 'approval-request'
+            openItem.type === 'approval-request'
               ? () =>
                   respond.mutate({
-                    approvalRequestId: openDecision.approvalRequestId,
-                    turnId: openDecision.turnId,
+                    approvalRequestId: openItem.approvalRequestId,
+                    turnId: openItem.turnId,
                     decision: 'granted',
                     requestId: createRequestId(),
                   })
               : undefined
           }
           onDeny={
-            openDecision.type === 'approval-request'
+            openItem.type === 'approval-request'
               ? () =>
                   respond.mutate({
-                    approvalRequestId: openDecision.approvalRequestId,
-                    turnId: openDecision.turnId,
+                    approvalRequestId: openItem.approvalRequestId,
+                    turnId: openItem.turnId,
                     decision: 'denied',
                     requestId: createRequestId(),
                   })
@@ -1520,14 +1529,27 @@ export function ThreadStream({
             submitAnswers.mutate({ userInputRequestId, answers, requestId: createRequestId() })
           }
           onNext={
-            decisionsAfter > 0 && decisionQueue[decisionIndex + 1]
-              ? () => openSheet('decision', decisionQueue[decisionIndex + 1]!.id, 'replace')
+            decisionsAfter > 0 && nextWalk
+              ? () => openSheet('decision', nextWalk.key, 'replace')
+              : undefined
+          }
+          onClose={closeSheet}
+        />
+      ) : openEntry && openRow ? (
+        <DecisionRowSheet
+          title={openRow.title}
+          createdAt={openRow.createdAt}
+          blocking={openRow.blocking}
+          more={decisionsAfter}
+          onNext={
+            decisionsAfter > 0 && nextWalk
+              ? () => openSheet('decision', nextWalk.key, 'replace')
               : undefined
           }
           onClose={closeSheet}
         />
       ) : null}
-      {phone && stepsTurnId ? (
+      {stepsTurnId ? (
         <PhoneSheetFrame
           label={timelineCopy.stepsSheet}
           mode="partial"
@@ -1567,37 +1589,6 @@ export function ThreadStream({
             ) : null}
           </ul>
         </PhoneSheetFrame>
-      ) : null}
-      {allStepsTurnId && !phone ? (
-        <div role="dialog" aria-label={timelineCopy.openAllSteps} className="ok-prose">
-          {level2.data?.beforeCursor ? (
-            <Button
-              variant="quiet"
-              size="sm"
-              onPress={level2.pageEarlier}
-              isDisabled={level2.paging}
-            >
-              {timelineCopy.loadEarlier}
-            </Button>
-          ) : null}
-          <ul className="flex flex-col gap-2">
-            {(level2.completeItems.length > 0 ? level2.completeItems : feedItems)
-              .filter((item) => item.turnId === allStepsTurnId && isStepItem(item))
-              .map((item) => (
-                <li key={item.id} className="ok-step">
-                  {renderTimelineItem(item)}
-                </li>
-              ))}
-          </ul>
-          {level2.data?.afterCursor ? (
-            <Button variant="quiet" size="sm" onPress={level2.pageLater} isDisabled={level2.paging}>
-              {timelineCopy.loadLater}
-            </Button>
-          ) : null}
-          <Button variant="quiet" size="sm" onPress={() => setAllStepsTurnId(null)}>
-            {timelineCopy.closeInspector}
-          </Button>
-        </div>
       ) : null}
     </TimelineNowProvider>
   );

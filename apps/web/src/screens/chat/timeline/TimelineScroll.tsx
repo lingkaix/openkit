@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { Button } from '../../../primitives';
 import { fillCopy, timelineCopy } from './copy';
 import { writeTimelineHistory } from './navigation-state';
@@ -41,6 +42,7 @@ export function TimelineScroll({
   onJump,
   newCount,
   decisionNew,
+  updatesHost,
   onFollowChange,
   onCatchUp,
   pinDivider,
@@ -59,6 +61,8 @@ export function TimelineScroll({
   onJump: () => void;
   newCount: number;
   decisionNew: boolean;
+  /** Renders the new-updates control outside the scrolling entries. */
+  updatesHost?: HTMLElement | null;
   onFollowChange: (following: boolean) => void;
   onCatchUp: () => void;
   /** Keep the catch-up row at the top of the window once, then leave scroll alone. */
@@ -217,6 +221,20 @@ export function TimelineScroll({
     pending.current = { id: topEntryId, top: entry.getBoundingClientRect().top };
   }
 
+  const newUpdatesButton =
+    newCount > 0 && !following ? (
+      <Button
+        variant="quiet"
+        size="sm"
+        className={updatesHost ? undefined : 'self-center'}
+        data-emphasis={decisionNew ? 'decision' : undefined}
+        onPress={onCatchUp}
+      >
+        {fillCopy(timelineCopy.newUpdates, { count: newCount })}
+      </Button>
+    ) : null;
+  const newUpdates = updatesHost ? createPortal(newUpdatesButton, updatesHost) : newUpdatesButton;
+
   return (
     <div ref={frame} className="flex flex-col gap-3">
       <div ref={topSentinel} aria-hidden="true" />
@@ -250,17 +268,7 @@ export function TimelineScroll({
           {timelineCopy.jumpToLatest}
         </Button>
       ) : null}
-      {newCount > 0 && !following ? (
-        <Button
-          variant="quiet"
-          size="sm"
-          className="sticky bottom-3 z-10 self-center"
-          data-emphasis={decisionNew ? 'decision' : undefined}
-          onPress={onCatchUp}
-        >
-          {fillCopy(timelineCopy.newUpdates, { count: newCount })}
-        </Button>
-      ) : null}
+      {newUpdates}
     </div>
   );
 }
