@@ -13,6 +13,7 @@ import {
   useCurrentWorkspaceId,
   useThreadDashboard,
 } from '../data';
+import { getDisplayedTimeline, subscribeDisplayedTimeline } from './displayed-timeline';
 import {
   classifySteerError,
   composerLiveMode,
@@ -50,7 +51,18 @@ export function SteerProvider({ mode, children }: { mode: 'chat' | 'task'; child
     running: Boolean(runningTurn),
     pending: waiting && !runningTurn,
   });
-  // The stream keys its window by the route workspace. Follow that exact key, not every anchor.
+  // The mounted stream owns the window, including an implicit catch-up opening.
+  const displayed = useSyncExternalStore(
+    subscribeDisplayedTimeline,
+    getDisplayedTimeline,
+    () => null
+  );
+  const streamOwnsWindow =
+    displayed !== null &&
+    displayed.threadId === threadId &&
+    (displayed.workspaceId === routeWorkspaceId ||
+      (ownerId !== '' && displayed.workspaceId === ownerId));
+  // No stream is mounted. Follow the URL's exact key, not every cached anchor.
   const rendered = useSyncExternalStore(
     useCallback(
       (onChange: () => void) =>
@@ -74,7 +86,8 @@ export function SteerProvider({ mode, children }: { mode: 'chat' | 'task'; child
     () => queryClient.getQueryData(['thread-timeline', routeWorkspaceId, threadId, anchor]) ?? null,
     () => null
   );
-  const current = rendered ?? timeline.data ?? null;
+  const current =
+    streamOwnsWindow && displayed ? displayed.data : (rendered ?? timeline.data ?? null);
   const receipts = useMemo(() => steerReceiptsFromWindows(current ? [current] : []), [current]);
   const live = composerLiveMode({
     task: mode === 'task',

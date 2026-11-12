@@ -57,6 +57,7 @@ import {
   isDeniedRead,
   retainsAdmittedHistory,
 } from './timeline/degraded';
+import { clearDisplayedTimeline, publishDisplayedTimeline } from './timeline/displayed-timeline';
 import { openDecisionIds, planEmphasis } from './timeline/emphasis';
 import { buildAlignment } from './timeline/header';
 import { Inspector } from './timeline/Inspector';
@@ -296,28 +297,30 @@ function useThreadHistoryPaint(
   threadId: string
 ): void {
   const owner = workspaceId ?? '';
+  const versionRef = useRef(0);
+  const revisions = useRef(new Map<string, number>());
   const subscribe = useCallback(
     (onChange: () => void) =>
       queryClient.getQueryCache().subscribe((event) => {
-        const key = event.query.queryKey;
+        const query = event.query;
+        const key = query.queryKey;
         if (key[0] !== 'thread-timeline' && key[0] !== 'thread-timeline-items') return;
         if (key[1] !== owner || key[2] !== threadId) return;
+        if (event.type === 'removed') {
+          revisions.current.delete(query.queryHash);
+        } else {
+          const revision = query.state.dataUpdateCount + query.state.errorUpdateCount;
+          if (revisions.current.get(query.queryHash) === revision) return;
+          revisions.current.set(query.queryHash, revision);
+        }
+        versionRef.current += 1;
         // A cache write can happen while another stream is rendering. Deliver
         // the repaint after that render, still before the next timer tick.
         queueMicrotask(onChange);
       }),
     [owner, queryClient, threadId]
   );
-  const getSnapshot = useCallback(() => {
-    let version = 0;
-    const cache = queryClient.getQueryCache();
-    for (const head of ['thread-timeline', 'thread-timeline-items'] as const) {
-      for (const query of cache.findAll({ queryKey: [head, owner, threadId] })) {
-        version += query.state.dataUpdateCount + query.state.errorUpdateCount;
-      }
-    }
-    return version;
-  }, [owner, queryClient, threadId]);
+  const getSnapshot = useCallback(() => versionRef.current, []);
   useSyncExternalStore(subscribe, getSnapshot);
 }
 
@@ -499,6 +502,14 @@ export function ThreadStream({
     running: Boolean(running),
     pending: Boolean(pending),
   });
+  useLayoutEffect(() => {
+    const ticket = publishDisplayedTimeline({
+      workspaceId: workspaceId ?? '',
+      threadId,
+      data: timelineWindow.data ?? null,
+    });
+    return () => clearDisplayedTimeline(ticket);
+  }, [threadId, timelineWindow.data, workspaceId]);
   const stepsTurnId = sheets?.stepsTurnId ?? localSteps;
   const anchoredWindow =
     timelineWindow.data && itemAnchorHasLevel2(timelineWindow.data)

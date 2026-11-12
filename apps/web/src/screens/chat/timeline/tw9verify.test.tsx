@@ -231,7 +231,7 @@ it('TW9VERIFY shows the retained outcome of an older steer in the catch-up windo
     },
   });
   render(
-    <Frame api={api} cache={cache()} entry={`/tasks/${WS}/${THREAD}?catchUp=1`}>
+    <Frame api={api} cache={cache()}>
       <Routes>
         <Route
           path="/tasks/:workspaceId/:threadId"

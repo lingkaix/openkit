@@ -1,6 +1,6 @@
 import type { ThreadTimelineResponse } from '@openkit/app-api-schemas';
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../../app/core-client';
 import type { ThreadItem } from '../data';
@@ -54,6 +54,27 @@ function refusesThread(error: unknown): boolean {
     error instanceof ApiCallError &&
     (error.status === 401 || error.status === 403 || error.status === 404)
   );
+}
+
+/** A stored success is not current admission. Ask the Thread again before keeping a view. */
+async function admitCurrentThread(
+  client: CoreClient,
+  queryClient: QueryClient,
+  workspaceId: string,
+  threadId: string
+): Promise<boolean> {
+  try {
+    await client.operations['thread.timeline'](
+      openingInput(workspaceId, threadId, { kind: 'latest' })
+    );
+    queryClient.setQueryData(admissionKey(workspaceId, threadId), { admitted: true });
+    return true;
+  } catch (error) {
+    if (refusesThread(error)) {
+      queryClient.setQueryData(admissionKey(workspaceId, threadId), null);
+    }
+    return false;
+  }
 }
 
 /** The real client exposes the window read. Test doubles that omit it keep today's item path. */
@@ -137,13 +158,12 @@ export function useTimelineWindow(options: {
           error instanceof ApiCallError &&
           error.status === 404
         ) {
-          const admission = queryClient.getQueryData<{ admitted: true } | null>(
-            admissionKey(workspaceId, threadId)
-          );
           const preceding = precedingRef.current;
-          if (admission?.admitted && preceding) {
+          const admitted = await admitCurrentThread(client, queryClient, workspaceId, threadId);
+          if (admitted && preceding) {
             return { ...preceding, requestUnavailable: true };
           }
+          precedingRef.current = null;
         }
         throw error;
       }
