@@ -144,11 +144,17 @@ async function selectWorkspace(page: Page, name: string): Promise<void> {
   await expect(navigation.getByRole('button', { name, exact: true })).toBeVisible();
 }
 
-/** Leaves the authenticated product and waits for the protected read to reopen the gate. */
-async function signOut(page: Page, webUrl: string): Promise<void> {
-  await page.goto(`${webUrl}/settings/account`);
-  await expect(page.getByRole('heading', { name: 'Account' })).toBeVisible();
+/** Signs out through the live shell, then waits for auth and protected admission to settle. */
+async function signOut(page: Page): Promise<void> {
+  // Reloading for every actor discards admission caches and consumes the journey's shared budget.
+  await openSelectedWorkspaceAccount(page);
+  const signedOut = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname === '/api/auth/sign-out' &&
+      response.request().method() === 'POST'
+  );
   await page.getByRole('button', { name: 'Sign out' }).click();
+  expect((await signedOut).ok()).toBe(true);
   await expect(page.getByRole('heading', { name: 'Account access' })).toBeVisible();
 }
 
@@ -229,16 +235,16 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await completeServerBootstrap(stack, { ...bootstrapAdministrator, password });
   const ownerId = await signUp(page, owner);
   const workspaceId = await createWorkspace(page, stack.webUrl);
-  await signOut(page, stack.webUrl);
+  await signOut(page);
 
   const acceptingId = await signUp(page, accepting);
   await expect(page.locator('body')).not.toContainText(workspaceName);
   await expect(page.locator('body')).not.toContainText(workspaceId);
-  await signOut(page, stack.webUrl);
+  await signOut(page);
   const decliningId = await signUp(page, declining);
-  await signOut(page, stack.webUrl);
+  await signOut(page);
   const leavingId = await signUp(page, leaving);
-  await signOut(page, stack.webUrl);
+  await signOut(page);
 
   await signIn(page, owner);
   await selectWorkspace(page, workspaceName);
@@ -247,17 +253,17 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await invite(page, accepting.email);
   await invite(page, declining.email);
   await invite(page, leaving.email);
-  await signOut(page, stack.webUrl);
+  await signOut(page);
 
   await signIn(page, accepting);
   await decideInvitation(page, stack.webUrl, 'Accept');
-  await signOut(page, stack.webUrl);
+  await signOut(page);
   await signIn(page, declining);
   await decideInvitation(page, stack.webUrl, 'Decline');
-  await signOut(page, stack.webUrl);
+  await signOut(page);
   await signIn(page, leaving);
   await decideInvitation(page, stack.webUrl, 'Accept');
-  await signOut(page, stack.webUrl);
+  await signOut(page);
 
   await signIn(page, owner);
   await selectWorkspace(page, workspaceName);
@@ -290,7 +296,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
 
     // Ownership transfer keeps ordinary member controls. Actual removal revokes the stale session.
     await expect(page.getByRole('region', { name: 'Workspace members' })).toBeVisible();
-    await signOut(page, stack.webUrl);
+    await signOut(page);
     await signIn(page, accepting);
     await selectWorkspace(page, workspaceName);
     await openSelectedWorkspaceAccount(page);
@@ -346,7 +352,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
     await staleOwnerContext.close();
   }
 
-  await signOut(page, stack.webUrl);
+  await signOut(page);
   await signIn(page, accepting);
   await selectWorkspace(page, workspaceName);
   await openSelectedWorkspaceAccount(page);
@@ -355,7 +361,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   await expect(formerOwnerRow.getByRole('button', { name: 'Remove member' })).toHaveCount(0);
   await expect(formerOwnerRow).toContainText('removed');
   await expect(newOwnerMembers.getByRole('row', { name: new RegExp(decliningId) })).toHaveCount(0);
-  await signOut(page, stack.webUrl);
+  await signOut(page);
 
   await signIn(page, leaving);
   await selectWorkspace(page, workspaceName);
