@@ -178,6 +178,10 @@ Workspace close must drain its already-open dependent App databases under the sa
 
 Busy capture requires one bounded crash-consistent cut fencing every physical SQL and mutable-file writer. An ACK drain alone is insufficient. The idle-only capture rules below describe the current realization until that fence lands; destructive restore/MOVE/delete blockers do not change. Restore interrupts captured in-flight work, preserves unknown effects and replays nothing. Implementation projection: `apps/nanocore/src/storage/workspace-backup.ts` (`runWorkspaceCapture`) retains the scoped freeze/blockers; busy capture is pending behind the all-writer fence.
 
+Cold App reads at a capture cut follow [Core Storage](../core/storage.md#sqlite-layers). There is no normal-at-rest waiver. A no-residue read requires proof of no WAL or SHM, no open native App handle, and a held freeze. Otherwise the existing native owner admits the App as a participant and owns its writable final close, or the capture is a typed refusal. Ordinary cold App reads use the same rule. The selected realization is pending and is not claimed here.
+
+One same-build `active` variant on the private recovery-capture message is accepted and not yet implemented. [Private Active Capture Pin](../decisions/20261112-private_active_capture_pin.md) records that approval. It does not change the public protocol, the retained capture record, or the existing `finished` and `abandoned` variants, and it is not acceptance of capture.
+
 Before snapshots, the backup owner durably creates a Workspace SQL capture record excluding Storage GC and Notebook prune/repack for that Workspace.
 
 This specific capture obligation is new, not an existing hold implementation or generic service.

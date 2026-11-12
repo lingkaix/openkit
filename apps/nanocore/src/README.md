@@ -207,7 +207,7 @@ A selected Worker handoff to another Thread first completes the request-derived 
 
 MCP list-tools verifies retained schema attribution before replay admission and defers a failed read into the existing admitted failure closeout. A fresh request records its failed Call and Audit without Usage or upstream discovery; an earlier terminal Call remains immutable.
 
-Before a prerelease upgrade from actor-scoped Kernel receipts, finish and record outstanding requests. Earlier receipts remain stored but cannot replay under the corrected actor-free key. Inspect the current app and records before issuing a fresh request identity. Carry this incompatibility into the release record and operator upgrade procedure under the [pre-stable decision](../../../docs/decisions/20261014-pre_stable_data_continuity.md). This change performs no receipt migration or data reset.
+Kernel resource receipts use an actor-free lookup key. The actor remains a semantic input and is rechecked on replay. Receipts written under the earlier actor-scoped key remain stored and do not serve replay or reuse detection. Under the [pre-stable decision](../../../docs/decisions/20261014-pre_stable_data_continuity.md), this is an accepted change before `v0.1.0`: there is no migration, dual lookup, or new operator procedure. Earlier development receipts are test data. The candidate release notes disclose that discontinuity and add no upgrade step.
 
 `artifact-review-follow-up.ts` owns the single closed Artifact Review follow-up codec, including exact content and Material-range proof. Review commands, retained portability and S39 consume that codec without importing Review mutation orchestration.
 
