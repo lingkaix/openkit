@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useCoreClient } from '../../../app/core-client';
+import { accountGeneration } from '../../account/generation';
 import { openHrefForRow } from '../../workspace/data';
 import { timelineCopy } from './copy';
 import {
@@ -27,9 +28,14 @@ export function useTimelineAttention(workspaceId: string | null) {
   return useQuery({
     queryKey: ['attention', workspaceId ?? ''],
     queryFn: async () => {
+      const generation = accountGeneration();
       const list = client.operations['attention.list'];
       if (typeof list !== 'function') return [] as HumanAttentionRow[];
-      return (await list({ workspaceId: workspaceId as string })).items;
+      const page = await list({ workspaceId: workspaceId as string });
+      if (generation !== accountGeneration()) {
+        throw new Error('Discarded an earlier account response.');
+      }
+      return page.items;
     },
     enabled: Boolean(workspaceId),
     retry: false,

@@ -43,6 +43,14 @@ import {
   lostUpdateSameCount,
   readRetryAfterSeconds,
 } from './timeline/degraded';
+import {
+  cursorInput,
+  holdFromResponse,
+  holdItems,
+  level2Input,
+  openingInput,
+  type TimelineAnchorRequest,
+} from './timeline/window';
 
 /** One item in a thread's stream (the protocol Item union, via the response type). */
 export type ThreadItem = ListThreadItemsResponse['items'][number];
@@ -766,6 +774,86 @@ function foldTurnEvent(items: ThreadItem[], event: SseEventEnvelope): ThreadItem
   return items;
 }
 
+function timelineAnchor(value: unknown): TimelineAnchorRequest | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const kind = record.kind;
+  if (kind === 'latest' || kind === 'catch-up') return { kind };
+  if (kind === 'turn' && typeof record.turnId === 'string') {
+    return { kind, turnId: record.turnId };
+  }
+  if (kind === 'item' && typeof record.itemId === 'string') {
+    return { kind, itemId: record.itemId };
+  }
+  if (kind === 'attention' && typeof record.rowId === 'string') {
+    return { kind, rowId: record.rowId };
+  }
+  return null;
+}
+
+/**
+ * Replaces active timeline and open Item-window snapshots from `thread.timeline`.
+ * Resync does not consult dashboard-embedded Items: that list is empty under TB4,
+ * so a same-count edit would otherwise stay on the transient snapshot.
+ */
+async function replaceTimelineSnapshots(
+  queryClient: QueryClient,
+  client: CoreClient,
+  workspaceId: string,
+  threadId: string
+): Promise<void> {
+  const generation = accountGeneration();
+  const timelines = queryClient.getQueryCache().findAll({
+    queryKey: ['thread-timeline', workspaceId, threadId],
+  });
+  const windows = queryClient.getQueryCache().findAll({
+    queryKey: ['thread-timeline-items', workspaceId, threadId],
+  });
+  await Promise.all([
+    ...timelines.map(async (query) => {
+      const anchor = timelineAnchor(query.queryKey[3]);
+      if (!anchor) return;
+      try {
+        const fresh = await client.operations['thread.timeline'](
+          openingInput(workspaceId, threadId, anchor)
+        );
+        if (generation !== accountGeneration()) return;
+        queryClient.setQueryData(query.queryKey, {
+          ...holdFromResponse(fresh),
+          digest: fresh.digest,
+        });
+      } catch {
+        // A failed reread leaves the last admitted snapshot in place.
+      }
+    }),
+    ...windows.map(async (query) => {
+      const turnId = query.queryKey[3];
+      const placement = query.queryKey[4];
+      const cursor = query.queryKey[5];
+      if (typeof turnId !== 'string' || turnId.length === 0) return;
+      const view =
+        placement === 'all' || placement === 'narrative' || placement === 'step'
+          ? placement
+          : 'step';
+      try {
+        const page =
+          typeof cursor === 'string' && cursor.length > 0
+            ? await client.operations['thread.timeline'](cursorInput(workspaceId, threadId, cursor))
+            : await client.operations['thread.timeline'](
+                level2Input(workspaceId, threadId, turnId, view)
+              );
+        if (generation !== accountGeneration()) return;
+        queryClient.setQueryData(
+          query.queryKey,
+          holdItems(page.items, page.beforeCursor, page.afterCursor)
+        );
+      } catch {
+        // A failed reread leaves the last admitted snapshot in place.
+      }
+    }),
+  ]);
+}
+
 /**
  * Subscribes once to the authoritative running Turn, folds item events into the
  * item cache, and projects its matching updated or terminal Turn into the dashboard cache.
@@ -826,11 +914,12 @@ export function useLiveThreadItems(
             queryKey: chatKeys.items(workspaceId, threadId),
             exact: true,
           });
+          void replaceTimelineSnapshots(queryClient, client, workspaceId, threadId);
         }
         setStreamGeneration((current) => current + 1);
       },
     });
-  }, [queryClient, threadId, workspaceId]);
+  }, [client, queryClient, threadId, workspaceId]);
   const sequenceTurn = useRef(turnId);
   const reconnectPending = useRef(false);
   const [reconnectTick, setReconnectTick] = useState(0);
@@ -910,6 +999,7 @@ export function useLiveThreadItems(
 
   useEffect(() => {
     // reconnectTick bumps when the stream drops, even if the dashboard object is unchanged.
+    // The dashboard's embedded Items are not the recovery source: TB4 returns items: [].
     if (!workspaceId || !dashboard.isSuccess || !reconnectPending.current || reconnectTick < 0)
       return;
     const cached =
@@ -935,7 +1025,16 @@ export function useLiveThreadItems(
       queryKey: chatKeys.items(workspaceId, threadId),
       exact: true,
     });
-  }, [dashboard.data, dashboard.isSuccess, queryClient, reconnectTick, threadId, workspaceId]);
+    void replaceTimelineSnapshots(queryClient, client, workspaceId, threadId);
+  }, [
+    client,
+    dashboard.data,
+    dashboard.isSuccess,
+    queryClient,
+    reconnectTick,
+    threadId,
+    workspaceId,
+  ]);
 
   useEffect(() => {
     // streamGeneration is the restart signal after the page hides or returns.
@@ -1056,6 +1155,7 @@ export function useLiveThreadItems(
               queryKey: chatKeys.items(workspaceId, threadId),
               exact: true,
             });
+            void replaceTimelineSnapshots(queryClient, client, workspaceId, threadId);
           } else if (isBusyStatus(error)) {
             const seconds = readRetryAfterSeconds(error);
             report(owner, retry, 'busy', seconds);

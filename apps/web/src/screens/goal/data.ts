@@ -8,6 +8,7 @@ import { ApiCallError, createRequestId } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
+import { accountGeneration } from '../account/generation';
 
 export { useCurrentWorkspaceId } from '../chat/data';
 /** One server-owned, version-keyed Artifact Review projection. */
@@ -33,7 +34,17 @@ export function useGoalView(workspaceId: string | null, threadId: string) {
   const client = useCoreClient();
   return useQuery({
     queryKey: goalKeys.view(workspaceId ?? '', threadId),
-    queryFn: () => client.operations['goal.read']({ workspaceId: workspaceId!, threadId }),
+    queryFn: async () => {
+      const generation = accountGeneration();
+      const view = await client.operations['goal.read']({
+        workspaceId: workspaceId!,
+        threadId,
+      });
+      if (generation !== accountGeneration()) {
+        throw new Error('Discarded an earlier account response.');
+      }
+      return view;
+    },
     enabled: Boolean(workspaceId && threadId),
     refetchInterval: 5000,
     refetchIntervalInBackground: false,

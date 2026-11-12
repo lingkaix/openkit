@@ -26,6 +26,8 @@ export function DecisionSheet({
   onSubmitAnswers,
   onNext,
   onClose,
+  failed,
+  onRetry,
 }: {
   item: DecisionItem;
   actor: string;
@@ -39,12 +41,18 @@ export function DecisionSheet({
   onSubmitAnswers?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
   onNext?: () => void;
   onClose: () => void;
+  /** The last command failed. Retry replays its retained variables. */
+  failed?: boolean;
+  onRetry?: () => void;
 }) {
   const question = item.type === 'user-input-request';
+  const secret = question && item.questions.some((entry) => entry.isSecret);
   const missing = !question && !effectText;
+  const held = Boolean(holdReason);
   const approveId = `sheet-approve-${item.id}`;
   const denyId = `sheet-deny-${item.id}`;
   const missingId = `sheet-missing-${item.id}`;
+  const holdId = `sheet-hold-${item.id}`;
   const answerState = useQuestionAnswers(question ? item : null);
   return (
     <PhoneSheetFrame
@@ -58,11 +66,18 @@ export function DecisionSheet({
           </p>
           {!question ? <p id={denyId}>{timelineCopy.denyConsequence}</p> : null}
           {missing ? <p id={missingId}>{timelineCopy.exactEffectMissing}</p> : null}
-          {holdReason ? <p>{holdReason}</p> : null}
-          {question && answerState ? (
+          {holdReason ? <p id={holdId}>{holdReason}</p> : null}
+          {failed && onRetry ? (
+            <button type="button" className="min-h-11 text-left underline" onClick={onRetry}>
+              Retry
+            </button>
+          ) : null}
+          {question && answerState && !secret ? (
             <QuestionSubmit
               item={item}
               pending={Boolean(pending)}
+              held={held}
+              holdId={holdId}
               state={answerState}
               onSubmit={onSubmitAnswers}
             />
@@ -72,8 +87,8 @@ export function DecisionSheet({
               <Button
                 variant="negative-outline"
                 className="min-h-11 flex-1"
-                isDisabled={Boolean(pending)}
-                aria-describedby={denyId}
+                isDisabled={Boolean(pending) || held}
+                aria-describedby={held ? holdId : denyId}
                 onPress={onDeny}
               >
                 Deny
@@ -81,8 +96,8 @@ export function DecisionSheet({
               <Button
                 variant="accent"
                 className="min-h-11 flex-1"
-                isDisabled={missing || Boolean(pending)}
-                aria-describedby={missing ? missingId : approveId}
+                isDisabled={missing || Boolean(pending) || held}
+                aria-describedby={held ? holdId : missing ? missingId : approveId}
                 onPress={onApprove}
               >
                 Approve
@@ -99,7 +114,11 @@ export function DecisionSheet({
     >
       <div data-decision-body="" className="flex flex-col gap-3">
         {question && answerState ? (
-          <QuestionBody item={item} pending={Boolean(pending)} state={answerState} />
+          secret ? (
+            <SecretRefusal item={item} />
+          ) : (
+            <QuestionBody item={item} pending={Boolean(pending)} held={held} state={answerState} />
+          )
         ) : (
           <p className="text-base font-medium text-fg">
             {item.type === 'approval-request' ? item.title : ''}
@@ -185,13 +204,39 @@ function useQuestionAnswers(item: QuestionItem | null) {
   };
 }
 
+/** Secret questions stay visible and collect nothing. The command contract rejects secret transport. */
+function SecretRefusal({ item }: { item: QuestionItem }) {
+  const seen = new Set<string>();
+  const prompt = item.prompt.trim();
+  const showPrompt = prompt.length > 0;
+  if (showPrompt) seen.add(prompt);
+  return (
+    <>
+      {showPrompt ? <p className="text-base font-medium text-fg">{item.prompt}</p> : null}
+      {item.questions.map((entry) => {
+        const text = entry.question.trim();
+        const showText = text.length > 0 && !seen.has(text);
+        if (showText) seen.add(text);
+        return (
+          <div key={entry.id} className="flex flex-col gap-2">
+            {showText ? <p className="text-base font-medium text-fg">{entry.question}</p> : null}
+            <p className="font-bold text-fg-strong">{entry.header}</p>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function QuestionBody({
   item,
   pending,
+  held,
   state,
 }: {
   item: QuestionItem;
   pending: boolean;
+  held: boolean;
   state: { answers: Record<string, string>; setAnswers: (value: Record<string, string>) => void };
 }) {
   const seen = new Set<string>();
@@ -210,7 +255,7 @@ function QuestionBody({
             {showText ? <p className="text-base font-medium text-fg">{entry.question}</p> : null}
             <TextField
               label={entry.header}
-              isDisabled={pending}
+              isDisabled={pending || held}
               value={state.answers[entry.id] ?? ''}
               onChange={(value) => state.setAnswers({ ...state.answers, [entry.id]: value })}
             />
@@ -224,11 +269,15 @@ function QuestionBody({
 function QuestionSubmit({
   item,
   pending,
+  held,
+  holdId,
   state,
   onSubmit,
 }: {
   item: QuestionItem;
   pending: boolean;
+  held: boolean;
+  holdId: string;
   state: { answers: Record<string, string> };
   onSubmit?: (userInputRequestId: string, answers: Record<string, [string]>) => void;
 }) {
@@ -236,13 +285,15 @@ function QuestionSubmit({
   const why = `sheet-answer-${item.id}`;
   return (
     <>
-      {!complete && !pending ? <p id={`${why}-wait`}>Answer every question first.</p> : null}
+      {!complete && !pending && !held ? (
+        <p id={`${why}-wait`}>Answer every question first.</p>
+      ) : null}
       <Button
         className="min-h-11"
-        isDisabled={!complete || pending || !onSubmit}
-        aria-describedby={!complete || pending ? `${why}-wait` : why}
+        isDisabled={!complete || pending || held || !onSubmit}
+        aria-describedby={held ? holdId : !complete || pending ? `${why}-wait` : why}
         onPress={() => {
-          if (!onSubmit || !complete) return;
+          if (!onSubmit || !complete || held) return;
           onSubmit(
             item.userInputRequestId,
             Object.fromEntries(
