@@ -124,6 +124,8 @@ function tallTimeline(workspaceId: string, threadId: string) {
       narrativeCursor: null,
       statistics: {
         steps: 0,
+        failedStepCount: 0,
+        failedCommandCount: 0,
         filesChanged: 0,
         messages: 1,
         itemCounts: {},
@@ -144,6 +146,7 @@ function tallTimeline(workspaceId: string, threadId: string) {
     itemWindow: null,
     anchor: null,
     catchUpAnchor: null,
+    digest: { lines: [], coverage: 'complete' },
     restrictedReferences: false,
   });
 }

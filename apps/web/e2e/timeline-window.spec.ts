@@ -76,6 +76,8 @@ function runEntry(input: {
     narrativeCursor: null,
     statistics: {
       steps: input.steps,
+      failedStepCount: 0,
+      failedCommandCount: 0,
       filesChanged: 0,
       messages: input.item ? 1 : 0,
       itemCounts: {},

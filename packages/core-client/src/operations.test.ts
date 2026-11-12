@@ -1,4 +1,8 @@
-import { OPERATION_DEFINITIONS, operationHttpPath } from '@openkit/app-api-schemas';
+import {
+  OPERATION_DEFINITIONS,
+  operationHttpPath,
+  type ThreadTimelineResponse,
+} from '@openkit/app-api-schemas';
 import { PROTOCOL_VERSION as CURRENT_PROTOCOL, PROTOCOL_VERSION } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient as createClient } from './client.js';
@@ -298,8 +302,9 @@ describe('bounded timeline client', () => {
       afterCursor: null,
       anchor: null,
       catchUpAnchor: null,
+      digest: { lines: [], coverage: 'complete' },
       restrictedReferences: false,
-    };
+    } satisfies ThreadTimelineResponse;
     const requests: Request[] = [];
     const client = createCoreClient({
       baseUrl: 'http://nanocore.test',
