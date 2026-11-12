@@ -151,9 +151,19 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
     }
     await expect(page.getByText("Steering isn't available yet.")).toHaveCount(0);
     if (sawStop) {
-      await expect(page.getByText("This worker can't take notes while running.")).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Keep draft' })).toBeVisible();
-      await expect(page.getByRole('button', { name: 'Steer' })).toHaveCount(0);
+      const steer = page.getByRole('button', { name: 'Steer' });
+      const keep = page.getByRole('button', { name: 'Keep draft' });
+      if (await steer.isVisible()) {
+        await expect(
+          page.getByText(
+            "Sends this note into the run in progress. Accepted means the worker's runtime took it, not that the model acted on it."
+          )
+        ).toBeVisible();
+        await expect(keep).toHaveCount(0);
+      } else {
+        await expect(keep).toBeVisible();
+        await expect(steer).toHaveCount(0);
+      }
     } else {
       await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible();
     }

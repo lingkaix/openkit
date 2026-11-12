@@ -16,7 +16,6 @@ import {
 import {
   classifySteerError,
   composerLiveMode,
-  readSteerQualification,
   receiptCoversRequest,
   type SteerFailureView,
   steerErrorCode,
@@ -86,11 +85,10 @@ export function SteerProvider({ mode, children }: { mode: 'chat' | 'task'; child
     if (timeline.data && !windows.includes(timeline.data)) windows.push(timeline.data);
     return steerReceiptsFromWindows(windows);
   }, [cachedReceiptVersion, ownerKey, queryClient, routeWorkspaceId, threadId, timeline.data]);
-  const qualified = readSteerQualification(targets.data?.targets);
   const live = composerLiveMode({
     task: mode === 'task',
     runningTurnId: runningTurn?.id ?? null,
-    qualified,
+    targets: targets.data?.targets,
   });
   const mutation = useMutation({
     mutationKey: ['task', 'steer', ownerId, threadId] as const,

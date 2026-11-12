@@ -1,6 +1,6 @@
 import type { TimelineItem } from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
-import { lintCopyText } from './copy';
+import { lintCopyText, timelineCopy } from './copy';
 
 /**
  * Sentences for live steer. They live beside the timeline copy module because
@@ -27,14 +27,6 @@ export const steerCopy = {
   inapplicable:
     'This note can only include text. Remove the other choices, or stop the run and send them as a new run.',
 } as const;
-
-/**
- * The target catalog does not project qualified steer availability or the live adapter pin.
- * Codex and Pi qualification stays on the server. Until a read returns it, a running Task
- * keeps the draft and offers Stop.
- */
-export const STEER_QUALIFICATION_GAP =
-  'conversation.targets does not project steerAvailability or the live adapter pin, so a running Task keeps the draft.';
 
 export type SteerDeliveryState = 'sending' | 'accepted' | 'not-delivered' | 'unknown';
 
@@ -108,40 +100,54 @@ export function steerOutcomeCopy(
   }
 }
 
-/**
- * True only when a read explicitly says this worker can take a note.
- * A missing field is not qualification.
- */
-export function readSteerQualification(
-  targets: readonly { kind: string; steerAvailability?: unknown }[] | undefined
-): boolean | null {
-  const running = targets?.find((target) => target.kind === 'running-worker');
-  if (!running || typeof running.steerAvailability !== 'boolean') return null;
-  return running.steerAvailability;
+const STEER_STATES = ['available', 'busy', 'unsupported', 'unavailable'] as const;
+
+type SteerState = (typeof STEER_STATES)[number];
+
+/** Catalog fields the composer may read. Anything absent is not availability. */
+export interface SteerCatalogTarget {
+  kind: string;
+  activeTurnId?: string | null;
+  steerAvailability?: string | null;
+  steerUnavailableReason?: string | null;
+}
+
+function steerState(value: string | null | undefined): SteerState | null {
+  return STEER_STATES.find((state) => state === value) ?? null;
+}
+
+function exactTurnId(value: string | null | undefined): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
 /**
  * Composer action while a Task run is open.
- * No run: ordinary Send. Qualified: Steer. Otherwise the draft stays.
+ * Steer only when the running Worker read says available and names the exact Turn.
+ * After the run ends, a leftover activeTurnId does not keep Steer on screen.
+ * The Coordinator is never a steer target. A missing field keeps the draft.
  */
 export function composerLiveMode(input: {
   task: boolean;
   runningTurnId: string | null;
-  qualified: boolean | null;
+  targets?: readonly SteerCatalogTarget[] | null;
 }): SteerLiveMode | null {
   if (!input.task || !input.runningTurnId) return null;
-  if (input.qualified === true) {
+  const worker = input.targets?.find((target) => target.kind === 'running-worker');
+  const availability = steerState(worker?.steerAvailability);
+  const activeTurnId = exactTurnId(worker?.activeTurnId);
+  if (worker && availability === 'available' && activeTurnId) {
     return {
       mode: 'steer',
-      turnId: input.runningTurnId,
+      turnId: activeTurnId,
       consequence: steerCopy.consequence,
       actionLabel: steerCopy.steer,
     };
   }
+  const refused = availability === 'busy' || availability === 'unavailable';
   return {
     mode: 'keep-draft',
     turnId: input.runningTurnId,
-    consequence: steerCopy.unqualified,
+    consequence: refused ? timelineCopy.keepDraft : steerCopy.unqualified,
     actionLabel: steerCopy.keepDraft,
   };
 }
