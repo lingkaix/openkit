@@ -185,6 +185,18 @@ function FullRunLevel2({
   return null;
 }
 
+/**
+ * The opening shell keeps the thread mounted under the hidden attribute.
+ * That entry's box is 0x0 until reveal, so scroll and focus must wait for layout.
+ * A test renderer never produces a box; a revealed entry is still addressable there.
+ */
+function entryIsRevealed(element: HTMLElement): boolean {
+  if (!element.isConnected || element.closest('[hidden]')) return false;
+  const box = element.getBoundingClientRect();
+  if (box.width > 0 && box.height > 0) return true;
+  return element.offsetParent === null;
+}
+
 /** Focus the run that contains an addressed note when that note has no item target. */
 function focusEntry(turnId: string): boolean {
   const element = document.querySelector<HTMLElement>(
@@ -998,16 +1010,40 @@ export function ThreadStream({
   const windowRun = windowRuns?.find((run) => run.id === focusTurnId) ?? null;
   const addressedRunId = selectedTurn?.id ?? windowRun?.id ?? null;
   const focusKey = JSON.stringify([workspaceId, threadId, focusTurnId]);
+  const addressedListed = Boolean(
+    addressedRunId &&
+      (shownRuns?.some((run) => run.id === addressedRunId) || (!timelineOn && windowRuns === null))
+  );
   useEffect(() => {
-    if (!addressedRunId || historyLoading || historyError || !focusedElement.current) {
+    if (!addressedRunId || historyLoading || historyError || holdContent || !addressedListed) {
       if (located.current !== focusKey) located.current = null;
       return;
     }
     if (located.current === focusKey) return;
-    focusedElement.current.scrollIntoView({ block: 'center' });
-    focusedElement.current.focus();
-    located.current = focusKey;
-  }, [addressedRunId, focusKey, historyError, historyLoading]);
+    let frame = 0;
+    let stopped = false;
+    const place = () => {
+      if (stopped || located.current === focusKey) return;
+      const node = focusedElement.current;
+      if (!node || !entryIsRevealed(node)) {
+        frame = requestAnimationFrame(place);
+        return;
+      }
+      node.scrollIntoView({ block: 'center' });
+      node.focus();
+      const active = document.activeElement;
+      if (active === node || (active instanceof Node && node.contains(active))) {
+        located.current = focusKey;
+        return;
+      }
+      frame = requestAnimationFrame(place);
+    };
+    place();
+    return () => {
+      stopped = true;
+      cancelAnimationFrame(frame);
+    };
+  }, [addressedListed, addressedRunId, focusKey, historyError, historyLoading, holdContent]);
   const unavailableTurn = Boolean(focusTurnId && focusedDashboard && !addressedRunId);
   useEffect(() => {
     setPortalNode(!phone && inspectedTurnId ? (panelHost?.current ?? null) : null);
