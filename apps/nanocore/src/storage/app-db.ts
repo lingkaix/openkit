@@ -165,13 +165,21 @@ export function assertAppDefinitionMatches(db: AppDb): void {
   const row = db.sqlite
     .prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1')
     .get() as { schemaDigest: string } | undefined;
-  if (!row?.schemaDigest?.startsWith('sha256:')) {
+  assertAppDefinitionDigestMatches(db, row?.schemaDigest);
+}
+
+/** Rechecks exact retained definition authority without reopening or retaining a SQLite handle. */
+export function assertAppDefinitionDigestMatches(
+  db: Pick<AppDb, 'dataRoot' | 'workspaceId' | 'appId'>,
+  schemaDigest: string | undefined
+): void {
+  if (!schemaDigest?.startsWith('sha256:')) {
     throw new KernelCommandError('unavailable', 'App authority is incomplete.');
   }
   const definitionPath = join(
     lightAppRoot(db.dataRoot, db.workspaceId, db.appId),
     'definitions',
-    `${row.schemaDigest.slice('sha256:'.length)}.json`
+    `${schemaDigest.slice('sha256:'.length)}.json`
   );
   assertNotSymlink(definitionPath);
   if (!existsSync(definitionPath)) {
@@ -179,7 +187,7 @@ export function assertAppDefinitionMatches(db: AppDb): void {
   }
   const bytes = readFileSync(definitionPath);
   const digest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
-  if (digest !== row.schemaDigest) {
+  if (digest !== schemaDigest) {
     throw new KernelCommandError('unavailable', 'App definition digest does not match.');
   }
 }

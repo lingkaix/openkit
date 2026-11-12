@@ -1,5 +1,6 @@
 import { channel } from 'node:diagnostics_channel';
 import {
+  type BigIntStats,
   closeSync,
   constants,
   existsSync,
@@ -14,7 +15,13 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isMainThread, parentPort } from 'node:worker_threads';
 import { writeRetainedV1 } from '@openkit/protocol';
-import { changeVerifiedFileMode, publishVerifiedFileReplacement } from '@openkit/storage';
+import {
+  changeVerifiedFileMode,
+  copyFileForCut,
+  createPrivateTree,
+  publishVerifiedFileReplacement,
+  removePrivateTree,
+} from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { ZodError } from 'zod';
 import { ArtifactReviewError } from '../artifact-review-codecs.js';
@@ -133,7 +140,13 @@ import {
   prepareControlMaterialCommand,
   WorkspaceMaterialError,
 } from '../workspace-materials.js';
-import { type AppDb, assertAppAuthority, lightAppDbPath } from './app-db.js';
+import {
+  type AppDb,
+  assertAppAuthority,
+  assertAppDefinitionDigestMatches,
+  lightAppDbPath,
+  openAppDbReadOnly,
+} from './app-db.js';
 import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-native.js';
 import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
@@ -517,7 +530,15 @@ interface OwnedDatabase {
 const databases = new Map<string, OwnedDatabase>();
 const paths = new Set<string>();
 const identities = new Set<string>();
-const pendingIds = new Set<number>();
+/** An existing OPEN keeps its original admitted slot through private authority inspection. */
+type OpenRequest = Extract<ControlWorkerRequest, { operation: 'open' }> & {
+  preparation?: Promise<void>;
+  physicalForecast?: WriteRequest['physicalForecast'];
+  /** Only private inspection failures prove the selected source was never opened. */
+  inspectingApp?: boolean;
+  readonly ready: false;
+};
+const pendingIds = new Map<number, OpenRequest | null>();
 let stopping = false;
 
 /** Binds the admitted physical App to this exact existing owner connection. */
@@ -547,11 +568,15 @@ function appDatabase(owner: OwnedDatabase): AppDb {
 
 /** Keeps the admitted slot while Main synchronously reserves the exact post-predecessor copy. */
 function admitPhysicalPublication(
-  owner: OwnedDatabase,
-  request: WriteRequest,
+  owner: OwnedDatabase | undefined,
+  request: WriteRequest | OpenRequest,
   files: ControlPhysicalForecastFiles
 ): Promise<void> {
-  if (request.physicalForecast || request.ready || databases.get(request.database) !== owner)
+  if (
+    request.physicalForecast ||
+    request.ready ||
+    (owner ? databases.get(request.database) !== owner : pendingIds.get(request.id) !== request)
+  )
     throw new ControlProductPreconditionError();
   return new Promise<void>((resolve, reject) => {
     request.physicalForecast = { resolve, reject };
@@ -3560,6 +3585,11 @@ function shutdownWorker(id: number): void {
   for (const owner of databases.values()) owner.closing = true;
   const finish = async () => {
     try {
+      // These accepted requests do not have an OwnedDatabase until their original OPEN settles.
+      await Promise.allSettled(
+        [...pendingIds.values()].flatMap((request) => request?.preparation ?? [])
+      );
+      for (const owner of databases.values()) owner.closing = true;
       for (const owner of databases.values()) {
         await drain(owner);
         if (owner.sqlite.open) owner.sqlite.close();
@@ -3597,8 +3627,89 @@ function nativeUserDb(owner: OwnedDatabase, userId: string) {
   return db;
 }
 
+/** Exact pre-inspection source facts; no SQLite connection escapes the private stage. */
+interface AppOpenInspectionFile {
+  readonly suffix: string;
+  readonly metadata: BigIntStats | undefined;
+}
+
+/** Validates a cold App without opening source SQLite or leaving sidecars on a refused source. */
+async function inspectExistingAppOpening(
+  request: OpenRequest,
+  path: string,
+  dataRoot: string,
+  expectedIdentity: string
+): Promise<{ files: readonly AppOpenInspectionFile[]; schemaDigest: string }> {
+  const scope = request.physicalScope;
+  if (!scope || !request.dataRoot || request.create) throw new ControlProductPreconditionError();
+  const inputs = ['', '-wal', '-journal'].map((suffix) => {
+    const metadata = lstatSync(`${path}${suffix}`, { bigint: true, throwIfNoEntry: false });
+    if (!metadata && suffix) return { suffix, metadata };
+    if (
+      !metadata?.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.nlink !== 1n ||
+      metadata.size > BigInt(Number.MAX_SAFE_INTEGER)
+    )
+      throw new ControlProductPreconditionError();
+    return { suffix, metadata };
+  });
+  if (`${inputs[0]!.metadata?.dev}:${inputs[0]!.metadata?.ino}` !== expectedIdentity)
+    throw new ControlProductPreconditionError();
+  const bytes = inputs.reduce((sum, file) => sum + (file.metadata?.size ?? 0n), 0n);
+  // The copied WAL can need several WAL-index regions; an empty-WAL 32-KiB bound is insufficient.
+  const forecast = bytes * 2n + 32_768n + 65_536n;
+  if (forecast > BigInt(Number.MAX_SAFE_INTEGER)) throw new ControlProductPreconditionError();
+  // Admit the exact source filesystem before even the private directory is created.
+  await admitPhysicalPublication(undefined, request, [
+    { path: dirname(path), publicationBytes: Number(forecast) },
+  ]);
+  const scratch = await createPrivateTree(dirname(path), '.app-open-inspection-');
+  let failed = false;
+  let failure: unknown;
+  let schemaDigest: string | undefined;
+  try {
+    const copy = join(scratch, 'inspection');
+    for (const { suffix, metadata } of inputs) {
+      if (!metadata) continue;
+      await copyFileForCut({
+        sourcePath: `${path}${suffix}`,
+        destinationPath: `${copy}${suffix}`,
+        maxBytes: Number(metadata.size),
+        mode: 0o600,
+      });
+    }
+    const sqlite = openAppDbReadOnly(copy);
+    try {
+      assertSavepointSafeSchema(sqlite);
+      // Definition bytes belong to the original App, not to the disposable inspection directory.
+      assertAppAuthority({ scope: 'app', sqlite, dataRoot, ...scope }, true);
+      schemaDigest = (
+        sqlite.prepare('SELECT schema_digest AS schemaDigest FROM app_metadata LIMIT 1').get() as {
+          schemaDigest: string;
+        }
+      ).schemaDigest;
+    } finally {
+      sqlite.close();
+    }
+  } catch (error) {
+    failed = true;
+    failure = error;
+  }
+  try {
+    await removePrivateTree(scratch);
+  } catch (error) {
+    throw failed
+      ? new AggregateError([failure, error], 'App admission inspection cleanup failed.')
+      : error;
+  }
+  if (failed) throw failure;
+  if (schemaDigest === undefined) throw new ControlProductPreconditionError();
+  return { files: inputs, schemaDigest };
+}
+
 /** Opens only a trusted admitted path; neither directory discovery nor opening grants ownership. */
-function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open' }>): void {
+async function openDatabase(request: OpenRequest): Promise<void> {
   if (databases.has(request.database)) {
     reply(failure(request.id, 'invalid-request'));
     return;
@@ -3644,130 +3755,181 @@ function openDatabase(request: Extract<ControlWorkerRequest, { operation: 'open'
     reply(failure(request.id, 'invalid-request'));
     return;
   }
-  const migrationScope = request.physicalScope
-    ? 'app'
-    : (request.initialize ??
-      (request.productOwner?.kind === 'server'
-        ? 'core'
-        : request.productOwner?.kind === 'workspace'
-          ? 'workspace'
-          : undefined));
-  // A writable last close may checkpoint WAL even when no command body ran.
-  // Refuse unsupported existing history through a real read-only handle first.
-  if (existing && migrationScope !== undefined) {
-    try {
-      const inspection = openSupportedScopeReadOnlySqlite(
-        path,
-        migrationScope,
-        request.physicalScope ? 1000 : 5000
-      );
-      inspection.close();
-    } catch (error) {
-      const code = failureCode(error, [request.id]);
-      if (code !== `migration_unsupported_${migrationScope}`) throw error;
-      reply(failure(request.id, code, 'not-committed'));
-      return;
-    }
+  if (
+    [...pendingIds.values()].some(
+      (other) => other && other !== request && other.database === request.database
+    )
+  )
+    throw new ControlProductPreconditionError();
+  const inspectingApp =
+    existing !== undefined && request.physicalScope !== undefined && !request.create;
+  if (inspectingApp) {
+    request.inspectingApp = true;
+    paths.add(path);
+    if (existingIdentity !== null) identities.add(existingIdentity);
   }
-  const sqlite = new Database(path, {
-    fileMustExist: !request.create,
-    ...(request.physicalScope ? { timeout: 1000 } : {}),
-  });
   try {
-    if (migrationScope !== undefined) assertSupportedNativeLedger(sqlite, migrationScope);
-    assertSavepointSafeSchema(sqlite);
-    if (request.physicalScope) {
-      sqlite.pragma('busy_timeout = 1000');
-      if (request.create) applyAppMigrations(sqlite);
+    const appInspection = inspectingApp
+      ? await inspectExistingAppOpening(request, path, dataRoot!, existingIdentity!)
+      : undefined;
+    const migrationScope = request.physicalScope
+      ? 'app'
+      : (request.initialize ??
+        (request.productOwner?.kind === 'server'
+          ? 'core'
+          : request.productOwner?.kind === 'workspace'
+            ? 'workspace'
+            : undefined));
+    // A writable last close may checkpoint WAL even when no command body ran.
+    // Refuse unsupported existing history through a real read-only handle first.
+    if (existing && migrationScope !== undefined && !inspectingApp) {
+      try {
+        const inspection = openSupportedScopeReadOnlySqlite(
+          path,
+          migrationScope,
+          request.physicalScope ? 1000 : 5000
+        );
+        inspection.close();
+      } catch (error) {
+        const code = failureCode(error, [request.id]);
+        if (code !== `migration_unsupported_${migrationScope}`) throw error;
+        reply(failure(request.id, code, 'not-committed'));
+        return;
+      }
     }
-    if (request.initialize !== undefined) {
-      applyNativeScopeMigrations(
-        sqlite,
-        request.initialize,
-        undefined,
-        undefined,
-        request.initialize === 'workspace' ? 'pre-knowledge' : 'full'
-      );
-      assertSavepointSafeSchema(sqlite);
-    }
-    if (contentMount) {
-      if (!request.productOwner) throw new ControlProductPreconditionError();
-      const scopeRoot = dirname(dirname(path));
-      const canonical = join(scopeRoot, 'evidence', 'backend');
+    if (appInspection) {
       if (
-        dataRoot &&
-        resolve(contentMount.root) === canonical &&
-        contentMount.mount === 'backend-evidence' &&
-        contentMount.knowledgeBaseId === null
-      ) {
-        const directories = [
-          scopeRoot,
-          join(scopeRoot, 'evidence'),
-          canonical,
-          join(canonical, 'sha256'),
-        ];
-        for (const directory of directories) {
-          if (!lstatSync(directory, { throwIfNoEntry: false })) mkdirSync(directory);
-          const metadata = lstatSync(directory);
-          if (
-            !metadata.isDirectory() ||
-            metadata.isSymbolicLink() ||
-            realpathSync(directory) !== directory
-          )
-            throw new ControlProductPreconditionError();
-        }
-        // A visible directory may remain from interrupted first creation. Commit each parent once at open.
-        for (const directory of directories.slice(0, -1).reverse()) {
-          const fd = openSync(
-            directory,
-            constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
-          );
-          try {
-            fsyncSync(fd);
-          } finally {
-            closeSync(fd);
+        realpathSync(request.path) !== path ||
+        (request.dataRoot !== undefined && realpathSync(request.dataRoot) !== dataRoot)
+      )
+        throw new ControlProductPreconditionError();
+      for (const { suffix, metadata } of appInspection.files) {
+        const current = lstatSync(`${path}${suffix}`, { bigint: true, throwIfNoEntry: false });
+        if (
+          current?.isSymbolicLink() ||
+          current?.dev !== metadata?.dev ||
+          current?.ino !== metadata?.ino ||
+          current?.size !== metadata?.size ||
+          current?.mtimeNs !== metadata?.mtimeNs ||
+          current?.ctimeNs !== metadata?.ctimeNs ||
+          current?.nlink !== metadata?.nlink ||
+          current?.mode !== metadata?.mode
+        )
+          throw new ControlProductPreconditionError();
+      }
+      // Cleanup yielded after the original proof; recheck its exact definition before source SQLite.
+      assertAppDefinitionDigestMatches(
+        { dataRoot: dataRoot!, ...request.physicalScope! },
+        appInspection.schemaDigest
+      );
+    }
+    request.inspectingApp = false;
+    const sqlite = new Database(path, {
+      fileMustExist: !request.create,
+      ...(request.physicalScope ? { timeout: 1000 } : {}),
+    });
+    try {
+      if (migrationScope !== undefined) assertSupportedNativeLedger(sqlite, migrationScope);
+      assertSavepointSafeSchema(sqlite);
+      if (request.physicalScope) {
+        sqlite.pragma('busy_timeout = 1000');
+        if (request.create) applyAppMigrations(sqlite);
+      }
+      if (request.initialize !== undefined) {
+        applyNativeScopeMigrations(
+          sqlite,
+          request.initialize,
+          undefined,
+          undefined,
+          request.initialize === 'workspace' ? 'pre-knowledge' : 'full'
+        );
+        assertSavepointSafeSchema(sqlite);
+      }
+      if (contentMount) {
+        if (!request.productOwner) throw new ControlProductPreconditionError();
+        const scopeRoot = dirname(dirname(path));
+        const canonical = join(scopeRoot, 'evidence', 'backend');
+        if (
+          dataRoot &&
+          resolve(contentMount.root) === canonical &&
+          contentMount.mount === 'backend-evidence' &&
+          contentMount.knowledgeBaseId === null
+        ) {
+          const directories = [
+            scopeRoot,
+            join(scopeRoot, 'evidence'),
+            canonical,
+            join(canonical, 'sha256'),
+          ];
+          for (const directory of directories) {
+            if (!lstatSync(directory, { throwIfNoEntry: false })) mkdirSync(directory);
+            const metadata = lstatSync(directory);
+            if (
+              !metadata.isDirectory() ||
+              metadata.isSymbolicLink() ||
+              realpathSync(directory) !== directory
+            )
+              throw new ControlProductPreconditionError();
+          }
+          // A visible directory may remain from interrupted first creation. Commit each parent once at open.
+          for (const directory of directories.slice(0, -1).reverse()) {
+            const fd = openSync(
+              directory,
+              constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW
+            );
+            try {
+              fsyncSync(fd);
+            } finally {
+              closeSync(fd);
+            }
           }
         }
+        contentMount = { ...contentMount, root: realpathSync(contentMount.root) };
+        if (!statSync(contentMount.root).isDirectory()) throw new ControlProductPreconditionError();
       }
-      contentMount = { ...contentMount, root: realpathSync(contentMount.root) };
-      if (!statSync(contentMount.root).isDirectory()) throw new ControlProductPreconditionError();
+      const writer = controlStoreFor(sqlite);
+      const metadata = statSync(path);
+      const identity = `${metadata.dev}:${metadata.ino}`;
+      databases.set(request.database, {
+        sqlite,
+        scopeDb:
+          dataRoot === undefined || request.productOwner === undefined
+            ? undefined
+            : request.productOwner.kind === 'server'
+              ? bindCoreSqlite(sqlite, dataRoot)
+              : bindWorkspaceSqlite(sqlite, dataRoot, request.productOwner.workspaceId),
+        writer,
+        path,
+        identity,
+        productOwner: request.productOwner,
+        physicalScope: request.physicalScope,
+        contentMount,
+        pending: [],
+        publications: new Map(),
+        preparations: new Set(),
+        runtimePolicy:
+          request.productOwner?.kind === 'server'
+            ? createNativeRuntimePolicyPublication()
+            : undefined,
+        closing: false,
+        timer: null,
+        immediate: null,
+        poisoned: false,
+      });
+      paths.add(path);
+      identities.add(identity);
+    } catch (error) {
+      sqlite.close();
+      throw error;
     }
-    const writer = controlStoreFor(sqlite);
-    const metadata = statSync(path);
-    const identity = `${metadata.dev}:${metadata.ino}`;
-    databases.set(request.database, {
-      sqlite,
-      scopeDb:
-        dataRoot === undefined || request.productOwner === undefined
-          ? undefined
-          : request.productOwner.kind === 'server'
-            ? bindCoreSqlite(sqlite, dataRoot)
-            : bindWorkspaceSqlite(sqlite, dataRoot, request.productOwner.workspaceId),
-      writer,
-      path,
-      identity,
-      productOwner: request.productOwner,
-      physicalScope: request.physicalScope,
-      contentMount,
-      pending: [],
-      publications: new Map(),
-      preparations: new Set(),
-      runtimePolicy:
-        request.productOwner?.kind === 'server'
-          ? createNativeRuntimePolicyPublication()
-          : undefined,
-      closing: false,
-      timer: null,
-      immediate: null,
-      poisoned: false,
-    });
-    paths.add(path);
-    identities.add(identity);
+    reply({ version: CONTROL_WORKER_VERSION, id: request.id, status: 'ok', operation: 'open' });
   } catch (error) {
-    sqlite.close();
+    if (!databases.has(request.database)) {
+      paths.delete(path);
+      if (existingIdentity !== null) identities.delete(existingIdentity);
+    }
     throw error;
   }
-  reply({ version: CONTROL_WORKER_VERSION, id: request.id, status: 'ok', operation: 'open' });
 }
 
 /** Routes trusted protocol messages without transporting connections or executing caller code. */
@@ -3779,9 +3941,11 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     value.operation === 'physical-forecast'
   ) {
     const decision = ControlPhysicalForecastDecisionSchema.parse(value);
-    const request = databases
-      .get(decision.database)
-      ?.pending.find((item) => item.id === decision.id);
+    const admittedOpen = pendingIds.get(decision.id);
+    const request =
+      admittedOpen?.database === decision.database
+        ? admittedOpen
+        : databases.get(decision.database)?.pending.find((item) => item.id === decision.id);
     if (!request?.physicalForecast || request.ready)
       throw new Error('Uncorrelated physical forecast decision.');
     const continuation = request.physicalForecast;
@@ -3834,7 +3998,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     }
     if (code) {
       for (const request of value.requests) {
-        pendingIds.add(request.id);
+        pendingIds.set(request.id, null);
         reply(failure(request.id, code));
       }
     } else {
@@ -3856,7 +4020,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
     reply(failure(id, 'invalid-request'));
     return;
   }
-  pendingIds.add(value.id);
+  pendingIds.set(value.id, null);
   try {
     if (stopping) {
       reply(failure(value.id, 'unavailable'));
@@ -3867,7 +4031,19 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       return;
     }
     if (value.operation === 'open') {
-      openDatabase(value);
+      const request: OpenRequest = { ...value, ready: false };
+      pendingIds.set(request.id, request);
+      request.preparation = openDatabase(request);
+      void request.preparation.catch((error) => {
+        const code = failureCode(error, [request.id]);
+        reply(
+          failure(
+            request.id,
+            request.inspectingApp || code !== 'sql-failed' ? code : 'unavailable',
+            request.inspectingApp ? 'not-committed' : 'unknown'
+          )
+        );
+      });
       return;
     }
     const owner = databases.get(value.database);

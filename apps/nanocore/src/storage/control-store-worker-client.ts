@@ -102,6 +102,7 @@ export { ControlStoreWorkerError } from './control-store-worker-error.js';
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { lstatSync, realpathSync, statSync } from 'node:fs';
+import { realpath, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -192,6 +193,7 @@ import type {
   ControlAccessTokenVerification,
   ControlAccessTokenVerificationResult,
 } from './access-token-verification-codecs.js';
+import { lightAppDbPath } from './app-db.js';
 import {
   FileAdmissionError,
   FileStorageAdmission,
@@ -4987,7 +4989,7 @@ class ControlStoreWorkerClient {
   }
 
   /** Reserves the exact post-predecessor copy before the owner publishes any of it. */
-  private receivePhysicalForecast(value: unknown, host: WriterHost): void {
+  private async receivePhysicalForecast(value: unknown, host: WriterHost): Promise<void> {
     const parsed = ControlPhysicalForecastSchema.safeParse(value);
     if (!parsed.success) {
       this.fail(host);
@@ -5016,6 +5018,29 @@ class ControlStoreWorkerClient {
       // This check precedes even the capacity-owner lookup and every forPath/reservation.
       if (!this.schemaApplicationFactsCurrent(entry))
         throw new ControlStoreWorkerError('precondition', 'not-committed');
+      if (entry.command.operation === 'open' && opening.command.physicalScope) {
+        const scope = opening.command.physicalScope;
+        const dataRoot = opening.command.dataRoot;
+        if (!dataRoot) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const [current, currentPath, currentRoot] = await Promise.all([
+          stat(opening.path),
+          realpath(opening.command.path),
+          realpath(dataRoot),
+        ]);
+        // Failure or disposal during these reads cannot acquire capacity for a settled request.
+        if (
+          this.pending.get(forecast.id) !== entry ||
+          this.openings.get(forecast.database) !== opening ||
+          host.failed
+        )
+          throw new ControlStoreWorkerError('unavailable', 'not-committed');
+        if (
+          currentPath !== opening.path ||
+          `${current.dev}:${current.ino}` !== opening.identity ||
+          lightAppDbPath(currentRoot, scope.workspaceId, scope.appId) !== opening.path
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+      }
       const root = opening.command.dataRoot ?? dirname(opening.path);
       const admission = this.fileAdmissions.get(resolve(root));
       if (!admission) throw new Error('Missing native capacity owner.');
@@ -5091,7 +5116,7 @@ class ControlStoreWorkerClient {
       'status' in value &&
       value.status === 'physical-forecast'
     ) {
-      this.receivePhysicalForecast(value, host);
+      void this.receivePhysicalForecast(value, host);
       return;
     }
     if (!isControlWorkerReply(value)) {
