@@ -261,6 +261,85 @@ export function plainActorName(
   return 'Worker';
 }
 
+/** Admitted request lifecycle. A missing row is not a closed result. */
+export interface RequestLifecycle {
+  state: 'pending' | 'resolved' | 'ended' | 'inspect-only';
+  resolution: 'granted' | 'denied' | 'answered' | null;
+  ending: 'withdrawn' | 'invalidated' | null;
+  disposition:
+    | 'approved-executed'
+    | 'denied-not-executed'
+    | 'execution-error'
+    | 'outcome-unknown'
+    | null;
+}
+
+export type ClosedFold =
+  | { fold: false }
+  | {
+      fold: true;
+      kind: 'approved' | 'denied' | 'answered' | 'closed';
+      result: 'executed' | 'not-executed' | null;
+    };
+
+/**
+ * R8 folds a closed approval or question only when the published decision is in
+ * this run and the admitted lifecycle is safe. A lifecycle row before that
+ * publication stays a card, so the request remains visible. Pending, unknown,
+ * failed, and not-yet-consumed grants stay open (R9). Delivery is not on this
+ * read, so an answer does not claim it was delivered.
+ */
+export function closedDecisionFold(input: {
+  decision: 'granted' | 'denied' | 'answered' | null;
+  request: RequestLifecycle | null;
+}): ClosedFold {
+  const request = input.request;
+  if (
+    !input.decision ||
+    !request ||
+    request.state === 'pending' ||
+    request.state === 'inspect-only'
+  ) {
+    return { fold: false };
+  }
+  if (input.decision === 'granted') {
+    if (request.disposition === 'approved-executed') {
+      return { fold: true, kind: 'approved', result: 'executed' };
+    }
+    return { fold: false };
+  }
+  if (input.decision === 'denied') {
+    return {
+      fold: true,
+      kind: 'denied',
+      result: request.disposition === 'denied-not-executed' ? 'not-executed' : null,
+    };
+  }
+  if (input.decision === 'answered') {
+    return { fold: true, kind: 'answered', result: null };
+  }
+  return { fold: false };
+}
+
+/** One line: who decided, plus a recorded result only when the lifecycle has one. */
+export function closedDecisionLine(
+  name: string,
+  kind: 'approved' | 'denied' | 'answered' | 'closed',
+  result: 'executed' | 'not-executed' | null
+): string {
+  const head =
+    kind === 'approved'
+      ? fillCopy(timelineCopy.approvedBy, { name })
+      : kind === 'denied'
+        ? fillCopy(timelineCopy.deniedBy, { name })
+        : kind === 'answered'
+          ? fillCopy(timelineCopy.answeredBy, { name })
+          : timelineCopy.closedWithoutDecision;
+  if (result === 'executed') return `${head} · ${timelineCopy.executedResult}`;
+  if (result === 'not-executed') return `${head} · ${timelineCopy.notExecutedResult}`;
+  return head;
+}
+
 export function stepsFoldLabel(count: number, failed?: number): string {
   const base = fillCopy(timelineCopy.stepsFold, { count });
   const recorded = recordedCount(failed);

@@ -109,6 +109,11 @@ export function useCoreClient(): CoreClient {
   return client;
 }
 
+/** The mounted client, or null where a timeline fold is rendered outside the provider. */
+export function useOptionalCoreClient(): CoreClient | null {
+  return useContext(CoreClientContext);
+}
+
 /**
  * Accesses the shared transport-failure channel used by bounded live streams.
  *

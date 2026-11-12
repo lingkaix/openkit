@@ -1,14 +1,22 @@
+import type { ThreadDashboardResponse } from '@openkit/app-api-schemas';
 import { Fragment, type ReactNode, type Ref, useState } from 'react';
+import { useOptionalCoreClient } from '../../../app/core-client';
 import { Button } from '../../../primitives';
-import type { ThreadItem } from '../data';
+import { type ThreadItem, useThreadDashboard } from '../data';
+import { ItemView } from '../ItemView';
 import { fillCopy, timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
 import {
+  type ClosedFold,
+  closedDecisionFold,
+  closedDecisionLine,
   formatRunDuration,
   groupSteps,
   isStepItem,
   noteWindow,
+  plainActorName,
+  type RequestLifecycle,
   stepsFoldLabel,
   summaryLine,
   voiceClass,
@@ -45,11 +53,100 @@ function planMark(status: string): string {
   return '○';
 }
 
+type AdmittedRequest = NonNullable<ThreadDashboardResponse['pendingRequests']>[number];
+
+function workspaceOf(
+  items: readonly ThreadItem[]
+): { workspaceId: string; threadId: string } | null {
+  for (const item of items) {
+    const owner = item.owner;
+    if (owner?.kind === 'workspace' && item.threadId) {
+      return { workspaceId: owner.workspaceId, threadId: item.threadId };
+    }
+  }
+  return null;
+}
+
+function lifecycleOf(row: AdmittedRequest | undefined): RequestLifecycle | null {
+  if (!row) return null;
+  return {
+    state: row.state,
+    resolution: row.resolution,
+    ending: row.ending,
+    disposition: row.disposition,
+  };
+}
+
+function deciderName(
+  actor: { kind: string; id: string } | undefined,
+  viewerUserId: string | null,
+  names: ReadonlyMap<string, string>
+): string {
+  if (!actor) return timelineCopy.someone;
+  if (actor.kind === 'system') return timelineCopy.policyActor;
+  if (actor.kind === 'user' && viewerUserId && actor.id === viewerUserId) return 'You';
+  const recorded = names.get(`${actor.kind}:${actor.id}`);
+  return plainActorName(recorded, actor.kind === 'user' ? 'person' : 'worker');
+}
+
+function actorOf(item: ThreadItem | undefined): { kind: string; id: string } | undefined {
+  if (!item) return undefined;
+  if (
+    item.type === 'approval-decision' ||
+    item.type === 'user-input-response' ||
+    item.type === 'user-message'
+  ) {
+    return item.actor;
+  }
+  return undefined;
+}
+
+function requestItemId(item: ThreadItem): string | null {
+  if (item.type === 'approval-request' || item.type === 'approval-decision') {
+    return item.approvalRequestId;
+  }
+  if (item.type === 'user-input-request' || item.type === 'user-input-response') {
+    return item.userInputRequestId;
+  }
+  return null;
+}
+
+function ClosedDecisionFold({
+  line,
+  members,
+  renderMember,
+}: {
+  line: string;
+  members: readonly ThreadItem[];
+  renderMember: (item: ThreadItem) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-fold-depth="1" data-decision-fold="closed">
+      <Button
+        variant="quiet"
+        size="sm"
+        aria-expanded={open}
+        onPress={() => setOpen((value) => !value)}
+      >
+        {line}
+      </Button>
+      {open
+        ? members.map((item) => (
+            <div key={item.id} data-fold-depth="2" data-decision-member={item.id}>
+              {renderMember(item)}
+            </div>
+          ))
+        : null}
+    </div>
+  );
+}
+
 /**
  * One run: trigger, narrative, summary, long-run plan and notes, and the step fold.
  * The step fold opens in place. A running line can still show Full for this run only.
  */
-export function RunEntry({
+function RunEntryBody({
   entry,
   items,
   turn,
@@ -74,6 +171,9 @@ export function RunEntry({
   workerCue,
   previews,
   onShowFullText,
+  requests,
+  viewerUserId,
+  names,
 }: {
   entry: TimelineEntry;
   items: readonly ThreadItem[];
@@ -102,6 +202,9 @@ export function RunEntry({
   /** Previews in read order. They stay at the Item they follow, including when not truncated. */
   previews?: readonly NarrativePreview[];
   onShowFullText?: (preview: NarrativePreview) => void;
+  requests: readonly AdmittedRequest[] | undefined;
+  viewerUserId: string | null;
+  names: ReadonlyMap<string, string>;
 }) {
   const runLens: LensName = lens === 'full' || expanded ? 'full' : 'work';
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -131,9 +234,102 @@ export function RunEntry({
     stats: entry.stats,
   });
 
+  function requestFor(item: ThreadItem): RequestLifecycle | null {
+    const id = requestItemId(item);
+    if (!id) return null;
+    return lifecycleOf(requests?.find((row) => row.requestId === id));
+  }
+
+  function decisionFor(item: ThreadItem): ThreadItem | undefined {
+    if (item.type === 'approval-request') {
+      return items.find(
+        (candidate) =>
+          candidate.type === 'approval-decision' &&
+          candidate.approvalRequestId === item.approvalRequestId
+      );
+    }
+    if (item.type === 'user-input-request') {
+      return items.find(
+        (candidate) =>
+          candidate.type === 'user-input-response' &&
+          candidate.userInputRequestId === item.userInputRequestId
+      );
+    }
+    return undefined;
+  }
+
+  function foldFor(item: ThreadItem): ClosedFold {
+    if (item.type === 'approval-request') {
+      const decision = decisionFor(item);
+      return closedDecisionFold({
+        decision: decision?.type === 'approval-decision' ? decision.decision : null,
+        request: requestFor(item),
+      });
+    }
+    if (item.type === 'user-input-request') {
+      return closedDecisionFold({
+        decision: decisionFor(item) ? 'answered' : null,
+        request: requestFor(item),
+      });
+    }
+    return { fold: false };
+  }
+
+  function foldedIntoRequest(item: ThreadItem): boolean {
+    const request = items.find((candidate) => {
+      if (item.type === 'approval-decision' && candidate.type === 'approval-request') {
+        return candidate.approvalRequestId === item.approvalRequestId;
+      }
+      if (item.type === 'user-input-response' && candidate.type === 'user-input-request') {
+        return candidate.userInputRequestId === item.userInputRequestId;
+      }
+      return false;
+    });
+    return request ? foldFor(request).fold : false;
+  }
+
+  function renderMember(item: ThreadItem): ReactNode {
+    const decision = resolveRender(
+      item.type === 'assistant-message' ? 'assistant-message' : item.type,
+      runLens
+    );
+    const rendered = renderItem(item, voiceClass(decision.voice));
+    if (rendered) return rendered;
+    return (
+      <ItemView
+        item={item}
+        readOnly
+        viewerUserId={viewerUserId ?? undefined}
+        authorName={deciderName(actorOf(item), viewerUserId, names)}
+      />
+    );
+  }
+
   function row(item: ThreadItem): ReactNode {
     if (hiddenIds.has(item.id) || isStepItem(item)) return null;
     if (item.type === 'plan') return null;
+    if (foldedIntoRequest(item)) return null;
+    const fold = foldFor(item);
+    if (fold.fold) {
+      const partner = decisionFor(item);
+      const members = partner ? [item, partner] : [item];
+      const line =
+        fold.kind === 'closed'
+          ? timelineCopy.closedWithoutDecision
+          : closedDecisionLine(
+              deciderName(actorOf(partner), viewerUserId, names),
+              fold.kind,
+              fold.result
+            );
+      return (
+        <ClosedDecisionFold
+          key={item.id}
+          line={line}
+          members={members}
+          renderMember={renderMember}
+        />
+      );
+    }
     if (item.type === 'assistant-message' && entry.notes.some((note) => note.itemId === item.id)) {
       return null;
     }
@@ -387,5 +583,47 @@ export function RunEntry({
         {timelineCopy.inspectRun}
       </Button>
     </article>
+  );
+}
+
+function AdmittedRequests({
+  workspaceId,
+  threadId,
+  children,
+}: {
+  workspaceId: string;
+  threadId: string;
+  children: (lifecycle: {
+    requests: readonly AdmittedRequest[] | undefined;
+    viewerUserId: string | null;
+    names: ReadonlyMap<string, string>;
+  }) => ReactNode;
+}) {
+  const dashboard = useThreadDashboard(workspaceId, threadId, false);
+  const names = new Map(
+    (dashboard.data?.participants ?? []).map((participant) => [
+      `${participant.kind}:${participant.id}`,
+      participant.displayName,
+    ])
+  );
+  return children({
+    requests: dashboard.data?.pendingRequests,
+    viewerUserId: dashboard.data?.viewerUserId ?? null,
+    names,
+  });
+}
+
+export function RunEntry(
+  props: Omit<Parameters<typeof RunEntryBody>[0], 'requests' | 'viewerUserId' | 'names'>
+) {
+  const client = useOptionalCoreClient();
+  const scope = workspaceOf(props.items);
+  if (!client || !scope) {
+    return <RunEntryBody {...props} requests={undefined} viewerUserId={null} names={new Map()} />;
+  }
+  return (
+    <AdmittedRequests workspaceId={scope.workspaceId} threadId={scope.threadId}>
+      {(lifecycle) => <RunEntryBody {...props} {...lifecycle} />}
+    </AdmittedRequests>
   );
 }
