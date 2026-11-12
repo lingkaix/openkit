@@ -21,6 +21,7 @@ import type { Actor } from './auth/identity.js';
 import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import { isArtifactVisible } from './auth/thread-visibility.js';
 import { boundedJsonText, previewUtf8 } from './bounded-read-text.js';
+import { readRecordedTurnEnvironment } from './capability/usage-ledger.js';
 import { admitGenerativePresentationRead } from './generative-ui/commands.js';
 import { commandRequestKey, type FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
@@ -373,6 +374,40 @@ function itemWindow(
   };
 }
 
+function recordedEnvironment(owner: ThreadTimelineReadInput, turnId: string, budget: number) {
+  const unavailable = { usage: null, fallback: null };
+  const allowance = Math.min(1024, Math.max(0, Math.floor(budget / 4)));
+  if (bytes(unavailable) > allowance) return {};
+  const coreDb = owner.coreDb;
+  if (
+    !coreDb ||
+    !owner.repositoryWorkspaceDb ||
+    !(['workspace.read', 'audit.read'] as const).every((policyOperation) =>
+      isWorkspaceOperationAuthorized(coreDb, owner.actor, owner.input.workspaceId, {
+        policyOperation,
+        mutating: false,
+      })
+    )
+  )
+    return unavailable;
+  const db = owner.repositoryWorkspaceDb(owner.input.workspaceId);
+  try {
+    const facts = readRecordedTurnEnvironment(db, {
+      workspaceId: owner.input.workspaceId,
+      threadId: owner.input.threadId,
+      turnId,
+    });
+    while (Buffer.byteLength(JSON.stringify(facts), 'utf8') > allowance) {
+      if (!facts.usage?.measurements.length) return unavailable;
+      facts.usage.measurements.pop();
+      if (!facts.usage.measurements.length) facts.usage = null;
+    }
+    return facts;
+  } finally {
+    db.sqlite.close();
+  }
+}
+
 function runEntry(
   owner: ThreadTimelineReadInput,
   snapshot: ThreadTimelineSnapshot,
@@ -471,6 +506,7 @@ function runEntry(
     },
     interruptedBy: { visibility: 'restricted' },
     restrictedReferences: false,
+    ...recordedEnvironment(owner, turn.id, budget),
   };
   base.planSegments = readTimelinePlanSegments(
     snapshot,

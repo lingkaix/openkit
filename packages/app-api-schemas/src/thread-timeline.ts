@@ -14,6 +14,7 @@ import {
   TurnErrorPresentationSchema,
   TurnIdSchema,
   TurnStatusSchema,
+  UsageRecordSchema,
   UserInputRequestIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
@@ -209,6 +210,32 @@ export const TimelineRunEntrySchema = z.object({
   narrativeCursor: cursor.nullable(),
   statistics: TimelineStatisticsSchema,
   planSegments: TimelinePlanSegmentsSchema.optional(),
+  /** Recorded call-linked lower bounds; units and metric sources are never conflated. */
+  usage: z
+    .object({
+      measurements: z
+        .array(
+          z.object({
+            category: UsageRecordSchema.shape.category,
+            unit: UsageRecordSchema.shape.unit,
+            source: z.string().min(1).max(96).nullable(),
+            quantity: z.number().nonnegative(),
+          })
+        )
+        .min(1)
+        .max(8),
+      coverage: z.enum(['complete', 'partial']),
+    })
+    .nullable()
+    .optional(),
+  /** Actual reached route members only; no inferred serving model or current configuration. */
+  fallback: z
+    .object({
+      callsWithFallback: z.number().int().nonnegative().max(16),
+      coverage: z.enum(['complete', 'partial']),
+    })
+    .nullable()
+    .optional(),
   interruptedBy: z.discriminatedUnion('visibility', [
     z.object({ visibility: z.literal('restricted') }),
     z.object({ visibility: z.literal('available'), actor: ActorRefSchema.nullable() }),

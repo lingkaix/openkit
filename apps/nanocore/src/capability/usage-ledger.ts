@@ -626,6 +626,135 @@ export function listWorkspaceCapabilityCalls(
     });
 }
 
+/** Bounded recorded facts only; private call/member/provider identities never leave this projection. */
+export interface RecordedTurnEnvironment {
+  usage: {
+    measurements: Array<{
+      category: UsageRecord['category'];
+      unit: UsageRecord['unit'];
+      source: string | null;
+      quantity: number;
+    }>;
+    coverage: 'partial';
+  } | null;
+  fallback: { callsWithFallback: number; coverage: 'complete' | 'partial' } | null;
+}
+
+/** Uses existing exact-run and per-call indexes; unlinked usage remains unknown, not an invented total. */
+export function readRecordedTurnEnvironment(
+  workspaceDb: WorkspaceDb,
+  input: { workspaceId: string; threadId: string; turnId: string }
+): RecordedTurnEnvironment {
+  return workspaceDb.sqlite.transaction(() => {
+    const calls = workspaceDb.sqlite
+      .prepare(`SELECT call_id,family,schema_version FROM capability_calls INDEXED BY capability_calls_turn_family_idx
+      WHERE workspace_id=? AND thread_id=? AND turn_id=?
+      ORDER BY family,started_at,call_id LIMIT 17`)
+      .all(input.workspaceId, input.threadId, input.turnId) as Array<{
+      call_id: string;
+      family: string;
+      schema_version: number;
+    }>;
+    const measurements = new Map<
+      string,
+      {
+        category: UsageRecord['category'];
+        unit: UsageRecord['unit'];
+        source: string | null;
+        quantity: number;
+      }
+    >();
+    let fallbackPartial = calls.length > 16;
+    let fallbackKnown = false;
+    let callsWithFallback = 0;
+    let extensionAllowance = 65_536;
+    for (const call of calls.slice(0, 16)) {
+      try {
+        readRetainedV1({ schemaVersion: call.schema_version }, () => undefined);
+      } catch {
+        fallbackPartial = true;
+        continue;
+      }
+      const rows = workspaceDb.sqlite
+        .prepare(`SELECT usage_id,schema_version,workspace_id,thread_id,turn_id,capability_call_id,category,unit,quantity,
+        CASE WHEN length(CAST(source AS BLOB))<=96 THEN source ELSE NULL END AS source,
+        CASE WHEN source IS NOT NULL AND length(CAST(source AS BLOB))>96 THEN 1 ELSE 0 END AS oversized_source
+        FROM usage_records INDEXED BY usage_records_capability_call_idx WHERE capability_call_id=? ORDER BY rowid LIMIT 33`)
+        .all(call.call_id) as Array<Record<string, unknown>>;
+      for (const row of rows.slice(0, 32)) {
+        if (
+          row.workspace_id !== input.workspaceId ||
+          row.thread_id !== input.threadId ||
+          row.turn_id !== input.turnId ||
+          row.capability_call_id !== call.call_id
+        )
+          continue;
+        try {
+          readRetainedV1({ schemaVersion: row.schema_version }, () => undefined);
+          const category = UsageRecordSchema.shape.category.parse(row.category);
+          const unit = UsageRecordSchema.shape.unit.parse(row.unit);
+          const quantity = UsageRecordSchema.shape.quantity.parse(row.quantity);
+          if (row.oversized_source) continue;
+          const source = UsageRecordSchema.shape.source.parse(row.source);
+          // Input, output, cache and total tokens are distinct recorded metrics, never added together.
+          const key =
+            source === null ? String(row.usage_id) : JSON.stringify([category, unit, source]);
+          const previous = measurements.get(key);
+          if (!previous && measurements.size >= 8) continue;
+          const total = (previous?.quantity ?? 0) + quantity;
+          if (!Number.isFinite(total)) continue;
+          measurements.set(key, { category, unit, source, quantity: total });
+        } catch {
+          /* Unreadable measurements supply no value. Coverage is already a lower bound. */
+        }
+      }
+      if (call.family !== 'llm') continue;
+      const row = workspaceDb.sqlite
+        .prepare(`SELECT CASE WHEN length(CAST(extensions_json AS BLOB))<=? THEN extensions_json ELSE NULL END AS extensions
+        FROM capability_calls WHERE call_id=?`)
+        .get(extensionAllowance, call.call_id) as { extensions: string | null } | undefined;
+      try {
+        if (row?.extensions) extensionAllowance -= Buffer.byteLength(row.extensions, 'utf8');
+        const route = row?.extensions
+          ? CanonicalCapabilityCallExtensionsSchema.parse(JSON.parse(row.extensions))[
+              'openkit.gateway/routeLineage'
+            ]
+          : undefined;
+        if (!route || route.entries.length > 64) {
+          fallbackPartial = true;
+          continue;
+        }
+        if (route.entries.some((entry) => entry.kind === 'unavailable')) fallbackPartial = true;
+        const reached = new Set(
+          route.entries
+            .filter((entry) => entry.kind === 'attempt')
+            .map((entry) => entry.routeMemberId)
+        );
+        if (!reached.size) {
+          fallbackPartial = true;
+          continue;
+        }
+        fallbackKnown = true;
+        if (reached.size > 1) callsWithFallback++;
+      } catch {
+        fallbackPartial = true;
+      }
+    }
+    // A call-qualified seek cannot prove absence of nullable/unlinked usage records for this run.
+    return {
+      usage: measurements.size
+        ? { measurements: [...measurements.values()], coverage: 'partial' as const }
+        : null,
+      fallback: fallbackKnown
+        ? {
+            callsWithFallback,
+            coverage: fallbackPartial ? ('partial' as const) : ('complete' as const),
+          }
+        : null,
+    };
+  })();
+}
+
 /**
  * Lists workspace usage records as protocol records.
  *

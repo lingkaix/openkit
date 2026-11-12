@@ -7,6 +7,7 @@ import {
   TimelineItemDetailSchema,
   TimelinePlanSegmentsSchema,
   TimelinePolicyBadgeSchema,
+  TimelineRunEntrySchema,
   TimelineStatisticsSchema,
 } from './thread-timeline.js';
 
@@ -16,6 +17,47 @@ const selector = {
 };
 
 describe('bounded Thread timeline contract', () => {
+  it('keeps recorded metric qualifiers, units and zero distinct from absent observations', () => {
+    const usage = TimelineRunEntrySchema.shape.usage;
+    const measurement = {
+      category: 'llm',
+      unit: 'tokens',
+      source: 'llm-gateway-adapter-reported:input',
+      quantity: 0,
+    };
+    expect(usage.parse({ measurements: [measurement], coverage: 'partial' })).toEqual({
+      measurements: [measurement],
+      coverage: 'partial',
+    });
+    expect(usage.parse(null)).toBeNull();
+    expect(usage.parse(undefined)).toBeUndefined();
+    for (const changed of [
+      { quantity: -1 },
+      { quantity: Infinity },
+      { unit: 'estimated-usd' },
+      { source: 'x'.repeat(97) },
+    ])
+      expect(
+        usage.safeParse({ measurements: [{ ...measurement, ...changed }], coverage: 'partial' })
+          .success
+      ).toBe(false);
+    expect(usage.safeParse({ measurements: [], coverage: 'partial' }).success).toBe(false);
+    expect(
+      usage.safeParse({ measurements: Array(9).fill(measurement), coverage: 'partial' }).success
+    ).toBe(false);
+  });
+
+  it('bounds recorded fallback counts without defaulting historical absence to zero', () => {
+    const fallback = TimelineRunEntrySchema.shape.fallback;
+    expect(fallback.parse({ callsWithFallback: 0, coverage: 'complete' })).toEqual({
+      callsWithFallback: 0,
+      coverage: 'complete',
+    });
+    expect(fallback.parse(null)).toBeNull();
+    expect(fallback.parse(undefined)).toBeUndefined();
+    for (const callsWithFallback of [-1, 0.5, 17])
+      expect(fallback.safeParse({ callsWithFallback, coverage: 'complete' }).success).toBe(false);
+  });
   it('classifies every protocol Item with only the shared narrative/step fact', () => {
     expect(Object.keys(THREAD_TIMELINE_PLACEMENT).sort()).toEqual(
       [...ItemTypeSchema.options].sort()

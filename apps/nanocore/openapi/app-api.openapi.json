@@ -58357,6 +58357,118 @@
                   ],
                   "additionalProperties": false
                 },
+                "usage": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "measurements": {
+                          "minItems": 1,
+                          "maxItems": 8,
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "category": {
+                                "default": "runtime",
+                                "type": "string",
+                                "enum": [
+                                  "llm",
+                                  "tool",
+                                  "runtime",
+                                  "storage",
+                                  "network"
+                                ]
+                              },
+                              "unit": {
+                                "type": "string",
+                                "enum": [
+                                  "tokens",
+                                  "usd",
+                                  "requests",
+                                  "seconds",
+                                  "bytes",
+                                  "files",
+                                  "artifacts",
+                                  "tool_calls",
+                                  "capability_calls",
+                                  "sandbox_sessions"
+                                ]
+                              },
+                              "source": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 96
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "quantity": {
+                                "type": "number",
+                                "minimum": 0
+                              }
+                            },
+                            "required": [
+                              "category",
+                              "unit",
+                              "source",
+                              "quantity"
+                            ],
+                            "additionalProperties": false
+                          }
+                        },
+                        "coverage": {
+                          "type": "string",
+                          "enum": [
+                            "complete",
+                            "partial"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "measurements",
+                        "coverage"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "fallback": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "callsWithFallback": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 16
+                        },
+                        "coverage": {
+                          "type": "string",
+                          "enum": [
+                            "complete",
+                            "partial"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "callsWithFallback",
+                        "coverage"
+                      ],
+                      "additionalProperties": false
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "interruptedBy": {
                   "oneOf": [
                     {
@@ -178969,5 +179081,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:cf2c0b71b0856e45b871bb0b3c6e4a11076c9ab9f5c5b0603f0b6737c406b0bc"
+  "x-openkit-source-digest": "sha256:cb9c349b683a2935abb5b3b107d4e7ebc70821d95e5b0d3a1f0b5fc74890a317"
 }
