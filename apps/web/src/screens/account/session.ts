@@ -1,6 +1,6 @@
 import { ApiCallError, type CoreClient } from '@openkit/core-client';
 import { allocateEntityId } from '@openkit/protocol';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useRef } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { toastQueue } from '../../primitives/Toast';
@@ -12,6 +12,45 @@ import { advanceAccountGeneration } from './generation';
 
 /** The single TanStack owner for protected account admission reads. */
 export const accountAdmissionKey = ['account', 'authorized-workspaces'] as const;
+
+type AuthorizedWorkspaceList = Awaited<ReturnType<CoreClient['operations']['workspace.list']>>;
+
+/**
+ * The latest admission payload discovery may copy once.
+ * A later explicit discovery read must call workspace.list again.
+ */
+const reusableAdmission = new WeakMap<QueryClient, AuthorizedWorkspaceList>();
+
+/** Remembers one successful admission payload for a single discovery reuse. */
+function offerReusableAdmission(queryClient: QueryClient, result: AuthorizedWorkspaceList): void {
+  reusableAdmission.set(queryClient, result);
+}
+
+/**
+ * Returns the current admission payload when discovery can reuse it.
+ * An in-flight admission read is joined first. An invalidated, missing, or already-taken
+ * payload returns undefined so the caller performs its own read.
+ */
+export async function reuseAdmissionList(
+  queryClient: QueryClient
+): Promise<AuthorizedWorkspaceList | undefined> {
+  const state = queryClient.getQueryState(accountAdmissionKey);
+  if (state?.fetchStatus === 'fetching') {
+    await queryClient.refetchQueries(
+      { exact: true, queryKey: accountAdmissionKey },
+      { cancelRefetch: false, throwOnError: true }
+    );
+  }
+  const offered = reusableAdmission.get(queryClient);
+  const settled = queryClient.getQueryState(accountAdmissionKey);
+  if (!offered || !settled) return undefined;
+  if (settled.status !== 'success' || settled.fetchStatus !== 'idle' || settled.isInvalidated) {
+    return undefined;
+  }
+  if (settled.data !== offered) return undefined;
+  reusableAdmission.delete(queryClient);
+  return offered;
+}
 
 /** User-owned channel queries and transient mutation results cleared at every account transition. */
 export const accountChannelsKey = ['account', 'channels'] as const;
@@ -151,10 +190,11 @@ export function useAccountAdmission(options?: { readonly enabled?: boolean }) {
   const client = useCoreClient();
   const admission = useQuery({
     queryKey: accountAdmissionKey,
-    queryFn: async ({ signal }) => {
+    queryFn: async ({ signal, client: queryClient }) => {
       const result = await client.operations['workspace.list']({});
       // Reading the signal lets an account transition cancel this fetch before a late response commits.
       signal.throwIfAborted();
+      offerReusableAdmission(queryClient, result);
       return result;
     },
     retry: false,
@@ -249,7 +289,9 @@ export function useAccountMutation() {
         mutationCache.remove(mutation);
       }
       queryClient.removeQueries({ queryKey: myInvitationsKey, exact: true });
-      queryClient.removeQueries({ queryKey: ['workspaces'], exact: true });
+      // Drop the previous account's rows without detaching the mounted observer.
+      // The refetch below joins the admission read that replaces them.
+      queryClient.setQueryData(['workspaces'], []);
       queryClient.removeQueries({ queryKey: ['workspaces', 'summaries'], exact: true });
       queryClient.removeQueries({ queryKey: ['account', 'session-user'], exact: true });
       queryClient.removeQueries({ queryKey: ['thread-dashboard'] });
@@ -257,6 +299,7 @@ export function useAccountMutation() {
       queryClient.removeQueries({ queryKey: ['operations'] });
       useWorkspaceStore.getState().setCurrentWorkspaceId(null);
       void queryClient.resetQueries({ queryKey: accountAdmissionKey, exact: true });
+      void queryClient.refetchQueries({ queryKey: ['workspaces'], exact: true });
     },
   });
 }

@@ -33,6 +33,7 @@ import {
   toastQueue,
 } from '../../primitives';
 import { accountGeneration } from '../account/generation';
+import { reuseAdmissionList } from '../account/session';
 import { useWorkspaceStore } from '../workspace-store';
 import { submitConversationDraft } from './file-drafts';
 import { watchPageVisibility } from './stream-visibility';
@@ -414,15 +415,17 @@ export function commitDiscoveredWorkspaces(
 /** List the workspaces the user can act in. */
 export function useWorkspaces() {
   const client = useCoreClient();
-  const queryClient = useQueryClient();
   return useQuery({
     queryKey: chatKeys.workspaces,
     // A late personal-only list must not stay fresh and suppress the next account's read.
     staleTime: 0,
-    queryFn: async ({ signal }) => {
-      const epoch = beginWorkspaceDiscovery(queryClient);
-      const { items } = await client.operations['workspace.list']({});
-      return commitDiscoveredWorkspaces(queryClient, signal, epoch, items);
+    queryFn: async ({ signal, client: discoveryClient }) => {
+      const epoch = beginWorkspaceDiscovery(discoveryClient);
+      const admitted = await reuseAdmissionList(discoveryClient);
+      const items = admitted
+        ? admitted.items
+        : (await client.operations['workspace.list']({})).items;
+      return commitDiscoveredWorkspaces(discoveryClient, signal, epoch, items);
     },
   });
 }

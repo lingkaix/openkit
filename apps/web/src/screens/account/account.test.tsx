@@ -881,7 +881,7 @@ describe('protected-read account gate', () => {
     );
     expect(screen.getByRole('main', { name: 'Workspace' })).toBeInTheDocument();
     expect(screen.queryByRole('form', { name: /account access/i })).not.toBeInTheDocument();
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(1);
     expectSettledAccountQuery(queryClient, 'success', response);
     expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 0);
     expectNoDeploymentAdmissionProbes(forbidden);
@@ -1028,7 +1028,7 @@ describe('protected-read account gate', () => {
     expect(forbidden.meta).not.toHaveBeenCalled();
     successfulRetry.resolve(response);
     expect(await screen.findByRole('navigation')).toBeInTheDocument();
-    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(3);
+    expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2);
     expectSettledAccountQuery(queryClient, 'success', response);
     expectMetaAfterProtectedRead(forbidden, listAuthorizedWorkspaces, 1);
     expectNoDeploymentAdmissionProbes(forbidden);
@@ -1066,7 +1066,6 @@ describe('email/password session operations', () => {
         operation === 'signOut'
           ? vi
               .fn()
-              .mockResolvedValueOnce(PRODUCT_WORKSPACES)
               .mockResolvedValueOnce(PRODUCT_WORKSPACES)
               .mockReturnValueOnce(protectedRead.promise)
               .mockReturnValueOnce(retryRead.promise)
@@ -1106,9 +1105,7 @@ describe('email/password session operations', () => {
       expectAccountMutation(queryClient, 'pending');
       expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
       authOperation.resolve(authResponse);
-      await waitFor(() =>
-        expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 3 : 2)
-      );
+      await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(2));
       await waitFor(expectProtectedReadPending);
       expectFetchingAccountQuery(queryClient);
       expectSanitizedAccountMutation(queryClient, 'success', [
@@ -1119,7 +1116,7 @@ describe('email/password session operations', () => {
       ]);
       expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
       expect(auth.mock.invocationCallOrder[0]).toBeLessThan(
-        listAuthorizedWorkspaces.mock.invocationCallOrder[operation === 'signOut' ? 2 : 1] as number
+        listAuthorizedWorkspaces.mock.invocationCallOrder[1] as number
       );
 
       if (outcome === 'success') {
@@ -1131,7 +1128,7 @@ describe('email/password session operations', () => {
         expectMetaAfterProtectedRead(
           forbidden,
           listAuthorizedWorkspaces,
-          operation === 'signOut' ? 2 : 1,
+          1,
           metaCallsBeforeAuthSettlement
         );
       } else if (outcome === 'typed unauthenticated') {
@@ -1149,9 +1146,7 @@ describe('email/password session operations', () => {
         expectSettledAccountQuery(queryClient, 'error', failure);
         expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
         await userEvent.click(retry);
-        await waitFor(() =>
-          expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(operation === 'signOut' ? 4 : 3)
-        );
+        await waitFor(() => expect(listAuthorizedWorkspaces).toHaveBeenCalledTimes(3));
         await waitFor(expectProtectedReadPending);
         expectFetchingAccountQuery(queryClient);
         expect(forbidden.meta).toHaveBeenCalledTimes(metaCallsBeforeAuthSettlement);
@@ -1163,7 +1158,7 @@ describe('email/password session operations', () => {
         expectMetaAfterProtectedRead(
           forbidden,
           listAuthorizedWorkspaces,
-          operation === 'signOut' ? 3 : 2,
+          2,
           metaCallsBeforeAuthSettlement
         );
       }
