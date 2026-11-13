@@ -251,8 +251,7 @@ function currentReference(
     reference.status !== 'active' ||
     reference.ownerScope !== 'workspace' ||
     reference.workspaceId !== workspaceId ||
-    reference.userId !== null ||
-    terms.injectionPath === 'runtime-token'
+    reference.userId !== null
   )
     throw new PendingRequestCommandError(
       'vault_reference_not_active',

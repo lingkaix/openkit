@@ -1,6 +1,12 @@
 // openkit-test-platform: posix
 import { execFileSync } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import {
+  createHash,
+  generateKeyPairSync,
+  type KeyObject,
+  randomUUID,
+  verify as verifySignature,
+} from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -36,6 +42,7 @@ import type {
   WorkerGovernanceBackendCapabilities,
 } from '@openkit/config-schema';
 import {
+  AgentEnvironmentCredentialDeclarationSchema,
   materializeWorkspaceRoots,
   validateAgentEnvironmentPackageForBackend,
 } from '@openkit/config-schema';
@@ -59,6 +66,7 @@ import {
   WorkerRuntimeRawStreamManifestSchema,
   workerSessionInputPaths,
 } from '@openkit/worker-protocol';
+import { Hono } from 'hono';
 import {
   afterAll,
   afterEach,
@@ -93,7 +101,12 @@ import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-l
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { createRuntimeConfigManager, loadRuntimeConfig } from '../config/runtime-config.js';
+import { loadOpenKitConfig } from '../config/openkit-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import * as knowledgeOverviewReader from '../context/knowledge-overview.js';
 import * as materialSourceReader from '../context/material-source-files.js';
@@ -165,6 +178,7 @@ import {
 import {
   createAppWithLocalIdentity as createApp,
   createAppWithWorkspaceAuthority,
+  createTestSessionActor,
 } from '../test-support/app.js';
 import { createDemoStore, seedDemoWorkspace } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -223,6 +237,7 @@ import {
   resolveAgentEnvironmentPackage as resolveLoginEnvironmentPackage,
 } from './agent-environment.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
+import { createCredentialHelperHandler } from './credential-helper-exchange.js';
 import * as attempts from './execution-attempt-records.js';
 import * as nativeExecutionAttempts from './execution-attempts.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
@@ -16273,7 +16288,21 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
 }
 
 /** Launches through the real Core owners and waits on the real durable completion stream; only the external worker is modeled. */
-async function launchFinalReviewWorker(suffix: string) {
+async function launchFinalReviewWorker(
+  suffix: string,
+  prepare?: (
+    coreDb: CoreDb,
+    store: FsStore,
+    turn: ReturnType<FsStore['getTurnById']>,
+    agentSessionId: string
+  ) => Promise<{
+    agentSetup: ReturnType<typeof createTestAgentSetup>;
+    vaultBackend?: ConstructorParameters<typeof WorkerGovernanceTurnExecutor>[0]['vaultBackend'];
+    policyInterception?: ConstructorParameters<
+      typeof WorkerGovernanceTurnExecutor
+    >[0]['policyInterception'];
+  }>
+) {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-review-')));
   applyMigrations(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -16300,6 +16329,7 @@ async function launchFinalReviewWorker(suffix: string) {
     turnId: turn.id,
     workspaceId: workspaceIdForOwner(turn.owner),
   };
+  const prepared = prepare ? await prepare(coreDb, store, turn, agentSessionId) : undefined;
   const gateway = createDefaultWorkerControlGateway(coreDb);
   const backend = interruptibleBackend();
   const materialize = backend.materialize.bind(backend);
@@ -16332,6 +16362,8 @@ async function launchFinalReviewWorker(suffix: string) {
     fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
     backend,
     coreDb,
+    ...(prepared?.vaultBackend ? { vaultBackend: prepared.vaultBackend } : {}),
+    ...(prepared?.policyInterception ? { policyInterception: prepared.policyInterception } : {}),
     workerControlGateway: gateway,
     awaitWorkerCompletion: (_pkg, exactAttemptId) => {
       const result = waitForWorkerControlFinalStatus(coreDb, {
@@ -16351,7 +16383,7 @@ async function launchFinalReviewWorker(suffix: string) {
     new Date().toISOString(),
     'Exercise worker closeout',
     {
-      agentSetup: createTestAgentSetup(),
+      agentSetup: prepared?.agentSetup ?? createTestAgentSetup(),
       requestId,
       triggerActor: turn.triggerActor,
       workspaceRoots: [],
@@ -20990,6 +21022,809 @@ describe('Login publication under the original Goal Task decision', () => {
         for (const handle of operationHandles) closeTestCoreDb(handle);
         closeTestCoreDb(db);
         closeTestCoreDb(coreDb);
+      }
+    }
+  );
+});
+
+// Accepted cut-(b): native helpers use the actual App route, durable gateway and existing Vault/Policy/Audit owners.
+// This suite models only external execution through the existing FakeWorkerGovernanceBackend.
+
+/** Admit the intended fixture gate through the real human Policy/configuration owner before use. */
+async function activateCoreHelperPolicyBinding(
+  fixture: Awaited<ReturnType<typeof launchFinalReviewWorker>>,
+  manager: ReturnType<typeof createRuntimeConfigManager>,
+  participant: Pick<DeterministicPolicyParticipant, 'id' | 'version'>
+): Promise<void> {
+  const dataRoot = fixture.coreDb.dataRoot;
+  await manager.bindNativePolicyPublication(fixture.coreDb);
+  const configRoot = join(dataRoot, 'config');
+  mkdirSync(configRoot, { recursive: true });
+  const serverFile = join(configRoot, 'server.jsonc');
+  if (!existsSync(serverFile)) writeFileSync(serverFile, JSON.stringify({ schemaVersion: 1 }));
+  // A real reload must retain the already selected inline Gateway values.
+  writeFileSync(join(configRoot, 'gateway.jsonc'), JSON.stringify(manager.current().gatewayConfig));
+  createOpenKitAccessTokenRecord(fixture.coreDb, {
+    ownerUserId: LOCAL_USER_ID,
+    scope: 'server-admin',
+    workspaceIds: [],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+  });
+  const personal = await fixture.store.ensureQuickChatWorkspace(LOCAL_USER_ID);
+  recordWorkspaceOwnerMembership({
+    coreDb: fixture.coreDb,
+    workspaceId: personal.id,
+    ownerUserId: LOCAL_USER_ID,
+  });
+  const thread = await fixture.store.createThread(
+    personal.id,
+    'Admit helper Policy gate',
+    undefined,
+    'administration',
+    { visibility: 'private', privateOwnerUserId: LOCAL_USER_ID }
+  );
+  const turn = await fixture.store.createTurn(
+    personal.id,
+    thread.id,
+    'Confirm the exact helper gate',
+    { kind: 'user', id: LOCAL_USER_ID }
+  );
+  const container = {
+    kind: 'workspace' as const,
+    id: fixture.lineage.workspaceId,
+    owner: { kind: 'workspace' as const, workspaceId: fixture.lineage.workspaceId },
+  };
+  const scope = {
+    subjects: [{ kind: 'human' as const, id: LOCAL_USER_ID }],
+    actions: ['vault.use'],
+    resources: [{ kind: 'container' as const, container }],
+  };
+  const document: import('@openkit/protocol').PolicyDocumentV1 = {
+    schemaVersion: 1,
+    statements: [
+      ...(manager.current().openKitConfig.policy?.mediation?.statements ?? []),
+      {
+        id: `${participant.id}-gate`,
+        kind: 'binding',
+        author: { kind: 'human', id: LOCAL_USER_ID },
+        authority: { kind: 'human', userId: LOCAL_USER_ID },
+        authoredAt: new Date().toISOString(),
+        state: 'active',
+        scope,
+        lifetime: { anchor: container },
+        operation: 'vault.binding-deliver',
+        stage: 'decide',
+        mode: 'gate',
+        participant: { kind: 'deterministic', ...participant },
+        inputDisclosure: scope,
+        order: 0,
+        timeoutMs: 100,
+        failure: 'error',
+        circuit: { failures: 1, recoveryAfterMs: 60_000 },
+      },
+    ],
+  };
+  const files = new RuntimeConfigFileService({
+    dataRoot,
+    userId: LOCAL_USER_ID,
+    workspaceIds: [fixture.lineage.workspaceId, personal.id],
+    runtimeConfigManager: manager,
+    readRuntimeConfigStatus: () => manager.status(),
+  });
+  const handles = new Map<string, ReturnType<typeof openWorkspaceDb>>();
+  const configuration = createAdministrationConfiguration({
+    actor: createTestSessionActor(fixture.coreDb, LOCAL_USER_ID),
+    coreDb: fixture.coreDb,
+    store: fixture.store,
+    files,
+    runtimeConfig: () => manager.current(),
+    reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+    repositoryWorkspaceDb: (workspaceId) => {
+      let db = handles.get(workspaceId);
+      if (!db) {
+        db = openWorkspaceDb(dataRoot, workspaceId);
+        handles.set(workspaceId, db);
+      }
+      return db;
+    },
+    inflightCommands: new WeakMap(),
+  });
+  try {
+    const proposed = await configuration.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed: document,
+          rationale: 'Bind the existing deterministic helper gate to its exact Workspace use.',
+        },
+      },
+      { threadId: thread.id, turnId: turn.id, requestId: randomUUID() }
+    );
+    const applied = await configuration.apply({
+      requestId: randomUUID(),
+      candidate: proposed.candidate,
+      confirmation: proposed.confirmation,
+    });
+    if (!applied.persisted || applied.reload !== 'applied')
+      throw new Error('Helper Policy binding was not activated by its owner.');
+  } finally {
+    for (const db of handles.values()) db.sqlite.close();
+  }
+}
+
+/** Encode an independent public SSH string for a request or signature check. */
+function coreHelperSshString(value: string | Buffer): Buffer {
+  const bytes = typeof value === 'string' ? Buffer.from(value) : value;
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length);
+  return Buffer.concat([length, bytes]);
+}
+
+/** Derive only the public SSH blob; no signer or private-key consumer is implemented here. */
+function coreHelperPublicBlob(key: KeyObject): Buffer {
+  const jwk = key.export({ format: 'jwk' });
+  if (jwk.kty === 'OKP' && jwk.crv === 'Ed25519' && jwk.x) {
+    return Buffer.concat([
+      coreHelperSshString('ssh-ed25519'),
+      coreHelperSshString(Buffer.from(jwk.x, 'base64url')),
+    ]);
+  }
+  if (jwk.kty === 'RSA' && jwk.e && jwk.n) {
+    const mpint = (value: string) => {
+      const bytes = Buffer.from(value, 'base64url');
+      return coreHelperSshString(
+        bytes[0]! & 0x80 ? Buffer.concat([Buffer.from([0]), bytes]) : bytes
+      );
+    };
+    return Buffer.concat([coreHelperSshString('ssh-rsa'), mpint(jwk.e), mpint(jwk.n)]);
+  }
+  throw new Error('Unsupported synthetic public key.');
+}
+
+/** Verify the complete returned SSH signature with the independent platform crypto verifier. */
+function coreHelperVerifySignature(
+  encoded: string,
+  key: KeyObject,
+  data: Buffer,
+  flags: number
+): void {
+  const bytes = Buffer.from(encoded, 'base64');
+  expect(bytes.length).toBeGreaterThanOrEqual(8);
+  const algorithmLength = bytes.readUInt32BE(0);
+  expect(algorithmLength).toBeLessThanOrEqual(bytes.length - 8);
+  const algorithm = bytes.subarray(4, 4 + algorithmLength).toString();
+  const signatureLength = bytes.readUInt32BE(4 + algorithmLength);
+  expect(bytes.length).toBe(8 + algorithmLength + signatureLength);
+  expect(
+    algorithm === (flags === 0 ? 'ssh-ed25519' : flags === 2 ? 'rsa-sha2-256' : 'rsa-sha2-512')
+  ).toBe(true);
+  expect(
+    verifySignature(
+      flags === 0 ? null : flags === 2 ? 'sha256' : 'sha512',
+      data,
+      key,
+      bytes.subarray(8 + algorithmLength)
+    )
+  ).toBe(true);
+}
+
+/** Create fixture data through actual Vault owners, never through rows or successful receipts. */
+async function coreHelperCredentialData(
+  coreDb: CoreDb,
+  turn: ReturnType<FsStore['getTurnById']>,
+  agentSessionId: string,
+  input: { material: string; helper?: unknown; ssh?: boolean; expiresAt?: string | null }
+) {
+  const workspaceId = workspaceIdForOwner(turn.owner);
+  const referenceId = testEntityId('vault', 'core-helper-reference');
+  const grantId = testEntityId('grant', 'core-helper-grant');
+  const vault = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(coreDb.dataRoot, 'vault'),
+  });
+  vault.unlock({ masterKey: Buffer.alloc(32, 73) });
+  vault.backend().store({
+    referenceId,
+    material: input.material,
+    metadata: { ownerScope: 'workspace', workspaceId },
+  });
+  await createVaultReference(coreDb, {
+    referenceId,
+    ownerScope: 'workspace',
+    workspaceId,
+    displayName: 'Synthetic native helper',
+    secretKind: 'opaque',
+    backendKind: 'encrypted-file',
+  });
+  const visibility = input.ssh ? 'external-handle' : 'runtime-token';
+  await createVaultGrant(coreDb, {
+    grantId,
+    vaultReferenceId: referenceId,
+    ownerScope: 'workspace',
+    workspaceId,
+    targetAgentSessionId: agentSessionId,
+    allowedInjectionPaths: [visibility],
+    lifetime: 'agent-session',
+    expiresAt: input.expiresAt ?? null,
+  });
+  const declaration = AgentEnvironmentCredentialDeclarationSchema.parse({
+    id: 'core-helper',
+    requirementId: 'core-helper',
+    vaultGrantId: grantId,
+    visibility,
+    consumer: input.ssh ? 'ssh-agent' : 'credential-helper',
+    ...(input.ssh ? {} : { helper: input.helper }),
+  });
+  const agentSetup = createTestAgentSetup({ credentialDeclarations: [declaration] });
+  admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+  return { vault, referenceId, grantId, agentSetup };
+}
+
+/** Assert refusal without printing response bodies or fixture-private material. */
+async function coreHelperRefused(response: Response, ...privateValues: string[]): Promise<void> {
+  expect(response.status).toBeGreaterThanOrEqual(400);
+  const text = await response.text();
+  for (const material of privateValues) {
+    expect(text.includes(material) || text.includes(JSON.stringify(material).slice(1, -1))).toBe(
+      false
+    );
+  }
+}
+
+const coreHelperProcessCases = [
+  {
+    protocol: 'git',
+    helper: { protocol: 'git', scheme: 'https', host: 'opaque-target', path: 'scope' },
+    command: {
+      protocol: 'git',
+      operation: 'get',
+      attributes: { protocol: 'https', host: 'opaque-target', path: 'scope' },
+    },
+    wrong: [
+      {
+        protocol: 'git',
+        operation: 'get',
+        attributes: { protocol: 'https', host: 'other-target', path: 'scope' },
+      },
+      {
+        protocol: 'git',
+        operation: 'get',
+        attributes: { protocol: 'http', host: 'opaque-target', path: 'scope' },
+      },
+      {
+        protocol: 'git',
+        operation: 'get',
+        attributes: { protocol: 'https', host: 'opaque-target', path: 'other-scope' },
+      },
+    ],
+    credential: { username: 'synthetic-user', password: 'synthetic-git-value' },
+    privateValues: ['synthetic-git-value'],
+  },
+  {
+    protocol: 'docker',
+    helper: { protocol: 'docker', serverUrl: 'registry-key' },
+    command: { protocol: 'docker', operation: 'get', target: 'registry-key' },
+    wrong: [{ protocol: 'docker', operation: 'get', target: 'other-registry-key' }],
+    credential: { Username: 'synthetic-user', Secret: 'synthetic-docker-value' },
+    privateValues: ['synthetic-docker-value'],
+  },
+  {
+    protocol: 'aws',
+    helper: { protocol: 'aws' },
+    command: { protocol: 'aws', operation: 'get' },
+    wrong: [{ protocol: 'docker', operation: 'get', target: 'registry-key' }],
+    credential: {
+      Version: 1,
+      AccessKeyId: 'synthetic-access',
+      SecretAccessKey: 'synthetic-aws-value',
+      SessionToken: 'synthetic-session-value',
+    },
+    privateValues: ['synthetic-aws-value', 'synthetic-session-value'],
+  },
+  {
+    protocol: 'kubernetes',
+    helper: { protocol: 'kubernetes', apiVersion: 'client.authentication.k8s.io/v1' },
+    command: {
+      protocol: 'kubernetes',
+      operation: 'get',
+      apiVersion: 'client.authentication.k8s.io/v1',
+      interactive: false,
+    },
+    wrong: [
+      {
+        protocol: 'kubernetes',
+        operation: 'get',
+        apiVersion: 'client.authentication.k8s.io/v1beta1',
+        interactive: false,
+      },
+    ],
+    credential: {
+      apiVersion: 'client.authentication.k8s.io/v1',
+      kind: 'ExecCredential',
+      status: { token: 'synthetic-kubernetes-value' },
+    },
+    privateValues: ['synthetic-kubernetes-value'],
+  },
+  {
+    protocol: 'google',
+    helper: {
+      protocol: 'google',
+      audience: 'synthetic-audience',
+      subjectTokenType: 'urn:ietf:params:oauth:token-type:id_token',
+    },
+    command: {
+      protocol: 'google',
+      operation: 'get',
+      audience: 'synthetic-audience',
+      subjectTokenType: 'urn:ietf:params:oauth:token-type:id_token',
+    },
+    wrong: [
+      {
+        protocol: 'google',
+        operation: 'get',
+        audience: 'other-audience',
+        subjectTokenType: 'urn:ietf:params:oauth:token-type:id_token',
+      },
+      {
+        protocol: 'google',
+        operation: 'get',
+        audience: 'synthetic-audience',
+        subjectTokenType: 'urn:ietf:params:oauth:token-type:jwt',
+      },
+    ],
+    credential: {
+      version: 1,
+      success: true,
+      token_type: 'urn:ietf:params:oauth:token-type:id_token',
+      id_token: 'synthetic.google.value',
+    },
+    privateValues: ['synthetic.google.value'],
+  },
+] as const;
+
+describe('Core credential helpers through the actual App and durable fake-backend session', () => {
+  it.each(coreHelperProcessCases)(
+    '$protocol reauthorizes exact declaration, target, session and grant on every use',
+    async (scenario) => {
+      let data!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+      let allow = true;
+      const proposals: unknown[] = [];
+      const policy = new PolicyInterception({
+        id: 'core-helper-policy',
+        version: `sha256:${'7'.repeat(64)}`,
+        invoke: async ({ proposal }) => {
+          proposals.push(proposal);
+          return { decision: allow ? 'allow' : 'deny' };
+        },
+      });
+      const material = JSON.stringify(scenario.credential);
+      const fixture = await launchFinalReviewWorker(
+        `helper-${scenario.protocol}`,
+        async (coreDb, _store, turn, agentSessionId) => {
+          data = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            material,
+            helper: scenario.helper,
+          });
+          return {
+            agentSetup: data.agentSetup,
+            vaultBackend: () => data.vault.backend(),
+            policyInterception: () => policy,
+          };
+        }
+      );
+      const workspaceDb = createTestWorkspaceDb(
+        fixture.coreDb.dataRoot,
+        fixture.lineage.workspaceId
+      );
+      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+      const gatewayConfig = createTestGatewayConfig();
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: fixture.coreDb.dataRoot,
+        captureCoverage: fixture.store,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot: fixture.coreDb.dataRoot,
+          openKitConfig: loadOpenKitConfig(fixture.coreDb.dataRoot),
+          agentManifests: [],
+          gatewayConfig,
+        }),
+      });
+      const realApp = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.coreDb.dataRoot,
+        store: fixture.store,
+        workspaceMutationAdmission,
+        runtimeConfigManager,
+        turnExecutor: fixture.executor,
+        workerControlGateway: fixture.gateway,
+        vaultUnlockState: data.vault,
+        policyInterception: policy,
+        gatewayConfig,
+      });
+      // Dormancy C: test-only private routing precedes the real App's user-auth middleware.
+      const credentialHelperHandler = createCredentialHelperHandler({
+        gateway: fixture.gateway,
+        operations: {
+          coreDb: fixture.coreDb,
+          dataRoot: fixture.coreDb.dataRoot,
+          store: fixture.store,
+          workspaceMutationAdmission,
+          runtimeConfigManager,
+          turnExecutor: fixture.executor,
+          vaultUnlockState: data.vault,
+          policyInterception: policy,
+          repositoryWorkspaceDb: (workspaceId) =>
+            createTestWorkspaceDb(fixture.coreDb.dataRoot, workspaceId),
+        },
+      });
+      const app = new Hono();
+      app.post('/api/worker-control/credential-helper', (c) => credentialHelperHandler(c.req.raw));
+      app.route('/', realApp);
+      const post = (
+        command: unknown = scenario.command,
+        declarationId = 'core-helper',
+        lineage = fixture.lineage,
+        token = fixture.token
+      ) =>
+        app.request('/api/worker-control/credential-helper', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ lineage, declarationId, request: command }),
+        });
+      const resolve = vi.spyOn(data.vault.backend(), 'resolve');
+      try {
+        await activateCoreHelperPolicyBinding(fixture, runtimeConfigManager, {
+          id: 'core-helper-policy',
+          version: `sha256:${'7'.repeat(64)}`,
+        });
+        const response = await post();
+        expect(response.status).toBe(200);
+        const reply = await response.json();
+        expect(canonicalJsonText(reply.credential) === canonicalJsonText(scenario.credential)).toBe(
+          true
+        );
+        expect(typeof reply.receiptId).toBe('string');
+        expect(reply.receiptId.length).toBeGreaterThan(0);
+        expect(reply.materialGeneration === 1).toBe(true);
+        const resolved = resolve.mock.calls.length;
+        for (const wrong of scenario.wrong)
+          await coreHelperRefused(await post(wrong), ...scenario.privateValues);
+        await coreHelperRefused(
+          await post(scenario.command, 'unadmitted-declaration'),
+          ...scenario.privateValues
+        );
+        await coreHelperRefused(
+          await post(scenario.command, 'core-helper', {
+            ...fixture.lineage,
+            agentSessionId: testEntityId('as', 'wrong-helper-session'),
+          }),
+          ...scenario.privateValues
+        );
+        await coreHelperRefused(
+          await post(scenario.command, 'core-helper', fixture.lineage, 'synthetic-invalid-token'),
+          ...scenario.privateValues
+        );
+        expect(resolve.mock.calls.length).toBe(resolved);
+        const policyBefore = proposals.length;
+        allow = false;
+        await coreHelperRefused(await post(), ...scenario.privateValues);
+        expect(proposals.length).toBeGreaterThan(policyBefore);
+        expect(resolve.mock.calls.length).toBe(resolved);
+        allow = true;
+        const next = await post();
+        expect(next.status).toBe(200);
+        expect(
+          canonicalJsonText((await next.json()).credential) ===
+            canonicalJsonText(scenario.credential)
+        ).toBe(true);
+        expect(resolve.mock.calls.length).toBe(resolved + 1);
+        await revokeVaultGrant(fixture.coreDb, { grantId: data.grantId });
+        expect(getVaultGrant(fixture.coreDb, data.grantId)?.status).toBe('revoked');
+        await coreHelperRefused(await post(), ...scenario.privateValues);
+        expect(resolve.mock.calls.length).toBe(resolved + 1);
+        const evidence = JSON.stringify({
+          uses: listVaultUseRecords(workspaceDb),
+          audits: listWorkspaceAuditEvents(
+            workspaceDb,
+            fixture.lineage.workspaceId,
+            fixture.coreDb
+          ),
+          proposals,
+        });
+        for (const value of scenario.privateValues) expect(evidence.includes(value)).toBe(false);
+      } finally {
+        resolve.mockRestore();
+        workspaceDb.sqlite.close();
+        await fixture.dispose();
+        data.vault.lock();
+      }
+    }
+  );
+
+  it.each(['grant', 'material'] as const)(
+    'projects the earlier known %s expiry and refuses its expired boundary',
+    async (earlier) => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      const first = new Date(Date.now() + 60_000).toISOString();
+      const second = new Date(Date.now() + 120_000).toISOString();
+      const grantExpiry = earlier === 'grant' ? first : second;
+      const materialExpiry = earlier === 'material' ? first : second;
+      const credential = {
+        Version: 1,
+        AccessKeyId: 'synthetic-access',
+        SecretAccessKey: 'synthetic-expiry-value',
+        Expiration: materialExpiry,
+      };
+      const material = JSON.stringify(credential);
+      let data!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+      const policy = new PolicyInterception({
+        id: 'core-helper-expiry-policy',
+        version: `sha256:${'8'.repeat(64)}`,
+        invoke: async () => ({ decision: 'allow' }),
+      });
+      const fixture = await launchFinalReviewWorker(
+        `helper-expiry-${earlier}`,
+        async (coreDb, _store, turn, agentSessionId) => {
+          data = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            material,
+            helper: { protocol: 'aws' },
+            expiresAt: grantExpiry,
+          });
+          return {
+            agentSetup: data.agentSetup,
+            vaultBackend: () => data.vault.backend(),
+            policyInterception: () => policy,
+          };
+        }
+      );
+      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+      const gatewayConfig = createTestGatewayConfig();
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: fixture.coreDb.dataRoot,
+        captureCoverage: fixture.store,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot: fixture.coreDb.dataRoot,
+          openKitConfig: loadOpenKitConfig(fixture.coreDb.dataRoot),
+          agentManifests: [],
+          gatewayConfig,
+        }),
+      });
+      const realApp = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.coreDb.dataRoot,
+        store: fixture.store,
+        workspaceMutationAdmission,
+        runtimeConfigManager,
+        turnExecutor: fixture.executor,
+        workerControlGateway: fixture.gateway,
+        vaultUnlockState: data.vault,
+        policyInterception: policy,
+        gatewayConfig,
+      });
+      // Dormancy C: test-only private routing precedes the real App's user-auth middleware.
+      const credentialHelperHandler = createCredentialHelperHandler({
+        gateway: fixture.gateway,
+        operations: {
+          coreDb: fixture.coreDb,
+          dataRoot: fixture.coreDb.dataRoot,
+          store: fixture.store,
+          workspaceMutationAdmission,
+          runtimeConfigManager,
+          turnExecutor: fixture.executor,
+          vaultUnlockState: data.vault,
+          policyInterception: policy,
+          repositoryWorkspaceDb: (workspaceId) =>
+            createTestWorkspaceDb(fixture.coreDb.dataRoot, workspaceId),
+        },
+      });
+      const app = new Hono();
+      app.post('/api/worker-control/credential-helper', (c) => credentialHelperHandler(c.req.raw));
+      app.route('/', realApp);
+      const post = () =>
+        app.request('/api/worker-control/credential-helper', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            lineage: fixture.lineage,
+            declarationId: 'core-helper',
+            request: { protocol: 'aws', operation: 'get' },
+          }),
+        });
+      try {
+        const response = await post();
+        expect(response.status).toBe(200);
+        const reply = await response.json();
+        expect(Date.parse(reply.credential.Expiration)).toBe(Date.parse(first));
+        vi.setSystemTime(new Date(first));
+        await coreHelperRefused(await post(), 'synthetic-expiry-value');
+      } finally {
+        await fixture.dispose();
+        data.vault.lock();
+        vi.useRealTimers();
+      }
+    }
+  );
+
+  it.each([
+    { algorithm: 'ed25519', flags: 0 },
+    { algorithm: 'rsa', flags: 2 },
+    { algorithm: 'rsa', flags: 4 },
+  ] as const)(
+    'keeps $algorithm/$flags signing in Core with fresh Use and linked Audit per signature',
+    async ({ algorithm, flags }) => {
+      const pair =
+        algorithm === 'ed25519'
+          ? generateKeyPairSync('ed25519')
+          : generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const material = pair.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString();
+      const keyBlob = coreHelperPublicBlob(pair.publicKey).toString('base64');
+      const other =
+        algorithm === 'ed25519'
+          ? generateKeyPairSync('ed25519')
+          : generateKeyPairSync('rsa', { modulusLength: 2048 });
+      const wrongKey = coreHelperPublicBlob(other.publicKey).toString('base64');
+      let data!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+      let allow = true;
+      const proposals: unknown[] = [];
+      const policy = new PolicyInterception({
+        id: 'core-helper-sign-policy',
+        version: `sha256:${'9'.repeat(64)}`,
+        invoke: async ({ proposal }) => {
+          proposals.push(proposal);
+          return { decision: allow ? 'allow' : 'deny' };
+        },
+      });
+      const fixture = await launchFinalReviewWorker(
+        `helper-sign-${algorithm}-${flags}`,
+        async (coreDb, _store, turn, agentSessionId) => {
+          data = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            material,
+            ssh: true,
+          });
+          return {
+            agentSetup: data.agentSetup,
+            vaultBackend: () => data.vault.backend(),
+            policyInterception: () => policy,
+          };
+        }
+      );
+      const workspaceDb = createTestWorkspaceDb(
+        fixture.coreDb.dataRoot,
+        fixture.lineage.workspaceId
+      );
+      const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+      const gatewayConfig = createTestGatewayConfig();
+      const runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: fixture.coreDb.dataRoot,
+        captureCoverage: fixture.store,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          dataRoot: fixture.coreDb.dataRoot,
+          openKitConfig: loadOpenKitConfig(fixture.coreDb.dataRoot),
+          agentManifests: [],
+          gatewayConfig,
+        }),
+      });
+      const realApp = createApp({
+        coreDb: fixture.coreDb,
+        dataRoot: fixture.coreDb.dataRoot,
+        store: fixture.store,
+        workspaceMutationAdmission,
+        runtimeConfigManager,
+        turnExecutor: fixture.executor,
+        workerControlGateway: fixture.gateway,
+        vaultUnlockState: data.vault,
+        policyInterception: policy,
+        gatewayConfig,
+      });
+      // Dormancy C: test-only private routing precedes the real App's user-auth middleware.
+      const credentialHelperHandler = createCredentialHelperHandler({
+        gateway: fixture.gateway,
+        operations: {
+          coreDb: fixture.coreDb,
+          dataRoot: fixture.coreDb.dataRoot,
+          store: fixture.store,
+          workspaceMutationAdmission,
+          runtimeConfigManager,
+          turnExecutor: fixture.executor,
+          vaultUnlockState: data.vault,
+          policyInterception: policy,
+          repositoryWorkspaceDb: (workspaceId) =>
+            createTestWorkspaceDb(fixture.coreDb.dataRoot, workspaceId),
+        },
+      });
+      const app = new Hono();
+      app.post('/api/worker-control/credential-helper', (c) => credentialHelperHandler(c.req.raw));
+      app.route('/', realApp);
+      const post = (request: unknown) =>
+        app.request('/api/worker-control/credential-helper', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ lineage: fixture.lineage, declarationId: 'core-helper', request }),
+        });
+      const signData = Buffer.from('synthetic signing input');
+      const command = {
+        protocol: 'ssh-agent',
+        operation: 'sign',
+        keyBlob,
+        data: signData.toString('base64'),
+        flags,
+      };
+      const resolve = vi.spyOn(data.vault.backend(), 'resolve');
+      try {
+        await activateCoreHelperPolicyBinding(fixture, runtimeConfigManager, {
+          id: 'core-helper-sign-policy',
+          version: `sha256:${'9'.repeat(64)}`,
+        });
+        const identities = await post({ protocol: 'ssh-agent', operation: 'identities' });
+        expect(identities.status).toBe(200);
+        const list = await identities.json();
+        expect(Array.isArray(list.identities)).toBe(true);
+        expect(list.identities.length).toBe(1);
+        expect(list.identities[0].keyBlob === keyBlob).toBe(true);
+        expect(typeof list.identities[0].comment).toBe('string');
+        const beforeDeniedList = resolve.mock.calls.length;
+        allow = false;
+        await coreHelperRefused(
+          await post({ protocol: 'ssh-agent', operation: 'identities' }),
+          material
+        );
+        expect(resolve.mock.calls.length).toBe(beforeDeniedList);
+        allow = true;
+        await coreHelperRefused(await post({ ...command, keyBlob: wrongKey }), material);
+        for (const refusedFlags of algorithm === 'rsa' ? [0, 1, 6, 8] : [1, 2, 4, 6, 8]) {
+          await coreHelperRefused(await post({ ...command, flags: refusedFlags }), material);
+        }
+        for (let index = 0; index < 2; index += 1) {
+          const before = new Set(listVaultUseRecords(workspaceDb).map((use) => use.useId));
+          const resolutions = resolve.mock.calls.length;
+          const policyBefore = proposals.length;
+          const response = await post(command);
+          expect(response.status).toBe(200);
+          const reply = await response.json();
+          expect(typeof reply.receiptId).toBe('string');
+          expect(reply.receiptId.length).toBeGreaterThan(0);
+          expect(reply.materialGeneration === 1).toBe(true);
+          expect(typeof reply.signature).toBe('string');
+          coreHelperVerifySignature(reply.signature, pair.publicKey, signData, flags);
+          expect(resolve.mock.calls.length).toBe(resolutions + 1);
+          expect(proposals.length).toBeGreaterThan(policyBefore);
+          const added = listVaultUseRecords(workspaceDb).filter((use) => !before.has(use.useId));
+          expect(added.length).toBe(1);
+          const use = added[0]!;
+          expect(use.vaultReferenceId === data.referenceId).toBe(true);
+          expect(use.grantId === data.grantId).toBe(true);
+          expect(use.agentSessionId === fixture.agentSessionId).toBe(true);
+          expect(use.outcome === 'succeeded').toBe(true);
+          expect(use.materialVersion === 1).toBe(true);
+          expect(use.planId).toBeTruthy();
+          const audits = listWorkspaceAuditEvents(
+            workspaceDb,
+            fixture.lineage.workspaceId,
+            fixture.coreDb
+          );
+          expect(audits.some((audit) => audit.id === use.auditEventId)).toBe(true);
+          const evidence = JSON.stringify({
+            uses: listVaultUseRecords(workspaceDb),
+            audits,
+            proposals,
+            worker: fixture.backend.lastContext,
+            package: fixture.backend.lastPackage,
+            reply,
+          });
+          expect(
+            evidence.includes(material) || evidence.includes(JSON.stringify(material).slice(1, -1))
+          ).toBe(false);
+        }
+        const resolved = resolve.mock.calls.length;
+        await revokeVaultGrant(fixture.coreDb, { grantId: data.grantId });
+        await coreHelperRefused(await post(command), material);
+        expect(resolve.mock.calls.length).toBe(resolved);
+      } finally {
+        resolve.mockRestore();
+        workspaceDb.sqlite.close();
+        await fixture.dispose();
+        data.vault.lock();
       }
     }
   );

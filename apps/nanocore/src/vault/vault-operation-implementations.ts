@@ -48,7 +48,10 @@ import { readVaultReferenceId } from '../providers/vault-credential-resolver.js'
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { requireCoordinatorGoal } from '../runtime/goal-owner.js';
 import { readGoalTaskPolicyContext } from '../runtime/goal-task-policy-context.js';
-import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
+import {
+  assertCurrentWorkerCredentialAuthority,
+  readVaultRequesterAuthority,
+} from '../runtime/worker-credential-authority.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -80,6 +83,11 @@ import {
   refreshCodexLoginMaterial,
   withCoreConfirmedLoginQuarantine,
 } from './codex-login-refresh.js';
+import {
+  assertCredentialHelperTarget,
+  credentialHelperRequestFacts,
+  type GovernedCredentialHelperUse,
+} from './credential-helper-use.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
 import {
   prepareVaultAdminAudit,
@@ -202,7 +210,10 @@ export function createVaultOperationImplementations(
     | 'readRuntimePolicy'
     | 'goalTaskPolicy'
     | 'closeMcpCredentialGrants'
-  >
+  > & {
+    /** Request-local Core effect only; ordinary operation results remain reference-only. */
+    readonly credentialHelperUse?: GovernedCredentialHelperUse;
+  }
 ) {
   const { coreDb, dataRoot, repositoryWorkspaceDb, vaultUnlockState } = dependencies;
   let administrationState = vaultUnlockState
@@ -537,12 +548,7 @@ export function createVaultOperationImplementations(
     },
     context: AdmittedOperationContext
   ) {
-    if (
-      !coreDb ||
-      !dependencies.store ||
-      !dependencies.repositoryWorkspaceDb ||
-      !dependencies.turnExecutor?.credentialBindingOperation
-    )
+    if (!coreDb || !dependencies.store || !dependencies.repositoryWorkspaceDb)
       throw new OperationError(
         'credential_binding_unavailable',
         'Credential binding operation is unavailable.',
@@ -554,7 +560,8 @@ export function createVaultOperationImplementations(
       if (
         !plan?.packageSnapshotId ||
         (plan.injectionVisibility !== 'runtime-file' &&
-          plan.injectionVisibility !== 'runtime-token')
+          plan.injectionVisibility !== 'runtime-token' &&
+          plan.injectionVisibility !== 'external-handle')
       )
         throw new OperationError(
           'credential_binding_not_found',
@@ -575,6 +582,122 @@ export function createVaultOperationImplementations(
           'credential_binding_not_found',
           'Credential binding not found.',
           404
+        );
+      const helperDeclaration = original.credentials.declarations.find(
+        (value) =>
+          ((value.visibility === 'runtime-token' && value.consumer === 'credential-helper') ||
+            (value.visibility === 'external-handle' && value.consumer === 'ssh-agent')) &&
+          value.vaultGrantId === plan.grantId &&
+          value.visibility === plan.injectionVisibility &&
+          plan.planId === `plan_${original.snapshotId}_${value.id}`
+      );
+      if (helperDeclaration) {
+        const helper = dependencies.credentialHelperUse;
+        const receiptId = input.receiptId;
+        const materialVersion = input.materialVersion;
+        if (
+          !helper ||
+          action !== 'deliver' ||
+          context.kind !== 'worker' ||
+          helper.declarationId !== helperDeclaration.id ||
+          !receiptId ||
+          materialVersion === undefined ||
+          input.expectedReceiptId !== undefined ||
+          context.harnessLoginRefresh ||
+          context.harnessLoginReplacement ||
+          context.lineage.packageSnapshotId !== original.snapshotId ||
+          context.lineage.agentSessionId !== original.scope.agentSessionId ||
+          context.lineage.turnId !== original.scope.turnId
+        )
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Credential helper use is unavailable.',
+            409
+          );
+        assertCredentialHelperTarget(helperDeclaration, helper.command);
+        const readHelperFacts = () => {
+          const current = assertCurrentWorkerCredentialAuthority(
+            coreDb,
+            original,
+            () => new Date().toISOString(),
+            helperDeclaration
+          );
+          const currentPlan = getVaultInjectionPlan(coreDb, plan.planId);
+          if (
+            !isDeepStrictEqual(currentPlan, plan) ||
+            plan.status !== 'active' ||
+            plan.targetPath !== null ||
+            plan.targetEnvVarName !== null ||
+            plan.backendCapabilityRequirement !== 'worker-control' ||
+            plan.redactionRule !== 'no-secret-material' ||
+            current.reference.currentVersion !== materialVersion
+          )
+            vaultWorkspaceAccessDenied();
+          return { plan: currentPlan, grant: current.grant, reference: current.reference };
+        };
+        const selected = readHelperFacts();
+        const { dataBytes, ...requestReferences } = credentialHelperRequestFacts(helper.command);
+        return await governedVaultOperation(
+          'vault.binding-deliver',
+          input,
+          context,
+          db,
+          readHelperFacts,
+          {
+            planId: plan.planId,
+            grantId: plan.grantId,
+            receiptId,
+            requestId: input.requestId,
+            packageSnapshotId: original.snapshotId,
+            declarationId: helperDeclaration.id,
+            ...requestReferences,
+            ...(helper.command.protocol === 'ssh-agent' && helper.command.operation === 'sign'
+              ? {}
+              : { targetDigest: policyDigest(helper.command) }),
+          },
+          {
+            materialVersion,
+            ...(typeof dataBytes === 'number' ? { dataBytes } : {}),
+            format: helper.command.protocol,
+            access:
+              helper.command.protocol === 'ssh-agent'
+                ? helper.command.operation === 'sign'
+                  ? 'approved-signature-only'
+                  : 'public-identities-only'
+                : 'worker-readable',
+            ephemeral: true,
+            outsideRetainedStorage: true,
+            excludedFromCapture: true,
+            excludedFromExport: true,
+          },
+          async (recheckAuthority) => {
+            await recheckAuthority();
+            return helper.run({
+              coreDb,
+              db,
+              packageSnapshot: original,
+              declaration: helperDeclaration,
+              grant: selected.grant,
+              reference: selected.reference,
+              planId: plan.planId,
+              receiptId,
+              materialVersion,
+              recheckAuthority: async () => {
+                readHelperFacts();
+                await recheckAuthority();
+              },
+            });
+          }
+        );
+      }
+      if (
+        plan.injectionVisibility === 'external-handle' ||
+        !dependencies.turnExecutor?.credentialBindingOperation
+      )
+        throw new OperationError(
+          'credential_binding_unavailable',
+          'Credential binding operation is unavailable.',
+          503
         );
       const refresh = context.harnessLoginRefresh;
       const replacement = context.harnessLoginReplacement;
@@ -1841,7 +1964,11 @@ export function createVaultOperationImplementations(
         !(
           'revocationStatus' in result &&
           result.planId === input.planId &&
-          getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility === 'runtime-token'
+          (getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility === 'runtime-token' ||
+            (context.kind === 'worker' &&
+              dependencies.credentialHelperUse?.command.protocol === 'ssh-agent' &&
+              getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility ===
+                'external-handle'))
         )
       )
         throw new OperationError(

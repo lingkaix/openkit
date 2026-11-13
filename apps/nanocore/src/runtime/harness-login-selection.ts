@@ -224,7 +224,7 @@ export function prepareHarnessLoginSelection(
 ): PreparedHarnessLoginSelection | undefined {
   const declarations =
     input.agentSetup.manifest.sandbox?.credentialDeclarations.filter(
-      (value) => value.visibility === 'runtime-token'
+      (value) => value.visibility === 'runtime-token' && value.consumer === 'codex-login'
     ) ?? [];
   if (declarations.length === 0) return undefined;
   const authored = declarations[0]!;
@@ -250,6 +250,7 @@ export function prepareHarnessLoginSelection(
   const previous = predecessor?.credentials.declarations.find(
     (value) =>
       value.visibility === 'runtime-token' &&
+      value.consumer === 'codex-login' &&
       value.requirementId === authored.requirementId &&
       value.id === authored.id
   );
@@ -517,10 +518,10 @@ export function readHarnessLoginPredecessor(
   );
   const old = oldRecord.snapshot;
   const selected = pkg.credentials.declarations.filter(
-    (value) => value.visibility === 'runtime-token'
+    (value) => value.visibility === 'runtime-token' && value.consumer === 'codex-login'
   );
   const originals = old.credentials.declarations.filter(
-    (value) => value.visibility === 'runtime-token'
+    (value) => value.visibility === 'runtime-token' && value.consumer === 'codex-login'
   );
   const declaration = selected[0];
   const original = originals[0];

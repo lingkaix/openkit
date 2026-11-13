@@ -537,3 +537,69 @@ describe('retained Codex Login requirement evidence', () => {
     expect(redactResolvedAgentSetup(old)).toEqual(old);
   });
 });
+
+// Approved helper shapes remain redacted retained evidence, not current credential or readiness authority.
+it.each([
+  {
+    id: 'retained-process-helper',
+    requirementId: 'native-helper',
+    vaultGrantId: 'grant_00000000-0000-7fa7-82fe-c356c64344cc',
+    visibility: 'runtime-token',
+    consumer: 'credential-helper',
+    helper: { protocol: 'git', scheme: 'https', host: 'opaque-target', path: 'scope' },
+  },
+  {
+    id: 'retained-ssh-handle',
+    requirementId: 'native-ssh',
+    vaultGrantId: 'grant_00000000-0000-720f-937b-38f5395bee21',
+    visibility: 'external-handle',
+    consumer: 'ssh-agent',
+  },
+] as const)(
+  'round-trips redacted $visibility helper metadata without a Codex feature gate',
+  async (declaration) => {
+    const workspaceDb = createWorkspaceDb();
+    const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
+    const material = 'synthetic-retained-helper-material';
+    const injected =
+      'helper' in declaration
+        ? { ...declaration, material, helper: { ...declaration.helper, material } }
+        : { ...declaration, material };
+    const setup = createTestAgentSetup({ credentialDeclarations: [injected] });
+    expect(setup.manifest.requiredFeatures).toEqual([]);
+    try {
+      const projected = redactResolvedAgentSetup(setup);
+      expect(JSON.stringify(projected).includes(material)).toBe(false);
+      expect(projected.manifest.sandbox.credentialDeclarations).toEqual([declaration]);
+      expect(projected.manifest.requiredFeatures).toEqual([]);
+      expect(StoredResolvedAgentSetupV1Schema.safeParse(projected).success).toBe(true);
+      expect(redactResolvedAgentSetup(projected)).toEqual(projected);
+      const record = await getControlStoreWorkerClient().recordResolvedAgentSetup(workspaceDb, {
+        recordId: 'ras_native_helper_metadata',
+        workspaceId,
+        setup,
+        createdAt: '2026-11-13T00:00:00.000Z',
+      });
+      expect(JSON.stringify(record).includes(material)).toBe(false);
+      expect(record.setup).toEqual(projected);
+      expect(record.requiredFeatures).toEqual([]);
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      const reopened = openWorkspaceDb(workspaceDb.dataRoot, workspaceId);
+      try {
+        const read = requireResolvedAgentSetup(reopened, workspaceId, record.id);
+        const exported = listExportableResolvedAgentSetups(reopened, workspaceId);
+        expect(JSON.stringify([read, exported]).includes(material)).toBe(false);
+        expect(read).toEqual(record);
+        expect(exported).toEqual([record]);
+        expect(read.setup.manifest.sandbox.credentialDeclarations).toEqual([declaration]);
+        expect(read.requiredFeatures).toEqual([]);
+      } finally {
+        reopened.sqlite.close();
+      }
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      if (workspaceDb.sqlite.open) workspaceDb.sqlite.close();
+    }
+  }
+);

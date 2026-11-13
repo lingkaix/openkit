@@ -221,6 +221,48 @@ export function redactResolvedAgentSetup(
                 visibility: declaration.visibility,
               };
             }
+            if (
+              declaration.visibility === 'runtime-token' &&
+              declaration.consumer === 'credential-helper'
+            ) {
+              const helper = declaration.helper;
+              const target =
+                helper.protocol === 'git'
+                  ? {
+                      protocol: helper.protocol,
+                      scheme: helper.scheme,
+                      host: helper.host,
+                      ...(helper.path === undefined ? {} : { path: helper.path }),
+                    }
+                  : helper.protocol === 'docker'
+                    ? { protocol: helper.protocol, serverUrl: helper.serverUrl }
+                    : helper.protocol === 'aws'
+                      ? { protocol: helper.protocol }
+                      : helper.protocol === 'kubernetes'
+                        ? { protocol: helper.protocol, apiVersion: helper.apiVersion }
+                        : {
+                            protocol: helper.protocol,
+                            audience: helper.audience,
+                            subjectTokenType: helper.subjectTokenType,
+                          };
+              return {
+                id: declaration.id,
+                ...(declaration.requirementId ? { requirementId: declaration.requirementId } : {}),
+                visibility: declaration.visibility,
+                vaultGrantId: declaration.vaultGrantId,
+                consumer: declaration.consumer,
+                helper: target,
+              };
+            }
+            if (declaration.visibility === 'external-handle') {
+              return {
+                id: declaration.id,
+                ...(declaration.requirementId ? { requirementId: declaration.requirementId } : {}),
+                visibility: declaration.visibility,
+                vaultGrantId: declaration.vaultGrantId,
+                consumer: declaration.consumer,
+              };
+            }
             if (declaration.visibility === 'runtime-token') {
               return {
                 visibility: declaration.visibility,

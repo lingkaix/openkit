@@ -223,7 +223,8 @@ describe('supported Vault grant request and review', () => {
 async function prepare(
   f: ReturnType<typeof fixture>,
   ownerScope: 'workspace' | 'server' = 'workspace',
-  visibility: 'private' | 'workspace' = 'private'
+  visibility: 'private' | 'workspace' = 'private',
+  secretKind = 'mcp-credential'
 ) {
   const workspace = await f.send('workspace.create', {
     name: 'Grant authority',
@@ -244,7 +245,7 @@ async function prepare(
     {
       ...(ownerScope === 'server' ? { requestId: randomUUID() } : {}),
       material: 'synthetic-resolution-canary',
-      ...(ownerScope === 'workspace' ? { workspaceId, secretKind: 'mcp-credential' } : {}),
+      ...(ownerScope === 'workspace' ? { workspaceId, secretKind } : {}),
     }
   );
   expect(reference.status).toBe(200);
@@ -3425,3 +3426,104 @@ it('retains the real signup Session identity through Login request, approval and
     await f.cleanup();
   }
 });
+
+// Approved cut-(b): Workspace native helpers need reviewed grants, not low-level fixture-only grants.
+it.each(['runtime-token', 'external-handle'] as const)(
+  'issues a reviewed Workspace %s grant only after approval and keeps owner withdrawal non-authorizing',
+  async (injectionPath) => {
+    const f = fixture();
+    try {
+      const source = await prepare(f, 'workspace', 'private', 'opaque');
+      const terms = {
+        referenceId: source.terms.referenceId,
+        ownerScope: 'workspace',
+        lifetime: 'workspace',
+        injectionPath,
+        expiresAt: source.terms.expiresAt,
+      };
+      const raised = await f.send('vault.grant-request', {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        requestId: randomUUID(),
+        terms,
+      });
+      expect(raised.status).toBe(200);
+      const request = await raised.json();
+      expect(request.state).toBe('pending');
+      expect(request.grantId).toBeNull();
+      const disclosure = JSON.parse(request.effect.detail);
+      expect(disclosure.operation === 'vault.grant-issue').toBe(true);
+      expect(disclosure.terms.injectionPath === injectionPath).toBe(true);
+      expect(listVaultGrants(f.coreDb).length).toBe(0);
+      const input = {
+        workspaceId: source.workspaceId,
+        threadId: source.threadId,
+        approvalRequestId: request.approvalRequestId,
+      };
+      expect((await f.send('vault.grant-issue', input)).status).toBe(409);
+      expect(listVaultGrants(f.coreDb).length).toBe(0);
+      expect((await f.send('approval.respond', decision(request, 'granted'))).status).toBe(200);
+      expect(listVaultGrants(f.coreDb).length).toBe(0);
+      const issued = await f.send('vault.grant-issue', input);
+      expect(issued.status).toBe(200);
+      const result = await issued.json();
+      expect(result.state).toBe('resolved');
+      expect(result.resolution).toBe('granted');
+      const actual = getVaultGrant(f.coreDb, result.grantId);
+      expect(actual?.vaultReferenceId === terms.referenceId).toBe(true);
+      expect(actual?.ownerScope === 'workspace').toBe(true);
+      expect(actual?.workspaceId === source.workspaceId).toBe(true);
+      expect(actual?.allowedInjectionPaths).toEqual([injectionPath]);
+      expect(actual?.approvalId === request.approvalRequestId).toBe(true);
+      expect(actual?.status === 'active').toBe(true);
+      expect(Boolean(actual?.policyDecisionId)).toBe(true);
+      const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
+      try {
+        const decisions = await readReviewedIssueDecisions(db);
+        expect(
+          decisions.some(
+            (record) =>
+              record.decisionId === actual?.policyDecisionId &&
+              record.approvalId === request.approvalRequestId &&
+              record.result === 'allow'
+          )
+        ).toBe(true);
+      } finally {
+        db.sqlite.close();
+      }
+
+      const withdrawalSource = await prepare(f, 'workspace', 'private', 'opaque');
+      const raisedWithdrawal = await f.send('vault.grant-request', {
+        workspaceId: withdrawalSource.workspaceId,
+        threadId: withdrawalSource.threadId,
+        requestId: randomUUID(),
+        terms: { ...terms, referenceId: withdrawalSource.terms.referenceId },
+      });
+      expect(raisedWithdrawal.status).toBe(200);
+      const withdrawal = await raisedWithdrawal.json();
+      expect(withdrawal.state).toBe('pending');
+      const withdrawn = await f.send('pending-request.withdraw', {
+        workspaceId: withdrawalSource.workspaceId,
+        threadId: withdrawalSource.threadId,
+        pendingRequestId: withdrawal.approvalRequestId,
+        requestId: randomUUID(),
+      });
+      expect(withdrawn.status).toBe(200);
+      const refused = await f.send('vault.grant-issue', {
+        workspaceId: withdrawalSource.workspaceId,
+        threadId: withdrawalSource.threadId,
+        approvalRequestId: withdrawal.approvalRequestId,
+      });
+      expect(refused.status).toBe(409);
+      expect(listVaultGrants(f.coreDb).length).toBe(1);
+      expect(getVaultGrant(f.coreDb, result.grantId)?.status === 'active').toBe(true);
+      const publicEvidence =
+        JSON.stringify([request, result, actual, withdrawal]) +
+        (await withdrawn.text()) +
+        (await refused.text());
+      expect(publicEvidence.includes('synthetic-resolution-canary')).toBe(false);
+    } finally {
+      await f.cleanup();
+    }
+  }
+);

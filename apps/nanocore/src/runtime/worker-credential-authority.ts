@@ -92,7 +92,8 @@ export function assertCredentialGrantShapeMatchesDeclaration(
   reference: VaultReferenceRecord
 ): void {
   const requiredInjectionPath = declarationRequiredInjectionPath(declaration);
-  const reviewedUserLogin = declaration.visibility === 'runtime-token';
+  const reviewedUserLogin =
+    declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login';
   if (
     reviewedUserLogin &&
     (declaration.consumer !== 'codex-login' ||
@@ -155,7 +156,11 @@ export function assertCredentialGrantMatchesDeclaration(
   reference: VaultReferenceRecord
 ): void {
   assertCredentialGrantShapeMatchesDeclaration(input, declaration, grant, reference);
-  if (declaration.visibility === 'runtime-token' && reference.login?.quarantined)
+  if (
+    declaration.visibility === 'runtime-token' &&
+    declaration.consumer === 'codex-login' &&
+    reference.login?.quarantined
+  )
     throw new TurnStartValidationError(
       'credential_declaration_invalid',
       'Credential declaration does not match a current User Login.'
@@ -200,6 +205,7 @@ export function assertCurrentWorkerCredentialAuthority(
     const reference = requireDeclarationReference(coreDb, grant);
     if (
       declaration.visibility === 'runtime-token' &&
+      declaration.consumer === 'codex-login' &&
       (!reference.userId || !isCanonicalUserActive(coreDb, reference.userId))
     )
       throw new TurnStartValidationError(
@@ -250,7 +256,7 @@ export function assertCurrentWorkerCredentialAuthority(
  */
 function declarationRequiredInjectionPath(
   declaration: AgentEnvironmentCredentialDeclaration
-): 'backend-provider' | 'runtime-env' | 'runtime-file' | 'runtime-token' {
+): 'backend-provider' | 'runtime-env' | 'runtime-file' | 'runtime-token' | 'external-handle' {
   if (declaration.visibility === 'sandbox-provider') {
     return 'backend-provider';
   }

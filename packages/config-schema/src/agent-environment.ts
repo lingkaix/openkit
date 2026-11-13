@@ -681,6 +681,41 @@ export const AgentEnvironmentCredentialVisibilitySchema = z.enum([
   'runtime-file',
   'runtime-env',
   'runtime-token',
+  'external-handle',
+]);
+
+/** Exact admitted native target; request input never supplies this authority. */
+const CREDENTIAL_HELPER_TARGET_SCHEMA = z.discriminatedUnion('protocol', [
+  z
+    .object({
+      protocol: z.literal('git'),
+      scheme: z.string().min(1),
+      host: z.string().min(1),
+      path: z.string().optional(),
+    })
+    .strict(),
+  z.object({ protocol: z.literal('docker'), serverUrl: z.string().min(1) }).strict(),
+  z.object({ protocol: z.literal('aws') }).strict(),
+  z
+    .object({
+      protocol: z.literal('kubernetes'),
+      apiVersion: z.enum([
+        'client.authentication.k8s.io/v1',
+        'client.authentication.k8s.io/v1beta1',
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      protocol: z.literal('google'),
+      audience: z.string().min(1),
+      subjectTokenType: z.enum([
+        'urn:ietf:params:oauth:token-type:id_token',
+        'urn:ietf:params:oauth:token-type:jwt',
+        'urn:ietf:params:oauth:token-type:saml2',
+      ]),
+    })
+    .strict(),
 ]);
 
 /**
@@ -733,12 +768,29 @@ export const AgentEnvironmentCredentialDeclarationSchema = z.discriminatedUnion(
       targetEnvVarName: z.string().regex(WORKER_CREDENTIAL_ENV_NAME_PATTERN),
     })
     .strict(),
+  z.discriminatedUnion('consumer', [
+    z
+      .object({
+        ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
+        requirementId: z.string().min(1),
+        visibility: z.literal('runtime-token'),
+        consumer: z.literal('codex-login'),
+      })
+      .strict(),
+    z
+      .object({
+        ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
+        visibility: z.literal('runtime-token'),
+        consumer: z.literal('credential-helper'),
+        helper: CREDENTIAL_HELPER_TARGET_SCHEMA,
+      })
+      .strict(),
+  ]),
   z
     .object({
       ...RESOLVED_CREDENTIAL_DECLARATION_BASE,
-      requirementId: z.string().min(1),
-      visibility: z.literal('runtime-token'),
-      consumer: z.literal('codex-login'),
+      visibility: z.literal('external-handle'),
+      consumer: z.literal('ssh-agent'),
     })
     .strict(),
 ]);
@@ -766,11 +818,28 @@ export const AgentEnvironmentCredentialRequirementSchema = z.discriminatedUnion(
       targetEnvVarName: z.string().regex(WORKER_CREDENTIAL_ENV_NAME_PATTERN),
     })
     .strict(),
+  z.discriminatedUnion('consumer', [
+    z
+      .object({
+        ...CREDENTIAL_REQUIREMENT_BASE,
+        visibility: z.literal('runtime-token'),
+        consumer: z.literal('codex-login'),
+      })
+      .strict(),
+    z
+      .object({
+        ...CREDENTIAL_REQUIREMENT_BASE,
+        visibility: z.literal('runtime-token'),
+        consumer: z.literal('credential-helper'),
+        helper: CREDENTIAL_HELPER_TARGET_SCHEMA,
+      })
+      .strict(),
+  ]),
   z
     .object({
       ...CREDENTIAL_REQUIREMENT_BASE,
-      visibility: z.literal('runtime-token'),
-      consumer: z.literal('codex-login'),
+      visibility: z.literal('external-handle'),
+      consumer: z.literal('ssh-agent'),
     })
     .strict(),
 ]);
@@ -1299,7 +1368,8 @@ export const AgentEnvironmentPackageSchema = z
     }
 
     const loginDeclarations = value.credentials.declarations.filter(
-      (declaration) => declaration.visibility === 'runtime-token'
+      (declaration) =>
+        declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
     );
     if (value.llm.mode === 'harness') {
       if (value.agent.runtimeKind !== 'codex' || value.control.adapter?.targetRuntime !== 'codex') {

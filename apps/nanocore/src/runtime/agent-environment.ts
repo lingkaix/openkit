@@ -490,7 +490,8 @@ function resolveOpenShellAgentEnvironmentPackage(
   );
 
   const llmMode = sandboxAccess.credentialDeclarations.some(
-    (declaration) => declaration.visibility === 'runtime-token'
+    (declaration) =>
+      declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
   )
     ? ('harness' as const)
     : ('gateway' as const);
@@ -1490,7 +1491,10 @@ function resolveWorkerCredentialDeclarations(
         assertCredentialBackendMatchesReference(requireVaultBackend(input), fresh.reference);
       };
       recheck();
-      if (declaration.visibility === 'runtime-token') {
+      if (
+        declaration.visibility === 'runtime-token' ||
+        declaration.visibility === 'external-handle'
+      ) {
         // Preparation publishes only a plan and the original redacted requirement. Native
         // delivery, fresh Use/Audit and its receipt belong to authenticated active-Turn calls.
         appendCredentialDeclarationArtifacts({
@@ -1604,7 +1608,12 @@ interface CredentialDeclarationInjectionTarget {
   /** Product-safe receipt backend summary. */
   readonly backendSummary: string;
   /** Durable injection visibility class. */
-  readonly visibility: 'backend-provider' | 'runtime-env' | 'runtime-file' | 'runtime-token';
+  readonly visibility:
+    | 'backend-provider'
+    | 'runtime-env'
+    | 'runtime-file'
+    | 'runtime-token'
+    | 'external-handle';
   /** Revocation behavior summary. */
   readonly revocationBehavior: string;
   /** Runtime environment variable target when applicable. */
@@ -1622,6 +1631,22 @@ interface CredentialDeclarationInjectionTarget {
 function declarationInjectionTarget(
   declaration: AgentEnvironmentCredentialDeclaration
 ): CredentialDeclarationInjectionTarget {
+  if (declaration.visibility === 'runtime-token' && declaration.consumer === 'credential-helper') {
+    return {
+      backendCapabilityRequirement: 'worker-control',
+      backendSummary: `credential-helper:${declaration.helper.protocol}:pending-use`,
+      revocationBehavior: 'stale-session',
+      visibility: 'runtime-token',
+    };
+  }
+  if (declaration.visibility === 'external-handle') {
+    return {
+      backendCapabilityRequirement: 'worker-control',
+      backendSummary: 'ssh-agent:pending-use',
+      revocationBehavior: 'stale-session',
+      visibility: 'external-handle',
+    };
+  }
   if (declaration.visibility === 'runtime-token') {
     return {
       backendCapabilityRequirement: 'runtime-token:codex-login',
@@ -1736,7 +1761,8 @@ function appendCredentialDeclarationArtifacts(
     return;
   }
 
-  if (declaration.visibility === 'runtime-token') return;
+  if (declaration.visibility === 'runtime-token' || declaration.visibility === 'external-handle')
+    return;
   if (input.material === null) return;
   input.input.runtimeEnvCredentialSink?.({
     grantId: grant.grantId,

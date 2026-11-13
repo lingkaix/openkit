@@ -26,7 +26,13 @@ export const VaultGrantRequestTermsSchema = CreateWorkspaceVaultGrantRequestSche
     referenceId: VaultReferenceIdSchema,
     ownerScope: z.enum(['workspace', 'server']),
     lifetime: z.enum(['workspace', 'server']),
-    injectionPath: z.enum(['gateway-only', 'runtime-env', 'runtime-file', 'runtime-token']),
+    injectionPath: z.enum([
+      'gateway-only',
+      'runtime-env',
+      'runtime-file',
+      'runtime-token',
+      'external-handle',
+    ]),
     mcpSource: z
       .object({
         serverId: z.string().min(1).max(128),

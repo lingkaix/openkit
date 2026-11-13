@@ -29671,7 +29671,8 @@
                   "gateway-only",
                   "runtime-env",
                   "runtime-file",
-                  "runtime-token"
+                  "runtime-token",
+                  "external-handle"
                 ]
               },
               "mcpSource": {
@@ -29805,7 +29806,8 @@
                   "gateway-only",
                   "runtime-env",
                   "runtime-file",
-                  "runtime-token"
+                  "runtime-token",
+                  "external-handle"
                 ]
               },
               "mcpSource": {
@@ -30135,7 +30137,8 @@
                         "gateway-only",
                         "runtime-env",
                         "runtime-file",
-                        "runtime-token"
+                        "runtime-token",
+                        "external-handle"
                       ]
                     },
                     "mcpSource": {
@@ -30466,7 +30469,8 @@
                   "gateway-only",
                   "runtime-env",
                   "runtime-file",
-                  "runtime-token"
+                  "runtime-token",
+                  "external-handle"
                 ]
               },
               "mcpSource": {
@@ -179431,5 +179435,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8e64aca57071b78fb4e646ab5be4cfe64cb3ec5a6f7002f84ccd2918182a8db8"
+  "x-openkit-source-digest": "sha256:bf9064c5e1b49230f25a9f10a82a01621d7b205ac7a1d6987f4b9f7d70179091"
 }

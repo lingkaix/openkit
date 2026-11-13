@@ -41,6 +41,28 @@ const StoredSetupImageV1Schema = z.discriminatedUnion('kind', [
   }),
 ]);
 
+/** Closed target tags and whitelisted descriptive fields; never current helper readiness. */
+const StoredSetupHelperTargetV1Schema = z.discriminatedUnion('protocol', [
+  z
+    .object({
+      protocol: z.literal('git'),
+      scheme: z.string().min(1),
+      host: z.string().min(1),
+      path: z.string().optional(),
+    })
+    .strict(),
+  z.object({ protocol: z.literal('docker'), serverUrl: z.string().min(1) }).strict(),
+  z.object({ protocol: z.literal('aws') }).strict(),
+  z.object({ protocol: z.literal('kubernetes'), apiVersion: z.string().min(1) }).strict(),
+  z
+    .object({
+      protocol: z.literal('google'),
+      audience: z.string().min(1),
+      subjectTokenType: z.string().min(1),
+    })
+    .strict(),
+]);
+
 const credentialMetadata = {
   id: z.string().min(1),
   requirementId: z.string().min(1).optional(),
@@ -67,12 +89,29 @@ const StoredSetupCredentialMetadataV1Schema = z.discriminatedUnion('visibility',
     targetEnvVarName: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/),
     visibility: z.literal('runtime-env'),
   }),
+  z.discriminatedUnion('consumer', [
+    z
+      .object({
+        visibility: z.literal('runtime-token'),
+        requirementId: z.string().min(1),
+        vaultGrantId: VaultGrantIdSchema,
+        consumer: z.literal('codex-login'),
+      })
+      .strict(),
+    z
+      .object({
+        ...credentialMetadata,
+        visibility: z.literal('runtime-token'),
+        consumer: z.literal('credential-helper'),
+        helper: StoredSetupHelperTargetV1Schema,
+      })
+      .strict(),
+  ]),
   z
     .object({
-      visibility: z.literal('runtime-token'),
-      requirementId: z.string().min(1),
-      vaultGrantId: VaultGrantIdSchema,
-      consumer: z.literal('codex-login'),
+      ...credentialMetadata,
+      visibility: z.literal('external-handle'),
+      consumer: z.literal('ssh-agent'),
     })
     .strict(),
 ]);
@@ -144,7 +183,8 @@ export const StoredResolvedAgentSetupV1Schema = z
   .superRefine((value, ctx) => {
     if (
       value.manifest.sandbox.credentialDeclarations.some(
-        (declaration) => declaration.visibility === 'runtime-token'
+        (declaration) =>
+          declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
       ) &&
       !value.manifest.requiredFeatures.includes('worker.harness-login.v1')
     ) {
