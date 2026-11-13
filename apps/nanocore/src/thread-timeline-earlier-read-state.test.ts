@@ -83,11 +83,18 @@ describe(`Earlier page during a bulk receipt write on a ${EARLIER_PAGE_HEADERS}-
         scope: 'thread',
         acknowledgedCount: EARLIER_PAGE_ITEMS,
       });
-      const state = await post('thread.read-state', selector);
-      expect(state.status, state.text.slice(0, 400)).toBe(200);
-      const body = JSON.parse(state.text) as { readItemIds: string[]; unreadItemIds: string[] };
-      expect(new Set(body.readItemIds)).toEqual(new Set(corpus.itemIds));
-      expect(body.unreadItemIds).toEqual([]);
+      const readItemIds: string[] = [];
+      for (let offset = 0; offset < corpus.itemIds.length; offset += 200) {
+        const state = await post('thread.read-state', {
+          ...selector,
+          itemIds: corpus.itemIds.slice(offset, offset + 200),
+        });
+        expect(state.status, state.text.slice(0, 400)).toBe(200);
+        const body = JSON.parse(state.text) as { readItemIds: string[]; unreadItemIds: string[] };
+        readItemIds.push(...body.readItemIds);
+        expect(body.unreadItemIds).toEqual([]);
+      }
+      expect(new Set(readItemIds)).toEqual(new Set(corpus.itemIds));
     } finally {
       await receipt;
     }

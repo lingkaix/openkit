@@ -82,7 +82,7 @@ afterAll(async () => {
   await disposeTestStore(root);
 });
 
-const owner = () => ({ store, coreDb, userId, workspaceId, threadId });
+const owner = () => ({ store, coreDb, userId, workspaceId, threadId, itemIds: eligible });
 async function request(id: 'thread.read-state' | 'thread.mark-read', itemIds?: string[]) {
   const response = await app.request(
     ...operationRequest(id, { workspaceId, threadId, ...(itemIds ? { itemIds } : {}) })
@@ -104,8 +104,8 @@ function observeFullTraversals() {
 describe('receipt cost and current-source preservation', () => {
   it('reads exact eligible identities with at most one complete history traversal', async () => {
     const traversals = observeFullTraversals();
-    expect(await request('thread.read-state')).toEqual({
-      scope: 'thread',
+    expect(await request('thread.read-state', eligible)).toEqual({
+      scope: 'window',
       readItemIds: [],
       unreadItemIds: eligible,
     });
@@ -126,8 +126,8 @@ describe('receipt cost and current-source preservation', () => {
       'selected receipt validation repeated the complete canonical body traversal'
     ).toBeLessThanOrEqual(1);
     // The bounded acknowledgement does not return the union; verify it through its read owner.
-    expect(await request('thread.read-state')).toEqual({
-      scope: 'thread',
+    expect(await request('thread.read-state', eligible)).toEqual({
+      scope: 'window',
       readItemIds: [eligible[0]],
       unreadItemIds: eligible.slice(1),
     });

@@ -329,7 +329,9 @@ async function fixture(server = false) {
         ...(requestId ? { 'x-openkit-request-id': String(requestId) } : {}),
         ...(token ? { authorization: `Bearer ${token.secret}` } : {}),
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(
+        operation === 'thread.read-state' ? { ...body, itemIds: [item.id] } : body
+      ),
     });
     const contentType = response.headers.get('content-type') ?? '';
     const bodyIsJson = contentType.includes('application/json') || contentType.includes('+json');
@@ -393,7 +395,7 @@ for (const operation of [
     const result = await f.call(operation, input);
     expect(result.status).toBe(200);
     if (operation === 'thread.read-state')
-      expect(result.body).toEqual({ scope: 'thread', readItemIds: [], unreadItemIds: [f.item.id] });
+      expect(result.body).toEqual({ scope: 'window', readItemIds: [], unreadItemIds: [f.item.id] });
     if (operation === 'thread.mark-read')
       expect(result.body).toEqual({ scope: 'window', acknowledgedItemIds: [f.item.id] });
     if (operation === 'conversation.navigation')
@@ -483,7 +485,7 @@ it('joins the exact pending first-create before a second public owner can read t
   Atomics.notify(gate, 1);
   expect(await first).toEqual({
     status: 200,
-    body: { scope: 'thread', readItemIds: [], unreadItemIds: [f.item.id] },
+    body: { scope: 'window', readItemIds: [], unreadItemIds: [f.item.id] },
   });
   expect((await second).status).toBe(200);
   assertNativeOpening();
@@ -763,7 +765,7 @@ it('keeps acknowledged User receipts readable after their native host later dies
   fault.handles.length = 0;
   expect(await f.call('thread.read-state', f.owner)).toEqual({
     status: 200,
-    body: { scope: 'thread', readItemIds: [f.item.id], unreadItemIds: [] },
+    body: { scope: 'window', readItemIds: [f.item.id], unreadItemIds: [] },
   });
   const navigation = await f.call('conversation.navigation', { workspaceId: f.workspace.id });
   expect(navigation.status).toBe(200);
@@ -817,7 +819,7 @@ it('acknowledges the existing native User owner before returning a cold current 
   const f = await fixture();
   const exactReceipt = {
     status: 200,
-    body: { scope: 'thread', readItemIds: [f.item.id], unreadItemIds: [] },
+    body: { scope: 'window', readItemIds: [f.item.id], unreadItemIds: [] },
   };
   expect(await f.call('thread.mark-read', { ...f.owner, itemIds: [f.item.id] })).toEqual({
     status: 200,

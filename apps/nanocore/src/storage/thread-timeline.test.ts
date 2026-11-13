@@ -285,7 +285,7 @@ describe('Thread timeline windows', () => {
     const state = await f.app.request('/api/app/operations/thread.read-state', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(f.selector),
+      body: JSON.stringify({ ...f.selector, itemIds: [first.id, second.id] }),
     });
     expect(await state.json()).toMatchObject({
       readItemIds: [second.id],

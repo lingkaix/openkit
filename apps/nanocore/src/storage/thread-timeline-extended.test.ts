@@ -248,7 +248,7 @@ describe('Thread timeline Extended catch-up digest', () => {
 
   it('counts retained plan transitions after a mid-run B, not current plan totals or repeated title revisions', async () => {
     const f = await fixture();
-    await f.message('Earlier unread message');
+    const earlierUnread = await f.message('Earlier unread message');
     const steps = [
       { id: 'already-done', title: 'Finished before B', status: 'completed' as const },
       { id: 'newly-done', title: 'Finish after B', status: 'pending' as const },
@@ -282,7 +282,9 @@ describe('Thread timeline Extended catch-up digest', () => {
         f.turn.id,
         line.kind === 'plan-steps-finished' ? [plan.id] : [note.id]
       );
-    const readState = await f.operation('thread.read-state');
+    const readState = await f.operation('thread.read-state', {
+      itemIds: [earlierUnread.id, boundary.id, note.id],
+    });
     expect(readState.readItemIds).toEqual([boundary.id]);
     expect(readState.unreadItemIds).toHaveLength(2);
   });
@@ -304,7 +306,9 @@ describe('Thread timeline Extended catch-up digest', () => {
     expect(result.catchUpAnchor).toEqual({ turnId: f.turn.id, itemId: action.id });
     expect(counts(digest(result))).toEqual({ 'new-messages': 1 });
     await expectSource(f, result.digest.lines[0].anchor, f.turn.id, [incoming.id]);
-    const readState = await f.operation('thread.read-state');
+    const readState = await f.operation('thread.read-state', {
+      itemIds: [displayed.id, earlierUnread.id, incoming.id],
+    });
     expect(readState.readItemIds).toEqual([displayed.id]);
     expect(readState.unreadItemIds).toEqual([earlierUnread.id, incoming.id]);
   });

@@ -7035,7 +7035,7 @@
         "tags": [
           "thread"
         ],
-        "summary": "Read current User membership for up to 200 selected Items without marking read. Omit itemIds only for the temporary complete Thread read.",
+        "summary": "Read current User membership for 1 to 200 selected Items without marking read. A nonempty itemIds selection is required.",
         "security": [
           {
             "bearerAuth": []
@@ -7056,7 +7056,7 @@
         },
         "responses": {
           "200": {
-            "description": "Read current User membership for up to 200 selected Items without marking read. Omit itemIds only for the temporary complete Thread read.",
+            "description": "Read current User membership for 1 to 200 selected Items without marking read. A nonempty itemIds selection is required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -71179,6 +71179,7 @@
             "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
           },
           "itemIds": {
+            "minItems": 1,
             "maxItems": 200,
             "type": "array",
             "items": {
@@ -71189,74 +71190,42 @@
         },
         "required": [
           "workspaceId",
-          "threadId"
+          "threadId",
+          "itemIds"
         ],
         "additionalProperties": false
       },
       "thread.read-state.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "scope": {
-                "type": "string",
-                "const": "window"
-              },
-              "readItemIds": {
-                "maxItems": 200,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                }
-              },
-              "unreadItemIds": {
-                "maxItems": 200,
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                }
-              }
-            },
-            "required": [
-              "scope",
-              "readItemIds",
-              "unreadItemIds"
-            ],
-            "additionalProperties": false
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string",
+            "const": "window"
           },
-          {
-            "type": "object",
-            "properties": {
-              "scope": {
-                "type": "string",
-                "const": "thread"
-              },
-              "readItemIds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                }
-              },
-              "unreadItemIds": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                }
-              }
-            },
-            "required": [
-              "scope",
-              "readItemIds",
-              "unreadItemIds"
-            ],
-            "additionalProperties": false
+          "readItemIds": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
+          },
+          "unreadItemIds": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
           }
-        ]
+        },
+        "required": [
+          "scope",
+          "readItemIds",
+          "unreadItemIds"
+        ],
+        "additionalProperties": false
       },
       "thread.mark-read.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -179504,5 +179473,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:66898a97f013c73a5746985197ac22ef945e9396cb6678dfff48ae4efdfd3815"
+  "x-openkit-source-digest": "sha256:fc2fd4d42a3422ab2f214c25cbea76b5fe6440bee36f2837b1e4f0bfc2cfcccd"
 }

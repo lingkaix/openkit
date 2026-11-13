@@ -28,19 +28,12 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 
 const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 
-/** Current User membership for a bounded selection, or the temporary complete Thread read. */
-export const ThreadReadStateResponseSchema = z.discriminatedUnion('scope', [
-  z.object({
-    scope: z.literal('window'),
-    readItemIds: z.array(ItemIdSchema).max(200),
-    unreadItemIds: z.array(ItemIdSchema).max(200),
-  }),
-  z.object({
-    scope: z.literal('thread'),
-    readItemIds: z.array(ItemIdSchema),
-    unreadItemIds: z.array(ItemIdSchema),
-  }),
-]);
+/** Current User membership for the required bounded selection; never a complete Thread read. */
+export const ThreadReadStateResponseSchema = z.object({
+  scope: z.literal('window'),
+  readItemIds: z.array(ItemIdSchema).max(200),
+  unreadItemIds: z.array(ItemIdSchema).max(200),
+});
 
 /** FULL-acknowledged selected identities or a bulk selection count; never the retained union. */
 export const ThreadMarkReadResponseSchema = z.discriminatedUnion('scope', [
@@ -189,9 +182,9 @@ export const THREAD_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description:
-      'Read current User membership for up to 200 selected Items without marking read. Omit itemIds only for the temporary complete Thread read.',
+      'Read current User membership for 1 to 200 selected Items without marking read. A nonempty itemIds selection is required.',
     inputSchema: z
-      .object({ ...threadSelector, itemIds: z.array(ItemIdSchema).max(200).optional() })
+      .object({ ...threadSelector, itemIds: z.array(ItemIdSchema).min(1).max(200) })
       .strict(),
     outputSchema: ThreadReadStateResponseSchema,
     credentials: publicCredentials,

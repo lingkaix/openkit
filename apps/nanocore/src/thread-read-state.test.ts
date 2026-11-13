@@ -82,10 +82,10 @@ describe('User-owned Thread read receipts', () => {
         ...operationRequest(id, input, { headers: { authorization: `Bearer ${secret}` } })
       );
     const state = async () => {
-      const response = await request('thread.read-state');
+      const response = await request('thread.read-state', { ...owner, itemIds: [FIRST, SECOND] });
       expect(response.status).toBe(200);
       const { scope, ...state } = await response.json();
-      expect(scope).toBe('thread');
+      expect(scope).toBe('window');
       return state;
     };
 
@@ -119,8 +119,16 @@ describe('User-owned Thread read receipts', () => {
       400
     );
     expect(await state()).toEqual({ readItemIds: [SECOND], unreadItemIds: [FIRST] });
-    expect(await readThreadReadState({ ...owner, store, coreDb, userId: OTHER_USER })).toEqual({
-      scope: 'thread',
+    expect(
+      await readThreadReadState({
+        ...owner,
+        store,
+        coreDb,
+        userId: OTHER_USER,
+        itemIds: [FIRST, SECOND, OWN],
+      })
+    ).toEqual({
+      scope: 'window',
       readItemIds: [],
       unreadItemIds: [FIRST, SECOND, OWN],
     });
@@ -137,7 +145,13 @@ describe('User-owned Thread read receipts', () => {
       { visibility: 'private', privateOwnerUserId: OTHER_USER }
     );
     expect(
-      (await request('thread.read-state', { ...owner, threadId: privateThread.id })).status
+      (
+        await request('thread.read-state', {
+          ...owner,
+          threadId: privateThread.id,
+          itemIds: [FIRST],
+        })
+      ).status
     ).toBe(404);
     expect(
       (await request('thread.mark-read', { ...owner, threadId: privateThread.id })).status

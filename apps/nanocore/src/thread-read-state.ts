@@ -66,29 +66,22 @@ async function eligibleMessageItemIds(owner: ThreadReadOwner): Promise<string[]>
 }
 
 /** Reads one authenticated User's receipt after the operation's current Workspace and Thread admission. */
-export async function readThreadReadState(
-  owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
-) {
+export async function readThreadReadState(owner: ThreadReadOwner & { itemIds: readonly string[] }) {
   owner.store.getThread(owner.workspaceId, owner.threadId);
-  const selected = owner.itemIds === undefined ? undefined : [...new Set(owner.itemIds)];
-  if (selected !== undefined) await selectedMessageItemIds(owner, selected, false);
+  const selected = [...new Set(owner.itemIds)];
+  await selectedMessageItemIds(owner, selected, false);
   const db = await getControlStoreWorkerClient().openInitializedUserReadDb(
     owner.coreDb.dataRoot,
     owner.userId
   );
   try {
     await owner.recheckAdmission?.();
-    const currentEligible =
-      selected === undefined
-        ? await eligibleMessageItemIds(owner)
-        : await selectedMessageItemIds(owner, selected, false);
+    const currentEligible = await selectedMessageItemIds(owner, selected, false);
     const state = projectReadState(
       currentEligible,
       readThreadReadReceipt(db, owner.workspaceId, owner.threadId)
     );
-    return selected === undefined
-      ? { scope: 'thread' as const, ...state }
-      : { scope: 'window' as const, ...state };
+    return { scope: 'window' as const, ...state };
   } finally {
     db.sqlite.close();
   }

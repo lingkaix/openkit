@@ -116,9 +116,18 @@ async function body(operation: 'thread.read-state' | 'thread.mark-read', itemIds
   return response.json();
 }
 async function full() {
-  return body('thread.read-state');
+  // Aggregate genuine bounded reads over every fixture source; no legacy full-read route remains.
+  const sources = [...eligible, ...excluded];
+  const state = { readItemIds: [] as string[], unreadItemIds: [] as string[] };
+  for (let offset = 0; offset < sources.length; offset += 200) {
+    const window = await body('thread.read-state', sources.slice(offset, offset + 200));
+    expect(window.scope).toBe('window');
+    state.readItemIds.push(...window.readItemIds);
+    state.unreadItemIds.push(...window.unreadItemIds);
+  }
+  return state;
 }
-/** The original full read is the eligibility/membership oracle, not a copied predicate. */
+/** Genuine all-source window reads supply membership/eligibility, not a copied predicate. */
 function restricted(
   state: { readItemIds: string[]; unreadItemIds: string[] },
   selection: string[]
@@ -156,7 +165,7 @@ function atPublication(action: () => Promise<void>) {
 }
 
 describe('bounded receipt public operation contract', () => {
-  it('accepts a window and exactly matches legacy membership and eligibility in request order', async () => {
+  it('accepts a window and exactly matches fixture-source membership and eligibility in request order', async () => {
     await body('thread.mark-read', [eligible[0]!, eligible[2]!]);
     const legacy = await full();
     expect(legacy.unreadItemIds.length).toBeGreaterThan(200);
@@ -220,12 +229,8 @@ describe('bounded receipt public operation contract', () => {
     for (const scan of secondScans) expect(scan).not.toHaveBeenCalled();
   }, 120_000);
 
-  it('accepts an empty read window, deduplicates first occurrence, and enforces the 200 input bound', async () => {
-    expect(await body('thread.read-state', [])).toEqual({
-      scope: 'window',
-      readItemIds: [],
-      unreadItemIds: [],
-    });
+  it('refuses an empty read window, deduplicates first occurrence, and enforces the 200 input bound', async () => {
+    expect((await request('thread.read-state', [])).status).toBe(400);
     const selection = [eligible[8]!, eligible[6]!, eligible[8]!, eligible[7]!];
     expect(await body('thread.read-state', selection)).toEqual(restricted(await full(), selection));
     expect((await request('thread.read-state', eligible.slice(0, 200))).status).toBe(200);
@@ -394,7 +399,6 @@ describe('bounded receipt public operation contract', () => {
     expect(Buffer.byteLength(JSON.stringify(ack))).toBeLessThan(100);
     const after = await full();
     expect(after).toEqual({
-      scope: 'thread',
       readItemIds: [...before.readItemIds, ...before.unreadItemIds].sort(
         (a, b) => eligible.indexOf(a) - eligible.indexOf(b)
       ),

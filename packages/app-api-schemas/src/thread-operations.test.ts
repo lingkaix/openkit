@@ -81,10 +81,10 @@ describe('thread operation schemas', () => {
       expect(outputSchema.safeParse(invalid).success).toBe(false);
   });
 
-  it('distinguishes bounded window state from the temporary complete Thread read', () => {
+  it('requires a nonempty bounded selector and returns only window state', () => {
     const { inputSchema, outputSchema } = THREAD_OPERATION_DEFINITIONS['thread.read-state'];
-    expect(inputSchema.parse({ workspaceId, threadId })).toEqual({ workspaceId, threadId });
-    expect(inputSchema.parse({ workspaceId, threadId, itemIds: [] }).itemIds).toEqual([]);
+    expect(inputSchema.safeParse({ workspaceId, threadId }).success).toBe(false);
+    expect(inputSchema.safeParse({ workspaceId, threadId, itemIds: [] }).success).toBe(false);
     expect(
       inputSchema.parse({ workspaceId, threadId, itemIds: Array(200).fill(itemId) }).itemIds
     ).toHaveLength(200);
@@ -98,12 +98,12 @@ describe('thread operation schemas', () => {
       outputSchema.safeParse({ ...window, readItemIds: Array(201).fill(itemId) }).success
     ).toBe(false);
     expect(
-      outputSchema.parse({
+      outputSchema.safeParse({
         scope: 'thread',
-        readItemIds: Array(201).fill(itemId),
+        readItemIds: [itemId],
         unreadItemIds: [],
-      }).readItemIds
-    ).toHaveLength(201);
+      }).success
+    ).toBe(false);
     expect(outputSchema.safeParse({ ...window, unreadItemIds: ['not-an-item-id'] }).success).toBe(
       false
     );
