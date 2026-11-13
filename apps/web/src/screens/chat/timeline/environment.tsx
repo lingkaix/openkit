@@ -150,7 +150,8 @@ function CurrentRunFacts({
 }) {
   const dashboard = useThreadDashboard(workspaceId, threadId, true);
   if (!dashboard.isFetched) return null;
-  const factLines = currentRunFactLines(turnId, dashboard.data);
+  // A failed current read keeps the last success in `data`. That answer is no longer admitted.
+  const factLines = currentRunFactLines(turnId, dashboard.isError ? undefined : dashboard.data);
   if (facts === 'wait' && factLines.every((line) => line === UNAVAILABLE)) return null;
   return (
     <>

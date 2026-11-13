@@ -183,9 +183,14 @@ function RunEntryBody({
   viewerUserId,
   names,
   digests,
+  workspaceId = null,
+  threadId = null,
 }: {
   entry: TimelineEntry;
   items: readonly ThreadItem[];
+  /** Admitted Workspace and Thread. Item owners are only a fallback. */
+  workspaceId?: string | null;
+  threadId?: string | null;
   turn?: TimelineTurn;
   lens: LensName;
   expanded: boolean;
@@ -398,6 +403,7 @@ function RunEntryBody({
       ));
   }
 
+  const factsScope = workspaceId && threadId ? { workspaceId, threadId } : workspaceOf(items);
   return (
     <article data-voice="fact" data-entry="run" className="ok-run flex flex-col gap-2">
       {!omitTrigger && turn ? (
@@ -410,8 +416,8 @@ function RunEntryBody({
           usage={runLens === 'full' ? entry.usage : null}
           fallback={runLens === 'full' ? entry.fallback : null}
           turnId={entry.turnId}
-          workspaceId={workspaceOf(items)?.workspaceId ?? null}
-          threadId={workspaceOf(items)?.threadId ?? null}
+          workspaceId={factsScope?.workspaceId ?? null}
+          threadId={factsScope?.threadId ?? null}
           facts={runLens === 'full' ? 'standing' : 'wait'}
         />
       ) : null}

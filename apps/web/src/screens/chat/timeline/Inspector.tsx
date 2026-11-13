@@ -56,6 +56,8 @@ export function Inspector({
   fallback = null,
   presentation = null,
   runActivity,
+  workspaceId = null,
+  threadId = null,
 }: {
   turnId: string;
   usage?: TimelineRunEntry['usage'];
@@ -78,8 +80,11 @@ export function Inspector({
   sheet?: boolean;
   expanded?: boolean;
   onExpand?: () => void;
+  /** Admitted Workspace and Thread. Item owners are only a fallback. */
+  workspaceId?: string | null;
+  threadId?: string | null;
 }) {
-  const scope = scopeOf(items);
+  const scope = workspaceId && threadId ? { workspaceId, threadId } : scopeOf(items);
   return (
     <aside
       ref={panelRef}

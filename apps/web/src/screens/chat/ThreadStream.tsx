@@ -1687,6 +1687,8 @@ export function ThreadStream({
     <Inspector
       turnId={activeInspectId}
       items={inspectedItems}
+      workspaceId={workspaceId}
+      threadId={threadId}
       activity={inspectedActivity}
       {...admittedActivity}
       interrupted={inspectedTurn?.status === 'interrupted'}
@@ -1982,6 +1984,8 @@ export function ThreadStream({
                   <RunEntry
                     entry={entry}
                     items={group.items}
+                    workspaceId={workspaceId}
+                    threadId={threadId}
                     turn={groupTurn}
                     lens={inlineLens}
                     expanded={phone ? false : expandedTurnId === group.turnId}
