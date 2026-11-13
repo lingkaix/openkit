@@ -49,7 +49,7 @@ import {
   writeColdDataRootBackupManifest,
   writeStorageJsonAtomically as writeJsonAtomically,
 } from './data-root-backup.js';
-import type { WorkspaceDb } from './db.js';
+import type { UserDb, WorkspaceDb } from './db.js';
 import {
   assertSqliteIntegrity,
   type CoreDb,
@@ -298,6 +298,17 @@ const WORKSPACE_STORAGE_MIGRATION_REPORT_FILE = 'workspace-storage-v1-to-v2.json
 const WORKSPACE_STORAGE_STAGING_DIRECTORY = '.workspace-storage-v2-staging';
 
 /**
+ * Request-local uncertainty about canonical RW closure, not a handle registry.
+ * Opaque opens may conservatively retain exclusion even when no handle remains.
+ */
+interface MigrationCloseUncertainty {
+  /** Only a proved close of the same known Core connection can clear this fact. */
+  core: boolean;
+  /** A later healthy scope cannot disprove another scope's lost close outcome. */
+  scoped: boolean;
+}
+
+/**
  * Migrates one stopped v1 data root to the owner-independent v2 Workspace layout.
  *
  * @param input Data root, external cold-backup destination, and optional clock.
@@ -333,6 +344,7 @@ export async function migrateWorkspaceStorage(
   const lock = acquireDataRootLock(input.dataRoot, {
     bootId: `workspace-storage-migration-${randomUUID()}`,
   });
+  const closeUncertainty: MigrationCloseUncertainty = { core: false, scoped: false };
 
   try {
     marker = readPredecessorLayoutMarker(input.dataRoot);
@@ -464,7 +476,7 @@ export async function migrateWorkspaceStorage(
     renameSync(stagingRoot, targetWorkspacesRoot);
 
     stage = 'core-schema';
-    coreDb = openPredecessorCoreDb(input.dataRoot);
+    coreDb = openPredecessorCoreDb(input.dataRoot, undefined, closeUncertainty);
     applyMigrations(coreDb);
     verifyCoreWorkspaceConstraints(coreDb, sources);
     verifyPublishedWorkspaceTrees(input.dataRoot, sources);
@@ -476,11 +488,15 @@ export async function migrateWorkspaceStorage(
     stage = 'marker';
     writeSuccessorLayoutMarker(input.dataRoot, marker);
     readDataRootLayoutMarker(input.dataRoot);
-    coreDb.sqlite.close();
+    closeMigrationCoreDatabase(coreDb.sqlite, closeUncertainty);
     coreDb = undefined;
 
     stage = 'verification';
-    await verifyAndMigrateExistingScopedDatabases(input.dataRoot);
+    await verifyAndMigrateExistingScopedDatabasesInternal(
+      input.dataRoot,
+      undefined,
+      closeUncertainty
+    );
     const rebuiltIndexes = rebuildExistingWorkspaceDerivedIndexes(input.dataRoot, { now });
     if (rebuiltIndexes.length !== sources.length) {
       throw new Error('Derived-index verification did not rebuild every migrated Workspace.');
@@ -513,7 +529,7 @@ export async function migrateWorkspaceStorage(
       workspaceCount: sources.length,
     };
   } catch (error) {
-    coreDb?.sqlite.close();
+    if (coreDb) closeMigrationCoreDatabase(coreDb.sqlite, closeUncertainty);
 
     rmSync(stagingRoot, { force: true, recursive: true });
     if (backup && marker) {
@@ -538,7 +554,10 @@ export async function migrateWorkspaceStorage(
 
     throw error;
   } finally {
-    lock.release();
+    // The numeric directory fd has no GC close. An unproved canonical lifetime
+    // retains this same Kernel owner until OS process exit, including a scope
+    // failure consumed by verification. No diagnostic unlink or retry is safe.
+    if (!closeUncertainty.core && !closeUncertainty.scoped) lock.release();
   }
 }
 
@@ -877,22 +896,27 @@ function readPredecessorLayoutMarker(dataRoot: string): PredecessorLayoutMarker 
 /**
  * Opens the v1 Core database without invoking the v2 layout initializer.
  *
- * Initialization failures close the native handle before a caller can remove its private inspection copy.
+ * Initialization failures attempt the original native close. Canonical migration retains
+ * exclusion when acquisition or cleanup cannot prove closure.
  *
  * @param dataRoot Predecessor data root.
  * @param path Native file path; preflight supplies a disposable copy to preserve the source inventory.
+ * @param uncertainty Canonical migration only; private inspection supplies none.
  * @returns Open raw and Drizzle Core handles.
  * @throws Error when the Core database is missing, linked, or corrupt.
  */
 function openPredecessorCoreDb(
   dataRoot: string,
-  path = resolveDataRootPath(dataRoot, 'server', 'db', 'core.sqlite')
+  path = resolveDataRootPath(dataRoot, 'server', 'db', 'core.sqlite'),
+  uncertainty?: MigrationCloseUncertainty
 ): CoreDb {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isFile()) {
     throw new Error('Predecessor Core database must be a regular file.');
   }
 
+  // A throwing constructor need not return the canonical handle it acquired.
+  if (uncertainty) uncertainty.core = true;
   const sqlite = new Database(path, { fileMustExist: true });
   try {
     sqlite.pragma('foreign_keys = ON');
@@ -907,7 +931,7 @@ function openPredecessorCoreDb(
       dataRoot,
     };
   } catch (error) {
-    sqlite.close();
+    closeMigrationCoreDatabase(sqlite, uncertainty);
     throw error;
   }
 }
@@ -1254,6 +1278,15 @@ export async function verifyAndMigrateExistingScopedDatabases(
   dataRoot: string,
   validateFileAuthority?: () => void
 ): Promise<void> {
+  return verifyAndMigrateExistingScopedDatabasesInternal(dataRoot, validateFileAuthority);
+}
+
+/** Preserves boot's ordered traversal; only the stopped migration carries close uncertainty. */
+async function verifyAndMigrateExistingScopedDatabasesInternal(
+  dataRoot: string,
+  validateFileAuthority?: () => void,
+  uncertainty?: MigrationCloseUncertainty
+): Promise<void> {
   ensureLayout(dataRoot);
   const scopes = [
     ...listChildDirectories(join(dataRoot, 'users')).map((id) => ({ scope: 'user' as const, id })),
@@ -1275,8 +1308,8 @@ export async function verifyAndMigrateExistingScopedDatabases(
   for (const { scope, id } of scopes) {
     if (!isScopeAdmitted(dataRoot, scope, id)) continue;
     try {
-      if (scope === 'workspace') await migrateWorkspaceDatabase(dataRoot, id);
-      else migrateUserDatabase(dataRoot, id);
+      if (scope === 'workspace') await migrateWorkspaceDatabase(dataRoot, id, uncertainty);
+      else migrateUserDatabase(dataRoot, id, uncertainty);
     } catch {
       refuseScope(dataRoot, { scope, id, check: 'database' });
     }
@@ -1288,15 +1321,27 @@ export async function verifyAndMigrateExistingScopedDatabases(
  *
  * @param dataRoot Data root that owns the database.
  * @param userId User id that owns the database.
+ * @param uncertainty Canonical migration close outcome, absent for boot.
  * @throws When the existing authoritative database fails SQLite integrity validation.
  */
-function migrateUserDatabase(dataRoot: string, userId: string): void {
-  const userDb = openUserDb(dataRoot, userId);
+function migrateUserDatabase(
+  dataRoot: string,
+  userId: string,
+  uncertainty?: MigrationCloseUncertainty
+): void {
+  let userDb: UserDb;
+  try {
+    userDb = openUserDb(dataRoot, userId);
+  } catch (error) {
+    // The factory can lose a RW handle when its own initialization close throws.
+    if (uncertainty) uncertainty.scoped = true;
+    throw error;
+  }
 
   try {
     applyScopedMigrations(userDb);
   } finally {
-    userDb.sqlite.close();
+    closeMigratedScopeDatabase(userDb, uncertainty);
   }
 }
 
@@ -1305,10 +1350,22 @@ function migrateUserDatabase(dataRoot: string, userId: string): void {
  *
  * @param dataRoot Data root that owns the database.
  * @param workspaceId Workspace id that owns the database.
+ * @param uncertainty Canonical migration close outcome, absent for boot.
  * @throws When the authoritative Workspace database is missing or fails SQLite integrity validation.
  */
-async function migrateWorkspaceDatabase(dataRoot: string, workspaceId: string): Promise<void> {
-  const workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+async function migrateWorkspaceDatabase(
+  dataRoot: string,
+  workspaceId: string,
+  uncertainty?: MigrationCloseUncertainty
+): Promise<void> {
+  let workspaceDb: WorkspaceDb;
+  try {
+    workspaceDb = openBootVerifiedWorkspaceDb(dataRoot, workspaceId);
+  } catch (error) {
+    // No returned handle is not proof that the opaque factory acquired none.
+    if (uncertainty) uncertainty.scoped = true;
+    throw error;
+  }
 
   try {
     const activated = listAppliedNativeMigrationIds(workspaceDb.sqlite, 'workspace').includes(
@@ -1332,7 +1389,44 @@ async function migrateWorkspaceDatabase(dataRoot: string, workspaceId: string): 
     } else applyScopedMigrations(workspaceDb);
     recoverRunningCapabilityCalls({ workspaceDb });
   } finally {
-    workspaceDb.sqlite.close();
+    closeMigratedScopeDatabase(workspaceDb, uncertainty);
+  }
+}
+
+/** Performs only an existing Core close; a later proved close clears only Core uncertainty. */
+function closeMigrationCoreDatabase(
+  sqlite: Database.Database,
+  uncertainty?: MigrationCloseUncertainty
+): void {
+  if (uncertainty) uncertainty.core = true;
+  sqlite.close();
+  if (uncertainty) {
+    try {
+      if (sqlite.open === false) uncertainty.core = false;
+    } catch {
+      // Observing closure must not replace the original error or invent proof.
+    }
+  }
+}
+
+/** Records only this migration's scoped close failures before scope isolation can consume them. */
+function closeMigratedScopeDatabase(
+  database: UserDb | WorkspaceDb,
+  uncertainty?: MigrationCloseUncertainty
+): void {
+  try {
+    database.sqlite.close();
+  } catch (error) {
+    if (uncertainty) uncertainty.scoped = true;
+    throw error;
+  }
+  if (uncertainty) {
+    try {
+      if (database.sqlite.open !== false) uncertainty.scoped = true;
+    } catch {
+      // A missing close observation is uncertainty, not another migration error.
+      uncertainty.scoped = true;
+    }
   }
 }
 
