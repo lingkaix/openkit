@@ -176,6 +176,7 @@ export interface TurnExecutor {
   ): Promise<
     | import('@openkit/config-schema').WorkerCredentialReceipt
     | import('@openkit/app-api-schemas').WorkspaceVaultInjectionReceipt
+    | import('./provider-credential-binding.js').WorkerProviderProtectionProof
     | {
         readonly planId: string;
         readonly receiptId: string;

@@ -314,9 +314,11 @@ export interface WorkerGovernanceNativeResume {
   readonly digest: string;
 }
 
-/**
- * Backend-private workspace context used for transport effects.
- */
+/** Reference-only static Provider preparation. No credential material or synthetic value is admissible. */
+export type WorkerGovernanceProviderCredential =
+  import('./provider-credential-binding.js').WorkerProviderCredentialBinding;
+
+/** Backend-private workspace context used for transport effects. */
 export interface WorkerGovernanceMaterializationContext {
   /** Current exact canonical suppliers for disposable live originals; never serialized or retained. */
   contextPackageSources?: readonly WorkerContextPackageSourceFileInput[];
@@ -324,8 +326,8 @@ export interface WorkerGovernanceMaterializationContext {
   beforeMaterialization?: () => void | Promise<void>;
   /** Workspace data root used to read verified Skill snapshots for worker-supply imports. */
   dataRoot?: string;
-  /** Backend-private provider credentials resolved by NanoCore for this materialization only. */
-  providerCredentials?: WorkerGovernanceProviderCredential[];
+  /** Untrusted reference-only Provider preparation; the backend validates its closed intent before effects. */
+  providerCredentials?: readonly unknown[];
   /** Backend-private runtime environment credentials resolved by NanoCore for this materialization only. */
   runtimeEnvCredentials?: WorkerGovernanceRuntimeEnvCredential[];
   /** Backend-private runtime file credentials resolved by NanoCore for this materialization only. */
@@ -964,20 +966,6 @@ function isWorkerPathWithin(root: string, path: string): boolean {
   );
 }
 
-/** Backend-private provider credential material used only during materialization. */
-export interface WorkerGovernanceProviderCredential {
-  /** Optional credential expiry timestamp. */
-  credentialExpiresAt?: string;
-  /** OpenShell credential key. */
-  credentialKey: string;
-  /** Secret credential value. */
-  credentialValue: string;
-  /** Provider instance id declared in the AEP. */
-  providerInstanceId: string;
-  /** OpenShell provider profile/type id. */
-  providerType: string;
-}
-
 /** Backend-private runtime file credential references prepared before governed delivery. */
 export interface WorkerGovernanceRuntimeFileCredential {
   /** Exact admitted declaration; transient binding identity, never secret material. */
@@ -1155,6 +1143,21 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
     materialVersion: number,
     recheckAuthority: () => Promise<void>
   ): Promise<import('./execution-backend.js').ExecutionCredentialReceipt>;
+  /** Reads only the original Core-prepared references on this live owner, never native observations or material. */
+  readProviderCredentialBinding?(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string
+  ): import('./provider-credential-binding.js').WorkerProviderCredentialBinding | undefined;
+  /** Realizes governed static Provider supply before the Worker bridge is opened. */
+  deliverProviderCredentialBinding?(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string,
+    credentialValue: string,
+    materialVersion: number,
+    recheckAuthority: () => Promise<void>
+  ): Promise<import('./provider-credential-binding.js').WorkerProviderProtectionProof>;
   /** Realizes access-only supply; Core owns refresh, evidence and receipt publication after this acknowledgement. */
   deliverCredentialAccess?(
     input: {
