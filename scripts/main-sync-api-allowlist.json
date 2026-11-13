@@ -296,7 +296,7 @@
     "apps/nanocore/src/storage/control-store-worker-client.ts\tfs:statSync\t60309d32d874d0064b6657533da1885264d271038caa928f5c250e18414dfa61": 1,
     "apps/nanocore/src/storage/control-store.ts\tfs:realpathSync\tc744cf7b18406f4e3c41d245960348abf2056eb6ce0d56839efc46cf5ce7cae8": 1,
     "apps/nanocore/src/storage/control-store.ts\tfs:statSync\t17fc088e84da22464347e43532a3620e9e7c698db2231fe97d4ab7ef02cbcc5a": 1,
-    "apps/nanocore/src/storage/data-root-backup.ts\tchild_process:spawnSync\td0fee487a26ac02f9dc41bd5d8487021cfc42f2987a8f131a789f7e38e61d5dc": 1,
+    "apps/nanocore/src/storage/data-root-backup.ts\tchild_process:spawnSync\t08cd52e7c518328be1efa498fb88d59b3864e96a38173582e9c30b309717187a": 1,
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:existsSync\t1c309e5ff58023083c013e0373ed59790dfa8a14b95674df714a608a6d0be858": 1,
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:existsSync\t274a43854a02491eb55f7946d39d0c28a31e1f5695835b11647a00e6467e6d8f": 1,
     "apps/nanocore/src/storage/data-root-backup.ts\tfs:existsSync\t3708e63a97551c608135187dd989d39a82fabb5195d512c4d013027496a5c402": 1,

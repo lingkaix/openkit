@@ -297,6 +297,7 @@ const Database = require(nativeModule);
   for (const { source, destination } of databases) {
     const database = new Database(source, { fileMustExist: true, readonly: true });
     try {
+      database.pragma('query_only = ON');
       await database.backup(destination);
     } finally {
       database.close();
