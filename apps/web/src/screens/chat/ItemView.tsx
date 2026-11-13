@@ -440,6 +440,7 @@ export function ItemView({
           <p className="whitespace-pre-wrap">{item.text}</p>
           <details className="mt-2">
             <summary>Covered history range</summary>
+            <p>{item.sourceRange.itemCount} earlier messages are in this range.</p>
           </details>
         </ItemCard>
       );

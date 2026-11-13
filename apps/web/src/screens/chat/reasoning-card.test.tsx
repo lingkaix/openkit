@@ -79,7 +79,7 @@ it('keeps the fallback meta text when the summary is empty', () => {
 });
 
 function register_context_summary_test_tsx_0() {
-  it('shows the continuation seen by the model and its inspectable exact history range', () => {
+  it('shows the continuation and a covered range without raw identifiers', () => {
     const firstItemId = allocateEntityId('it');
     const lastItemId = allocateEntityId('it');
     const item = ItemSchema.parse({
@@ -109,9 +109,19 @@ function register_context_summary_test_tsx_0() {
     expect(screen.getByText(/Covers 12 earlier messages/)).toHaveTextContent(
       'Exact history remains available.'
     );
-    fireEvent.click(screen.getByText('Covered history range'));
-    expect(screen.queryByText(firstItemId)).not.toBeInTheDocument();
-    expect(screen.queryByText(lastItemId)).not.toBeInTheDocument();
+    const summary = screen.getByText('Covered history range');
+    fireEvent.click(summary);
+    const details = summary.closest('details');
+    expect(details).toBeInstanceOf(HTMLDetailsElement);
+    expect((details as HTMLDetailsElement).open).toBe(true);
+    const body = [...(details as HTMLElement).childNodes]
+      .filter((node) => !(node instanceof HTMLElement && node.tagName === 'SUMMARY'))
+      .map((node) => node.textContent ?? '')
+      .join('')
+      .trim();
+    expect(body).toBe('12 earlier messages are in this range.');
+    expect(body).not.toContain(firstItemId);
+    expect(body).not.toContain(lastItemId);
   });
 }
 register_context_summary_test_tsx_0();

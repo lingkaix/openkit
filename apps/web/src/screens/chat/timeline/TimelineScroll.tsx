@@ -175,7 +175,14 @@ export function TimelineScroll({
   useLayoutEffect(() => {
     if (paging || !restoreEarlierFocus.current) return;
     restoreEarlierFocus.current = false;
-    earlierRef.current?.focus();
+    // Paging can blur the button onto the body. A later choice stays where the reader put it.
+    const active = document.activeElement;
+    const resting =
+      active == null ||
+      active === document.body ||
+      active === document.documentElement ||
+      active === earlierRef.current;
+    if (resting) earlierRef.current?.focus();
   }, [paging]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: opening settles onto follow once; setFollow reads the latest callback.
