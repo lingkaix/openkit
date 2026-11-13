@@ -172,8 +172,9 @@ export interface ComposerProps {
     actionLabel: string;
   };
   /**
-   * Phone run controls. Stop is present only while a run is in progress.
-   * The placeholder Steer control is replaced by liveInput.
+   * Phone run controls. The stop column keeps its box for the whole visit.
+   * `engaged: false` leaves that box in place without offering the control.
+   * Absent `engaged` means the control is offered. Task steer uses liveInput.
    */
   phoneRun?: {
     steerReason?: string;
@@ -183,6 +184,7 @@ export interface ComposerProps {
       consequence: string;
       waitReason: string;
       onStop: () => void;
+      engaged?: boolean;
     };
   };
 }
@@ -704,30 +706,53 @@ export function Composer({
           }))}
           onChange={selectModel}
         />
-        {effortLevels.length ? (
+        <div
+          className={`inline-flex shrink-0${effortLevels.length ? '' : ' invisible'}`}
+          {...(effortLevels.length ? {} : { 'aria-hidden': true as const, inert: true as const })}
+        >
           <InlineSelect
-            isDisabled={disabled}
+            isDisabled={disabled || effortLevels.length === 0}
             ariaLabel="Reasoning effort"
             selectedKey={reasoningEffort ?? ''}
             placeholder="Effort"
-            items={effortLevels.map((level) => ({
-              targetRef: level,
-              label: effortLabel(level),
-              availability: 'available' as const,
-              unavailableReason: null,
-            }))}
+            items={
+              effortLevels.length
+                ? effortLevels.map((level) => ({
+                    targetRef: level,
+                    label: effortLabel(level),
+                    availability: 'available' as const,
+                    unavailableReason: null,
+                  }))
+                : [
+                    {
+                      targetRef: 'reserved',
+                      label: 'Effort',
+                      availability: 'available' as const,
+                      unavailableReason: null,
+                    },
+                  ]
+            }
             onChange={(level) => {
+              if (!effortLevels.length) return;
               setEffortChoice({ logicalModelId, value: level as ReasoningEffort });
               setEffortSubmitted(false);
             }}
           />
-        ) : null}
-        <VoiceInputControl
-          transcribe={voice?.transcribe}
-          unavailableReason={voice?.unavailableReason}
-          onBusyChange={onVoiceBusy}
-          onText={(text) => setValue((current) => appendTranscript(current, text))}
-        />
+        </div>
+        {voice ? (
+          <VoiceInputControl
+            transcribe={voice.transcribe}
+            unavailableReason={voice.unavailableReason}
+            onBusyChange={onVoiceBusy}
+            onText={(text) => setValue((current) => appendTranscript(current, text))}
+          />
+        ) : (
+          <span
+            aria-hidden="true"
+            inert
+            className="invisible inline-flex size-11 min-h-11 min-w-11 shrink-0"
+          />
+        )}
         {live ? null : (
           <AriaButton
             type="submit"
@@ -828,9 +853,14 @@ export function Composer({
         </div>
       ) : null}
       {phoneRun?.stop && !live ? (
-        <div className="mt-2 flex flex-col gap-2">
+        <div
+          className={`mt-2 flex flex-col gap-2${phoneRun.stop.engaged === false ? ' invisible' : ''}`}
+          {...(phoneRun.stop.engaged === false
+            ? { 'aria-hidden': true as const, inert: true as const }
+            : {})}
+        >
           <p id="composer-stop-why">{phoneRun.stop.consequence}</p>
-          {phoneRun.stop.pending ? (
+          {phoneRun.stop.pending && phoneRun.stop.engaged !== false ? (
             <p id="composer-stop-wait" role="status">
               {phoneRun.stop.waitReason}
             </p>
@@ -839,9 +869,16 @@ export function Composer({
             <button
               type="button"
               className="min-h-11 flex-1 rounded-full border border-negative-fg px-3 text-sm font-bold text-negative-fg"
-              disabled={phoneRun.stop.pending}
-              aria-describedby={phoneRun.stop.pending ? 'composer-stop-wait' : 'composer-stop-why'}
-              onClick={phoneRun.stop.onStop}
+              disabled={phoneRun.stop.pending || phoneRun.stop.engaged === false}
+              aria-describedby={
+                phoneRun.stop.pending && phoneRun.stop.engaged !== false
+                  ? 'composer-stop-wait'
+                  : 'composer-stop-why'
+              }
+              onClick={() => {
+                if (phoneRun.stop?.engaged === false) return;
+                phoneRun.stop?.onStop();
+              }}
             >
               {phoneRun.stop.label}
             </button>

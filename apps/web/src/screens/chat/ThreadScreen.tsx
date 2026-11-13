@@ -826,20 +826,21 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                     phone
                       ? {
                           steerReason: timelineCopy.steerUnavailable,
-                          stop: activeTurn
-                            ? {
-                                label: timelineCopy.stopRun,
-                                pending: interruptState?.status === 'pending',
-                                consequence: timelineCopy.stopConsequence,
-                                waitReason: `${timelineCopy.stopping} ${timelineCopy.waitForStop}`,
-                                onStop: () =>
-                                  interrupt.mutate({
-                                    workspaceId: workspaceId ?? '',
-                                    threadId,
-                                    turnId: activeTurn.id,
-                                  }),
-                              }
-                            : undefined,
+                          stop: {
+                            label: timelineCopy.stopRun,
+                            pending: Boolean(activeTurn) && interruptState?.status === 'pending',
+                            consequence: timelineCopy.stopConsequence,
+                            waitReason: `${timelineCopy.stopping} ${timelineCopy.waitForStop}`,
+                            engaged: Boolean(activeTurn),
+                            onStop: () => {
+                              if (!activeTurn) return;
+                              interrupt.mutate({
+                                workspaceId: workspaceId ?? '',
+                                threadId,
+                                turnId: activeTurn.id,
+                              });
+                            },
+                          },
                         }
                       : undefined
                   }
