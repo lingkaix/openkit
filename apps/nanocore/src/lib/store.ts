@@ -91,6 +91,7 @@ import {
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   allocateEntityId,
+  compareCodeUnits,
   deriveEntityId,
   formatReferenceUri,
   ItemSchema,
@@ -104,6 +105,7 @@ import {
   SseEventEnvelopeSchema,
   ThreadIdSchema,
   ThreadSchema,
+  TimestampSchema,
   TurnSchema,
   WorkspaceIdSchema,
   workspaceIdForOwner,
@@ -299,6 +301,7 @@ import {
   readNativeProductEntries,
   readNativeProductPages,
   readNativeThreadItem,
+  readNativeThreadNavigationFacts,
   readNativeThreadTurnPages,
   readNativeTurnEvents,
   readNativeTurnEventWindow,
@@ -5959,6 +5962,55 @@ export class FsStore {
    */
   public listThreadItems(workspaceId: string, threadId: string): Item[] {
     return this.listThreadTurns(workspaceId, threadId).flatMap((turn) => turn.items);
+  }
+
+  /** Navigation selects active/latest headers and activity endpoints without loading Item histories. */
+  public readThreadNavigationFacts(
+    workspaceId: string,
+    threadId: string
+  ): {
+    activeTurn: Omit<Turn, 'items'> | null;
+    latestTurn: Omit<Turn, 'items'> | null;
+    lastActivityAt: string | null;
+  } {
+    this.getThread(workspaceId, threadId);
+    const header = (record: Record<string, unknown>): Omit<Turn, 'items'> => {
+      const { items: _items, ...metadata } = TurnReaderSchema.parse({ ...record, items: [] });
+      return metadata;
+    };
+    if (this.dataRoot) {
+      const facts = readNativeThreadNavigationFacts(
+        this.nativeScope({ kind: 'workspace', workspaceId }),
+        threadId
+      );
+      return {
+        activeTurn: facts.activeTurn ? header(facts.activeTurn.record) : null,
+        latestTurn: facts.latestTurn ? header(facts.latestTurn.record) : null,
+        lastActivityAt:
+          facts.lastActivityAt === null ? null : TimestampSchema.parse(facts.lastActivityAt),
+      };
+    }
+    // The in-memory owner has no immutable bodies or SQL indexes; read its existing current records directly.
+    const turns = [...this.turns.values()]
+      .filter(
+        (turn) => turn.threadId === threadId && workspaceIdForOwner(turn.owner) === workspaceId
+      )
+      .sort((a, b) => compareCodeUnits(a.startedAt ?? '', b.startedAt ?? ''));
+    const active = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
+    const timestamps = turns.flatMap((turn) => [turn.startedAt, turn.completedAt]);
+    for (const item of this.items.values()) {
+      if (item.threadId === threadId && workspaceIdForOwner(item.owner) === workspaceId)
+        timestamps.push(item.createdAt, item.completedAt);
+    }
+    return {
+      activeTurn: active ? header(active) : null,
+      latestTurn: active ? header(active) : turns.at(-1) ? header(turns.at(-1)!) : null,
+      lastActivityAt:
+        timestamps
+          .filter((time): time is string => time !== null)
+          .sort()
+          .at(-1) ?? null,
+    };
   }
 
   /** Runs one bounded timeline selection in the existing Thread owner's read snapshot. */

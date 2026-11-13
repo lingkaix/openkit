@@ -31,6 +31,7 @@ import {
 } from './scheduler-records.js';
 import { readPendingCommandRequestRecords } from './storage/command-request-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
+import { readNavigationPendingReceiptSizes } from './storage/thread-dashboard-records.js';
 import { hasWorkspaceReviewArtifact } from './storage/workspace-review-records.js';
 
 /**
@@ -42,6 +43,13 @@ interface BuildHumanAttentionRowsInput {
   reviewLimit?: number;
   /** Optional bounded read projection; the full Action Center retains its existing selection. */
   pendingLimit?: number;
+  /** Navigation must prove absence within this operation-local canonical body allowance. */
+  navigationProof?: {
+    remainingBytes: number;
+    remainingItems: number;
+    approvalAllowed: boolean;
+    turnAllowed: boolean;
+  };
   reviewCandidates?: ReturnType<typeof listArtifactReviews>;
   /** Authenticated actor requesting the projection. */
   actor?: Actor | undefined;
@@ -180,8 +188,17 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
       let artifact: ReturnType<FsStore['getArtifact']> | undefined;
       try {
         artifact = input.store.getArtifact(review.workspaceId, review.artifactId);
-      } catch {
+      } catch (error) {
+        if (input.navigationProof) throw error;
         artifact = undefined;
+      }
+      if (input.navigationProof && artifact && artifact.content.format !== 'file') {
+        const body = artifact.content.body;
+        if (body.length > input.navigationProof.remainingBytes)
+          throw new Error('Navigation attention canonical proof exceeds its byte bound.');
+        input.navigationProof.remainingBytes -= Buffer.byteLength(body, 'utf8');
+        if (input.navigationProof.remainingBytes < 0)
+          throw new Error('Navigation attention canonical proof exceeds its byte bound.');
       }
       let sourceTurn: Record<string, unknown>;
       try {
@@ -192,7 +209,8 @@ function artifactReviewRows(input: BuildHumanAttentionRowsInput): HumanAttention
         );
         if (!row) return [];
         sourceTurn = row.record;
-      } catch {
+      } catch (error) {
+        if (input.navigationProof) throw error;
         return [];
       }
       const canonicalDigest =
@@ -425,13 +443,14 @@ function boundedAttentionRow(
 export function readScopedHumanAttention(
   input: BuildHumanAttentionRowsInput & { threadIds: readonly string[] }
 ) {
-  const decision =
-    !input.coreDb ||
-    (!!input.actor &&
-      isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
-        mutating: true,
-        policyOperation: 'approval.respond',
-      }));
+  const decision = input.navigationProof
+    ? input.navigationProof.approvalAllowed || input.navigationProof.turnAllowed
+    : !input.coreDb ||
+      (!!input.actor &&
+        isWorkspaceOperationAuthorized(input.coreDb, input.actor, input.workspaceId, {
+          mutating: true,
+          policyOperation: 'approval.respond',
+        }));
   const review =
     !input.coreDb ||
     (!!input.actor &&
@@ -464,6 +483,26 @@ export function readScopedHumanAttention(
   };
 }
 
+/** Preflight and decode share a read cut; an oversized canonical source is never treated as absent. */
+function pendingProofReceipts(input: BuildHumanAttentionRowsInput, requestId: string) {
+  const sqlite = input.workspaceDb!.sqlite;
+  if (!input.navigationProof) return readPendingCommandRequestRecords(sqlite, requestId);
+  const proof = input.navigationProof;
+  return sqlite.transaction(() => {
+    const sizes = readNavigationPendingReceiptSizes(sqlite, requestId, proof.remainingItems);
+    const bytes = sizes.reduce((sum, row) => {
+      if (!Number.isSafeInteger(row.bytes) || row.bytes < 0)
+        throw new Error('Invalid canonical Pending receipt size.');
+      return sum + row.bytes;
+    }, 0);
+    if (sizes.length > proof.remainingItems || bytes > proof.remainingBytes)
+      throw new Error('Navigation attention canonical receipt proof exceeds its bound.');
+    proof.remainingItems -= sizes.length;
+    proof.remainingBytes -= bytes;
+    return readPendingCommandRequestRecords(sqlite, requestId);
+  })();
+}
+
 /** Exact indexed associations feed the unchanged canonical validator and blocking rule. */
 export function pendingProjectionFacts(
   input: BuildHumanAttentionRowsInput,
@@ -484,6 +523,11 @@ export function pendingProjectionFacts(
     const related = positions.filter(
       (row) => kinds.has(row.type) && row.threadId === record.threadId
     );
+    if (input.navigationProof) {
+      input.navigationProof.remainingItems -= related.length;
+      if (input.navigationProof.remainingItems < 0)
+        throw new Error('Navigation attention canonical proof exceeds its candidate bound.');
+    }
     const ids = new Set(
       [
         record.raisingTurnId,
@@ -502,6 +546,16 @@ export function pendingProjectionFacts(
               items: related
                 .filter((position) => position.turnId === id)
                 .flatMap((position) => {
+                  if (input.navigationProof) {
+                    const selected = snapshot.itemWithinBytes(
+                      position.itemId,
+                      input.navigationProof.remainingBytes
+                    );
+                    if (!selected)
+                      throw new Error('Navigation attention canonical proof is unavailable.');
+                    input.navigationProof.remainingBytes -= selected.byteLength;
+                    return [selected.item];
+                  }
                   const item = snapshot.item(position.itemId);
                   return item ? [item] : [];
                 }),
@@ -527,9 +581,7 @@ export function pendingProjectionFacts(
         : validateCanonicalLoad(
             record,
             turns,
-            includeReceipts
-              ? readPendingCommandRequestRecords(input.workspaceDb!.sqlite, record.requestId)
-              : []
+            includeReceipts ? pendingProofReceipts(input, record.requestId) : []
           ),
       presentation: {
         ...pendingRequestPresentation(record, presentationTurns),
@@ -568,11 +620,21 @@ function pendingRequestRows(input: BuildHumanAttentionRowsInput) {
           }),
         input.pendingLimit
       );
-    } catch {
+    } catch (error) {
+      if (input.navigationProof) throw error;
       continue;
     }
+    if (input.navigationProof && records.length >= (input.pendingLimit ?? 33))
+      throw new Error('Navigation attention absence cannot be proved within its candidate bound.');
     for (const record of records) {
       if (record.state !== 'pending') continue;
+      if (
+        input.navigationProof &&
+        !(record.kind === 'approval'
+          ? input.navigationProof.approvalAllowed
+          : input.navigationProof.turnAllowed)
+      )
+        continue;
       if (
         input.actor &&
         record.responsibleUserId !== input.actor.userId &&

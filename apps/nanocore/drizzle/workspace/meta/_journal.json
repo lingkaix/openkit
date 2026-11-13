@@ -183,6 +183,13 @@
       "when": 1794463200000,
       "tag": "0025_timeline_plan_history",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1794600000000,
+      "tag": "0026_conversation_navigation",
+      "breakpoints": true
     }
   ]
 }

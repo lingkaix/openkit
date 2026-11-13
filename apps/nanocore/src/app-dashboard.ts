@@ -18,6 +18,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { readScopedHumanAttention } from './action-center.js';
 import { publishedErrorMessage } from './api-errors.js';
 import { listOutputArtifacts } from './artifact-catalog.js';
 import {
@@ -31,7 +32,7 @@ import { StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
 import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
-import { listGoalsForThread } from './runtime/goal-owner.js';
+import { listGoalsForThread, readGoalAttentionScope } from './runtime/goal-owner.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
 import { readThreadReadReceipt } from './storage/thread-read-receipts.js';
@@ -589,7 +590,8 @@ export async function readConversationNavigation({
     const rows: ConversationNavigationResponse['items'] = visibleThreads
       .filter((thread) => thread.status === 'active')
       .map((thread) => {
-        const turns = sortTurns(store.listThreadTurns(workspaceId, thread.id));
+        const facts = store.readThreadNavigationFacts(workspaceId, thread.id);
+        // Cut 1 leaves only unread on its original full-history owner until the bounded probe lands.
         const items = store.listThreadItems(workspaceId, thread.id);
         const readIds = new Set(
           userDb ? readThreadReadReceipt(userDb, workspaceId, thread.id) : []
@@ -597,8 +599,8 @@ export async function readConversationNavigation({
         const unreadCount = receiptMessageItemIds(items, actor.userId).filter(
           (id) => !readIds.has(id)
         ).length;
-        const activeTurn = turns.findLast((turn) => !isSealedTurnTerminal(turn.status));
-        const latestTurn = activeTurn ?? turns.at(-1);
+        const activeTurn = facts.activeTurn;
+        const latestTurn = facts.latestTurn;
         const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
         const activeGoal = goals.findLast((goal) => goal.disposition === null);
         const latestGoal = activeGoal ?? goals.at(-1);
@@ -618,15 +620,46 @@ export async function readConversationNavigation({
               : !latestTurn
                 ? 'chat'
                 : 'unknown';
-        const needsYou =
-          pendingApprovalItems(store, items, approvalAllowed).length > 0 ||
-          pendingQuestionItems(store, items, turnAllowed, actor?.userId ?? null).length > 0;
-        const working = turns.some((turn) => isActiveWorkStatus(turn.status));
-        const times = [
-          ...turns.flatMap((turn) => [turn.startedAt, turn.completedAt]),
-          ...items.flatMap((item) => [item.createdAt, item.completedAt]),
-          ...goals.map((goal) => goal.updatedAt),
-        ].filter((time): time is string => time !== null);
+        const scope = workspaceDb
+          ? readGoalAttentionScope(workspaceDb, thread.id)
+          : { threadIds: [thread.id], more: false };
+        const attention = readScopedHumanAttention({
+          store,
+          coreDb,
+          workspaceDb,
+          workspaceId,
+          actor,
+          administratorEligible: Boolean(currentAdministratorEligible),
+          threadIds: scope.threadIds,
+          pendingLimit: 33,
+          navigationProof: {
+            remainingBytes: 65_536,
+            remainingItems: 64,
+            approvalAllowed,
+            turnAllowed,
+          },
+        });
+        if (
+          scope.more ||
+          attention.more ||
+          attention.pendingRequests.some((request) => request.state === 'inspect-only')
+        )
+          throw new Error(
+            'Navigation attention absence cannot be proved within its canonical bound.'
+          );
+        const needsYou = attention.items.some(
+          (row) =>
+            row.kind === 'artifact_review' ||
+            row.actions.some(
+              (action) =>
+                !action.disabled &&
+                (action.kind === 'grant_approval' || action.kind === 'answer_question')
+            )
+        );
+        const working = activeTurn !== null || activeGoal !== undefined;
+        const times = [facts.lastActivityAt, ...goals.map((goal) => goal.updatedAt)].filter(
+          (time): time is string => time !== null
+        );
         return {
           thread,
           activity,

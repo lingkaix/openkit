@@ -4,6 +4,7 @@ import {
   readCurrentThreadItemPositions,
   readLastTurnEventTime,
   readPendingItemAssociations,
+  readThreadNavigationPositions,
   readThreadTurnRanks,
 } from './thread-dashboard-records.js';
 import { assertSafeWorkspacePathSegment } from './workspace-path-segment.js';
@@ -1226,6 +1227,29 @@ export interface ThreadTimelineSnapshot {
     requestItemId: string
   ): ReturnType<typeof readPendingItemAssociations>;
   lastEventAt(turnId: string): string | null;
+}
+
+/** Reads one navigation row's bounded metadata and indexed timestamp endpoints in a released cut. */
+export function readNativeThreadNavigationFacts(scope: NativeProductScope, threadId: string) {
+  const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+  try {
+    return reader.sqlite.transaction(() => {
+      const positions = readThreadNavigationPositions(reader.sqlite, threadId);
+      const activeTurn = readActiveThreadTurnSnapshot(reader.sqlite, scope.owner, threadId);
+      const latestTurn =
+        activeTurn ??
+        (positions.latestTurnId
+          ? readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, positions.latestTurnId)
+          : undefined);
+      return {
+        activeTurn: activeTurn ?? null,
+        latestTurn: latestTurn ?? null,
+        lastActivityAt: positions.lastActivityAt,
+      };
+    })();
+  } finally {
+    reader.close();
+  }
 }
 
 /** Keeps every selected metadata row and immutable descriptor in one existing Workspace read cut. */

@@ -35,6 +35,47 @@ export function readCurrentThreadItemPositions(
     ) as ThreadItemPosition[];
 }
 
+/** Navigation uses indexed endpoints, not admission order or complete run/Item histories. */
+export function readThreadNavigationPositions(sqlite: Database.Database, threadId: string) {
+  const latest = sqlite
+    .prepare(`SELECT id FROM control_turns WHERE thread_id=?
+      ORDER BY coalesce(json_extract(record_json,'$.startedAt'),'') DESC,thread_read_order DESC LIMIT 1`)
+    .get(threadId) as { id: string } | undefined;
+  const timestamps: string[] = [];
+  for (const field of ['startedAt', 'completedAt']) {
+    const turn = sqlite
+      .prepare(`SELECT json_extract(record_json,'$.${field}') AS timestamp FROM control_turns
+        WHERE thread_id=? ORDER BY json_extract(record_json,'$.${field}') DESC LIMIT 1`)
+      .get(threadId) as { timestamp: string | null } | undefined;
+    const item = sqlite
+      .prepare(`SELECT json_extract(read_metadata_json,'$.${field === 'startedAt' ? 'createdAt' : field}') AS timestamp
+        FROM control_product_entries WHERE kind='item' AND is_current=1
+        AND json_extract(identity_json,'$.threadId')=?
+        ORDER BY json_extract(read_metadata_json,'$.${field === 'startedAt' ? 'createdAt' : field}') DESC LIMIT 1`)
+      .get(threadId) as { timestamp: string | null } | undefined;
+    for (const row of [turn, item])
+      if (row?.timestamp !== null && row?.timestamp !== undefined) timestamps.push(row.timestamp);
+  }
+  return { latestTurnId: latest?.id ?? null, lastActivityAt: timestamps.sort().at(-1) ?? null };
+}
+
+/** Metadata-only lookahead bounds the unchanged canonical Pending command-receipt decoder. */
+export function readNavigationPendingReceiptSizes(
+  sqlite: Database.Database,
+  requestId: string,
+  maximumRows: number
+) {
+  if (!Number.isSafeInteger(maximumRows) || maximumRows < 0 || maximumRows > 64)
+    throw new TypeError('Invalid navigation Pending receipt allowance.');
+  return sqlite
+    .prepare(`SELECT octet_length(request_key)+octet_length(command_name)+octet_length(request_id)
+    +octet_length(scope_json)+octet_length(input_hash)+octet_length(response_kind)+octet_length(response_id)
+    +coalesce(octet_length(response_json),0)+octet_length(created_at)+octet_length(expires_at) AS bytes
+    FROM idempotency_requests WHERE coalesce(json_extract(scope_json,'$.approvalRequestId'),
+      json_extract(scope_json,'$.userInputRequestId'),json_extract(scope_json,'$.pendingRequestId'))=? LIMIT ?`)
+    .all(requestId, maximumRows + 1) as Array<{ bytes: number }>;
+}
+
 /** Exact retained Thread rank facts; the global immutable admission key remains unchanged. */
 export function readThreadTurnRanks(sqlite: Database.Database, threadId: string, turnId: string) {
   const current = sqlite
