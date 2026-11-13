@@ -85,7 +85,11 @@ import {
   type VaultUseDb,
   type VaultUseRecord,
 } from './vault-native-codecs.js';
-import type { PreparedControlVaultRead } from './vault-policy-read.js';
+import type {
+  PreparedControlVaultRead,
+  PreparedHarnessLoginActivationRead,
+  PreparedNativeVaultRead,
+} from './vault-policy-read.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from './workspace-import-authority.js';
 
@@ -707,8 +711,11 @@ export function applyControlVault(
   db: CoreDb | WorkspaceDb,
   input: ControlVaultInput,
   nativeRead?: {
-    readonly prepared: PreparedControlVaultRead | undefined;
+    readonly prepared: PreparedNativeVaultRead | undefined;
     readonly policyState: NativeRuntimePolicyPublication | undefined;
+    readonly policyIdentity?:
+      | import('./control-store-worker-protocol.js').ControlPolicyGrant['policy']
+      | undefined;
   }
 ): ControlVaultResult {
   assertControlProductWriter(db.sqlite);
@@ -717,15 +724,36 @@ export function applyControlVault(
   // the preparation carries verified reads, never an allowing decision.
   let initialWorkspace: WorkspaceDb | undefined;
   let initialPackage: PreparedControlVaultRead['consumerPackage'] | undefined;
+  let activationRead: PreparedHarnessLoginActivationRead | undefined;
   if (
     ((request.kind === 'reference-advance' || request.kind === 'receipt-create') &&
       request.record.loginBinding) ||
     (request.kind === 'reference-login-state' && 'coreConfirmedQuarantine' in request.record)
   ) {
-    if (db.scope !== 'core' || !nativeRead?.prepared) throw new ControlProductPreconditionError();
+    if (db.scope !== 'core' || !nativeRead?.prepared || 'kind' in nativeRead.prepared)
+      throw new ControlProductPreconditionError();
     nativeRead.prepared.assertCurrent(db, input, nativeRead.policyState);
     initialWorkspace = nativeRead.prepared.workspaceDb;
     initialPackage = nativeRead.prepared.consumerPackage;
+  }
+  if (
+    request.kind === 'thread-login-activate' &&
+    request.record.loginBinding &&
+    !request.record.replacement
+  )
+    throw new ControlProductPreconditionError();
+  if (request.kind === 'thread-login-activate' && request.record.replacement) {
+    const prepared = nativeRead?.prepared;
+    if (
+      db.scope !== 'workspace' ||
+      !prepared ||
+      !('kind' in prepared) ||
+      prepared.kind !== 'login-activation' ||
+      !nativeRead?.policyIdentity
+    )
+      throw new ControlProductPreconditionError();
+    prepared.assertCurrent(db, input, nativeRead.policyIdentity);
+    activationRead = prepared;
   }
   if (
     request.kind !== 'use-create' &&
@@ -756,7 +784,7 @@ export function applyControlVault(
     applyHarnessLoginRemoval(db, request);
     result = { kind: request.kind, value: null };
   } else if (request.kind === 'thread-login-activate') {
-    applyHarnessLoginNativeEffect(db, request);
+    applyHarnessLoginNativeEffect(db, request, activationRead);
     result = { kind: request.kind, value: null };
   } else if (request.kind === 'reference-login-observe') {
     const value = applyHarnessLoginNativeEffect(db, request);
@@ -1369,6 +1397,11 @@ function requireLoginAccessBinding(
     )
   )
     throw new ControlProductPreconditionError();
+  if (
+    authority.replacement &&
+    (previousReceiptId !== undefined || authority.refreshContext !== undefined)
+  )
+    throw new ControlProductPreconditionError();
   if (previousReceiptId !== undefined) {
     if (!authority.refreshContext) throw new ControlProductPreconditionError();
     try {
@@ -1488,22 +1521,35 @@ function applyHarnessLoginRemoval(
  */
 function applyHarnessLoginNativeEffect(
   db: CoreDb | WorkspaceDb,
-  input: Effect
+  input: Effect,
+  prepared?: PreparedHarnessLoginActivationRead
 ): VaultReferenceRecord | null {
+  const replacing =
+    input.kind === 'thread-login-activate' && input.record.replacement !== undefined;
+  if (replacing ? !prepared || prepared.kind !== 'login-activation' : prepared !== undefined)
+    throw new ControlProductPreconditionError();
   const record = input.record;
   const context = record.context;
   const otherScope =
     db.scope === 'core'
       ? { kind: 'workspace' as const, workspaceId: context.workspaceId }
       : { kind: 'server' as const };
-  const scope = nativeProductScope(db.dataRoot, otherScope);
-  const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+  const reader = prepared
+    ? undefined
+    : (() => {
+        const scope = nativeProductScope(db.dataRoot, otherScope);
+        return openControlStoreProductReadHandle(scope.path, scope.owner);
+      })();
   try {
-    const coreDb = db.scope === 'core' ? db : bindCoreSqlite(reader.sqlite, db.dataRoot);
+    const coreDb = prepared
+      ? prepared.coreDb
+      : db.scope === 'core'
+        ? db
+        : bindCoreSqlite(reader!.sqlite, db.dataRoot);
     const workspaceDb =
       db.scope === 'workspace'
         ? db
-        : bindWorkspaceSqlite(reader.sqlite, db.dataRoot, context.workspaceId);
+        : bindWorkspaceSqlite(reader!.sqlite, db.dataRoot, context.workspaceId);
     const refuse = (): never => {
       throw new Error('Native Login effect lineage is unavailable.');
     };
@@ -1516,11 +1562,13 @@ function applyHarnessLoginNativeEffect(
     if (record.now > admissionNow) return refuse();
     requireHarnessLoginBinding(coreDb, context, admissionNow);
     const snapshot = AgentEnvironmentPackageSchema.parse(
-      requireAgentEnvironmentPackageSnapshot(
-        workspaceDb,
-        context.workspaceId,
-        context.packageSnapshotId
-      ).snapshot
+      prepared
+        ? prepared.consumerPackage
+        : requireAgentEnvironmentPackageSnapshot(
+            workspaceDb,
+            context.workspaceId,
+            context.packageSnapshotId
+          ).snapshot
     );
     const original = snapshot.scope;
     if (
@@ -1643,6 +1691,7 @@ function applyHarnessLoginNativeEffect(
     if (result.changes !== 1) return refuse();
     return null;
   } finally {
-    reader.close();
+    // Replacement borrows the preparation-owned Core RO; the worker's close lifecycle owns it.
+    reader?.close();
   }
 }

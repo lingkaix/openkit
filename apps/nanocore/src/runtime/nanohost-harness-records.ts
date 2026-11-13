@@ -1,5 +1,7 @@
 import { Buffer } from 'node:buffer';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
+import type { AgentEnvironmentPackage } from '@openkit/config-schema';
 import { compareCodeUnits, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { sha256CanonicalJson, sha256Hex } from '@openkit/protocol/digest';
 import {
@@ -11,9 +13,312 @@ import {
   NativeEnvironmentRecordSchema,
   parseHarnessResultBody,
 } from '@openkit/worker-protocol';
+import { z } from 'zod';
+import type { HarnessLoginReplacement } from '../operation-contract.js';
+import { TurnStartValidationError } from '../operation-error.js';
+import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
+import { AgentSessionRetainedStorageSchema } from '../storage/workspace-file-records.js';
+import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import { requireHarnessLoginBinding } from './harness-login-authority.js';
+import type { HarnessLoginReplacementRead } from './harness-login-selection.js';
 import { bindNanoHostAttemptRouteTokenHashes } from './nanohost-attempt-records.js';
+import { nanoHostSandboxId } from './nanohost-capture-anchors.js';
+import {
+  nanoHostHarnessCompatibilityKey,
+  nanoHostSandboxCompatibilityKey,
+} from './nanohost-compatibility.js';
+import { nanoHostSandboxIdFromBackendSessionId } from './nanohost-effect-identity.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
+import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { hashWorkerRouteToken } from './worker-control-gateway.js';
+import {
+  getWorkerStorageBinding,
+  getWorkerStorageBindingForSandbox,
+} from './worker-storage-binding-records.js';
+
+/**
+ * Pure current release inference over an already verified canonical/raw package read set.
+ * Strictly later SAME association/slot plus exact old-domain absence relies on the existing
+ * cleanup-owned release/reserve lifecycle. It is neither an old callback ACK nor capture repair.
+ * All canonical package I/O belongs to preparation; this function performs only current Core reads.
+ */
+export function requireReleasedLoginPredecessor(
+  db: CoreDb,
+  replacement: HarnessLoginReplacement,
+  prepared: HarnessLoginReplacementRead,
+  successor: AgentEnvironmentPackage,
+  now: string
+): void {
+  const refuse: () => never = () => {
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'The previous Login physical writer is not proved released.',
+      409
+    );
+  };
+  const context = replacement.context;
+  requireHarnessLoginBinding(db, context, now);
+  const source = prepared.session;
+  const retained = AgentSessionRetainedStorageSchema.safeParse(source.retainedStorage).data;
+  const attached = AgentSessionRetainedStorageSchema.safeParse(
+    prepared.successor.retainedStorage
+  ).data;
+  const predecessor = prepared.predecessor;
+  const anchor = getWorkerBackendSession(db, predecessor.attemptId);
+  const successorStorage = successor.extensions.openkit as
+    | { workerStorage?: { workSlotRef?: string } }
+    | undefined;
+  if (
+    !retained ||
+    !attached ||
+    !anchor ||
+    retained.attachmentGeneration === undefined ||
+    attached.attachmentGeneration === undefined ||
+    attached.storageRef !== retained.storageRef ||
+    attached.workSlotRef !== retained.workSlotRef ||
+    successorStorage?.workerStorage?.workSlotRef !== attached.workSlotRef ||
+    attached.attachmentGeneration <= retained.attachmentGeneration ||
+    !['closed', 'failed', 'interrupted'].includes(source.status) ||
+    source.id !== predecessor.agentSessionId ||
+    source.workspaceId !== context.workspaceId ||
+    source.threadId !== context.threadId ||
+    source.nativeHandleDigest !== replacement.nativeResume.digest ||
+    source.id !== replacement.nativeResume.locator ||
+    predecessor.receiptId !== replacement.previousReceiptId ||
+    prepared.successor.id !== context.agentSessionId ||
+    successor.scope.agentSessionId !== context.agentSessionId ||
+    successor.scope.workspaceId !== context.workspaceId ||
+    successor.scope.threadId !== context.threadId ||
+    successor.scope.turnId !== context.turnId ||
+    successor.snapshotId !== context.packageSnapshotId ||
+    context.agentSessionId === source.id
+  )
+    refuse();
+  const bindings = z.array(z.object({ bindingId: z.string(), sessionId: z.string() })).parse(
+    db.sqlite
+      .prepare(
+        `SELECT agent_session_runtime_binding_id AS bindingId, agent_session_id AS sessionId
+     FROM agent_session_runtime_bindings WHERE workspace_id=? AND thread_id=?`
+      )
+      .all(context.workspaceId, context.threadId)
+  );
+  if (
+    bindings.length !== 1 ||
+    bindings[0]!.bindingId !== context.agentSessionRuntimeBindingId ||
+    bindings[0]!.sessionId !== context.agentSessionId ||
+    db.sqlite
+      .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id=? LIMIT 1')
+      .get(source.id)
+  )
+    refuse();
+  const physical = z
+    .object({
+      sandboxBindingRef: z.string(),
+      sandboxKey: z.string(),
+      harnessKey: z.string(),
+      runtimeTargetId: z.string(),
+      originPhysicalEpoch: z.string(),
+    })
+    .parse(
+      db.sqlite
+        .prepare(
+          `SELECT s.sandbox_binding_ref AS sandboxBindingRef, s.sandbox_compatibility_key AS sandboxKey,
+      h.harness_compatibility_key AS harnessKey, s.runtime_target_id AS runtimeTargetId,
+      s.origin_physical_epoch AS originPhysicalEpoch FROM agent_session_runtime_bindings b
+      JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+      WHERE b.agent_session_runtime_binding_id=?`
+        )
+        .get(context.agentSessionRuntimeBindingId)
+    );
+  if (
+    physical.sandboxKey !== nanoHostSandboxCompatibilityKey(successor) ||
+    physical.harnessKey !== nanoHostHarnessCompatibilityKey(successor) ||
+    physical.runtimeTargetId !== context.runtimeTargetId ||
+    physical.originPhysicalEpoch !== context.physicalEpoch
+  )
+    refuse();
+  const storage = getWorkerStorageBinding(db, { storageRef: retained.storageRef });
+  const resident = getWorkerStorageBindingForSandbox(db, {
+    sandboxBindingRef: physical.sandboxBindingRef,
+  });
+  const target = getNanoHostRuntimeTarget(db, physical.runtimeTargetId);
+  if (
+    !storage ||
+    !isDeepStrictEqual(storage, resident) ||
+    !target ||
+    storage.state !== 'attached' ||
+    storage.workspaceId !== context.workspaceId ||
+    storage.currentSandboxBindingRef !== physical.sandboxBindingRef ||
+    storage.runtimeTargetId !== physical.runtimeTargetId ||
+    storage.deploymentId !== target.deploymentId ||
+    storage.attachmentGeneration !== attached.attachmentGeneration ||
+    storage.targets.filter((value) => value.active).length === 0 ||
+    storage.targets.some(
+      (value) =>
+        value.active &&
+        (!value.initialized ||
+          !storage.layout.targets.some((entry) => entry.target === value.target))
+    ) ||
+    storage.layout.targets.some(
+      (value) =>
+        !storage.targets.some(
+          (entry) => entry.active && entry.initialized && entry.target === value.target
+        )
+    ) ||
+    !storage.contributors.some(
+      (value) =>
+        value.workspaceId === context.workspaceId &&
+        value.threadId === context.threadId &&
+        value.workSlotRef === retained.workSlotRef &&
+        value.attachmentGeneration === retained.attachmentGeneration
+    ) ||
+    !storage.contributors.some(
+      (value) =>
+        value.workspaceId === context.workspaceId &&
+        value.threadId === context.threadId &&
+        value.workSlotRef === attached.workSlotRef &&
+        value.attachmentGeneration === attached.attachmentGeneration
+    )
+  )
+    refuse();
+  const original = prepared.packages.find(
+    (value) => value.snapshotId === predecessor.packageSnapshotId
+  );
+  if (!original) refuse();
+  // NEVER use the normalized snapshot for original physical compatibility.
+  const oldKey = nanoHostSandboxCompatibilityKey(original.retainedSnapshot);
+  const oldHarnessKey = nanoHostHarnessCompatibilityKey(original.retainedSnapshot);
+  const oldSandboxId = nanoHostSandboxId(oldKey);
+  if (oldKey === physical.sandboxKey || oldHarnessKey === physical.harnessKey) refuse();
+  const attempts = z
+    .array(z.object({ attemptId: z.string() }))
+    .parse(
+      db.sqlite
+        .prepare(
+          'SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE agent_session_id=? ORDER BY attempt_id'
+        )
+        .all(source.id)
+    );
+  const domains: NonNullable<ReturnType<typeof getWorkerBackendSession>>[] = [];
+  for (const { attemptId } of attempts) {
+    const attempt = requireSchedulerExecutionAttempt(db, attemptId);
+    if (
+      attempt.phase !== 'closed' ||
+      attempt.workspaceId !== context.workspaceId ||
+      attempt.threadId !== context.threadId ||
+      attempt.agentSessionId !== source.id
+    )
+      refuse();
+    const domain = getWorkerBackendSession(db, attemptId);
+    if (!domain) {
+      if (attempt.disposition !== 'not_accepted') refuse();
+      continue;
+    }
+    const record = prepared.packages.find((value) => value.snapshotId === domain.packageSnapshotId);
+    const pkg = record?.retainedSnapshot;
+    const admission = requireSchedulerExecutionAttemptAdmissionContext(db, attemptId);
+    const openkit = pkg?.extensions.openkit as
+      | { workerStorage?: { workSlotRef?: string } }
+      | undefined;
+    if (
+      !pkg ||
+      nanoHostSandboxCompatibilityKey(pkg) !== oldKey ||
+      nanoHostHarnessCompatibilityKey(pkg) !== oldHarnessKey ||
+      openkit?.workerStorage?.workSlotRef !== retained.workSlotRef ||
+      domain.backendKind !== 'openshell' ||
+      domain.transientProviderInstanceId !== null ||
+      domain.workspaceId !== context.workspaceId ||
+      domain.threadId !== context.threadId ||
+      domain.agentSessionId !== source.id ||
+      domain.turnId !== attempt.turnId ||
+      domain.packageSnapshotId !== attempt.inputRef ||
+      domain.sandboxBindingRef !== attempt.bindingRef ||
+      pkg.scope.workspaceId !== domain.workspaceId ||
+      pkg.scope.threadId !== domain.threadId ||
+      pkg.scope.agentSessionId !== domain.agentSessionId ||
+      pkg.scope.turnId !== domain.turnId ||
+      pkg.scope.requestId !== admission.requestId ||
+      !isDeepStrictEqual(pkg.scope.triggerActor, admission.triggerActor) ||
+      domain.stagingDirectoryRef !== `server/runtime/worker-backend-sessions/${pkg.snapshotId}` ||
+      nanoHostSandboxIdFromBackendSessionId(domain.backendSessionId) !== oldSandboxId ||
+      domain.backendSessionId !==
+        `${oldSandboxId}-${createHash('sha256').update(pkg.snapshotId).digest('hex').slice(0, 16)}`
+    )
+      refuse();
+    const image = pkg.runtime.image;
+    if (
+      image.kind === 'reference'
+        ? !('imageRef' in domain.backendLineage) || domain.backendLineage.imageRef !== image.ref
+        : !('buildArgumentsDigest' in domain.backendLineage) ||
+          domain.backendLineage.buildArgumentsDigest !== image.argumentsDigest ||
+          domain.backendLineage.buildContextDigest !== image.contextDigest ||
+          domain.backendLineage.buildInputDigest !== image.input.digest
+    )
+      refuse();
+    const oldTarget = getNanoHostRuntimeTarget(db, domain.runtimeTargetId);
+    if (
+      !oldTarget ||
+      oldTarget.deploymentId !== domain.deploymentId ||
+      domain.deploymentId !== storage.deploymentId ||
+      domain.runtimeTargetId !== storage.runtimeTargetId ||
+      !oldTarget.ready ||
+      !oldTarget.predecessorFenced ||
+      !oldTarget.freshEmpty ||
+      !oldTarget.physicalEpoch ||
+      !/^[0-9a-f]{64}$/.test(oldTarget.physicalEpoch) ||
+      !/^[0-9a-f]{64}$/.test(domain.originPhysicalEpoch)
+    )
+      refuse();
+    if (
+      db.sqlite
+        .prepare(`SELECT 1 FROM sandbox_runtime_records WHERE runtime_target_id=?
+      AND origin_physical_epoch=? AND sandbox_compatibility_key=? LIMIT 1`)
+        .get(domain.runtimeTargetId, domain.originPhysicalEpoch, oldKey)
+    )
+      refuse();
+    if (oldTarget.physicalEpoch === domain.originPhysicalEpoch) {
+      // Include other residents' materialized attempts in this SAME physical domain. Never
+      // equate an attempt bindingRef with the resident's physical Sandbox bindingRef.
+      const neighbours = z
+        .array(z.object({ attemptId: z.string(), backendSessionId: z.string() }))
+        .parse(
+          db.sqlite
+            .prepare(
+              `SELECT attempt_id AS attemptId, backend_session_id AS backendSessionId FROM worker_backend_sessions
+         WHERE runtime_target_id=? AND origin_physical_epoch=?`
+            )
+            .all(domain.runtimeTargetId, domain.originPhysicalEpoch)
+        );
+      if (
+        neighbours.some(
+          (value) =>
+            value.backendSessionId.startsWith(`${oldSandboxId}-`) &&
+            requireSchedulerExecutionAttempt(db, value.attemptId).phase !== 'closed'
+        )
+      )
+        refuse();
+    }
+    domains.push(domain);
+  }
+  const anchored = z
+    .array(z.object({ attemptId: z.string() }))
+    .parse(
+      db.sqlite
+        .prepare(
+          'SELECT attempt_id AS attemptId FROM worker_backend_sessions WHERE agent_session_id=? ORDER BY attempt_id'
+        )
+        .all(source.id)
+    );
+  if (
+    domains.length === 0 ||
+    !domains.some((value) => value.attemptId === predecessor.attemptId) ||
+    anchored.length !== domains.length ||
+    anchored.some((value) => !domains.some((domain) => domain.attemptId === value.attemptId))
+  )
+    refuse();
+}
 
 /** Exact enqueue-to-result outage budget for one private Harness operation. */
 export const NANO_HOST_HARNESS_RESULT_BUDGET_MS = 300_000;

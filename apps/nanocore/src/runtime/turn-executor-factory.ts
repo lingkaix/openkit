@@ -8,8 +8,6 @@ import {
   type AgentEnvironmentValidationDiagnostic,
   EMPTY_BUILD_CONTEXT_DIGEST,
   EMPTY_BUILD_CONTEXT_REF,
-  planSessionWorkspaceMaterialization,
-  sessionStaticControl,
   validateAgentEnvironmentPackageForBackend,
   WORKER_CREDENTIAL_FILE_REQUIREMENT,
   WorkerCredentialBindingsSchema,
@@ -138,9 +136,12 @@ import {
   readNanoHostWorkspaceCaptureAnchors,
 } from './nanohost-capture-anchors.js';
 import {
+  nanoHostHarnessCompatibilityKey,
+  nanoHostSandboxCompatibilityKey,
+} from './nanohost-compatibility.js';
+import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
-  stableNanoHostEffectJson,
 } from './nanohost-effect-identity.js';
 import {
   acknowledgeNanoHostHarnessResult,
@@ -354,6 +355,10 @@ export interface ConfiguredWorkerLifecycleRuntime {
         readonly receiptId: string;
         readonly materialGeneration: number;
         readonly accountId: string;
+        /** Non-secret original governed proof retained only for replacement affinity. */
+        readonly loginBinding?: Parameters<
+          NonNullable<WorkerGovernanceBackend['deliverCredentialAccess']>
+        >[0]['loginBinding'];
       },
       exchangeSignal: AbortSignal
     ) => Promise<void>,
@@ -365,6 +370,10 @@ export interface ConfiguredWorkerLifecycleRuntime {
     readonly receiptId: string;
     readonly materialGeneration: number;
   }>;
+  /** Reads the actual resume pair carried by this authenticated current backend session. */
+  readonly readHarnessLoginNativeResume: (
+    context: HarnessLoginContext
+  ) => WorkerGovernanceNativeResume | null;
   /** Returns the last privately acknowledged receipt for this exact current consumer. */
   readonly readCompletedHarnessLoginReceipt: (context: HarnessLoginContext) => HarnessLoginReceipt;
   /** Acknowledges external completion, then joins the original governed receipt and any affinity effect. */
@@ -593,6 +602,7 @@ function createNanoHostWorkerLifecycleRuntime(
   return {
     executionReconciler,
     acquireHarnessLogin: (...args) => backend.acquireHarnessLogin(...args),
+    readHarnessLoginNativeResume: (context) => backend.readHarnessLoginNativeResume(context),
     readCompletedHarnessLoginReceipt: (context) =>
       backend.readCompletedHarnessLoginReceipt(context),
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
@@ -700,7 +710,11 @@ interface InitialHarnessLoginExchange {
   completion: Promise<void> | null;
   receipt: HarnessLoginReceipt | null;
   effect: InitialHarnessLoginEffect | null;
-  verifySupply: ((receiptRequired: boolean) => void) | null;
+  verifySupply:
+    | ((
+        receiptRequired: boolean
+      ) => import('../storage/vault-native-codecs.js').VaultReferenceRecord)
+    | null;
   supplied: boolean;
   externalCompleted: boolean;
   completed: boolean;
@@ -2450,14 +2464,16 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           );
         }
       }
-      // Preserve read-only continuity inspection. Only the subsequent retirement may delete.
+      // Desired B placement classifies A; only admitted retirement may publish its proof.
       for (const binding of retirement.bindings) {
-        await this.handoffDurableAgentSessionProof(
-          binding,
-          binding.agentSessionId === input.agentSessionId
-            ? input.recordNativeHandleDigest
-            : undefined
-        );
+        if (input.reuseAllowed) this.recognizeDurableAgentSessionProof(binding, retirement);
+        else
+          await this.handoffDurableAgentSessionProof(
+            binding,
+            binding.agentSessionId === input.agentSessionId
+              ? input.recordNativeHandleDigest
+              : undefined
+          );
       }
       // Shared residency does not imply this Thread has a predecessor.
       // Fresh admission retires the resident through the existing eviction below only after acquiring its attempt.
@@ -2466,7 +2482,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const inspection = replacesRequestedBinding
       ? null
       : inspectNanoHostAgentSessionContinuity(this.coreDb, input);
+    const readOnlyReplacement =
+      input.reuseAllowed &&
+      input.environmentPackage !== undefined &&
+      input.environmentPackage.scope.agentSessionId !== input.agentSessionId;
     if (!inspection) {
+      if (readOnlyReplacement) return 'absent';
       if (input.environmentPackage && input.admissionAttemptId) {
         const responsibleUserId = responsibleUserIdForActor(
           input.environmentPackage.scope.triggerActor
@@ -2512,6 +2533,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         }
       }
       return 'absent';
+    }
+    // A desired successor describes placement, not permission to publish or restore A.
+    if (readOnlyReplacement) {
+      this.recognizeDurableAgentSessionProof(inspection);
+      return 'sandbox-replacement-required';
     }
     // Compatibility decides placement, never whether an already-accepted proof survives.
     if (input.recordNativeHandleDigest) {
@@ -5092,6 +5118,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     await session.refreshHarnessLogin?.delivery?.catch(() => {});
   }
 
+  /** Exposes only the actual carried resume pair, after repeating current native consumer authority. */
+  public readHarnessLoginNativeResume(
+    context: HarnessLoginContext
+  ): WorkerGovernanceNativeResume | null {
+    const resume = this.requireHarnessLoginSession(context).nativeResume;
+    return resume === null ? null : Object.freeze({ ...resume });
+  }
+
   /** Reads only this session's last positively completed supply, never a Worker-selected receipt. */
   public readCompletedHarnessLoginReceipt(context: HarnessLoginContext): HarnessLoginReceipt {
     const session = this.requireHarnessLoginSession(context);
@@ -5272,6 +5306,29 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         selected.reference.currentVersion !== input.expectedMaterialVersion
       )
         throw new Error('Native Login original generation is unavailable.');
+      const originalBinding = input.loginBinding ? structuredClone(input.loginBinding) : undefined;
+      if (
+        originalBinding &&
+        (!originalBinding.replacement ||
+          !originalBinding.policyProof ||
+          input.previousReceiptId !== undefined ||
+          originalBinding.previousReceiptId !== undefined ||
+          originalBinding.refreshContext !== undefined ||
+          !isDeepStrictEqual(originalBinding.replacement.context, exchange.context) ||
+          !isDeepStrictEqual(originalBinding.replacement.nativeResume, session.nativeResume) ||
+          !isDeepStrictEqual(originalBinding.binding.consumer, {
+            snapshotId: pkg.snapshotId,
+            scope: pkg.scope,
+            agent: { agentId: pkg.agent.agentId },
+          }) ||
+          !isDeepStrictEqual(originalBinding.binding.declaration, declaration) ||
+          originalBinding.binding.materialVersion !== input.expectedMaterialVersion ||
+          !isDeepStrictEqual(originalBinding.reference, selected.reference) ||
+          originalBinding.attemptId !== input.attemptId ||
+          originalBinding.planId !== input.planId ||
+          originalBinding.receiptId !== input.receiptId)
+      )
+        throw new Error('Native Login replacement proof contradicts its original supply.');
       const verify = (generation: number, receiptRequired: boolean) => {
         this.assertHarnessLoginCurrent(session, exchange);
         const current = assertCurrentWorkerCredentialAuthority(
@@ -5316,6 +5373,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           )
             throw new Error('Native Login previous receipt authority changed.');
         }
+        return current.reference;
       };
       const work = (async () => {
         try {
@@ -5347,7 +5405,11 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             materialGeneration: access.materialGeneration,
           };
           exchange.receipt = proof;
-          exchange.effect = { ...proof, accountId: access.accountId };
+          exchange.effect = {
+            ...proof,
+            accountId: access.accountId,
+            ...(originalBinding ? { loginBinding: originalBinding } : {}),
+          };
           exchange.verifySupply = (required) => verify(proof.materialGeneration, required);
           exchange.supplied = true;
           exchange.resolveAccess?.(access);
@@ -5420,8 +5482,22 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             const verify = exchange.verifySupply;
             if (!effect || !publish || !verify)
               throw new Error('Native Login original affinity owner is unavailable.');
-            verify(true);
-            await publish(effect, exchange.controller.signal);
+            const reference = verify(true);
+            // Preserve the original decision and requester; only its verified successor is projected.
+            const projected = effect.loginBinding
+              ? {
+                  ...effect,
+                  loginBinding: {
+                    ...effect.loginBinding,
+                    binding: {
+                      ...effect.loginBinding.binding,
+                      materialVersion: reference.currentVersion,
+                    },
+                    reference: structuredClone(reference),
+                  },
+                }
+              : effect;
+            await publish(projected, exchange.controller.signal);
             await currentCheck();
             this.assertHarnessLoginCurrent(session, exchange);
             exchange.completed = true;
@@ -8436,28 +8512,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     );
   }
 
-  /**
-   * Joins accepted proof to original persisted identities and compatibility keys reproduced from digest-verified retained JSON before normalization. Proof-only inspection needs no Turn handle or live Harness, including in an old physical Epoch. A recorder refusal leaves the binding and its cleanup ownership untouched.
-   */
-  private async handoffDurableAgentSessionProof(
+  /** Recognizes exact accepted proof without recorder, Store or live-cache publication. */
+  private recognizeDurableAgentSessionProof(
     inspection: NanoHostAgentSessionContinuityInspection,
-    record?: (
-      digest: string,
-      retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
-    ) => void | Promise<void>,
     retirement?: Pick<
       NanoHostIdleSandboxEviction,
       'originPhysicalEpoch' | 'physicalAbsent' | 'sandboxBindingRef'
     >
-  ): Promise<void> {
+  ) {
     const digest = inspection.nativeHandleDigest;
     if (!digest) return;
     // Physical retirement is not executable admission. Keep the accepted historical proof and bytes.
     if (retirement?.physicalAbsent && this.hasRecordedRetiringProof(inspection, retirement)) return;
-    const liveSession = [...this.sessions.values()].find(
-      (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
-    );
-    if (liveSession) liveSession.acceptedProofUnrecorded = true;
     const { environmentPackage, attemptId, historical, ownerAdmitted } =
       this.readDurableAgentSession(inspection, retirement);
     const attachment = this.requireDurableAgentSessionProvenance(
@@ -8498,13 +8564,54 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const recorded =
       retirement &&
       this.hasRecordedRetiringProof(inspection, retirement, retainedStorage.workSlotRef);
+    if (!ownerAdmitted && !recorded) {
+      throw new WorkerNativeProofValidationError(
+        'retiring-proof-handoff/lineage-conflict',
+        diagnostic
+      );
+    }
+    const live = [...this.sessions.values()].find(
+      (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
+    );
+    if (
+      ownerAdmitted &&
+      live &&
+      (live.sharedHarness.sandbox.workerStorageBinding.storageRef !== retainedStorage.storageRef ||
+        live.sharedHarness.sandbox.workerStorageBinding.attachmentGeneration !==
+          retainedStorage.attachmentGeneration ||
+        packageWorkerStorageWorkSlotRef(live.environmentPackage) !== retainedStorage.workSlotRef)
+    )
+      throw new WorkerNativeProofValidationError('live-storage-association', diagnostic);
+    return { retainedStorage, recorded, ownerAdmitted, diagnostic };
+  }
+
+  /** Publishes recognized accepted proof through its original admitted recorder and cache owner. */
+  private async handoffDurableAgentSessionProof(
+    inspection: NanoHostAgentSessionContinuityInspection,
+    record?: (
+      digest: string,
+      retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
+    ) => void | Promise<void>,
+    retirement?: Pick<
+      NanoHostIdleSandboxEviction,
+      'originPhysicalEpoch' | 'physicalAbsent' | 'sandboxBindingRef'
+    >
+  ): Promise<void> {
+    const digest = inspection.nativeHandleDigest;
+    if (!digest) return;
+    // Physical retirement is not executable admission. Keep the accepted historical proof and bytes.
+    if (retirement?.physicalAbsent && this.hasRecordedRetiringProof(inspection, retirement)) return;
+    const liveSession = [...this.sessions.values()].find(
+      (session) => session.agentSessionRuntimeBindingId === inspection.agentSessionRuntimeBindingId
+    );
+    if (liveSession) liveSession.acceptedProofUnrecorded = true;
+    const proof = this.recognizeDurableAgentSessionProof(inspection, retirement);
+    if (!proof) {
+      if (liveSession) liveSession.acceptedProofUnrecorded = false;
+      return;
+    }
+    const { retainedStorage, recorded, ownerAdmitted } = proof;
     if (!ownerAdmitted) {
-      // Proof recognition is read-only; no recorder can write a non-admitted Workspace.
-      if (!recorded)
-        throw new WorkerNativeProofValidationError(
-          'retiring-proof-handoff/lineage-conflict',
-          diagnostic
-        );
       if (liveSession) liveSession.acceptedProofUnrecorded = false;
       return;
     }
@@ -8516,16 +8623,6 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         retainedStorage: { storageRef: string; workSlotRef: string; attachmentGeneration: number }
       ) => this.recordNativeHandleDigest(inspection.agentSessionId, digest, retainedStorage));
     if (liveSession) {
-      if (
-        liveSession.sharedHarness.sandbox.workerStorageBinding.storageRef !==
-          retainedStorage.storageRef ||
-        liveSession.sharedHarness.sandbox.workerStorageBinding.attachmentGeneration !==
-          retainedStorage.attachmentGeneration ||
-        packageWorkerStorageWorkSlotRef(liveSession.environmentPackage) !==
-          retainedStorage.workSlotRef
-      ) {
-        throw new WorkerNativeProofValidationError('live-storage-association', diagnostic);
-      }
       if (recorded) {
         liveSession.acceptedProofUnrecorded = false;
         return;
@@ -9373,190 +9470,6 @@ function credentialBindingAddress(
   return sha256Hex(JSON.stringify([declarationId, planId, receiptId]));
 }
 
-/** Hashes only the exact inputs that decide physical Sandbox reuse. */
-function nanoHostSandboxCompatibilityKey(
-  environmentPackage: AgentEnvironmentPackagePreview
-): string {
-  const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
-  const {
-    root: sessionRoot,
-    contextRoot,
-    packagePath,
-  } = workerSessionInputPaths(environmentPackage.scope.agentSessionId);
-  const { layout, materialization } = planSessionWorkspaceMaterialization({ environmentPackage });
-  const mainWorktreePath = layout.slots.find((slot) => slot.id === 'main-worktree')?.path;
-  const filesystem = environmentPackage.policy.filesystem;
-  return createHash('sha256')
-    .update(
-      stableNanoHostEffectJson({
-        backend: environmentPackage.backend,
-        credentials: environmentPackage.credentials,
-        ...(environmentPackage.credentials.declarations.some(
-          (item) => item.visibility === 'runtime-file'
-        )
-          ? { credentialAgentSessionId: environmentPackage.scope.agentSessionId }
-          : {}),
-        policy: {
-          ...environmentPackage.policy,
-          ...(filesystem
-            ? {
-                filesystem: {
-                  ...filesystem,
-                  rules: filesystem.rules.map((rule) => {
-                    if (
-                      !rule ||
-                      typeof rule !== 'object' ||
-                      Array.isArray(rule) ||
-                      !('workerPath' in rule)
-                    ) {
-                      return rule;
-                    }
-                    if (
-                      'id' in rule &&
-                      rule.id === 'openkit-context-package' &&
-                      rule.workerPath === contextRoot
-                    ) {
-                      return { ...rule, workerPath: 'agent-session-context' };
-                    }
-                    if (rule.workerPath === mainWorktreePath) {
-                      return { ...rule, workerPath: 'worker-storage-worktree' };
-                    }
-                    // Only planner-bound input rules lose private paths; other policy stays literal.
-                    const binding = materialization.inputs.find(
-                      (input) => 'id' in rule && input.inputId === rule.id
-                    );
-                    const slot = layout.slots.find((entry) => entry.id === binding?.slotId);
-                    if (
-                      slot &&
-                      (slot.id === 'turn-inputs' || slot.id === 'artifact-input') &&
-                      slot.path === rule.workerPath &&
-                      typeof rule.workerPath === 'string' &&
-                      rule.workerPath.startsWith(`${sessionRoot}/`) &&
-                      environmentPackage.workspace.inputs.some(
-                        (input) => input.id === binding?.inputId && input.target === rule.workerPath
-                      )
-                    ) {
-                      return {
-                        ...rule,
-                        workerPath: `agent-session${rule.workerPath.slice(sessionRoot.length)}`,
-                      };
-                    }
-                    return rule;
-                  }),
-                },
-              }
-            : {}),
-        },
-        responsibleUserTrust: {
-          actorKind: environmentPackage.scope.triggerActor.kind,
-          responsibleUserId,
-        },
-        resources: environmentPackage.resources,
-        runtimeImage: environmentPackage.runtime.image,
-        runtimeProcess: environmentPackage.runtime.process ?? null,
-        schemaVersion: environmentPackage.schemaVersion,
-        vault: environmentPackage.vault,
-        workspace: {
-          generatedFiles: environmentPackage.workspace.generatedFiles.map((file) => ({
-            access: file.access,
-            id: file.id,
-            target:
-              file.id === 'agent-environment-package' && file.target === packagePath
-                ? 'agent-session-package'
-                : file.target,
-          })),
-          id: environmentPackage.scope.workspaceId,
-          // Generated context files are Turn-dynamic inside the declared context slot.
-          inputs: environmentPackage.workspace.inputs.flatMap((input, index) =>
-            materialization.inputs[index]?.slotId === 'context'
-              ? []
-              : [
-                  nanoHostStaticWorkspaceInput(
-                    input,
-                    materialization.inputs[index]?.slotId,
-                    sessionRoot
-                  ),
-                ]
-          ),
-          layout: {
-            ...layout,
-            layoutId: 'worker-storage-layout',
-            workingDirectory:
-              layout.workingDirectory === mainWorktreePath
-                ? 'worker-storage-worktree'
-                : layout.workingDirectory,
-            // Private disposable namespaces vary by AgentSession inside one physical Sandbox.
-            slots: layout.slots.map((slot) =>
-              slot.id === 'context'
-                ? { ...slot, path: 'agent-session-context' }
-                : slot.id === 'main-worktree'
-                  ? { ...slot, path: 'worker-storage-worktree' }
-                  : slot.id === 'turn-output'
-                    ? { ...slot, path: 'agent-session-output' }
-                    : slot.path.startsWith(`${sessionRoot}/`)
-                      ? { ...slot, path: `agent-session-slot/${slot.id}` }
-                      : slot
-            ),
-            control: { ...layout.control, contextRoot: 'agent-session-context' },
-          },
-          outputs: environmentPackage.workspace.outputs.map((output) =>
-            output.id === 'turn-output-root' && output.path === `${sessionRoot}/outputs`
-              ? { ...output, path: 'agent-session-output' }
-              : output.path === mainWorktreePath
-                ? { ...output, path: 'worker-storage-worktree' }
-                : output
-          ),
-        },
-      })
-    )
-    .digest('hex');
-}
-
-/** Hashes the process-static adapter and Integration configuration of one Harness. */
-function nanoHostHarnessCompatibilityKey(
-  environmentPackage: AgentEnvironmentPackagePreview
-): string {
-  const { openkit, ...extensions } = environmentPackage.extensions ?? {};
-  const openkitRecord =
-    openkit && typeof openkit === 'object' && !Array.isArray(openkit)
-      ? (openkit as Record<string, unknown>)
-      : null;
-  const {
-    turnInput: _turnInput,
-    sessionWorkspace: _sessionWorkspace,
-    workerStorage: _workerStorage,
-    ...staticOpenkit
-  } = openkitRecord ?? {};
-  return createHash('sha256')
-    .update(
-      stableNanoHostEffectJson({
-        adapter: environmentPackage.control.adapter,
-        agentRuntime: {
-          kind: environmentPackage.agent.runtimeKind,
-          version: environmentPackage.agent.runtimeVersion,
-        },
-        control: sessionStaticControl({
-          transcript: environmentPackage.control.transcript ?? null,
-        }),
-        credentials: environmentPackage.credentials,
-        extensions: { ...extensions, openkit: openkitRecord ? staticOpenkit : openkit },
-        resources: environmentPackage.resources,
-        runtime: {
-          binaries: environmentPackage.runtime.binaries,
-          command: {
-            ...environmentPackage.runtime.command,
-            workingDirectory: 'worker-storage-worktree',
-          },
-          process: environmentPackage.runtime.process ?? null,
-          session: environmentPackage.runtime.session ?? null,
-        },
-        supply: environmentPackage.supply,
-        vault: environmentPackage.vault,
-      })
-    )
-    .digest('hex');
-}
-
 /**
  * Reads the package's opaque adapter identity. NanoCore carries it without an enum; the Harness's
  * static adapter registry refuses an identity it does not register.
@@ -9571,32 +9484,6 @@ function nanoHostSharedHarnessMapKey(
   harnessCompatibilityKey: string
 ): string {
   return `${sandboxCompatibilityKey}:${harnessCompatibilityKey}`;
-}
-
-/** Removes Turn content lineage while retaining one input's static isolation envelope. */
-function nanoHostStaticWorkspaceInput(
-  input: AgentEnvironmentPackage['workspace']['inputs'][number],
-  slotId: string | undefined,
-  sessionRoot: string
-): Record<string, unknown> {
-  const { commit: _commit, ...source } = input.source;
-  const { contentDigest: _contentDigest, ...materialization } = input.materialization ?? {};
-  return {
-    access: input.access,
-    id: slotId === 'context' ? 'context' : input.id,
-    kind: input.kind,
-    materialization,
-    mount: input.mount ?? null,
-    source: slotId === 'context' ? { kind: source.kind } : source,
-    target:
-      slotId === 'context'
-        ? 'agent-session-context'
-        : slotId === 'main-worktree'
-          ? 'worker-storage-worktree'
-          : input.target.startsWith(`${sessionRoot}/`)
-            ? `agent-session${input.target.slice(sessionRoot.length)}`
-            : input.target,
-  };
 }
 
 /** Hashes only the exact inputs that decide one AgentSession's native continuity. */

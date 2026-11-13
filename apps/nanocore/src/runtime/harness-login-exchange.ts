@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { isEntityId } from '@openkit/protocol';
 import { asApiError } from '../api-errors.js';
 import type { FsStore } from '../lib/store.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
+import type { HarnessLoginReplacement } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { readProduct } from '../storage/control-store-product-records.js';
@@ -17,6 +19,7 @@ import { getVaultInjectionPlan } from '../storage/vault-native-codecs.js';
 import { hasCurrentHarnessLoginExhaustion } from '../vault/login-selection.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
 import { authenticateHarnessLoginRequest } from './harness-login-authority.js';
+import { readHarnessLoginPredecessor } from './harness-login-selection.js';
 import type { NanoHostHarnessLoginHandler } from './nanohost-session-dispatch.js';
 import type { ConfiguredWorkerLifecycleRuntime } from './turn-executor-factory.js';
 import type { WorkerControlGateway } from './worker-control-gateway.js';
@@ -27,7 +30,7 @@ import {
 
 /**
  * Composes governed Login access, completion and bounded native observations.
- * This factory installs no route or capability. Replacement remains unavailable.
+ * This factory installs no route or capability. Fresh replacement uses the existing governed operation.
  * @param input Actual Core, operation, transport and configured placement owners.
  * @returns An uninstalled private handler that acknowledges completion only after receipt and affinity.
  */
@@ -169,6 +172,32 @@ export function createHarnessLoginExchange(input: {
       const expectedReferenceId = previous?.referenceId ?? null;
       if (expectedReferenceId !== null && !isEntityId('vault', expectedReferenceId))
         throw unavailable();
+      // Correlate only the actual carried resume, never an arbitrary prior Login receipt.
+      const readReplacement = (): HarnessLoginReplacement | undefined => {
+        if (refreshing || expectedReferenceId !== null) return undefined;
+        const nativeResume = input.runtime.readHarnessLoginNativeResume(context);
+        if (!nativeResume) return undefined;
+        const db = dependencies.repositoryWorkspaceDb(context.workspaceId);
+        try {
+          const result = readHarnessLoginPredecessor(
+            dependencies.coreDb,
+            db,
+            environmentPackage,
+            nativeResume
+          );
+          if (!result) return undefined;
+          if (!previous || previous.referenceId !== null) throw unavailable();
+          return Object.freeze({
+            context,
+            nativeResume,
+            previousReceiptId: result.predecessor.receiptId,
+            clearedLogin: structuredClone(previous),
+          });
+        } finally {
+          db.sqlite.close();
+        }
+      };
+      const replacement = readReplacement();
       // Same-family refresh never establishes new affinity or claims cross-account continuation.
       if (
         (refreshing || expectedReferenceId !== null) &&
@@ -193,6 +222,17 @@ export function createHarnessLoginExchange(input: {
           throw unavailable();
         const current = readAffinity();
         if (
+          replacement &&
+          (!isDeepStrictEqual(readReplacement(), replacement) ||
+            !isDeepStrictEqual(
+              current,
+              affinityPublished
+                ? { ...replacement.clearedLogin, referenceId }
+                : replacement.clearedLogin
+            ))
+        )
+          throw unavailable();
+        if (
           (current?.referenceId ?? null) !==
           (affinityPublished ? reference.referenceId : expectedReferenceId)
         )
@@ -209,12 +249,14 @@ export function createHarnessLoginExchange(input: {
         currentCheck,
         async (signal) => {
           await invoke(
-            'vault.binding-deliver',
+            replacement ? 'vault.binding-replace' : 'vault.binding-deliver',
             {
               workspaceId: context.workspaceId,
               bindingThreadId: context.threadId,
               planId,
-              receiptId,
+              ...(replacement
+                ? { expectedReceiptId: replacement.previousReceiptId }
+                : { receiptId }),
               materialVersion,
               requestId,
             },
@@ -233,6 +275,7 @@ export function createHarnessLoginExchange(input: {
               signal,
               recheckEntry: currentCheck,
               ...(refresh ? { harnessLoginRefresh: refresh } : {}),
+              ...(replacement ? { harnessLoginReplacement: replacement } : {}),
             }
           );
         },
@@ -249,27 +292,45 @@ export function createHarnessLoginExchange(input: {
             await currentCheck();
             return;
           }
+          const loginBinding = effect.loginBinding;
+          const policyProof = loginBinding?.policyProof;
+          if (
+            replacement
+              ? !loginBinding ||
+                !policyProof ||
+                !isDeepStrictEqual(loginBinding.replacement, replacement)
+              : loginBinding !== undefined
+          )
+            throw unavailable();
           const workspaceDb = dependencies.repositoryWorkspaceDb(context.workspaceId);
           try {
-            await getControlStoreWorkerClient().vault(
-              workspaceDb,
-              'thread-login-activate',
-              {
-                context,
-                referenceId,
-                grantId: grant.grantId,
-                planId,
-                receiptId: effect.receiptId,
-                materialGeneration: effect.materialGeneration,
-                accountId: effect.accountId,
-                expectedReferenceId,
-                now: () => new Date().toISOString(),
-              },
-              async () => {
-                signal.throwIfAborted();
-                await currentCheck();
-              }
-            );
+            const record = {
+              context,
+              referenceId,
+              grantId: grant.grantId,
+              planId,
+              receiptId: effect.receiptId,
+              materialGeneration: effect.materialGeneration,
+              accountId: effect.accountId,
+              expectedReferenceId,
+              ...(replacement && loginBinding && policyProof
+                ? { replacement, loginBinding: { ...loginBinding, policyProof } }
+                : {}),
+              now: () => new Date().toISOString(),
+            };
+            const beforeSubmit = async () => {
+              signal.throwIfAborted();
+              await currentCheck();
+            };
+            const client = getControlStoreWorkerClient();
+            if (replacement)
+              await client.activateHarnessLoginWithPolicyBorrow(
+                dependencies.coreDb,
+                workspaceDb,
+                record,
+                beforeSubmit
+              );
+            else await client.vault(workspaceDb, 'thread-login-activate', record, beforeSubmit);
             affinityPublished = true;
             signal.throwIfAborted();
             authenticated.recheck();

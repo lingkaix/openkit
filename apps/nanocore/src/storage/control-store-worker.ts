@@ -306,7 +306,11 @@ import {
 import { applyControlThreadReadReceipt } from './thread-read-membership-native.js';
 import { applyControlVault } from './vault-native.js';
 import { controlVaultRefusal } from './vault-native-codecs.js';
-import { type PreparedControlVaultRead, prepareControlVaultRead } from './vault-policy-read.js';
+import {
+  type PreparedNativeVaultRead,
+  prepareControlVaultRead,
+  prepareHarnessLoginActivationRead,
+} from './vault-policy-read.js';
 import {
   applyControlWorkObservation,
   type ControlWorkObservationInput,
@@ -492,7 +496,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
-  readonly preparedVaultRead?: PreparedControlVaultRead | undefined;
+  readonly preparedVaultRead?: PreparedNativeVaultRead | undefined;
   policyReadState?:
     | {
         /** Undefined after an attempted helper construction is not proof of no handle. */
@@ -3233,6 +3237,7 @@ function flush(owner: OwnedDatabase): void {
             const result = applyControlVault(owner.scopeDb, request.input, {
               prepared: request.preparedVaultRead,
               policyState: owner.runtimePolicy,
+              policyIdentity: request.policyReadState?.grant?.policy,
             });
             outcome = {
               version: CONTROL_WORKER_VERSION,
@@ -4510,7 +4515,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedSteer: WriteRequest['preparedSteer'];
           let preparedPending: PreparedControlPendingCommand | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
-          let preparedVaultRead: PreparedControlVaultRead | undefined;
+          let preparedVaultRead: PreparedNativeVaultRead | undefined;
           let preparedMaterial: ControlMaterialCommandInput | undefined;
           let preparedCapability: ControlCapabilityCommandInput | undefined;
           let preparedReview: PreparedControlReviewCommand | undefined;
@@ -4889,7 +4894,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             if (value.operation === 'vault' && value.policyRead) {
               await prepareAfterPredecessors(owner, queued, earlier);
               if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-              const corePath = coreDbPath(owner.scopeDb.dataRoot);
+              const workspaceDb = owner.scopeDb;
+              const corePath = coreDbPath(workspaceDb.dataRoot);
               const before = statSync(corePath);
               const policy: NonNullable<WriteRequest['policyReadState']> = {
                 coreIdentity: `${before.dev}:${before.ino}`,
@@ -4909,6 +4915,17 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 before.ino !== physical.ino
               )
                 throw new ControlProductPreconditionError();
+              if (value.input.kind === 'thread-login-activate' && value.input.record.replacement) {
+                preparedVaultRead = await prepareHarnessLoginActivationRead(
+                  workspaceDb,
+                  value.input,
+                  bindCoreSqlite(reader, workspaceDb.dataRoot)
+                );
+                // Only the new wrapper is owned here; the bridge still owns exact Core RO closure.
+                Object.assign(queued, { preparedVaultRead });
+                if (owner.poisoned || queued.predecessorFailed)
+                  throw new ControlProductPreconditionError();
+              }
               port.postMessage({
                 version: CONTROL_WORKER_VERSION,
                 id: queued.id,

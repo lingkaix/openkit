@@ -84,6 +84,11 @@ import {
   listExportableWorkspacePermissionDecisions,
   listUserPermissionDecisions,
 } from '../policy/permission-decisions.js';
+import {
+  policyDigest,
+  policyOperationDefinition,
+  policyProposalDigest,
+} from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createVaultProviderCredentialResolver } from '../providers/vault-credential-resolver.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
@@ -183,6 +188,10 @@ import * as journalOwners from './execution-journal.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionInvocation, ExecutionJournalRef } from './execution-step-journal.js';
 import { createHarnessLoginExchange } from './harness-login-exchange.js';
+import {
+  nanoHostHarnessCompatibilityKey,
+  nanoHostSandboxCompatibilityKey,
+} from './nanohost-compatibility.js';
 import { commandInputHash, runIdempotentCommand } from './idempotent-command.js';
 import {
   bindNanoHostAttemptPreparation,
@@ -3077,6 +3086,8 @@ describe('createConfiguredTurnExecutor', () => {
                   },
                 }
               );
+              if (!('materialVersion' in replaced))
+                throw new Error('File binding replacement requires its material-version receipt.');
               expect(replaced.materialVersion).toBe(2);
             } else {
               const attempt = attempts.listSchedulerExecutionAttemptsForTurn(core, pkg.scope)[0]!;
@@ -22613,6 +22624,9 @@ describe('inert initial private Login exchange through the concrete backend sess
     'new-turn-account-exhaustion-other-session',
     'new-turn-account-exhaustion-different-account',
     'new-turn-account-exhaustion-after-preparation',
+    'replacement-current-release-feasibility',
+    'replacement-unknown-delete-admission',
+    'replacement-grant-revoked-after-pending',
   ] as const)(
     'joins authenticated acquire and complete without completing startup (%s)',
     async (ending) => {
@@ -22636,7 +22650,8 @@ describe('inert initial private Login exchange through the concrete backend sess
       const accountId = randomUUID();
       const refreshMaterials = [randomUUID(), randomUUID(), randomUUID()];
       const sameFamilyRefresh = ending.startsWith('same-family-refresh');
-      const preferencePreview = ending.startsWith('new-turn-preference-preview-');
+      const replacementEffect = ending.startsWith('replacement-');
+      const preferencePreview = ending.startsWith('new-turn-preference-preview-') || replacementEffect;
       const accountEvidence = ending.startsWith('new-turn-account-exhaustion-');
       const evidenceSessionId = accountEvidence ? testEntityId('as', randomUUID()) : undefined;
       if (sameFamilyRefresh) refreshMaterials.push(randomUUID());
@@ -22672,6 +22687,21 @@ describe('inert initial private Login exchange through the concrete backend sess
       let alternateStartReady = false;
       let departureCloseout: Promise<unknown> | undefined;
       let departureTimers = false;
+      const releaseReplacementDelete = Promise.withResolvers<void>();
+      const releaseReplacementStart = Promise.withResolvers<void>();
+      let replacementProduct: Promise<Response> | undefined;
+      let replacementRetirement: Promise<Response> | undefined;
+      let replacementDispatchJob: Promise<unknown> | undefined;
+      const replacementDispatchJobs: Promise<unknown>[] = [];
+      let retainedReplacementClaim: {
+        queueEntryId: string;
+        owner: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
+        promise: Promise<Awaited<ReturnType<typeof schedulerOwners.runSchedulerDispatchLoop>>>;
+      } | undefined;
+      let replacementEffectSpy: { mockRestore(): void } | undefined;
+      const replacementDiagnosticSpies: Array<{ mockRestore(): void }> = [];
+      let replacementCompleted = false;
+      let replacementTurnId: string | undefined;
       let observeClose: { mockRestore(): void } | undefined;
       const startDeliveryFailed = Promise.withResolvers<void>();
       let heldStart: harnessRecords.NanoHostHarnessCommand | undefined;
@@ -23725,9 +23755,10 @@ describe('inert initial private Login exchange through the concrete backend sess
             })).toString('base64'),
             'synthetic-signature',
           ].join('.');
+          const candidateRefreshed = randomUUID();
           alternateBootstrap = {
             inputRefresh: candidateRefresh,
-            outputRefresh: randomUUID(),
+            outputRefresh: candidateRefreshed,
             outputAccess: candidateAccess(1),
           };
           const candidateLogin = await invoke('vault.bootstrap-codex-auth', {
@@ -23759,7 +23790,11 @@ describe('inert initial private Login exchange through the concrete backend sess
             targetAgentId: null, targetAgentSessionId: null, targetCapabilityId: null,
             allowedInjectionPaths: ['runtime-token'], status: 'active',
           });
-          return { grantId: grant.grantId, referenceId: candidateLogin.referenceId };
+          return { grantId: grant.grantId, referenceId: candidateLogin.referenceId,
+            prepareRefresh: () => {
+              alternateBootstrap = { inputRefresh: candidateRefreshed,
+                outputRefresh: randomUUID(), outputAccess: candidateAccess(2) };
+            } };
         };
         const createAccountTarget = async () => {
           const sameAccount = ending !== 'new-turn-account-exhaustion-different-account';
@@ -24249,7 +24284,8 @@ describe('inert initial private Login exchange through the concrete backend sess
           expect(listVaultInjectionReceipts(coreDb).find((value) =>
             value.receiptId === access.receiptId)?.revocationStatus).toBe('active');
 
-          const preferred = await reviewedAlternative('Review preferred Login B');
+          const preferred = await reviewedAlternative('Review preferred Login B',
+            replacementEffect ? accountId : randomUUID());
           const fallback = await reviewedAlternative('Review fallback Login C');
           expect(new Set([login.referenceId, preferred.referenceId, fallback.referenceId]).size)
             .toBe(3);
@@ -24323,6 +24359,533 @@ describe('inert initial private Login exchange through the concrete backend sess
           expect(resolveLoaded(capturedA).manifest.sandbox?.credentialDeclarations).toEqual(
             setup.manifest.sandbox?.credentialDeclarations
           );
+          if (replacementEffect) {
+            const selectedReplacementGrantId = preferred.grantId;
+            if (typeof selectedReplacementGrantId !== 'string')
+              throw new Error('Replacement requires the actual reviewed B grant id.');
+            const original = store.getAgentSession(agentSessionId);
+            const oldStorage = original.retainedStorage;
+            if (!oldStorage?.attachmentGeneration || !original.nativeHandleDigest)
+              throw new Error('Replacement requires A accepted native and historical storage proof.');
+            const oldAttachment = getWorkerStorageBinding(coreDb, oldStorage);
+            expect(oldAttachment?.attachmentGeneration).toBe(oldStorage.attachmentGeneration);
+            expect(oldAttachment?.state).toBe('attached');
+            const oldHarnessId = wire.harnessInstanceId;
+            const runActualScheduler = schedulerOwners.runSchedulerDispatchLoop;
+            let schedulerArrival = Promise.withResolvers<void>();
+            observeSchedulerDispatch = vi.spyOn(schedulerOwners, 'runSchedulerDispatchLoop')
+              .mockImplementation((...args) => {
+                // Retain this actual controller before a cold restart reassigns native.
+                const dispatchedNative = native;
+                const publicDispatch = runActualScheduler(...args);
+                replacementDispatchJob = publicDispatch.then(async (result) => {
+                  for (const started of result.startedTurns) {
+                    const selected = started.dispatch.entry;
+                    if (selected.workspaceId !== DEMO_WORKSPACE_ID || selected.threadId !== thread.id)
+                      continue;
+                    if (!dispatchedNative || dispatchedNative.executor !== args[0].turnExecutor ||
+                      args[0].store !== store || args[0].coreDb !== coreDb)
+                      throw new Error('Original replacement execution owner is unavailable.');
+                    // Join the exact claim retained at native pending start, not a later registry lookup.
+                    // Execution adopts the fixture's original Worker/delivery/interrupt/failure join,
+                    // not its launched or ACK gate.
+                    const claim = retainedReplacementClaim?.owner === dispatchedNative &&
+                      retainedReplacementClaim.queueEntryId === selected.queueEntryId
+                      ? retainedReplacementClaim.promise : undefined;
+                    const execution = dispatchedNative.executionFor(selected.turnId).execution;
+                    const [task] = await Promise.allSettled([execution]);
+                    if (claim) await claim;
+                    if (task.status === 'rejected') throw task.reason;
+                    if (!claim)
+                      throw new Error('Original replacement dispatch claim is unavailable.');
+                  }
+                  return result;
+                });
+                replacementDispatchJobs.push(replacementDispatchJob);
+                void replacementDispatchJob.catch(() => undefined);
+                schedulerArrival.resolve();
+                // Keep the public ACK Promise identical; only the fixture joins full lifecycle.
+                return publicDispatch;
+              });
+            const dispatched = async () => {
+              // Public HTTP acceptance can precede dispatch; join its actual entry signal,
+              // not the response or a speculative mock-results read in the same microtask.
+              await schedulerArrival.promise;
+              schedulerArrival = Promise.withResolvers<void>();
+              if (!replacementDispatchJob) throw new Error('Actual Scheduler invocation is absent.');
+              return replacementDispatchJob;
+            };
+            const userTurn = (application: typeof app, label: string) => Promise.resolve(application.request(
+              ...operationRequest('turn.start', {}, {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+                  requestId: randomUUID(), input: label, agentId: authored.id }),
+              })));
+            if (ending === 'replacement-unknown-delete-admission') {
+              const deletionEntered = Promise.withResolvers<void>();
+              native.peerFaults.closeRefusal = 'cleanup_required';
+              native.peerFaults.failSandboxDelete = true;
+              const originalDeleteRequests: NanoHostSessionEffectRequest[] = [];
+              let heldOriginalDelete: NanoHostSessionEffectRequest | undefined;
+              const effect = dispatch.effect.bind(dispatch);
+              replacementEffectSpy = vi.spyOn(dispatch, 'effect').mockImplementation(
+                async (connectionOrRequest, carried?) => {
+                  const request = carried ?? connectionOrRequest;
+                  if ('kind' in request && request.kind === 'sandbox.delete') {
+                    heldOriginalDelete ??= request as NanoHostSessionEffectRequest;
+                    originalDeleteRequests.push(request as NanoHostSessionEffectRequest);
+                    deletionEntered.resolve();
+                    await releaseReplacementDelete.promise;
+                  }
+                  return carried ? effect(connectionOrRequest, carried)
+                    : effect(connectionOrRequest as NanoHostSessionEffectRequest);
+                });
+              replacementRetirement = userTurn(app, 'Explicit B request with unknown A deletion');
+              expect((await replacementRetirement).status).toBe(202);
+              const firstPlacement = await dispatched() as Awaited<ReturnType<typeof runActualScheduler>>;
+              expect(firstPlacement.startedTurns).toEqual([]);
+              expect(firstPlacement.terminalResult).toMatchObject({ status: 'queued', reason: 'backend-busy' });
+              // The existing owner explicitly requeues after known cleanup_required. This fixture
+              // has no continuous scheduler, so advance that SAME admission once to wider cleanup.
+              const configuration = cold.current();
+              const widerDispatch = schedulerOwners.runSchedulerDispatchLoop({
+                coreDb, store, turnExecutor: native.executor,
+                executionBackend: native.executor.executionBackend!,
+                agentManifests: configuration.agentManifests,
+                gatewayConfig: configuration.gatewayConfig, providerRegistry: configuration.providerRegistry,
+                workspaceConfigs: configuration.workspaceConfigs,
+                workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
+                maxDispatches: 1,
+              });
+              void widerDispatch.catch(() => undefined);
+              const widerPlacement = dispatched();
+              void widerPlacement.catch(() => undefined);
+              const crossing = await Promise.race([
+                deletionEntered.promise.then(() => 'original-delete-held'),
+                widerPlacement.then(() => 'returned-before-delete', () => 'refused-before-delete'),
+              ]);
+              expect(crossing).toBe('original-delete-held');
+              const occupied = getWorkerStorageBinding(coreDb, oldStorage);
+              expect(occupied?.attachmentGeneration).toBe(oldStorage.attachmentGeneration);
+              expect(occupied?.state === 'attached' || occupied?.state === 'unknown').toBe(true);
+              const beforeBlocked = { uses: listVaultUseRecords(db),
+                receipts: listVaultInjectionReceipts(coreDb),
+                material: getVaultReference(coreDb, preferred.referenceId),
+                stockEntries: upstream.mock.calls.length };
+              const blocked = await userTurn(app, 'Separate explicit request cannot release A');
+              expect(blocked.status >= 400 || blocked.status === 202).toBe(true);
+              expect(store.listThreadAgentSessions(DEMO_WORKSPACE_ID, thread.id)
+                .filter((session) => session.id !== agentSessionId)).toEqual([]);
+              expect({ uses: listVaultUseRecords(db), receipts: listVaultInjectionReceipts(coreDb),
+                material: getVaultReference(coreDb, preferred.referenceId),
+                stockEntries: upstream.mock.calls.length }).toEqual(beforeBlocked);
+              expect(getWorkerStorageBinding(coreDb, oldStorage)).toEqual(occupied);
+              expect(originalDeleteRequests).toHaveLength(1);
+              expect(originalDeleteRequests[0]).toBe(heldOriginalDelete);
+              const readBEffects = () => ({
+                uses: listVaultUseRecords(db).filter((use) => use.grantId === preferred.grantId),
+                receipts: listVaultInjectionReceipts(coreDb)
+                  .filter((receipt) => receipt.grantId === preferred.grantId),
+                material: getVaultReference(coreDb, preferred.referenceId),
+                backend: vault.backend().listReferences({ referenceId: preferred.referenceId }),
+                affinity: privateThread().login,
+                stockEntries: upstream.mock.calls.length,
+              });
+              const beforeResultLoss = readBEffects();
+              // Let the SAME actual delete reach the peer's existing result-loss control.
+              // No deletion ACK is fabricated and this request must not be redispatched.
+              releaseReplacementDelete.resolve();
+              await expect(widerPlacement).rejects.toMatchObject({ code: 'recovery_required' });
+              await replacementRetirement;
+              const afterLoss = getWorkerStorageBinding(coreDb, oldStorage);
+              expect(afterLoss?.attachmentGeneration).toBe(oldStorage.attachmentGeneration);
+              expect(afterLoss?.state === 'attached' || afterLoss?.state === 'unknown').toBe(true);
+              const freshAfterLoss = await userTurn(app,
+                'New explicit user request must inspect the unknown old deletion');
+              expect(freshAfterLoss.status).toBe(202);
+              await expect(dispatched()).rejects.toMatchObject({ code: 'recovery_required' });
+              expect(readBEffects()).toEqual(beforeResultLoss);
+              expect(store.listThreadAgentSessions(DEMO_WORKSPACE_ID, thread.id)
+                .filter((session) => session.id !== agentSessionId)).toEqual([]);
+              const stillOccupied = getWorkerStorageBinding(coreDb, oldStorage);
+              expect(stillOccupied?.attachmentGeneration).toBe(oldStorage.attachmentGeneration);
+              expect(stillOccupied?.state === 'attached' || stillOccupied?.state === 'unknown').toBe(true);
+              expect(originalDeleteRequests).toHaveLength(1);
+              expect(originalDeleteRequests[0]).toBe(heldOriginalDelete);
+              return;
+            }
+            // OLD may retire A and then refuse its changed frozen Login snapshot. This is a
+            // truthful failed user request, not the deciding activation check or an auto retry.
+            replacementRetirement = userTurn(app, 'Explicit first B request retires A');
+            const retired = await replacementRetirement;
+            // HTTP acceptance acknowledges admission, not the later preparation outcome.
+            expect(retired.status).toBe(202);
+            // Continuity wraps a changed post-close Login snapshot in its public refusal.
+            await expect(dispatched()).rejects.toMatchObject({ code: 'recovery_required',
+              message: 'The AgentSession runtime binding changed after scheduler dispatch.' });
+            // The post-close frozen-snapshot check can refuse before canonical retirement.
+            // A fresh request must reconcile that actual absent binding without a private setter.
+            expect(coreDb.sqlite.prepare(
+              'SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+            ).get(agentSessionId)).toBeUndefined();
+            const departed = NativeThreadLoginSchema.parse(privateThread().login);
+            const readPredecessorHistory = () => {
+              const uses = listVaultUseRecords(db)
+                .filter((use) => use.vaultReferenceId === login.referenceId);
+              return {
+                receipts: listVaultInjectionReceipts(coreDb)
+                  .filter((receipt) => receipt.grantId === issued.grantId),
+                uses,
+                audits: listWorkspaceAuditEvents(db, DEMO_WORKSPACE_ID, coreDb)
+                  .filter((audit) => uses.some((use) => use.auditEventId === audit.id)),
+              };
+            };
+            const predecessorHistory = readPredecessorHistory();
+            expect(predecessorHistory.receipts.some((receipt) =>
+              receipt.receiptId === access.receiptId)).toBe(true);
+            expect(predecessorHistory.uses.some((use) =>
+              use.receiptId === access.receiptId && use.outcome === 'succeeded')).toBe(true);
+            expect(predecessorHistory.uses.filter((use) => use.outcome === 'succeeded')
+              .every((use) => predecessorHistory.audits.some((audit) =>
+                audit.id === use.auditEventId && audit.action === 'vault.resolve' &&
+                audit.outcome === 'succeeded'))).toBe(true);
+            expect(departed.referenceId).toBeNull();
+            expect(departed.lastLeftAt[login.referenceId]).toEqual(expect.any(String));
+            const outside = native.outside;
+            await native.restore();
+            acceptStart?.mockRestore();
+            const successorDispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+            native = await createNativeTaskAdmissionFixture(coreDb, store, {
+              readRuntimeConfig: () => cold.current(), vaultBackend: () => vault.backend(),
+              policyInterception: () => interception, workspaceMutationAdmission: mutation,
+              nanoHostSessionDispatch: successorDispatch,
+            }, outside);
+            const successorNative = native;
+            const actualBindingOperation = successorNative.executor.credentialBindingOperation;
+            if (!actualBindingOperation)
+              throw new Error('Replacement requires the genuine credential binding operation.');
+            const bindingOperation = actualBindingOperation.bind(successorNative.executor);
+            const replacementActivations: Parameters<typeof bindingOperation>[1][] = [];
+            // Passive witness only: preserve the genuine receiver, arguments, Promise and errors.
+            replacementDiagnosticSpies.push(vi.spyOn(native.executor, 'credentialBindingOperation')
+              .mockImplementation((...args) => {
+                if (args[1].action === 'replace') replacementActivations.push(args[1]);
+                return bindingOperation(...args);
+              }));
+            successorDispatch.bindHarnessLogin!(createHarnessLoginExchange({
+              operations: { ...operations, runtimeConfigManager: cold },
+              gateway: native.workerControlGateway, runtime: native.runtime,
+            }));
+            await successorDispatch.readiness!(physical,
+              Buffer.from(JSON.stringify({ physicalEpoch: target.physicalEpoch })), {
+                coreDb, targetId: target.targetId, deploymentId: target.deploymentId,
+                identityId: target.identityId,
+              });
+            const pending = Promise.withResolvers<harnessRecords.NanoHostHarnessCommand>();
+            const acceptSuccessor = native.runtime.acceptNanoHostHarnessCommand.bind(native.runtime);
+            acceptStart = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand')
+              .mockImplementation(async (command) => {
+                const successorWire = await acceptSuccessor(command);
+                if (successorWire?.operation === 'turn.start' && successorWire.body.threadId === thread.id) {
+                  const actualTurnId = successorWire.body.turnId;
+                  if (typeof actualTurnId !== 'string')
+                    throw new Error('Replacement requires the actual native pending Turn id.');
+                  replacementTurnId = actualTurnId;
+                  // Native turn.start is still held here, before startup completion/ACK cleanup.
+                  // Retain the actual registered Promise now; the registry may forget it later.
+                  const actualAttemptId = successorWire.body.leaseId;
+                  if (typeof actualAttemptId !== 'string')
+                    throw new Error('Replacement requires the actual native pending attempt id.');
+                  const actualAttempt = attempts.requireSchedulerExecutionAttempt(coreDb, actualAttemptId);
+                  if (actualAttempt.workspaceId !== DEMO_WORKSPACE_ID ||
+                    actualAttempt.threadId !== thread.id || actualAttempt.turnId !== actualTurnId ||
+                    actualAttempt.agentSessionId !== successorWire.body.agentSessionId ||
+                    actualAttempt.inputRef !== successorWire.body.packageSnapshotId)
+                    throw new Error('Original replacement dispatch claim lineage changed.');
+                  const actualQueueEntryId = actualAttempt.queueEntryId;
+                  if (typeof actualQueueEntryId !== 'string')
+                    throw new Error('Replacement requires the original Scheduler queue entry id.');
+                  const originalClaim = schedulerOwners.getSchedulerPreparationClaims(coreDb)
+                    .get(actualQueueEntryId);
+                  if (!originalClaim || retainedReplacementClaim)
+                    throw new Error('Original replacement dispatch claim is unavailable at native start.');
+                  retainedReplacementClaim = {
+                    queueEntryId: actualQueueEntryId,
+                    owner: successorNative,
+                    promise: originalClaim,
+                  };
+                  pending.resolve(successorWire);
+                  await releaseReplacementStart.promise;
+                  if (!replacementCompleted)
+                    throw new Error('Replacement feasibility peer did not complete startup.');
+                }
+                return successorWire;
+              });
+            const successorApp = appOwner.createApp({ coreDb, dataRoot: coreDb.dataRoot, store,
+              mode: 'local', localUserId: ownerUserId, runtimeConfigManager: cold,
+              turnExecutor: native.executor, workerControlGateway: native.workerControlGateway,
+              workspaceMutationAdmission: mutation });
+            const readPreauthorizationBEffects = () => ({
+              uses: listVaultUseRecords(db).filter((use) => use.grantId === preferred.grantId),
+              receipts: listVaultInjectionReceipts(coreDb)
+                .filter((receipt) => receipt.grantId === preferred.grantId),
+            });
+            expect(readPreauthorizationBEffects()).toEqual({ uses: [], receipts: [] });
+            // Bootstrap/review happened earlier; only this explicit start-to-pending interval counts.
+            const stockCallsBeforeBStart = upstream.mock.calls.length;
+            replacementProduct = userTurn(successorApp, 'New explicit B request after A retirement');
+            expect((await replacementProduct).status).toBe(202);
+            const invocation = dispatched();
+            const crossing = await Promise.race([
+              pending.promise.then((value) => ({ kind: 'pending' as const, value })),
+              invocation.then(() => ({ kind: 'returned' as const }),
+                () => ({ kind: 'refused' as const })),
+            ]);
+            expect(crossing.kind).toBe('pending');
+            if (crossing.kind !== 'pending') throw new Error('B did not reach actual pending start.');
+            const nextWire = crossing.value;
+            expect(nextWire.operation).toBe('turn.start');
+            expect(nextWire.body.threadId).toBe(thread.id);
+            expect(nextWire.body.agentSessionId).not.toBe(agentSessionId);
+            expect(nextWire.body.turnId).not.toBe(wire.body.turnId);
+            expect(readPreauthorizationBEffects()).toEqual({ uses: [], receipts: [] });
+            expect(upstream.mock.calls.length).toBe(stockCallsBeforeBStart);
+            const successorSession = store.getAgentSession(String(nextWire.body.agentSessionId));
+            expect(successorSession.id).toBe(nextWire.body.agentSessionId);
+            expect(store.getTurnById(String(nextWire.body.turnId))).toMatchObject({
+              threadId: thread.id, agentSessionId: successorSession.id,
+            });
+            expect(store.getAgentSession(agentSessionId).status).toBe('closed');
+            const newStorage = getWorkerStorageBinding(coreDb, oldStorage);
+            expect(newStorage?.storageRef).toBe(oldStorage.storageRef);
+            expect(newStorage?.currentWorkSlotRef).toBe(oldStorage.workSlotRef);
+            expect(newStorage?.state).toBe('attached');
+            expect(newStorage?.attachmentGeneration).toBeGreaterThan(oldStorage.attachmentGeneration);
+            expect(successorSession.retainedStorage).toMatchObject({
+              storageRef: oldStorage.storageRef, workSlotRef: oldStorage.workSlotRef,
+              attachmentGeneration: newStorage?.attachmentGeneration,
+            });
+            expect(coreDb.sqlite.prepare(
+              'SELECT harness_instance_id FROM harness_instance_records WHERE harness_instance_id = ?'
+            ).get(oldHarnessId)).toBeUndefined();
+            const nextPackage = requireAgentEnvironmentPackageSnapshot(db, DEMO_WORKSPACE_ID,
+              String(nextWire.body.packageSnapshotId)).snapshot;
+            expect(nextPackage.snapshotId).toBe(nextWire.body.packageSnapshotId);
+            expect(nextPackage.snapshotId).not.toBe(pkg.snapshotId);
+            expect(nextPackage.scope).toMatchObject({
+              workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+              turnId: nextWire.body.turnId, agentSessionId: successorSession.id,
+            });
+            expect(nextPackage.credentials.declarations.map((value) => value.vaultGrantId))
+              .toEqual([preferred.grantId]);
+            const successorAttempts = attempts.listSchedulerExecutionAttemptsForTurn(coreDb, {
+              workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+              turnId: String(nextWire.body.turnId),
+            });
+            expect(successorAttempts).toHaveLength(1);
+            const successorAttempt = successorAttempts[0]!;
+            expect(getWorkerBackendSession(coreDb, successorAttempt.attemptId)).toMatchObject({
+              turnId: nextWire.body.turnId,
+              agentSessionId: nextWire.body.agentSessionId,
+              packageSnapshotId: nextPackage.snapshotId,
+            });
+            expect(nanoHostSandboxCompatibilityKey(nextPackage))
+              .not.toBe(nanoHostSandboxCompatibilityKey(pkg));
+            expect(nanoHostHarnessCompatibilityKey(nextPackage))
+              .not.toBe(nanoHostHarnessCompatibilityKey(pkg));
+            expect(NativeThreadLoginSchema.parse(privateThread().login)).toEqual(departed);
+            const body = { workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+              agentSessionId: nextWire.body.agentSessionId,
+              agentSessionRuntimeBindingId: nextWire.body.agentSessionRuntimeBindingId,
+              packageSnapshotId: nextWire.body.packageSnapshotId, turnId: nextWire.body.turnId,
+              leaseId: nextWire.body.leaseId, turnSequence: nextWire.body.turnSequence };
+            const successorCall = (input: Record<string, unknown>) => successorDispatch.harnessLogin!(physical,
+              new Request('http://module.invalid/worker-control/harness/login', {
+                method: 'POST', headers: { 'content-type': 'application/json',
+                  authorization: `Bearer ${String(nextWire.body.workerControlToken)}` },
+                body: JSON.stringify({ ...body, ...input }),
+              }));
+            const readSuccessorEffects = () => ({
+              uses: listVaultUseRecords(db), receipts: listVaultInjectionReceipts(coreDb),
+              material: getVaultReference(coreDb, preferred.referenceId),
+              affinity: privateThread().login, stockEntries: upstream.mock.calls.length,
+              nativeEffects: successorNative.effects.slice(),
+              replacementAudits: listWorkspaceAuditEvents(db, DEMO_WORKSPACE_ID, coreDb)
+                .filter((audit) => audit.action === 'vault.binding-replace' &&
+                  audit.outcome === 'succeeded'),
+            });
+            const beforeReplay = readSuccessorEffects();
+            // Replay A's genuine completed carriage through the CURRENT handler, not its old controller.
+            const replayed = await successorDispatch.harnessLogin!(physical,
+              new Request('http://module.invalid/worker-control/harness/login', {
+                method: 'POST', headers: { 'content-type': 'application/json',
+                  authorization: `Bearer ${String(wire.body.workerControlToken)}` },
+                body: JSON.stringify({ ...bodyLineage, kind: 'acquire', reason: 'activate' }),
+              }));
+            expect(replayed.status >= 400 && replayed.status < 500).toBe(true);
+            expect(readSuccessorEffects()).toEqual(beforeReplay);
+            if (ending === 'replacement-grant-revoked-after-pending') {
+              await invoke('vault.grant-revoke', {
+                workspaceId: DEMO_WORKSPACE_ID, grantId: preferred.grantId,
+              }, entry);
+              expect(getVaultGrant(coreDb, selectedReplacementGrantId)?.status).toBe('revoked');
+              const afterRevocation = readSuccessorEffects();
+              const refused = await successorCall({ kind: 'acquire', reason: 'activate' });
+              expect(refused.status >= 400 && refused.status < 500).toBe(true);
+              expect(readSuccessorEffects()).toEqual(afterRevocation);
+              // Existing peer failure cleanup owns an uncompleted start; never fake native completion.
+              releaseReplacementStart.resolve();
+              await expect(invocation).rejects.toThrow();
+              return;
+            }
+            preferred.prepareRefresh();
+            const beforeAcquire = { uses: listVaultUseRecords(db),
+              receipts: listVaultInjectionReceipts(coreDb),
+              material: getVaultReference(coreDb, preferred.referenceId),
+              stockEntries: upstream.mock.calls.length };
+            const acquired = await successorCall({ kind: 'acquire', reason: 'activate' });
+            if (!acquired.ok) {
+              expect({ uses: listVaultUseRecords(db), receipts: listVaultInjectionReceipts(coreDb),
+                material: getVaultReference(coreDb, preferred.referenceId),
+                stockEntries: upstream.mock.calls.length }).toEqual(beforeAcquire);
+            }
+            expect(acquired.status).toBe(200);
+            const delivered = await acquired.json() as { receiptId: string; materialGeneration: number };
+            expect(delivered.receiptId).not.toBe(access.receiptId);
+            const beforeWrongCompletion = readSuccessorEffects();
+            const wrongCompletion = await successorCall({ kind: 'complete',
+              receiptId: access.receiptId, materialGeneration: access.materialGeneration });
+            expect(wrongCompletion.status).toBe(409);
+            expect(readSuccessorEffects()).toEqual(beforeWrongCompletion);
+            expect((await successorCall({ kind: 'complete',
+              receiptId: delivered.receiptId,
+              materialGeneration: delivered.materialGeneration })).status).toBe(204);
+            const successorPlans = listVaultInjectionPlans(coreDb).filter((plan) =>
+              plan.packageSnapshotId === nextPackage.snapshotId && plan.grantId === preferred.grantId);
+            expect(successorPlans).toHaveLength(1);
+            expect(getVaultGrant(coreDb, selectedReplacementGrantId)).toMatchObject({
+              vaultReferenceId: preferred.referenceId, status: 'active',
+              allowedInjectionPaths: ['runtime-token'],
+            });
+            const successorReceipts = listVaultInjectionReceipts(coreDb).filter((receipt) =>
+              receipt.receiptId === delivered.receiptId);
+            expect(successorReceipts).toHaveLength(1);
+            expect(successorReceipts[0]).toMatchObject({
+              planId: successorPlans[0]!.planId,
+              grantId: preferred.grantId,
+              agentSessionId: nextWire.body.agentSessionId,
+              revocationStatus: 'active',
+            });
+            const successorUses = listVaultUseRecords(db).filter((use) =>
+              use.receiptId === delivered.receiptId &&
+              use.vaultReferenceId === preferred.referenceId &&
+              use.materialVersion === delivered.materialGeneration && use.outcome === 'succeeded');
+            // Refresh can resolve more than one version; do not impose an unjustified total Use count.
+            expect(successorUses.length > 0).toBe(true);
+            expect(successorUses.every((use) =>
+              use.planId === successorPlans[0]!.planId && use.grantId === preferred.grantId &&
+              use.agentSessionId === nextWire.body.agentSessionId)).toBe(true);
+            const successorAudits = listWorkspaceAuditEvents(db, DEMO_WORKSPACE_ID, coreDb);
+            expect(successorUses.every((use) => successorAudits.some((audit) =>
+              audit.id === use.auditEventId && audit.action === 'vault.resolve' &&
+              audit.outcome === 'succeeded'))).toBe(true);
+            const replacementDecisions = listExportableWorkspacePermissionDecisions(
+              db, DEMO_WORKSPACE_ID).filter((decision) =>
+              decision.enforcementPoint === 'vault.binding-replace@decide' &&
+              decision.mediation?.role === 'final');
+            expect(replacementDecisions).toHaveLength(1);
+            expect(replacementDecisions[0]?.result).toBe('allow');
+            // C1: one actual mediated replacement, tied to the authenticated B invocation.
+            expect(replacementActivations).toHaveLength(1);
+            const activation = replacementActivations[0]!;
+            expect(activation).toMatchObject({
+              action: 'replace', workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+              planId: successorPlans[0]!.planId,
+              coreAuthority: {
+                workspaceId: DEMO_WORKSPACE_ID,
+                requester: { kind: 'worker', lineage: {
+                  workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+                  turnId: nextWire.body.turnId,
+                  agentSessionId: nextWire.body.agentSessionId,
+                  packageSnapshotId: nextPackage.snapshotId,
+                } },
+              },
+            });
+            expect(activation.policyProof).toBeDefined();
+            const proof = activation.policyProof!;
+            expect(replacementDecisions[0]!.action).toBe(
+              policyOperationDefinition('vault.binding-replace').policyOperation
+            );
+            expect(activation.receiptId).toBe(delivered.receiptId);
+            expect(activation.expectedReceiptId).toBe(access.receiptId);
+            expect(proof.proposal.inputReferences).toMatchObject({
+              receiptId: delivered.receiptId,
+              replacementPreviousReceiptId: access.receiptId,
+            });
+            expect(policyDigest(proof.document)).toBe(proof.decision.policyRevision);
+            expect(policyProposalDigest(proof.proposal)).toBe(proof.decision.proposalDigest);
+            expect(proof.proposal).toMatchObject({
+              operation: 'vault.binding-replace', workspaceId: DEMO_WORKSPACE_ID,
+              inputReferences: {
+                planId: successorPlans[0]!.planId, grantId: preferred.grantId,
+                requestId: activation.requestId, packageSnapshotId: nextPackage.snapshotId,
+              },
+              subject: { process: {
+                workspaceId: DEMO_WORKSPACE_ID, threadId: thread.id,
+                turnId: nextWire.body.turnId,
+              } },
+            });
+            expect(replacementDecisions[0]).toMatchObject({
+              decisionId: proof.decision.decisionId,
+              policySnapshotId: proof.decision.policyRevision,
+              contextSummary: { requestId: activation.requestId },
+              mediation: {
+                role: 'final', stage: 'decide', operation: 'vault.binding-replace',
+                proposalDigest: proof.decision.proposalDigest,
+                authorizationRevision: proof.decision.authorizationRevision,
+                subject: proof.proposal.subject,
+              },
+            });
+            expect(successorAudits.filter((audit) =>
+              audit.action === 'vault.binding-replace' && audit.outcome === 'succeeded' &&
+              audit.requestId === activation.requestId)).toEqual([
+                expect.objectContaining({
+                  actor: proof.proposal.subject.actor,
+                  resource: `workspace:${DEMO_WORKSPACE_ID}`,
+                }),
+              ]);
+            expect(getWorkerBackendSession(coreDb, successorAttempt.attemptId)).toMatchObject({
+              turnId: nextWire.body.turnId, agentSessionId: successorReceipts[0]!.agentSessionId,
+              packageSnapshotId: successorPlans[0]!.packageSnapshotId,
+            });
+            expect(readPredecessorHistory()).toEqual(predecessorHistory);
+            expect(successorAudits.some((audit) =>
+              audit.id === replacementDecisions[0]?.auditEventId)).toBe(true);
+            expect(successorAudits.filter((audit) =>
+              audit.id === replacementDecisions[0]?.auditEventId)).toEqual([
+                expect.objectContaining({
+                  permissionDecisionId: proof.decision.decisionId,
+                  action: 'permission.decision', outcome: 'succeeded',
+                  actor: proof.proposal.subject.actor,
+                  workspaceId: DEMO_WORKSPACE_ID,
+                  threadId: nextWire.body.threadId, turnId: nextWire.body.turnId,
+                  requestId: activation.requestId,
+                  resource: `permission:${policyOperationDefinition('vault.binding-replace').policyOperation}`,
+                }),
+              ]);
+            expect(successorAudits.some((audit) =>
+              audit.action === 'vault.binding-replace' && audit.outcome === 'succeeded')).toBe(true);
+            expect(NativeThreadLoginSchema.parse(privateThread().login)).toEqual({
+              ...departed, referenceId: preferred.referenceId });
+            replacementCompleted = true;
+            releaseReplacementStart.resolve();
+            const nextExecution = native.executionFor(String(nextWire.body.turnId));
+            await nextExecution.launched.promise;
+            nextExecution.completion.resolve();
+            expect((await replacementProduct).status).toBe(202);
+            await replacementDispatchJob;
+            return;
+          }
           if (ending === 'new-turn-preference-preview-ineligible') {
             await invoke('vault.grant-withdraw', {
               workspaceId: DEMO_WORKSPACE_ID, grantId: preferred.grantId,
@@ -25286,6 +25849,16 @@ describe('inert initial private Login exchange through the concrete backend sess
           }
         }
       } finally {
+        releaseReplacementDelete.resolve();
+        releaseReplacementStart.resolve();
+        if (replacementTurnId && replacementCompleted)
+          native?.executionFor(replacementTurnId).completion.resolve();
+        await replacementRetirement?.catch(() => undefined);
+        await replacementProduct?.catch(() => undefined);
+        await replacementDispatchJob?.catch(() => undefined);
+        await Promise.allSettled(replacementDispatchJobs);
+        replacementEffectSpy?.mockRestore();
+        for (const diagnostic of replacementDiagnosticSpies) diagnostic.mockRestore();
         if (departureTimers) vi.useRealTimers();
         releaseRemoval.resolve();
         acquireAbort.abort();

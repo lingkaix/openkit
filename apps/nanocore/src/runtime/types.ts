@@ -158,6 +158,8 @@ export interface TurnExecutor {
       readonly receiptId?: string;
       readonly expectedReceiptId?: string;
       /** Prior successful access delivery from the authenticated private Login exchange. */
+      /** Fresh B's exact retired native predecessor, not same-family refresh authority. */
+      readonly loginReplacement?: import('../operation-contract.js').HarnessLoginReplacement;
       readonly loginRefresh?: Readonly<{
         previousReceiptId: string;
         context: import('./harness-login-authority.js').HarnessLoginContext;

@@ -570,8 +570,24 @@ export function createVaultOperationImplementations(
           'Credential binding not found.',
           404
         );
-      const receiptId = input.expectedReceiptId ?? input.receiptId ?? null;
       const refresh = context.harnessLoginRefresh;
+      const replacement = context.harnessLoginReplacement;
+      const loginDeclaration = original.credentials.declarations.filter(
+        (value) => value.visibility === 'runtime-token' && value.consumer === 'codex-login'
+      );
+      if (
+        replacement &&
+        (refresh ||
+          context.kind !== 'worker' ||
+          action !== 'replace' ||
+          plan.injectionVisibility !== 'runtime-token' ||
+          loginDeclaration.length !== 1 ||
+          input.expectedReceiptId !== replacement.previousReceiptId)
+      )
+        vaultWorkspaceAccessDenied();
+      const receiptId = replacement
+        ? `receipt_${original.snapshotId}_${loginDeclaration[0]!.id}`
+        : (input.expectedReceiptId ?? input.receiptId ?? null);
       if (
         refresh &&
         (context.kind !== 'worker' ||
@@ -619,8 +635,13 @@ export function createVaultOperationImplementations(
               ? selectedReference
               : reference,
           receipt: receiptId ? getVaultInjectionReceipt(coreDb, receiptId) : null,
-          ...(refresh
-            ? { previousReceipt: getVaultInjectionReceipt(coreDb, refresh.previousReceiptId) }
+          ...(refresh || replacement
+            ? {
+                previousReceipt: getVaultInjectionReceipt(
+                  coreDb,
+                  (refresh ?? replacement)!.previousReceiptId
+                ),
+              }
             : {}),
         };
       };
@@ -638,6 +659,12 @@ export function createVaultOperationImplementations(
             ? {
                 previousReceiptId: refresh.previousReceiptId,
                 refreshContextDigest: policyDigest(refresh.context),
+              }
+            : {}),
+          ...(replacement
+            ? {
+                replacementPreviousReceiptId: replacement.previousReceiptId,
+                replacementContextDigest: policyDigest(replacement),
               }
             : {}),
           requestId: input.requestId,
@@ -661,7 +688,7 @@ export function createVaultOperationImplementations(
               action,
               ...(policyProof ? { policyProof } : {}),
               ...(context.kind === 'worker' &&
-              action === 'deliver' &&
+              (action === 'deliver' || (action === 'replace' && replacement !== undefined)) &&
               plan.injectionVisibility === 'runtime-token'
                 ? {
                     onPermanentLoginRefreshFailure: async (witness: object) => {
@@ -710,16 +737,17 @@ export function createVaultOperationImplementations(
               threadId: input.bindingThreadId,
               planId: input.planId,
               requestId: input.requestId,
-              ...(input.receiptId ? { receiptId: input.receiptId } : {}),
+              ...(receiptId ? { receiptId } : {}),
               ...(input.expectedReceiptId ? { expectedReceiptId: input.expectedReceiptId } : {}),
               ...(refresh ? { loginRefresh: refresh } : {}),
+              ...(replacement ? { loginReplacement: replacement } : {}),
               ...(input.materialVersion ? { materialVersion: input.materialVersion } : {}),
               ...(context.signal ? { signal: context.signal } : {}),
             },
             async (successor) => {
               if (successor) {
                 if (
-                  action !== 'deliver' ||
+                  (action !== 'deliver' && !(action === 'replace' && replacement)) ||
                   plan.injectionVisibility !== 'runtime-token' ||
                   acceptedSuccessor ||
                   !selectedReference ||
@@ -1819,7 +1847,30 @@ export function createVaultOperationImplementations(
     },
     'vault.binding-replace': async (input, context) => {
       const result = await bindingOperation('replace', input, context);
-      if (!('realizedProtection' in result))
+      const replacement = context.harnessLoginReplacement;
+      const plan =
+        replacement && !('realizedProtection' in result)
+          ? getVaultInjectionPlan(coreDb!, input.planId)
+          : null;
+      if (
+        !('realizedProtection' in result) &&
+        !(
+          context.kind === 'worker' &&
+          replacement &&
+          !context.harnessLoginRefresh &&
+          input.expectedReceiptId === replacement.previousReceiptId &&
+          'revocationStatus' in result &&
+          result.planId === input.planId &&
+          input.planId.startsWith('plan_') &&
+          result.receiptId === `receipt_${input.planId.slice(5)}` &&
+          plan?.injectionVisibility === 'runtime-token' &&
+          plan.packageSnapshotId === context.lineage.packageSnapshotId &&
+          plan.packageSnapshotId === replacement.context.packageSnapshotId &&
+          plan.grantId === result.grantId &&
+          result.agentSessionId === context.lineage.agentSessionId &&
+          result.agentSessionId === replacement.context.agentSessionId
+        )
+      )
         throw new OperationError(
           'recovery_required',
           'Credential binding requires inspection.',

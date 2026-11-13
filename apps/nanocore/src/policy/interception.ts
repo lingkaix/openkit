@@ -3,7 +3,7 @@ import {
   type RuntimeConfigFileReadResponse,
   VAULT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { type AgentEnvironmentPackage, WorkspaceConfigSchema } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
@@ -22,12 +22,18 @@ import {
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
 import {
+  currentScheduledTurnWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
   evaluateCoreConfirmedLoginQuarantine,
   isCurrentServerPolicyAuthor,
   readCurrentWorkspacePolicy,
 } from '../auth/operation-authorizer.js';
-import type { ThreadVisibilityReadPort } from '../auth/thread-visibility.js';
+import {
+  canDiscloseThreadToAudience,
+  isThreadVisible,
+  type ThreadVisibilityReadPort,
+} from '../auth/thread-visibility.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
 import type { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
@@ -38,14 +44,18 @@ import {
   readGoalTaskPolicyContext,
 } from '../runtime/goal-task-policy-context.js';
 import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
+import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-binding-records.js';
 import type { SchedulerExecutionLineage } from '../scheduler-records.js';
-import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
+import {
+  ControlProductPreconditionError,
+  readProduct,
+} from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
   nativeUserDatabasePath,
 } from '../storage/control-store-worker-client.js';
+import type { ControlPolicyGrant } from '../storage/control-store-worker-protocol.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
-import type { NativeRuntimePolicyPublication } from '../storage/runtime-policy-publication.js';
 import type { PermissionDecisionResult } from '../storage/schema/permission-decisions.js';
 import type {
   ControlVaultInput,
@@ -242,9 +252,85 @@ export class PolicyInterception {
     };
   }
 
+  /** Repeats the existing whole-volume audience meaning using actual native SQL readers. */
+  static assertVaultStorageAudience(
+    coreDb: CoreDb,
+    db: WorkspaceDb,
+    pkg: AgentEnvironmentPackage,
+    document: PolicyDocumentV1
+  ): void {
+    const workspaceId = pkg.scope.workspaceId;
+    const userId = responsibleUserIdForActor(pkg.scope.triggerActor);
+    const lineage = { ...pkg.scope, packageSnapshotId: pkg.snapshotId };
+    if (
+      !currentScheduledTurnWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true) ||
+      !currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'runtime.launch', true)
+    )
+      throw new ControlProductPreconditionError();
+    const rows = coreDb.sqlite
+      .prepare(`SELECT s.sandbox_binding_ref AS bindingRef FROM agent_session_runtime_bindings b
+      JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id
+      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id
+      WHERE b.workspace_id=? AND b.thread_id=? AND b.agent_session_id=?`)
+      .all(workspaceId, pkg.scope.threadId, pkg.scope.agentSessionId);
+    const row = rows.length === 1 ? z.object({ bindingRef: z.string() }).parse(rows[0]) : null;
+    const storage = row
+      ? getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef: row.bindingRef })
+      : null;
+    const workspace = readProduct(
+      db.sqlite,
+      { kind: 'workspace', workspaceId },
+      'workspace',
+      workspaceId
+    );
+    if (!userId || !storage || !workspace || db.workspaceId !== workspaceId)
+      throw new ControlProductPreconditionError();
+    const target = readProduct(
+      db.sqlite,
+      { kind: 'workspace', workspaceId },
+      'thread',
+      pkg.scope.threadId
+    )?.record as ReturnType<ThreadVisibilityReadPort['getThread']> | undefined;
+    const owner = {
+      personalWorkspaceCore: coreDb,
+      getDataRoot: () => coreDb.dataRoot,
+      getWorkspace: () => workspace.record as ReturnType<ThreadVisibilityReadPort['getWorkspace']>,
+      getWorkspaceResourceAccess(id: string) {
+        if (id !== workspaceId) throw new ControlProductPreconditionError();
+        return readCurrentWorkspacePolicy({ coreDb, workspaceId, policy: document });
+      },
+    };
+    for (const contributor of storage.contributors) {
+      const thread = readProduct(
+        db.sqlite,
+        { kind: 'workspace', workspaceId },
+        'thread',
+        contributor.threadId
+      )?.record as ReturnType<ThreadVisibilityReadPort['getThread']> | undefined;
+      if (
+        contributor.workspaceId !== workspaceId ||
+        contributor.responsibleUserId !== userId ||
+        !thread ||
+        !target ||
+        !isThreadVisible(owner, thread, userId, false, 'thread.read', {
+          kind: 'agent',
+          userId,
+          agentId: pkg.agent.agentId,
+          processId: pkg.scope.agentSessionId,
+        }) ||
+        !canDiscloseThreadToAudience(owner, thread, target)
+      )
+        throw new ControlProductPreconditionError();
+    }
+  }
+
   /** Reads the original Login intent before native physical preparation, without granting an effect. */
   static readVaultBindingIntent(
-    kind: 'reference-advance' | 'receipt-create' | 'reference-login-state',
+    kind:
+      | 'reference-advance'
+      | 'receipt-create'
+      | 'reference-login-state'
+      | 'thread-login-activate',
     binding: NonNullable<
       Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
     >
@@ -252,6 +338,7 @@ export class PolicyInterception {
     const proof = binding.policyProof;
     if (
       !proof ||
+      (kind === 'thread-login-activate' && !binding.replacement) ||
       (kind === 'reference-login-state' && proof.caller.kind !== 'worker') ||
       binding.binding.declaration.visibility !== 'runtime-token' ||
       binding.binding.declaration.consumer !== 'codex-login'
@@ -267,7 +354,8 @@ export class PolicyInterception {
     const proposal = proof.proposal;
     const originalVersion = proposal.inputAttributes.materialVersion;
     const refresh = binding.refreshContext;
-    const successorOffset = kind === 'receipt-create' ? 1 : 0;
+    const replacement = binding.replacement;
+    const successorOffset = kind === 'receipt-create' || kind === 'thread-login-activate' ? 1 : 0;
     // Delivery stages retain their original receipt; failed refresh remains at original X.
     if (
       typeof originalVersion !== 'number' ||
@@ -278,7 +366,8 @@ export class PolicyInterception {
     )
       throw new ControlProductPreconditionError();
     if (
-      proof.proposal.operation !== 'vault.binding-deliver' ||
+      proof.proposal.operation !==
+        (replacement ? 'vault.binding-replace' : 'vault.binding-deliver') ||
       proposal.workspaceId !== workspaceId ||
       binding.requester.workspaceId !== workspaceId ||
       !isDeepStrictEqual(requester, binding.requester.requester) ||
@@ -287,6 +376,22 @@ export class PolicyInterception {
       proposal.resource.container.owner.kind !== 'workspace' ||
       proposal.resource.container.owner.workspaceId !== workspaceId ||
       proposal.resource.container.id !== workspaceId ||
+      (proposal.inputReferences.replacementPreviousReceiptId ?? undefined) !==
+        replacement?.previousReceiptId ||
+      (proposal.inputReferences.replacementContextDigest ?? undefined) !==
+        (replacement ? policyDigest(replacement) : undefined) ||
+      (replacement &&
+        (refresh !== undefined ||
+          binding.previousReceiptId !== undefined ||
+          caller.kind !== 'worker' ||
+          replacement.context.leaseId !== binding.attemptId ||
+          replacement.context.workspaceId !== workspaceId ||
+          replacement.context.threadId !== consumer.scope.threadId ||
+          replacement.context.turnId !== consumer.scope.turnId ||
+          replacement.context.agentSessionId !== consumer.scope.agentSessionId ||
+          replacement.context.packageSnapshotId !== consumer.snapshotId ||
+          replacement.previousReceiptId === binding.receiptId ||
+          replacement.clearedLogin.referenceId !== null)) ||
       proposal.inputReferences.planId !== binding.planId ||
       proposal.inputReferences.grantId !== binding.binding.declaration.vaultGrantId ||
       proposal.inputReferences.receiptId !== binding.receiptId ||
@@ -321,7 +426,11 @@ export class PolicyInterception {
   static assertVaultRead(input: {
     readonly coreDb: CoreDb;
     readonly workspaceDb: WorkspaceDb;
-    readonly kind: 'reference-advance' | 'receipt-create' | 'reference-login-state';
+    readonly kind:
+      | 'reference-advance'
+      | 'receipt-create'
+      | 'reference-login-state'
+      | 'thread-login-activate';
     readonly binding: NonNullable<
       Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']['loginBinding']
     >;
@@ -345,7 +454,8 @@ export class PolicyInterception {
         | { readonly value: RuntimeConfigFileReadResponse }
         | { readonly error: unknown };
     };
-    readonly policyState: NativeRuntimePolicyPublication | undefined;
+    /** Relevant identity from the actual active Core owner or this request's native grant, never allow. */
+    readonly policyIdentity: ControlPolicyGrant['policy'];
     /** Actual owner User reader and distinct decision for the failed-refresh stage only. */
     readonly userDb?: UserDb;
     readonly quarantine?: Extract<
@@ -353,23 +463,23 @@ export class PolicyInterception {
       { coreConfirmedQuarantine: unknown }
     >['coreConfirmedQuarantine'];
   }): void {
-    const { coreDb: actualCore, workspaceDb, callerPackage, sampled, policyState, binding } = input;
+    const {
+      coreDb: actualCore,
+      workspaceDb,
+      callerPackage,
+      sampled,
+      policyIdentity,
+      binding,
+    } = input;
     const { proof, requester } = PolicyInterception.readVaultBindingIntent(input.kind, binding);
     const consumer = binding.binding.consumer;
     const workspaceId = consumer.scope.workspaceId;
     const caller = proof.caller;
     const proposal = proof.proposal;
-    if (
-      policyState?.state !== 'active' ||
-      !policyState.identity ||
-      policyState.identity.serverRevision !== policyDigest(proof.document)
-    )
+    if (policyIdentity.serverRevision !== policyDigest(proof.document))
       throw new ControlProductPreconditionError();
-    const workspaceRevision = policyState.identity.workspaceRevisions.find(
-      (entry) => entry.workspaceId === workspaceId
-    );
-    if (workspaceRevision) {
-      if (workspaceRevision.revision !== policyDigest(proof.workspaceDocument))
+    if (policyIdentity.workspaceRevision !== null) {
+      if (policyIdentity.workspaceRevision !== policyDigest(proof.workspaceDocument))
         throw new ControlProductPreconditionError();
     } else {
       if (policyDigest(proof.workspaceDocument) !== policyDigest(EMPTY_POLICY_DOCUMENT))
@@ -495,7 +605,10 @@ export class PolicyInterception {
             },
           }
         : null;
-    const definition = VAULT_OPERATION_DEFINITIONS['vault.binding-deliver'];
+    const definition =
+      VAULT_OPERATION_DEFINITIONS[
+        binding.replacement ? 'vault.binding-replace' : 'vault.binding-deliver'
+      ];
     let authority: ReturnType<typeof PolicyInterception.readVaultAuthority>;
     try {
       authority = PolicyInterception.readVaultAuthority({
@@ -705,7 +818,11 @@ export class PolicyInterception {
     const proposal = proof.proposal;
     const definition =
       VAULT_OPERATION_DEFINITIONS[
-        db.scope === 'workspace' ? 'vault.binding-deliver' : 'vault.login-quarantine'
+        db.scope === 'workspace'
+          ? proposal.operation === 'vault.binding-replace'
+            ? 'vault.binding-replace'
+            : 'vault.binding-deliver'
+          : 'vault.login-quarantine'
       ];
     const context = decision.contextSummary as Record<string, unknown> | null;
     const resource = decision.resourceSummary as Record<string, unknown> | null;

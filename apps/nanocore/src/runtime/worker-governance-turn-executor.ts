@@ -78,6 +78,7 @@ import {
 } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
+import { PolicyInterception } from '../policy/interception.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import {
   findSchedulerAdmissionForTurn,
@@ -124,7 +125,6 @@ import {
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   AgentEnvironmentSnapshotReadError,
-  findNamedAgentEnvironmentPackageSnapshot,
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
 } from './aep-snapshot-ledger.js';
@@ -168,11 +168,14 @@ import type {
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import {
   applyPreparedHarnessLoginSelection,
+  assertHarnessLoginReplacement,
   assertPreparedHarnessLoginSelection,
   prepareHarnessLoginSelection,
 } from './harness-login-selection.js';
 import { commandInputHash } from './idempotent-command.js';
 import { drainNanoHostSandboxAdmission } from './nanohost-harness.js';
+import { requireReleasedLoginPredecessor } from './nanohost-harness-records.js';
+import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
   frozenPendingOutcomeInput,
@@ -269,93 +272,6 @@ function workerGovernanceContinuityDisposition(
   result: WorkerGovernanceAgentSessionContinuityDisposition
 ): 'reusable' | 'replacement-required' | 'sandbox-replacement-required' | 'closed' | 'absent' {
   return typeof result === 'string' ? result : result.disposition;
-}
-
-/**
- * Selects the nearest accepted resume pair within the selected Agent and runtime segment.
- * A switch starts a fresh native conversation; a failed preparation without a package or proof
- * does not establish a runtime. Within one segment, predecessors without proof remain skippable.
- * Creation order defines predecessor order and equal creation times fail closed.
- *
- * @param agentSessions Every AgentSession of the Thread.
- * @param successorId AgentSession excluded from the walk.
- * @param selected Current Agent and runtime selection.
- * @param workspaceDb Owner of the retained packages that identify predecessor runtimes.
- * @throws TurnStartValidationError when order, runtime identity or accepted storage is unproved.
- */
-function selectThreadNativeResumeSource(
-  agentSessions: readonly ReturnType<FsStore['getAgentSession']>[],
-  successorId: string,
-  selected: { readonly agentId: string; readonly runtimeKind: string; readonly adapter: string },
-  workspaceDb: WorkspaceDb | null
-): ReturnType<FsStore['getAgentSession']> | null {
-  const ordered = agentSessions
-    .filter((candidate) => candidate.id !== successorId)
-    .sort((left, right) =>
-      left.createdAt === right.createdAt ? 0 : left.createdAt < right.createdAt ? 1 : -1
-    );
-  for (const [index, candidate] of ordered.entries()) {
-    if (ordered[index + 1]?.createdAt === candidate.createdAt) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'The Thread AgentSession order is ambiguous, so its resume predecessor is unproved.',
-        409
-      );
-    }
-    if (candidate.agentId !== selected.agentId) return null;
-    if (candidate.environmentPackageSnapshotId !== null) {
-      let snapshot: ReturnType<typeof findNamedAgentEnvironmentPackageSnapshot>;
-      try {
-        snapshot = workspaceDb
-          ? findNamedAgentEnvironmentPackageSnapshot(
-              workspaceDb,
-              candidate.workspaceId,
-              candidate.id,
-              candidate.environmentPackageSnapshotId
-            )
-          : null;
-      } catch {
-        throw new TurnStartValidationError(
-          'recovery_required',
-          'The native resume predecessor runtime cannot be read.',
-          409
-        );
-      }
-      if (
-        !snapshot ||
-        snapshot.agentId !== candidate.agentId ||
-        snapshot.threadId !== candidate.threadId
-      ) {
-        throw new TurnStartValidationError(
-          'recovery_required',
-          'The native resume predecessor runtime is unproved.',
-          409
-        );
-      }
-      if (
-        snapshot.runtimeKind !== selected.runtimeKind ||
-        snapshot.snapshot.control.adapter.targetRuntime !== selected.adapter
-      )
-        return null;
-    } else if (candidate.nativeHandleDigest !== null) {
-      throw new TurnStartValidationError(
-        'recovery_required',
-        'The native resume predecessor runtime is unproved.',
-        409
-      );
-    }
-    if (candidate.nativeHandleDigest !== null) {
-      if (!AgentSessionRetainedStorageSchema.safeParse(candidate.retainedStorage).success) {
-        throw new TurnStartValidationError(
-          'recovery_required',
-          'The native resume predecessor has no proven retained-storage attachment.',
-          409
-        );
-      }
-      return candidate;
-    }
-  }
-  return null;
 }
 
 /** Mutable exact-backend lifecycle retained while one turn executes and cleans up. */
@@ -1446,7 +1362,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     const currentEnvironmentPackage = loginReplacement
-      ? undefined
+      ? this.previewAgentEnvironmentPackage(input.freshAgentSessionId, input)
       : this.previewAgentEnvironmentPackage(current.id, input);
     if (!loginReplacement) await this.requireMaterializationCapacity(current.id, input);
     checkLogin(loginReplacement ? input.freshAgentSessionId : current.id);
@@ -1751,7 +1667,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         409
       );
     const currentEnvironmentPackage = loginReplacement
-      ? undefined
+      ? this.previewAgentEnvironmentPackage(prepared.agentSessionId, preparation)
       : this.previewAgentEnvironmentPackage(current.id, preparation);
     const reuseAllowed =
       current.agentId === preparation.agentSetup.manifest.id &&
@@ -2366,13 +2282,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
         const deliverAccess = this.backend.deliverCredentialAccess?.bind(this.backend);
         const refresh = input.loginRefresh;
+        const replacement = input.loginReplacement;
         const previousReceiptId = refresh?.previousReceiptId;
         const receiptId =
           previousReceiptId === undefined
             ? `receipt_${original.snapshotId}_${declaration.id}`
             : `receipt_${input.requestId}`;
         if (
-          input.action !== 'deliver' ||
+          (replacement
+            ? input.action !== 'replace' || refresh !== undefined
+            : input.action !== 'deliver') ||
           !deliverAccess ||
           !this.vaultBackend ||
           consumer.snapshotId !== original.snapshotId ||
@@ -2425,6 +2344,28 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           forSupply = false
         ) => {
           await recheckAuthority();
+          if (replacement) {
+            const prepared = assertHarnessLoginReplacement(coreDb, db, consumer, replacement);
+            requireReleasedLoginPredecessor(
+              coreDb,
+              replacement,
+              prepared,
+              consumer,
+              this.currentTime()
+            );
+            if (!input.policyProof)
+              throw new OperationError(
+                'credential_binding_unavailable',
+                'Login Policy proof is unavailable.',
+                409
+              );
+            PolicyInterception.assertVaultStorageAudience(
+              coreDb,
+              db,
+              consumer,
+              input.policyProof.workspaceDocument
+            );
+          }
           const live = requireSchedulerExecutionAttempt(coreDb, attempt.attemptId);
           if (
             live.deadline === null ||
@@ -2494,6 +2435,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ...(refresh
             ? { previousReceiptId: refresh.previousReceiptId, refreshContext: refresh.context }
             : {}),
+          ...(replacement ? { replacement } : {}),
           reference,
           ...(input.policyProof ? { policyProof: input.policyProof } : {}),
         });
@@ -2519,6 +2461,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               planId: plan.planId,
               receiptId,
               expectedMaterialVersion: expectedVersion,
+              ...(replacement ? { loginBinding: nativeBinding(expectedReference) } : {}),
               ...(refresh
                 ? { previousReceiptId: refresh.previousReceiptId, refreshContext: refresh.context }
                 : {}),

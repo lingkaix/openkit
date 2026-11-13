@@ -135,7 +135,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
   'vault.binding-replace': {
     stability: 'release-coupled',
     description:
-      'Replace one live credential file binding with a current authorized Vault material version.',
+      'Replace one credential binding with current authorized material; native Login requires exact trusted predecessor correlation.',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -149,7 +149,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
         requestId: z.uuid(),
       })
       .strict(),
-    outputSchema: WorkerCredentialReceiptSchema,
+    outputSchema: z.union([WorkerCredentialReceiptSchema, WorkspaceVaultInjectionReceiptSchema]),
     credentials: [
       'local-user',
       'user-session',

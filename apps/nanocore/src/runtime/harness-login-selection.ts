@@ -7,24 +7,38 @@ import { responsibleUserIdForActor, workspaceIdForOwner } from '@openkit/protoco
 import type { ResolvedAgentSetup } from '../agents/setup-resolver.js';
 import { currentScheduledTurnWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
+import type { HarnessLoginReplacement } from '../operation-contract.js';
 import { TurnStartValidationError } from '../operation-error.js';
-import { readProduct } from '../storage/control-store-product-records.js';
-import { type CoreDb, openAdmittedWorkspaceReadDb } from '../storage/db.js';
+import { listProducts, readProduct } from '../storage/control-store-product-records.js';
+import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import { type NativeThreadLogin, NativeThreadLoginSchema } from '../storage/native-thread-login.js';
 import {
+  getVaultGrant,
+  getVaultInjectionPlan,
+  getVaultInjectionReceipt,
   getVaultReference,
   listExportableWorkspaceVaultGrants,
+  listVaultInjectionReceipts,
   readCurrentExhaustedLoginAccounts,
   type VaultGrantRecord,
 } from '../storage/vault-native-codecs.js';
+import {
+  AgentSessionRecordSchema,
+  isCurrentAgentSessionStatus,
+} from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import {
   type HarnessLoginCandidate,
   hasCurrentHarnessLoginExhaustion,
   selectHarnessLogin,
 } from '../vault/login-selection.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
+import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
+import { selectThreadNativeResumeSource } from './native-resume-selection.js';
 import type { PrepareAgentSessionForTurnInput } from './types.js';
+import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { assertCredentialGrantShapeMatchesDeclaration } from './worker-credential-authority.js';
+import type { WorkerGovernanceNativeResume } from './worker-governance-backend.js';
 
 /** One transient proposal carried by prepare/commit/start; no selection state is persisted. */
 export interface PreparedHarnessLoginSelection {
@@ -365,4 +379,298 @@ export function applyPreparedHarnessLoginSelection(
       },
     },
   };
+}
+
+/** Reads canonical Session selection inputs through the existing bounded product reader. */
+export function readHarnessLoginThreadSessions(db: WorkspaceDb, threadId: string) {
+  const sessions: ReturnType<typeof AgentSessionRecordSchema.parse>[] = [];
+  let after = '';
+  for (;;) {
+    const page = listProducts(
+      db.sqlite,
+      { kind: 'workspace', workspaceId: db.workspaceId },
+      'agent-session',
+      after
+    );
+    if (page.length === 0) return sessions;
+    for (const row of page) {
+      const session = AgentSessionRecordSchema.parse(row.record);
+      if (session.threadId === threadId) sessions.push(session);
+      after = session.id;
+    }
+  }
+}
+
+/** Canonical read set only; native publication repeats physical release and current authority. */
+export interface HarnessLoginReplacementRead {
+  readonly sessions: ReturnType<typeof readHarnessLoginThreadSessions>;
+  readonly session: ReturnType<typeof AgentSessionRecordSchema.parse>;
+  readonly successor: ReturnType<typeof AgentSessionRecordSchema.parse>;
+  readonly packages: readonly ReturnType<typeof requireAgentEnvironmentPackageSnapshot>[];
+  readonly predecessor: {
+    readonly agentSessionId: string;
+    readonly packageSnapshotId: string;
+    readonly declarationId: string;
+    readonly planId: string;
+    readonly receiptId: string;
+    readonly attemptId: string;
+    readonly nativeResume: WorkerGovernanceNativeResume;
+  };
+}
+
+/** Correlates the ACTUAL carried resume with one completed delivery, never with old permission. */
+export function readHarnessLoginPredecessor(
+  coreDb: CoreDb,
+  db: WorkspaceDb,
+  pkg: AgentEnvironmentPackage,
+  nativeResume: WorkerGovernanceNativeResume,
+  previousReceiptId?: string
+): HarnessLoginReplacementRead | undefined {
+  const sessions = readHarnessLoginThreadSessions(db, pkg.scope.threadId);
+  const source = selectThreadNativeResumeSource(
+    sessions.map((session) => ({
+      ...session,
+      // Preserve the exact optional representation; NEVER infer an old generation.
+      retainedStorage:
+        session.retainedStorage === null
+          ? null
+          : {
+              storageRef: session.retainedStorage.storageRef,
+              workSlotRef: session.retainedStorage.workSlotRef,
+              ...(session.retainedStorage.attachmentGeneration === undefined
+                ? {}
+                : {
+                    attachmentGeneration: session.retainedStorage.attachmentGeneration,
+                  }),
+            },
+    })),
+    pkg.scope.agentSessionId,
+    {
+      agentId: pkg.agent.agentId,
+      runtimeKind: pkg.agent.runtimeKind,
+      adapter: pkg.control.adapter.targetRuntime,
+    },
+    db
+  );
+  if (
+    !source ||
+    source.id !== nativeResume.locator ||
+    source.nativeHandleDigest !== nativeResume.digest ||
+    !source.environmentPackageSnapshotId
+  )
+    throw unavailable();
+  const oldRecord = requireAgentEnvironmentPackageSnapshot(
+    db,
+    db.workspaceId,
+    source.environmentPackageSnapshotId
+  );
+  const old = oldRecord.snapshot;
+  const selected = pkg.credentials.declarations.filter(
+    (value) => value.visibility === 'runtime-token'
+  );
+  const originals = old.credentials.declarations.filter(
+    (value) => value.visibility === 'runtime-token'
+  );
+  const declaration = selected[0];
+  const original = originals[0];
+  if (
+    selected.length !== 1 ||
+    originals.length !== 1 ||
+    !declaration ||
+    !original ||
+    declaration.consumer !== 'codex-login' ||
+    original.consumer !== declaration.consumer ||
+    original.id !== declaration.id ||
+    original.requirementId !== declaration.requirementId ||
+    old.scope.agentSessionId !== source.id ||
+    old.scope.workspaceId !== db.workspaceId ||
+    old.scope.threadId !== pkg.scope.threadId
+  )
+    throw unavailable();
+  if (original.vaultGrantId === declaration.vaultGrantId) return undefined;
+  const current = sessions.filter((session) => isCurrentAgentSessionStatus(session.status));
+  if (
+    isCurrentAgentSessionStatus(source.status) ||
+    current.length !== 1 ||
+    current[0]!.id !== pkg.scope.agentSessionId
+  )
+    throw unavailable();
+  const planId = `plan_${old.snapshotId}_${original.id}`;
+  const plan = getVaultInjectionPlan(coreDb, planId);
+  const grant = getVaultGrant(coreDb, original.vaultGrantId);
+  const reference = grant ? getVaultReference(coreDb, grant.vaultReferenceId) : null;
+  if (
+    !plan ||
+    plan.packageSnapshotId !== old.snapshotId ||
+    plan.grantId !== original.vaultGrantId ||
+    plan.injectionVisibility !== 'runtime-token' ||
+    !reference?.login
+  )
+    throw unavailable();
+  const receipts =
+    previousReceiptId === undefined
+      ? listVaultInjectionReceipts(coreDb)
+      : [getVaultInjectionReceipt(coreDb, previousReceiptId)].filter((value) => value !== null);
+  const completed = receipts.filter(
+    (receipt) =>
+      receipt.planId === planId &&
+      receipt.grantId === original.vaultGrantId &&
+      receipt.agentSessionId === source.id &&
+      db.sqlite
+        .prepare(
+          `SELECT 1 FROM vault_use_records u JOIN audit_events a ON a.audit_event_id=u.audit_event_id
+       WHERE u.owner_scope='workspace' AND u.workspace_id=? AND u.vault_reference_id=?
+       AND u.grant_id=? AND u.plan_id=? AND u.receipt_id=? AND u.agent_session_id=? AND u.outcome='succeeded'
+       AND a.workspace_id=? AND a.action='vault.resolve' AND a.outcome='succeeded' LIMIT 1`
+        )
+        .get(
+          db.workspaceId,
+          reference.referenceId,
+          original.vaultGrantId,
+          planId,
+          receipt.receiptId,
+          source.id,
+          db.workspaceId
+        )
+  );
+  if (completed.length !== 1) throw unavailable();
+  const packages = new Map<string, ReturnType<typeof requireAgentEnvironmentPackageSnapshot>>();
+  let selectedAttempt: string | undefined;
+  const attempts = coreDb.sqlite
+    .prepare(
+      'SELECT attempt_id AS attemptId FROM scheduler_execution_attempts WHERE agent_session_id=? ORDER BY attempt_id'
+    )
+    .all(source.id);
+  for (const row of attempts) {
+    if (
+      !row ||
+      typeof row !== 'object' ||
+      !('attemptId' in row) ||
+      typeof row.attemptId !== 'string'
+    )
+      throw unavailable();
+    const attempt = requireSchedulerExecutionAttempt(coreDb, row.attemptId);
+    if (
+      attempt.workspaceId !== db.workspaceId ||
+      attempt.threadId !== source.threadId ||
+      attempt.phase !== 'closed'
+    )
+      throw unavailable();
+    const backend = getWorkerBackendSession(coreDb, attempt.attemptId);
+    if (!backend) {
+      if (attempt.disposition !== 'not_accepted') throw unavailable();
+      continue;
+    }
+    const record = requireAgentEnvironmentPackageSnapshot(
+      db,
+      db.workspaceId,
+      backend.packageSnapshotId
+    );
+    if (
+      record.snapshot.scope.agentSessionId !== source.id ||
+      record.snapshot.scope.threadId !== source.threadId ||
+      record.snapshot.scope.turnId !== attempt.turnId ||
+      record.snapshotId !== attempt.inputRef ||
+      backend.sandboxBindingRef !== attempt.bindingRef
+    )
+      throw unavailable();
+    packages.set(record.snapshotId, record);
+    if (record.snapshotId === old.snapshotId) {
+      if (selectedAttempt !== undefined) throw unavailable();
+      selectedAttempt = attempt.attemptId;
+    }
+  }
+  if (!selectedAttempt || !packages.has(old.snapshotId)) throw unavailable();
+  return {
+    sessions,
+    session: source,
+    successor: current[0]!,
+    packages: [...packages.values()],
+    predecessor: {
+      agentSessionId: source.id,
+      packageSnapshotId: old.snapshotId,
+      declarationId: original.id,
+      planId,
+      receiptId: completed[0]!.receiptId,
+      attemptId: selectedAttempt,
+      nativeResume: { ...nativeResume },
+    },
+  };
+}
+
+/** Reads immutable provenance before SQL and freezes the complete, genuinely cleared departure value. */
+export function assertHarnessLoginReplacement(
+  coreDb: CoreDb,
+  db: WorkspaceDb,
+  pkg: AgentEnvironmentPackage,
+  replacement: HarnessLoginReplacement
+): HarnessLoginReplacementRead {
+  const result = readHarnessLoginPredecessor(
+    coreDb,
+    db,
+    pkg,
+    replacement.nativeResume,
+    replacement.previousReceiptId
+  );
+  if (!result) throw unavailable();
+  assertPreparedHarnessLoginReplacement(coreDb, db, pkg, replacement, result);
+  return result;
+}
+
+/** Repeats canonical SQL facts only; package/selector I/O has already finished at preparation. */
+export function assertPreparedHarnessLoginReplacement(
+  coreDb: CoreDb,
+  db: WorkspaceDb,
+  pkg: AgentEnvironmentPackage,
+  replacement: HarnessLoginReplacement,
+  prepared: HarnessLoginReplacementRead
+): void {
+  const thread = readProduct(
+    db.sqlite,
+    { kind: 'workspace', workspaceId: db.workspaceId },
+    'thread',
+    pkg.scope.threadId
+  );
+  const login = thread ? NativeThreadLoginSchema.safeParse(thread.record.login).data : undefined;
+  const plan = getVaultInjectionPlan(coreDb, prepared.predecessor.planId);
+  const receipt = getVaultInjectionReceipt(coreDb, replacement.previousReceiptId);
+  const grant = plan ? getVaultGrant(coreDb, plan.grantId) : null;
+  const record = prepared.packages.find(
+    (value) => value.snapshotId === prepared.predecessor.packageSnapshotId
+  );
+  const declaration = record?.retainedSnapshot.credentials.declarations.find(
+    (value) => value.id === prepared.predecessor.declarationId
+  );
+  if (
+    !login ||
+    login.referenceId !== null ||
+    !grant ||
+    !receipt ||
+    !plan ||
+    !declaration ||
+    plan.packageSnapshotId !== prepared.predecessor.packageSnapshotId ||
+    plan.injectionVisibility !== 'runtime-token' ||
+    receipt.planId !== plan.planId ||
+    receipt.grantId !== grant.grantId ||
+    receipt.agentSessionId !== prepared.session.id ||
+    declaration.vaultGrantId !== grant.grantId ||
+    !login.lastLeftAt[grant.vaultReferenceId] ||
+    !isDeepStrictEqual(login, replacement.clearedLogin) ||
+    !isDeepStrictEqual(readHarnessLoginThreadSessions(db, pkg.scope.threadId), prepared.sessions) ||
+    !db.sqlite
+      .prepare(`SELECT 1 FROM vault_use_records u JOIN audit_events a ON a.audit_event_id=u.audit_event_id
+      WHERE u.owner_scope='workspace' AND u.workspace_id=? AND u.vault_reference_id=? AND u.grant_id=?
+      AND u.plan_id=? AND u.receipt_id=? AND u.agent_session_id=? AND u.outcome='succeeded'
+      AND a.workspace_id=? AND a.action='vault.resolve' AND a.outcome='succeeded' LIMIT 1`)
+      .get(
+        db.workspaceId,
+        grant.vaultReferenceId,
+        grant.grantId,
+        plan.planId,
+        receipt.receiptId,
+        prepared.session.id,
+        db.workspaceId
+      )
+  )
+    throw unavailable();
 }

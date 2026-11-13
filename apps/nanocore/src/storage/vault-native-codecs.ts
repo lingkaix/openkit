@@ -16,6 +16,7 @@ import {
 } from '@openkit/protocol';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
+import { NativeThreadLoginSchema } from './native-thread-login.js';
 import type {
   InjectionVisibility,
   VaultGrantLifetime,
@@ -1890,6 +1891,18 @@ export const VaultBindingPolicyProofSchema = z
   .strict();
 /** References the original decision and documents; native current owners still decide. */
 export type VaultBindingPolicyProof = z.infer<typeof VaultBindingPolicyProofSchema>;
+/** Private request-local correlation; the predecessor supplies no current material authority. */
+export const HarnessLoginReplacementSchema = z
+  .object({
+    context: z.lazy(() => HarnessLoginContextSchema),
+    nativeResume: z
+      .object({ locator: z.string().min(1).max(512), digest: z.string().regex(/^[0-9a-f]{64}$/) })
+      .strict(),
+    previousReceiptId: z.string().min(1).max(512),
+    clearedLogin: NativeThreadLoginSchema,
+  })
+  .strict();
+
 /** Transient deciding facts for access-only delivery; never retained or Worker-authored. */
 const loginBindingAuthority = z
   .object({
@@ -1900,6 +1913,7 @@ const loginBindingAuthority = z
     receiptId: z.string().min(1),
     previousReceiptId: z.string().min(1).max(512).optional(),
     refreshContext: z.lazy(() => HarnessLoginContextSchema).optional(),
+    replacement: HarnessLoginReplacementSchema.optional(),
     reference: VaultReferenceRecordSchema,
     policyProof: VaultBindingPolicyProofSchema.optional(),
   })
@@ -1987,6 +2001,10 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
     .object({
       kind: z.literal('thread-login-activate'),
       record: HarnessLoginNativeEffectSchema.extend({
+        replacement: HarnessLoginReplacementSchema.optional(),
+        loginBinding: loginBindingAuthority
+          .extend({ policyProof: VaultBindingPolicyProofSchema })
+          .optional(),
         expectedReferenceId: z
           .string()
           .refine((value) => isEntityId('vault', value))

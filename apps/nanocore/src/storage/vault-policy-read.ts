@@ -12,9 +12,17 @@ import {
   requiredTaskTurn,
 } from '../runtime/goal-task-policy-context.js';
 import {
+  assertHarnessLoginReplacement,
+  assertPreparedHarnessLoginReplacement,
+  type HarnessLoginReplacementRead,
+  readHarnessLoginThreadSessions,
+} from '../runtime/harness-login-selection.js';
+import { requireReleasedLoginPredecessor } from '../runtime/nanohost-harness-records.js';
+import {
   ControlProductPreconditionError,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
+import type { ControlPolicyGrant } from './control-store-worker-protocol.js';
 import {
   bindWorkspaceSqlite,
   type CoreDb,
@@ -52,6 +60,110 @@ export interface PreparedControlVaultRead {
   close(): void;
 }
 
+/** The native activation borrows the existing worker-owned Core source, never its lifetime. */
+export interface PreparedHarnessLoginActivationRead {
+  readonly kind: 'login-activation';
+  readonly coreDb: CoreDb;
+  readonly consumerPackage: PreparedControlVaultRead['consumerPackage'];
+  sampleHead(): void;
+  assertCurrent(
+    db: WorkspaceDb,
+    input: ControlVaultInput,
+    policy: ControlPolicyGrant['policy']
+  ): void;
+  close(): void;
+}
+export type PreparedNativeVaultRead = PreparedControlVaultRead | PreparedHarnessLoginActivationRead;
+type PreparedVaultPolicyRead = Omit<PreparedControlVaultRead, 'assertCurrent'> & {
+  assertCurrent(
+    core: CoreDb,
+    input: ControlVaultInput,
+    identity: ControlPolicyGrant['policy']
+  ): void;
+};
+
+/** Preserves the initial stages' actual Core transaction and active publication authority. */
+export async function prepareControlVaultRead(
+  coreDb: CoreDb,
+  input: ControlVaultInput
+): Promise<PreparedControlVaultRead | undefined> {
+  if (input.kind === 'thread-login-activate' && input.record.loginBinding)
+    throw new ControlProductPreconditionError();
+  const read = await prepareVaultPolicyRead(coreDb, input);
+  if (!read) return undefined;
+  return {
+    workspaceDb: read.workspaceDb,
+    get consumerPackage() {
+      return read.consumerPackage;
+    },
+    sampleHead: read.sampleHead,
+    close: read.close,
+    assertCurrent(actual, command, publication) {
+      if (!actual.sqlite.inTransaction || publication?.state !== 'active' || !publication.identity)
+        throw new ControlProductPreconditionError();
+      read.assertCurrent(actual, command, {
+        serverRevision: publication.identity.serverRevision,
+        workspaceRevision:
+          publication.identity.workspaceRevisions.find(
+            (entry) => entry.workspaceId === read.workspaceDb.workspaceId
+          )?.revision ?? null,
+      });
+    },
+  };
+}
+
+/** Prepares only operation-local reads; the bridge retains both physical close and return ownership. */
+export async function prepareHarnessLoginActivationRead(
+  db: WorkspaceDb,
+  input: Extract<ControlVaultInput, { kind: 'thread-login-activate' }>,
+  coreDb: CoreDb
+): Promise<PreparedHarnessLoginActivationRead> {
+  const { record } = input;
+  const binding = record.loginBinding;
+  if (
+    !record.replacement ||
+    !binding ||
+    !binding.policyProof ||
+    db.sqlite.inTransaction ||
+    coreDb.sqlite.inTransaction ||
+    !coreDb.sqlite.readonly ||
+    db.dataRoot !== coreDb.dataRoot ||
+    db.workspaceId !== record.context.workspaceId ||
+    !isDeepStrictEqual(record.replacement, binding.replacement) ||
+    !isDeepStrictEqual(record.context, record.replacement.context) ||
+    binding.binding.consumer.snapshotId !== record.context.packageSnapshotId ||
+    binding.binding.consumer.scope.workspaceId !== record.context.workspaceId ||
+    binding.binding.consumer.scope.threadId !== record.context.threadId ||
+    binding.binding.consumer.scope.turnId !== record.context.turnId ||
+    binding.binding.consumer.scope.agentSessionId !== record.context.agentSessionId ||
+    binding.attemptId !== record.context.leaseId ||
+    binding.planId !== record.planId ||
+    binding.receiptId !== record.receiptId ||
+    binding.reference.referenceId !== record.referenceId ||
+    binding.binding.declaration.vaultGrantId !== record.grantId ||
+    binding.binding.materialVersion !== record.materialGeneration ||
+    binding.reference.currentVersion !== record.materialGeneration ||
+    binding.reference.login?.accountId !== record.accountId
+  )
+    throw new ControlProductPreconditionError();
+  const read = await prepareVaultPolicyRead(coreDb, input, db);
+  if (!read) throw new ControlProductPreconditionError();
+  return {
+    kind: 'login-activation',
+    coreDb,
+    get consumerPackage() {
+      return read.consumerPackage;
+    },
+    sampleHead: read.sampleHead,
+    close: read.close,
+    assertCurrent(actual, command, policy) {
+      if (actual !== db || !db.sqlite.inTransaction || coreDb.sqlite.inTransaction)
+        throw new ControlProductPreconditionError();
+      read.assertCurrent(coreDb, command, policy);
+    },
+  };
+}
+
 type SourceSample =
   | { readonly value: ReturnType<typeof readRuntimeConfigPolicySource> }
   | { readonly error: unknown };
@@ -83,10 +195,11 @@ function databaseIdentity(path: string, sqlite?: CoreDb['sqlite']): string {
  * absent Login binding remains with the canonical native Login discriminator and its ordinary refusal.
  * All immutable history and source I/O ends before assertCurrent. No snapshot supplies loaded authority.
  */
-export async function prepareControlVaultRead(
+async function prepareVaultPolicyRead(
   coreDb: CoreDb,
-  input: ControlVaultInput
-): Promise<PreparedControlVaultRead | undefined> {
+  input: ControlVaultInput,
+  committingWorkspace?: WorkspaceDb
+): Promise<PreparedVaultPolicyRead | undefined> {
   const parsed = ControlVaultInputSchema.parse(input);
   const quarantine =
     parsed.kind === 'reference-login-state' && 'coreConfirmedQuarantine' in parsed.record
@@ -94,7 +207,7 @@ export async function prepareControlVaultRead(
       : undefined;
   const kind = parsed.kind;
   const binding =
-    kind === 'reference-advance' || kind === 'receipt-create'
+    kind === 'reference-advance' || kind === 'receipt-create' || kind === 'thread-login-activate'
       ? parsed.record.loginBinding
       : quarantine?.binding;
   if (!binding) return undefined;
@@ -104,7 +217,14 @@ export async function prepareControlVaultRead(
     parsed.record.referenceId !== binding.reference.referenceId
   )
     throw new ControlProductPreconditionError();
-  if (kind !== 'reference-advance' && kind !== 'receipt-create' && kind !== 'reference-login-state')
+  if (
+    kind !== 'reference-advance' &&
+    kind !== 'receipt-create' &&
+    kind !== 'reference-login-state' &&
+    kind !== 'thread-login-activate'
+  )
+    throw new ControlProductPreconditionError();
+  if ((kind === 'thread-login-activate') !== (committingWorkspace !== undefined))
     throw new ControlProductPreconditionError();
   const { proof } = PolicyInterception.readVaultBindingIntent(kind, binding);
   const connection = coreDb.sqlite;
@@ -117,10 +237,24 @@ export async function prepareControlVaultRead(
   const coreIdentity = databaseIdentity(corePath, connection);
   const located = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
   const workspaceIdentity = databaseIdentity(located.path);
-  const reader = openControlStoreProductReadHandle(located.path, located.owner);
-  const workspaceDb = bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
+  if (
+    committingWorkspace &&
+    (committingWorkspace.workspaceId !== workspaceId ||
+      committingWorkspace.dataRoot !== dataRoot ||
+      committingWorkspace.sqlite.inTransaction)
+  )
+    throw new ControlProductPreconditionError();
+  const reader = openControlStoreProductReadHandle(
+    located.path,
+    located.owner,
+    committingWorkspace?.sqlite
+  );
+  const workspaceDb =
+    committingWorkspace ?? bindWorkspaceSqlite(reader.sqlite, dataRoot, workspaceId);
   const scope = { ...located, sqlite: reader.sqlite };
   const histories: Array<{ turnId: string; read: PreparedNativeTurnHistoryRead }> = [];
+  let initialReplacement: HarnessLoginReplacementRead | undefined;
+  let replacementRead: HarnessLoginReplacementRead | undefined;
   let closed = false;
   let userRead: { db: UserDb; path: string; identity: string } | undefined;
   let head: { server: SourceSample; workspace: SourceSample } | undefined;
@@ -220,6 +354,13 @@ export async function prepareControlVaultRead(
       workspaceId,
       consumer.snapshotId
     );
+    if (binding.replacement)
+      initialReplacement = assertHarnessLoginReplacement(
+        coreDb,
+        workspaceDb,
+        consumerRecord.snapshot,
+        binding.replacement
+      );
     const callerRecord =
       caller.kind === 'worker'
         ? caller.lineage.packageSnapshotId === consumer.snapshotId
@@ -278,6 +419,7 @@ export async function prepareControlVaultRead(
           databaseIdentity(located.path, reader.sqlite) !== workspaceIdentity
         )
           throw new ControlProductPreconditionError();
+        replacementRead = undefined;
         const server = sampleSource(dataRoot, { kind: 'server' });
         const workspace = sampleSource(dataRoot, { kind: 'workspace', workspaceId });
         // The canonical immutable owner repeats its complete validation before SQL.
@@ -306,12 +448,23 @@ export async function prepareControlVaultRead(
             databaseIdentity(userRead.path, userRead.db.sqlite) !== userRead.identity)
         )
           throw new ControlProductPreconditionError();
+        if (binding.replacement) {
+          const current = assertHarnessLoginReplacement(
+            coreDb,
+            workspaceDb,
+            consumerRecord.snapshot,
+            binding.replacement
+          );
+          if (!isDeepStrictEqual(current, initialReplacement))
+            throw new ControlProductPreconditionError();
+          replacementRead = current;
+        }
         head = { server, workspace };
       },
       assertCurrent(
         actualCore: CoreDb,
         actualInput: ControlVaultInput,
-        policyState: NativeRuntimePolicyPublication | undefined
+        policyIdentity: ControlPolicyGrant['policy']
       ) {
         assertOpen();
         const sampled = head;
@@ -322,8 +475,7 @@ export async function prepareControlVaultRead(
           actualCore.sqlite !== connection ||
           actualCore.dataRoot !== dataRoot ||
           actualInput !== input ||
-          !isDeepStrictEqual(ControlVaultInputSchema.parse(actualInput), parsed) ||
-          !connection.inTransaction
+          !isDeepStrictEqual(ControlVaultInputSchema.parse(actualInput), parsed)
         )
           throw new ControlProductPreconditionError();
         PolicyInterception.assertVaultRead({
@@ -335,8 +487,38 @@ export async function prepareControlVaultRead(
           callerPackage,
           store,
           sampled,
-          policyState,
+          policyIdentity,
         });
+        if (binding.replacement) {
+          if (
+            !replacementRead ||
+            !isDeepStrictEqual(
+              readHarnessLoginThreadSessions(workspaceDb, consumer.scope.threadId),
+              replacementRead.sessions
+            )
+          )
+            throw new ControlProductPreconditionError();
+          assertPreparedHarnessLoginReplacement(
+            actualCore,
+            workspaceDb,
+            consumerRecord.snapshot,
+            binding.replacement,
+            replacementRead
+          );
+          requireReleasedLoginPredecessor(
+            actualCore,
+            binding.replacement,
+            replacementRead,
+            consumerRecord.snapshot,
+            new Date().toISOString()
+          );
+          PolicyInterception.assertVaultStorageAudience(
+            actualCore,
+            workspaceDb,
+            consumerRecord.snapshot,
+            proof.workspaceDocument
+          );
+        }
       },
     });
   } catch (error) {

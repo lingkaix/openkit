@@ -1168,6 +1168,13 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
       readonly planId: string;
       readonly receiptId: string;
       readonly expectedMaterialVersion: number;
+      /** Original governed replacement proof; metadata only, never part of the access response. */
+      readonly loginBinding?: NonNullable<
+        Extract<
+          import('../storage/vault-native-codecs.js').ControlVaultInput,
+          { kind: 'receipt-create' }
+        >['record']['loginBinding']
+      >;
       readonly previousReceiptId?: string;
       readonly refreshContext?: import('./harness-login-authority.js').HarnessLoginContext;
       readonly consumer: 'codex-login';

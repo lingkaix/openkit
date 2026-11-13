@@ -9,6 +9,15 @@ import type { z } from 'zod';
 import type { Actor } from './auth/identity.js';
 import { OperationError } from './operation-error.js';
 import type { SchedulerExecutionLineage } from './scheduler-records.js';
+/** Exact native predecessor correlation, never old Login permission or a refresh selector. */
+export interface HarnessLoginReplacement {
+  readonly context: import('./runtime/harness-login-authority.js').HarnessLoginContext;
+  readonly nativeResume: import('./runtime/worker-governance-backend.js').WorkerGovernanceNativeResume;
+  readonly previousReceiptId: string;
+  /** Complete canonical departure history frozen before governed access. */
+  readonly clearedLogin: import('./storage/native-thread-login.js').NativeThreadLogin;
+}
+
 /** Request-local facts supplied only by trusted entry assembly. */
 export interface OperationRequestFacts {
   /** Trusted transport currentness repeated around admission waits; never operation JSON. */
@@ -19,6 +28,8 @@ export interface OperationRequestFacts {
     receiptId: string;
     context: import('./runtime/harness-login-authority.js').HarnessLoginContext;
   }>;
+  /** Authenticated fresh B's actual A resume/receipt, never operation JSON or same-family refresh. */
+  readonly harnessLoginReplacement?: HarnessLoginReplacement;
   /** Core-only, invocation-scoped refresh failure; operation JSON never supplies this fact. */
   readonly coreConfirmedLoginFailure?: object;
   /** Existing querying lineage supplied by internal assembly, never an operation payload. */
