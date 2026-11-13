@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
 import { THREAD_TIMELINE_PLACEMENT } from '@openkit/app-api-schemas';
 import { canonicalJsonText, type Item } from '@openkit/protocol';
-import { WorkerObservationDataSchema } from '@openkit/worker-protocol';
+import type { WorkerObservationFact } from '@openkit/worker-protocol';
 import { boundedJsonText } from './bounded-read-text.js';
 import type { WorkspaceDb } from './storage/db.js';
 import {
@@ -47,7 +47,9 @@ export function readTimelineReportedActivity(
       const binding = readControlWorkObservationTurnBinding(db.sqlite, owner, input);
       const rows = readControlWorkObservations(db.sqlite, owner, input).flatMap((row) =>
         row.type === 'runtime.observed' && row.obs === 'worker-shim'
-          ? [{ row, fact: WorkerObservationDataSchema.parse(row.payload).fact }]
+          ? // The native reader already parsed this complete payload and checked observer/manifest/lineage.
+            // Reuse those admitted facts; a second schema parse adds no source proof.
+            [{ row, fact: row.payload.fact as WorkerObservationFact }]
           : []
       );
       // Child names are local display ordinals from this exact admitted prefix, not native identities.
@@ -94,11 +96,23 @@ export function readTimelineReportedActivity(
         entries: entries.slice(-50),
         omittedEntryCount: Math.max(0, entries.length - 50),
       };
-      while (Buffer.byteLength(JSON.stringify(result)) > budget) {
-        if (!result.entries.length) return null;
-        result.entries.shift();
+      // Count each encoded entry once. Re-encoding a shrinking 50-entry array for every
+      // dropped entry multiplied response work across the default 31-run window.
+      const entryBytes = result.entries.map((entry) => Buffer.byteLength(JSON.stringify(entry)));
+      let remaining = result.entries.length;
+      let size =
+        Buffer.byteLength(JSON.stringify({ ...result, entries: [] })) +
+        entryBytes.reduce((total, length) => total + length, 0) +
+        Math.max(0, remaining - 1);
+      while (size > budget && remaining) {
+        const previousDigits = String(result.omittedEntryCount).length;
+        size -= entryBytes[result.entries.length - remaining]! + (remaining > 1 ? 1 : 0);
+        remaining--;
         result.omittedEntryCount++;
+        size += String(result.omittedEntryCount).length - previousDigits;
       }
+      if (size > budget) return null;
+      result.entries = result.entries.slice(result.entries.length - remaining);
       return result;
     })();
   } catch {
