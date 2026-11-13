@@ -483,7 +483,8 @@ function isOsv(value: unknown): value is OsvRecord {
     object(value) &&
     typeof value.id === 'string' &&
     value.id.trim().length > 0 &&
-    Array.isArray(value.affected)
+    Array.isArray(value.affected) &&
+    value.affected.every(object)
   );
 }
 /** Selects string identifiers from optional untrusted arrays. */

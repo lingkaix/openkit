@@ -16,6 +16,14 @@ The release-identity owner supplies observed build metadata. Release tooling own
 
 These are bounded transient module boundaries. They do not enable monitoring, persist findings, or install a second scheduler. Daily matching, hourly enrichment, source staleness, the independent audit watch and enable/boot composition join the existing recurring owner in slice 8.
 
+## Source-only trigger and sensor preparation
+
+`assessSecurityWatch` compares explicit original check/start facts against the accepted daily, hourly and 300-second intervals. Completion times do not delay nominal polling. In-flight work suppresses only its own lane; off or lost delegation does not suppress outstanding-notice drain assessment. This pure projection creates no timer, retained state, retry policy or delivery grant. Actual scheduling, writes and grant checks remain with the existing owners.
+
+`securityRequestId`, `securityThreadId` and `securityPublicationIds` implement the exact E4 UUID names from already assigned inputs. They never allocate an occurrence, advance a generation, publish a tuple or repair partial state. Native counters, receipts and recovery remain required.
+
+`createSecurityCanaryMcpSupply` constructs the fixed inert `openkit-security` source declaration in the existing AEP supply shape. `classifySecurityCanaryRequest` recognizes an exact selected call from borrowed authenticated lineage, independently of a Tool grant. It projects observation eligibility only while the existing trigger is on; exact calls remain inert while off/stopping. This module is not an authenticator, route integration or Audit writer. Real route admission must prove current token/run/schema lineage and refuse before credentials or upstream. No package is automatically supplied a canary, no sensor is activated and no containment grant is introduced by these helpers. Native sensor evidence and the zero-grant credential issuer remain separate prerequisites.
+
 ## Checks
 
 Run the inventory and feeds owner suites with NanoCore's Vitest configuration and zero retries. Run `server.security.test.ts` in Config Schema for authored feed choices. Tests use fixture SBOMs, checksum bytes and injected recorded/hostile feed streams, not third-party endpoints.
