@@ -22,7 +22,7 @@ const root = mkdtempSync(join(tmpdir(), 'receipt-window-'));
 const coreDb = createTestCoreDb(root);
 const userId = ensureLocalUser(coreDb);
 const store = createTestStore({ dataRoot: root });
-const app = createApp({ coreDb, store });
+let app: ReturnType<typeof createApp>;
 const eligible: string[] = [];
 const excluded: string[] = [];
 let workspaceId: string;
@@ -31,6 +31,7 @@ let foreignId: string;
 let appendHistory: (count: number) => Promise<void>;
 
 beforeAll(async () => {
+  app = createApp({ coreDb, store });
   const workspace = await store.createWorkspace('Receipt window');
   workspaceId = workspace.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
