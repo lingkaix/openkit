@@ -15109,7 +15109,18 @@ describe('credential carrier unified Vault operation acceptance', () => {
                     disableCanonicalUser(fixture.coreDb, userId);
                   })();
                 if (ending === 'policy-stale') {
-                  const changed = await propose({ schemaVersion: 1, statements: [] });
+                  // Change the real revision without withdrawing the author's required gate.
+                  const changed = await propose({
+                    schemaVersion: 1,
+                    statements: [
+                      ...document.statements,
+                      {
+                        ...document.statements[0]!,
+                        id: 'synthetic-vault-inactive-revision-marker',
+                        state: 'inactive',
+                      },
+                    ],
+                  });
                   await configuration.apply({
                     requestId: randomUUID(),
                     candidate: changed.candidate,
