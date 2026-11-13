@@ -1364,7 +1364,62 @@ export function createVaultOperationImplementations(
           !context.signal?.aborted &&
           policyDigest(readAdmittedPolicyDocument(coreDb, readPolicy())) === policyRevision &&
           policyDigest(currentFacts()) === authorityRevision,
-        finalKernel: () => currentFacts().kernel,
+        finalKernel: () => {
+          const repository = dependencies.repositoryWorkspaceDb;
+          const taskPolicy = dependencies.goalTaskPolicy;
+          if (!confirmedWorker || context.kind !== 'worker' || !repository || !taskPolicy)
+            return currentFacts().kernel;
+          // Only the authentic live failure can select its original proved Task decision.
+          const failure = readCoreConfirmedLoginQuarantine(
+            coreDb,
+            context,
+            inputReferences.referenceId
+          );
+          if (!failure) vaultWorkspaceAccessDenied();
+          const original = failure.binding.policyProof;
+          const originalOperation = original.proposal.operation;
+          const responsibleHumanId = original.proposal.subject.responsibleHumanId;
+          if (
+            !responsibleHumanId ||
+            original.caller.kind !== 'worker' ||
+            (originalOperation !== 'vault.binding-deliver' &&
+              originalOperation !== 'vault.binding-replace')
+          )
+            vaultWorkspaceAccessDenied();
+          const definition = VAULT_OPERATION_DEFINITIONS[originalOperation];
+          const workspaceId = original.caller.lineage.workspaceId;
+          const workspaceDb = repository(workspaceId);
+          try {
+            const authority = PolicyInterception.readVaultAuthority({
+              coreDb,
+              workspaceDb,
+              workspaceId,
+              requester: failure.binding.requester.requester,
+              coordinator: null,
+              worker: {
+                lineage: original.caller.lineage,
+                goalLinked: original.caller.goalLinked,
+              },
+              subject: original.proposal.subject,
+              resource: original.proposal.resource,
+              operation: definition.policyOperation,
+              mutating: definition.mutating,
+              taskPolicy: taskPolicy(workspaceDb, responsibleHumanId),
+              decision: original.decision,
+            });
+            // Keep the separate current User Kernel last; the original Task cannot widen it.
+            const currentUserKernel = currentFacts().kernel;
+            return authority.goal
+              ? {
+                  ...authority.goal,
+                  kernel:
+                    authority.kernel.effect === 'allow' ? currentUserKernel : authority.kernel,
+                }
+              : currentUserKernel;
+          } finally {
+            workspaceDb.sqlite.close();
+          }
+        },
       };
       const decision = await dependencies.policyInterception.decide(policyInput);
       if (decision.result !== 'allow') vaultWorkspaceAccessDenied();
