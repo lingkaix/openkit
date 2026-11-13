@@ -40,6 +40,10 @@ import {
   resolveWorkspaceMembershipRelation,
 } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
+
+/** Canonical target of the existing product-authorization entry, also used by credential adapters. */
+export type { ProductAccessTarget } from '../policy/workspace-access.js';
+
 import {
   DeploymentAdminRequiredError,
   getOpenKitAccessTokenRecord,
