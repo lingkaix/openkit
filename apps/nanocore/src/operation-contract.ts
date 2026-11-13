@@ -30,6 +30,8 @@ export interface OperationRequestFacts {
   }>;
   /** Authenticated fresh B's actual A resume/receipt, never operation JSON or same-family refresh. */
   readonly harnessLoginReplacement?: HarnessLoginReplacement;
+  /** Original selection observation from the exact live Worker, never operation JSON or permission. */
+  readonly harnessLoginPreferenceSkip?: import('./runtime/harness-login-selection.js').HarnessLoginPreferenceSkip;
   /** Core-only, invocation-scoped refresh failure; operation JSON never supplies this fact. */
   readonly coreConfirmedLoginFailure?: object;
   /** Existing querying lineage supplied by internal assembly, never an operation payload. */

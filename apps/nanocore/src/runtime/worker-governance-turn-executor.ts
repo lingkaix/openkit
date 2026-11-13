@@ -3548,6 +3548,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               ? { workerStorageChoice: context.workerStorageChoice }
               : {}),
             nativeResume,
+            ...(context.harnessLoginSelection?.preferenceSkip
+              ? { harnessLoginPreferenceSkip: context.harnessLoginSelection.preferenceSkip }
+              : {}),
             workspaceRoots: preparedWorkerContext
               ? [
                   ...context.workspaceRoots,

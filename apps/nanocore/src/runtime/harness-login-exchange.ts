@@ -247,7 +247,15 @@ export function createHarnessLoginExchange(input: {
         context,
         request.signal,
         currentCheck,
-        async (signal) => {
+        async (signal, preferenceSkip) => {
+          if (
+            replacement &&
+            preferenceSkip &&
+            (preferenceSkip.selectedGrantId !== grant.grantId ||
+              preferenceSkip.preferredGrantId === grant.grantId ||
+              preferenceSkip.requirementId !== declaration.requirementId)
+          )
+            throw unavailable();
           await invoke(
             replacement ? 'vault.binding-replace' : 'vault.binding-deliver',
             {
@@ -276,6 +284,9 @@ export function createHarnessLoginExchange(input: {
               recheckEntry: currentCheck,
               ...(refresh ? { harnessLoginRefresh: refresh } : {}),
               ...(replacement ? { harnessLoginReplacement: replacement } : {}),
+              ...(replacement && preferenceSkip
+                ? { harnessLoginPreferenceSkip: preferenceSkip }
+                : {}),
             }
           );
         },

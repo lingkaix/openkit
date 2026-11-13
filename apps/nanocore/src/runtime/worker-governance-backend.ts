@@ -339,6 +339,8 @@ export interface WorkerGovernanceMaterializationContext {
    * A Turn that reuses an open binding ignores it.
    */
   nativeResume?: WorkerGovernanceNativeResume | null;
+  /** Original redacted selection observation, confined to this live Turn's existing session. */
+  harnessLoginPreferenceSkip?: import('./harness-login-selection.js').HarnessLoginPreferenceSkip;
   /** Host-side workspace roots available to NanoCore but not uploaded in raw form to workers. */
   workspaceRoots: MaterializedWorkspaceRoot[];
 }

@@ -40,6 +40,20 @@ import { getWorkerBackendSession } from './worker-backend-session-records.js';
 import { assertCredentialGrantShapeMatchesDeclaration } from './worker-credential-authority.js';
 import type { WorkerGovernanceNativeResume } from './worker-governance-backend.js';
 
+/** Original redacted selection observation; descriptive only, never authority or retained AEP state. */
+export interface HarnessLoginPreferenceSkip {
+  readonly requirementId: string;
+  readonly preferredGrantId: string;
+  readonly selectedGrantId: string;
+  readonly reason:
+    | 'preferred_grant_revoked'
+    | 'quarantined'
+    | 'refresh-busy'
+    | 'account-exhausted'
+    | 'cooldown'
+    | 'unavailable';
+}
+
 /** One transient proposal carried by prepare/commit/start; no selection state is persisted. */
 export interface PreparedHarnessLoginSelection {
   /** Exact authored declaration checked again after canonical setup composition. */
@@ -51,6 +65,8 @@ export interface PreparedHarnessLoginSelection {
   /** Actual predecessor facts, including absence, remain unchanged until activation. */
   readonly threadLogin: NativeThreadLogin | null;
   readonly predecessorGrantId: string | null;
+  /** Captured from this composition only; later configuration and quota cannot reconstruct it. */
+  readonly preferenceSkip?: HarnessLoginPreferenceSkip;
 }
 
 /** Reads canonical private affinity without allocating or repairing a Workspace. */
@@ -305,6 +321,40 @@ export function prepareHarnessLoginSelection(
       ? preferred
       : byReference.get(selected.referenceId);
   if (!row) throw unavailable();
+  let preferenceSkip: HarnessLoginPreferenceSkip | undefined;
+  if (row.grant.grantId !== authored.vaultGrantId) {
+    const preferredGrant = preferred?.grant ?? getVaultGrant(coreDb, authored.vaultGrantId);
+    const candidate = preferred?.candidate;
+    // A missing authorized candidate cannot justify disclosing foreign grant or reference facts.
+    const reason: HarnessLoginPreferenceSkip['reason'] =
+      preferredGrant?.ownerScope === 'workspace' &&
+      preferredGrant.workspaceId === workspaceId &&
+      preferredGrant.issuance === 'target' &&
+      preferredGrant.status === 'revoked'
+        ? 'preferred_grant_revoked'
+        : candidate?.quarantined
+          ? 'quarantined'
+          : candidate?.refreshBusy
+            ? 'refresh-busy'
+            : candidate &&
+                (candidate.accountExhausted ||
+                  selectionInput.eligible.some(
+                    (other) =>
+                      other.accountId === candidate.accountId &&
+                      hasCurrentHarnessLoginExhaustion(other.quota, other.materialGeneration)
+                  ))
+              ? 'account-exhausted'
+              : candidate?.lastLeftAt !== undefined &&
+                  selectionInput.now - candidate.lastLeftAt < 60_000
+                ? 'cooldown'
+                : 'unavailable';
+    preferenceSkip = Object.freeze({
+      requirementId: authored.requirementId,
+      preferredGrantId: authored.vaultGrantId,
+      selectedGrantId: row.grant.grantId,
+      reason,
+    });
+  }
   return {
     authored: structuredClone(authored),
     grantId: row.grant.grantId,
@@ -312,6 +362,7 @@ export function prepareHarnessLoginSelection(
     materialGeneration: row.candidate.materialGeneration,
     threadLogin,
     predecessorGrantId: previous?.vaultGrantId ?? null,
+    ...(preferenceSkip ? { preferenceSkip } : {}),
   };
 }
 
@@ -581,6 +632,14 @@ export function readHarnessLoginPredecessor(
     }
   }
   if (!selectedAttempt || !packages.has(old.snapshotId)) throw unavailable();
+  // Retained cross-account continuation is not qualified in v0.1.0. Refuse before
+  // audited material resolution; the adapter's later account guard is not a disclosure guard.
+  const selectedGrant = getVaultGrant(coreDb, declaration.vaultGrantId);
+  const selectedReference = selectedGrant
+    ? getVaultReference(coreDb, selectedGrant.vaultReferenceId)
+    : null;
+  if (!selectedReference?.login || selectedReference.login.accountId !== reference.login.accountId)
+    throw unavailable();
   return {
     sessions,
     session: source,

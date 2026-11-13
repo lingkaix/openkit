@@ -349,7 +349,10 @@ export interface ConfiguredWorkerLifecycleRuntime {
     context: HarnessLoginContext,
     requestSignal: AbortSignal,
     currentCheck: () => Promise<void>,
-    runGovernedDelivery: (exchangeSignal: AbortSignal) => Promise<void>,
+    runGovernedDelivery: (
+      exchangeSignal: AbortSignal,
+      preferenceSkip: import('./harness-login-selection.js').HarnessLoginPreferenceSkip | null
+    ) => Promise<void>,
     publishAffinity: (
       effect: {
         readonly receiptId: string;
@@ -745,6 +748,10 @@ interface NanoHostBackendTurnSession {
   }> | null;
   /** Predecessor resume pair for a new binding; null starts a new native conversation. */
   readonly nativeResume: WorkerGovernanceNativeResume | null;
+  /** Original composition fact for this exact package; never restored or shared across Turns. */
+  readonly harnessLoginPreferenceSkip:
+    | import('./harness-login-selection.js').HarnessLoginPreferenceSkip
+    | null;
   /** AgentSession owner bound by the executor; receives each accepted ready proof at once. */
   recordNativeHandleDigest:
     | ((
@@ -2209,6 +2216,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       attemptId: attemptId,
       nativeResume: null,
+      harnessLoginPreferenceSkip: null,
       nativeSessionReusable: false,
       recordNativeHandleDigest: null,
       pendingImports: [],
@@ -4651,6 +4659,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       identity,
       attemptId: attemptId,
       nativeResume: context.nativeResume ?? null,
+      harnessLoginPreferenceSkip: context.harnessLoginPreferenceSkip
+        ? structuredClone(context.harnessLoginPreferenceSkip)
+        : null,
       nativeSessionReusable: false,
       recordNativeHandleDigest: null,
       pendingImports: [],
@@ -5217,7 +5228,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         this.assertHarnessLoginCurrent(session, exchange);
         await currentCheck();
         this.assertHarnessLoginCurrent(session, exchange);
-        await runGovernedDelivery(exchange.controller.signal);
+        await runGovernedDelivery(
+          exchange.controller.signal,
+          !refresh && session.harnessLoginPreferenceSkip
+            ? structuredClone(session.harnessLoginPreferenceSkip)
+            : null
+        );
         this.assertHarnessLoginCurrent(session, exchange);
         if (!exchange.externalCompleted || !exchange.supplied)
           throw new Error('Native Login governing operation did not settle an external delivery.');

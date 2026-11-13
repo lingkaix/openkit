@@ -463,6 +463,10 @@ export function createVaultOperationImplementations(
           })
         : undefined;
       const result = await run(recheckAuthority, ownDecision.decisionId, policyProof);
+      const preferenceSkip =
+        operation === 'vault.binding-replace' && context.kind === 'worker'
+          ? context.harnessLoginPreferenceSkip
+          : undefined;
       // Reviewed issuance publishes its exact grant-linked Core Audit in the native effect.
       if (operation !== 'vault.grant-issue')
         await recordVaultAuditEvent({
@@ -473,7 +477,9 @@ export function createVaultOperationImplementations(
           action: operation,
           resource: `workspace:${input.workspaceId}`,
           outcome: 'succeeded',
-          summary: 'Governed Vault operation completed.',
+          summary: preferenceSkip
+            ? `Governed Vault operation completed. Preferred Login grant ${preferenceSkip.preferredGrantId} for requirement ${preferenceSkip.requirementId} was skipped: ${preferenceSkip.reason}; selected grant ${preferenceSkip.selectedGrantId}.`
+            : 'Governed Vault operation completed.',
         });
       // Completed observations are non-decisive and cannot make an effect retryable.
       await interception

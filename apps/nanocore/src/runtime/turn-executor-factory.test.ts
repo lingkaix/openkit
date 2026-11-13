@@ -22627,6 +22627,8 @@ describe('inert initial private Login exchange through the concrete backend sess
     'replacement-current-release-feasibility',
     'replacement-unknown-delete-admission',
     'replacement-grant-revoked-after-pending',
+    'replacement-cross-account-refused-before-material',
+    'replacement-skipped-preference-audit',
   ] as const)(
     'joins authenticated acquire and complete without completing startup (%s)',
     async (ending) => {
@@ -24285,7 +24287,8 @@ describe('inert initial private Login exchange through the concrete backend sess
             value.receiptId === access.receiptId)?.revocationStatus).toBe('active');
 
           const preferred = await reviewedAlternative('Review preferred Login B',
-            replacementEffect ? accountId : randomUUID());
+            replacementEffect && ending !== 'replacement-cross-account-refused-before-material'
+              ? accountId : randomUUID());
           const fallback = await reviewedAlternative('Review fallback Login C');
           expect(new Set([login.referenceId, preferred.referenceId, fallback.referenceId]).size)
             .toBe(3);
@@ -24360,6 +24363,8 @@ describe('inert initial private Login exchange through the concrete backend sess
             setup.manifest.sandbox?.credentialDeclarations
           );
           if (replacementEffect) {
+            let skippedPreferenceGrantId: string | undefined;
+            let assertCrossAccountRefusal: (() => void) | undefined;
             const selectedReplacementGrantId = preferred.grantId;
             if (typeof selectedReplacementGrantId !== 'string')
               throw new Error('Replacement requires the actual reviewed B grant id.');
@@ -24551,6 +24556,44 @@ describe('inert initial private Login exchange through the concrete backend sess
                 audit.outcome === 'succeeded'))).toBe(true);
             expect(departed.referenceId).toBeNull();
             expect(departed.lastLeftAt[login.referenceId]).toEqual(expect.any(String));
+            if (ending === 'replacement-skipped-preference-audit') {
+              // Use the existing configuration owner after genuine A retirement. The old Login
+              // is cooling down; withdraw C so B is the sole eligible fallback for this request.
+              const ignored = await reviewedAlternative('Review skipped preferred Login', accountId);
+              const ignoredGrantId = ignored.grantId;
+              if (typeof ignoredGrantId !== 'string')
+                throw new Error('Skipped preference requires its reviewed grant identity.');
+              skippedPreferenceGrantId = ignoredGrantId;
+              await invoke('vault.grant-withdraw', {
+                workspaceId: DEMO_WORKSPACE_ID, grantId: ignoredGrantId,
+              }, entry);
+              await invoke('vault.grant-withdraw', {
+                workspaceId: DEMO_WORKSPACE_ID, grantId: fallback.grantId,
+              }, entry);
+              const reread = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
+              expect(reread.status).toBe(200);
+              const currentFile = await reread.json() as {
+                file: { revision: string }; content: string;
+              };
+              const ignoredDocument = JSON.parse(currentFile.content);
+              ignoredDocument.workspace.agents[0].credentialBindings[0].vaultGrantId = ignoredGrantId;
+              const saved = await app.request(...operationRequest('runtime.file-update', {}, {
+                method: 'PUT', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ id: fileId, kind: 'workspace',
+                  expectedRevision: currentFile.file.revision,
+                  content: JSON.stringify(ignoredDocument) }),
+              }));
+              expect(saved.status).toBe(200);
+              const reloaded = await app.request(...operationRequest('runtime.reload', {}, {
+                body: JSON.stringify({ mode: 'safe' }),
+              }));
+              expect(reloaded.status).toBe(200);
+              expect(await reloaded.json()).toMatchObject({ status: 'applied' });
+              expect(getVaultGrant(coreDb, ignoredGrantId)?.status).toBe('revoked');
+              expect(getVaultGrant(coreDb, selectedReplacementGrantId)?.status).toBe('active');
+              const installed = resolveLoaded(cold.current()).manifest.sandbox?.credentialDeclarations;
+              expect(installed?.map((value) => value.vaultGrantId)).toEqual([ignoredGrantId]);
+            }
             const outside = native.outside;
             await native.restore();
             acceptStart?.mockRestore();
@@ -24743,7 +24786,59 @@ describe('inert initial private Login exchange through the concrete backend sess
               receipts: listVaultInjectionReceipts(coreDb),
               material: getVaultReference(coreDb, preferred.referenceId),
               stockEntries: upstream.mock.calls.length };
+            const crossAccount = ending === 'replacement-cross-account-refused-before-material';
+            const materialBackend = vault.backend();
+            const inventoryBeforeAcquire = crossAccount
+              ? materialBackend.listReferences({ referenceId: preferred.referenceId }) : undefined;
+            const resolves = crossAccount ? vi.spyOn(materialBackend, 'resolve') : undefined;
+            const rotations = crossAccount ? vi.spyOn(materialBackend, 'rotate') : undefined;
+            if (resolves) replacementDiagnosticSpies.push(resolves);
+            if (rotations) replacementDiagnosticSpies.push(rotations);
+            if (crossAccount) {
+              expect(getVaultReference(coreDb, login.referenceId)?.login?.accountId ===
+                getVaultReference(coreDb, preferred.referenceId)?.login?.accountId).toBe(false);
+            }
             const acquired = await successorCall({ kind: 'acquire', reason: 'activate' });
+            if (crossAccount) {
+              // Capture the deciding boundary before any completion. Defer the assertion on
+              // the unsafe base until its genuine execution joins, so RED cannot strand it.
+              const responseBody = await acquired.clone().json() as {
+                accessToken?: unknown; code?: unknown;
+              };
+              const successfulUses = (uses: ReturnType<typeof listVaultUseRecords>) =>
+                uses.filter((use) => use.outcome === 'succeeded').length;
+              const observed = {
+                status: acquired.status,
+                typedRefusal: typeof responseBody.code === 'string' &&
+                  responseBody.code.length > 0,
+                successfulUsesAdded: successfulUses(listVaultUseRecords(db)) - successfulUses(beforeAcquire.uses),
+                materialResolutions: resolves?.mock.calls.length ?? 0,
+                rotations: rotations?.mock.calls.length ?? 0,
+                referenceUnchanged: isDeepStrictEqual(
+                  getVaultReference(coreDb, preferred.referenceId), beforeAcquire.material),
+                generationUnchanged: getVaultReference(coreDb, preferred.referenceId)?.currentVersion ===
+                  beforeAcquire.material?.currentVersion,
+                backendInventoryUnchanged: isDeepStrictEqual(
+                  materialBackend.listReferences({ referenceId: preferred.referenceId }),
+                  inventoryBeforeAcquire),
+                receiptsUnchanged: isDeepStrictEqual(listVaultInjectionReceipts(coreDb),
+                  beforeAcquire.receipts),
+                accessReturned: typeof responseBody.accessToken === 'string',
+              };
+              assertCrossAccountRefusal = () => expect(observed).toEqual({
+                status: 409, typedRefusal: true, successfulUsesAdded: 0,
+                materialResolutions: 0, rotations: 0, referenceUnchanged: true,
+                generationUnchanged: true, backendInventoryUnchanged: true,
+                receiptsUnchanged: true, accessReturned: false,
+              });
+              if (!acquired.ok) {
+                // The existing failing peer owns refused startup; do not synthesize completion.
+                releaseReplacementStart.resolve();
+                await expect(invocation).rejects.toThrow();
+                assertCrossAccountRefusal();
+                return;
+              }
+            }
             if (!acquired.ok) {
               expect({ uses: listVaultUseRecords(db), receipts: listVaultInjectionReceipts(coreDb),
                 material: getVaultReference(coreDb, preferred.referenceId),
@@ -24884,6 +24979,29 @@ describe('inert initial private Login exchange through the concrete backend sess
             nextExecution.completion.resolve();
             expect((await replacementProduct).status).toBe(202);
             await replacementDispatchJob;
+            assertCrossAccountRefusal?.();
+            if (ending === 'replacement-skipped-preference-audit') {
+              const skippedGrantId = skippedPreferenceGrantId;
+              if (!skippedGrantId) throw new Error('Skipped preference is unproved.');
+              // Observe the existing public Audit fields through the established read owner.
+              // The reason is a fixed redacted code, not a private selection-field assertion.
+              const effectAudits = listWorkspaceAuditEvents(db, DEMO_WORKSPACE_ID, coreDb)
+                .filter((audit) => audit.action === 'vault.binding-replace' &&
+                  audit.outcome === 'succeeded' && audit.requestId === activation.requestId);
+              const namesSkippedGrant = (audit: (typeof effectAudits)[number]) =>
+                audit.vaultGrantId === skippedGrantId ||
+                audit.resource?.includes(skippedGrantId) === true ||
+                audit.summary.includes(skippedGrantId);
+              const hasRevokedReason = (audit: (typeof effectAudits)[number]) =>
+                audit.errorCode === 'preferred_grant_revoked' ||
+                audit.summary.split(/[^a-z0-9_]+/u).includes('preferred_grant_revoked');
+              expect({
+                namesSkippedGrant: effectAudits.some(namesSkippedGrant),
+                fixedRevokedReason: effectAudits.some(hasRevokedReason),
+                sameEffectAudit: effectAudits.some((audit) =>
+                  namesSkippedGrant(audit) && hasRevokedReason(audit)),
+              }).toEqual({ namesSkippedGrant: true, fixedRevokedReason: true, sameEffectAudit: true });
+            }
             return;
           }
           if (ending === 'new-turn-preference-preview-ineligible') {
