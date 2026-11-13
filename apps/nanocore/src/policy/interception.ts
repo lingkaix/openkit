@@ -984,9 +984,11 @@ export class PolicyInterception {
     }
     let kernel: PolicyDecision | null = null;
     let escalation: GoalTaskAccessResult['escalation'];
+    let inGoalEnvelope = false;
     try {
       const evaluated = input.finalKernel({ proposal: input.proposal, advice });
       const goal = 'kernel' in evaluated ? evaluated : undefined;
+      inGoalEnvelope = goal?.inGoalEnvelope === true;
       kernel = 'kernel' in evaluated ? evaluated.kernel : evaluated;
       if (
         kernel.reasons.some(({ code }) =>
@@ -1016,7 +1018,16 @@ export class PolicyInterception {
     } catch {
       results.push('error');
     }
-    const result = combineResults(results);
+    const combined = combineResults(results);
+    // An agent's own grant is not initiation. Keep existing refusals and review
+    // destinations; only prevent an otherwise allowing, uninitiated release.
+    const result =
+      combined === 'allow' &&
+      input.proposal.subject.principal.kind === 'agent' &&
+      input.proposal.subject.onBehalfOf === null &&
+      !inGoalEnvelope
+        ? 'deny'
+        : combined;
     const decisionId = allocateEntityId('pd');
     const consumed =
       result === 'allow'

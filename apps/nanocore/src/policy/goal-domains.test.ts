@@ -352,7 +352,7 @@ describe('jointly approved Goal-domain publication', () => {
             operation: 'tool.use',
             mutating: false,
           }),
-        }).kernel,
+        }),
     });
     expect(decision.result).toBe('allow');
     expect(f.service().read(f.key)).toBeNull();

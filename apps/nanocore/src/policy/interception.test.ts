@@ -174,7 +174,11 @@ describe('bounded native Policy pipeline', () => {
       ...input,
       proposal: {
         ...proposal,
-        subject: { ...proposal.subject, principal: { kind: 'agent', id: 'worker' } },
+        subject: {
+          ...proposal.subject,
+          principal: { kind: 'agent', id: 'worker' },
+          onBehalfOf: userId,
+        },
       },
       authorizationUses: [{ statement, limit: 1 }],
     };

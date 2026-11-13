@@ -595,7 +595,7 @@ async function fixture() {
       participantAuthorized: () => false,
       stillCurrent: () =>
         tasks.evaluateTask(effect)?.authorizationRevision === evaluation.authorizationRevision,
-      finalKernel: () => tasks.evaluateTask(effect)!.kernel,
+      finalKernel: () => tasks.evaluateTask(effect)!,
     };
   }
   return {

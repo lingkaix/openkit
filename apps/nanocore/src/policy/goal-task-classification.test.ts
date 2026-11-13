@@ -254,6 +254,16 @@ describe('Goal Task classification at the final Policy interception seam', () =>
       const input = fixture();
       const decision = await new PolicyInterception().decide({
         ...input,
+        proposal:
+          mode === 'no-goal'
+            ? {
+                ...input.proposal,
+                subject: {
+                  ...input.proposal.subject,
+                  principal: { kind: 'human', id: humanId },
+                },
+              }
+            : input.proposal,
         authorizationUses: mode === 'task' ? input.authorizationUses : [],
         finalKernel: () => (mode === 'task' ? evaluate({ resources: [resource] }) : humanKernel()),
       });
