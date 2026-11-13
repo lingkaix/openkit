@@ -19,7 +19,10 @@ import { noSecrets } from './release-safety.mjs';
  * @param {boolean} [input.requirePrerelease] Whether the tag must identify a prerelease.
  * @param {boolean} [input.requireReleaseManifestAssessment] Require reviewed release assessment before publication.
  * @param {boolean} [input.requireReleaseImageDigests] Whether release image base images must be digest-pinned.
- * @returns {{ version: string, releaseImages: string[] }} Release summary.
+ * @param {string} [input.promotionSourceTag] Published prerelease whose bytes a stable tag promotes.
+ * @param {string} [input.repository] Exact publication repository.
+ * @param {string} [input.authorization] Engineer-authorized stable tag and commit, joined with @.
+ * @returns {{ version: string, releaseImages: string[], promotionSourceTag?: string }} Release summary.
  */
 export function validateReleasePreflight(input) {
   const repoRoot = resolve(input.repoRoot);
@@ -28,18 +31,52 @@ export function validateReleasePreflight(input) {
   if (input.requireMain) {
     assertTagOnMain(repoRoot, input.sha, input.mainRef ?? 'origin/main');
   }
-  if (input.requirePrerelease && !version.includes('-')) {
-    throw new Error(
-      `Release tag must identify a prerelease until stable-release blockers close: ${input.tag}`
-    );
+  if (input.promotionSourceTag && version.includes('-'))
+    throw Error('Release Management: a promotion target must be stable');
+  if (!version.includes('-') && (input.requirePrerelease || input.promotionSourceTag)) {
+    if (!input.promotionSourceTag)
+      throw new Error(
+        `Release tag must identify a prerelease until stable-release blockers close: ${input.tag}`
+      );
+    validateStablePromotionIdentity({ ...input, sourceTag: input.promotionSourceTag });
   }
 
-  if (input.requireReleaseManifestAssessment) readReleaseAssessment(repoRoot, input.tag);
+  if (input.requireReleaseManifestAssessment)
+    readReleaseAssessment(repoRoot, input.promotionSourceTag ?? input.tag);
   validatePortableReleaseInputs(repoRoot);
   validateNanoHostReleaseInputs(repoRoot);
   const releaseImages = validateImageManifest(repoRoot, Boolean(input.requireReleaseImageDigests));
 
-  return { version, releaseImages };
+  return {
+    version,
+    releaseImages,
+    ...(input.promotionSourceTag ? { promotionSourceTag: input.promotionSourceTag } : {}),
+  };
+}
+
+/** Require the engineer's exact tag/commit authorization; no standing prerelease grant admits stable publication. */
+export function validateStablePromotionIdentity({
+  repository,
+  tag,
+  sha,
+  sourceTag,
+  authorization,
+}) {
+  const version = parseVersionTag(tag);
+  const sourceVersion = parseVersionTag(sourceTag);
+  if (
+    version.includes('-') ||
+    !sourceVersion.startsWith(`${version}-`) ||
+    !/^[a-f0-9]{40}$/u.test(sha ?? '')
+  )
+    throw Error(
+      'Release Management: stable promotion requires the same version and exact source commit'
+    );
+  const scratch = repository === 'notrucked/openkit' && /^0\.0\.(?:0|[1-9]\d*)$/u.test(version);
+  if (!scratch && !(repository === 'lingkaix/openkit' && authorization === `${tag}@${sha}`))
+    throw Error(
+      'Release Management: stable publication requires exact engineer authorization after stable blockers close'
+    );
 }
 
 /**
@@ -662,9 +699,13 @@ function main() {
     requireReleaseImageDigests: true,
     sha: args.sha ? String(args.sha) : undefined,
     tag: String(args.tag ?? process.env.GITHUB_REF_NAME ?? ''),
+    promotionSourceTag: args['promotion-source'] ? String(args['promotion-source']) : undefined,
+    repository: args.repository ? String(args.repository) : undefined,
+    authorization: process.env.OPENKIT_STABLE_PROMOTION,
   });
 
   console.log(`Release preflight passed for ${result.version}.`);
+  if (result.promotionSourceTag) console.log(`Promotion source: ${result.promotionSourceTag}`);
   console.log(`Release images: ${result.releaseImages.join(', ')}`);
 }
 

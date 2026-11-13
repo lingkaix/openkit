@@ -1333,7 +1333,7 @@ test('manifest publication is required before notes and the existing immutable u
   );
 });
 
-test('stable rehearsal is tag-only, scratch-only, serialized and has no construction path', () => {
+test('stable rehearsal is tag-only, authority-gated, serialized and has no construction path', () => {
   const stable = parse(readFileSync('.github/workflows/release-promotion.yml', 'utf8'));
   assert.deepEqual(stable.on.push.tags, ['v*.*.*', '!v*.*.*-*']);
   assert.deepEqual(Object.keys(stable.on), ['push']);
@@ -1341,10 +1341,77 @@ test('stable rehearsal is tag-only, scratch-only, serialized and has no construc
   assert.equal(stable.concurrency.group, 'openkit-release');
   assert.equal(stable.concurrency['cancel-in-progress'], false);
   const job = stable.jobs.promote;
-  assert.equal(job.steps[0].name, 'Require bounded scratch authority');
-  assert.match(job.steps[0].run, /notrucked\/openkit/u);
-  assert.match(job.steps[0].run, /R001 remains open/u);
-  assert.ok(job.steps.find((s) => s.run?.includes('release-promotion.mjs')));
+  const authority = job.steps[0];
+  assert.ok(authority.run, 'the promotion job opens with an executable authority check');
+  assert.ok(!authority.uses, 'the authority check runs no action');
+  assert.ok(job.steps.indexOf(authority) < job.steps.findIndex((entry) => entry.uses));
+
+  const sha = 'a'.repeat(40);
+  const rehearsal = {
+    PATH: process.env.PATH,
+    REPOSITORY: 'notrucked/openkit',
+    FORK: 'false',
+    GITHUB_REF_NAME: 'v0.0.42',
+    GITHUB_SHA: sha,
+    OPENKIT_STABLE_PROMOTION: '',
+  };
+  const production = {
+    PATH: process.env.PATH,
+    REPOSITORY: 'lingkaix/openkit',
+    FORK: 'false',
+    GITHUB_REF_NAME: 'v0.1.0',
+    GITHUB_SHA: sha,
+    OPENKIT_STABLE_PROMOTION: `v0.1.0@${sha}`,
+  };
+  /** Runs the released authority check exactly as the runner would, with no other input. */
+  const authorityStatus = (environment) =>
+    spawnSync('bash', ['-eo', 'pipefail', '-c', authority.run], {
+      env: environment,
+      encoding: 'utf8',
+    }).status;
+  assert.equal(
+    authorityStatus(rehearsal),
+    0,
+    'the bounded synthetic scratch stable rehearsal runs'
+  );
+  assert.equal(
+    authorityStatus(production),
+    0,
+    'the exact engineer authorization admits production'
+  );
+  for (const [name, environment] of [
+    ['unauthorized production promotion', { ...production, OPENKIT_STABLE_PROMOTION: '' }],
+    [
+      'an authorization for another tag',
+      { ...production, OPENKIT_STABLE_PROMOTION: `v0.1.1@${sha}` },
+    ],
+    [
+      'an authorization for another commit',
+      { ...production, OPENKIT_STABLE_PROMOTION: `v0.1.0@${'b'.repeat(40)}` },
+    ],
+    ['an authorization without its commit', { ...production, OPENKIT_STABLE_PROMOTION: 'v0.1.0' }],
+    ['a forked repository', { ...production, FORK: 'true' }],
+    [
+      'a foreign repository holding the exact production authorization',
+      { ...production, REPOSITORY: 'example/openkit' },
+    ],
+    [
+      'a production repository promoting a bounded synthetic version',
+      { ...rehearsal, REPOSITORY: 'lingkaix/openkit' },
+    ],
+  ])
+    assert.notEqual(authorityStatus(environment), 0, `${name} stops before any effect`);
+
+  const promote = step(job, 'Promote and verify exact published bytes');
+  assert.equal(
+    promote.env.OPENKIT_STABLE_PROMOTION,
+    actionExpression('vars.OPENKIT_STABLE_PROMOTION'),
+    'the driver re-reads the same engineer authorization'
+  );
+  assert.match(
+    promote.run,
+    /release-promotion\.mjs[\s\S]*--repository "\$\{GITHUB_REPOSITORY\}" --tag "\$\{GITHUB_REF_NAME\}"[\s\S]*--sha "\$\{GITHUB_SHA\}"/u
+  );
   const commands = job.steps.map((s) => s.run ?? '').join('\n');
   assert.doesNotMatch(
     commands,

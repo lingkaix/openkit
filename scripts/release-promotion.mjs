@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-/** No-build promotion of an already verified prerelease; live admission is scratch-only while R001 stays open. */
+/** No-build stable promotion; production requires exact engineer authorization after stable prerequisites close. */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -9,7 +9,12 @@ import { parseArgs } from 'node:util';
 import { verifyOperationsSkillArchive } from './package-release-assets.mjs';
 import { resolveImageDigest } from './release-image-state.mjs';
 import { readReleaseNotesInput } from './release-notes.mjs';
-import { parseVersionTag, readReleaseAssessment } from './release-preflight.mjs';
+import {
+  parseVersionTag,
+  readReleaseAssessment,
+  validateReleasePreflight,
+  validateStablePromotionIdentity,
+} from './release-preflight.mjs';
 import { createReleaseManifest, publicationManifest } from './release-record.mjs';
 import { verifyNanoHostRelease } from './verify-nanohost-release.mjs';
 
@@ -41,12 +46,12 @@ export function promotionAssets(sourceTag) {
 }
 
 /** Validate observed source, successful latest-attempt proof, exact indexes and immutable retry state before writes. */
-export function planStablePromotion({ repository, tag, sha, source, registry }) {
-  const version = parseVersionTag(tag);
-  requireFact(
-    repository === 'notrucked/openkit' && /^0\.0\.(?:0|[1-9]\d*)$/.test(version),
-    'only the bounded synthetic scratch stable rehearsal is admitted; production remains reserved'
-  );
+export function planStablePromotion({ repository, tag, sha, source, registry, authorization }) {
+  try {
+    validateStablePromotionIdentity({ repository, tag, sha, sourceTag: source.tag, authorization });
+  } catch (error) {
+    requireFact(false, error.message);
+  }
   requireFact(/^[a-f0-9]{40}$/.test(sha ?? ''), 'exact source commit');
   requireFact(
     source.tag.startsWith(`${tag}-`) && source.resolvedSha === sha,
@@ -130,8 +135,8 @@ export function planStablePromotion({ repository, tag, sha, source, registry }) 
   let present = 0;
   for (const image of m.images) {
     requireFact(
-      image.image === `ghcr.io/notrucked/openkit-${image.id}`,
-      'scratch-owned image names only'
+      image.image === `ghcr.io/${repository.split('/')[0]}/openkit-${image.id}`,
+      'publication-owned image names only'
     );
     const seen = registry.find((i) => i.id === image.id);
     requireFact(
@@ -247,7 +252,12 @@ async function main() {
     },
   });
   const { repository, tag, sha } = args;
-  requireFact(repository === 'notrucked/openkit', 'production stable publication remains reserved');
+  const authorization = process.env.OPENKIT_STABLE_PROMOTION;
+  requireFact(
+    repository === 'notrucked/openkit' ||
+      (repository === 'lingkaix/openkit' && authorization === `${tag}@${sha}`),
+    'production stable publication needs exact engineer authorization'
+  );
   requireFact(run('git', ['rev-parse', 'HEAD']) === sha, 'clean exact-source checkout');
   requireFact(run('git', ['status', '--porcelain']) === '', 'clean exact-source checkout');
   requireFact(resolveTag(repository, tag) === sha, 'stable tag source');
@@ -255,11 +265,27 @@ async function main() {
   mkdirSync(dir, { recursive: false });
   const releases = api(`repos/${repository}/releases?per_page=100`, true).flat();
   const sources = releases.filter(
-    (r) => r.prerelease && !r.draft && r.tag_name.startsWith(`${tag}-`)
+    (r) =>
+      r.prerelease &&
+      !r.draft &&
+      r.tag_name.startsWith(`${tag}-`) &&
+      resolveTag(repository, r.tag_name) === sha
   );
-  requireFact(sources.length === 1, 'one published prerelease of this synthetic version');
+  requireFact(sources.length === 1, 'one published same-version prerelease on the stable commit');
   const sourceRelease = sources[0],
     sourceTag = sourceRelease.tag_name;
+  validateReleasePreflight({
+    repoRoot: process.cwd(),
+    tag,
+    sha,
+    repository,
+    authorization,
+    promotionSourceTag: sourceTag,
+    requireMain: true,
+    requirePrerelease: true,
+    requireReleaseManifestAssessment: true,
+    requireReleaseImageDigests: true,
+  });
   const match = /\/actions\/runs\/(\d+)/u.exec(sourceRelease.body ?? '');
   requireFact(match, 'source publication run');
   const sourceRun = api(`repos/${repository}/actions/runs/${match[1]}`);
@@ -327,7 +353,7 @@ async function main() {
       ? api(`repos/${repository}/releases/latest`).id
       : null,
   };
-  const plan = planStablePromotion({ repository, tag, sha, source, registry });
+  const plan = planStablePromotion({ repository, tag, sha, source, registry, authorization });
   const currentRun = api(`repos/${repository}/actions/runs/${sourceRun.id}`);
   requireFact(
     currentRun.run_attempt === sourceRun.run_attempt && currentRun.conclusion === 'success',
@@ -347,7 +373,7 @@ async function main() {
       process.env.GITHUB_EVENT_NAME === 'push' &&
       process.env.GITHUB_REF === `refs/tags/${tag}` &&
       process.env.GITHUB_SHA === sha,
-    'live promotion requires the exact scratch tag workflow'
+    'live promotion requires the exact authorized tag workflow'
   );
   const notes = join(dir, 'stable-notes.md');
   writeFileSync(notes, plan.body);
@@ -387,7 +413,7 @@ async function main() {
       after.body === plan.body,
     'stable release flags, title and reviewed notes'
   );
-  requireFact(api(`repos/${repository}/releases/latest`).id === after.id, 'scratch GitHub Latest');
+  requireFact(api(`repos/${repository}/releases/latest`).id === after.id, 'GitHub Latest');
   requireFact(
     JSON.stringify(after.assets.map((a) => a.name).sort()) === JSON.stringify(plan.assets),
     'stable attachment set'

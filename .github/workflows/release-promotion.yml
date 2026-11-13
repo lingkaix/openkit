@@ -17,20 +17,28 @@ jobs:
     name: Promote verified prerelease without rebuild
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    environment: stable-release
     permissions:
       contents: write
       actions: read
       packages: write
     steps:
-      - name: Require bounded scratch authority
+      - name: Require exact engineer authority or bounded scratch rehearsal
         env:
           REPOSITORY: ${{ github.repository }}
           FORK: ${{ github.event.repository.fork }}
+          OPENKIT_STABLE_PROMOTION: ${{ vars.OPENKIT_STABLE_PROMOTION }}
         run: |
-          [ "${REPOSITORY}" = notrucked/openkit ] && [ "${FORK}" = false ] || {
-            echo 'Production stable publication is reserved and R001 remains open.' >&2
-            exit 1
-          }
+          [ "${FORK}" = false ] || exit 1
+          case "${REPOSITORY}" in
+            notrucked/openkit) ;;
+            lingkaix/openkit)
+              [ "${OPENKIT_STABLE_PROMOTION}" = "${GITHUB_REF_NAME}@${GITHUB_SHA}" ] || {
+                echo 'Stable publication needs exact engineer authorization after all stable prerequisites pass.' >&2
+                exit 1
+              } ;;
+            *) exit 1 ;;
+          esac
 
       - name: Checkout exact promoted source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,7 +54,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Log in to scratch packages
+      - name: Log in to release packages
         uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:
           registry: ghcr.io
@@ -59,6 +67,7 @@ jobs:
       - name: Promote and verify exact published bytes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENKIT_STABLE_PROMOTION: ${{ vars.OPENKIT_STABLE_PROMOTION }}
         run: |
           node scripts/release-promotion.mjs \
             --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" \
