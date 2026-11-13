@@ -503,6 +503,11 @@ export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
     usage: run.usage ?? null,
     fallback: run.fallback ?? null,
     planSegments: run.planSegments ?? null,
+    admittedRun: {
+      id: run.id,
+      narrative: run.narrative,
+      plan: run.plan ?? null,
+    },
     errorPresentation: run.error?.presentation ?? null,
     reportedActivity: Object.hasOwn(run, 'reportedActivity')
       ? (run.reportedActivity ?? null)

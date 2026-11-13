@@ -25,6 +25,15 @@ export interface TimelineEntry {
   usage?: TimelineRunEntry['usage'];
   fallback?: TimelineRunEntry['fallback'];
   planSegments?: TimelineRunEntry['planSegments'] | null;
+  /**
+   * Narrative and plan from the run that produced this entry.
+   * Interval membership reads this owner. A dashboard projection omits it.
+   */
+  admittedRun?: {
+    id: string;
+    narrative: TimelineRunEntry['narrative'];
+    plan: TimelineItem | null;
+  };
   policies?: readonly { id: string; policy: TimelineItem['policy'] }[];
   /** Owner presentation from this exact run. Absence is not filled from another run. */
   errorPresentation?: NonNullable<TimelineRunEntry['error']>['presentation'] | null;

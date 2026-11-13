@@ -66,21 +66,26 @@ function admit(items: readonly TimelineItem[]): Map<string, AdmittedItem> {
 }
 
 /**
- * Finished-interval members from the current admitted items only.
- * Containment is `start <= firstPublicationSequence < end` in the plan-boundary
- * position space. A null or omitted position is never placed. Cursors mean the
- * bounded page continues; a covered span with no cursor is not an edge.
+ * Finished-interval members from the current admitted items.
+ * Containment is `start <= firstPublicationSequence < end` across every
+ * admitted source. Coverage extrema come only from the step page, so an
+ * earlier narrative or plan position does not prove that page is loaded.
+ * A null or omitted position is never placed. A step cursor means that page
+ * continues; a covered span with no cursor is not an edge.
  */
 export function finishedIntervalView(
   segment: { startSequence: number; endSequence: number; steps: number },
   items: readonly TimelineItem[],
+  stepItems: readonly TimelineItem[],
   edges: { earlier: boolean; later: boolean; settled: boolean }
 ): FinishedIntervalView {
   const admitted = admit(items);
+  const covered = admit(stepItems);
   let min: number | null = null;
   let max: number | null = null;
   let unplacedStep = false;
-  for (const row of admitted.values()) {
+  let pageMembers = 0;
+  for (const row of covered.values()) {
     if (typeof row.sequence === 'number') {
       min = min == null || row.sequence < min ? row.sequence : min;
       max = max == null || row.sequence > max ? row.sequence : max;
@@ -91,8 +96,9 @@ export function finishedIntervalView(
       row.sequence >= segment.startSequence &&
       row.sequence < segment.endSequence;
     // A known position outside this interval is not one of its members.
-    // An unknown position, or a row in range with no body, cannot be completed.
+    // An unknown step on this page, or a row in range with no body, cannot be completed.
     if (typeof row.sequence !== 'number' || (inRange && !canShow(row.item))) unplacedStep = true;
+    if (inRange && typeof row.sequence === 'number' && canShow(row.item)) pageMembers += 1;
   }
   const extendsEarlier = Boolean(edges.earlier && min != null && segment.startSequence < min);
   const extendsLater = Boolean(edges.later && max != null && segment.endSequence > max + 1);
@@ -114,7 +120,7 @@ export function finishedIntervalView(
     !unplacedStep &&
     !extendsEarlier &&
     !extendsLater &&
-    members.length === segment.steps;
+    pageMembers === segment.steps;
   return {
     members,
     partial: members.length > 0 && !exact && edges.settled,

@@ -1,12 +1,12 @@
 import type { TimelineItem, TimelineRunEntry } from '@openkit/app-api-schemas';
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
 import { fillCopy, timelineCopy } from './copy';
-import { getDisplayedTimeline, subscribeDisplayedTimeline } from './displayed-timeline';
 import { finishedIntervalView } from './interval-members';
+import type { TimelineEntry } from './source';
 import { useRunItemWindow } from './use-timeline-window';
 
 type RecordedPlan = NonNullable<TimelineRunEntry['planSegments']>;
@@ -44,52 +44,7 @@ function segmentLine(segment: PlanSegment): string {
   return fillCopy(timelineCopy.segmentSteps, { title: segment.title, count: segment.steps });
 }
 
-function emptyDisplayedTimeline() {
-  return null;
-}
-
-/**
- * Finished intervals the user opened, kept outside the instance.
- * A step read can replace the disclosure before a pointer gesture ends.
- * A pointer press does not close an interval until that read has settled.
- * Keyboard presses toggle immediately. Membership still comes only from
- * the current admitted window.
- */
-const closedIntervals: ReadonlySet<string> = new Set();
-let openIntervals: ReadonlySet<string> = closedIntervals;
-const openIntervalListeners = new Set<() => void>();
-
-function subscribeOpenIntervals(listener: () => void): () => void {
-  openIntervalListeners.add(listener);
-  return () => {
-    openIntervalListeners.delete(listener);
-  };
-}
-
-function getOpenIntervals(): ReadonlySet<string> {
-  return openIntervals;
-}
-
-function getServerOpenIntervals(): ReadonlySet<string> {
-  return closedIntervals;
-}
-
-function toggleInterval(key: string, allowClose: boolean): void {
-  const open = openIntervals.has(key);
-  if (open && !allowClose) return;
-  const next = new Set(openIntervals);
-  if (open) next.delete(key);
-  else next.add(key);
-  openIntervals = next;
-  for (const listener of openIntervalListeners) listener();
-}
-
-/** Test isolation. The latch outlives one disclosure so a step read cannot close it. */
-export function resetOpenIntervals(): void {
-  if (openIntervals.size === 0) return;
-  openIntervals = closedIntervals;
-  for (const listener of openIntervalListeners) listener();
-}
+type AdmittedRun = NonNullable<TimelineEntry['admittedRun']>;
 
 interface StepAdmission {
   items: readonly TimelineItem[];
@@ -158,26 +113,27 @@ function IntervalMemberRow({ item }: { item: TimelineItem }) {
   return <ItemView item={item.detail.value as ThreadItem} readOnly />;
 }
 
-/** Recorded plan intervals for this run. Omitted or null coverage renders nothing. */
-export function PlanSegments({ recorded }: { recorded?: RecordedPlan | null }) {
-  const displayed = useSyncExternalStore(
-    subscribeDisplayedTimeline,
-    getDisplayedTimeline,
-    emptyDisplayedTimeline
-  );
-  const openKeys = useSyncExternalStore(
-    subscribeOpenIntervals,
-    getOpenIntervals,
-    getServerOpenIntervals
-  );
+/**
+ * Recorded plan intervals for this run.
+ * Open state stays on this owner, so a second stream and a remount start closed.
+ * The admitted run comes from the parent entry. Coverage uses this step page only.
+ */
+export function PlanSegments({
+  recorded,
+  admittedRun = null,
+  workspaceId = null,
+  threadId = null,
+}: {
+  recorded?: RecordedPlan | null;
+  admittedRun?: AdmittedRun | null;
+  workspaceId?: string | null;
+  threadId?: string | null;
+}) {
+  const [openKeys, setOpenKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [stepPage, setStepPage] = useState<StepAdmission | null>(null);
   const onStepPage = useCallback((next: StepAdmission) => {
     setStepPage((current) => (current && sameAdmission(current, next) ? current : next));
   }, []);
-  const run =
-    recorded == null
-      ? null
-      : (displayed?.data?.runs.find((candidate) => candidate.planSegments === recorded) ?? null);
   const anyOpen =
     recorded?.segments.some(
       (segment) => segment.endSequence != null && openKeys.has(segmentKey(segment))
@@ -185,19 +141,31 @@ export function PlanSegments({ recorded }: { recorded?: RecordedPlan | null }) {
   useEffect(() => {
     if (!anyOpen) setStepPage(null);
   }, [anyOpen]);
-  const itemWindow =
-    run && displayed?.data?.itemWindow?.turnId === run.id ? displayed.data.itemWindow : null;
-  const earlier = Boolean(stepPage?.beforeCursor || itemWindow?.beforeCursor);
-  const later = Boolean(stepPage?.afterCursor || itemWindow?.afterCursor || run?.narrativeCursor);
-  const frameEarlier = Boolean(displayed?.data?.beforeCursor);
-  const frameLater = Boolean(displayed?.data?.afterCursor);
+  const earlier = Boolean(stepPage?.beforeCursor);
+  const later = Boolean(stepPage?.afterCursor);
   const sources: TimelineItem[] = [];
-  if (run) {
-    sources.push(...run.narrative);
-    if (run.plan) sources.push(run.plan);
-    if (itemWindow) sources.push(...itemWindow.items);
-    if (stepPage) sources.push(...stepPage.items.filter((item) => item.turnId === run.id));
+  const stepItems: TimelineItem[] = [];
+  if (admittedRun) {
+    sources.push(...admittedRun.narrative);
+    if (admittedRun.plan) sources.push(admittedRun.plan);
+    if (stepPage) {
+      for (const item of stepPage.items) {
+        if (item.turnId !== admittedRun.id) continue;
+        sources.push(item);
+        stepItems.push(item);
+      }
+    }
   }
+  const toggle = (key: string, allowClose: boolean) => {
+    setOpenKeys((current) => {
+      const open = current.has(key);
+      if (open && !allowClose) return current;
+      const next = new Set(current);
+      if (open) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  };
   if (!recorded || (recorded.segments.length === 0 && recorded.coverage !== 'partial')) return null;
   const settled = stepPage?.settled === true;
   const rows = recorded.segments.map((segment) => {
@@ -213,23 +181,22 @@ export function PlanSegments({ recorded }: { recorded?: RecordedPlan | null }) {
               steps: segment.steps,
             },
             sources,
+            stepItems,
             { earlier, later, settled }
           );
     return { segment, key, open, view };
   });
   const showEarlier = rows.some(
-    (row) => row.open && row.view?.extendsEarlier && stepPage?.beforeCursor && !frameEarlier
+    (row) => row.open && row.view?.extendsEarlier && stepPage?.beforeCursor
   );
-  const showLater = rows.some(
-    (row) => row.open && row.view?.extendsLater && stepPage?.afterCursor && !frameLater
-  );
+  const showLater = rows.some((row) => row.open && row.view?.extendsLater && stepPage?.afterCursor);
   return (
     <div data-plan-coverage={recorded.coverage}>
-      {run && displayed && anyOpen ? (
+      {admittedRun && workspaceId && threadId && anyOpen ? (
         <IntervalStepPage
-          workspaceId={displayed.workspaceId}
-          threadId={displayed.threadId}
-          turnId={run.id}
+          workspaceId={workspaceId}
+          threadId={threadId}
+          turnId={admittedRun.id}
           onPage={onStepPage}
         />
       ) : null}
@@ -249,7 +216,7 @@ export function PlanSegments({ recorded }: { recorded?: RecordedPlan | null }) {
                   onPress={(event) => {
                     const allowClose =
                       event.pointerType === 'keyboard' || stepPage?.settled === true;
-                    toggleInterval(key, allowClose);
+                    toggle(key, allowClose);
                   }}
                 >
                   {segmentLine(segment)}

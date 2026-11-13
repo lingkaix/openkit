@@ -13,7 +13,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CoreClientProvider } from '../../../app/core-client';
 import { ThreadStream } from '../ThreadStream';
-import { resetOpenIntervals } from './tb7';
 import { useRunItemWindow } from './use-timeline-window';
 
 function id(kind: string, value: number) {
@@ -302,7 +301,6 @@ beforeEach(() => {
   };
 });
 afterEach(() => {
-  resetOpenIntervals();
   for (const client of clients.splice(0)) client.clear();
   if (originalObserver) globalThis.IntersectionObserver = originalObserver;
   else Reflect.deleteProperty(globalThis, 'IntersectionObserver');

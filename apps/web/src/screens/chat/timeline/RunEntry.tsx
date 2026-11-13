@@ -442,7 +442,12 @@ function RunEntryBody({
           {timelineCopy.plan}
         </p>
       ) : null}
-      <PlanSegments recorded={entry.planSegments} />
+      <PlanSegments
+        recorded={entry.planSegments}
+        admittedRun={entry.admittedRun ?? null}
+        workspaceId={factsScope?.workspaceId ?? null}
+        threadId={factsScope?.threadId ?? null}
+      />
       {earlierPlans.length > 0 ? (
         <div data-fold-depth="1">
           <Button
