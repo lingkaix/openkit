@@ -1266,7 +1266,14 @@ async function decideWorkspaceRecovery(
             }
           );
       } finally {
-        release?.();
+        try {
+          // This recovery preflight has no later capture-read phases.
+          await getControlStoreWorkerClient().finishCaptureReads(
+            `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`
+          );
+        } finally {
+          release?.();
+        }
       }
       const owner = {
         core: owned.coreDb,
@@ -1519,8 +1526,15 @@ export function createWorkspaceRestoreOperationImplementations(
                 }
               );
           } finally {
-            // Native lifecycle posts must not wait on the hold owned by this same operation.
-            releaseHold?.();
+            try {
+              // End the preflight generation before native replacement or a later retry.
+              await getControlStoreWorkerClient().finishCaptureReads(
+                `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`
+              );
+            } finally {
+              // Native lifecycle posts must not wait on this operation's own hold.
+              releaseHold?.();
+            }
           }
           const owner = {
             core: owned.coreDb,

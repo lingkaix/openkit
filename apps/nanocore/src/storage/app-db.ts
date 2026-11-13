@@ -22,6 +22,7 @@ import {
 } from './control-store-product-records.js';
 import {
   assertExistingAppReadReady,
+  ControlStoreWorkerError,
   getControlStoreWorkerClient,
 } from './control-store-worker-client.js';
 import { resolveDataRootPath } from './fs-layout.js';
@@ -129,7 +130,21 @@ export async function withExistingAppRead<T>(
     try {
       await getControlStoreWorkerClient().openExistingAppForRead(dataRoot, workspaceId, appId);
     } catch (error) {
-      if (error instanceof OperationError || error instanceof KernelCommandError) throw error;
+      // Native admission must preserve the preflight's unsupported-history refusal.
+      if (error instanceof ControlStoreWorkerError && error.code === 'migration_unsupported_app') {
+        const refusal = new BootConfigError(
+          error.code,
+          'Unsupported app native Drizzle ledger identity.'
+        );
+        refusal.cause = error;
+        throw refusal;
+      }
+      if (
+        error instanceof BootConfigError ||
+        error instanceof OperationError ||
+        error instanceof KernelCommandError
+      )
+        throw error;
       const unavailable = new KernelCommandError(
         'unavailable',
         'App read authority is unavailable.'

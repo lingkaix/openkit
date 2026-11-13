@@ -16,7 +16,11 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
-import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
+import {
+  commandRequestKey,
+  getCommandRequestRecord,
+  getCommandRequestRecordFromDb,
+} from './command-request-records.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -622,9 +626,8 @@ it('refuses a new valid same-Turn Item publication after Workspace retirement be
     expect(held.row()).toEqual(held.original);
     expect(retained().find((row) => row.id === first.id)).toEqual(originalRows[0]);
     expect(
-      getCommandRequestRecord(
-        f.root,
-        a.scope,
+      getCommandRequestRecordFromDb(
+        held.db,
         commandRequestKey('kernel.records.create', a.requestId, a.scope),
         new Date().toISOString()
       )
