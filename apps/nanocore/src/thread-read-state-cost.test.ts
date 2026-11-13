@@ -24,12 +24,13 @@ const root = mkdtempSync(join(tmpdir(), 'receipt-cost-'));
 const coreDb = createTestCoreDb(root);
 const userId = ensureLocalUser(coreDb);
 const store = createTestStore({ dataRoot: root });
-const app = createApp({ store, coreDb });
+let app: ReturnType<typeof createApp>;
 const eligible: string[] = [];
 let workspaceId: string;
 let threadId: string;
 
 beforeAll(async () => {
+  app = createApp({ store, coreDb });
   const workspace = await store.createWorkspace('Receipt cost');
   workspaceId = workspace.id;
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
