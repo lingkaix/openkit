@@ -145,6 +145,7 @@ export function ThreadReadReceipts({
   const threadUnreadCount = navigation.isSuccess
     ? navigation.data?.find((row) => row.thread.id === threadId)?.unreadCount
     : undefined;
+  const exactUnread = typeof threadUnreadCount === 'number' ? threadUnreadCount : null;
   const pending = useRef(new Set<string>());
   const running = useRef(false);
   const failed = useRef(false);
@@ -217,15 +218,20 @@ export function ThreadReadReceipts({
               }}
             />
           ) : null}
-          {threadUnreadCount != null && threadUnreadCount > 0 ? (
+          {exactUnread != null && exactUnread > 0 ? (
             <p className="text-xs text-fg-muted">
-              {threadUnreadCount === 1 ? '1 unread reply' : `${threadUnreadCount} unread replies`}
+              {exactUnread === 1 ? '1 unread reply' : `${exactUnread} unread replies`}
             </p>
           ) : null}
-          {threadUnreadCount === 0 ? (
-            <p className="text-xs text-fg-muted">All replies read</p>
+          {exactUnread === 0 ? <p className="text-xs text-fg-muted">All replies read</p> : null}
+          {navigation.isSuccess && exactUnread == null ? (
+            <span
+              aria-hidden
+              data-unread="unknown"
+              className="inline-block size-1.5 rounded-full bg-fg-muted"
+            />
           ) : null}
-          {unreadIds.size > 0 || threadUnreadCount == null || threadUnreadCount > 0 ? (
+          {unreadIds.size > 0 || exactUnread == null || exactUnread > 0 ? (
             <div data-read-dock="bar" className="flex justify-start">
               <Button
                 variant="quiet"

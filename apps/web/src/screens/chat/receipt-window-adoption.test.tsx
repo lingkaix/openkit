@@ -133,7 +133,13 @@ function NavigationObserver() {
 /** Fake only the external Core client. React Query, receipt code, DOM and observers are real. */
 function fixture(
   items: ThreadItem[],
-  options: { unread?: string[]; navigationCount?: number | null; omitCurrentRow?: boolean } = {}
+  options: {
+    unread?: string[];
+    navigationCount?: number | null;
+    omitCurrentRow?: boolean;
+    currentUnread?: number | null;
+    omitCurrentUnread?: boolean;
+  } = {}
 ) {
   const eligible = items.filter((item) => item.status === 'completed').map((item) => item.id);
   const unread = new Set(options.unread ?? eligible);
@@ -150,28 +156,38 @@ function fixture(
       ? { scope: 'thread' as const, acknowledgedCount: eligible.length }
       : { scope: 'window' as const, acknowledgedItemIds: [...new Set(input.itemIds)] }
   );
-  const row = (id: string, unreadCount: number) => ({
-    thread: {
-      id,
-      owner: { kind: 'workspace' as const, workspaceId: WS },
-      name: 'Conversation',
-      status: 'active' as const,
-      entryPath: 'conversation' as const,
-      visibility: 'workspace' as const,
-      createdAt: AT,
-      updatedAt: AT,
-    },
-    activity: 'chat' as const,
-    state: 'idle' as const,
-    lastActivityAt: AT,
-    unreadCount,
-  });
+  const row = (id: string, unreadCount: number | null | undefined) => {
+    const entry = {
+      thread: {
+        id,
+        owner: { kind: 'workspace' as const, workspaceId: WS },
+        name: 'Conversation',
+        status: 'active' as const,
+        entryPath: 'conversation' as const,
+        visibility: 'workspace' as const,
+        createdAt: AT,
+        updatedAt: AT,
+      },
+      activity: 'chat' as const,
+      state: 'idle' as const,
+      lastActivityAt: AT,
+      unreadCount: unreadCount ?? 0,
+    };
+    if (unreadCount === undefined) delete (entry as { unreadCount?: number }).unreadCount;
+    else if (unreadCount === null) (entry as { unreadCount: number | null }).unreadCount = null;
+    return entry;
+  };
   const navigation = vi.fn(async () => {
     if (options.navigationCount === null) throw new Error('Navigation unavailable');
+    const currentUnread = options.omitCurrentUnread
+      ? undefined
+      : 'currentUnread' in options
+        ? options.currentUnread
+        : (options.navigationCount ?? 73);
     return {
       items: [
         row(OTHER_THREAD, 999),
-        ...(options.omitCurrentRow ? [] : [row(THREAD, options.navigationCount ?? 73)]),
+        ...(options.omitCurrentRow ? [] : [row(THREAD, currentUnread)]),
       ],
       nextCursor: null,
     };
@@ -319,6 +335,38 @@ describe('thread-level banner truth and bounded mutations', () => {
     await screen.findByText('ready');
     await settled(f.queryClient);
     expect(screen.getByText('All replies read')).toBeInTheDocument();
+  });
+
+  it.each([
+    ['number', 4],
+    ['zero', 0],
+    ['null', null],
+    ['undefined', undefined],
+  ] as const)('keeps an exact %s unread count distinct from unknown', async (kind, value) => {
+    const f = fixture([], {
+      unread: [],
+      ...(kind === 'undefined' ? { omitCurrentUnread: true } : { currentUnread: value }),
+    });
+    f.mount(f.receipts());
+    await screen.findByText('ready');
+    await settled(f.queryClient);
+    const unknown = document.querySelector('[data-unread="unknown"]');
+    if (kind === 'number') {
+      expect(screen.getByText('4 unread replies')).toBeInTheDocument();
+      expect(screen.queryByText('All replies read')).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Mark read/i })).toBeEnabled();
+      expect(unknown).toBeNull();
+    } else if (kind === 'zero') {
+      expect(screen.getByText('All replies read')).toBeInTheDocument();
+      expect(screen.queryByText(/\bunread\b/i)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Mark read/i })).not.toBeInTheDocument();
+      expect(unknown).toBeNull();
+    } else {
+      expect(screen.queryByText('All replies read')).not.toBeInTheDocument();
+      expect(screen.queryByText(/\bunread\b/i)).not.toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Mark read/i })).toBeEnabled();
+      expect(unknown).not.toBeNull();
+    }
   });
 
   it('does not announce all-read or a partial-window count while another chunk is pending', async () => {

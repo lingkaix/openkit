@@ -845,6 +845,54 @@ it('announces that conversations are loading', async () => {
   await waitFor(() => expect(screen.queryByText('Loading conversations…')).not.toBeInTheDocument());
 });
 
+it.each([
+  ['number', 4],
+  ['zero', 0],
+  ['null', null],
+  ['undefined', undefined],
+] as const)(
+  'shows a sidebar unread %s only when the count is an exact number',
+  async (kind, unreadCount) => {
+    const projectId = 'ws_019a0000-0000-7000-8000-000000000101';
+    const row = {
+      thread: {
+        id: 'th_00000000-0000-70ad-bcb6-3098e81b33d6',
+        owner: { kind: 'workspace' as const, workspaceId: projectId },
+        name: 'Conversation',
+        preview: '',
+        status: 'active' as const,
+        entryPath: 'conversation' as const,
+        visibility: 'workspace' as const,
+        createdAt: '2026-09-16T00:00:00.000Z',
+        updatedAt: '2026-09-16T00:00:00.000Z',
+      },
+      activity: 'chat' as const,
+      state: 'idle' as const,
+      lastActivityAt: '2026-09-16T00:00:00.000Z',
+      unreadCount: unreadCount ?? 0,
+    };
+    if (unreadCount === undefined) delete (row as { unreadCount?: number }).unreadCount;
+    else (row as { unreadCount: number | null }).unreadCount = unreadCount;
+    renderAssistantNavigation(
+      vi.fn(),
+      vi.fn().mockResolvedValue({ items: [row], nextCursor: null })
+    );
+    const button = await screen.findByRole('button', {
+      name: 'Personal Assistant',
+      description: /· Idle/,
+    });
+    if (kind === 'number') {
+      expect(button).toHaveAccessibleDescription(/4 unread replies/);
+      expect(within(button).getByText('4')).toBeVisible();
+      expect(button.querySelector('[data-unread="unknown"]')).toBeNull();
+    } else {
+      expect(button).not.toHaveAccessibleDescription(/unread/i);
+      expect(within(button).queryByText('4')).not.toBeInTheDocument();
+      expect(button.querySelector('[data-unread="unknown"]') == null).toBe(kind === 'zero');
+    }
+  }
+);
+
 it('returns focus to Search when Escape closes the search overlay', async () => {
   const user = userEvent.setup();
   renderAssistantNavigation(vi.fn());

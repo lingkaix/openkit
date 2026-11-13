@@ -191,16 +191,27 @@ export function ThreadLists({ segment = 'all' }: { segment?: ListSegment }) {
           ? 'Needs you'
           : 'Idle';
     const suffix = `/${encodeURIComponent(workspace.id)}/${encodeURIComponent(thread.id)}`;
+    const exactUnread = typeof unreadCount === 'number' ? unreadCount : null;
+    const unreadSuffix =
+      !navigation.isError && exactUnread != null && exactUnread > 0
+        ? ` · ${exactUnread} unread ${exactUnread === 1 ? 'reply' : 'replies'}`
+        : '';
     return (
       <NavRow
         key={thread.id}
         indent={indent}
         icon={icons[activity]}
         label={labelOverride ?? thread.name ?? thread.preview}
-        description={`${labels[activity]} · ${status}${!navigation.isError && unreadCount > 0 ? ` · ${unreadCount} unread ${unreadCount === 1 ? 'reply' : 'replies'}` : ''}`}
+        description={`${labels[activity]} · ${status}${unreadSuffix}`}
         trailing={
-          !navigation.isError && unreadCount > 0 ? (
-            <CountBadge count={unreadCount} tone="neutral" />
+          navigation.isError ? undefined : exactUnread != null && exactUnread > 0 ? (
+            <CountBadge count={exactUnread} tone="neutral" />
+          ) : exactUnread == null ? (
+            <span
+              aria-hidden
+              data-unread="unknown"
+              className="inline-block size-1.5 rounded-full bg-fg-muted"
+            />
           ) : undefined
         }
         iconBadge={
