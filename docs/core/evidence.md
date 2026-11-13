@@ -274,7 +274,7 @@ Runtime-private task graphs, retries, and telemetry remain private unless an own
 
 `communication.md` and `mediation.md` own network and external-call semantics; this document owns only measured consumption and audit projections derived from those effects.
 
-`policy.md` owns authority and `PermissionDecision`, while budget enforcement remains a policy projection over measured usage rather than a Metering decision.
+`policy.md` owns authority and `PermissionDecision`. [Mediation](mediation.md#rate-limits-and-budgets) owns `Budget` and its enforcement boundary. Budget enforcement reads measured usage and is not a Metering decision.
 
 ## Related Docs
 

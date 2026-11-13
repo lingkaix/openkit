@@ -108,7 +108,7 @@ This document owns:
 - planning and the human approval of one exact Plan version as workflow mechanisms, ordinary bounded Tasks, gate, decision, evidence, checkpoint, context compaction, handoff, retry, refinement, stop, and closeout semantics. This document does not own the Goal record or the person's approval record.
 - the relationship between workflow mechanisms, current Goal Mode, the remote MCP guide loop recipe as a channel that does not advance a Goal by a step, worker execution, artifacts, evidence, and review
 - the rule that prevents premature `TaskRun`-style core concepts
-- the concept-level meanings of `Judgement` and `Candidate Set` as the human ground truth for improvement
+- the concept-level meanings of `Judgement Grounding`, `Judgement`, `Candidate Set`, and `Improvement Input` as the human ground truth for improvement
 
 This document does not own:
 
@@ -412,6 +412,21 @@ A Workspace-only Artifact import or registration may omit an originating Thread 
 
 Deliverable, task, job, and goal are product-facing terms. A Deliverable normally projects one or more Artifacts plus Item-backed status or summary, and none of these labels creates parallel durable truth.
 
+## Judgement Grounding
+
+`Judgement Grounding` is the conversion of a human judgement into Agent input that is precise, localized, executable, and replayable. A person directs work by an act on an exact target, such as a selection, a comparison, an annotation, an adjustment, or a local correction. The person does not have to restate that judgement in prose. The [Core owners decision](../decisions/20261113-core_owners_for_vision_mechanisms.md) records why Core owns this concept.
+
+The four properties have these meanings:
+
+- Precise: the judgement names one exact target. The target is one exact version, one exact range in one exact revision, or one immutable Candidate Set.
+- Localized: when the judgement applies to a part of a resource, the target names that bounded part and retains its original content.
+- Executable: an Agent can receive the judged target and the typed choice as input to a later step. The Agent does not have to interpret prose to find the target.
+- Replayable: an accepted Judgement is immutable and retains its exact target and typed choice. A later step, review, or evaluation reads the same input after restart and after Workspace export.
+
+A Judgement starts no work. It becomes Agent input only when its owning workflow admits a later step with the judged exact target as pinned input. A later Judgement or a newer version MUST NOT change an input that a step already pinned. When the pinned content is missing or current admission fails, Core MUST block that input. Core MUST NOT substitute another candidate or version.
+
+Judgement Grounding uses the existing records and the four human-attention modes. It adds no interaction mode, feedback log, workflow object, or universal Resource model. [Conversation And Grounded Collaboration](#conversation-and-grounded-collaboration) owns the product projection, and the next section owns the records.
+
 ## Judgement And Candidate Set
 
 Human judgement on exact outputs and candidate selection provide the v0.1.0 foundation for improvement through ordinary work.
@@ -420,7 +435,21 @@ A `Judgement` records one human assessment of one exact target. It retains the a
 
 A `Candidate Set` retains an ordered collection of at least two distinct exact Artifact-version references from one Workspace. Each reference includes its content digest. The set also retains its creator and creation time. Its identity and membership are immutable. A different membership creates a different set. A human selects one member through an attributable `select` judgement. Selection alone starts no work.
 
+Candidates come from ordinary work. A request for several candidates runs as parallel work under the existing Thread and Turn rules, or as repeated work with the same configuration or with a different Skill version, model, or prompt. Each candidate is an exact Artifact version that its own execution produced. The Candidate Set records those versions after they exist. Candidate production adds no workflow mechanism, run object, or strategy record. The configuration that produced a candidate is descriptive provenance and grants no authority.
+
 The Evaluation Foundation specification owns the judgement record and the candidate set with its attributable selection, and keeps the record detail.
+
+### Improvement Inputs
+
+An `Improvement Input` is an existing retained record that improvement through ordinary work may read. Improvement reads these records through their owners:
+
+- Judgements and Candidate Set selections
+- Review And Acceptance decisions
+- the ordered Item history of the judged work
+- the exact Agent setup and the delivered context of that work
+- measured usage
+
+An improvement proposal MUST cite the exact inputs that support it, as [source-traceable learning](doctrine.md#canonical-terms) requires. Improvement adds no second ledger of work, judgement, or outcome. A missing input remains an explicit gap, and Core MUST NOT reconstruct it. An input grants no authority. Acceptance of a proposal remains with the owner of the changed resource: [Knowledge](knowledge.md) for a Knowledge change and [Agent Supply](agent-supply.md) for a Skill version. This section defines the inputs only. The Task Evaluator remains a reserved role without an evaluation model.
 
 ## Invariants
 
@@ -435,6 +464,8 @@ The Evaluation Foundation specification owns the judgement record and the candid
 - Once a workflow accepts an immutable execution request, that accepted record MUST own every task-specific worker-request fact. A coordinator, channel, caller payload, default, or mutable projection MUST NOT replace or reconstruct those accepted facts.
 - Human attention MUST use the four composable product modes without turning Action Center into a new authority.
 - Grounded collaboration MUST preserve exact subject and version context through owning records without creating a hidden feedback log.
+- A Judgement MUST name one exact target. A step that uses a judged target MUST pin that exact target through ordinary input admission, and Core MUST NOT substitute another candidate or version when that input is unavailable.
+- Candidate production and improvement MUST use existing work records. They MUST NOT add a run object, a strategy record, or a second ledger of work, judgement, or outcome.
 - Work-produced Artifact mutations MUST remain Item-backed. A Workspace-only import or registration MAY omit Thread and Turn lineage only with explicit provenance; its first introduction into a Thread and every later work-produced mutation MUST create exact Item-backed lineage.
 - Redo and refinement MUST create new traceable work without mutating or deleting prior attempts; refinement MUST explicitly carry the selected prior result as context.
 - Accepted Steering Input MUST have one current owning delivery path and an authoritative outcome. If immediate receipt or durable later delivery cannot be proven, the input MUST NOT be accepted as Steering Input or represented as delivered.
