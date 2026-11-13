@@ -15,7 +15,15 @@ import Database from 'better-sqlite3';
 
 import { BootConfigError } from '../config/mode.js';
 import { KernelCommandError } from '../generative-kernel/errors.js';
-import { ownMainScopeReadHandle } from './control-store-product-records.js';
+import { OperationError } from '../operation-error.js';
+import {
+  ownMainScopeReadHandle,
+  reserveMainScopeReadAcquisition,
+} from './control-store-product-records.js';
+import {
+  assertExistingAppReadReady,
+  getControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { resolveDataRootPath } from './fs-layout.js';
 import { assertSupportedNativeLedger } from './migrate.js';
 
@@ -90,6 +98,13 @@ export function openExistingAppDb(
   if (!existsSync(path)) {
     throw new KernelCommandError('unavailable', 'App authority is missing.');
   }
+  try {
+    assertExistingAppReadReady(dataRoot, workspaceId, appId);
+  } catch (error) {
+    const unavailable = new KernelCommandError('unavailable', 'App read authority is unavailable.');
+    unavailable.cause = error;
+    throw unavailable;
+  }
   const sqlite = openAppDbReadOnly(path);
   const db: AppDb = { scope: 'app', sqlite, dataRoot, workspaceId, appId };
   try {
@@ -98,6 +113,35 @@ export function openExistingAppDb(
   } catch (error) {
     sqlite.close();
     throw error;
+  }
+}
+
+/** Funds the future Main reader before native admission, then hands off inside the original read. */
+export async function withExistingAppRead<T>(
+  dataRoot: string,
+  workspaceId: string,
+  appId: string,
+  read: () => T | Promise<T>,
+  recheckAdmission?: () => void | Promise<void>
+): Promise<T> {
+  const release = reserveMainScopeReadAcquisition(lightAppDbPath(dataRoot, workspaceId, appId));
+  try {
+    try {
+      await getControlStoreWorkerClient().openExistingAppForRead(dataRoot, workspaceId, appId);
+    } catch (error) {
+      if (error instanceof OperationError || error instanceof KernelCommandError) throw error;
+      const unavailable = new KernelCommandError(
+        'unavailable',
+        'App read authority is unavailable.'
+      );
+      unavailable.cause = error;
+      throw unavailable;
+    }
+    await recheckAdmission?.();
+    assertExistingAppReadReady(dataRoot, workspaceId, appId);
+    return await read();
+  } finally {
+    release();
   }
 }
 
@@ -219,13 +263,14 @@ export function openAppDbReadOnly(path: string): Database.Database {
       fileMustExist: true,
       timeout: APP_BUSY_TIMEOUT_MS,
     });
-    assertSupportedNativeLedger(sqlite, 'app');
     sqlite.pragma('query_only = ON');
+    ownMainScopeReadHandle(sqlite);
+    assertSupportedNativeLedger(sqlite, 'app');
     const result = sqlite.prepare('PRAGMA quick_check').pluck().get();
     if (result !== 'ok') {
       throw new KernelCommandError('unavailable', 'App database failed integrity check.');
     }
-    return ownMainScopeReadHandle(sqlite);
+    return sqlite;
   } catch (error) {
     sqlite?.close();
     if (error instanceof KernelCommandError || error instanceof BootConfigError) {

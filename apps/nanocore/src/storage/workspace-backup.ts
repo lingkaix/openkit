@@ -1443,7 +1443,7 @@ export type WorkspaceCapturePhase =
 export type WorkspaceCaptureControl =
   | { kind: 'source-proof'; file: ControlRecoveryTargetProofFile }
   | { kind: 'candidate'; workspaceId: string }
-  | { kind: 'phase'; phase: WorkspaceCapturePhase; at: number }
+  | { kind: 'phase'; phase: WorkspaceCapturePhase; at: number; path?: string }
   | { kind: 'capacity'; action: 'reserve'; writes: FileWriteCapacity }
   | {
       kind: 'capacity';
@@ -1650,7 +1650,13 @@ export async function runWorkspaceCaptureWorker(
         },
       },
     },
-    (phase) => control({ kind: 'phase', phase, at: performance.timeOrigin + performance.now() }),
+    (phase, path) =>
+      control({
+        kind: 'phase',
+        phase,
+        at: performance.timeOrigin + performance.now(),
+        ...(path ? { path } : {}),
+      }),
     (proof, admission) =>
       withSourceRecoveryProofFile(dataRoot, selected.backupId, proof, admission, (file) => {
         control({ kind: 'source-proof', file });
@@ -1744,6 +1750,7 @@ async function runWorkspaceCapture(
   let captureFreeze: WorkspaceFrozenAdmission | undefined;
   let releaseReplayRead: (() => void) | undefined;
   let resumeNative: (() => void) | undefined;
+  let nativeCaptureClient: ReturnType<typeof getControlStoreWorkerClient> | undefined;
   let worker: Worker | undefined;
   let authorityError: unknown;
   let result: Omit<WorkspaceBackupCreateResult, 'manifest'> | null | undefined;
@@ -1920,7 +1927,8 @@ async function runWorkspaceCapture(
                     operation: 'capture',
                   });
                   if (blockers.length) return blockers;
-                  hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+                  nativeCaptureClient = getControlStoreWorkerClient();
+                  hold = nativeCaptureClient.tryPauseForWorkspaceCapture(
                     `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
                     live.mutationAdmission
                   );
@@ -1989,12 +1997,23 @@ async function runWorkspaceCapture(
                 )
                   refuse('recovery-required');
               }
+              await nativeCaptureClient?.captureReadBarrier(
+                `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
+                value.phase,
+                value.path
+              );
+              if (closing) return;
               if (value.phase === 'cut') {
                 resumeNative?.();
                 resumeNative = undefined;
                 if (input.purpose === 'backup' && captureFreeze !== live.freezeOwner) {
                   captureFreeze?.release();
                   captureFreeze = undefined;
+                  // Automatic retention takes a second freeze in this same Worker request.
+                  // End the completed generation only after ordinary read admission reopens.
+                  await nativeCaptureClient?.finishCaptureReads(
+                    `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`
+                  );
                 }
               }
               if (value.phase === 'finish' && input.purpose === 'backup' && !live.freezeOwner) {
@@ -2120,6 +2139,9 @@ async function runWorkspaceCapture(
     // released the failed hold. Late successful acquisition still belongs here.
     await drained;
     try {
+      await nativeCaptureClient?.finishCaptureReads(
+        `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`
+      );
       resumeNative?.();
       if (input.purpose === 'move' && captureFreeze) {
         // Before a pin a refused MOVE reopens; uncertain retained truth keeps its fence.
@@ -2186,7 +2208,7 @@ async function runWorkspaceCapture(
  */
 async function captureWorkspaceBackup(
   input: CaptureInput,
-  phase?: (phase: WorkspaceCapturePhase) => number | undefined,
+  phase?: (phase: WorkspaceCapturePhase, path?: string) => number | undefined,
   prepareSource?: (proof: RecoveryProof, admission: CaptureInput['admission']) => Promise<void>
 ): Promise<WorkspaceBackupCreateResult> {
   let lock: DataRootLock | undefined;
@@ -2442,7 +2464,7 @@ async function captureWorkspaceBackup(
       }
       if (currentDatabase) {
         // A single database-copy method, including WAL: SQLite's backup API.
-        phase?.('db-backup');
+        phase?.('db-backup', original);
         const db = live
           ? new Database(original, { readonly: true, fileMustExist: true })
           : database(verifiedParent ? destination : original);
@@ -2454,7 +2476,7 @@ async function captureWorkspaceBackup(
         renameSync(`${destination}.capture`, destination);
         chmodSync(destination, mode);
         if (live) cutMetadata.set(path, { bytes: lstatSync(destination).size, mode });
-        phase?.('mutable-copy');
+        phase?.('mutable-copy', original);
       }
     }
     if (verifiedParent) {

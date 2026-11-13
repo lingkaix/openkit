@@ -273,7 +273,7 @@ import type {
   ControlExecutionAttemptCommand,
   ControlExecutionAttemptResult,
 } from './execution-attempt-codecs.js';
-import { ensureUserLayout, resolveDataRootPath, userDbPath } from './fs-layout.js';
+import { ensureUserLayout, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import type {
   ControlHarnessLifecycleInput,
   ControlHarnessLifecycleResult,
@@ -415,7 +415,20 @@ interface ControlRecoverySourceReactivationCall {
   readonly path: string;
   readonly identity: string;
 }
+const captureReadCall = Symbol('capture-read-call');
+/** One existing capture's funded App OPEN; never serialized or inherited by business frames. */
+interface ControlCaptureReadCall {
+  readonly kind: 'capture-read';
+  readonly [captureReadCall]: true;
+  readonly capture: CaptureReadGeneration;
+  readonly hold: PostingHold;
+  readonly released: Promise<void>;
+  readonly command: Omit<OpenCommand, 'operation'>;
+  readonly path: string;
+  readonly identity: string;
+}
 type ControlFrozenNativeCall =
+  | ControlCaptureReadCall
   | ControlCoreRetirementCall
   | ControlRecoverySourceReactivationCall
   | ControlRecoveryTargetRegistrationCall
@@ -486,6 +499,8 @@ interface Opening {
   acknowledged: boolean;
   readonly promise: Promise<void>;
   readonly policyReads: Set<PolicyReadResource>;
+  /** Request-local capture enrollment stays with this existing physical Workspace owner. */
+  captureReads?: CaptureReadGeneration;
   /** The exact close owner excludes later OPEN/read acquisition, including after a failed attempt. */
   retirement?:
     | { operation: 'close'; promise: Promise<void>; settled?: true }
@@ -496,6 +511,20 @@ interface Opening {
 interface PostingHold {
   released: Promise<void>;
   drain: (() => void) | undefined;
+}
+
+/** The existing capture's release ledger and phase rendezvous, not another scope registry. */
+interface CaptureReadGeneration {
+  readonly root: Opening;
+  readonly workspaceId: string;
+  readonly dataRoot: string;
+  readonly acquired: Array<() => void>;
+  readonly inFlightOpens: Map<string, Promise<void>>;
+  active: boolean;
+  postingHeld: boolean;
+  enumerating: boolean;
+  copyingPath: string | undefined;
+  changed: ReturnType<typeof Promise.withResolvers<void>>;
 }
 
 /** One immutable transport frame shared by its existing pending request slots. */
@@ -538,6 +567,8 @@ interface Pending {
   posted: boolean;
   /** The original admitted scope ACK gates posting after finite request admission. */
   ready: boolean;
+  /** Deduplicates the async physical recheck within this same admitted capture-read slot. */
+  captureReadChecking?: boolean;
   /** Binary input and echoed range content remain admitted until reply or known disposal. */
   readonly materialBytes: number;
   readonly inputBytes: number;
@@ -681,6 +712,15 @@ export function getControlStoreWorkerClient(
   if (singleton === undefined || singleton.isClosed) singleton = new ControlStoreWorkerClient();
   if (admission) singleton.setWorkspaceMutationAdmission(admission);
   return singleton;
+}
+
+/** Synchronous primitives may borrow offline roots, but never bypass a live native App owner. */
+export function assertExistingAppReadReady(
+  dataRoot: string,
+  workspaceId: string,
+  appId: string
+): void {
+  if (isMainThread) singleton?.assertExistingAppReadReady(dataRoot, workspaceId, appId);
 }
 
 /** Stops the existing process-local host without creating one; callers must finish shutdown before removing its database roots. */
@@ -1451,6 +1491,37 @@ class ControlStoreWorkerClient {
         });
       return;
     }
+    if ('kind' in recovery && recovery.kind === 'capture-read') {
+      const capture = recovery.capture;
+      const physical = command.operation === 'open' ? command.physicalScope : undefined;
+      // Actual posting adds transport identity to the same admitted business binding.
+      const {
+        operation: _operation,
+        version: _version,
+        id: _id,
+        ...admitted
+      } = command as ControlWorkerRequest;
+      if (
+        recovery[captureReadCall] !== true ||
+        !capture.active ||
+        this.backupHold ||
+        capture.root.captureReads !== capture ||
+        capture.root.retirement ||
+        capture.root.host.failed ||
+        !this.workspaceMutationAdmission?.isCaptureActive(capture.workspaceId) ||
+        command.operation !== 'open' ||
+        command.create !== false ||
+        command.initialize !== undefined ||
+        physical?.kind !== 'app' ||
+        physical.workspaceId !== capture.workspaceId ||
+        !isDeepStrictEqual(admitted, recovery.command) ||
+        this.databaseHolds.get(command.database) !== recovery.hold ||
+        recovery.hold.released !== recovery.released ||
+        !command.dataRoot
+      )
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      return;
+    }
     if ('kind' in recovery && recovery.kind === 'core-sharing-retirement') {
       try {
         const physical =
@@ -1661,6 +1732,222 @@ class ControlStoreWorkerClient {
       )
         throw new ControlStoreWorkerError('busy', 'not-committed');
     }
+  }
+
+  /** Checks the original ACK and physical identity without changing the synchronous read API. */
+  assertExistingAppReadReady(dataRoot: string, workspaceId: string, appId: string): void {
+    const opening = this.appReadOpening(dataRoot, workspaceId, appId);
+    if (!opening) return;
+    const path = resolve(lightAppDbPath(dataRoot, workspaceId, appId));
+    const current = statSync(path);
+    this.assertAppReadIdentity(opening, workspaceId, appId, {
+      path: realpathSync(path),
+      identity: `${current.dev}:${current.ino}`,
+      root: realpathSync(dataRoot),
+      originalRoot: realpathSync(opening.command.dataRoot!),
+    });
+  }
+
+  /** Noncreating state check shared by the synchronous primitive and async admission. */
+  private appReadOpening(
+    dataRoot: string,
+    workspaceId: string,
+    appId: string
+  ): Opening | undefined {
+    const path = resolve(lightAppDbPath(dataRoot, workspaceId, appId));
+    const opening = this.openings.get(`app:${path}`);
+    const parent = this.openings.get(`workspace:${workspaceDbPath(dataRoot, workspaceId)}`);
+    if (opening?.retirement || parent?.retirement)
+      throw new ControlStoreWorkerError('busy', 'not-committed');
+    if (this.stopping && !this.closed) throw new ControlStoreWorkerError('busy', 'not-committed');
+    if (this.closed || (!parent && !opening)) return undefined;
+    if (
+      !opening ||
+      !opening.acknowledged ||
+      opening.host.failed ||
+      parent?.host.failed ||
+      !opening.command.dataRoot
+    )
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    return opening;
+  }
+
+  private assertAppReadIdentity(
+    opening: Opening,
+    workspaceId: string,
+    appId: string,
+    facts: { path: string; identity: string; root: string; originalRoot: string }
+  ): void {
+    const owner = opening.command.physicalScope ?? opening.command.productOwner;
+    if (
+      owner?.kind !== 'app' ||
+      owner.workspaceId !== workspaceId ||
+      owner.appId !== appId ||
+      facts.path !== opening.path ||
+      facts.identity !== opening.identity ||
+      facts.root !== facts.originalRoot
+    )
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+  }
+
+  /** Async callers do not borrow the synchronous primitive's metadata exceptions. */
+  private async assertExistingAppReadReadyAsync(
+    dataRoot: string,
+    workspaceId: string,
+    appId: string
+  ): Promise<void> {
+    const opening = this.appReadOpening(dataRoot, workspaceId, appId);
+    if (!opening) return;
+    const path = resolve(lightAppDbPath(dataRoot, workspaceId, appId));
+    const [current, canonicalPath, root, originalRoot] = await Promise.all([
+      stat(path),
+      realpath(path),
+      realpath(dataRoot),
+      realpath(opening.command.dataRoot!),
+    ]);
+    if (this.appReadOpening(dataRoot, workspaceId, appId) !== opening)
+      throw new ControlStoreWorkerError('unavailable', 'not-committed');
+    this.assertAppReadIdentity(opening, workspaceId, appId, {
+      path: canonicalPath,
+      identity: `${current.dev}:${current.ino}`,
+      root,
+      originalRoot,
+    });
+  }
+
+  private wakeCaptureReads(capture: CaptureReadGeneration): void {
+    const previous = capture.changed;
+    capture.changed = Promise.withResolvers<void>();
+    previous.resolve();
+  }
+
+  /** Reuses warm read ownership, or funds one existing cold App in the matching capture. */
+  async openExistingAppForRead(
+    dataRoot: string,
+    workspaceId: string,
+    appId: string
+  ): Promise<void> {
+    this.assertAccepting();
+    const canonicalDataRoot = await realpath(dataRoot);
+    const path = await realpath(lightAppDbPath(dataRoot, workspaceId, appId));
+    const database = `app:${path}`;
+    const command: Omit<OpenCommand, 'operation'> = {
+      database,
+      path,
+      dataRoot,
+      create: false,
+      physicalScope: { kind: 'app', workspaceId, appId },
+    };
+    for (;;) {
+      if (this.workspaceMutationAdmission?.isLifecycleClosed(workspaceId))
+        throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
+          details: { workspaceId, retryable: true },
+        });
+      const existing = this.openings.get(database);
+      if (existing) {
+        if (existing.retirement || existing.host.failed)
+          throw new ControlStoreWorkerError('busy', 'not-committed');
+        await existing.promise;
+        await this.assertExistingAppReadReadyAsync(dataRoot, workspaceId, appId);
+        return;
+      }
+      const parent = this.openings.get(`workspace:${workspaceDbPath(dataRoot, workspaceId)}`);
+      const capture = parent?.captureReads;
+      if (!this.workspaceMutationAdmission?.isCaptureActive(workspaceId)) {
+        await this.openFrozen(command);
+        await this.assertExistingAppReadReadyAsync(dataRoot, workspaceId, appId);
+        return;
+      }
+      if (!capture?.active || capture.dataRoot !== canonicalDataRoot || this.backupHold)
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      const admitted = capture.inFlightOpens.get(database);
+      if (admitted) {
+        await admitted;
+        await this.assertExistingAppReadReadyAsync(dataRoot, workspaceId, appId);
+        return;
+      }
+      if (capture.enumerating || capture.copyingPath === path) {
+        await capture.changed.promise;
+        continue;
+      }
+      // Register before the first asynchronous hold acquisition, including failure settlement.
+      const accepted = Promise.withResolvers<void>();
+      capture.inFlightOpens.set(database, accepted.promise);
+      const original = (async () => {
+        let release: (() => void) | undefined;
+        try {
+          release = await this.pauseForDataRootBackup(database);
+          if (!capture.active) throw new ControlStoreWorkerError('busy', 'not-committed');
+          if (capture.postingHeld) capture.acquired.push(release);
+          const hold = this.databaseHolds.get(database)!;
+          const current = await stat(path);
+          await this.openFrozen(command, {
+            kind: 'capture-read',
+            [captureReadCall]: true,
+            capture,
+            hold,
+            released: hold.released,
+            command,
+            path,
+            identity: `${current.dev}:${current.ino}`,
+          });
+          await this.assertExistingAppReadReadyAsync(dataRoot, workspaceId, appId);
+        } catch (error) {
+          if (!this.openings.has(database)) release?.();
+          throw error;
+        } finally {
+          if (!capture.postingHeld || !capture.active) release?.();
+        }
+      })();
+      void original.then(accepted.resolve, accepted.reject);
+      const remove = () => capture.inFlightOpens.delete(database);
+      void accepted.promise.then(remove, remove);
+      await accepted.promise;
+      return;
+    }
+  }
+
+  /** Sets exclusion before joining accepted OPENs; only the original phase reply releases copy. */
+  async captureReadBarrier(database: string, phase: string, path?: string): Promise<void> {
+    const capture = this.openings.get(database)?.captureReads;
+    if (!capture?.active) return;
+    if (phase === 'enumeration' || phase === 'cut') capture.enumerating = true;
+    else if (phase === 'pin') {
+      capture.enumerating = false;
+      this.wakeCaptureReads(capture);
+      return;
+    } else if (phase === 'db-backup' && path) capture.copyingPath = resolve(path);
+    else if (phase === 'mutable-copy' && path) {
+      if (capture.copyingPath !== resolve(path))
+        throw new ControlStoreWorkerError('precondition', 'not-committed');
+      capture.copyingPath = undefined;
+      this.wakeCaptureReads(capture);
+      return;
+    } else return;
+    await Promise.allSettled(
+      [...capture.inFlightOpens]
+        .filter(([key]) => phase !== 'db-backup' || key === `app:${capture.copyingPath}`)
+        .map(([, promise]) => promise)
+    );
+    if (
+      capture.root.host.failed ||
+      [...this.openings.values()].some(
+        (opening) =>
+          opening.command.physicalScope?.workspaceId === capture.workspaceId && opening.host.failed
+      )
+    )
+      throw new ControlStoreWorkerError('unavailable', 'unknown');
+  }
+
+  /** Ends this request's generation before releasing its existing physical holds. */
+  async finishCaptureReads(database: string): Promise<void> {
+    const root = this.openings.get(database);
+    const capture = root?.captureReads;
+    if (!capture) return;
+    capture.active = false;
+    this.wakeCaptureReads(capture);
+    await Promise.allSettled(capture.inFlightOpens.values());
+    if (capture.root.captureReads === capture) delete capture.root.captureReads;
   }
 
   /**
@@ -4703,8 +4990,11 @@ class ControlStoreWorkerClient {
     database: string,
     admission?: WorkspaceMutationAdmission
   ): Promise<() => void> | null {
-    const parent = this.openings.get(database)?.command;
+    const root = this.openings.get(database);
+    const parent = root?.command;
     const owner = parent?.productOwner;
+    if (root?.captureReads?.active) return null;
+    const canonicalDataRoot = parent?.dataRoot ? realpathSync(parent.dataRoot) : undefined;
     const keys = [
       database,
       ...[...this.openings.entries()]
@@ -4714,22 +5004,39 @@ class ControlStoreWorkerClient {
             entry.command.physicalScope?.workspaceId === owner.workspaceId &&
             entry.command.dataRoot !== undefined &&
             parent?.dataRoot !== undefined &&
-            realpathSync(entry.command.dataRoot) === realpathSync(parent.dataRoot)
+            realpathSync(entry.command.dataRoot) === canonicalDataRoot
         )
         .map(([key]) => key),
     ];
     if (this.backupHold || keys.some((key) => this.databaseHolds.has(key))) return null;
     if (admission) this.setWorkspaceMutationAdmission(admission);
     const acquired: Array<() => void> = [];
+    const capture: CaptureReadGeneration | undefined =
+      root && owner?.kind === 'workspace' && parent?.dataRoot
+        ? {
+            root,
+            workspaceId: owner.workspaceId,
+            dataRoot: canonicalDataRoot!,
+            acquired,
+            inFlightOpens: new Map(),
+            active: true,
+            postingHeld: true,
+            enumerating: false,
+            copyingPath: undefined,
+            changed: Promise.withResolvers<void>(),
+          }
+        : undefined;
+    if (capture) capture.root.captureReads = capture;
     return Promise.allSettled(
       keys.map(async (key) => {
         const release = await this.pauseForDataRootBackup(key);
         acquired.push(release);
         return release;
       })
-    ).then((results) => {
+    ).then(async (results) => {
       const failed = results.find((result) => result.status === 'rejected');
       if (failed?.status === 'rejected') {
+        await this.finishCaptureReads(database);
         for (const release of acquired) release();
         throw failed.reason;
       }
@@ -4737,6 +5044,12 @@ class ControlStoreWorkerClient {
       return () => {
         if (released) return;
         released = true;
+        if (capture) {
+          capture.postingHeld = false;
+          capture.enumerating = false;
+          capture.copyingPath = undefined;
+          this.wakeCaptureReads(capture);
+        }
         for (const release of acquired) release();
       };
     });
@@ -5177,8 +5490,51 @@ class ControlStoreWorkerClient {
     return result;
   }
 
-  /** Posts an admitted message once, after its scope ACK and any data-root capture hold. */
+  /** Async physical checks stay in the original finite request slot and precede native posting. */
   private post(entry: Pending): void {
+    const recovery = entry.recovery;
+    if (!recovery || !('kind' in recovery) || recovery.kind !== 'capture-read') {
+      this.postChecked(entry);
+      return;
+    }
+    if (entry.posted || entry.captureReadChecking) return;
+    entry.captureReadChecking = true;
+    void (async () => {
+      const command = entry.command;
+      if (command.operation !== 'open' || !command.dataRoot)
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      const [current, path, root] = await Promise.all([
+        stat(recovery.path),
+        realpath(command.path),
+        realpath(command.dataRoot),
+      ]);
+      if (
+        path !== recovery.path ||
+        root !== recovery.capture.dataRoot ||
+        `${current.dev}:${current.ino}` !== recovery.identity
+      )
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+    })().then(
+      () => {
+        entry.captureReadChecking = false;
+        if (this.pending.get(entry.request.id) === entry) this.postChecked(entry);
+      },
+      (error: unknown) => {
+        entry.captureReadChecking = false;
+        if (this.pending.get(entry.request.id) === entry)
+          this.complete(
+            entry.request.id,
+            undefined,
+            error instanceof ControlStoreWorkerError
+              ? error
+              : new ControlStoreWorkerError('precondition', 'not-committed')
+          );
+      }
+    );
+  }
+
+  /** Rechecks current holds and authority without an async gap before the original post. */
+  private postChecked(entry: Pending): void {
     if (entry.posted) return;
     const opening =
       'database' in entry.command ? this.openings.get(entry.command.database) : undefined;
@@ -5200,7 +5556,9 @@ class ControlStoreWorkerClient {
       entry.posted ||
       !entry.ready ||
       this.backupHold ||
-      ('database' in entry.command && this.databaseHolds.has(entry.command.database))
+      ('database' in entry.command &&
+        this.databaseHolds.has(entry.command.database) &&
+        !(entry.recovery && 'kind' in entry.recovery && entry.recovery.kind === 'capture-read'))
     )
       return;
     const members = entry.cohort?.frame.requests.map(

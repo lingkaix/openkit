@@ -4,7 +4,7 @@ import {
   assertKernelMutationRequestSize,
   boundedKernelResponse,
   createRecord,
-  getLightApp,
+  getLightAppForRead,
 } from './generative-kernel/commands.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { resolveLightAppMeaning } from './generative-kernel/meaning.js';
@@ -19,7 +19,11 @@ export function createKernelOperationImplementations(
   return {
     'kernel.apps.get': async (input, context) => {
       try {
-        const app = getLightApp(kernelDataRoot(dependencies), input.workspaceId, input.appId);
+        const dataRoot = kernelDataRoot(dependencies);
+        const app = await getLightAppForRead(
+          { dataRoot, workspaceId: input.workspaceId, recheckAdmission: context.recheckAdmission },
+          input.appId
+        );
         if (!app.schema?.references.length) return app;
         const output =
           context.kind === 'worker'

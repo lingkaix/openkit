@@ -47,7 +47,7 @@ import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
-import { lightAppDbPath, openExistingAppDb } from './storage/app-db.js';
+import { lightAppDbPath, openExistingAppDb, withExistingAppRead } from './storage/app-db.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 
 type MutationId =
@@ -102,14 +102,32 @@ export function createLightAppDefinitionOperationImplementations(
       return catalogFailure(error, 'light_app_definition_failed');
     }
   };
+  /** Both receipt paths share the original authority-presence probe. */
+  const appAuthorityExists = (context: KernelCommandContext, appId: string): boolean =>
+    existsSync(lightAppDbPath(context.dataRoot, context.workspaceId, appId));
   /** Reads the existing native receipt before consulting mutable catalog selections. */
-  const replayDefinition = (
+  const replayDefinition = async (
+    context: KernelCommandContext,
+    appId: string,
+    command: 'kernel.apps.create' | 'kernel.schema.update',
+    input: object
+  ): Promise<CreateLightAppResponse | null> => {
+    if (!appAuthorityExists(context, appId)) return null;
+    return withExistingAppRead(
+      context.dataRoot,
+      context.workspaceId,
+      appId,
+      () => replayDefinitionAdmitted(context, appId, command, input),
+      context.recheckAdmission
+    );
+  };
+  const replayDefinitionAdmitted = (
     context: KernelCommandContext,
     appId: string,
     command: 'kernel.apps.create' | 'kernel.schema.update',
     input: object
   ): CreateLightAppResponse | null => {
-    if (!existsSync(lightAppDbPath(context.dataRoot, context.workspaceId, appId))) return null;
+    if (!appAuthorityExists(context, appId)) return null;
     const appDb = openExistingAppDb(context.dataRoot, context.workspaceId, appId, 'format-upgrade');
     try {
       const receipt = context.store.getCommandRequest(
@@ -355,13 +373,13 @@ export function createLightAppDefinitionOperationImplementations(
         })
       ),
     'kernel.apps.instantiate': (input, context) =>
-      execute(() => {
+      execute(async () => {
         const command = kernel(input, context);
         const requestedDefinition = {
           entryId: input.entryId,
           ...(input.digest === undefined ? {} : { digest: input.digest }),
         };
-        const replay = replayDefinition(
+        const replay = await replayDefinition(
           command,
           allocateAppId(input.workspaceId, input.requestId),
           'kernel.apps.create',
@@ -381,13 +399,13 @@ export function createLightAppDefinitionOperationImplementations(
         );
       }),
     'kernel.schema.activate': (input, context) =>
-      execute(() => {
+      execute(async () => {
         const command = kernel(input, context);
         const requestedDefinition = {
           entryId: input.entryId,
           ...(input.digest === undefined ? {} : { digest: input.digest }),
         };
-        const replay = replayDefinition(command, input.appId, 'kernel.schema.update', {
+        const replay = await replayDefinition(command, input.appId, 'kernel.schema.update', {
           expectedAppRevision: input.expectedAppRevision,
           expectedSchemaRevision: input.expectedSchemaRevision,
           requestedDefinition,

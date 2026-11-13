@@ -13,7 +13,7 @@ import {
   createLightApp,
   getRecord,
   type KernelCommandContext,
-  listLightApps,
+  listLightAppsForRead,
   listRecords,
   retireLightApp,
   updateLightAppSchema,
@@ -36,6 +36,7 @@ import type {
 } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import { withExistingAppRead } from './storage/app-db.js';
 
 type KernelId = keyof typeof KERNEL_REMAINING_OPERATION_DEFINITIONS;
 type UiId = keyof typeof GENERATIVE_UI_OPERATION_DEFINITIONS;
@@ -166,9 +167,7 @@ export function createRemainingKernelOperationImplementations(
   };
   return {
     'kernel.apps.list': (input, context) => {
-      return execute(input, context, (c) =>
-        listLightApps(c.dataRoot, c.workspaceId, input.page, input.perPage)
-      );
+      return execute(input, context, (c) => listLightAppsForRead(c, input.page, input.perPage));
     },
     'kernel.apps.create': (input, context) => {
       return execute(input, context, (c) => {
@@ -194,19 +193,32 @@ export function createRemainingKernelOperationImplementations(
     },
     'kernel.records.list': (input, context) => {
       return execute(input, context, (c) =>
-        listRecords(c.dataRoot, c.workspaceId, input.appId, input.collection, input)
+        withExistingAppRead(
+          c.dataRoot,
+          c.workspaceId,
+          input.appId,
+          () => listRecords(c.dataRoot, c.workspaceId, input.appId, input.collection, input),
+          c.recheckAdmission
+        )
       );
     },
     'kernel.records.get': (input, context) => {
       return execute(input, context, (c) =>
-        getRecord(
+        withExistingAppRead(
           c.dataRoot,
           c.workspaceId,
           input.appId,
-          input.collection,
-          input.recordId,
-          input.schemaRevision,
-          input.fields
+          () =>
+            getRecord(
+              c.dataRoot,
+              c.workspaceId,
+              input.appId,
+              input.collection,
+              input.recordId,
+              input.schemaRevision,
+              input.fields
+            ),
+          c.recheckAdmission
         )
       );
     },

@@ -70,6 +70,7 @@ import {
   lightAppsRoot,
   openAppDbReadOnly,
   openExistingAppDb,
+  withExistingAppRead,
 } from '../storage/app-db.js';
 import { KernelCommandError } from './errors.js';
 import { compileRecordFilter } from './filter.js';
@@ -153,6 +154,43 @@ export function listLightApps(
   });
 }
 
+/** Pays native ownership only for catalog entries actually inspected by the async API. */
+export async function listLightAppsForRead(
+  context: KernelCommandContext,
+  page = 1,
+  perPage = 30
+): Promise<ListLightAppsResponse> {
+  assertPage(page, perPage);
+  const items: LightAppCatalogItem[] = [];
+  for (const entry of listAppDirectories(context.dataRoot, context.workspaceId)) {
+    try {
+      items.push(
+        await withExistingAppRead(
+          context.dataRoot,
+          context.workspaceId,
+          entry.name,
+          () => inspectCatalogItem(context.dataRoot, context.workspaceId, entry.name),
+          context.recheckAdmission
+        )
+      );
+    } catch {
+      // Catalog refusal stays per App, but never hides changed caller authority.
+      await context.recheckAdmission?.();
+      items.push(unavailableCatalogItem(entry.name));
+    }
+  }
+  await context.recheckAdmission?.();
+  items.sort((left, right) => compareCodeUnits(left.appId, right.appId));
+  const start = (page - 1) * perPage;
+  return boundedKernelResponse({
+    page,
+    perPage,
+    totalItems: items.length,
+    totalPages: items.length === 0 ? 0 : Math.ceil(items.length / perPage),
+    items: items.slice(start, start + perPage),
+  });
+}
+
 /**
  * Creates one Light App from an authored proposal or an exact Core-selected definition.
  *
@@ -198,14 +236,7 @@ export function getLightApp(
   workspaceId: string,
   appId: string
 ): GetLightAppResponse {
-  try {
-    lstatSync(lightAppRoot(dataRoot, workspaceId, appId));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      throw new KernelCommandError('not_found', 'Light App was not found.');
-    }
-    // An inspection failure does not prove absence; the existing reader projects unavailable.
-  }
+  assertLightAppPresent(dataRoot, workspaceId, appId);
   const item = inspectCatalogItem(dataRoot, workspaceId, appId);
   if (item.lifecycle === 'unavailable') {
     return boundedKernelResponse({ ...item, schema: null, capabilities: LIGHT_APP_CAPABILITIES });
@@ -215,6 +246,31 @@ export function getLightApp(
     return boundedKernelResponse(projectApp(appDb));
   } finally {
     if (appDb.sqlite.open) appDb.sqlite.close();
+  }
+}
+
+/** Keeps missing/unavailable catalog projections while the async entry owns native admission. */
+export async function getLightAppForRead(
+  context: Pick<KernelCommandContext, 'dataRoot' | 'workspaceId' | 'recheckAdmission'>,
+  appId: string
+): Promise<GetLightAppResponse> {
+  assertLightAppPresent(context.dataRoot, context.workspaceId, appId);
+  try {
+    return await withExistingAppRead(
+      context.dataRoot,
+      context.workspaceId,
+      appId,
+      () => getLightApp(context.dataRoot, context.workspaceId, appId),
+      context.recheckAdmission
+    );
+  } catch (error) {
+    await context.recheckAdmission?.();
+    if (!(error instanceof KernelCommandError) || error.code !== 'unavailable') throw error;
+    return boundedKernelResponse({
+      ...unavailableCatalogItem(appId),
+      schema: null,
+      capabilities: LIGHT_APP_CAPABILITIES,
+    });
   }
 }
 
@@ -604,14 +660,32 @@ function assertPage(page: number, perPage: number): void {
  * @returns Sorted catalog items.
  */
 function listCatalogItems(dataRoot: string, workspaceId: string): LightAppCatalogItem[] {
-  const root = lightAppsRoot(dataRoot, workspaceId);
-  if (!existsSync(root)) {
-    return [];
-  }
-  return readdirSync(root, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
+  return listAppDirectories(dataRoot, workspaceId)
     .map((entry) => inspectCatalogItem(dataRoot, workspaceId, entry.name))
     .sort((left, right) => compareCodeUnits(left.appId, right.appId));
+}
+
+/** Both catalog entries share the original bounded inventory probe. */
+function listAppDirectories(dataRoot: string, workspaceId: string) {
+  const root = lightAppsRoot(dataRoot, workspaceId);
+  if (!existsSync(root)) return [];
+  return readdirSync(root, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+}
+
+/** Keeps the original missing-App classification for synchronous and async reads. */
+function assertLightAppPresent(dataRoot: string, workspaceId: string, appId: string): void {
+  try {
+    lstatSync(lightAppRoot(dataRoot, workspaceId, appId));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      throw new KernelCommandError('not_found', 'Light App was not found.');
+    // Other inspection failures retain the unavailable projection.
+  }
+}
+
+/** Existing creation and receipt admission share one path-presence probe. */
+function appPathExists(root: string): boolean {
+  return existsSync(root);
 }
 
 /**
@@ -651,19 +725,24 @@ function inspectCatalogItem(
     } catch {
       /* Missing, corrupt, and unknown formats have no admitted projection. */
     }
-    return {
-      appId,
-      title: 'Unavailable app',
-      purpose: '',
-      appRevision: null,
-      schemaRevision: null,
-      schemaDigest: null,
-      kernelFormatVersion: null,
-      definitionVersion: null,
-      definitionSource: null,
-      lifecycle: 'unavailable',
-    };
+    return unavailableCatalogItem(appId);
   }
+}
+
+/** Preserves the existing opaque catalog refusal without opening a canonical database. */
+function unavailableCatalogItem(appId: string): LightAppCatalogItem {
+  return {
+    appId,
+    title: 'Unavailable app',
+    purpose: '',
+    appRevision: null,
+    schemaRevision: null,
+    schemaDigest: null,
+    kernelFormatVersion: null,
+    definitionVersion: null,
+    definitionSource: null,
+    lifecycle: 'unavailable',
+  };
 }
 
 /**
@@ -711,8 +790,26 @@ function readApp<T>(
   }
 }
 
-/** Collapses duplicates before preparation; native business, Audit and original receipt share one ACK. */
+/** Receipt replay borrows the same acknowledged native owner before its synchronous App read. */
 function runNativeAppCommand<T extends ControlAppResult>(
+  context: KernelCommandContext,
+  appId: string,
+  spec: KernelCommandSpec<T>
+): Promise<T> {
+  const run = () => runPreparedNativeAppCommand(context, appId, spec);
+  return appPathExists(lightAppDbPath(context.dataRoot, context.workspaceId, appId))
+    ? withExistingAppRead(
+        context.dataRoot,
+        context.workspaceId,
+        appId,
+        run,
+        context.recheckAdmission
+      )
+    : run();
+}
+
+/** Collapses duplicates before preparation; native business, Audit and original receipt share one ACK. */
+function runPreparedNativeAppCommand<T extends ControlAppResult>(
   context: KernelCommandContext,
   appId: string,
   spec: KernelCommandSpec<T>
@@ -741,7 +838,7 @@ function runNativeAppCommand<T extends ControlAppResult>(
       if (fresh) {
         if (spec.change.kind === 'create' && !spec.change.sourceSelection)
           admitLightAppSchema(spec.change.schema, appId, 1);
-        if (existsSync(root))
+        if (appPathExists(root))
           throw new KernelCommandError(
             'recovery_required',
             'Interrupted app creation cannot be replayed.'
