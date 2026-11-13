@@ -702,15 +702,15 @@ Implementation is In Progress. Bounded server and Web timeline slices have lande
 | --- | --- | --- |
 | thread | `/chat`, `/tasks` or `/goals` + `/:workspaceId/:threadId` | `turn`, `turnId`, `item` and `request` in `apps/web/src/screens/chat/timeline/resolve.ts` |
 | artifact | `/artifacts?workspaceId=&artifact=`; Goal review `/goals/:ws/:thread/artifacts/:id` | exact `version` when the address has one |
-| audit | `/workspace/usage`; `/settings/server-audit` | None |
-| attention | `/attention` (Action Center); owning review or recovery surface | None |
+| audit | `/workspace/usage`; `/settings/server-audit` | Workspace usage resolver carries an exact Turn, CapabilityCall or Item selector; no row-focus anchor |
+| attention | `/attention` (Action Center); owning review or recovery surface | Exact request/Thread anchors, Artifact review/version and Workspace recovery anchors are implemented where supplied by the source |
 | knowledge | `/knowledge` | Not verified |
 | material | `/materials/:ws/:thread/:materialId?` | Yes |
-| connection | `/workspace/vault` | None |
-| gateway | `/settings/gateway` | None |
-| goal-card | Goal route | None |
+| connection | No resolver destination; explicit unavailable result | None |
+| gateway | `/settings/gateway` | `model` selects and focuses the exact logical model |
+| goal-card | Goal route | `card` selects and focuses the exact Goal card |
 
-Audit, attention, knowledge, connection, gateway and goal-card anchors in this table remain unresolved. Thread and Artifact addresses above do not close those gaps.
+Audit filtering, source-specific attention anchors, Gateway model focus and Goal-card focus are implemented. Knowledge remains a page-level destination and Connection reports unavailable; no universal exact-object resolver completion is claimed.
 
 ## Alternatives Considered
 

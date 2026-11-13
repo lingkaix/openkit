@@ -8,7 +8,7 @@ updated: 2026-10-15
 
 ## Goal Boundary
 
-Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordinator role belong to [Goal](20261002-goal.md). This specification keeps deterministic classification and worker-request composition for Chat and Task. It does not own Goal truth and it does not perform Goal progression effects. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the split. A test of this role requires neither a Goal stop conversion nor `remainingWorkerIterations=0`.
+Goal progression, Goal Plan decisions, Goal stop decisions, and the model Coordinator role belong to [Goal](20261002-goal.md). This specification keeps trusted explicit Task selection and worker-request composition; the Assistant owns conversation. It does not own Goal truth and it does not perform Goal progression effects. [Goal Redesign Rulings](../decisions/20261002-goal_redesign_rulings.md) records the split. A test of this role requires neither a Goal stop conversion nor `remainingWorkerIterations=0`.
 
 ## Owns
 
