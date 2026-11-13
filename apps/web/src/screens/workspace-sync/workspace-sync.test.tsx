@@ -514,9 +514,10 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
       'thread.list': vi.fn().mockResolvedValue({ items: [] }),
       ...core,
       ...operations,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        core['workspace.list'] ??
+        operations['workspace.list'] ??
+        vi.fn().mockResolvedValue({
           items: [WORKSPACE].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -526,22 +527,7 @@ function makeClient(operations: OperationOverrides = {}, core: CoreOverrides = {
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          core['workspace.list'] ??
-            operations['workspace.list'] ??
-            vi.fn().mockResolvedValue({
-              items: [WORKSPACE].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
 }

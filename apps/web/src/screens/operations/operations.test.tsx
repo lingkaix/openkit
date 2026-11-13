@@ -404,9 +404,10 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       ...core,
       ...app,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        core['workspace.list'] ??
+        app['workspace.list'] ??
+        vi.fn().mockResolvedValue({
           items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -416,22 +417,7 @@ function makeClient(app: AppOverrides = {}, core: CoreOverrides = {}): CoreClien
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          core['workspace.list'] ??
-            app['workspace.list'] ??
-            vi.fn().mockResolvedValue({
-              items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
 }
@@ -4049,22 +4035,11 @@ describe('Recovery and search', () => {
         if (next === scenario.destination) events.push('navigate');
       });
 
+      expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
       expect(
-        await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
-      ).toBeInTheDocument();
-      await submitSearch(user);
-      expect(await screen.findByText(scenario.title)).toBeInTheDocument();
-      expect(pathname).toBe('/chat');
-      const readsBeforePendingActivation = [
-        getWorkspaceDashboard.mock.calls.length,
-        getThread.mock.calls.length,
-        getThreadDashboard.mock.calls.length,
-        listThreadItems.mock.calls.length,
-        listConversationNavigation.mock.calls.length,
-      ];
-      // Discovery has not authorized a workspace, so the hit cannot be pressed.
-      // Clicking it anyway sticks React Aria's press state and swallows the later press.
-      expect(screen.getByRole('button', { name: scenario.title })).toBeDisabled();
+        screen.queryByRole('heading', { level: 1, name: 'What can we get done?' })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: scenario.title })).not.toBeInTheDocument();
       expect(pathname).toBe('/chat');
       expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE.id);
       expect([
@@ -4073,7 +4048,7 @@ describe('Recovery and search', () => {
         getThreadDashboard.mock.calls.length,
         listThreadItems.mock.calls.length,
         listConversationNavigation.mock.calls.length,
-      ]).toEqual(readsBeforePendingActivation);
+      ]).toEqual([0, 0, 0, 0, 0]);
       expect(events).toEqual([]);
 
       await act(async () => {
@@ -4090,12 +4065,18 @@ describe('Recovery and search', () => {
         });
         await discovery.promise;
       });
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
+      ).toBeInTheDocument();
       await waitFor(() =>
         expect(listConversationNavigation).toHaveBeenCalledWith({
           workspaceId: WORKSPACE.id,
           limit: 50,
         })
       );
+      await submitSearch(user);
+      expect(await screen.findByText(scenario.title)).toBeInTheDocument();
+      expect(pathname).toBe('/chat');
       const workspaceAReadsBeforeDestination = [
         getWorkspaceDashboard.mock.calls.filter(([input]) => input.workspaceId === WORKSPACE.id)
           .length,
@@ -4194,9 +4175,6 @@ describe('Recovery and search', () => {
     } else {
       expect(scenario.hit.workspaceId).toBe(WORKSPACE_B.id);
     }
-    expect(
-      await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
-    ).toBeInTheDocument();
     if (scenario.admitted) {
       await act(async () => {
         discovery.resolve({
@@ -4212,10 +4190,18 @@ describe('Recovery and search', () => {
         });
         await discovery.promise;
       });
+      expect(
+        await screen.findByRole('heading', { level: 1, name: 'What can we get done?' })
+      ).toBeInTheDocument();
+      await submitSearch(user);
+      expect(await screen.findByRole('button', { name: scenario.hit.title })).toBeDisabled();
+    } else {
+      expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
+      expect(
+        screen.queryByRole('heading', { level: 1, name: 'What can we get done?' })
+      ).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: scenario.hit.title })).not.toBeInTheDocument();
     }
-
-    await submitSearch(user);
-    expect(await screen.findByRole('button', { name: scenario.hit.title })).toBeDisabled();
     expect(useWorkspaceStore.getState().currentWorkspaceId).toBe(WORKSPACE.id);
     poisonDom();
   });

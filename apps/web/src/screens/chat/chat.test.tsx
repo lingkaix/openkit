@@ -223,9 +223,11 @@ function makeClient(
       'thread.dashboard': vi.fn().mockResolvedValue({ turns: [] }),
       ...core,
       ...app,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        ((core['workspace.list'] ?? app['workspace.list']) as
+          | CoreClient['operations']['workspace.list']
+          | undefined) ??
+        vi.fn().mockResolvedValue({
           items: [
             { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
             { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace' },
@@ -238,26 +240,7 @@ function makeClient(
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          ((core['workspace.list'] ?? app['workspace.list']) as
-            | CoreClient['operations']['workspace.list']
-            | undefined) ??
-            vi.fn().mockResolvedValue({
-              items: [
-                { id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0', name: 'Market research' },
-                { id: 'ws_00000000-0000-7ec6-8e33-a3b1d758efc6', name: 'Second workspace' },
-              ].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
   if (app['conversation.navigation'] == null) {
@@ -888,13 +871,13 @@ describe('chat starter (board 01)', () => {
       )
     );
 
-    await screen.findByRole('heading', { name: 'What can we get done?' });
-    expect(screen.getByText('Recent')).not.toHaveClass('uppercase');
-    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
+    expect(
+      screen.queryByRole('heading', { name: 'What can we get done?' })
+    ).not.toBeInTheDocument();
     expect(listWorkspaces).toHaveBeenCalled();
     expect(listConversationNavigation).not.toHaveBeenCalled();
-    expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
-    expect(recent.getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(screen.queryByText('Start a chat')).not.toBeInTheDocument();
 
     await act(async () => {
       workspaces.resolve({
@@ -912,6 +895,9 @@ describe('chat starter (board 01)', () => {
       });
       await workspaces.promise;
     });
+    await screen.findByRole('heading', { name: 'What can we get done?' });
+    const recent = within(screen.getByText('Recent').closest('section')!);
+    expect(screen.getByText('Recent')).not.toHaveClass('uppercase');
     await waitFor(() =>
       expect(listConversationNavigation).toHaveBeenCalledWith({
         workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
@@ -958,13 +944,33 @@ describe('chat starter (board 01)', () => {
         )
       );
 
+      if (failure === 'discovery') {
+        const alert = await screen.findByRole('alert');
+        expect(alert).toHaveTextContent("Couldn't check account access.");
+        expect(alert).not.toHaveTextContent('Read unavailable');
+        expect(screen.queryByText('Start a chat')).not.toBeInTheDocument();
+        expect(
+          screen.queryByRole('heading', { name: 'What can we get done?' })
+        ).not.toBeInTheDocument();
+        expect(listNavigation).not.toHaveBeenCalled();
+        const callsBeforeRetry = listWorkspaces.mock.calls.length;
+        listWorkspaces.mockResolvedValue(workspaceResult);
+        await user.click(within(alert).getByRole('button', { name: 'Try again' }));
+        expect(await screen.findByText('Start a chat')).toBeInTheDocument();
+        expect(listWorkspaces).toHaveBeenCalledTimes(callsBeforeRetry + 1);
+        expect(listNavigation).toHaveBeenCalledWith({
+          workspaceId: 'ws_7d54f339-a119-5221-bbbf-bfbf3e8a3f28',
+          limit: 50,
+        });
+        return;
+      }
+
       await screen.findByRole('heading', { name: 'What can we get done?' });
       const recent = within(screen.getByText('Recent').closest('section')!);
       expect(await recent.findByText("Couldn't load recent chats.")).toBeInTheDocument();
       expect(recent.queryByText('Start a chat')).not.toBeInTheDocument();
-      if (failure === 'discovery') expect(listNavigation).not.toHaveBeenCalled();
       const callsBeforeRetry = failedRead.mock.calls.length;
-      failedRead.mockResolvedValue(failure === 'discovery' ? workspaceResult : { items: [] });
+      failedRead.mockResolvedValue({ items: [] });
       await user.click(recent.getByRole('button', { name: 'Try again' }));
       expect(await recent.findByText('Start a chat')).toBeInTheDocument();
       expect(failedRead).toHaveBeenCalledTimes(callsBeforeRetry + 1);

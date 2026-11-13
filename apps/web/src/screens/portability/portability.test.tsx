@@ -221,9 +221,9 @@ function makeClient(
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       ...overrides.operations,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        overrides.operations?.['workspace.list'] ??
+        vi.fn().mockResolvedValue({
           items: [WORKSPACE].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -233,23 +233,7 @@ function makeClient(
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          (overrides.operations?.['workspace.list'] as
-            | CoreClient['operations']['workspace.list']
-            | undefined) ??
-            vi.fn().mockResolvedValue({
-              items: [WORKSPACE].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
 }
@@ -453,9 +437,11 @@ describe('Portability', () => {
     const { queryClient } = renderApp('/settings/portability', client);
 
     const loadAlert = await screen.findByRole('alert');
-    expect(loadAlert).toHaveTextContent(/couldn't load workspaces/i);
+    expect(loadAlert).toHaveTextContent(/couldn't check account access/i);
     expect(loadAlert).not.toHaveTextContent('ws_00000000-0000-7b14-af76-27f19ffc88fa failure');
-    expect(screen.getByRole('heading', { level: 1, name: 'Portability' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { level: 1, name: 'Portability' })
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Export workspace' })).not.toBeInTheDocument();
     expect(screen.queryByText(/no project workspace selected/i)).not.toBeInTheDocument();
     await user.click(within(loadAlert).getByRole('button', { name: 'Try again' }));

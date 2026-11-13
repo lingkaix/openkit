@@ -174,9 +174,9 @@ function makeClient(
         updatedAt: TIMESTAMP,
       }),
       ...overrides.operations,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        overrides.operations?.['workspace.list'] ??
+        vi.fn().mockResolvedValue({
           items: [{ id: WORKSPACE_ID, name: 'Product workspace' }].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -186,23 +186,7 @@ function makeClient(
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          (overrides.operations?.['workspace.list'] as
-            | CoreClient['operations']['workspace.list']
-            | undefined) ??
-            vi.fn().mockResolvedValue({
-              items: [{ id: WORKSPACE_ID, name: 'Product workspace' }].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
 }
@@ -356,8 +340,8 @@ describe('S19-F Material Workspace discovery barrier', () => {
       ];
       renderMaterial(client);
 
-      await screen.findByRole('main', { name: 'Workspace' });
-      expect.soft(screen.queryAllByRole('status', { name: /loading/i }).length).toBeGreaterThan(0);
+      expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
+      expect.soft(screen.queryByRole('main', { name: 'Workspace' })).not.toBeInTheDocument();
       expect
         .soft(screen.queryByText(/choose a workspace first|create your first material/i))
         .not.toBeInTheDocument();

@@ -869,9 +869,9 @@ function makeClient(
       'attention.list': vi.fn().mockResolvedValue({ items: [] }),
       'workspace.resources': vi.fn().mockResolvedValue(WORKSPACE_RESOURCES),
       ...overrides.operations,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        overrides.operations?.['workspace.list'] ??
+        vi.fn().mockResolvedValue({
           items: [WORKSPACE].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -881,23 +881,7 @@ function makeClient(
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          (overrides.operations?.['workspace.list'] as
-            | CoreClient['operations']['workspace.list']
-            | undefined) ??
-            vi.fn().mockResolvedValue({
-              items: [WORKSPACE].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
 }
@@ -1268,7 +1252,7 @@ describe('Vault settings (board 15)', () => {
     renderApp('/workspace/vault', client);
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't load workspaces/i);
+    expect(alert).toHaveTextContent(/couldn't check account access/i);
     expect(alert).not.toHaveTextContent('ws_00000000-0000-758f-ad51-c7addeabda71 failure');
     expect(screen.queryByText('No workspace selected')).not.toBeInTheDocument();
 
@@ -1527,10 +1511,11 @@ describe('Debug settings (board 11)', () => {
       })
     );
 
-    expect(await screen.findByRole('heading', { level: 1, name: 'Debug' })).toBeInTheDocument();
-    expect(screen.getByText('Buttons', { exact: true })).toBeInTheDocument();
+    expect(await screen.findByRole('status')).toHaveTextContent('Checking account access…');
+    expect(screen.queryByRole('heading', { level: 1, name: 'Debug' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Buttons', { exact: true })).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Evidence bundles' })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByLabelText('Loading').length).toBeGreaterThan(1));
+    expect(screen.queryByText('No workspace selected', { exact: true })).not.toBeInTheDocument();
   });
 
   it('shows an empty state when no Workspace is selected', async () => {
@@ -1809,7 +1794,7 @@ describe('Usage and audit settings (board 17)', () => {
     renderApp('/workspace/usage', client);
 
     const alert = await screen.findByRole('alert');
-    expect(alert).toHaveTextContent(/couldn't load workspaces/i);
+    expect(alert).toHaveTextContent(/couldn't check account access/i);
     expect(alert).not.toHaveTextContent('ws_00000000-0000-7641-ba4a-a1306b8c904a failure');
     await user.click(within(alert).getByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(listWorkspaces).toHaveBeenCalledTimes(2));
