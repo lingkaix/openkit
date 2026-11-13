@@ -19,6 +19,9 @@ patchedDependencies:
   '@earendil-works/pi-coding-agent@1.4.0':
     hash: d2b1f00b02b71eda03e1ee73e30192fcbfc0733caae72de9505176321788a224
     path: patches/pi-coding-agent-1.4.0-openkit-native-state.patch
+  '@pandatix/js-cvss@0.4.4':
+    hash: 4b7cacd763394cdc4efdc580bae0e51e83a278a03095a1e1cd27ef493a64d6d5
+    path: patches/js-cvss-0.4.4-node-esm.patch
 
 importers:
 
@@ -145,6 +148,9 @@ importers:
       '@opentelemetry/sdk-trace':
         specifier: ^3.1.0
         version: 3.1.0(@opentelemetry/api@1.10.0)
+      '@pandatix/js-cvss':
+        specifier: 0.4.4
+        version: 0.4.4(patch_hash=4b7cacd763394cdc4efdc580bae0e51e83a278a03095a1e1cd27ef493a64d6d5)
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
@@ -4661,6 +4667,9 @@ packages:
 
   '@oxc-project/types@0.156.0':
     resolution: {integrity: sha512-1Duyg48TdJNdyhEB8Xn1L36bT9Pv6GUtlKjHxOys8xkaF/rQq3XJE+bAurSK/AgIz5mGFsb77cn9Pb20+WCScw==}
+
+  '@pandatix/js-cvss@0.4.4':
+    resolution: {integrity: sha512-hhBbQ7IKfoRoV3QKTP9hLKJT166/e0FkeiVSLZZIEVsO7DjxVmIWhJlPvbp+RXaM4w215xghtnXQv13Ebdlj/w==}
 
   '@playwright/test@1.65.0':
     resolution: {integrity: sha512-iGURLGuKDLakSEl7Pgfv8h7f+XLT+V861Wfhz0zlEl5nyFuKUopdkFBPKqTllTUp06aOwPuH8iuUEb3yp3MpbQ==}
@@ -12434,6 +12443,8 @@ snapshots:
   '@opentelemetry/semantic-conventions@1.45.0': {}
 
   '@oxc-project/types@0.156.0': {}
+
+  '@pandatix/js-cvss@0.4.4(patch_hash=4b7cacd763394cdc4efdc580bae0e51e83a278a03095a1e1cd27ef493a64d6d5)': {}
 
   '@playwright/test@1.65.0':
     dependencies:

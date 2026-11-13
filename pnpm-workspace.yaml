@@ -7,6 +7,7 @@ strictDepBuilds: true
 blockExoticSubdeps: true
 patchedDependencies:
   '@earendil-works/pi-coding-agent@1.4.0': patches/pi-coding-agent-1.4.0-openkit-native-state.patch
+  '@pandatix/js-cvss@0.4.4': patches/js-cvss-0.4.4-node-esm.patch
 allowBuilds:
   # Keep previously ignored optional runtime helpers disabled; no new script is enabled.
   '@deepseek-ai/dsh-subprocess-local': false

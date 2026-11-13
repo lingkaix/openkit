@@ -1,0 +1,55 @@
+diff --git a/dist/cvss20.js b/dist/cvss20.js
+index 4d5b50cd6fd9a7a3c56767a12465dd8f25e942bf..2790a0a0a048c96675a48bbca3dedddb4568dea2 100644
+--- a/dist/cvss20.js
++++ b/dist/cvss20.js
+@@ -1,4 +1,4 @@
+-import * as errors from './errors';
++import * as errors from './errors.js';
+ // https://go.dev/play/p/FpbKl0gOmWy
+ const re = /^(AV:[LAN])\/(AC:[LMH])\/(Au:[MSN])\/(C:[NPC])\/(I:[NPC])\/(A:[NPC])(?:\/(E:(?:ND|U|POC|F|H))\/(RL:(?:ND|OF|TF|W|U))\/(RC:(?:ND|UC|UR|C)))?(?:\/(CDP:(?:ND|N|L|LM|MH|H))\/(TD:(?:ND|N|L|M|H))\/(CR:(?:ND|L|M|H))\/(IR:(?:ND|L|M|H))\/(AR:(?:ND|L|M|H)))?$/g;
+ /**
+diff --git a/dist/cvss30.js b/dist/cvss30.js
+index af237ec11c7c1b258c53ba74333d2a73276a2df1..18a0461c5517672ccb561635248b532075df288b 100644
+--- a/dist/cvss30.js
++++ b/dist/cvss30.js
+@@ -1,4 +1,4 @@
+-import * as errors from './errors';
++import * as errors from './errors.js';
+ const cvss30header = 'CVSS:3.0/';
+ /**
+  * Implementation of the CVSS v3.0 specification (https://www.first.org/cvss/v3.0/specification-document).
+diff --git a/dist/cvss31.js b/dist/cvss31.js
+index 43fa82909957ff06c8a9517477c7a3a7e5d45961..14fc464b4dfabe9b79fa92d7075690e66ecaf188 100644
+--- a/dist/cvss31.js
++++ b/dist/cvss31.js
+@@ -1,4 +1,4 @@
+-import * as errors from './errors';
++import * as errors from './errors.js';
+ const cvss31header = 'CVSS:3.1/';
+ /**
+  * Implementation of the CVSS v3.1 specification (https://www.first.org/cvss/v3.1/specification-document).
+diff --git a/dist/cvss40.js b/dist/cvss40.js
+index 2e48175d12a3468697723f19b7842376b1d1917c..007e7135c8c6d1a1bb6bb8fbae91a3c3374e9639 100644
+--- a/dist/cvss40.js
++++ b/dist/cvss40.js
+@@ -1,4 +1,4 @@
+-import * as errors from './errors';
++import * as errors from './errors.js';
+ // Comes from https://www.first.org/cvss/cvss-v4.0.json, slightly modified
+ // to match the metric groups without false-positives and to avoid double-capture
+ // of Provider Urgency (U) due to multi-char values.
+diff --git a/dist/index.js b/dist/index.js
+index f68fc73836b884d41cbe00b29b66731a7fed7fbf..eb8c315d96a5655f92188b6d35a8bb1faf6ed34f 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -1,5 +1,5 @@
+-export * from './cvss20';
+-export * from './cvss30';
+-export * from './cvss31';
+-export * from './cvss40';
+-export * from './errors';
++export * from './cvss20.js';
++export * from './cvss30.js';
++export * from './cvss31.js';
++export * from './cvss40.js';
++export * from './errors.js';

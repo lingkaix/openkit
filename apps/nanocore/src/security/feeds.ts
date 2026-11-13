@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
+import { CVSS20, CVSS30, CVSS31, CVSS40 } from '@pandatix/js-cvss';
 import { Agent, fetch as fetchWithDispatcher } from 'undici';
 import type { InventoryComponent, SecurityInventory } from './inventory.js';
 
@@ -87,14 +88,77 @@ export function assessAdvisories(input: {
 }): { findings: SecurityFinding[]; gaps: SecurityAssessmentGap[]; malformedRecords: number } {
   if (!Number.isFinite(Date.parse(input.now))) throw new TypeError('Assessment time is invalid.');
   const gaps: SecurityAssessmentGap[] = [];
-  const findings = new Map(input.previous.map((finding) => [findingKey(finding), { ...finding }]));
+  const gapKeys = new Set<string>();
+  const exhausted = Symbol('assessment-bound');
+  // One fixed envelope allowance also leaves room for the incomplete diagnostic.
+  let workBytes = 1024;
+  let projectionBytes = 1024;
+  const spend = (bytes: number) => {
+    if (bytes > MAX_BYTES - workBytes) throw exhausted;
+    workBytes += bytes;
+  };
+  const addGap = (gap: SecurityAssessmentGap) => {
+    const bytes =
+      128 + textBound(gap.kind) + textBound(gap.reason) + textBound(gap.identifier ?? '');
+    spend(bytes);
+    const key = JSON.stringify(gap);
+    if (gapKeys.has(key)) return;
+    if (bytes > MAX_BYTES - projectionBytes) throw exhausted;
+    projectionBytes += bytes;
+    gapKeys.add(key);
+    gaps.push(gap);
+  };
+  // Check borrowed state before constructing repeated tuple keys. Never discard it to fit.
+  try {
+    for (const finding of input.previous) spend(findingKeyBound(finding) + 512);
+    for (const component of input.inventory.components)
+      spend(
+        4 *
+          (64 +
+            textBound(component.sourceId) +
+            textBound(component.purl) +
+            textBound(component.version) +
+            textBound(component.repository ?? ''))
+      );
+  } catch (error) {
+    if (error !== exhausted) throw error;
+    return {
+      findings: [...input.previous],
+      gaps: [{ kind: 'incomplete', reason: 'Assessment projection/work byte bound reached.' }],
+      malformedRecords: 0,
+    };
+  }
+  const prior = new Map(input.previous.map((finding) => [findingKey(finding), finding]));
+  const findings = new Map([...prior].map(([key, finding]) => [key, { ...finding }]));
+  const costs = new Map<string, number>();
+  for (const [key, finding] of findings) {
+    const bytes = findingBound(finding);
+    if (bytes > MAX_BYTES - projectionBytes)
+      return {
+        findings: [...input.previous],
+        gaps: [{ kind: 'incomplete', reason: 'Assessment projection/work byte bound reached.' }],
+        malformedRecords: 0,
+      };
+    projectionBytes += bytes;
+    costs.set(key, bytes);
+  }
+  const project = (key: string, finding: SecurityFinding) => {
+    const bytes = findingBound(finding);
+    const next = projectionBytes - (costs.get(key) ?? 0) + bytes;
+    if (next > MAX_BYTES) throw exhausted;
+    projectionBytes = next;
+    costs.set(key, bytes);
+    findings.set(key, finding);
+  };
   const observed = new Set(
     input.inventory.components.map((component) =>
       JSON.stringify([component.sourceId, component.purl, component.version])
     )
   );
-  const present = (finding: SecurityFinding) =>
-    observed.has(JSON.stringify([finding.sourceId, finding.purl, finding.version]));
+  const present = (finding: SecurityFinding) => {
+    spend(32 + textBound(finding.sourceId) + textBound(finding.purl) + textBound(finding.version));
+    return observed.has(JSON.stringify([finding.sourceId, finding.purl, finding.version]));
+  };
   const packageIndex = new Map<string, InventoryComponent[]>();
   for (const component of input.inventory.components) {
     for (const key of componentKeys(component)) {
@@ -103,113 +167,174 @@ export function assessAdvisories(input: {
       packageIndex.set(key, rows);
     }
   }
-  for (const [key, finding] of findings) {
-    const complete = input.inventory.coverage.some(
-      (row) => row.sourceId === finding.sourceId && row.status === 'complete'
-    );
-    if (complete && !present(finding) && finding.status !== 'fixed')
-      findings.set(key, {
-        ...finding,
-        status: 'fixed',
-        triageRevision: finding.triageRevision + 1,
-      });
-    else if (present(finding) && finding.status === 'fixed')
-      findings.set(key, { ...finding, status: 'open', triageRevision: finding.triageRevision + 1 });
-  }
   let malformedRecords = 0;
   let matchChecks = 0;
-  records: for (const candidate of input.records.slice(0, MAX_RECORDS)) {
-    if (!isOsv(candidate)) {
-      malformedRecords++;
-      continue;
-    }
-    const aliases = stringList(candidate.aliases);
-    const severity = findingClass(candidate, gaps);
-    for (const affected of candidate.affected) {
-      const components = new Set(
-        affectedKeys(affected).flatMap((key) => packageIndex.get(key) ?? [])
+  try {
+    for (const [key, finding] of findings) {
+      spend(256);
+      const complete = input.inventory.coverage.some(
+        (row) => row.sourceId === finding.sourceId && row.status === 'complete'
       );
-      for (const component of components) {
-        if (++matchChecks > 1_000_000 || findings.size >= MAX_RECORDS) {
-          gaps.push({
-            kind: 'incomplete',
-            reason: 'Advisory assessment work or finding bound reached.',
-          });
-          break records;
-        }
-        if (!affects(component, affected, gaps)) continue;
-        const key = findingKey({ ...component, advisoryId: candidate.id });
-        const previous = findings.get(key);
-        const firstMatchedAt = previous?.firstMatchedAt ?? input.now;
-        const raised = previous && RANK[severity] > RANK[previous.class];
-        const selectedClass = previous && !raised ? previous.class : severity;
+      if (complete && !present(finding) && finding.status !== 'fixed')
         findings.set(key, {
-          sourceId: component.sourceId,
-          purl: component.purl,
-          version: component.version,
-          advisoryId: candidate.id,
-          aliases: [...new Set([...(previous?.aliases ?? []), ...aliases])],
-          class: selectedClass,
-          status: previous?.status ?? 'open',
-          firstMatchedAt,
-          dueAt: dueAt(firstMatchedAt, selectedClass),
-          triageRevision: (previous?.triageRevision ?? 1) + (raised ? 1 : 0),
+          ...finding,
+          status: 'fixed',
+          triageRevision: finding.triageRevision + 1,
         });
-      }
-    }
-  }
-  if (input.records.length > MAX_RECORDS)
-    gaps.push({ kind: 'incomplete', reason: 'Advisory record limit reached.' });
-  const kevIds = new Set<string>();
-  if (object(input.kev) && Array.isArray(input.kev.vulnerabilities))
-    for (const row of input.kev.vulnerabilities.slice(0, MAX_RECORDS))
-      if (object(row) && typeof row.cveID === 'string') kevIds.add(row.cveID.toUpperCase());
-  for (const [key, finding] of findings) {
-    if (!present(finding)) continue;
-    if ([finding.advisoryId, ...finding.aliases].some((id) => kevIds.has(id.toUpperCase())))
-      findings.set(key, raise(finding, 'K'));
-  }
-  // Index only currently inventory-backed advisories, not package claims from RSS prose.
-  const identifiers = new Map<string, Set<string>>();
-  for (const finding of findings.values()) {
-    if (!present(finding)) continue;
-    for (const identifier of [finding.advisoryId, ...finding.aliases]) {
-      const ids = identifiers.get(identifier.toUpperCase()) ?? new Set<string>();
-      ids.add(finding.advisoryId);
-      identifiers.set(identifier.toUpperCase(), ids);
-    }
-  }
-  for (const signal of input.rss.slice(0, MAX_RECORDS)) {
-    for (const identifier of signal.identifiers.slice(0, MAX_RECORDS)) {
-      const matches = identifiers.get(identifier.toUpperCase());
-      if (!matches || matches.size !== 1) {
-        gaps.push({
-          kind: matches ? 'ambiguous-identifier' : 'unmatched-identifier',
-          identifier,
-          reason: 'RSS identifier does not select one inventory-backed advisory.',
+      else if (present(finding) && finding.status === 'fixed')
+        findings.set(key, {
+          ...finding,
+          status: 'open',
+          triageRevision: finding.triageRevision + 1,
         });
+    }
+    records: for (const candidate of input.records.slice(0, MAX_RECORDS)) {
+      if (!isOsv(candidate)) {
+        malformedRecords++;
         continue;
       }
-      for (const [key, finding] of findings)
-        if (present(finding) && matches.has(finding.advisoryId))
-          findings.set(key, raise(finding, 'C'));
+      spend(textBound(candidate.id));
+      const aliases: string[] = [];
+      if (Array.isArray(candidate.aliases))
+        for (const alias of candidate.aliases) {
+          if (typeof alias !== 'string') continue;
+          spend(8 + textBound(alias));
+          if (alias.trim()) aliases.push(alias);
+        }
+      const severity = findingClass(candidate, addGap, spend);
+      for (const affected of candidate.affected) {
+        // A single parsed input fragment is bounded by its document. Charge its repeated
+        // matching/array work before projecting it across inventory components.
+        const affectedBytes = Buffer.byteLength(JSON.stringify(affected));
+        spend(2 * affectedBytes + 64);
+        const components = new Set(
+          affectedKeys(affected).flatMap((key) => packageIndex.get(key) ?? [])
+        );
+        for (const component of components) {
+          if (++matchChecks > 1_000_000 || findings.size >= MAX_RECORDS) {
+            addGap({
+              kind: 'incomplete',
+              reason: 'Advisory assessment work or finding bound reached.',
+            });
+            break records;
+          }
+          spend(2 * affectedBytes + 64);
+          if (!affects(component, affected, addGap)) continue;
+          spend(findingKeyBound({ ...component, advisoryId: candidate.id }));
+          const key = findingKey({ ...component, advisoryId: candidate.id });
+          const previous = findings.get(key);
+          const firstMatchedAt = previous?.firstMatchedAt ?? input.now;
+          const raised = previous && RANK[severity] > RANK[previous.class];
+          const selectedClass = previous && !raised ? previous.class : severity;
+          // Account before allocating the merged aliases or replacement metadata.
+          spend(512 + aliasBound(previous?.aliases ?? []) + aliasBound(aliases));
+          project(key, {
+            sourceId: component.sourceId,
+            purl: component.purl,
+            version: component.version,
+            advisoryId: candidate.id,
+            aliases: [...new Set([...(previous?.aliases ?? []), ...aliases])],
+            class: selectedClass,
+            status: previous?.status ?? 'open',
+            firstMatchedAt,
+            dueAt: dueAt(firstMatchedAt, selectedClass),
+            triageRevision: (previous?.triageRevision ?? 1) + (raised ? 1 : 0),
+          });
+        }
+      }
     }
+    if (input.records.length > MAX_RECORDS)
+      addGap({ kind: 'incomplete', reason: 'Advisory record limit reached.' });
+    const kevIds = new Set<string>();
+    if (object(input.kev) && Array.isArray(input.kev.vulnerabilities))
+      for (const row of input.kev.vulnerabilities.slice(0, MAX_RECORDS))
+        if (object(row) && typeof row.cveID === 'string') {
+          spend(textBound(row.cveID));
+          kevIds.add(row.cveID.toUpperCase());
+        }
+    for (const [key, finding] of findings) {
+      if (!present(finding)) continue;
+      spend(256 + textBound(finding.advisoryId) + aliasBound(finding.aliases));
+      if ([finding.advisoryId, ...finding.aliases].some((id) => kevIds.has(id.toUpperCase())))
+        findings.set(key, raise(finding, 'K'));
+    }
+    // Index only currently inventory-backed advisories, not package claims from RSS prose.
+    const identifiers = new Map<string, Set<string>>();
+    for (const finding of findings.values()) {
+      if (!present(finding)) continue;
+      spend(8 * (1 + finding.aliases.length));
+      for (const identifier of [finding.advisoryId, ...finding.aliases]) {
+        spend(2 * textBound(identifier) + 64);
+        const ids = identifiers.get(identifier.toUpperCase()) ?? new Set<string>();
+        ids.add(finding.advisoryId);
+        identifiers.set(identifier.toUpperCase(), ids);
+      }
+    }
+    for (const signal of input.rss.slice(0, MAX_RECORDS)) {
+      for (const identifier of signal.identifiers.slice(0, MAX_RECORDS)) {
+        spend(textBound(identifier));
+        const matches = identifiers.get(identifier.toUpperCase());
+        if (!matches || matches.size !== 1) {
+          addGap({
+            kind: matches ? 'ambiguous-identifier' : 'unmatched-identifier',
+            identifier,
+            reason: 'RSS identifier does not select one inventory-backed advisory.',
+          });
+          continue;
+        }
+        for (const [key, finding] of findings) {
+          spend(256);
+          if (present(finding) && matches.has(finding.advisoryId))
+            findings.set(key, raise(finding, 'C'));
+        }
+      }
+    }
+  } catch (error) {
+    if (error !== exhausted) throw error;
+    gaps.push({ kind: 'incomplete', reason: 'Assessment projection/work byte bound reached.' });
   }
-  // One assessment has one revision change, even if multiple sources raise the same finding.
-  const previous = new Map(input.previous.map((finding) => [findingKey(finding), finding]));
-  const revised = [...findings.values()].map((finding) => {
-    const old = previous.get(findingKey(finding));
+  // Reuse admitted keys; final revision normalization must not recreate large tuple strings.
+  const revised = [...findings].map(([key, finding]) => {
+    const old = prior.get(key);
     const changed = old && (RANK[finding.class] > RANK[old.class] || finding.status !== old.status);
     return { ...finding, triageRevision: old ? old.triageRevision + (changed ? 1 : 0) : 1 };
   });
   // Repeated records can name the same unsupported assessment. Keep the report bounded.
   return {
     findings: revised,
-    gaps: [
-      ...new Map(gaps.slice(0, MAX_RECORDS).map((gap) => [JSON.stringify(gap), gap])).values(),
-    ],
+    gaps,
     malformedRecords,
   };
+}
+
+/** Conservative UTF-8 JSON bound, including escaping, without allocating serialized text. */
+function textBound(value: string): number {
+  return 2 + 6 * value.length;
+}
+
+/** Includes array slots as well as escaped alias text before copying a list. */
+function aliasBound(values: readonly string[]): number {
+  let bytes = 2;
+  for (const value of values) bytes += 8 + textBound(value);
+  return bytes;
+}
+
+/** Estimates tuple allocation before serializing attacker-controlled identifiers. */
+function findingKeyBound(
+  value: Pick<SecurityFinding, 'sourceId' | 'purl' | 'version' | 'advisoryId'>
+): number {
+  return (
+    16 +
+    textBound(value.sourceId) +
+    textBound(value.purl) +
+    textBound(value.version) +
+    textBound(value.advisoryId)
+  );
+}
+
+/** Covers fixed fields, the current unique row, and its aliases, not prior replacements. */
+function findingBound(value: SecurityFinding): number {
+  return 256 + findingKeyBound(value) + aliasBound(value.aliases);
 }
 
 /** Exact finding identity is per observed artifact source and advisory. */
@@ -241,7 +366,7 @@ function dueAt(first: string, severity: SecurityFinding['class']): string | null
 function affects(
   component: InventoryComponent,
   value: unknown,
-  gaps: SecurityAssessmentGap[]
+  gap: (value: SecurityAssessmentGap) => void
 ): boolean {
   if (!object(value)) return false;
   const versions = stringList(value.versions);
@@ -257,9 +382,9 @@ function affects(
   if (versions.includes(component.version)) return true;
   return ranges.some((range) => {
     if (!object(range)) return false;
-    if (range.type === 'SEMVER') return semverRange(component.version, range.events, gaps);
+    if (range.type === 'SEMVER') return semverRange(component.version, range.events, gap);
     if (range.type !== 'GIT')
-      gaps.push({
+      gap({
         kind: 'unsupported-range',
         reason: 'Affected range is not an exact version, SEMVER range or release-tag GIT range.',
       });
@@ -369,10 +494,14 @@ function compare(a: Semver, b: Semver): number {
   return 0;
 }
 /** Evaluates OSV ordered disjoint intervals, including exclusive limit and inclusive last_affected. */
-function semverRange(version: string, events: unknown, gaps: SecurityAssessmentGap[]): boolean {
+function semverRange(
+  version: string,
+  events: unknown,
+  gap: (value: SecurityAssessmentGap) => void
+): boolean {
   const current = semver(version);
   if (!current || !Array.isArray(events)) {
-    gaps.push({
+    gap({
       kind: 'unsupported-version',
       reason: 'SEMVER assessment lacks a valid version or event sequence.',
     });
@@ -401,11 +530,16 @@ function semverRange(version: string, events: unknown, gaps: SecurityAssessmentG
 }
 
 /** Uses only structured severity fields. Unsupported vectors remain explicitly unassessed. */
-function findingClass(record: OsvRecord, gaps: SecurityAssessmentGap[]): SecurityFinding['class'] {
+function findingClass(
+  record: OsvRecord,
+  gap: (value: SecurityAssessmentGap) => void,
+  spend: (bytes: number) => void
+): SecurityFinding['class'] {
   if (record.id.startsWith('MAL-')) return 'K';
   let rating: SecurityFinding['class'] | undefined;
   const specific = object(record.database_specific) ? record.database_specific : null;
   if (typeof specific?.severity === 'string') {
+    spend(textBound(specific.severity));
     const name = specific.severity.toUpperCase();
     rating =
       name === 'CRITICAL'
@@ -419,9 +553,10 @@ function findingClass(record: OsvRecord, gaps: SecurityAssessmentGap[]): Securit
   if (Array.isArray(record.severity))
     for (const metric of record.severity) {
       if (!object(metric) || typeof metric.score !== 'string') continue;
+      spend(textBound(metric.score));
       const score = cvssScore(metric.score);
       if (score === null) {
-        gaps.push({
+        gap({
           kind: 'unsupported-severity',
           identifier: record.id,
           reason: 'Severity vector requires a supported structured score or a person assessment.',
@@ -434,43 +569,28 @@ function findingClass(record: OsvRecord, gaps: SecurityAssessmentGap[]): Securit
   return rating ?? 'H';
 }
 
-/** Computes CVSS v3 base severity; numeric scores are accepted only as bounded structured scores. */
+/** Uses standard CVSS base scores without a local weight or v4 macrovector table. */
 function cvssScore(vector: string): number | null {
+  if (vector.length > 4096) return null;
   if (/^(?:10(?:\.0)?|[0-9](?:\.\d)?)$/.test(vector)) return Number(vector);
-  if (!/^CVSS:3\.[01]\//.test(vector)) return null;
-  const parts = vector
-    .split('/')
-    .slice(1)
-    .map((part) => part.split(':'));
-  if (
-    parts.some((part) => part.length !== 2) ||
-    new Set(parts.map((part) => part[0])).size !== parts.length
-  )
+  try {
+    let score: number;
+    if (vector.startsWith('CVSS:4.0/')) {
+      const parsed = new CVSS40(vector);
+      // Validate the whole vector, but advisory base severity does not inherit
+      // source-authored Threat/Environmental adjustments for this instance.
+      const base = ['AV', 'AC', 'AT', 'PR', 'UI', 'VC', 'VI', 'VA', 'SC', 'SI', 'SA'];
+      score = new CVSS40(
+        `CVSS:4.0/${base.map((metric) => `${metric}:${parsed.Get(metric)}`).join('/')}`
+      ).Score();
+    } else if (vector.startsWith('CVSS:3.1/')) score = new CVSS31(vector).BaseScore();
+    else if (vector.startsWith('CVSS:3.0/')) score = new CVSS30(vector).BaseScore();
+    else if (vector.startsWith('AV:')) score = new CVSS20(vector).BaseScore();
+    else return null;
+    return Number.isFinite(score) && score >= 0 && score <= 10 ? score : null;
+  } catch {
     return null;
-  const values = Object.fromEntries(parts);
-  const changed = values.S === 'C';
-  if (!['U', 'C'].includes(values.S ?? '')) return null;
-  const av = ({ N: 0.85, A: 0.62, L: 0.55, P: 0.2 } as Record<string, number>)[values.AV ?? ''];
-  const ac = ({ L: 0.77, H: 0.44 } as Record<string, number>)[values.AC ?? ''];
-  const pr = (
-    (changed ? { N: 0.85, L: 0.68, H: 0.5 } : { N: 0.85, L: 0.62, H: 0.27 }) as Record<
-      string,
-      number
-    >
-  )[values.PR ?? ''];
-  const ui = ({ N: 0.85, R: 0.62 } as Record<string, number>)[values.UI ?? ''];
-  const impacts = ['C', 'I', 'A'].map(
-    (key) => (({ H: 0.56, L: 0.22, N: 0 }) as Record<string, number>)[values[key] ?? '']
-  );
-  if ([av, ac, pr, ui, ...impacts].some((value) => value === undefined)) return null;
-  const iss = 1 - (1 - impacts[0]!) * (1 - impacts[1]!) * (1 - impacts[2]!);
-  const impact = changed ? 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 : 6.42 * iss;
-  if (impact <= 0) return 0;
-  return (
-    Math.ceil(
-      (Math.min((changed ? 1.08 : 1) * (impact + 8.22 * av! * ac! * pr! * ui!), 10) - 1e-10) * 10
-    ) / 10
-  );
+  }
 }
 
 /** Narrows JSON records without treating optional text as instructions. */
