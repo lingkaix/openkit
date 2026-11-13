@@ -11753,6 +11753,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
       let history: ReturnType<typeof assertLiveSchemaHistory> | undefined;
       let previewed = false;
       beforeAll(async () => {
+        // A selected child suite must not inherit the parent fixture's Native mutation owner.
+        await shutdownControlStoreWorkerClient();
         const prepared = await prepareCompletedKnowledgeTask((value) => {
           companion = value;
         });
@@ -11769,7 +11771,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
           }
         }
       });
-      it('previews complete schema dependencies with exact completed and live Task history and preserves it across schema application and replay', async () => {
+      // Establish the complete public preview as a separately bounded fixture phase.
+      // No test finishes between this phase and application, so the same live Task stays owned.
+      beforeAll(async () => {
         history = assertLiveSchemaHistory(
           companion!,
           lineage.sourceReferences,
@@ -11777,6 +11781,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
         );
         expect((await history.next()).done).toBe(false);
         previewed = true;
+      }, 60_000);
+      it('previews complete schema dependencies with exact completed and live Task history and preserves it across schema application and replay', async () => {
         // Keep the owned live Task inside one test lifetime so normal teardown follows its release.
         expect(previewed, 'the real live-Task preview must complete before application').toBe(true);
         expect((await history!.next()).done).toBe(true);

@@ -225,6 +225,8 @@ An unavailable Worker observation may cite an earlier expected observation from 
 
 ## Verification
 
+The completed-work live schema fixture establishes its complete public preview in a separate 60-second setup phase before the original 60-second application/replay test. Every original assertion remains, and the same paused Task and captured history span both phases. No test finishes between them, so the shared App fixture's normal per-test Native cleanup still follows the Task release and join.
+
 Run the nearest focused tests first, followed by NanoCore typecheck, lint, build, and the complete NanoCore test suite for runtime behavior changes. Governed-worker changes should also run worker-control, recovery, scheduler, and Server route coverage relevant to the changed lifecycle.
 
 The MCP concurrent credential-rejection regression holds the real upstream delayed response on an explicit fixture gate and observes tool-call ingress before triggering rejection. It preserves the call rejection, unknown-effect and degraded-health assertions without relying on wall-clock scheduling.
