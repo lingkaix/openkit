@@ -269,10 +269,10 @@ function mergeUnique(current: readonly ThreadItem[], extra: readonly ThreadItem[
   return merged;
 }
 
-function elapsedSeconds(startedAt: string): number {
+function elapsedSeconds(startedAt: string, now: number): number {
   const started = Date.parse(startedAt);
   if (!Number.isFinite(started)) return 0;
-  return Math.max(0, Math.floor((Date.now() - started) / 1000));
+  return Math.max(0, Math.floor((now - started) / 1000));
 }
 
 /** The latest tool call that is still running, if this Turn has one. */
@@ -1027,7 +1027,7 @@ export function ThreadStream({
       live.dataUpdatedAt,
       timelineOn ? timelineWindow.dataUpdatedAt : 0
     ),
-    clock
+    Date.now()
   );
   const admissionHold = controlsReadOnly
     ? 'Reconnect to respond to this approval.'
@@ -1046,7 +1046,7 @@ export function ThreadStream({
     !historyDenied &&
     (historyBusy || (timelineOn && retainsAdmittedHistory(historyFault)));
   const retainedStale = retainHistory
-    ? freshnessCopy(3, timelineOn ? timelineWindow.dataUpdatedAt : items.dataUpdatedAt, clock)
+    ? freshnessCopy(3, timelineOn ? timelineWindow.dataUpdatedAt : items.dataUpdatedAt, Date.now())
     : null;
   const focusedElement = useRef<HTMLDivElement>(null);
   const located = useRef<string | null>(null);
@@ -1992,7 +1992,7 @@ export function ThreadStream({
                     onOpenAllSteps={() => openSheet('steps', group.turnId)}
                     actorName={actorName}
                     omitTrigger={Boolean(firstViewerMessage)}
-                    durationMs={runDurationMs(groupTurn, Date.now())}
+                    durationMs={runDurationMs(groupTurn, clock)}
                     hiddenIds={groupedSourceIds}
                     renderItem={(item) => {
                       const node = renderTimelineItem(item);
@@ -2055,10 +2055,10 @@ export function ThreadStream({
                             <span aria-hidden="true"> · </span>
                             <time
                               dateTime={durationDateTime(
-                                elapsedSeconds(groupTurn.startedAt ?? '') * 1000
+                                elapsedSeconds(groupTurn.startedAt ?? '', clock) * 1000
                               )}
                             >
-                              {elapsedSeconds(groupTurn.startedAt ?? '')} seconds
+                              {elapsedSeconds(groupTurn.startedAt ?? '', clock)} seconds
                             </time>
                             <span aria-hidden="true"> · </span>
                             <span>{runningStep.tool}</span>

@@ -608,6 +608,8 @@ export function useThread(workspaceId: string | null, threadId: string) {
 async function readThreadDashboard(client: CoreClient, workspaceId: string, threadId: string) {
   const generation = accountGeneration();
   const sentAtMs = Date.now();
+  // Wall time orders nothing. This stamp is the request's send order.
+  const order = performance.now();
   const dashboard = await client.operations['thread.dashboard']({
     workspaceId,
     threadId,
@@ -622,6 +624,7 @@ async function readThreadDashboard(client: CoreClient, workspaceId: string, thre
     serverTime: dashboard.serverTime,
     sentAtMs,
     receivedAtMs,
+    order,
   });
   return dashboard;
 }

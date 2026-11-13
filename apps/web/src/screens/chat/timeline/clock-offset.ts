@@ -8,6 +8,8 @@
 
 type ClockSample = {
   sentAtMs: number;
+  /** Monotonic request order. Wall time is not request order. */
+  order: number;
   offsetMs: number | null;
 };
 
@@ -39,6 +41,7 @@ export function midpointOffsetMs(input: {
 /**
  * Keep the newest admitted sample for one Thread.
  * A response that started before the sample already kept is ignored.
+ * Request order is the monotonic `order` from send time, never `Date.now()`.
  * A missing `serverTime` clears the offset for that Thread.
  */
 export function publishDashboardClockSample(input: {
@@ -47,13 +50,16 @@ export function publishDashboardClockSample(input: {
   serverTime: string | undefined;
   sentAtMs: number;
   receivedAtMs: number;
+  /** Monotonic instant when this request was sent. */
+  order: number;
 }): void {
   const key = sampleKey(input.workspaceId, input.threadId);
   const previous = samples.get(key);
-  if (previous && input.sentAtMs < previous.sentAtMs) return;
+  const order = input.order;
+  if (previous && order < previous.order) return;
   const offsetMs = midpointOffsetMs(input);
-  if (previous && previous.sentAtMs === input.sentAtMs && previous.offsetMs === offsetMs) return;
-  samples.set(key, { sentAtMs: input.sentAtMs, offsetMs });
+  if (previous && previous.order === order && previous.offsetMs === offsetMs) return;
+  samples.set(key, { sentAtMs: input.sentAtMs, order, offsetMs });
   if (previous?.offsetMs !== offsetMs) emit();
 }
 
