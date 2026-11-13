@@ -19,6 +19,7 @@ import {
 import { RequestUnavailableNotice } from './request-anchor';
 import { TimelineTime } from './TimelineTime';
 import { formatAgeSeconds, useReducedMotion } from './time';
+import { IDLE_POLL_MS } from './window';
 
 /**
  * Attention rows for the timeline. The same query Action Center uses.
@@ -40,7 +41,7 @@ export function useTimelineAttention(workspaceId: string | null) {
     },
     enabled: Boolean(workspaceId),
     retry: false,
-    refetchInterval: 5_000,
+    refetchInterval: IDLE_POLL_MS,
     refetchIntervalInBackground: false,
   });
 }

@@ -4780,7 +4780,7 @@ describe('open thread external activity', () => {
       } else {
         getThreadDashboard.mockResolvedValue(laterDashboard());
         await act(async () => {
-          await vi.advanceTimersByTimeAsync(5_000);
+          await vi.advanceTimersByTimeAsync(15_000);
         });
       }
       await user.click(await screen.findByRole('button', { name: /Conversation agent/ }));
@@ -4827,7 +4827,7 @@ describe('open thread external activity', () => {
     items = [...ITEMS, laterItem];
     getThreadDashboard.mockResolvedValue(laterDashboard());
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
 
     await waitFor(() => expect(screen.getByText('CATALOG_OK_GROK')).toBeInTheDocument());
@@ -4981,7 +4981,7 @@ describe('open thread external activity', () => {
     expect(screen.queryByRole('region', { name: 'Runtime activity' })).not.toBeInTheDocument();
     reported = true;
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
     expect(await screen.findByText('Child 1: verification running')).toBeInTheDocument();
     expect(screen.getAllByRole('region', { name: 'Runtime activity' })).toHaveLength(1);
@@ -5188,7 +5188,7 @@ describe('open thread external activity', () => {
       makeClient({ 'thread.items': listThreadItems }, { 'thread.dashboard': getThreadDashboard })
     );
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
     expect(await screen.findByText('CATALOG_OK_GROK')).toBeInTheDocument();
     const itemCalls = listThreadItems.mock.calls.length;
@@ -5299,7 +5299,7 @@ describe('open thread external activity', () => {
     newest = [...ITEMS, laterItem];
     getThreadDashboard.mockResolvedValue(laterDashboard());
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000);
     });
 
     expect(await screen.findByText('CATALOG_OK_GROK')).toBeInTheDocument();

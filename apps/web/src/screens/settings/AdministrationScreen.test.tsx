@@ -523,7 +523,7 @@ describe('Administration', () => {
         ],
       });
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(5_000);
+        await vi.advanceTimersByTimeAsync(15_000);
       });
       expect(
         await screen.findByText('Administration observation arrived without an Item.')

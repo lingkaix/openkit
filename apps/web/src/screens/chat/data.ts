@@ -48,9 +48,11 @@ import {
   cursorInput,
   holdFromResponse,
   holdItems,
+  IDLE_POLL_MS,
   level2Input,
   openingInput,
   type TimelineAnchorRequest,
+  windowPollMs,
 } from './timeline/window';
 
 /** One item in a thread's stream (the protocol Item union, via the response type). */
@@ -635,7 +637,8 @@ async function readThreadDashboard(client: CoreClient, workspaceId: string, thre
  * @param workspaceId Current Workspace identity, or null before selection resolves.
  * @param threadId Current Thread identity.
  * @param enabled Whether this observer may fetch instead of only following cached state.
- * @param poll When true, refresh this observer every 5s in the foreground, including running Turns.
+ * @param poll When true, refresh in the foreground from the latest dashboard:
+ *        5s while a Turn is running or pending, otherwise 15s. Hidden pages do not poll.
  */
 export function useThreadDashboard(
   workspaceId: string | null,
@@ -652,10 +655,21 @@ export function useThreadDashboard(
     },
     enabled: Boolean(client && workspaceId) && enabled,
     // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
-    staleTime: poll ? 5_000 : 0,
-    refetchInterval: poll ? 5_000 : false,
+    staleTime: (query) => (poll ? dashboardPollMs(query.state.data) : 0),
+    refetchInterval: (query) => (poll ? dashboardPollMs(query.state.data) : false),
     refetchIntervalInBackground: false,
   });
+}
+
+/** Foreground dashboard cadence. A running or pending Turn is the fast poll. */
+function dashboardPollMs(dashboard: { turns?: readonly { status: string }[] } | undefined): number {
+  const turns = dashboard?.turns ?? [];
+  const interval = windowPollMs({
+    hidden: false,
+    running: turns.some((turn) => turn.status === 'running'),
+    pending: turns.some((turn) => turn.status === 'pending'),
+  });
+  return interval === false ? IDLE_POLL_MS : interval;
 }
 
 /**
