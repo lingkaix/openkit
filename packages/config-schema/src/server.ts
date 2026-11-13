@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { KnowledgeMaintenanceSchema } from './knowledge-maintenance.js';
 import { KnowledgeMountsSchema, validateKnowledgeMountBinding } from './knowledge-mounts.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
+import { SecurityConfigSchema } from './security.js';
 
 /** Combined native stderr/log bytes selected once per admitted Turn package. */
 export const DEFAULT_NATIVE_LOG_MAX_BYTES = 16 * 1024 * 1024;
@@ -289,6 +290,7 @@ export const OpenKitConfigSchema = z
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.optional(),
     schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
     server: OpenKitServerRuntimeSchema.optional(),
+    security: SecurityConfigSchema.optional(),
     vault: OpenKitVaultConfigSchema.optional(),
   })
   .strip()

@@ -1,0 +1,4 @@
+{
+  "id": "GHSA-local-fixture",
+  "affected": [{ "package": { "purl": "pkg:npm/fixture" }, "versions": ["1.0.0"] }]
+}

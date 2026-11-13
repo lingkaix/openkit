@@ -13,6 +13,7 @@ export * from './provider.js';
 export * from './provider-subscription.js';
 export * from './resource-catalog.js';
 export * from './schema-evolution.js';
+export * from './security.js';
 export * from './server.js';
 export * from './session-workspace.js';
 export * from './source-catalog.js';
