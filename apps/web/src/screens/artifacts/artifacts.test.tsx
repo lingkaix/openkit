@@ -436,9 +436,9 @@ function makeClient(
       'artifact.introduce': vi.fn().mockResolvedValue(INTRODUCE_MUTATION),
       'turn.read': vi.fn(),
       ...overrides.operations,
-      'workspace.list': vi
-        .fn()
-        .mockResolvedValueOnce({
+      'workspace.list':
+        overrides.operations?.['workspace.list'] ??
+        vi.fn().mockResolvedValue({
           items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
             membershipStatus: 'active' as const,
             accessCause: 'membership' as const,
@@ -448,23 +448,7 @@ function makeClient(
             ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
             registryRevision: 1,
           })),
-        })
-        .mockImplementation(
-          (overrides.operations?.['workspace.list'] as
-            | CoreClient['operations']['workspace.list']
-            | undefined) ??
-            vi.fn().mockResolvedValue({
-              items: [WORKSPACE, WORKSPACE_B].map((workspace) => ({
-                membershipStatus: 'active' as const,
-                accessCause: 'membership' as const,
-                workspace,
-                isOwner: true,
-                membershipRevision: 1,
-                ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
-                registryRevision: 1,
-              })),
-            })
-        ),
+        }),
     },
   } as unknown as CoreClient;
   const readArtifact = client.operations['artifact.read'];
