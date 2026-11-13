@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldMain } from 'node:timers/promises';
 import type { Item } from '@openkit/protocol';
-import type { FsStore } from './lib/store.js';
+import { type FsStore, StoreRecordNotFoundError } from './lib/store.js';
 import { OperationError } from './operation-error.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openUserReadDb } from './storage/db.js';
@@ -67,7 +67,7 @@ async function eligibleMessageItemIds(owner: ThreadReadOwner): Promise<string[]>
 
 /** Reads one authenticated User's receipt after the operation's current Workspace and Thread admission. */
 export async function readThreadReadState(owner: ThreadReadOwner) {
-  await eligibleMessageItemIds(owner);
+  owner.store.getThread(owner.workspaceId, owner.threadId);
   const db = await getControlStoreWorkerClient().openInitializedUserReadDb(
     owner.coreDb.dataRoot,
     owner.userId
@@ -84,21 +84,41 @@ export async function readThreadReadState(owner: ThreadReadOwner) {
   }
 }
 
+/** Rechecks only displayed targets through their current canonical Workspace/Thread source. */
+async function validateSelectedMessages(owner: ThreadReadOwner, selected: readonly string[]) {
+  let deadline = performance.now() + 8;
+  for (const id of selected) {
+    let item: Item | undefined;
+    try {
+      item = owner.store.getThreadItem(owner.workspaceId, owner.threadId, id);
+    } catch (error) {
+      if (!(error instanceof StoreRecordNotFoundError)) throw error;
+      // A missing Thread retains its original not-found result; a foreign/missing target is invalid.
+      owner.store.getThread(owner.workspaceId, owner.threadId);
+    }
+    if (!item || receiptMessageItemIds([item], owner.userId).length === 0)
+      throw new OperationError(
+        'invalid_input',
+        'Read receipts require completed messages in this Thread.',
+        400
+      );
+    if (performance.now() >= deadline) {
+      await yieldMain();
+      await owner.recheckAdmission?.();
+      deadline = performance.now() + 8;
+    }
+  }
+}
+
 /** Unions actual displayed identities; omitted identities mean the caller explicitly selected Mark read. */
 export async function markThreadRead(
   owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
 ) {
-  const eligible = await eligibleMessageItemIds(owner);
-  const selected = owner.itemIds ?? eligible;
-  const allowed = new Set(eligible);
-  if (selected.some((id) => !allowed.has(id))) {
-    throw new OperationError(
-      'invalid_input',
-      'Read receipts require completed messages in this Thread.',
-      400
-    );
-  }
-  let currentEligible = eligible;
+  // An empty display set is a read, never a membership publication.
+  if (owner.itemIds?.length === 0) return readThreadReadState(owner);
+  const selected = owner.itemIds ?? (await eligibleMessageItemIds(owner));
+  if (owner.itemIds !== undefined) await validateSelectedMessages(owner, selected);
+  let currentEligible: string[] = [];
   const revalidate = async () => {
     await owner.recheckAdmission?.();
     currentEligible = await eligibleMessageItemIds(owner);
@@ -115,7 +135,13 @@ export async function markThreadRead(
     owner.userId
   );
   try {
-    await revalidate();
+    if (owner.itemIds === undefined) {
+      // Mark-all needs both its initial selection and a current projection, not a reused stale set.
+      await revalidate();
+    } else {
+      await owner.recheckAdmission?.();
+      await validateSelectedMessages(owner, selected);
+    }
     const recorded = await advanceThreadReadReceipt(
       db,
       owner.workspaceId,

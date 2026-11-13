@@ -1,8 +1,9 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -87,6 +88,15 @@ describe('User-owned Thread read receipts', () => {
     };
 
     expect(await state()).toEqual({ readItemIds: [], unreadItemIds: [FIRST, SECOND] });
+    const membership = vi.spyOn(getControlStoreWorkerClient(), 'threadReadMembership');
+    try {
+      const empty = await request('thread.mark-read', { ...owner, itemIds: [] });
+      expect(empty.status).toBe(200);
+      expect(await empty.json()).toEqual({ readItemIds: [], unreadItemIds: [FIRST, SECOND] });
+      expect(membership).not.toHaveBeenCalled();
+    } finally {
+      membership.mockRestore();
+    }
     expect((await request('thread.items')).status).toBe(200);
     const prefetchedNavigation = await request('conversation.navigation', {
       workspaceId: workspace.id,
