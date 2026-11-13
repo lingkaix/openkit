@@ -1304,14 +1304,20 @@ export function readAuthorizedWorkspaces(
   coreDb: CoreDb,
   store: FsStore,
   actor: Actor,
-  workspaceIds: readonly string[]
+  workspaceIds: readonly string[],
+  knowledgeCounts?: ReadonlyMap<string, number>
 ) {
   try {
     return ListAuthorizedWorkspacesResponseSchema.parse({
       items: workspaceIds.map((workspaceId) =>
         AuthorizedWorkspaceSummarySchema.parse({
           ...readAuthorizedWorkspaceRelation(coreDb, actor, workspaceId),
-          workspace: store.getWorkspace(workspaceId),
+          workspace: store.getWorkspace(
+            workspaceId,
+            knowledgeCounts?.has(workspaceId)
+              ? { knowledgeEntryCount: knowledgeCounts.get(workspaceId)! }
+              : undefined
+          ),
         })
       ),
     });

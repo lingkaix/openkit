@@ -10,6 +10,8 @@ This directory contains NanoCore's existing app-local product-state aggregate an
 
 ## Boundaries
 
+`FsStore.getWorkspace` accepts an optional request-local Knowledge count from an already admitted reader. This avoids a second synchronous Notebook read during authorized collection projection. It does not retain the count, grant access, or change the current Thread and Artifact count readers.
+
 An admitted MCP effect's terminal tool-call Item selects only its exact invocation credit by causation identity. The existing same-Turn publication tail still orders its head capture and FULL acknowledgement; new-admission pressure does not refuse this closeout. Unrelated Items keep ordinary accounting. MCP reports genuine publication failure explicitly without rewriting the completed effect.
 
 C2-B2 product writes use the native database worker and return Promises. Callers must await Workspace, Thread, Turn, Item, AgentSession and Server product writes before exposing their results. Reads use actual read-only/query-only SQLite connections and verified immutable Storage bodies, never mutable cached truth or product file fallback. Other SQL and file-owned families retain their accepted owners. The [control-store specification](../../../../docs/specs/20261019-durable_execution_and_control_store.md) owns this boundary.

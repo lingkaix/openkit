@@ -21,7 +21,10 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import type { AdmittedOperationContext } from './operation-contract.js';
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
-import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adapter.js';
+import {
+  prepareAuthorizedWorkspaceNotebookRead,
+  readAuthorizedWorkspaceNotebookPages,
+} from './retrieval-knowledge-adapter.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -305,31 +308,48 @@ export function createWorkspaceOperationImplementations(
           context.scope.kind === 'authorized-workspace-set' ? context.scope.workspaceIds : [];
         const store = dependencies.store!;
         const actor = publicOperationActor(context);
-        const result = readAuthorizedWorkspaces(dependencies.coreDb!, store, actor, workspaceIds);
         const dataRoot = store.getDataRoot();
-        if (!dataRoot) return result;
-        return {
-          ...result,
-          items: result.items.map((entry) => ({
-            ...entry,
-            workspace: {
-              ...entry.workspace,
-              counts: {
-                ...entry.workspace.counts,
-                knowledgeEntryCount: readAuthorizedWorkspaceNotebookPages({
-                  dataRoot,
-                  workspaceId: entry.workspace.id,
-                  access: {
-                    store,
-                    coreDb: dependencies.coreDb,
-                    actor: { kind: 'user', id: actor.userId },
-                    requestActor: actor,
-                  },
-                }).pages.length,
-              },
-            },
-          })),
-        };
+        if (!dataRoot)
+          return readAuthorizedWorkspaces(dependencies.coreDb!, store, actor, workspaceIds);
+        const targets = workspaceIds.map((workspaceId) => ({
+          dataRoot,
+          workspaceId,
+          access: {
+            store,
+            coreDb: dependencies.coreDb,
+            actor: { kind: 'user' as const, id: actor.userId },
+            requestActor: actor,
+          },
+        }));
+        const notebookReads: Awaited<ReturnType<typeof prepareAuthorizedWorkspaceNotebookRead>>[] =
+          [];
+        // Bound Git children without serializing every Workspace on the request path.
+        for (let offset = 0; offset < targets.length; offset += 4) {
+          notebookReads.push(
+            ...(await Promise.all(
+              targets.slice(offset, offset + 4).map(prepareAuthorizedWorkspaceNotebookRead)
+            ))
+          );
+        }
+        await context.recheckAdmission?.();
+        // Recheck live Page/Source authority after all asynchronous content reads.
+        const knowledgeCounts = new Map(
+          targets.map((target, index) => [
+            target.workspaceId,
+            readAuthorizedWorkspaceNotebookPages({
+              ...target,
+              notebookRead: notebookReads[index]!,
+              requirePreparedMatch: true,
+            }).pages.length,
+          ])
+        );
+        return readAuthorizedWorkspaces(
+          dependencies.coreDb!,
+          store,
+          actor,
+          workspaceIds,
+          knowledgeCounts
+        );
       } catch (error) {
         if (error instanceof StoreRecordNotFoundError)
           throw new OperationError('not_found', error.message, 404, { cause: error });

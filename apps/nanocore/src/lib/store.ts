@@ -2957,8 +2957,11 @@ export class FsStore {
     }
   }
 
-  /** Joins committed native system metadata with the existing configuration and derived read projections. */
-  public getWorkspace(workspaceId: string): WorkspaceRecord {
+  /** Joins current metadata and counts; callers may supply an already admitted request-local Knowledge count. */
+  public getWorkspace(
+    workspaceId: string,
+    projection?: { readonly knowledgeEntryCount: number }
+  ): WorkspaceRecord {
     this.assertWorkspacePublicationAcknowledged(workspaceId);
     if (this.dataRoot) {
       const root = this.workspaceRootPath(workspaceId);
@@ -3013,10 +3016,12 @@ export class FsStore {
               artifact.workspaceId === workspaceId &&
               !this.pendingArtifactSubmissions.has(artifact.id)
           ).length,
-          knowledgeEntryCount: readWorkspaceKnowledgePages(
-            this.workspaceRootPath(workspaceId),
-            this.workspaceKnowledgeSelection(workspaceId)
-          ).length,
+          knowledgeEntryCount:
+            projection?.knowledgeEntryCount ??
+            readWorkspaceKnowledgePages(
+              this.workspaceRootPath(workspaceId),
+              this.workspaceKnowledgeSelection(workspaceId)
+            ).length,
         };
       };
       return {

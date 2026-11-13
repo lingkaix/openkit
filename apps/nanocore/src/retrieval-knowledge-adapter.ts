@@ -30,6 +30,7 @@ import {
   type WorkspaceNotebookRead,
 } from './knowledge/notebook-index-source.js';
 import {
+  prepareWorkspaceNotebookReads,
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from './knowledge/notebook-workspace-selection.js';
@@ -311,6 +312,8 @@ export type UserMemoryRetrievalAccess = KnowledgeRetrievalAccess & {
 interface Target {
   /** Content loaded for this synchronous disclosure boundary only; never a retained permission. */
   notebookRead?: WorkspaceNotebookRead | undefined;
+  /** Refuses a changed head instead of doing synchronous Git work on an asynchronous list path. */
+  requirePreparedMatch?: boolean;
   dataRoot: string;
   workspaceId: string;
   access: KnowledgeRetrievalAccess;
@@ -764,7 +767,8 @@ function selectWorkspaceNotebook(
   workspaceId: string,
   knowledgeBaseId: string,
   preparedSelection?: WorkspaceNotebookSelection,
-  borrowedDb?: WorkspaceDb
+  borrowedDb?: WorkspaceDb,
+  requirePreparedMatch = false
 ): WorkspaceNotebookSelection {
   let workspaceDb: WorkspaceDb | undefined;
   try {
@@ -776,6 +780,7 @@ function selectWorkspaceNotebook(
       workspaceId,
       expectedKnowledgeBaseId: knowledgeBaseId,
       preparedSelection,
+      requirePreparedMatch,
     });
   } catch (error) {
     if (error instanceof NotebookError || error instanceof OperationError) throw error;
@@ -793,6 +798,7 @@ export function readCurrentWorkspaceNotebookSelection(input: {
   readonly expectedKnowledgeBaseId?: string;
   /** Reusable immutable facts; the physical owner, default KB and SQL head are still read now. */
   readonly preparedSelection?: WorkspaceNotebookSelection | undefined;
+  readonly requirePreparedMatch?: boolean;
 }): WorkspaceNotebookSelection {
   if (input.workspaceDb.workspaceId !== input.workspaceId)
     throw new NotebookError('recovery_required');
@@ -810,6 +816,7 @@ export function readCurrentWorkspaceNotebookSelection(input: {
     workspaceRoot: join(input.dataRoot, 'workspaces', input.workspaceId),
     knowledgeBaseId,
     preparedSelection: input.preparedSelection,
+    ...(input.requirePreparedMatch ? { requirePreparedMatch: true } : {}),
   });
 }
 
@@ -840,7 +847,8 @@ function pinNotebook(input: Target): PinnedNotebookTarget {
     input.workspaceId,
     knowledgeBaseId,
     input.notebookRead?.selection,
-    input.access.workspaceDb
+    input.access.workspaceDb,
+    input.requirePreparedMatch
   );
   const notebook = selection.notebook;
   const prepared = currentWorkspaceNotebookRead(input.notebookRead, workspaceRoot, selection);
@@ -1169,17 +1177,26 @@ export async function prepareAuthorizedWorkspaceNotebookRead(input: Target) {
     dataRoot,
     scope: { kind: 'workspace', workspaceId: input.workspaceId },
   });
-  return prepareWorkspaceNotebookRead({
-    ...input,
-    dataRoot,
-    selection: selectWorkspaceNotebook(
-      dataRoot,
-      input.workspaceId,
+  let workspaceDb: WorkspaceDb | undefined;
+  try {
+    if (input.access.workspaceDb)
+      assertWorkspaceNotebookReadBinding(dataRoot, input.workspaceId, input.access.workspaceDb);
+    else workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, input.workspaceId);
+    const selection = await prepareWorkspaceNotebookReads({
+      workspaceDb: input.access.workspaceDb ?? workspaceDb!,
+      workspaceRoot: join(dataRoot, 'workspaces', input.workspaceId),
       knowledgeBaseId,
-      undefined,
-      input.access.workspaceDb
-    ),
-  });
+      // Prepare metadata only; the existing reader owns exact Page and Source loading.
+      readPaths: [],
+      sources: false,
+    });
+    return await prepareWorkspaceNotebookRead({ ...input, dataRoot, selection });
+  } catch (error) {
+    if (error instanceof NotebookError || error instanceof OperationError) throw error;
+    throw new NotebookError('recovery_required');
+  } finally {
+    workspaceDb?.sqlite.close();
+  }
 }
 /** Declares only body, description and tags as body fields; title has its own kernel weight. */
 function textRanges(content: string, body: string): { start: number; end: number }[] {
