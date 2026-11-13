@@ -1761,6 +1761,101 @@ export async function prepareNativeTurnHistoryRead(
   }
 }
 
+/** Reads only the retained SSE suffix and its addressed lineage in one fresh native read cut. */
+export function readNativeTurnEventWindow(
+  scope: NativeProductScope,
+  turnId: string
+): { turn: Omit<Turn, 'items'>; events: SseEventEnvelope[] } | undefined {
+  const owner = scope.owner;
+  if (owner.kind !== 'workspace') throw new Error('Workspace Turn stream required.');
+  const reader = getWorkspaceProductReadHandle(scope.path, owner, scope.sqlite);
+  try {
+    return reader.sqlite.transaction(() => {
+      const snapshot = readNativeProduct(scope, 'turn', turnId, reader);
+      if (!snapshot) return undefined;
+      const { items: _items, ...turn } = TurnReaderSchema.parse({ ...snapshot.record, items: [] });
+      if (
+        turn.id !== turnId ||
+        turn.owner.kind !== 'workspace' ||
+        turn.owner.workspaceId !== owner.workspaceId
+      )
+        throw new Error('Native Turn stream lineage is recovery_required.');
+      const head = (
+        reader.sqlite
+          .prepare(
+            "SELECT coalesce(max(sequence),0) AS sequence FROM control_product_entries WHERE kind='event' AND turn_id=?"
+          )
+          .get(turnId) as { sequence: number }
+      ).sequence;
+      if (!Number.isSafeInteger(head) || head < 0)
+        throw new Error('Native Turn stream sequence is recovery_required.');
+      let after = Math.max(0, head - TURN_STREAM_EVENT_WINDOW_SIZE);
+      const events: SseEventEnvelope[] = [];
+      const itemIds = new Set<string>();
+      while (after < head) {
+        const page = reader.entries(
+          turnId,
+          'event',
+          after,
+          Math.min(CONTROL_PRODUCT_LIMITS.pageRows, head - after)
+        );
+        if (!page.length) throw new Error('Native Turn stream suffix is recovery_required.');
+        for (const row of page) {
+          if (
+            row.sequence !== after + 1 ||
+            row.revision !== 1 ||
+            row.id !== `${turnId}:${row.sequence}`
+          )
+            throw new Error('Native Turn stream sequence is recovery_required.');
+          const value = readImmutableProductJson(scope.contentMount, owner, row.content);
+          if (
+            value &&
+            typeof value === 'object' &&
+            'requiredFeatures' in value &&
+            (!Array.isArray(value.requiredFeatures) || value.requiredFeatures.length > 0)
+          )
+            throw new Error('Native product required semantics are unsupported.');
+          const event = readRetainedV1(value, StoredEventV1Schema.parse);
+          if (
+            event.sequence !== row.sequence ||
+            event.workspaceId !== owner.workspaceId ||
+            event.threadId !== turn.threadId ||
+            event.turnId !== turnId ||
+            event.event !== event.data.type.replaceAll('-', '.')
+          )
+            throw new Error('Native Turn stream lineage is recovery_required.');
+          const data = event.data;
+          const itemId =
+            data.type === 'item-created'
+              ? data.item.id
+              : data.type === 'item-completed' || data.type === 'item-delta'
+                ? data.itemId
+                : undefined;
+          if (itemId && !itemIds.has(itemId)) {
+            if (reader.threadItem(turn.threadId, itemId)?.turnId !== turnId)
+              throw new Error('Native Turn stream Item lineage is recovery_required.');
+            itemIds.add(itemId);
+          }
+          assertTurnEventPayloadLineage(
+            event as SseEventEnvelope,
+            owner.workspaceId,
+            turn.threadId,
+            turnId,
+            itemIds
+          );
+          const { schemaVersion: _header, ...payload } = value as Record<string, unknown>;
+          const { schemaVersion: _knownHeader, ...known } = event;
+          events.push(preserveDescriptiveRecord(payload, known, known) as SseEventEnvelope);
+          after = row.sequence;
+        }
+      }
+      return { turn, events };
+    })();
+  } finally {
+    if (scope.sqlite) reader.close();
+  }
+}
+
 /** Reads complete ordered native transcript history and validates retained lineage. */
 export function readNativeTurnEvents(
   scope: NativeProductScope,

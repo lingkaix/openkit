@@ -71,22 +71,25 @@ export function registerTurnEventRoutes({
     const workspaceAccess = c.get('workspaceAccess');
     const policyOperation: ProductOperation =
       workspaceAccess?.kind === 'workspace' ? workspaceAccess.policyOperation : 'thread.read';
-    let ownerTurn: ReturnType<FsStore['getTurnById']>;
+    let eventWindow: ReturnType<FsStore['getTurnEventWindow']>;
 
     try {
-      ownerTurn = store.getTurnById(turnId);
+      eventWindow = store.getTurnEventWindow(turnId);
     } catch (error) {
       return asApiError(publishedErrorMessage(error));
     }
 
+    const ownerTurn = eventWindow.turn;
     if (workspaceAccess) {
       assertAuthorizedWorkspaceLineage(workspaceAccess, workspaceIdForOwner(ownerTurn.owner));
     }
 
-    try {
-      store.getTurn(workspaceId, threadId, turnId);
-    } catch (error) {
-      return asApiError(publishedErrorMessage(error));
+    if (
+      ownerTurn.owner.kind !== 'workspace' ||
+      ownerTurn.owner.workspaceId !== workspaceId ||
+      ownerTurn.threadId !== threadId
+    ) {
+      return asApiError('Turn not found.', 'not_found', 404);
     }
 
     /**
@@ -108,7 +111,7 @@ export function registerTurnEventRoutes({
       return asApiError('Thread not found.', 'not_found', 404);
     }
 
-    const retainedEvents = store.getTurnEvents(turnId);
+    const retainedEvents = eventWindow.events;
     const replayEvents = retainedEvents.filter((event) => event.sequence > since);
     const firstRetainedSequence = retainedEvents.at(0)?.sequence;
     const terminalSequence = retainedEvents.find(

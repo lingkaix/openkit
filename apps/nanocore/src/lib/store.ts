@@ -301,6 +301,7 @@ import {
   readNativeThreadItem,
   readNativeThreadTurnPages,
   readNativeTurnEvents,
+  readNativeTurnEventWindow,
   readNativeTurnHistory,
   readNativeTurnHistorySteps,
   readNativeTurnItemCounts,
@@ -8223,18 +8224,46 @@ export class FsStore {
 
   public addTurnListener(turnId: string, listener: EventListener): () => void {
     this.assertTurnPublicationAcknowledged(turnId);
-    this.getTurnById(turnId);
+    // Subscription owns live delivery only; the caller already selected its bounded replay.
+    if (!this.getTurnLineage(turnId)) this.getTurnEventWindow(turnId);
     const stream = this.turnStream(turnId);
-
-    if (!stream) {
-      throw new StoreRecordNotFoundError(`Turn stream not found: ${turnId}`);
-    }
-
     stream.listeners.add(listener);
-
     return () => {
       stream.listeners.delete(listener);
     };
+  }
+
+  /** Returns fresh Turn metadata and at most the retained SSE window, without Item history. */
+  public getTurnEventWindow(turnId: string): {
+    turn: Omit<Turn, 'items'>;
+    events: SseEventEnvelope[];
+  } {
+    this.assertTurnPublicationAcknowledged(turnId);
+    if (this.dataRoot) {
+      const lineage = this.getTurnLineage(turnId);
+      if (lineage) {
+        const window = readNativeTurnEventWindow(
+          this.nativeScope({ kind: 'workspace', workspaceId: lineage.workspaceId }),
+          turnId
+        );
+        if (window) return window;
+      } else {
+        // Preserve opaque-miss quarantine refusal without hydrating unrelated histories.
+        for (const failure of this.suppliedScopeRefusals ?? scopeAdmissionFailures(this.dataRoot))
+          if (failure.scope === 'workspace')
+            assertScopeAdmitted(this.dataRoot, 'workspace', failure.id, this.suppliedScopeRefusals);
+      }
+    } else {
+      const existing = this.turns.get(turnId);
+      if (existing) {
+        const { items: _items, ...turn } = existing;
+        return {
+          turn,
+          events: (this.streams.get(turnId)?.events ?? []).slice(-TURN_STREAM_EVENT_WINDOW_SIZE),
+        };
+      }
+    }
+    throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
   }
 
   public getTurnEvents(turnId: string): SseEventEnvelope[] {
