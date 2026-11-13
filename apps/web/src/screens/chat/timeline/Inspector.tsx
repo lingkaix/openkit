@@ -78,9 +78,10 @@ export function Inspector({
 }) {
   const core = useOptionalCoreClient();
   const queryClient = useContext(QueryClientContext);
+  const scope = scopeOf(items);
   const reported =
     core && queryClient
-      ? reportedActivityFor(queryClient, turnId, scopeOf(items))
+      ? reportedActivityFor(queryClient, turnId, scope)
       : { state: 'absent' as const };
   return (
     <aside
@@ -131,7 +132,15 @@ export function Inspector({
           <Icon name="close" />
         </Button>
       </div>
-      {sheet ? <RunEnvironment usage={usage} fallback={fallback} /> : null}
+      {sheet ? (
+        <RunEnvironment
+          usage={usage}
+          fallback={fallback}
+          turnId={turnId}
+          workspaceId={scope?.workspaceId ?? null}
+          threadId={scope?.threadId ?? null}
+        />
+      ) : null}
       {presentation ? <OwnerRunError presentation={presentation} /> : null}
       <section className="mt-3" aria-label={timelineCopy.identifiersHeading}>
         <h3 className="text-xs font-semibold text-fg">{timelineCopy.identifiersHeading}</h3>

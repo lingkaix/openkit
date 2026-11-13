@@ -413,7 +413,16 @@ function RunEntryBody({
           {timelineCopy['run-trigger']} · {actorName}
         </p>
       ) : null}
-      {runLens === 'full' ? <RunEnvironment usage={entry.usage} fallback={entry.fallback} /> : null}
+      {runLens === 'full' || turn?.status === 'pending' ? (
+        <RunEnvironment
+          usage={runLens === 'full' ? entry.usage : null}
+          fallback={runLens === 'full' ? entry.fallback : null}
+          turnId={entry.turnId}
+          workspaceId={workspaceOf(items)?.workspaceId ?? null}
+          threadId={workspaceOf(items)?.threadId ?? null}
+          facts={runLens === 'full' ? 'standing' : 'wait'}
+        />
+      ) : null}
       {runningStatus}
       {previewNodes('narrative', null)}
       {items.map((item) => (

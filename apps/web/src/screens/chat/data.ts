@@ -26,7 +26,7 @@ import {
 } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useConnectionFailure, useCoreClient } from '../../app/core-client';
+import { useConnectionFailure, useCoreClient, useOptionalCoreClient } from '../../app/core-client';
 import {
   type ComposerWorkerEnvironmentOption,
   type ComposerWorkerEnvironments,
@@ -640,11 +640,14 @@ export function useThreadDashboard(
   enabled = true,
   poll = false
 ) {
-  const client = useCoreClient();
+  const client = useOptionalCoreClient();
   return useQuery({
     queryKey: chatKeys.dashboard(workspaceId ?? '', threadId),
-    queryFn: () => readThreadDashboard(client, workspaceId as string, threadId),
-    enabled: Boolean(workspaceId) && enabled,
+    queryFn: () => {
+      if (!client || !workspaceId) throw new Error('Dashboard read is not admitted.');
+      return readThreadDashboard(client, workspaceId, threadId);
+    },
+    enabled: Boolean(client && workspaceId) && enabled,
     // Shared stream and workbench observers reuse a fresh dashboard until the next poll.
     staleTime: poll ? 5_000 : 0,
     refetchInterval: poll ? 5_000 : false,
