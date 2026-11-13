@@ -9,6 +9,7 @@ This non-authorizing record summarizes the independent documentation audit that 
 
 - Audit base SHA: `996085376c65d973ce9e3c899779ba78d5297fec` (`main` on 2026-10-23).
 - Readiness channel: GitHub issue #440. A held group is not audited.
+- Joint release: the five held groups were released on 2026-11-13 at common SHA `ea4e22503d2956532fc67ed79c9cdc14097453f4` (#440 release comment).
 - Roles: one primary context performs the Auditor function, which writes the findings and the dated records, and the Writer function, which writes the documentation corrections. Read-only inspector contexts collect G3 evidence. One fresh Reviewer context checks each group's diff.
 - Goals: G1 product vision to design, G2 Core against specifications, G3 specifications against implementation, G4 specification organization, and G5 writing rules under [Documentation Writing](../writing.md).
 - Branch: the session's designated branch is `audit/independent-docs-ag29v9`. The engineer's instruction named `audit/independent-docs-<yyyymmdd>`; the session harness fixed the branch name, so the date form was not used.
@@ -25,7 +26,7 @@ This non-authorizing record summarizes the independent documentation audit that 
 
 ## Coverage Ledger
 
-The ledger lists every Core document and every active specification with its home group and state. The home group is the Core document that owns the primary concept in the specification's `## Owns` section. A state is `open, pending` until its group record lands, then `audited` with a link to the group record. A held group keeps `held (#440)`.
+The ledger lists every Core document and every active specification with its home group and state. The home group is the Core document that owns the primary concept in the specification's `## Owns` section. A state is `open, pending` until its group record lands, then `audited` with a link to the group record. A held group keeps `held (#440)`. When #440 releases a held group for audit at a recorded common SHA, its rows return to `open, pending`; release is permission to audit, not an `audited` verdict.
 
 ### Core Documents
 
@@ -48,11 +49,11 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/core/knowledge.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/core/generative-apps.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
-| `docs/core/storage.md` | storage | held (#440) | — |
-| `docs/core/runtime-model.md` | runtime-model | held (#440) | — |
-| `docs/core/fault-tolerance.md` | fault-tolerance | held (#440) | — |
-| `docs/core/evidence.md` | evidence | held (#440) | — |
-| `docs/core/work-model.md` | work-model | held (#440) | — |
+| `docs/core/storage.md` | storage | open, pending (#440 released) | — |
+| `docs/core/runtime-model.md` | runtime-model | open, pending (#440 released) | — |
+| `docs/core/fault-tolerance.md` | fault-tolerance | open, pending (#440 released) | — |
+| `docs/core/evidence.md` | evidence | open, pending (#440 released) | — |
+| `docs/core/work-model.md` | work-model | open, pending (#440 released) | — |
 
 ### Active Specifications
 
@@ -140,27 +141,27 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260711-evaluation_harness_design.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/README.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/AGENTS.md` | process | audited (proposals only) | [process](20261025-independent_doc_audit_process.md) |
-| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | held (#440) | — |
-| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | held (#440) | — |
-| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | held (#440) | — |
-| `docs/specs/20260921-work_data_retention_format.md` | storage | held (#440, named) | — |
-| `docs/specs/20260704-workspace_backup_export_import.md` | storage | held (#440, named) | — |
-| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | held (#440) | — |
-| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | held (#440) | — |
-| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | held (#440, named) | — |
-| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | held (#440) | — |
-| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | held (#440) | — |
-| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | held (#440, named) | — |
-| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | held (#440) | — |
-| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | held (#440) | — |
-| `docs/specs/20260704-chat_mode_assistant.md` | work-model | held (#440) | — |
-| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | held (#440) | — |
-| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | held (#440) | — |
-| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | held (#440) | — |
-| `docs/specs/20261017-evaluation_foundation.md` | work-model | held (#440) | — |
-| `docs/specs/20261002-goal.md` | work-model | held (#440, named) | — |
-| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | held (#440) | — |
-| `docs/specs/20260831-unified_conversation_composer.md` | work-model | held (#440) | — |
+| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | open, pending (#440 released) | — |
+| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | open, pending (#440 released) | — |
+| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | open, pending (#440 released) | — |
+| `docs/specs/20260921-work_data_retention_format.md` | storage | open, pending (#440 released, named) | — |
+| `docs/specs/20260704-workspace_backup_export_import.md` | storage | open, pending (#440 released, named) | — |
+| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | open, pending (#440 released) | — |
+| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | open, pending (#440 released) | — |
+| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | open, pending (#440 released, named) | — |
+| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | open, pending (#440 released) | — |
+| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | open, pending (#440 released) | — |
+| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | open, pending (#440 released, named) | — |
+| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | open, pending (#440 released) | — |
+| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | open, pending (#440 released) | — |
+| `docs/specs/20260704-chat_mode_assistant.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20261017-evaluation_foundation.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20261002-goal.md` | work-model | open, pending (#440 released, named) | — |
+| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20260831-unified_conversation_composer.md` | work-model | open, pending (#440 released) | — |
 
 ### Archive Check
 
