@@ -873,6 +873,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     await workerMcpGateway.closeCredentialGrants(grantIds);
   };
   const app = new Hono<{ Variables: AuthVariables }>();
+  // Default-on at the Core response boundary, including early refusals and unmatched routes.
+  app.use(async (c, next) => {
+    await next();
+    c.header('Content-Security-Policy', "script-src 'self'; object-src 'none'; base-uri 'self'");
+  });
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
     options.nanohostTransportSessionAuthority ?? createNanoHostTransportSessionAuthority();
