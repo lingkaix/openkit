@@ -111,7 +111,7 @@ function scopedFiles(root) {
     encoding: 'utf8',
   })
     .split('\0')
-    .filter((path) => /\.[cm]?tsx?$/.test(path));
+    .filter((path) => /\.[cm]?[jt]sx?$/.test(path));
 }
 
 function scan(root) {
