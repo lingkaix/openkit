@@ -516,7 +516,13 @@ function semverRange(
     if (kind === 'introduced') {
       if (start !== undefined) return false;
       start = value === '0' ? 'zero' : (semver(value) ?? undefined);
-      if (start === undefined) return false;
+      if (start === undefined) {
+        gap({
+          kind: 'unsupported-version',
+          reason: 'SEMVER introduced version cannot be assessed.',
+        });
+        return false;
+      }
     } else if (['fixed', 'last_affected', 'limit'].includes(kind)) {
       const end = semver(value);
       if (start === undefined || !end) return false;
