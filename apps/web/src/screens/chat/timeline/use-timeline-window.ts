@@ -4,6 +4,7 @@ import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tansta
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useCoreClient } from '../../../app/core-client';
 import type { ThreadItem } from '../data';
+import { noteAdmittedArgumentDigest } from './argument-digest';
 import {
   absorbEdge,
   absorbItemEdge,
@@ -293,9 +294,13 @@ export function useRunItemWindow(options: {
     },
   });
   const loaded = query.data?.items ?? [];
-  const completeItems: ThreadItem[] = loaded.flatMap((item) =>
-    item.detail.kind === 'complete' ? [item.detail.value as ThreadItem] : []
-  );
+  const completeItems: ThreadItem[] = loaded.flatMap((item) => {
+    if (item.detail.kind !== 'complete') return [];
+    const value = item.detail.value;
+    if (!value || typeof value !== 'object') return [];
+    noteAdmittedArgumentDigest(value, item.argumentDigest);
+    return [value as ThreadItem];
+  });
   const previewDetails = loaded.flatMap((item) => (item.detail.kind === 'preview' ? [item] : []));
   const pageEarlier = useCallback(() => page.mutate('before'), [page.mutate]);
   const pageLater = useCallback(() => page.mutate('after'), [page.mutate]);

@@ -134,6 +134,7 @@ export const timelineCopy = {
   planSegments: 'Plan progress',
   segmentSteps: '{title} · {count} steps',
   segmentsPartial: 'These counts are incomplete.',
+  intervalMembersUnavailable: 'Interval members are unavailable.',
   approvedBy: 'Approved by {name}',
   deniedBy: 'Denied by {name}',
   answeredBy: 'Answered by {name}',

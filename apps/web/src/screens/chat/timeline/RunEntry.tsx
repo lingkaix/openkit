@@ -6,13 +6,14 @@ import { Button } from '../../../primitives';
 import { type ThreadItem, useThreadDashboard } from '../data';
 import { ItemView } from '../ItemView';
 import {
-  argumentDigestsFor,
+  digestsCarriedWith,
   type ReportedActivityRead,
   reportedActivityFor,
 } from './argument-digest';
 import { fillCopy, timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
+import { OwnerRunError } from './owner-error';
 import {
   type ClosedFold,
   closedDecisionFold,
@@ -153,6 +154,11 @@ function ClosedDecisionFold({
  * One run: trigger, narrative, summary, long-run plan and notes, and the step fold.
  * The step fold opens in place. A running line can still show Full for this run only.
  */
+function dashboardPresents(turn: TimelineTurn | undefined): boolean {
+  const error = turn?.error as { presentation?: unknown } | null | undefined;
+  return error?.presentation != null;
+}
+
 function RunEntryBody({
   entry,
   items,
@@ -493,7 +499,9 @@ function RunEntryBody({
           <span>{timelineCopy.countedFromRecords}</span>
         </p>
       ) : null}
-      {entry.outcome && turn?.status !== 'failed' ? (
+      {entry.errorPresentation && !dashboardPresents(turn) ? (
+        <OwnerRunError presentation={entry.errorPresentation} />
+      ) : entry.outcome && !entry.errorPresentation && turn?.status !== 'failed' ? (
         <p data-voice="fact" data-invariant="true" className="ok-voice-fact ok-outcome">
           {entry.outcome.text}
         </p>
@@ -631,7 +639,7 @@ function AdmittedRequests({
   });
 }
 
-function RecordedDigests({
+function RecordedActivity({
   workspaceId,
   threadId,
   turnId,
@@ -640,26 +648,21 @@ function RecordedDigests({
   workspaceId: string;
   threadId: string;
   turnId: string;
-  children: (facts: {
-    digests: ReadonlyMap<string, string | null>;
-    reported: ReportedActivityRead;
-  }) => ReactNode;
+  children: (reported: ReportedActivityRead) => ReactNode;
 }) {
   const queryClient = useQueryClient();
-  return children({
-    digests: argumentDigestsFor(queryClient, workspaceId, threadId),
-    reported: reportedActivityFor(queryClient, turnId, { workspaceId, threadId }),
-  });
+  return children(reportedActivityFor(queryClient, turnId, { workspaceId, threadId }));
 }
 
 export function RunEntry(
   props: Omit<
     Parameters<typeof RunEntryBody>[0],
-    'requests' | 'viewerUserId' | 'names' | 'digests' | 'reported'
+    'requests' | 'viewerUserId' | 'names' | 'reported'
   >
 ) {
   const client = useOptionalCoreClient();
   const scope = workspaceOf(props.items);
+  const digests = props.digests ?? digestsCarriedWith(props.items);
   if (!client || !scope) {
     return (
       <RunEntryBody
@@ -667,20 +670,22 @@ export function RunEntry(
         requests={undefined}
         viewerUserId={null}
         names={new Map()}
-        digests={new Map()}
+        digests={digests}
       />
     );
   }
   return (
     <AdmittedRequests workspaceId={scope.workspaceId} threadId={scope.threadId}>
       {(lifecycle) => (
-        <RecordedDigests
+        <RecordedActivity
           workspaceId={scope.workspaceId}
           threadId={scope.threadId}
           turnId={props.entry.turnId}
         >
-          {(facts) => <RunEntryBody {...props} {...lifecycle} {...facts} />}
-        </RecordedDigests>
+          {(reported) => (
+            <RunEntryBody {...props} {...lifecycle} digests={digests} reported={reported} />
+          )}
+        </RecordedActivity>
       )}
     </AdmittedRequests>
   );

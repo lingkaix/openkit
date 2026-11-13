@@ -5,6 +5,7 @@ import type {
   TimelineRunEntry,
 } from '@openkit/app-api-schemas';
 import type { ThreadItem } from '../data';
+import { noteAdmittedArgumentDigest } from './argument-digest';
 import { recordedFailureText } from './owner-error';
 import { outcomeLine, recordedCount } from './present';
 import type { AgentProfileId } from './profiles';
@@ -381,19 +382,32 @@ export function itemAnchorHasLevel2(
   );
 }
 
+function carryDigest(item: TimelineItem): ThreadItem | null {
+  if (item.detail.kind !== 'complete') return null;
+  const value = item.detail.value;
+  if (!value || typeof value !== 'object') return null;
+  noteAdmittedArgumentDigest(value, item.argumentDigest);
+  return value as ThreadItem;
+}
+
 export function completeDetails(items: readonly TimelineItem[]): ThreadItem[] {
-  return items.flatMap((item) =>
-    item.detail.kind === 'complete' ? [item.detail.value as ThreadItem] : []
-  );
+  return items.flatMap((item) => {
+    const value = carryDigest(item);
+    return value ? [value] : [];
+  });
 }
 
 export function completeThreadItems(runs: readonly TimelineRunEntry[]): ThreadItem[] {
   const items: ThreadItem[] = [];
   for (const run of runs) {
     for (const item of run.narrative) {
-      if (item.detail.kind === 'complete') items.push(item.detail.value as ThreadItem);
+      const value = carryDigest(item);
+      if (value) items.push(value);
     }
-    if (run.plan?.detail.kind === 'complete') items.push(run.plan.detail.value as ThreadItem);
+    if (run.plan) {
+      const value = carryDigest(run.plan);
+      if (value) items.push(value);
+    }
   }
   return items;
 }
@@ -489,6 +503,7 @@ export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
     usage: run.usage ?? null,
     fallback: run.fallback ?? null,
     planSegments: run.planSegments ?? null,
+    errorPresentation: run.error?.presentation ?? null,
     policies: [
       ...run.narrative.map((item) => ({ id: item.id, policy: item.policy ?? null })),
       ...(run.plan ? [{ id: run.plan.id, policy: run.plan.policy ?? null }] : []),

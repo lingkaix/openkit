@@ -116,6 +116,8 @@ export function TimelineScroll({
   // biome-ignore lint/correctness/useExhaustiveDependencies: paging callbacks stay current; rebinding the observer on each render would page twice.
   useEffect(() => {
     if (!restoreSettled) return undefined;
+    // Paging waits when the observer API is absent. The timeline still renders.
+    if (typeof IntersectionObserver === 'undefined') return undefined;
     const root = scrollParent(frame.current);
     const viewport = root.clientHeight || window.innerHeight;
     const margin = `${Math.round(sentinelDistancePx(viewport))}px 0px`;

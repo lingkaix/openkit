@@ -26,6 +26,8 @@ export interface TimelineEntry {
   fallback?: TimelineRunEntry['fallback'];
   planSegments?: TimelineRunEntry['planSegments'] | null;
   policies?: readonly { id: string; policy: TimelineItem['policy'] }[];
+  /** Owner presentation from this exact run. Absence is not filled from another run. */
+  errorPresentation?: NonNullable<TimelineRunEntry['error']>['presentation'] | null;
 }
 
 export interface TimelineTurn {

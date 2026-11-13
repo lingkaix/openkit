@@ -53,11 +53,7 @@ function FinishedSegment({ segment }: { segment: PlanSegment }) {
       >
         {line}
       </Button>
-      {open ? (
-        <ul data-fold-depth="2" data-plan-members={segment.stepId}>
-          <li data-plan-member={segmentKey(segment)}>{line}</li>
-        </ul>
-      ) : null}
+      {open ? <p data-fold-depth="2">{timelineCopy.intervalMembersUnavailable}</p> : null}
     </li>
   );
 }

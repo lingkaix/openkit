@@ -433,11 +433,10 @@ describe('closed decisions and recorded plan intervals', () => {
     expect(list.querySelector('[data-plan-members]')).toBeNull();
 
     await user.click(finished);
-    const members = list.querySelector('[data-plan-members="notes"]');
-    expect(members).not.toBeNull();
-    expect(members?.querySelectorAll('[data-plan-member]')).toHaveLength(1);
-    expect(members?.textContent).toContain('Write notes · 4 steps');
-    expect(members?.textContent).not.toContain('Fix formatter');
+    expect(within(list).getAllByText('Write notes · 4 steps')).toHaveLength(1);
+    expect(screen.getByText('Interval members are unavailable.')).toBeVisible();
+    expect(list.querySelector('[data-plan-member]')).toBeNull();
+    expect(within(list).getByText('Fix formatter · 18 steps')).toBeInTheDocument();
     expect(screen.getByText('These counts are incomplete.')).toBeInTheDocument();
   });
 });
