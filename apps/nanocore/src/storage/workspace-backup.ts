@@ -1748,6 +1748,8 @@ async function runWorkspaceCapture(
   let authorityError: unknown;
   let result: Omit<WorkspaceBackupCreateResult, 'manifest'> | null | undefined;
   let closing = false;
+  // Request-local settlement fences, not a new owner or cancellation of accepted native work.
+  const controlJobs = new Set<Promise<void>>();
   let drained: Promise<void> | undefined;
   const signal = new Int32Array(new SharedArrayBuffer(4));
   try {
@@ -1811,277 +1813,293 @@ async function runWorkspaceCapture(
           );
         host.on('error', onWorkerFailure);
         host.on('exit', onWorkerFailure);
-        host.on(
-          'message',
-          async (
-            value:
-              | WorkspaceCaptureControl
-              | { kind: 'done'; result: Omit<WorkspaceBackupCreateResult, 'manifest'> | null }
-              | { kind: 'failed'; code: WorkspaceRecoveryErrorCode }
-          ) => {
-            if (value.kind === 'done') {
-              if (authorityError) reject(authorityError);
-              else resolveResult(value.result);
-              return;
-            }
-            if (value.kind === 'failed') {
-              reject(
-                authorityError ??
-                  new WorkspaceRecoveryError(value.code, 'Workspace capture refused.')
-              );
-              return;
-            }
-            let reply: number | undefined;
-            let ok = true;
-            try {
-              if (value.kind === 'candidate') {
-                if (!automatic?.workspaceIds.includes(value.workspaceId))
-                  refuse('invalid-arguments');
-                targetWorkspaceId = value.workspaceId;
-                captureWorkerActive!.workspaceId = targetWorkspaceId;
-                reply = 0;
-                if (isScopeAdmitted(live.dataRoot, 'workspace', targetWorkspaceId)) {
-                  const candidate = live.mutationAdmission.tryFreeze(targetWorkspaceId, () =>
-                    readBlockers({ ...live, workspaceId: targetWorkspaceId, operation: 'capture' })
-                  );
-                  if (candidate.status === 'frozen') {
-                    candidate.release();
-                    reply = 1;
-                  }
-                }
-              } else if (value.kind === 'source-proof') {
-                const assertCurrent = () => {
-                  live.currentAuthority?.();
-                  if (
-                    input.purpose !== 'move' ||
-                    !live.actor ||
-                    !captureFreeze ||
-                    !live.mutationAdmission.ownsFreeze(targetWorkspaceId, captureFreeze)
-                  )
-                    refuse('recovery-required');
-                };
-                assertCurrent();
-                const scope = nativeProductScope(live.dataRoot, { kind: 'server' });
-                if (live.coreDb.scope !== 'core' || live.coreDb.sqlite.name !== scope.path)
-                  refuse('recovery-required');
-                const client = getControlStoreWorkerClient(live.mutationAdmission);
-                const database = `core:${scope.path}`;
-                await client.open({
-                  database,
-                  path: scope.path,
-                  dataRoot: live.dataRoot,
-                  create: false,
-                  initialize: 'core',
-                  productOwner: scope.owner,
-                  contentMount: scope.contentMount,
-                });
-                assertCurrent();
-                await client.recoveryTargetPreparation(
-                  database,
-                  {
-                    kind: 'source-prepare',
-                    admissionId: input.backupId,
-                    workspaceId: targetWorkspaceId,
-                    authority: { mode: 'source', actor: live.actor! },
-                    file: value.file,
-                  },
-                  captureFreeze,
-                  assertCurrent
+        const handleControlMessage = async (
+          value:
+            | WorkspaceCaptureControl
+            | { kind: 'done'; result: Omit<WorkspaceBackupCreateResult, 'manifest'> | null }
+            | { kind: 'failed'; code: WorkspaceRecoveryErrorCode }
+        ) => {
+          if (value.kind === 'done') {
+            if (authorityError) reject(authorityError);
+            else resolveResult(value.result);
+            return;
+          }
+          if (value.kind === 'failed') {
+            reject(
+              authorityError ?? new WorkspaceRecoveryError(value.code, 'Workspace capture refused.')
+            );
+            return;
+          }
+          let reply: number | undefined;
+          let ok = true;
+          try {
+            if (value.kind === 'candidate') {
+              if (!automatic?.workspaceIds.includes(value.workspaceId)) refuse('invalid-arguments');
+              targetWorkspaceId = value.workspaceId;
+              captureWorkerActive!.workspaceId = targetWorkspaceId;
+              reply = 0;
+              if (isScopeAdmitted(live.dataRoot, 'workspace', targetWorkspaceId)) {
+                const candidate = live.mutationAdmission.tryFreeze(targetWorkspaceId, () =>
+                  readBlockers({ ...live, workspaceId: targetWorkspaceId, operation: 'capture' })
                 );
-                assertCurrent();
-              } else if (value.kind === 'capacity') {
-                if (value.action === 'reserve') {
-                  reply = reservations.size;
-                  reservations.set(reply, input.admission.reserve(value.writes));
-                } else {
-                  const reservation = reservations.get(value.reservation);
-                  if (!reservation) refuse('capacity-exceeded');
-                  if (value.action === 'assert') reservation.assertAvailable();
-                  if (value.action === 'release') reservation.release();
-                  if (value.action === 'reduce') reservation.reduceTo(value.bytes as bigint);
-                  if (value.action === 'written') reservation.recordWritten(value.bytes as number);
+                if (candidate.status === 'frozen') {
+                  candidate.release();
+                  reply = 1;
                 }
+              }
+            } else if (value.kind === 'source-proof') {
+              const assertCurrent = () => {
+                live.currentAuthority?.();
+                if (
+                  input.purpose !== 'move' ||
+                  !live.actor ||
+                  !captureFreeze ||
+                  !live.mutationAdmission.ownsFreeze(targetWorkspaceId, captureFreeze)
+                )
+                  refuse('recovery-required');
+              };
+              assertCurrent();
+              const scope = nativeProductScope(live.dataRoot, { kind: 'server' });
+              if (live.coreDb.scope !== 'core' || live.coreDb.sqlite.name !== scope.path)
+                refuse('recovery-required');
+              const client = getControlStoreWorkerClient(live.mutationAdmission);
+              const database = `core:${scope.path}`;
+              await client.open({
+                database,
+                path: scope.path,
+                dataRoot: live.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              });
+              assertCurrent();
+              if (closing) return;
+              await client.recoveryTargetPreparation(
+                database,
+                {
+                  kind: 'source-prepare',
+                  admissionId: input.backupId,
+                  workspaceId: targetWorkspaceId,
+                  authority: { mode: 'source', actor: live.actor! },
+                  file: value.file,
+                },
+                captureFreeze,
+                assertCurrent
+              );
+              assertCurrent();
+            } else if (value.kind === 'capacity') {
+              if (value.action === 'reserve') {
+                reply = reservations.size;
+                reservations.set(reply, input.admission.reserve(value.writes));
               } else {
-                if (value.phase !== 'cleanup' && value.phase !== 'cleanup-end') {
-                  live.currentAuthority?.();
-                  if (
-                    live.freezeOwner &&
-                    !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
-                  )
-                    refuse('recovery-required');
-                }
-                if (value.phase === 'freeze') {
-                  live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
-                  let hold: Promise<() => void> | null = null;
-                  const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
-                  const captureBlockers = (): readonly WorkspaceBlocker[] => {
-                    const blockers = readBlockers({
-                      ...live,
-                      workspaceId: targetWorkspaceId,
-                      operation: 'capture',
-                    });
-                    if (blockers.length) return blockers;
-                    hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
-                      `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
-                      live.mutationAdmission
-                    );
-                    return hold
-                      ? []
-                      : [
-                          {
-                            kind: 'publication',
-                            reason: 'pending-publication',
-                            reference: { workspaceId: targetWorkspaceId },
-                            actions: [],
-                          },
-                        ];
-                  };
-                  let admission: WorkspaceFreezeAdmission;
-                  if (live.freezeOwner) {
-                    const blockers = captureBlockers();
-                    admission = blockers.length
-                      ? { status: 'blocked', blockers }
-                      : live.freezeOwner;
-                  } else {
-                    admission = live.mutationAdmission.tryFreeze(
-                      targetWorkspaceId,
-                      captureBlockers
-                    );
-                  }
-                  if (admission.status !== 'frozen') {
-                    const busy = wasClosed && admission.status === 'busy';
-                    throw new OperationError(
-                      busy ? 'workspace_frozen' : 'workspace_blocked',
-                      'Workspace capture is not admitted.',
-                      409,
-                      {
-                        details: {
-                          workspaceId: targetWorkspaceId,
-                          operation: 'capture',
-                          retryable: busy,
-                          blockers:
-                            admission.status === 'blocked'
-                              ? admission.blockers
-                              : [
-                                  {
-                                    kind: 'publication',
-                                    reason: busy ? 'frozen' : 'pending-publication',
-                                    reference: { workspaceId: targetWorkspaceId },
-                                    actions: [],
-                                  },
-                                ],
+                const reservation = reservations.get(value.reservation);
+                if (!reservation) refuse('capacity-exceeded');
+                if (value.action === 'assert') reservation.assertAvailable();
+                if (value.action === 'release') reservation.release();
+                if (value.action === 'reduce') reservation.reduceTo(value.bytes as bigint);
+                if (value.action === 'written') reservation.recordWritten(value.bytes as number);
+              }
+            } else {
+              if (value.phase !== 'cleanup' && value.phase !== 'cleanup-end') {
+                live.currentAuthority?.();
+                if (
+                  live.freezeOwner &&
+                  !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
+                )
+                  refuse('recovery-required');
+              }
+              if (value.phase === 'freeze') {
+                live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
+                let hold: Promise<() => void> | null = null;
+                const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
+                const captureBlockers = (): readonly WorkspaceBlocker[] => {
+                  const blockers = readBlockers({
+                    ...live,
+                    workspaceId: targetWorkspaceId,
+                    operation: 'capture',
+                  });
+                  if (blockers.length) return blockers;
+                  hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+                    `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
+                    live.mutationAdmission
+                  );
+                  return hold
+                    ? []
+                    : [
+                        {
+                          kind: 'publication',
+                          reason: 'pending-publication',
+                          reference: { workspaceId: targetWorkspaceId },
+                          actions: [],
                         },
-                      }
-                    );
-                  }
-                  captureFreeze = admission;
-                  drained = hold!.then(
-                    (release) => {
-                      resumeNative = release;
-                    },
-                    (error) => {
-                      authorityError ??= error;
+                      ];
+                };
+                let admission: WorkspaceFreezeAdmission;
+                if (live.freezeOwner) {
+                  const blockers = captureBlockers();
+                  admission = blockers.length ? { status: 'blocked', blockers } : live.freezeOwner;
+                } else {
+                  admission = live.mutationAdmission.tryFreeze(targetWorkspaceId, captureBlockers);
+                }
+                if (admission.status !== 'frozen') {
+                  const busy = wasClosed && admission.status === 'busy';
+                  throw new OperationError(
+                    busy ? 'workspace_frozen' : 'workspace_blocked',
+                    'Workspace capture is not admitted.',
+                    409,
+                    {
+                      details: {
+                        workspaceId: targetWorkspaceId,
+                        operation: 'capture',
+                        retryable: busy,
+                        blockers:
+                          admission.status === 'blocked'
+                            ? admission.blockers
+                            : [
+                                {
+                                  kind: 'publication',
+                                  reason: busy ? 'frozen' : 'pending-publication',
+                                  reference: { workspaceId: targetWorkspaceId },
+                                  actions: [],
+                                },
+                              ],
+                      },
                     }
                   );
                 }
-                if (value.phase === 'drain') {
-                  await drained;
-                  if (closing) return;
-                  if (authorityError) throw authorityError;
-                  live.currentAuthority?.();
-                  if (
-                    live.freezeOwner &&
-                    !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
-                  )
-                    refuse('recovery-required');
-                }
-                if (value.phase === 'cut') {
-                  resumeNative?.();
-                  resumeNative = undefined;
-                  if (input.purpose === 'backup' && captureFreeze !== live.freezeOwner) {
-                    captureFreeze?.release();
-                    captureFreeze = undefined;
-                  }
-                }
-                if (value.phase === 'finish' && input.purpose === 'backup' && !live.freezeOwner) {
-                  // The fresh capture released its freeze at cut. Reuse the native
-                  // first-terminal owner after the Worker verified and published its seal.
-                  const client = getControlStoreWorkerClient(live.mutationAdmission);
-                  const scope = nativeProductScope(live.dataRoot, {
-                    kind: 'workspace',
-                    workspaceId: targetWorkspaceId,
-                  });
-                  const database = `workspace:${scope.path}`;
-                  let opened = false;
-                  let finishAttempted = false;
-                  try {
-                    await client.open({
-                      database,
-                      path: scope.path,
-                      dataRoot: live.dataRoot,
-                      create: false,
-                      initialize: 'workspace',
-                      productOwner: scope.owner,
-                      contentMount: scope.contentMount,
-                    });
-                    opened = true;
-                    live.currentAuthority?.();
-                    finishAttempted = true;
-                    await client.recoveryCapture(database, {
-                      workspaceId: targetWorkspaceId,
-                      captureId: input.backupId,
-                      state: 'finished',
-                    });
-                    reply = 1;
-                    live.currentAuthority?.();
-                  } catch (error) {
+                captureFreeze = admission;
+                drained = hold!.then(
+                  (release) => {
+                    resumeNative = release;
+                  },
+                  (error) => {
                     authorityError ??= error;
-                    reply = finishAttempted ? 2 : 0;
-                    // No terminal request was offered before OPEN/current-authority refusal.
-                    // An unknown posted request can still commit after an active read.
-                    // Inspect only after proved non-commit; otherwise retain the seal.
-                    if (
-                      finishAttempted &&
-                      opened &&
-                      error instanceof ControlStoreWorkerError &&
-                      error.commit === 'not-committed'
-                    ) {
+                  }
+                );
+              }
+              if (value.phase === 'drain') {
+                await drained;
+                if (closing) return;
+                if (authorityError) throw authorityError;
+                live.currentAuthority?.();
+                if (
+                  live.freezeOwner &&
+                  !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
+                )
+                  refuse('recovery-required');
+              }
+              if (value.phase === 'cut') {
+                resumeNative?.();
+                resumeNative = undefined;
+                if (input.purpose === 'backup' && captureFreeze !== live.freezeOwner) {
+                  captureFreeze?.release();
+                  captureFreeze = undefined;
+                }
+              }
+              if (value.phase === 'finish' && input.purpose === 'backup' && !live.freezeOwner) {
+                // The fresh capture released its freeze at cut. Reuse the native
+                // first-terminal owner after the Worker verified and published its seal.
+                const client = getControlStoreWorkerClient(live.mutationAdmission);
+                const scope = nativeProductScope(live.dataRoot, {
+                  kind: 'workspace',
+                  workspaceId: targetWorkspaceId,
+                });
+                const database = `workspace:${scope.path}`;
+                let opened = false;
+                let finishAttempted = false;
+                try {
+                  await client.open({
+                    database,
+                    path: scope.path,
+                    dataRoot: live.dataRoot,
+                    create: false,
+                    initialize: 'workspace',
+                    productOwner: scope.owner,
+                    contentMount: scope.contentMount,
+                  });
+                  opened = true;
+                  if (closing) return;
+                  live.currentAuthority?.();
+                  finishAttempted = true;
+                  await client.recoveryCapture(database, {
+                    workspaceId: targetWorkspaceId,
+                    captureId: input.backupId,
+                    state: 'finished',
+                  });
+                  reply = 1;
+                  live.currentAuthority?.();
+                } catch (error) {
+                  authorityError ??= error;
+                  reply = finishAttempted ? 2 : 0;
+                  // No terminal request was offered before OPEN/current-authority refusal.
+                  // An unknown posted request can still commit after an active read.
+                  // Inspect only after proved non-commit; otherwise retain the seal.
+                  if (
+                    !closing &&
+                    finishAttempted &&
+                    opened &&
+                    error instanceof ControlStoreWorkerError &&
+                    error.commit === 'not-committed'
+                  ) {
+                    try {
+                      const retained = openWorkspaceReadDb(live.dataRoot, targetWorkspaceId);
                       try {
-                        const retained = openWorkspaceReadDb(live.dataRoot, targetWorkspaceId);
-                        try {
-                          const decision = inspectCapture(
-                            retained,
-                            targetWorkspaceId,
-                            input.backupId
-                          );
-                          if (decision?.state === 'active' || decision?.state === 'abandoned')
-                            reply = 0;
-                        } finally {
-                          retained.sqlite.close();
-                        }
-                      } catch {
-                        // Unreadable or missing truth leaves the sealed generation unknown.
+                        const decision = inspectCapture(
+                          retained,
+                          targetWorkspaceId,
+                          input.backupId
+                        );
+                        if (decision?.state === 'active' || decision?.state === 'abandoned')
+                          reply = 0;
+                      } finally {
+                        retained.sqlite.close();
                       }
+                    } catch {
+                      // Unreadable or missing truth leaves the sealed generation unknown.
                     }
                   }
                 }
               }
-            } catch (error) {
-              ok = false;
-              authorityError ??=
-                error instanceof FileAdmissionError
-                  ? new WorkspaceRecoveryError(
-                      'capacity-exceeded',
-                      'Capture capacity is unavailable.'
-                    )
-                  : error;
             }
-            if (closing) return;
-            host.postMessage({ ok, result: reply });
-            Atomics.store(signal, 0, 1);
-            Atomics.notify(signal, 0);
+          } catch (error) {
+            ok = false;
+            authorityError ??=
+              error instanceof FileAdmissionError
+                ? new WorkspaceRecoveryError(
+                    'capacity-exceeded',
+                    'Capture capacity is unavailable.'
+                  )
+                : error;
           }
-        );
+          if (closing) return;
+          host.postMessage({ ok, result: reply });
+          Atomics.store(signal, 0, 1);
+          Atomics.notify(signal, 0);
+        };
+        host.on('message', (value: Parameters<typeof handleControlMessage>[0]) => {
+          if (closing) return;
+          // Register before invoking the original callback: result/failure may settle inline.
+          let settle!: () => void;
+          const job = new Promise<void>((resolve) => {
+            settle = resolve;
+          });
+          controlJobs.add(job);
+          const complete = () => {
+            controlJobs.delete(job);
+            settle();
+          };
+          void handleControlMessage(value).then(complete, (error: unknown) => {
+            if (authorityError === undefined) authorityError = error;
+            else if (authorityError !== error)
+              authorityError = new AggregateError(
+                [authorityError, error],
+                'Capture control settlement failed.'
+              );
+            reject(authorityError);
+            complete();
+          });
+        });
       }
     );
     live.currentAuthority?.();
@@ -2095,6 +2113,9 @@ async function runWorkspaceCapture(
     } catch (error) {
       cleanupFailure = error;
     }
+    // No new callback starts after closing. Join the accepted originals before releasing
+    // their freeze, reservations or active slot; Worker exit alone does not join listeners.
+    await Promise.all(controlJobs);
     // Drain rejection is observed when acquired; its native owner has already
     // released the failed hold. Late successful acquisition still belongs here.
     await drained;
