@@ -7,7 +7,6 @@ import {
   type EarlierPageCorpus,
 } from './test-support/thread-timeline-earlier.fixture.js';
 
-const PAGE_ITEMS = 50;
 const PAGE_RUNS = 31;
 const RESPONSE_BYTES = 262_144;
 /** Cooperative eligibility chunks yield well inside this bound; one synchronous pass does not. */
@@ -33,10 +32,9 @@ async function post(operation: string, body: Record<string, unknown>) {
   return { status: response.status, bytes: Buffer.byteLength(text), text };
 }
 
-describe(`Earlier page during a receipt write on a ${EARLIER_PAGE_HEADERS}-header / ${EARLIER_PAGE_ITEMS}-Item Thread`, () => {
-  it('serves the real older page while a displayed-only Mark read is still scanning eligibility', async () => {
+describe(`Earlier page during a bulk receipt write on a ${EARLIER_PAGE_HEADERS}-header / ${EARLIER_PAGE_ITEMS}-Item Thread`, () => {
+  it('serves the real older page while bulk Mark read is still scanning eligibility', async () => {
     const selector = { workspaceId: corpus.workspaceId, threadId: corpus.threadId };
-    const displayed = corpus.itemIds.slice(-PAGE_ITEMS);
 
     // The quiet first page fixes the exact older-run identities this Thread must answer with.
     const first = await post('thread.timeline', selector);
@@ -54,7 +52,7 @@ describe(`Earlier page during a receipt write on a ${EARLIER_PAGE_HEADERS}-heade
     // Probe only receipt work, before the separately bounded Earlier reader is issued.
     const started = performance.now();
     let settled = false;
-    const receipt = post('thread.mark-read', { ...selector, itemIds: displayed }).then((result) => {
+    const receipt = post('thread.mark-read', selector).then((result) => {
       settled = true;
       return result;
     });
@@ -79,15 +77,17 @@ describe(`Earlier page during a receipt write on a ${EARLIER_PAGE_HEADERS}-heade
       expect(settled, 'Earlier page waited for the whole receipt scan').toBe(false);
       const marked = await receipt;
 
-      // The receipt still records every displayed identity against the complete eligible set.
+      // The bulk path acknowledges every selected current identity without returning the union.
       expect(marked.status, marked.text.slice(0, 400)).toBe(200);
+      expect(JSON.parse(marked.text)).toEqual({
+        scope: 'thread',
+        acknowledgedCount: EARLIER_PAGE_ITEMS,
+      });
       const state = await post('thread.read-state', selector);
       expect(state.status, state.text.slice(0, 400)).toBe(200);
       const body = JSON.parse(state.text) as { readItemIds: string[]; unreadItemIds: string[] };
-      expect(new Set(body.readItemIds)).toEqual(new Set(displayed));
-      expect(new Set(body.unreadItemIds)).toEqual(
-        new Set(corpus.itemIds.slice(0, EARLIER_PAGE_ITEMS - PAGE_ITEMS))
-      );
+      expect(new Set(body.readItemIds)).toEqual(new Set(corpus.itemIds));
+      expect(body.unreadItemIds).toEqual([]);
     } finally {
       await receipt;
     }

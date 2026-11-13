@@ -84,7 +84,9 @@ describe('User-owned Thread read receipts', () => {
     const state = async () => {
       const response = await request('thread.read-state');
       expect(response.status).toBe(200);
-      return response.json();
+      const { scope, ...state } = await response.json();
+      expect(scope).toBe('thread');
+      return state;
     };
 
     expect(await state()).toEqual({ readItemIds: [], unreadItemIds: [FIRST, SECOND] });
@@ -92,7 +94,7 @@ describe('User-owned Thread read receipts', () => {
     try {
       const empty = await request('thread.mark-read', { ...owner, itemIds: [] });
       expect(empty.status).toBe(200);
-      expect(await empty.json()).toEqual({ readItemIds: [], unreadItemIds: [FIRST, SECOND] });
+      expect(await empty.json()).toEqual({ scope: 'window', acknowledgedItemIds: [] });
       expect(membership).not.toHaveBeenCalled();
     } finally {
       membership.mockRestore();
@@ -118,6 +120,7 @@ describe('User-owned Thread read receipts', () => {
     );
     expect(await state()).toEqual({ readItemIds: [SECOND], unreadItemIds: [FIRST] });
     expect(await readThreadReadState({ ...owner, store, coreDb, userId: OTHER_USER })).toEqual({
+      scope: 'thread',
       readItemIds: [],
       unreadItemIds: [FIRST, SECOND, OWN],
     });

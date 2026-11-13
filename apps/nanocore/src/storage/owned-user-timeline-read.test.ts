@@ -338,7 +338,7 @@ it('keeps exact public Timeline membership, run and message projections through 
     boundary = await f.message('Actually displayed boundary.\r\n🚀');
   const marked = await f.operation('thread.mark-read', { ...f.selectors, itemIds: [boundary.id] });
   expect(marked.status, await marked.clone().text()).toBe(200);
-  expect(await marked.json()).toEqual({ readItemIds: [boundary.id], unreadItemIds: [earlier.id] });
+  expect(await marked.json()).toEqual({ scope: 'window', acknowledgedItemIds: [boundary.id] });
   expect(acks('open', f.database).length).toBeGreaterThan(0);
   const membershipAck = acks('thread-read-membership', f.database);
   expect(membershipAck).toHaveLength(1);

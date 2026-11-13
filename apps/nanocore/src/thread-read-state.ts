@@ -66,26 +66,41 @@ async function eligibleMessageItemIds(owner: ThreadReadOwner): Promise<string[]>
 }
 
 /** Reads one authenticated User's receipt after the operation's current Workspace and Thread admission. */
-export async function readThreadReadState(owner: ThreadReadOwner) {
+export async function readThreadReadState(
+  owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
+) {
   owner.store.getThread(owner.workspaceId, owner.threadId);
+  const selected = owner.itemIds === undefined ? undefined : [...new Set(owner.itemIds)];
+  if (selected !== undefined) await selectedMessageItemIds(owner, selected, false);
   const db = await getControlStoreWorkerClient().openInitializedUserReadDb(
     owner.coreDb.dataRoot,
     owner.userId
   );
   try {
     await owner.recheckAdmission?.();
-    const currentEligible = await eligibleMessageItemIds(owner);
-    return projectReadState(
+    const currentEligible =
+      selected === undefined
+        ? await eligibleMessageItemIds(owner)
+        : await selectedMessageItemIds(owner, selected, false);
+    const state = projectReadState(
       currentEligible,
       readThreadReadReceipt(db, owner.workspaceId, owner.threadId)
     );
+    return selected === undefined
+      ? { scope: 'thread' as const, ...state }
+      : { scope: 'window' as const, ...state };
   } finally {
     db.sqlite.close();
   }
 }
 
-/** Rechecks only displayed targets through their current canonical Workspace/Thread source. */
-async function validateSelectedMessages(owner: ThreadReadOwner, selected: readonly string[]) {
+/** Rechecks selected canonical sources; reads filter ineligible Items, display writes refuse them. */
+async function selectedMessageItemIds(
+  owner: ThreadReadOwner,
+  selected: readonly string[],
+  requireEligible: boolean
+): Promise<string[]> {
+  const eligible: string[] = [];
   let deadline = performance.now() + 8;
   for (const id of selected) {
     let item: Item | undefined;
@@ -96,33 +111,39 @@ async function validateSelectedMessages(owner: ThreadReadOwner, selected: readon
       // A missing Thread retains its original not-found result; a foreign/missing target is invalid.
       owner.store.getThread(owner.workspaceId, owner.threadId);
     }
-    if (!item || receiptMessageItemIds([item], owner.userId).length === 0)
+    const isEligible = item !== undefined && receiptMessageItemIds([item], owner.userId).length > 0;
+    if (!item || (requireEligible && !isEligible))
       throw new OperationError(
         'invalid_input',
         'Read receipts require completed messages in this Thread.',
         400
       );
+    if (isEligible) eligible.push(id);
     if (performance.now() >= deadline) {
       await yieldMain();
       await owner.recheckAdmission?.();
       deadline = performance.now() + 8;
     }
   }
+  return eligible;
 }
 
-/** Unions actual displayed identities; omitted identities mean the caller explicitly selected Mark read. */
+/** Unions actual displayed identities and returns only their FULL-acknowledged selection, not history. */
 export async function markThreadRead(
   owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
 ) {
-  // An empty display set is a read, never a membership publication.
-  if (owner.itemIds?.length === 0) return readThreadReadState(owner);
-  const selected = owner.itemIds ?? (await eligibleMessageItemIds(owner));
-  if (owner.itemIds !== undefined) await validateSelectedMessages(owner, selected);
-  let currentEligible: string[] = [];
+  owner.store.getThread(owner.workspaceId, owner.threadId);
+  const explicit = owner.itemIds !== undefined;
+  const selected = explicit ? [...new Set(owner.itemIds)] : await eligibleMessageItemIds(owner);
+  if (explicit) await selectedMessageItemIds(owner, selected, true);
   const revalidate = async () => {
     await owner.recheckAdmission?.();
-    currentEligible = await eligibleMessageItemIds(owner);
-    const allowed = new Set(currentEligible);
+    if (explicit) {
+      await selectedMessageItemIds(owner, selected, true);
+      return;
+    }
+    // Bulk selection and current eligibility are separate proofs across native waits.
+    const allowed = new Set(await eligibleMessageItemIds(owner));
     if (selected.some((id) => !allowed.has(id)))
       throw new OperationError(
         'invalid_input',
@@ -135,21 +156,13 @@ export async function markThreadRead(
     owner.userId
   );
   try {
-    if (owner.itemIds === undefined) {
-      // Mark-all needs both its initial selection and a current projection, not a reused stale set.
-      await revalidate();
-    } else {
-      await owner.recheckAdmission?.();
-      await validateSelectedMessages(owner, selected);
-    }
-    const recorded = await advanceThreadReadReceipt(
-      db,
-      owner.workspaceId,
-      owner.threadId,
-      selected,
-      revalidate
-    );
-    return projectReadState(currentEligible, recorded);
+    await revalidate();
+    // The existing native owner still returns the full retained union internally.
+    // Empty selections are reads there and never publish a membership row.
+    await advanceThreadReadReceipt(db, owner.workspaceId, owner.threadId, selected, revalidate);
+    return explicit
+      ? { scope: 'window' as const, acknowledgedItemIds: selected }
+      : { scope: 'thread' as const, acknowledgedCount: selected.length };
   } finally {
     db.sqlite.close();
   }

@@ -28,11 +28,28 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 
 const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 
-/** Current User receipt membership and unread message identities for one visible Thread. */
-export const ThreadReadStateResponseSchema = z.object({
-  readItemIds: z.array(ItemIdSchema),
-  unreadItemIds: z.array(ItemIdSchema),
-});
+/** Current User membership for a bounded selection, or the temporary complete Thread read. */
+export const ThreadReadStateResponseSchema = z.discriminatedUnion('scope', [
+  z.object({
+    scope: z.literal('window'),
+    readItemIds: z.array(ItemIdSchema).max(200),
+    unreadItemIds: z.array(ItemIdSchema).max(200),
+  }),
+  z.object({
+    scope: z.literal('thread'),
+    readItemIds: z.array(ItemIdSchema),
+    unreadItemIds: z.array(ItemIdSchema),
+  }),
+]);
+
+/** FULL-acknowledged selected identities or a bulk selection count; never the retained union. */
+export const ThreadMarkReadResponseSchema = z.discriminatedUnion('scope', [
+  z.object({
+    scope: z.literal('window'),
+    acknowledgedItemIds: z.array(ItemIdSchema).max(200),
+  }),
+  z.object({ scope: z.literal('thread'), acknowledgedCount: z.number().int().nonnegative() }),
+]);
 
 /** Thread commands and audience-scoped reads retain the protocol, closeout and dashboard owners. */
 export const THREAD_OPERATION_DEFINITIONS = {
@@ -171,8 +188,11 @@ export const THREAD_OPERATION_DEFINITIONS = {
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
-    description: 'Read the current User read receipt and unread messages without marking any read.',
-    inputSchema: z.object(threadSelector).strict(),
+    description:
+      'Read current User membership for up to 200 selected Items without marking read. Omit itemIds only for the temporary complete Thread read.',
+    inputSchema: z
+      .object({ ...threadSelector, itemIds: z.array(ItemIdSchema).max(200).optional() })
+      .strict(),
     outputSchema: ThreadReadStateResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
@@ -186,14 +206,14 @@ export const THREAD_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     description:
-      'Record displayed completed message Item IDs for the current User. Omit itemIds only for explicit Mark read of all current messages.',
+      'Record displayed completed message Item IDs and return only their bounded acknowledgement. Omit itemIds only for explicit bulk Mark read, which acknowledges a count.',
     inputSchema: z
       .object({
         ...threadSelector,
         itemIds: z.array(ItemIdSchema).max(200).optional(),
       })
       .strict(),
-    outputSchema: ThreadReadStateResponseSchema,
+    outputSchema: ThreadMarkReadResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },

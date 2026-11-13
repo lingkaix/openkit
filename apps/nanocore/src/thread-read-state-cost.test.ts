@@ -104,6 +104,7 @@ describe('receipt cost and current-source preservation', () => {
   it('reads exact eligible identities with at most one complete history traversal', async () => {
     const traversals = observeFullTraversals();
     expect(await request('thread.read-state')).toEqual({
+      scope: 'thread',
       readItemIds: [],
       unreadItemIds: eligible,
     });
@@ -116,13 +117,19 @@ describe('receipt cost and current-source preservation', () => {
   it('marks one displayed identity with at most one complete history traversal', async () => {
     const traversals = observeFullTraversals();
     expect(await request('thread.mark-read', [eligible[0]!])).toEqual({
-      readItemIds: [eligible[0]],
-      unreadItemIds: eligible.slice(1),
+      scope: 'window',
+      acknowledgedItemIds: [eligible[0]],
     });
     expect(
       traversals(),
       'selected receipt validation repeated the complete canonical body traversal'
     ).toBeLessThanOrEqual(1);
+    // The bounded acknowledgement does not return the union; verify it through its read owner.
+    expect(await request('thread.read-state')).toEqual({
+      scope: 'thread',
+      readItemIds: [eligible[0]],
+      unreadItemIds: eligible.slice(1),
+    });
   });
 
   it('does not publish a selected target that becomes empty during native opening', async () => {

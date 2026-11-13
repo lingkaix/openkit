@@ -44,7 +44,7 @@ describe('thread operation schemas', () => {
     }
   });
 
-  it('caps thread.mark-read itemIds at 200 items and validates read-state output', () => {
+  it('caps thread.mark-read itemIds at 200 items and validates bounded acknowledgements', () => {
     const inputSchema = THREAD_OPERATION_DEFINITIONS['thread.mark-read'].inputSchema;
     const outputSchema = THREAD_OPERATION_DEFINITIONS['thread.mark-read'].outputSchema;
 
@@ -65,21 +65,47 @@ describe('thread operation schemas', () => {
       }).success
     ).toBe(false);
 
+    const acknowledgement = { scope: 'window', acknowledgedItemIds: [itemId] };
+    expect(outputSchema.parse(acknowledgement)).toEqual(acknowledgement);
+    expect(outputSchema.parse({ scope: 'thread', acknowledgedCount: 10_000 })).toEqual({
+      scope: 'thread',
+      acknowledgedCount: 10_000,
+    });
+    for (const invalid of [
+      { scope: 'window', acknowledgedItemIds: ['not-an-item-id'] },
+      { scope: 'window', acknowledgedItemIds: Array(201).fill(itemId) },
+      { scope: 'thread', acknowledgedCount: -1 },
+      { scope: 'thread', acknowledgedCount: 1.5 },
+      { readItemIds: [itemId], unreadItemIds: [] },
+    ])
+      expect(outputSchema.safeParse(invalid).success).toBe(false);
+  });
+
+  it('distinguishes bounded window state from the temporary complete Thread read', () => {
+    const { inputSchema, outputSchema } = THREAD_OPERATION_DEFINITIONS['thread.read-state'];
+    expect(inputSchema.parse({ workspaceId, threadId })).toEqual({ workspaceId, threadId });
+    expect(inputSchema.parse({ workspaceId, threadId, itemIds: [] }).itemIds).toEqual([]);
+    expect(
+      inputSchema.parse({ workspaceId, threadId, itemIds: Array(200).fill(itemId) }).itemIds
+    ).toHaveLength(200);
+    expect(
+      inputSchema.safeParse({ workspaceId, threadId, itemIds: Array(201).fill(itemId) }).success
+    ).toBe(false);
+    expect(inputSchema.safeParse({ workspaceId, threadId, itemIds: [null] }).success).toBe(false);
+    const window = { scope: 'window', readItemIds: [itemId], unreadItemIds: [] };
+    expect(outputSchema.parse(window)).toEqual(window);
+    expect(
+      outputSchema.safeParse({ ...window, readItemIds: Array(201).fill(itemId) }).success
+    ).toBe(false);
     expect(
       outputSchema.parse({
-        readItemIds: [itemId],
+        scope: 'thread',
+        readItemIds: Array(201).fill(itemId),
         unreadItemIds: [],
-      })
-    ).toEqual({
-      readItemIds: [itemId],
-      unreadItemIds: [],
-    });
-
-    expect(
-      outputSchema.safeParse({
-        readItemIds: ['not-an-item-id'],
-        unreadItemIds: [],
-      }).success
-    ).toBe(false);
+      }).readItemIds
+    ).toHaveLength(201);
+    expect(outputSchema.safeParse({ ...window, unreadItemIds: ['not-an-item-id'] }).success).toBe(
+      false
+    );
   });
 });

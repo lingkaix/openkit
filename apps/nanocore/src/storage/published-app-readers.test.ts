@@ -295,7 +295,7 @@ it.each(['established', 'absent'] as const)(
       itemIds: [item.id],
     });
     expect(read.status).toBe(200);
-    expect(await read.json()).toEqual({ readItemIds: [item.id], unreadItemIds: [] });
+    expect(await read.json()).toEqual({ scope: 'window', acknowledgedItemIds: [item.id] });
     const created = await call('thread.create', {
       workspaceId: workspace.id,
       name: 'F1 native publication',

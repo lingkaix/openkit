@@ -336,7 +336,7 @@ async function fixture(server = false) {
   const selectors = { workspaceId: workspace.id, threadId: thread.id };
   const marked = await request('thread.mark-read', { ...selectors, itemIds: [item.id] });
   expect(marked.status).toBe(200);
-  expect(await marked.json()).toEqual({ readItemIds: [item.id], unreadItemIds: [] });
+  expect(await marked.json()).toEqual({ scope: 'window', acknowledgedItemIds: [item.id] });
   const path = userDbPath(root, userId);
   const database = `user:${path}`;
   const client = getControlStoreWorkerClient();

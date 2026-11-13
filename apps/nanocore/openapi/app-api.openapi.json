@@ -7035,7 +7035,7 @@
         "tags": [
           "thread"
         ],
-        "summary": "Read the current User read receipt and unread messages without marking any read.",
+        "summary": "Read current User membership for up to 200 selected Items without marking read. Omit itemIds only for the temporary complete Thread read.",
         "security": [
           {
             "bearerAuth": []
@@ -7056,7 +7056,7 @@
         },
         "responses": {
           "200": {
-            "description": "Read the current User read receipt and unread messages without marking any read.",
+            "description": "Read current User membership for up to 200 selected Items without marking read. Omit itemIds only for the temporary complete Thread read.",
             "content": {
               "application/json": {
                 "schema": {
@@ -7085,7 +7085,7 @@
         "tags": [
           "thread"
         ],
-        "summary": "Record displayed completed message Item IDs for the current User. Omit itemIds only for explicit Mark read of all current messages.",
+        "summary": "Record displayed completed message Item IDs and return only their bounded acknowledgement. Omit itemIds only for explicit bulk Mark read, which acknowledges a count.",
         "security": [
           {
             "bearerAuth": []
@@ -7106,7 +7106,7 @@
         },
         "responses": {
           "200": {
-            "description": "Record displayed completed message Item IDs for the current User. Omit itemIds only for explicit Mark read of all current messages.",
+            "description": "Record displayed completed message Item IDs and return only their bounded acknowledgement. Omit itemIds only for explicit bulk Mark read, which acknowledges a count.",
             "content": {
               "application/json": {
                 "schema": {
@@ -71177,6 +71177,14 @@
           "threadId": {
             "type": "string",
             "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "itemIds": {
+            "maxItems": 200,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+            }
           }
         },
         "required": [
@@ -71187,28 +71195,68 @@
       },
       "thread.read-state.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "readItemIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-            }
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "const": "window"
+              },
+              "readItemIds": {
+                "maxItems": 200,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "unreadItemIds": {
+                "maxItems": 200,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
+            },
+            "required": [
+              "scope",
+              "readItemIds",
+              "unreadItemIds"
+            ],
+            "additionalProperties": false
           },
-          "unreadItemIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-            }
+          {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "const": "thread"
+              },
+              "readItemIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              },
+              "unreadItemIds": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
+            },
+            "required": [
+              "scope",
+              "readItemIds",
+              "unreadItemIds"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "readItemIds",
-          "unreadItemIds"
-        ],
-        "additionalProperties": false
+        ]
       },
       "thread.mark-read.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -71239,28 +71287,49 @@
       },
       "thread.mark-read.output": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
-        "properties": {
-          "readItemIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-            }
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "const": "window"
+              },
+              "acknowledgedItemIds": {
+                "maxItems": 200,
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                }
+              }
+            },
+            "required": [
+              "scope",
+              "acknowledgedItemIds"
+            ],
+            "additionalProperties": false
           },
-          "unreadItemIds": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "pattern": "^it_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-            }
+          {
+            "type": "object",
+            "properties": {
+              "scope": {
+                "type": "string",
+                "const": "thread"
+              },
+              "acknowledgedCount": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "scope",
+              "acknowledgedCount"
+            ],
+            "additionalProperties": false
           }
-        },
-        "required": [
-          "readItemIds",
-          "unreadItemIds"
-        ],
-        "additionalProperties": false
+        ]
       },
       "thread.dashboard.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -179435,5 +179504,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:bf9064c5e1b49230f25a9f10a82a01621d7b205ac7a1d6987f4b9f7d70179091"
+  "x-openkit-source-digest": "sha256:66898a97f013c73a5746985197ac22ef945e9396cb6678dfff48ae4efdfd3815"
 }

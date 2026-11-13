@@ -393,9 +393,9 @@ for (const operation of [
     const result = await f.call(operation, input);
     expect(result.status).toBe(200);
     if (operation === 'thread.read-state')
-      expect(result.body).toEqual({ readItemIds: [], unreadItemIds: [f.item.id] });
+      expect(result.body).toEqual({ scope: 'thread', readItemIds: [], unreadItemIds: [f.item.id] });
     if (operation === 'thread.mark-read')
-      expect(result.body).toEqual({ readItemIds: [f.item.id], unreadItemIds: [] });
+      expect(result.body).toEqual({ scope: 'window', acknowledgedItemIds: [f.item.id] });
     if (operation === 'conversation.navigation')
       expect(
         result.body.items.find((row: { thread: { id: string } }) => row.thread.id === f.thread.id)
@@ -483,7 +483,7 @@ it('joins the exact pending first-create before a second public owner can read t
   Atomics.notify(gate, 1);
   expect(await first).toEqual({
     status: 200,
-    body: { readItemIds: [], unreadItemIds: [f.item.id] },
+    body: { scope: 'thread', readItemIds: [], unreadItemIds: [f.item.id] },
   });
   expect((await second).status).toBe(200);
   assertNativeOpening();
@@ -727,7 +727,7 @@ it('natively upgrades an authentic original User journal prefix before readonly 
   fault.fence = true;
   expect(await f.call('thread.mark-read', { ...f.owner, itemIds: [f.item.id] })).toEqual({
     status: 200,
-    body: { readItemIds: [f.item.id], unreadItemIds: [] },
+    body: { scope: 'window', acknowledgedItemIds: [f.item.id] },
   });
   assertNativeOpening();
   const reader = openUserReadDb(f.dataRoot, f.userId);
@@ -752,7 +752,7 @@ it('keeps acknowledged User receipts readable after their native host later dies
   // Actual owner admission settles first; this differs from a lost first-initialization ACK.
   expect(await f.call('thread.mark-read', { ...f.owner, itemIds: [f.item.id] })).toEqual({
     status: 200,
-    body: { readItemIds: [f.item.id], unreadItemIds: [] },
+    body: { scope: 'window', acknowledgedItemIds: [f.item.id] },
   });
   const host = fault.userHost;
   expect(host).toBeDefined();
@@ -763,7 +763,7 @@ it('keeps acknowledged User receipts readable after their native host later dies
   fault.handles.length = 0;
   expect(await f.call('thread.read-state', f.owner)).toEqual({
     status: 200,
-    body: { readItemIds: [f.item.id], unreadItemIds: [] },
+    body: { scope: 'thread', readItemIds: [f.item.id], unreadItemIds: [] },
   });
   const navigation = await f.call('conversation.navigation', { workspaceId: f.workspace.id });
   expect(navigation.status).toBe(200);
@@ -815,10 +815,14 @@ it('keeps original unsupported predecessor-ledger refusal when native User journ
 
 it('acknowledges the existing native User owner before returning a cold current reader and closes at rest', async () => {
   const f = await fixture();
-  const exactReceipt = { status: 200, body: { readItemIds: [f.item.id], unreadItemIds: [] } };
-  expect(await f.call('thread.mark-read', { ...f.owner, itemIds: [f.item.id] })).toEqual(
-    exactReceipt
-  );
+  const exactReceipt = {
+    status: 200,
+    body: { scope: 'thread', readItemIds: [f.item.id], unreadItemIds: [] },
+  };
+  expect(await f.call('thread.mark-read', { ...f.owner, itemIds: [f.item.id] })).toEqual({
+    status: 200,
+    body: { scope: 'window', acknowledgedItemIds: [f.item.id] },
+  });
   const setup = openUserReadDb(f.dataRoot, f.userId);
   let journal: unknown[];
   let schema: unknown[];

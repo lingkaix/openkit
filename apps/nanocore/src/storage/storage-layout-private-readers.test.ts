@@ -397,7 +397,7 @@ async function prepare() {
     )
   );
   expect(written.status).toBe(200);
-  expect(await written.json()).toEqual({ readItemIds: [item.id], unreadItemIds: [] });
+  expect(await written.json()).toEqual({ scope: 'window', acknowledgedItemIds: [item.id] });
   const path = userDbPath(root, userId),
     database = `user:${path}`;
   const reader = openUserReadDb(root, userId);
@@ -657,7 +657,7 @@ async function markRead(f: Fixture, itemId: string) {
   );
   expect(response.status).toBe(200);
   const body = await response.json();
-  expect(body).toEqual({ readItemIds: [f.item.id, itemId].sort(), unreadItemIds: [] });
+  expect(body).toEqual({ scope: 'window', acknowledgedItemIds: [itemId] });
 }
 function retainedFiles(path: string) {
   return ['', '-wal', '-shm', '-journal'].map((suffix) => {
