@@ -763,10 +763,20 @@ jobs:
           working_directory: apps/nanohost
           install_args: rust
 
+      - name: Set up pinned Node for verified tool supply
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node
+      - name: Install checksum-bound auditable Cargo wrapper
+        run: |
+          node scripts/install-security-tools.mjs --tool cargo-auditable --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+
       - name: Build and inspect the pinned NanoHost binary
         run: |
           cd apps/nanohost
-          cargo build --locked --release
+          cargo auditable build --locked --release
           ./target/release/nanohost --version
           mkdir -p ../../nanohost-native
           cp target/release/nanohost ../../nanohost-native/nanohost
@@ -800,10 +810,20 @@ jobs:
           working_directory: apps/nanohost
           install_args: rust
 
+      - name: Set up pinned Node for verified tool supply
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node
+      - name: Install checksum-bound auditable Cargo wrapper
+        run: |
+          node scripts/install-security-tools.mjs --tool cargo-auditable --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+
       - name: Build and inspect the pinned NanoHost binary
         run: |
           cd apps/nanohost
-          cargo build --locked --release
+          cargo auditable build --locked --release
           ./target/release/nanohost --version
           mkdir -p ../../nanohost-native
           cp target/release/nanohost ../../nanohost-native/nanohost
@@ -2287,6 +2307,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      packages: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2300,11 +2323,39 @@ jobs:
           path: release-records
           merge-multiple: true
 
+      - name: Set up pinned release verification tools
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node pnpm
+      - name: Install checksum-bound inventory and workflow tools
+        run: |
+          node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
+          node scripts/install-security-tools.mjs --tool zizmor --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+      - name: Lint before registry credentials
+        run: node scripts/check-workflows.mjs --all
+      - name: Set up release Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Read-only release registry login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install verifier dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
       - name: Download portable release assets
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-portable-assets
           path: portable-assets
+
+      - name: Generate every image platform and NanoHost archive SBOM
+        run: |
+          node scripts/release-sbom.mjs release --records release-records --assets portable-assets \
+            --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}"
 
       - name: Generate release manifest and checksum
         run: |
@@ -2312,6 +2363,15 @@ jobs:
             --repo-root . --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" \
             --repository "${GITHUB_REPOSITORY}" --records release-records \
             --publication-assets portable-assets
+
+      - name: Bind all file and OCI index/platform subjects from the release manifest
+        run: |
+          node scripts/release-sbom.mjs subjects --assets portable-assets --repository "${GITHUB_REPOSITORY}" \
+            --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/provenance-subjects.txt"
+      - name: Attest all released image and NanoHost/SHA256SUMS subjects
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/provenance-subjects.txt
 
       - name: Create release notes
         env:
@@ -2346,12 +2406,13 @@ jobs:
           else
             release_flags+=(--latest)
           fi
+          mapfile -t sbom_assets < <(node --input-type=module -e 'import {sbomAssetNames} from "./scripts/release-sbom.mjs"; for (const name of sbomAssetNames(process.env.GITHUB_REF_NAME)) console.log("portable-assets/"+name)')
           gh release create "${GITHUB_REF_NAME}" \
             "portable-assets/openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz" \
             "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-amd64.tar.gz" \
             "portable-assets/openkit-nanohost-${GITHUB_REF_NAME}-linux-arm64.tar.gz" \
             "portable-assets/openkit-release-${GITHUB_REF_NAME}.json" \
-            portable-assets/SHA256SUMS \
+            portable-assets/SHA256SUMS "${sbom_assets[@]}" \
             --repo "${GITHUB_REPOSITORY}" \
             "${release_flags[@]}"
 
@@ -2367,6 +2428,7 @@ jobs:
     permissions:
       contents: read
       packages: read
+      attestations: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -2389,6 +2451,14 @@ jobs:
           pattern: release-image-*
           path: release-records
           merge-multiple: true
+
+      - name: Set up pinned integrity verifier runtime
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node pnpm
+      - name: Install integrity verifier dependencies without lifecycle scripts
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Verify every published image digest
         run: |
@@ -2426,8 +2496,9 @@ jobs:
           checksum="$(sha256sum release-download/SHA256SUMS | cut -d ' ' -f1)"
           visibility=public
           if [ "${REPOSITORY_PRIVATE}" = "true" ]; then visibility=private; fi
-          RELEASE_JSON="${release_json}" node <<'NODE'
-          const fs = require('node:fs');
+          RELEASE_JSON="${release_json}" node --input-type=module <<'NODE'
+          import fs from 'node:fs';
+          import { sbomAssetNames } from './scripts/release-sbom.mjs';
           const release = JSON.parse(process.env.RELEASE_JSON);
           const expectedPrerelease = process.env.GITHUB_REF_NAME.includes('-');
           const names = release.assets.map((asset) => asset.name).sort();
@@ -2437,6 +2508,7 @@ jobs:
             `openkit-ops-skill-${process.env.GITHUB_REF_NAME}.tar.gz`,
             `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-amd64.tar.gz`,
             `openkit-nanohost-${process.env.GITHUB_REF_NAME}-linux-arm64.tar.gz`,
+            ...sbomAssetNames(process.env.GITHUB_REF_NAME),
           ].sort();
           if (release.tagName !== process.env.GITHUB_REF_NAME || release.isDraft || release.isPrerelease !== expectedPrerelease) {
             throw new Error('GitHub Release identity or state does not match the tag.');
@@ -2489,6 +2561,13 @@ jobs:
               --repo-root .
           done
           VERIFY_ASSETS
+
+      - name: Verify release SBOM bindings and native keyless attestations
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/verify-release-integrity.mjs --directory release-download --repository "${GITHUB_REPOSITORY}" \
+            --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}"
 
       - name: Verify public worker base without registry credentials
         run: |

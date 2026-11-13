@@ -11,7 +11,7 @@ ENV LINDERA_BUILD_DICTIONARY_CACHE_DIR="/build/target/lindera"
 ARG TARGETARCH
 WORKDIR /build
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates curl g++ python3 pkg-config \
+  && apt-get install -y --no-install-recommends ca-certificates curl g++ python3 pkg-config xz-utils \
   && case "${TARGETARCH}" in \
        amd64) rustup_target=x86_64-unknown-linux-gnu; rustup_sha256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
        arm64) rustup_target=aarch64-unknown-linux-gnu; rustup_sha256=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
@@ -23,6 +23,8 @@ RUN apt-get update \
   && /tmp/rustup-init -y --no-modify-path --default-toolchain "${RUST_VERSION}" --profile minimal \
   && rm /tmp/rustup-init \
   && rm -rf /var/lib/apt/lists/*
+COPY scripts/install-security-tools.mjs scripts/security-tools.json /tmp/openkit-security-tools/
+RUN node /tmp/openkit-security-tools/install-security-tools.mjs --tool cargo-auditable --directory /usr/local/bin
 COPY Cargo.toml Cargo.lock ./
 COPY packages/retrieval-kernel/ packages/retrieval-kernel/
 COPY scripts/retrieval-dictionary.py scripts/retrieval-notices.py scripts/
@@ -30,7 +32,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,id=openkit-retrieval-reg
     --mount=type=cache,target=/build/target,id=openkit-retrieval-target-${TARGETARCH} \
     python3 scripts/retrieval-dictionary.py --cache "${LINDERA_BUILD_DICTIONARY_CACHE_DIR}" --notice /out/licenses/IPADIC-COPYING \
   && cargo fetch --locked \
-  && cargo build --locked --offline --release -p retrieval-kernel \
+  && cargo auditable build --locked --offline --release -p retrieval-kernel \
   && strip target/release/retrieval-kernel \
   && cp target/release/retrieval-kernel /out/retrieval-kernel \
   && python3 scripts/retrieval-notices.py --output /out/licenses/crates
@@ -72,7 +74,7 @@ RUN pnpm --filter @openkit/nanocore... --filter @openkit/web... build
 # Pin Zod exactly across the workspace because legacy deploy re-resolves schema-package ranges independently of NanoCore's locked converter; remove the pin once App deploy uses the shared lockfile.
 RUN pnpm --filter @openkit/nanocore deploy --prod --legacy /deploy/nanocore
 
-FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime
+FROM node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68 AS runtime-base
 
 ARG TARGETARCH
 
@@ -149,3 +151,19 @@ RUN node -e 'const fs=require("node:fs"); const releaseTag=process.env.OPENKIT_R
 EXPOSE 8080
 
 ENTRYPOINT ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]
+
+# Scan only the completed runtime's read-only filesystem, never this supplier stage's tools.
+FROM runtime-base AS sbom
+ARG TARGETARCH
+ARG OPENKIT_SOURCE_COMMIT
+COPY scripts/install-security-tools.mjs scripts/security-tools.json scripts/security-scan.mjs scripts/release-sbom.mjs /tmp/openkit-security-tools/
+RUN node /tmp/openkit-security-tools/install-security-tools.mjs --tool syft --directory /tmp/security-bin
+RUN --network=none --mount=from=runtime-base,target=/image-root,ro \
+    export PATH="/tmp/security-bin:${PATH}" \
+  && sha_args=() \
+  && if [ -n "${OPENKIT_SOURCE_COMMIT}" ]; then sha_args=(--sha "${OPENKIT_SOURCE_COMMIT}"); fi \
+  && node /tmp/openkit-security-tools/release-sbom.mjs rootfs --root /image-root --id app \
+       --platform "linux/${TARGETARCH}" "${sha_args[@]}" --output /out/app-sbom.cdx.json
+
+FROM runtime-base AS runtime
+COPY --from=sbom /out/app-sbom.cdx.json /app/security/sbom.cdx.json

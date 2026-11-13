@@ -28,5 +28,37 @@
         "sha256": "983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81"
       }
     }
+  },
+  "syft": {
+    "version": "1.57.1",
+    "publishedAt": "2026-11-09T14:39:42Z",
+    "platforms": {
+      "amd64": {
+        "url": "https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_linux_amd64.tar.gz",
+        "sha256": "bf52519eb57f675d47c07d43213cb6dff6449f3d6d1147ff6701ed91f44eef0c",
+        "member": "syft"
+      },
+      "arm64": {
+        "url": "https://github.com/anchore/syft/releases/download/v1.57.1/syft_1.57.1_linux_arm64.tar.gz",
+        "sha256": "aa3d3e07344f590bcce8d31043b752daa76c8a56c2aa34ceeee63c6168152582",
+        "member": "syft"
+      }
+    }
+  },
+  "cargo-auditable": {
+    "version": "0.7.7",
+    "publishedAt": "2026-10-02T13:14:19Z",
+    "platforms": {
+      "amd64": {
+        "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.7/cargo-auditable-x86_64-unknown-linux-musl.tar.xz",
+        "sha256": "7676443367c5e33d9fb22acef63cccb5e9202de12dae1b0579995eb3e2bc7a18",
+        "member": "cargo-auditable-x86_64-unknown-linux-musl/cargo-auditable"
+      },
+      "arm64": {
+        "url": "https://github.com/rust-secure-code/cargo-auditable/releases/download/v0.7.7/cargo-auditable-aarch64-unknown-linux-musl.tar.xz",
+        "sha256": "c324af56990601354bbf40080f582ba46f8ec8b807a1388e25bb7e429d285c18",
+        "member": "cargo-auditable-aarch64-unknown-linux-musl/cargo-auditable"
+      }
+    }
   }
 }

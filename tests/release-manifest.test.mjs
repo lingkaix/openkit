@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createReleaseNotes, parseReleaseNotesInput } from '../scripts/release-notes.mjs';
+import { promotionAssets } from '../scripts/release-promotion.mjs';
 import {
   compactReleaseRecord,
   createReleaseManifest,
@@ -38,10 +39,8 @@ export function manifestInput() {
       tags: [tag, tag.slice(1), `sha-${sha.slice(0, 12)}`],
       platforms: ['linux/amd64', 'linux/arm64'].map((platform) => ({ platform, digest })),
     })),
-    checksums: `${[
-      `openkit-ops-skill-${tag}.tar.gz`,
-      ...['amd64', 'arm64'].map((arch) => `openkit-nanohost-${tag}-linux-${arch}.tar.gz`),
-    ]
+    checksums: `${promotionAssets(tag)
+      .filter((name) => name !== 'SHA256SUMS' && name !== `openkit-release-${tag}.json`)
       .map((name) => `${'c'.repeat(64)}  ${name}`)
       .join('\n')}\n`,
     assertions: {
@@ -60,7 +59,9 @@ test('manifest projects both image platforms and portable identities', () => {
   const m = createReleaseManifest(manifestInput());
   assert.equal(m.schemaVersion, 1);
   assert.equal(m.images.length, 3);
-  assert.equal(m.assets.length, 3);
+  assert.equal(m.assets.length, 11);
+  assert.equal(m.assets.filter((asset) => asset.name.endsWith('.tar.gz')).length, 3);
+  assert.equal(m.assets.filter((asset) => !asset.name.endsWith('.tar.gz')).length, 8);
   assert.equal(m.sourceCommit, 'a'.repeat(40));
 });
 for (const key of Object.keys(manifestInput().assertions))
@@ -257,7 +258,7 @@ test('manifest CLI generates the asset and refuses changed downloaded bytes', (t
   assert.match(changed.stderr, /differs/);
 });
 
-test('publication attaches a fifth checksummed asset and compares all downloaded facts', async (t) => {
+test('publication attaches thirteen controlled assets and compares all downloaded facts', async (t) => {
   const { publicationManifest } = await import('../scripts/release-record.mjs');
   const dir = mkdtempSync(path.join(tmpdir(), 'release-published-manifest-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -293,9 +294,9 @@ test('publication attaches a fifth checksummed asset and compares all downloaded
   const name = `openkit-release-${input.tag}.json`;
   assert.equal(
     readFileSync(path.join(params.assetsDir, 'SHA256SUMS'), 'utf8').trim().split('\n').length,
-    4
+    12
   );
-  assert.equal(publicationManifest({ ...params, verify: true }).assets.length, 3);
+  assert.equal(publicationManifest({ ...params, verify: true }).assets.length, 11);
   assert.throws(() => publicationManifest(params), /already written/);
   const original = readFileSync(path.join(params.assetsDir, name));
   writeFileSync(path.join(params.assetsDir, name), `${original}\n`);

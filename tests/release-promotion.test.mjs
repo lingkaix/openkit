@@ -30,7 +30,7 @@ function observed() {
     provenance: 'synthetic-scratch-assessment',
   };
   const checksums = `${promotionAssets(sourceTag)
-    .filter((n) => n.endsWith('.tar.gz'))
+    .filter((n) => n !== 'SHA256SUMS' && n !== `openkit-release-${sourceTag}.json`)
     .map((n) => `${'d'.repeat(64)}  ${n}`)
     .join('\n')}\n`;
   const manifest = createReleaseManifest({

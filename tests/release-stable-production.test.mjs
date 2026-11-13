@@ -72,7 +72,9 @@ function observation({
     recovery: 'previous-image-compatible',
     provenance: 'synthetic-stable-source',
   };
-  const portable = promotionAssets(sourceTag).filter((name) => name.endsWith('.tar.gz'));
+  const portable = promotionAssets(sourceTag).filter(
+    (name) => name !== 'SHA256SUMS' && name !== `openkit-release-${sourceTag}.json`
+  );
   const archiveChecksums = portable.map((name) => `${hex(`archive/${name}`)}  ${name}`).join('\n');
   const checksums = `${archiveChecksums}\n${hex('manifest')}  openkit-release-${sourceTag}.json\n`;
   const manifest = createReleaseManifest({

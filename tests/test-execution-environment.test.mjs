@@ -452,7 +452,7 @@ test('test image smoke requires Playwright headless-shell and rejects Xvfb', () 
     ]) {
       writeFileSync(
         join(fakeBin, command),
-        '#!/bin/sh\ncase "$*" in --version|"clippy --version") echo fixture-version;; *) exit 97;; esac\n',
+        '#!/bin/sh\ncase "$*" in --version|"clippy --version"|"auditable --version") echo fixture-version;; *) exit 97;; esac\n',
         { mode: 0o755 }
       );
     }

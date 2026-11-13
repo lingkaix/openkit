@@ -8,6 +8,7 @@ import { parseArgs } from 'node:util';
 import { createReleaseNotes, parseReleaseNotesInput } from './release-notes.mjs';
 import { parseVersionTag, readReleaseAssessment } from './release-preflight.mjs';
 import { noSecrets } from './release-safety.mjs';
+import { sbomAssetNames } from './release-sbom.mjs';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 /** Generate the narrow release asset from existing image JSON, checksums and reviewed assessments. */
@@ -76,6 +77,7 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
   const expected = [
     `openkit-ops-skill-${tag}.tar.gz`,
     ...['amd64', 'arm64'].map((a) => `openkit-nanohost-${tag}-linux-${a}.tar.gz`),
+    ...sbomAssetNames(tag),
   ];
   if (typeof checksums !== 'string') fail('portable checksums');
   const assets = checksums
@@ -132,7 +134,7 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
   };
 }
 
-/** Produce or independently compare the fifth attachment and its non-circular checksum entry. */
+/** Produce or independently compare the controlled manifest and its non-circular checksum entry. */
 export function publicationManifest({
   repoRoot,
   tag,

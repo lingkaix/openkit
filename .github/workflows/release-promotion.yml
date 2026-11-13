@@ -22,6 +22,7 @@ jobs:
       contents: read
       actions: read
       packages: read
+      attestations: read
     steps:
       - name: Checkout exact promoted source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,6 +57,13 @@ jobs:
           OPENKIT_STABLE_PROMOTION: ${{ vars.OPENKIT_STABLE_PROMOTION }}
         run: |
           node scripts/release-promotion.mjs --check-only --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/security-promotion"
+      - name: Verify the unchanged source SBOMs and prerelease provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_ASSETS: ${{ runner.temp }}/security-promotion/source
+        run: |
+          source_tag="$(node --input-type=module -e 'import {publishedImages} from "./scripts/release-security.mjs"; console.log(publishedImages({directory:process.env.SOURCE_ASSETS,repoRoot:process.cwd(),repository:process.env.GITHUB_REPOSITORY,sha:process.env.GITHUB_SHA}).tag)')"
+          node scripts/verify-release-integrity.mjs --directory "${SOURCE_ASSETS}" --repository "${GITHUB_REPOSITORY}" --tag "${source_tag}" --sha "${GITHUB_SHA}"
       - name: Admit source locks and every published platform digest
         env:
           OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
@@ -80,6 +88,8 @@ jobs:
       contents: write
       actions: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - name: Require exact engineer authority or bounded scratch rehearsal
         env:
@@ -134,6 +144,18 @@ jobs:
           name: security-promotion-${{ github.run_attempt }}
           path: ${{ runner.temp }}/security-admitted
 
+      - name: Prepare unchanged verified source subjects without publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENKIT_STABLE_PROMOTION: ${{ vars.OPENKIT_STABLE_PROMOTION }}
+        run: |
+          node scripts/release-promotion.mjs --check-only --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/promotion-attestation" --security-manifest "${RUNNER_TEMP}/security-admitted/security-manifest.json"
+          node scripts/release-sbom.mjs subjects --assets "${RUNNER_TEMP}/promotion-attestation/source" --repository "${GITHUB_REPOSITORY}" --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/stable-provenance-subjects.txt"
+      - name: Attest unchanged file and OCI index/platform subjects at the stable tag
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: ${{ runner.temp }}/stable-provenance-subjects.txt
+
       - name: Promote and verify exact published bytes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,6 +165,11 @@ jobs:
             --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" \
             --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/promotion" \
             --security-manifest "${RUNNER_TEMP}/security-admitted/security-manifest.json"
+
+      - name: Verify stable SBOM bindings and GitHub-keyless provenance
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/verify-release-integrity.mjs --directory "${RUNNER_TEMP}/promotion/downloaded" --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}"
 
       - name: Retain promotion evidence
         if: always()

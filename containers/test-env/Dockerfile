@@ -57,6 +57,7 @@ RUN apt-get update \
     make \
     pkg-config \
     python3 \
+    xz-utils \
   && rm -rf /var/lib/apt/lists/*
 
 RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} from "node:crypto"; const r=await fetch("https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz"); if(!r.ok) throw Error("Corepack download failed"); const b=Buffer.from(await r.arrayBuffer()); if(createHash("sha512").update(b).digest("hex")!=="4a2889b01859a9d0623c74c497a393dec012ad1aca21c61340cb15197c7a104fe033c5853306237885fc4edf11894e08bf627a2db4fc2a919f08eb01a51581ff") throw Error("Corepack checksum mismatch"); fs.writeFileSync("/tmp/corepack.tgz",b);' \
@@ -110,7 +111,8 @@ RUN npm ci --prefix /opt/openkit-browser-tools --ignore-scripts --no-audit --no-
 
 COPY scripts/install-security-tools.mjs scripts/security-tools.json /usr/local/lib/openkit/security-tools/
 RUN node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool zizmor --directory /usr/local/bin \
-  && node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool osv-scanner --directory /usr/local/bin
+  && node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool osv-scanner --directory /usr/local/bin \
+  && node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool cargo-auditable --directory /usr/local/bin
 
 COPY containers/test-env/smoke.sh /usr/local/bin/openkit-test-env-smoke
 RUN chmod +x /usr/local/bin/openkit-test-env-smoke

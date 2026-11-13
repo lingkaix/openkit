@@ -21,6 +21,7 @@ import {
   readPublishedManifest,
 } from './release-record.mjs';
 import { canonical } from './release-safety.mjs';
+import { sbomAssetNames } from './release-sbom.mjs';
 import { verifyNanoHostRelease } from './verify-nanohost-release.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -47,6 +48,7 @@ export function promotionAssets(sourceTag) {
     `openkit-nanohost-${sourceTag}-linux-amd64.tar.gz`,
     `openkit-nanohost-${sourceTag}-linux-arm64.tar.gz`,
     `openkit-release-${sourceTag}.json`,
+    ...sbomAssetNames(sourceTag),
   ].sort();
 }
 

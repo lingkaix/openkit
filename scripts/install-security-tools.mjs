@@ -42,7 +42,7 @@ export async function installSecurityTool({ tool, directory, architecture = proc
     const binary = join(temporary, tool);
     writeFileSync(archive, bytes, { flag: 'wx' });
     if (asset.member) {
-      const executable = execFileSync('tar', ['-xOzf', archive, asset.member], {
+      const executable = execFileSync('tar', ['-xOf', archive, asset.member], {
         maxBuffer: 256 * 1024 * 1024,
         timeout: 60000,
         stdio: ['ignore', 'pipe', 'pipe'],

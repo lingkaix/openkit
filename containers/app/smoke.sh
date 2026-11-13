@@ -12,6 +12,23 @@ print_required_version() {
 print_required_version "node" node --version
 print_required_version "pnpm" pnpm --version
 print_required_version "caddy" caddy version
+# The offline inventory covers this exact platform, including installed OS and native binaries.
+node --input-type=module <<'SBOM'
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const bom = JSON.parse(readFileSync('/app/security/sbom.cdx.json', 'utf8'));
+assert.equal(bom.bomFormat, 'CycloneDX');
+assert.equal(bom.specVersion, '1.6');
+assert.ok(Array.isArray(bom.components) && bom.components.length > 0);
+const packages = bom.components.filter(component => !['file', 'operating-system'].includes(component.type));
+for (const component of packages) {
+  assert.ok(typeof component.purl === 'string' && component.purl.startsWith('pkg:'));
+  assert.ok(typeof component.version === 'string' && component.version.length > 0);
+}
+for (const type of ['pkg:npm/', 'pkg:deb/', 'pkg:cargo/', 'pkg:golang/']) assert.ok(packages.some(component => component.purl.startsWith(type)), `Missing ${type} inventory`);
+const platform = `linux/${process.arch === 'arm64' ? 'arm64' : 'amd64'}`;
+assert.equal(bom.metadata.properties.find(item => item.name === 'openkit:artifact-source')?.value, `image:app:${platform}`);
+SBOM
 # Data-root process ownership needs the packaged advisory-lock utility.
 command -v flock >/dev/null
 test -x /usr/local/bin/openkit-operator

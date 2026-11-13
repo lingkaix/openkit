@@ -307,7 +307,16 @@ test('release workflow publishes and independently verifies the portable release
     'publish-container-images',
     'publish-app-image',
   ]);
-  assert.deepEqual(githubRelease.permissions, { contents: 'write' });
+  assert.deepEqual(githubRelease.permissions, {
+    contents: 'write',
+    packages: 'read',
+    'id-token': 'write',
+    attestations: 'write',
+  });
+  assert.equal(
+    githubRelease.if,
+    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+  );
   assert.ok(step(githubRelease, 'Create immutable GitHub Release'));
   assert.deepEqual(verify.needs, [
     'test-image',
@@ -315,7 +324,11 @@ test('release workflow publishes and independently verifies the portable release
     'publish-container-images',
     'publish-app-image',
   ]);
-  assert.deepEqual(verify.permissions, { contents: 'read', packages: 'read' });
+  assert.deepEqual(verify.permissions, {
+    contents: 'read',
+    packages: 'read',
+    attestations: 'read',
+  });
   assert.equal(download.env.GH_TOKEN, actionExpression('secrets.GITHUB_TOKEN'));
   assert.equal(download.env.TEST_IMAGE, actionExpression('needs.test-image.outputs.image'));
   assert.ok(verify.steps.indexOf(download) < verify.steps.indexOf(anonymous));
@@ -338,7 +351,8 @@ test('release workflow builds NanoHost natively and publishes one checksummed po
     .map((candidate) => candidate.run)
     .filter(Boolean)
     .join('\n');
-  assert.match(nativeCommands, /cargo build --locked --release/);
+  assert.match(nativeCommands, /cargo auditable build --locked --release/);
+  assert.match(nativeCommands, /install-security-tools\.mjs --tool cargo-auditable/u);
   assert.match(nativeCommands, /nanohost --version/);
   assert.doesNotMatch(nativeCommands, /rustup|mise (?:exec|run)/u);
   assert.ok(
@@ -1060,8 +1074,17 @@ test('Worker publication and final verification retain the reviewed cadence step
   assert.deepEqual(cadence('github-release'), [
     'Checkout',
     'Download image release records',
+    'Set up pinned release verification tools',
+    'Install checksum-bound inventory and workflow tools',
+    'Lint before registry credentials',
+    'Set up release Docker Buildx',
+    'Read-only release registry login',
+    'Install verifier dependencies without lifecycle scripts',
     'Download portable release assets',
+    'Generate every image platform and NanoHost archive SBOM',
     'Generate release manifest and checksum',
+    'Bind all file and OCI index/platform subjects from the release manifest',
+    'Attest all released image and NanoHost/SHA256SUMS subjects',
     'Create release notes',
     'Create immutable GitHub Release',
   ]);
@@ -1070,8 +1093,11 @@ test('Worker publication and final verification retain the reviewed cadence step
     'Set up Docker Buildx',
     'Log in to GHCR',
     'Download image release records',
+    'Set up pinned integrity verifier runtime',
+    'Install integrity verifier dependencies without lifecycle scripts',
     'Verify every published image digest',
     'Download and verify GitHub Release assets',
+    'Verify release SBOM bindings and native keyless attestations',
     'Verify public worker base without registry credentials',
   ]);
 
@@ -1089,8 +1115,18 @@ test('Worker publication and final verification retain the reviewed cadence step
   assert.deepEqual(workflow.jobs['verify-release'].permissions, {
     contents: 'read',
     packages: 'read',
+    attestations: 'read',
   });
-  assert.deepEqual(workflow.jobs['github-release'].permissions, { contents: 'write' });
+  assert.deepEqual(workflow.jobs['github-release'].permissions, {
+    contents: 'write',
+    packages: 'read',
+    'id-token': 'write',
+    attestations: 'write',
+  });
+  assert.equal(
+    workflow.jobs['github-release'].if,
+    "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')"
+  );
   assert.deepEqual(workflow.jobs['publish-container-images'].permissions, {
     contents: 'read',
     packages: 'write',

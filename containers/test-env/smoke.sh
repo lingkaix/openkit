@@ -23,6 +23,7 @@ print_required_version "jq" jq --version
 print_required_version "python3" python3 --version
 print_required_version "rustc" rustc --version
 print_required_version "cargo" cargo --version
+print_required_version "cargo-auditable" cargo auditable --version
 print_required_version "clippy" cargo clippy --version
 print_required_version "rustfmt" rustfmt --version
 
