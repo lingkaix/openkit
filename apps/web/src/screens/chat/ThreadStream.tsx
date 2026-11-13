@@ -1676,13 +1676,19 @@ export function ThreadStream({
   const activeInspectId = phone ? phoneInspectId : inspectedTurnId;
   const inspectedItems = feedItems.filter((item) => item.turnId === activeInspectId);
   const inspectedActivity = activeInspectId ? activityByTurn.get(activeInspectId) : undefined;
+  const inspectedEntry = activeInspectId ? entryByTurn.get(activeInspectId) : undefined;
   const inspectedTurn = dashboard?.turns.find((turn) => turn.id === activeInspectId);
   const inspectedRun = windowRuns?.find((run) => run.id === activeInspectId);
+  const admittedActivity =
+    inspectedEntry && Object.hasOwn(inspectedEntry, 'reportedActivity')
+      ? { runActivity: inspectedEntry.reportedActivity ?? null }
+      : {};
   const inspector = activeInspectId ? (
     <Inspector
       turnId={activeInspectId}
       items={inspectedItems}
       activity={inspectedActivity}
+      {...admittedActivity}
       interrupted={inspectedTurn?.status === 'interrupted'}
       onClose={closeInspector}
       panelRef={panelRef}

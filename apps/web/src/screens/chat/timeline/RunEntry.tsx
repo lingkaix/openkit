@@ -1,15 +1,10 @@
 import type { ThreadDashboardResponse } from '@openkit/app-api-schemas';
-import { useQueryClient } from '@tanstack/react-query';
 import { Fragment, type ReactNode, type Ref, useState } from 'react';
 import { useOptionalCoreClient } from '../../../app/core-client';
 import { Button } from '../../../primitives';
 import { type ThreadItem, useThreadDashboard } from '../data';
 import { ItemView } from '../ItemView';
-import {
-  digestsCarriedWith,
-  type ReportedActivityRead,
-  reportedActivityFor,
-} from './argument-digest';
+import { digestsCarriedWith } from './argument-digest';
 import { fillCopy, timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { resolveRender } from './lens';
@@ -188,7 +183,6 @@ function RunEntryBody({
   viewerUserId,
   names,
   digests,
-  reported,
 }: {
   entry: TimelineEntry;
   items: readonly ThreadItem[];
@@ -222,8 +216,6 @@ function RunEntryBody({
   names: ReadonlyMap<string, string>;
   /** Recorded argument digests from the timeline read. Missing ids stay ungrouped. */
   digests?: ReadonlyMap<string, string | null>;
-  /** Bounded reported activity for this run. Absence keeps the dashboard activity line. */
-  reported?: ReportedActivityRead;
 }) {
   const runLens: LensName = lens === 'full' || expanded ? 'full' : 'work';
   const byId = new Map(items.map((item) => [item.id, item]));
@@ -603,8 +595,8 @@ function RunEntryBody({
           {timelineCopy.reportedByWorker}
         </p>
       ) : null}
-      {runLens === 'full' && reported && reported.state !== 'absent' ? (
-        <ReportedActivityView activity={reported.state === 'present' ? reported.activity : null} />
+      {runLens === 'full' && Object.hasOwn(entry, 'reportedActivity') ? (
+        <ReportedActivityView activity={entry.reportedActivity ?? null} />
       ) : showActivity ? (
         activityLine
       ) : null}
@@ -648,26 +640,8 @@ function AdmittedRequests({
   });
 }
 
-function RecordedActivity({
-  workspaceId,
-  threadId,
-  turnId,
-  children,
-}: {
-  workspaceId: string;
-  threadId: string;
-  turnId: string;
-  children: (reported: ReportedActivityRead) => ReactNode;
-}) {
-  const queryClient = useQueryClient();
-  return children(reportedActivityFor(queryClient, turnId, { workspaceId, threadId }));
-}
-
 export function RunEntry(
-  props: Omit<
-    Parameters<typeof RunEntryBody>[0],
-    'requests' | 'viewerUserId' | 'names' | 'reported'
-  >
+  props: Omit<Parameters<typeof RunEntryBody>[0], 'requests' | 'viewerUserId' | 'names'>
 ) {
   const client = useOptionalCoreClient();
   const scope = workspaceOf(props.items);
@@ -685,17 +659,7 @@ export function RunEntry(
   }
   return (
     <AdmittedRequests workspaceId={scope.workspaceId} threadId={scope.threadId}>
-      {(lifecycle) => (
-        <RecordedActivity
-          workspaceId={scope.workspaceId}
-          threadId={scope.threadId}
-          turnId={props.entry.turnId}
-        >
-          {(reported) => (
-            <RunEntryBody {...props} {...lifecycle} digests={digests} reported={reported} />
-          )}
-        </RecordedActivity>
-      )}
+      {(lifecycle) => <RunEntryBody {...props} {...lifecycle} digests={digests} />}
     </AdmittedRequests>
   );
 }

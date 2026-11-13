@@ -28,6 +28,12 @@ export interface TimelineEntry {
   policies?: readonly { id: string; policy: TimelineItem['policy'] }[];
   /** Owner presentation from this exact run. Absence is not filled from another run. */
   errorPresentation?: NonNullable<TimelineRunEntry['error']>['presentation'] | null;
+  /**
+   * Reported activity from this exact timeline run.
+   * Absent on entries that were not projected from a run.
+   * Null means the run omitted the field or returned null, and stays unavailable.
+   */
+  reportedActivity?: TimelineRunEntry['reportedActivity'];
 }
 
 export interface TimelineTurn {

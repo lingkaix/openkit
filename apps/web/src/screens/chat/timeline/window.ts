@@ -504,6 +504,9 @@ export function entryFromRun(run: TimelineRunEntry): TimelineEntry {
     fallback: run.fallback ?? null,
     planSegments: run.planSegments ?? null,
     errorPresentation: run.error?.presentation ?? null,
+    reportedActivity: Object.hasOwn(run, 'reportedActivity')
+      ? (run.reportedActivity ?? null)
+      : null,
     policies: [
       ...run.narrative.map((item) => ({ id: item.id, policy: item.policy ?? null })),
       ...(run.plan ? [{ id: run.plan.id, policy: run.plan.policy ?? null }] : []),

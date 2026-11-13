@@ -1,14 +1,10 @@
 import type { TimelineRunEntry } from '@openkit/app-api-schemas';
 import type { TurnErrorPresentation } from '@openkit/protocol';
-import { QueryClientContext } from '@tanstack/react-query';
 import type { ReactNode, Ref } from 'react';
-import { useContext } from 'react';
 import { Link } from 'react-router-dom';
-import { useOptionalCoreClient } from '../../../app/core-client';
 import { Button, Icon } from '../../../primitives';
 import type { ThreadItem } from '../data';
 import { ItemView } from '../ItemView';
-import { reportedActivityFor } from './argument-digest';
 import { timelineCopy } from './copy';
 import { RunEnvironment } from './environment';
 import { OwnerRunError } from './owner-error';
@@ -59,6 +55,7 @@ export function Inspector({
   usage = null,
   fallback = null,
   presentation = null,
+  runActivity,
 }: {
   turnId: string;
   usage?: TimelineRunEntry['usage'];
@@ -67,6 +64,12 @@ export function Inspector({
   presentation?: TurnErrorPresentation | null;
   items: readonly ThreadItem[];
   activity?: ReportedActivity | null;
+  /**
+   * Reported activity from the exact displayed timeline run.
+   * Omitted when this inspector has no admitted run, so the dashboard activity remains.
+   * Null means that run omitted the field or returned null.
+   */
+  runActivity?: TimelineRunEntry['reportedActivity'] | null;
   /** Today's read has no interrupt actor, so an interrupted run says so here. */
   interrupted?: boolean;
   onClose: () => void;
@@ -76,13 +79,7 @@ export function Inspector({
   expanded?: boolean;
   onExpand?: () => void;
 }) {
-  const core = useOptionalCoreClient();
-  const queryClient = useContext(QueryClientContext);
   const scope = scopeOf(items);
-  const reported =
-    core && queryClient
-      ? reportedActivityFor(queryClient, turnId, scope)
-      : { state: 'absent' as const };
   return (
     <aside
       ref={panelRef}
@@ -175,8 +172,8 @@ export function Inspector({
           {timelineCopy.auditRecords}
         </Link>
       </p>
-      {reported.state !== 'absent' ? (
-        <ReportedActivityView activity={reported.state === 'present' ? reported.activity : null} />
+      {runActivity !== undefined ? (
+        <ReportedActivityView activity={runActivity} />
       ) : activity ? (
         <section aria-label="Runtime activity" aria-live="polite" className="mt-4 text-sm">
           <h3 className="font-semibold text-fg">Runtime activity</h3>
