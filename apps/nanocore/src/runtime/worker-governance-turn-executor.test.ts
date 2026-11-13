@@ -11759,6 +11759,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
           companion = value;
         });
         lineage = await proveCompletedWorkLineage(prepared);
+        // Establish the complete public preview in this separately bounded fixture phase.
+        // No test finishes before application, so the same live Task stays owned.
+        history = assertLiveSchemaHistory(
+          companion!,
+          lineage.sourceReferences,
+          lineage.candidatePageBytes
+        );
+        expect((await history.next()).done).toBe(false);
+        previewed = true;
       }, 60_000);
       afterAll(async () => {
         try {
@@ -11771,17 +11780,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
           }
         }
       });
-      // Establish the complete public preview as a separately bounded fixture phase.
-      // No test finishes between this phase and application, so the same live Task stays owned.
-      beforeAll(async () => {
-        history = assertLiveSchemaHistory(
-          companion!,
-          lineage.sourceReferences,
-          lineage.candidatePageBytes
-        );
-        expect((await history.next()).done).toBe(false);
-        previewed = true;
-      }, 60_000);
       it('previews complete schema dependencies with exact completed and live Task history and preserves it across schema application and replay', async () => {
         // Keep the owned live Task inside one test lifetime so normal teardown follows its release.
         expect(previewed, 'the real live-Task preview must complete before application').toBe(true);
