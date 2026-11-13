@@ -1,4 +1,6 @@
 import { existsSync } from 'node:fs';
+import { performance } from 'node:perf_hooks';
+import { setImmediate as yieldMain } from 'node:timers/promises';
 import type { Item } from '@openkit/protocol';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
@@ -40,22 +42,39 @@ function projectReadState(eligible: readonly string[], recorded: readonly string
   };
 }
 
+/** Drains the same complete source proof without holding Main across released contributions. */
+async function eligibleMessageItemIds(owner: ThreadReadOwner): Promise<string[]> {
+  const steps = owner.store.listThreadTurnsSteps(owner.workspaceId, owner.threadId);
+  let deadline = performance.now() + 8;
+  try {
+    for (;;) {
+      const step = steps.next();
+      if (step.done)
+        return receiptMessageItemIds(
+          step.value.flatMap((turn) => turn.items),
+          owner.userId
+        );
+      if (performance.now() >= deadline) {
+        await yieldMain();
+        await owner.recheckAdmission?.();
+        deadline = performance.now() + 8;
+      }
+    }
+  } finally {
+    steps.return([]);
+  }
+}
+
 /** Reads one authenticated User's receipt after the operation's current Workspace and Thread admission. */
 export async function readThreadReadState(owner: ThreadReadOwner) {
-  receiptMessageItemIds(
-    owner.store.listThreadItems(owner.workspaceId, owner.threadId),
-    owner.userId
-  );
+  await eligibleMessageItemIds(owner);
   const db = await getControlStoreWorkerClient().openInitializedUserReadDb(
     owner.coreDb.dataRoot,
     owner.userId
   );
   try {
     await owner.recheckAdmission?.();
-    const currentEligible = receiptMessageItemIds(
-      owner.store.listThreadItems(owner.workspaceId, owner.threadId),
-      owner.userId
-    );
+    const currentEligible = await eligibleMessageItemIds(owner);
     return projectReadState(
       currentEligible,
       readThreadReadReceipt(db, owner.workspaceId, owner.threadId)
@@ -69,10 +88,7 @@ export async function readThreadReadState(owner: ThreadReadOwner) {
 export async function markThreadRead(
   owner: ThreadReadOwner & { itemIds?: readonly string[] | undefined }
 ) {
-  const eligible = receiptMessageItemIds(
-    owner.store.listThreadItems(owner.workspaceId, owner.threadId),
-    owner.userId
-  );
+  const eligible = await eligibleMessageItemIds(owner);
   const selected = owner.itemIds ?? eligible;
   const allowed = new Set(eligible);
   if (selected.some((id) => !allowed.has(id))) {
@@ -85,10 +101,7 @@ export async function markThreadRead(
   let currentEligible = eligible;
   const revalidate = async () => {
     await owner.recheckAdmission?.();
-    currentEligible = receiptMessageItemIds(
-      owner.store.listThreadItems(owner.workspaceId, owner.threadId),
-      owner.userId
-    );
+    currentEligible = await eligibleMessageItemIds(owner);
     const allowed = new Set(currentEligible);
     if (selected.some((id) => !allowed.has(id)))
       throw new OperationError(
