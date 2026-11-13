@@ -73,11 +73,26 @@ impl Kernel {
                 live.keys().filter(|k| !indexed.contains(**k)).count();
             let mut usable = BTreeSet::new();
             for (number, record) in pin.manifest.documents.iter().enumerate() {
-                if live
-                    .get(&record.document.key)
-                    .is_none_or(|d| d.identity() != record.document)
-                {
+                let Some(current) = live.get(&record.document.key) else {
                     result.coverage.stale_revisions += 1;
+                    continue;
+                };
+                let limited = matches!(current.content, Content::ResourceLimited)
+                    || matches!(record.document.content, Content::ResourceLimited);
+                let mut identity = current.identity();
+                if limited {
+                    // A processing stop changes availability, not the canonical revision.
+                    identity.content = record.document.content.clone();
+                }
+                if identity != record.document {
+                    result.coverage.stale_revisions += 1;
+                    continue;
+                }
+                if limited {
+                    result.coverage.stopped_work += 1;
+                    result.coverage.representations_complete = false;
+                    result.coverage.matches_complete = false;
+                    reason(&mut result.coverage, "resource-limited");
                     continue;
                 }
                 if matches!(record.document.content, Content::Unreadable) {
@@ -310,6 +325,10 @@ impl Kernel {
                 TextFile::new(file, None)
             }
             Content::Unavailable => Err(error("unavailable", "canonical source unavailable")),
+            Content::ResourceLimited => Err(error(
+                "resource-limited",
+                "adapter text processing budget exhausted",
+            )),
         }
     }
     /// Verify the pinned representation before admitting any hit, then repeat after scans.

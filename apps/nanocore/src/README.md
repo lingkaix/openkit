@@ -26,6 +26,8 @@ User Memory retrieval borrows its admitted User database or opens an existing re
 
 Workspace Knowledge selection, completed-work proof reads, and Material retrieval use the existing query-only Workspace reader with the bounded Main lock wait. These projections retain scope admission and current authority checks, create no layout or schema, and close their own read handles.
 
+`retrieval-service.ts` keeps large decoded text out of the 8 MiB RPC frame through private request-local files and buffers of at most 16 KiB. The product-owned derived store carries these temporary files, not a new canonical body or sidecar; each RPC removes its files. Text above the 16 MiB document or 64 MiB request transport budget remains an admitted `resource-limited` document with incomplete coverage, while healthy neighbors remain searchable. Current source admission, canonical identities, coordinates and final adapter rechecks are unchanged. The kernel README owns the internal wire and exact bounds.
+
 Artifact catalog disclosure and exact Knowledge meaning reads use that same admitted read owner. Artifact listing never runs schema migration; audience filtering, internal Sync Review evidence exclusion, and exact page or Source pin checks remain with their product owners.
 
 Command receipt inventories open existing scope-owned readers without migration or pruning. Active User listing retains scope admission and expiry filtering; recovery inventories retain expired rows and their existing fail-closed unreadable result without granting scope admission.

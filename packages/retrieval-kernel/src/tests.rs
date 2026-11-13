@@ -1,4 +1,44 @@
 //! Kernel contract fixtures; expectations are independent of the returned data.
+
+/// Transport budgets can change availability without changing or hiding canonical revision checks.
+#[test]
+fn resource_limited_transport_preserves_neighbors_and_canonical_identity() {
+    let f = Fixture::new();
+    let original = f.view(
+        "transport-budget",
+        vec![
+            f.text("limited", "needle limited"),
+            f.text("healthy", "needle healthy"),
+        ],
+    );
+    let generation = f.kernel.publish(original.clone(), None).unwrap();
+    let mut limited = original.clone();
+    limited.documents[0].content = Content::ResourceLimited;
+    let result = f.search(Mode::Exact, "needle", vec![limited.clone()], 20);
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].key.id, "healthy");
+    assert_eq!(result.coverage.admitted_objects, 2);
+    assert_eq!(result.coverage.stale_revisions, 0);
+    assert_eq!(result.coverage.stopped_work, 1);
+    assert_eq!(result.coverage.reasons["resource-limited"], 1);
+    assert!(!result.complete);
+    let lexical = f.search(Mode::Lexical, "needle", vec![limited.clone()], 20);
+    assert!(!lexical.coverage.matches_complete);
+    assert!(!lexical.complete);
+
+    f.kernel.publish(limited.clone(), Some(generation)).unwrap();
+    let result = f.search(Mode::Exact, "needle", vec![original], 20);
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.coverage.stale_revisions, 0);
+    assert_eq!(result.coverage.reasons["resource-limited"], 1);
+    assert!(!result.complete);
+
+    limited.documents[0].revision = "changed".into();
+    let stale = f.search(Mode::Exact, "needle", vec![limited], 20);
+    assert_eq!(stale.coverage.stale_revisions, 1);
+    assert_eq!(stale.hits.len(), 1);
+    assert!(!stale.complete);
+}
 /// Freeze the pre-#249 shipped analyzer, including OpenKit's lowercase and word filters.
 #[test]
 fn p08_tokenizer_fields_are_preserved() {

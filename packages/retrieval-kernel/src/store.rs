@@ -387,6 +387,12 @@ impl Kernel {
                     Content::Unavailable => {
                         return Err(error("unavailable", "canonical representation unavailable"));
                     }
+                    Content::ResourceLimited => {
+                        return Err(error(
+                            "resource-limited",
+                            "adapter text processing budget exhausted",
+                        ));
+                    }
                 };
                 record.language = record.document.language.clone().unwrap_or_else(|| {
                     if detected == "ja" || record.document.title.chars().any(is_kana) {
@@ -789,7 +795,10 @@ pub(crate) fn validate_view(view: &ScopeView, require_text: bool) -> Result<()> 
         }
         if let Some(ranges) = &d.text_ranges
             && (ranges.len() > 256
-                || !matches!(d.content, Content::Text { .. } | Content::InlineText { .. })
+                || !matches!(
+                    d.content,
+                    Content::Text { .. } | Content::InlineText { .. } | Content::ResourceLimited
+                )
                 || ranges
                     .iter()
                     .any(|range| range.end <= range.start || range.end > d.size)

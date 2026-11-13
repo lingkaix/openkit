@@ -82,6 +82,8 @@ pub enum Content {
     Unreadable,
     /// A discoverable source whose canonical representation is unavailable.
     Unavailable,
+    /// A known source whose adapter stopped at a named processing budget without opening its body.
+    ResourceLimited,
 }
 
 /// A contiguous canonical source unit, without a copied scan-text body.

@@ -1,8 +1,15 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { makePrivateTreeDirectory, measureDerivedTreeBytes } from '@openkit/storage';
+import {
+  makePrivateTreeDirectory,
+  measureDerivedTreeBytes,
+  removePrivateTree,
+  writePrivateTreeFile,
+} from '@openkit/storage';
 import { z } from 'zod';
 import type {
   FileDigestWindowScanInput,
@@ -37,7 +44,7 @@ export interface RetrievalDocument {
         fragments: { start: number; end: number; locator: string }[];
         complete: boolean;
       }
-    | { kind: 'unreadable' | 'unavailable' };
+    | { kind: 'unreadable' | 'unavailable' | 'resource-limited' };
 }
 /** A complete current inventory in one exact read-eligibility partition. */
 export interface RetrievalScope {
@@ -135,6 +142,12 @@ export interface RetrievalServiceOptions {
 const FRAME_BYTES = 8 * 1024 * 1024;
 const GENERATION_BYTES = 512 * 1024 * 1024;
 const DEFAULT_STORE_BYTES = 2 * 1024 * 1024 * 1024;
+// Request-local text transport, not a retained representation or a cross-read body cache.
+const INLINE_DOCUMENT_BYTES = 64 * 1024;
+const INLINE_REQUEST_BYTES = 1024 * 1024;
+const TRANSPORT_DOCUMENT_BYTES = 16 * 1024 * 1024;
+const TRANSPORT_REQUEST_BYTES = 64 * 1024 * 1024;
+const TRANSPORT_BUFFER_BYTES = 16 * 1024;
 
 /** Supervises one ownership-homed stdio service; never retries an uncertain operation. */
 export class RetrievalService {
@@ -142,6 +155,7 @@ export class RetrievalService {
   private tail: Promise<unknown> = Promise.resolve();
   private sequence = 0;
   private closed = false;
+  private transportRoot: string | undefined;
   private pending: ((error: RetrievalServiceError) => void) | undefined;
   private output = Buffer.alloc(0);
   private response: ((value: unknown) => void) | undefined;
@@ -265,6 +279,7 @@ export class RetrievalService {
       });
     }
     await this.tail.catch(() => undefined);
+    if (this.transportRoot) await removePrivateTree(this.transportRoot);
   }
 
   /** Validates the child boundary without reflecting untrusted protocol bytes in errors. */
@@ -318,11 +333,192 @@ export class RetrievalService {
           }
         }
         signal?.throwIfAborted();
-        return this.rpc(operation, signal);
+        return this.streamInlineText(operation, signal);
       });
     this.tail = run;
     return run;
   }
+
+  /** Borrows bounded private files for large decoded text; canonical identities and caller views stay unchanged. */
+  private async streamInlineText(
+    operation: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<unknown> {
+    const views =
+      operation.op === 'publish'
+        ? [operation.view as RetrievalScope]
+        : operation.op === 'search'
+          ? (operation.request as RetrievalQuery).scopes
+          : [];
+    const storePath = relative(this.options.sourcesRoot, this.options.storeRoot);
+    // Product stores are beneath their admitted source root. Other clients already have the explicit file form.
+    if (
+      storePath.startsWith('..') ||
+      isAbsolute(storePath) ||
+      !views.some((view) => view.documents.some((doc) => doc.content.kind === 'inline-text'))
+    )
+      return this.rpc(operation, signal);
+
+    let inlineRemaining = INLINE_REQUEST_BYTES;
+    let transportRemaining = TRANSPORT_REQUEST_BYTES;
+    let capacityChecked = false;
+    let metadataBytes = 1024;
+    const files: string[] = [];
+    const streamed: RetrievalScope[] = [];
+    let primaryFailure: unknown;
+    let acknowledged = false;
+    let result: unknown;
+    const deadline = Date.now() + (this.options.timeoutMs ?? 65_000);
+    try {
+      for (const view of views) {
+        metadataBytes += Buffer.byteLength(JSON.stringify({ ...view, documents: [] }));
+        const documents: RetrievalDocument[] = [];
+        for (const document of view.documents) {
+          const selected = { ...document };
+          metadataBytes += Buffer.byteLength(
+            JSON.stringify({ ...selected, content: { kind: 'unavailable' } })
+          );
+          if (metadataBytes > FRAME_BYTES - INLINE_REQUEST_BYTES - 1024)
+            throw new RetrievalServiceError('resource-limited');
+          if (selected.content.kind === 'inline-text') {
+            const text = selected.content.text;
+            const size = Buffer.byteLength(text);
+            // Six is the maximum JSON escape expansion. Do not encode a complete body to measure it.
+            const encodedCeiling = size * 6 + 2;
+            if (size <= INLINE_DOCUMENT_BYTES && encodedCeiling <= inlineRemaining) {
+              inlineRemaining -= encodedCeiling;
+            } else if (
+              size > TRANSPORT_DOCUMENT_BYTES ||
+              size > transportRemaining ||
+              Date.now() > deadline
+            ) {
+              selected.content = { kind: 'resource-limited' };
+            } else {
+              if (!capacityChecked) {
+                await makePrivateTreeDirectory(this.options.storeRoot);
+                const used = await measureDerivedTreeBytes(
+                  this.options.storeRoot,
+                  DEFAULT_STORE_BYTES,
+                  RetrievalServiceError
+                );
+                const reserve = operation.op === 'publish' ? GENERATION_BYTES : 0;
+                transportRemaining = Math.min(
+                  transportRemaining,
+                  Math.max(
+                    0,
+                    (this.options.storeLimitBytes ?? DEFAULT_STORE_BYTES) - used - reserve
+                  )
+                );
+                capacityChecked = true;
+              }
+              if (size > transportRemaining) {
+                selected.content = { kind: 'resource-limited' };
+                documents.push(selected);
+                continue;
+              }
+              // Reserve before I/O: partial failed files also consume the request's byte account.
+              transportRemaining -= size;
+              this.transportRoot ??= join(
+                this.options.storeRoot,
+                `.inline-transport-${randomUUID()}`
+              );
+              await makePrivateTreeDirectory(this.transportRoot);
+              // Stable within this service, including single-scope publish and multi-scope search.
+              const name = createHash('sha256')
+                .update(
+                  JSON.stringify([
+                    view.scope,
+                    selected.key.namespace,
+                    selected.key.id,
+                    selected.digest,
+                  ])
+                )
+                .digest('hex');
+              const path = join(this.transportRoot, name);
+              const chunks = function* () {
+                for (let offset = 0; offset < text.length; ) {
+                  let end = Math.min(text.length, offset + TRANSPORT_BUFFER_BYTES / 4);
+                  const last = text.charCodeAt(end - 1);
+                  if (end < text.length && last >= 0xd800 && last <= 0xdbff) end--;
+                  const part = text.slice(offset, end);
+                  const bytes = Buffer.from(part);
+                  if (bytes.toString('utf8') !== part)
+                    throw new RetrievalServiceError('invalid-request');
+                  yield bytes;
+                  offset = end;
+                }
+              };
+              files.push(path);
+              try {
+                const digest = createHash('sha256');
+                let written = 0;
+                await writePrivateTreeFile({
+                  path,
+                  source: Readable.from(chunks(), { objectMode: true, highWaterMark: 1 }),
+                  signal: signal ?? new AbortController().signal,
+                  cancellationMessage: 'Retrieval text transport cancelled.',
+                  onChunk: (bytes) => {
+                    if (this.closed) throw new RetrievalServiceError('unavailable');
+                    if (Date.now() > deadline || bytes.length > TRANSPORT_BUFFER_BYTES)
+                      throw new RetrievalServiceError('resource-limited');
+                    digest.update(bytes);
+                  },
+                  onWritten: (count) => {
+                    written += count;
+                  },
+                  validate: () => {
+                    if (written !== selected.size || digest.digest('hex') !== selected.digest)
+                      throw new RetrievalServiceError('conflict');
+                  },
+                });
+                selected.content = { kind: 'text', path: relative(this.options.sourcesRoot, path) };
+              } catch (error) {
+                const code =
+                  error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+                if (code === 'EEXIST') files.pop();
+                if (
+                  (error instanceof RetrievalServiceError && error.code === 'resource-limited') ||
+                  ['ENOSPC', 'EDQUOT', 'EFBIG', 'EMFILE', 'ENFILE', 'EEXIST'].includes(code)
+                )
+                  selected.content = { kind: 'resource-limited' };
+                else throw error;
+              }
+            }
+          }
+          documents.push(selected);
+        }
+        streamed.push({ ...view, documents });
+      }
+      signal?.throwIfAborted();
+      if (this.closed) throw new RetrievalServiceError('unavailable');
+      const transported =
+        operation.op === 'publish'
+          ? { ...operation, view: streamed[0] }
+          : {
+              ...operation,
+              request: { ...(operation.request as RetrievalQuery), scopes: streamed },
+            };
+      result = await this.rpc(transported, signal);
+      acknowledged = true;
+    } catch (error) {
+      primaryFailure =
+        error instanceof RetrievalServiceError || signal?.aborted
+          ? error
+          : new RetrievalServiceError('io');
+    }
+    try {
+      for (const path of files) await removePrivateTree(path);
+    } catch {
+      // A cleanup failure cannot hide the original publication ambiguity or undo an acknowledgement.
+      primaryFailure ??= new RetrievalServiceError(
+        'io',
+        acknowledged && operation.op === 'publish'
+      );
+    }
+    if (primaryFailure !== undefined) throw primaryFailure;
+    return result;
+  }
+
   /** Starts a fresh child with no inherited credential environment or network configuration. */
   private spawn(): ChildProcessWithoutNullStreams {
     const child = spawn(
