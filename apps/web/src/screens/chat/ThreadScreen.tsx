@@ -183,7 +183,8 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
     workspaceId,
     threadId,
     Boolean(waitingTurn) && !activeTurn && !timelineOn,
-    !timelineOn
+    !timelineOn,
+    timelineOn
   );
   const workerEnvironments = useComposerWorkerEnvironments(workspaceId, threadId);
   const workspaceArtifacts = useArtifacts(workspaceId);
