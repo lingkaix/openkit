@@ -110,7 +110,8 @@ function register_context_summary_test_tsx_0() {
       'Exact history remains available.'
     );
     fireEvent.click(screen.getByText('Covered history range'));
-    expect(screen.getByText(`${firstItemId} through ${lastItemId}`)).toBeVisible();
+    expect(screen.queryByText(firstItemId)).not.toBeInTheDocument();
+    expect(screen.queryByText(lastItemId)).not.toBeInTheDocument();
   });
 }
 register_context_summary_test_tsx_0();

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { closeSheetSearch, openSheetSearch, phoneBarLabel, shortenProgress } from './phone';
+import {
+  closeSheetSearch,
+  nextSheetStack,
+  openSheetSearch,
+  phoneBarLabel,
+  shortenProgress,
+} from './phone';
 
 describe('phone timeline copy', () => {
   it('shortens plan progress to the header line', () => {
@@ -21,5 +27,25 @@ describe('phone timeline copy', () => {
     expect(new URLSearchParams(next).get('decision')).toBeNull();
     expect(new URLSearchParams(next).get('steps')).toBe('tu_2');
     expect(closeSheetSearch(next)).toBe('turnId=tu_1');
+  });
+
+  it('keeps the first sheet when a second opens and replaces a third', () => {
+    const steps = nextSheetStack([], 'steps', 'tu_1');
+    expect(steps).toEqual({ mode: 'push', stack: [{ kind: 'steps', id: 'tu_1' }] });
+    const inspect = nextSheetStack(steps.stack, 'inspect', 'tu_1');
+    expect(inspect).toEqual({
+      mode: 'push',
+      stack: [
+        { kind: 'steps', id: 'tu_1' },
+        { kind: 'inspect', id: 'tu_1' },
+      ],
+    });
+    expect(nextSheetStack(inspect.stack, 'decision', 'it_1')).toEqual({
+      mode: 'replace',
+      stack: [
+        { kind: 'steps', id: 'tu_1' },
+        { kind: 'decision', id: 'it_1' },
+      ],
+    });
   });
 });

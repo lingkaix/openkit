@@ -49,9 +49,7 @@ export function NavRow({
         'flex w-full items-center gap-2 rounded-ok py-1.5 pr-2 text-left text-sm outline-none transition-colors',
         'focus-visible:ring-2 focus-visible:ring-focus',
         INDENT[indent],
-        active
-          ? 'bg-selected font-bold text-accent-content'
-          : 'font-medium text-fg hover:bg-overlay',
+        active ? 'bg-selected font-bold text-accent-hover' : 'font-medium text-fg hover:bg-overlay',
       ].join(' ')}
     >
       {icon ? (

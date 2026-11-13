@@ -806,6 +806,11 @@ export function Composer({
                 className="min-h-11 rounded-full bg-accent px-3 text-sm font-bold text-on-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
                 disabled={!canSteer}
                 aria-describedby={steerExtras ? 'steer-inapplicable' : 'steer-consequence'}
+                // Keep Message focused through the press. On a phone, blurring it
+                // brings the sections bar back and moves this control before pointerup.
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
               >
                 {live.actionLabel}
               </button>

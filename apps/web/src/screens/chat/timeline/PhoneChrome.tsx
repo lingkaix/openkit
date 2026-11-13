@@ -7,11 +7,13 @@ import { timelineCopy } from './copy';
 import type { NowModel } from './now';
 import {
   closeSheetSearch,
-  nextSheetDepth,
+  nextSheetStack,
   openSheetSearch,
   phoneBarLabel,
   type SheetKind,
+  type SheetLayer,
   sheetDepthOf,
+  sheetStackOf,
 } from './phone';
 import { RequestUnavailableNotice } from './request-anchor';
 
@@ -20,6 +22,8 @@ export interface TimelineSheets {
   decisionId: string | null;
   stepsTurnId: string | null;
   inspectTurnId: string | null;
+  /** The sheet underneath the URL sheet. Present only while two sheets are open. */
+  under: SheetLayer | null;
   open: (kind: SheetKind, id: string, mode?: 'push' | 'replace') => void;
   close: () => void;
 }
@@ -30,25 +34,44 @@ export function useTimelineSheets(): TimelineSheets {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const opener = useRef<HTMLElement | null>(null);
+  const openers = useRef<Array<HTMLElement | null>>([]);
+  const seenDepth = useRef(0);
   const decisionId = searchParams.get('decision');
   const stepsTurnId = searchParams.get('steps');
   const inspectTurnId = searchParams.get('inspect');
+  const urlTop: SheetLayer | null = decisionId
+    ? { kind: 'decision', id: decisionId }
+    : stepsTurnId
+      ? { kind: 'steps', id: stepsTurnId }
+      : inspectTurnId
+        ? { kind: 'inspect', id: inspectTurnId }
+        : null;
+  const recorded = sheetStackOf(location.state);
+  const stack =
+    recorded.length > 0 ? recorded : urlTop && sheetDepthOf(location.state) > 0 ? [urlTop] : [];
+  const under = stack.length === 2 && urlTop && stack[1]?.kind === urlTop.kind ? stack[0]! : null;
   const open = (kind: SheetKind, id: string, mode: 'push' | 'replace' = 'push') => {
-    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const fromHistory = sheetStackOf(history.state);
+    const base = fromHistory.length > 0 ? fromHistory : stack;
+    const next =
+      mode === 'replace' && base.length > 0
+        ? { mode: 'replace' as const, stack: [...base.slice(0, -1), { kind, id }] }
+        : nextSheetStack(base, kind, id);
+    const index = next.stack.length - 1;
+    openers.current[index] = active;
+    openers.current.length = index + 1;
     const search = openSheetSearch(searchParams.toString(), kind, id);
-    const next = nextSheetDepth(sheetDepthOf(history.state));
     navigate(
       { pathname: location.pathname, search },
       {
-        replace: mode === 'replace' || next.mode === 'replace',
-        state: { okSheet: kind, sheetDepth: next.depth },
+        replace: next.mode === 'replace',
+        state: { okSheet: kind, sheetDepth: next.stack.length, sheetStack: next.stack },
       }
     );
   };
   const close = () => {
-    const state = history.state as { usr?: { okSheet?: string }; okSheet?: string } | null;
-    if (state?.usr?.okSheet || state?.okSheet) {
+    if (sheetDepthOf(location.state) > 0 || sheetDepthOf(history.state) > 0) {
       navigate(-1);
       return;
     }
@@ -62,7 +85,13 @@ export function useTimelineSheets(): TimelineSheets {
       usr?: { okSheet?: string };
       okSheet?: string;
     } | null;
-    if (sheetDepthOf(state) > 0 || state?.usr?.okSheet || state?.okSheet) return;
+    if (
+      sheetDepthOf(location.state) > 0 ||
+      sheetDepthOf(state) > 0 ||
+      state?.usr?.okSheet ||
+      state?.okSheet
+    )
+      return;
     const key = `${location.pathname}?${location.search}`;
     if (seeded.current === key) return;
     seeded.current = key;
@@ -76,25 +105,28 @@ export function useTimelineSheets(): TimelineSheets {
     });
     navigate(
       { pathname: location.pathname, search: openSheetSearch(current, kind, id) },
-      { state: { okSheet: kind, sheetDepth: 1 } }
+      { state: { okSheet: kind, sheetDepth: 1, sheetStack: [{ kind, id }] } }
     );
   }, [
     decisionId,
     inspectTurnId,
     location.pathname,
     location.search,
+    location.state,
     navigate,
     searchParams,
     stepsTurnId,
   ]);
+  const depth = under ? 2 : urlTop ? Math.max(stack.length, 1) : 0;
   useEffect(() => {
-    if (decisionId || stepsTurnId || inspectTurnId) return;
-    const target = opener.current;
-    if (!target) return;
-    opener.current = null;
-    target.focus();
-  }, [decisionId, inspectTurnId, stepsTurnId]);
-  return { phone, decisionId, stepsTurnId, inspectTurnId, open, close };
+    const previous = seenDepth.current;
+    seenDepth.current = depth;
+    if (depth >= previous) return;
+    const target = openers.current[previous - 1];
+    openers.current.length = depth;
+    target?.focus();
+  }, [depth]);
+  return { phone, decisionId, stepsTurnId, inspectTurnId, under, open, close };
 }
 
 /** Sticky Now and Needs you line. Tapping opens the next decision. */
@@ -150,6 +182,7 @@ export function PhoneSheetFrame({
   expanded,
   onExpand,
   onClose,
+  covered = false,
   children,
   footer,
 }: {
@@ -158,6 +191,8 @@ export function PhoneSheetFrame({
   expanded?: boolean;
   onExpand?: () => void;
   onClose: () => void;
+  /** A newer sheet is open above this one. Keep it mounted, but out of the way. */
+  covered?: boolean;
   children: ReactNode;
   footer?: ReactNode;
 }) {
@@ -166,10 +201,18 @@ export function PhoneSheetFrame({
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   useEffect(() => {
-    const node = dialogRef.current;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const firstControl = node?.querySelector<HTMLElement>('button, [href], input, textarea');
-    (firstControl ?? node)?.focus();
+    return () => {
+      previous?.focus();
+    };
+  }, []);
+  useEffect(() => {
+    if (covered) return;
+    const node = dialogRef.current;
+    if (node && !node.contains(document.activeElement)) {
+      const firstControl = node.querySelector<HTMLElement>('button, [href], input, textarea');
+      (firstControl ?? node).focus();
+    }
     const onKey = (event: KeyboardEvent) => {
       if (!node) return;
       if (event.key === 'Escape') {
@@ -203,16 +246,19 @@ export function PhoneSheetFrame({
     document.addEventListener('keydown', onKey);
     return () => {
       document.removeEventListener('keydown', onKey);
-      previous?.focus();
     };
-  }, []);
+  }, [covered]);
   return (
-    <div className="fixed inset-0 z-40 flex flex-col">
+    <div
+      className="fixed inset-0 z-40 flex flex-col"
+      inert={covered || undefined}
+      aria-hidden={covered || undefined}
+    >
       {mode === 'partial' && !full ? <div className="min-h-0 flex-1" aria-hidden="true" /> : null}
       <div
         ref={dialogRef}
         role="dialog"
-        aria-modal="true"
+        aria-modal={covered ? undefined : true}
         aria-label={label}
         tabIndex={-1}
         data-sheet={mode}

@@ -57,3 +57,51 @@ export function nextSheetDepth(depth: number): { mode: 'push' | 'replace'; depth
   if (depth >= 2) return { mode: 'replace', depth: 2 };
   return { mode: 'push', depth: depth + 1 };
 }
+
+export interface SheetLayer {
+  kind: SheetKind;
+  id: string;
+}
+
+const SHEET_KINDS = new Set<SheetKind>(['decision', 'steps', 'inspect']);
+
+function historyRecord(state: unknown): Record<string, unknown> | null {
+  if (!state || typeof state !== 'object') return null;
+  const wrapped = (state as { usr?: unknown }).usr;
+  if (wrapped && typeof wrapped === 'object') return wrapped as Record<string, unknown>;
+  return state as Record<string, unknown>;
+}
+
+function isSheetLayer(value: unknown): value is SheetLayer {
+  if (!value || typeof value !== 'object') return false;
+  const layer = value as { kind?: unknown; id?: unknown };
+  return (
+    typeof layer.kind === 'string' &&
+    SHEET_KINDS.has(layer.kind as SheetKind) &&
+    typeof layer.id === 'string' &&
+    layer.id.length > 0
+  );
+}
+
+/** Layers recorded on this history entry, oldest first. The query shows only the top. */
+export function sheetStackOf(state: unknown): SheetLayer[] {
+  const record = historyRecord(state);
+  const raw = record?.sheetStack;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(isSheetLayer).slice(0, 2);
+}
+
+/**
+ * Push a sheet under the current one, up to two deep.
+ * A third open replaces the top and keeps the sheet beneath it.
+ */
+export function nextSheetStack(
+  stack: readonly SheetLayer[],
+  kind: SheetKind,
+  id: string
+): { mode: 'push' | 'replace'; stack: SheetLayer[] } {
+  const layer = { kind, id };
+  const current = stack.slice(0, 2);
+  if (current.length >= 2) return { mode: 'replace', stack: [current[0]!, layer] };
+  return { mode: 'push', stack: [...current, layer] };
+}

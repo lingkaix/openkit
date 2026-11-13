@@ -411,14 +411,12 @@ function RunEntryBody({
           {timelineCopy['run-trigger']} · {actorName}
         </p>
       ) : null}
-      {runLens === 'full' || turn?.status === 'pending' ? (
+      {turn?.status === 'pending' && runLens !== 'full' ? (
         <RunEnvironment
-          usage={runLens === 'full' ? entry.usage : null}
-          fallback={runLens === 'full' ? entry.fallback : null}
           turnId={entry.turnId}
           workspaceId={factsScope?.workspaceId ?? null}
           threadId={factsScope?.threadId ?? null}
-          facts={runLens === 'full' ? 'standing' : 'wait'}
+          facts="wait"
         />
       ) : null}
       {runningStatus}
@@ -600,6 +598,16 @@ function RunEntryBody({
             </ul>
           ) : null}
         </div>
+      ) : null}
+      {runLens === 'full' ? (
+        <RunEnvironment
+          usage={entry.usage}
+          fallback={entry.fallback}
+          turnId={entry.turnId}
+          workspaceId={factsScope?.workspaceId ?? null}
+          threadId={factsScope?.threadId ?? null}
+          facts="standing"
+        />
       ) : null}
       {workerCue ? (
         <p data-voice="claim" className="ok-voice-claim ok-meta">

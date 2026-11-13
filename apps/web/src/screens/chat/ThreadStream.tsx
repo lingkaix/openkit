@@ -525,6 +525,9 @@ export function ThreadStream({
     return () => clearDisplayedTimeline(ticket);
   }, [threadId, timelineWindow.data, workspaceId]);
   const stepsTurnId = sheets?.stepsTurnId ?? localSteps;
+  const underSheet = sheets?.under ?? null;
+  const stepsSheetId = stepsTurnId ?? (underSheet?.kind === 'steps' ? underSheet.id : null);
+  const stepsCovered = Boolean(stepsSheetId && !stepsTurnId);
   const anchoredWindow =
     timelineWindow.data && itemAnchorHasLevel2(timelineWindow.data)
       ? timelineWindow.data.itemWindow
@@ -534,7 +537,7 @@ export function ThreadStream({
       ? (timelineWindow.data?.anchor?.turnId ?? timelineWindow.data?.runs.at(-1)?.id ?? null)
       : null;
   const level2TurnId = timelineOn
-    ? (stepsTurnId ?? expandedTurnId ?? fullTurnId ?? anchoredWindow?.turnId ?? null)
+    ? (stepsSheetId ?? expandedTurnId ?? fullTurnId ?? anchoredWindow?.turnId ?? null)
     : null;
   const level2Seed = useMemo(
     () =>
@@ -546,7 +549,7 @@ export function ThreadStream({
   const level2SeedId =
     level2Seed && timelineWindow.data?.anchor?.itemId ? timelineWindow.data.anchor.itemId : null;
   const level2Run = timelineWindow.data?.runs.find((run) => run.id === level2TurnId);
-  const level2Placement = stepsTurnId || expandedTurnId ? 'step' : 'all';
+  const level2Placement = stepsSheetId || expandedTurnId ? 'step' : 'all';
   const level2 = useRunItemWindow({
     workspaceId,
     threadId,
@@ -851,7 +854,7 @@ export function ThreadStream({
     }
     if (item && isStepItem(item) && lens !== 'full') {
       if (phone) {
-        if (stepsTurnId !== item.turnId) {
+        if (stepsSheetId !== item.turnId) {
           if (openedAnchor.current !== anchoredItemId) {
             openedAnchor.current = anchoredItemId;
             openSheet('steps', item.turnId);
@@ -891,7 +894,7 @@ export function ThreadStream({
             )
           : null);
     }
-  }, [anchoredItemId, expandedTurnId, feedItems, historyLoading, lens, phone, stepsTurnId]);
+  }, [anchoredItemId, expandedTurnId, feedItems, historyLoading, lens, phone, stepsSheetId]);
   const respond = useRespondApproval(workspaceId ?? '', threadId);
   const submitAnswers = useSubmitTurnAnswers(workspaceId ?? '', threadId);
   const withdraw = useWithdrawPendingRequest(workspaceId ?? '', threadId);
@@ -1666,7 +1669,7 @@ export function ThreadStream({
   function closeInspector() {
     if (phone) {
       closeSheet();
-      inspectButtonRef.current?.focus();
+      if (!sheets) inspectButtonRef.current?.focus();
       return;
     }
     setInspectedTurnId(null);
@@ -1703,10 +1706,10 @@ export function ThreadStream({
     />
   ) : null;
   const stepSource =
-    timelineOn && stepsTurnId && level2TurnId === stepsTurnId && level2.completeItems.length > 0
+    timelineOn && stepsSheetId && level2TurnId === stepsSheetId && level2.completeItems.length > 0
       ? level2.completeItems
       : feedItems;
-  const stepItems = stepSource.filter((item) => item.turnId === stepsTurnId && isStepItem(item));
+  const stepItems = stepSource.filter((item) => item.turnId === stepsSheetId && isStepItem(item));
   const catchUp = timelineOn ? (timelineWindow.data?.catchUpAnchor ?? null) : null;
   const runOrder = new Map((windowRuns ?? []).map((run) => [run.id, run.admissionOrder]));
   for (const item of locatedUnread) {
@@ -1954,7 +1957,7 @@ export function ThreadStream({
               });
 
               return (
-                <div
+                <article
                   key={group.turnId}
                   data-timeline-entry={group.turnId}
                   data-run-status={timelineRun?.status ?? groupTurn?.status}
@@ -1990,7 +1993,7 @@ export function ThreadStream({
                     lens={inlineLens}
                     expanded={phone ? false : expandedTurnId === group.turnId}
                     stepsInSheet={phone}
-                    stepsSheetOpen={stepsTurnId === group.turnId}
+                    stepsSheetOpen={stepsSheetId === group.turnId}
                     onStepsToggle={(open) => rememberExpanded(open ? group.turnId : null)}
                     onOpenSteps={() => openSheet('steps', group.turnId)}
                     onOpenAllSteps={() => openSheet('steps', group.turnId)}
@@ -2168,7 +2171,7 @@ export function ThreadStream({
                     'restricted' ? (
                     <p className="ok-meta">{timelineCopy.restricted}</p>
                   ) : null}
-                  {!stepsTurnId &&
+                  {!stepsSheetId &&
                   level2TurnId === group.turnId &&
                   (expandedTurnId === group.turnId || lens === 'full') ? (
                     <div className="flex gap-2">
@@ -2194,14 +2197,13 @@ export function ThreadStream({
                       ) : null}
                     </div>
                   ) : null}
-                </div>
+                </article>
               );
             })}
           </TimelineFrame>
         </div>
       </ThreadReadReceipts>
       {inspector && !phone ? (portalNode ? createPortal(inspector, portalNode) : inspector) : null}
-      {phone && inspector}
       {openItem ? (
         <DecisionSheet
           item={openItem}
@@ -2287,15 +2289,27 @@ export function ThreadStream({
           onClose={closeSheet}
         />
       ) : null}
-      {stepsTurnId ? (
+      {stepsSheetId ? (
         <PhoneSheetFrame
           label={timelineCopy.stepsSheet}
           mode="partial"
           expanded={sheetExpanded}
+          covered={stepsCovered}
           onExpand={() => setSheetExpanded((open) => !open)}
           onClose={closeSheet}
         >
           <ul className="flex flex-col gap-2">
+            {phone ? (
+              <li>
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  onPress={() => openSheet('inspect', stepsSheetId)}
+                >
+                  {timelineCopy.inspectRun}
+                </Button>
+              </li>
+            ) : null}
             {level2.data?.beforeCursor ? (
               <li>
                 <Button
@@ -2328,6 +2342,7 @@ export function ThreadStream({
           </ul>
         </PhoneSheetFrame>
       ) : null}
+      {phone && inspector}
     </TimelineNowProvider>
   );
 }
@@ -2337,8 +2352,13 @@ function TimelineFrame({
   children,
   ...props
 }: { windowed: boolean; children: ReactNode } & ComponentProps<typeof TimelineScroll>) {
-  if (!windowed) return children;
-  return <TimelineScroll {...props}>{children}</TimelineScroll>;
+  const feed = (
+    <div role="feed" aria-busy={props.paging ? 'true' : 'false'}>
+      {children}
+    </div>
+  );
+  if (!windowed) return feed;
+  return <TimelineScroll {...props}>{feed}</TimelineScroll>;
 }
 
 function approvalEffectText(

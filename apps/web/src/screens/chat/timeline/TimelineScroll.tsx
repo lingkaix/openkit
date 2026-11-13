@@ -85,6 +85,8 @@ export function TimelineScroll({
   const pinnedDivider = useRef(false);
   const pinToken = useRef(pinKey);
   const restored = useRef(false);
+  const earlierRef = useRef<HTMLButtonElement>(null);
+  const restoreEarlierFocus = useRef(false);
   // The edge sentinel must not page while a saved offset is still waiting for height.
   const [restoreSettled, setRestoreSettled] = useState(restoreTop == null);
   const restoreToken = useRef(restoreTop);
@@ -169,6 +171,12 @@ export function TimelineScroll({
     if (delta !== 0) scroller.scrollTop += delta;
     pending.current = null;
   });
+
+  useLayoutEffect(() => {
+    if (paging || !restoreEarlierFocus.current) return;
+    restoreEarlierFocus.current = false;
+    earlierRef.current?.focus();
+  }, [paging]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: opening settles onto follow once; setFollow reads the latest callback.
   useLayoutEffect(() => {
@@ -275,10 +283,11 @@ export function TimelineScroll({
       <div ref={topSentinel} aria-hidden="true" />
       {canEarlier ? (
         <Button
+          ref={earlierRef}
           variant="quiet"
           size="sm"
-          isDisabled={paging}
           onPress={() => {
+            restoreEarlierFocus.current = true;
             remember();
             onEarlier();
           }}
@@ -288,7 +297,7 @@ export function TimelineScroll({
       ) : null}
       {children}
       {canLater ? (
-        <Button variant="quiet" size="sm" isDisabled={paging} onPress={onLater}>
+        <Button variant="quiet" size="sm" onPress={onLater}>
           {timelineCopy.loadLater}
         </Button>
       ) : null}

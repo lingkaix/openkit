@@ -152,6 +152,7 @@ function mountSheet(
     decisionId: ITEM,
     stepsTurnId: null,
     inspectTurnId: null,
+    under: null,
     open: () => {},
     close: () => {},
   };

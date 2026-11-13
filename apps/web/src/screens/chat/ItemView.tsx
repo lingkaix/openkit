@@ -440,9 +440,6 @@ export function ItemView({
           <p className="whitespace-pre-wrap">{item.text}</p>
           <details className="mt-2">
             <summary>Covered history range</summary>
-            <p className="break-all">
-              {item.sourceRange.firstItemId} through {item.sourceRange.lastItemId}
-            </p>
           </details>
         </ItemCard>
       );

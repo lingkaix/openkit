@@ -62,15 +62,37 @@
   font-variant-numeric: tabular-nums;
 }
 
-.ok-voice-claim {
+.ok-voice-fact.ok-outcome {
+  max-width: var(--ok-measure-prose);
   font-size: 16px;
+  font-weight: 500;
   line-height: 1.5;
+}
+
+.ok-voice-claim {
+  max-width: var(--ok-measure-prose);
+  font-size: 16px;
+  line-height: 24px;
+  background: none;
+}
+
+.ok-voice-claim .ok-message-report,
+.ok-voice-claim .ok-message-report :where(p),
+.ok-voice-claim .whitespace-pre-wrap {
+  max-width: var(--ok-measure-prose);
+  font-size: 16px;
+  line-height: 24px;
   background: none;
 }
 
 .ok-voice-human {
+  max-width: var(--ok-measure-prose);
   font-size: 16px;
   line-height: 1.5;
+}
+
+.ok-voice-human .rounded-ok-xl {
+  background-color: var(--surface-card);
 }
 
 .ok-voice-generated {
