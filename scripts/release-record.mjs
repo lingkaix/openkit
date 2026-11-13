@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 /** Offline manifest, reviewed draft and private closeout projections of existing release evidence. */
-import { lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -186,6 +186,54 @@ export function publicationManifest({
     writeFileSync(join(assetsDir, name), bytes, { flag: 'wx' });
     writeFileSync(sumFile, `${archiveLines.join('\n')}\n${entry}\n`);
   }
+  return manifest;
+}
+
+/** Read the existing public projection through the same publication/checksum verifier. */
+export function readPublishedManifest({
+  repoRoot,
+  assetsDir,
+  recordsDir,
+  sourceTag,
+  sha,
+  repository,
+}) {
+  parseVersionTag(sourceTag);
+  if (!/^[a-f0-9]{40}$/u.test(sha)) throw Error('Published source commit required');
+  const manifest = JSON.parse(
+    readFileSync(join(assetsDir, `openkit-release-${sourceTag}.json`), 'utf8')
+  );
+  if (
+    manifest.tag !== sourceTag ||
+    manifest.sourceCommit !== sha ||
+    manifest.repository !== repository ||
+    !Array.isArray(manifest.images)
+  )
+    throw Error('Published source identity mismatch');
+  mkdirSync(recordsDir);
+  for (const image of manifest.images) {
+    if (!/^[a-z0-9-]+$/u.test(image.id ?? '')) throw Error('Published image id required');
+    // These are deterministic source-tag projections, as in the existing promotion reader;
+    // publicationManifest revalidates every binding and every downloaded checksum below.
+    writeFileSync(
+      join(recordsDir, `${image.id}.json`),
+      JSON.stringify({
+        ...image,
+        prerelease: true,
+        tags: [sourceTag, sourceTag.slice(1), `sha-${sha.slice(0, 12)}`],
+      }),
+      { flag: 'wx' }
+    );
+  }
+  publicationManifest({
+    repoRoot,
+    tag: sourceTag,
+    sha,
+    repository,
+    recordsDir,
+    assetsDir,
+    verify: true,
+  });
   return manifest;
 }
 

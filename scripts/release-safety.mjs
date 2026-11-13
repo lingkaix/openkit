@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { CREDENTIAL_PATTERN } from './credential-patterns.mjs';
 
 /** Hex SHA-256 identity for retained bytes and manifests. */
 export const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -21,8 +22,6 @@ export function canonical(value) {
   }
   return JSON.stringify(sort(value));
 }
-const SECRET =
-  /\b(?:gh[pousr]_|github_pat_|okt_|okw_|sk-)[A-Za-z0-9_-]{8,}|\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+|\b(?:AKIA|ASIA)[A-Z0-9]{16}|Bearer\s+[A-Za-z0-9._~+/-]{8,}=*|-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)|[a-z]+:\/\/[^\s/@]+:[^\s/@]+@/gi;
 const secretKey =
   /^(authorization|cookie|password|passwd|secret|token|api[_-]?key|access[_-]?token|refresh[_-]?token|private[_-]?key|headerValue|capabilityCredential|inferenceCredential)$/i;
 
@@ -30,12 +29,19 @@ const secretKey =
 export function redact(value, secrets = []) {
   if (typeof value === 'string') {
     for (const secret of secrets) if (secret) value = value.split(secret).join('[redacted]');
-    return value
-      .replace(SECRET, '[redacted]')
-      .replace(
-        /((?:password|api[_-]?key|access[_-]?token|client_secret)\s*[:=]\s*)["']?[^\s,;"'}]+["']?/gi,
-        '$1[redacted]'
-      );
+    return (
+      value
+        .replace(CREDENTIAL_PATTERN, '[redacted]')
+        // Literal presentation masking is intentionally broader than known-form detection.
+        .replace(
+          /(?:Bearer\s+[A-Za-z0-9._~+/-]{8,}=*|[a-z]+:\/\/[^\s/@]+:[^\s/@]+@)/gi,
+          '[redacted]'
+        )
+        .replace(
+          /((?:password|api[_-]?key|access[_-]?token|client_secret)\s*[:=]\s*)["']?[^\s,;"'}]+["']?/gi,
+          '$1[redacted]'
+        )
+    );
   }
   if (Array.isArray(value)) return value.map((v) => redact(v, secrets));
   if (value && typeof value === 'object')

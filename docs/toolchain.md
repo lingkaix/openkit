@@ -116,6 +116,10 @@ Root `AGENTS.md` routes setup, CI, dependency, generator, and toolchain work her
 
 `pnpm security:tools --tool zizmor --directory <tool-directory>` installs the committed security-tool version on a native Linux host and verifies its archive checksum before extraction. Put that directory on `PATH`. `scripts/security-tools.json` owns these binary pins and publication dates; the development image installs the same manifest. This checksum-bound supply is required by [Development Security](specs/20261109-development_security.md#supply-chain-controls). `pnpm check:workflows --all` runs the pinned, offline workflow linter, and `check:repo` and release preflight include it. A missing or wrong tool version fails rather than skipping the check.
 
+Install OSV from the same manifest with `pnpm security:tools --tool osv-scanner --directory <tool-directory>`. The checksum-bound static binary is identical in native and development-image execution; the image smoke requires both tools. The staged hook runs `pnpm check:security --staged` after formatting. CI supplies the actual comparison bounds, release checks scan every committed lock and candidate platform digest, and the scheduled job diagnoses the newest published release. Existing dependency matches remain visible without blocking an unrelated lock change; new K/C/H matches fail it. Missing tools, malformed reports and omitted lock/OS inventory fail, never become empty success.
+
+Release K/C clearance is an engineer-owned prerequisite: tag-only read-only jobs may consume the existing DS register's schema-version-1 JSON export through the dormant `OPENKIT_SECURITY_FINDINGS` Actions secret. No export means no approvals. Only current mitigations, independently reviewed VEX, and current engineer acceptances of at most 90 days clear K/C; fix availability does not change this. Never put private reachability or decision evidence in public logs. This repository change does not create or change that secret or any repository setting.
+
 ### Version Maintenance
 
 - If any default or procedure obligation named in `## Owns` changes, update this guide in the same change and carry a change record.

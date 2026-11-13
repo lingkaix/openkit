@@ -442,6 +442,7 @@ test('test image smoke requires Playwright headless-shell and rejects Xvfb', () 
       'node',
       'pnpm',
       'zizmor',
+      'osv-scanner',
       'git',
       'jq',
       'python3',

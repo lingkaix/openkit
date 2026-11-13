@@ -77,7 +77,12 @@ test('tag publication promotes the proved candidate digest without rebuilding or
   const candidateJob = workflow.jobs['candidate-images'];
   const candidate = step(candidateJob, 'Build one native digest-only candidate');
   const smoke = step(candidateJob, 'Smoke and record the exact registry platform digest');
-  const resolve = step(job, 'Resolve the proved exact-P candidate digest');
+  const gate = workflow.jobs['release-security'];
+  const selected = step(gate, 'Select the already-proved immutable candidate');
+  const admission = step(gate, 'Admit every platform digest before publication');
+  const retained = step(gate, 'Retain only the admitted immutable digest');
+  const download = step(job, 'Download the security-admitted immutable candidate');
+  const resolve = step(job, 'Consume the proved and security-admitted candidate digest');
   const promote = step(job, 'Promote the smoked digest');
   const verify = step(job, 'Verify promoted identity');
   const anonymous = step(job, 'Verify public worker base anonymous pull');
@@ -94,9 +99,42 @@ test('tag publication promotes the proved candidate digest without rebuilding or
   });
   assert.match(smoke.run, /release-candidate\.mjs platform/u);
   assert.ok(candidateJob.steps.indexOf(candidate) < candidateJob.steps.indexOf(smoke));
-  assert.match(resolve.run, /release-candidate\.mjs fetch/u);
-  assert.match(resolve.run, /PRESENT.*true/u);
-  assert.match(resolve.run, /digest=\$\{EXISTING_DIGEST\}/u);
+  assert.deepEqual(gate.permissions, { contents: 'read', packages: 'read', actions: 'read' });
+  assert.equal(gate.if, "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')");
+  for (const publisher of ['publish-container-images', 'publish-app-image'])
+    assert.ok(workflow.jobs[publisher].needs.includes('release-security'), publisher);
+  assert.match(selected.run, /release-candidate\.mjs fetch/u);
+  assert.match(selected.run, /PRESENT.*true/u);
+  assert.match(selected.run, /digest=\$\{EXISTING_DIGEST\}/u);
+  assert.equal(admission.env.DIGEST, actionExpression('steps.selected.outputs.digest'));
+  assert.equal(admission.env.PLATFORMS, actionExpression('matrix.platforms'));
+  assert.match(admission.run, /release-security\.mjs.*--digest.*--platforms.*--output/u);
+  assert.ok(gate.steps.indexOf(selected) < gate.steps.indexOf(admission));
+  assert.ok(gate.steps.indexOf(admission) < gate.steps.indexOf(retained));
+  assert.equal(retained.with['if-no-files-found'], 'error');
+  assert.equal(download.with.name, retained.with.name);
+  assert.equal(
+    download.with.name,
+    'security-admitted-' +
+      actionExpression('matrix.id') +
+      '-' +
+      actionExpression('github.run_attempt')
+  );
+  assert.equal(download.with['run-id'], undefined);
+  assert.ok(job.steps.indexOf(download) < job.steps.indexOf(resolve));
+  assert.match(
+    resolve.run,
+    /readFileSync\(`security-admitted\/\$\{process\.env\.IMAGE_ID\}\.digest`/u
+  );
+  assert.match(
+    resolve.run,
+    /process\.env\.PRESENT === 'true'.*process\.env\.EXISTING_DIGEST !== digest/u
+  );
+  assert.match(resolve.run, /digest=\$\{digest\}/u);
+  assert.doesNotMatch(
+    job.steps.map((entry) => entry.run ?? '').join('\n'),
+    /release-candidate\.mjs (?:fetch|select)/u
+  );
   assert.ok(job.steps.indexOf(existing) < job.steps.indexOf(resolve));
   assert.ok(job.steps.indexOf(resolve) < job.steps.indexOf(promote));
   assert.equal(promote.if, "steps.existing.outputs.present == 'false'");
@@ -569,7 +607,13 @@ test('the complete job graph stays enumerated and no checkout persists credentia
     Object.keys(workflow.jobs)
       .filter((name) => !placementOwnedElsewhere.includes(name))
       .sort(),
-    [...unchangedJobNames, ...shardJobNames, ...candidateJobNames].sort()
+    [
+      ...unchangedJobNames,
+      ...shardJobNames,
+      ...candidateJobNames,
+      'release-security',
+      'image-security-diagnostic',
+    ].sort()
   );
   for (const name of placementOwnedElsewhere)
     assert.ok(workflow.jobs[name], `the job ${name} is still declared`);
@@ -594,12 +638,38 @@ test('only complete L0-L2 shards, whole-owner coverage and NanoCore e2e read exa
     if (!selected.includes(name)) {
       assert.equal(
         job.permissions?.actions,
-        ['publish-container-images', 'build-app-candidate', 'candidate-registry'].includes(name)
+        [
+          'publish-container-images',
+          'build-app-candidate',
+          'candidate-registry',
+          'release-security',
+          'image-security-diagnostic',
+        ].includes(name)
           ? 'read'
           : undefined,
         name
       );
       assert.ok(!job.steps?.some((entry) => entry.id === 'reuse'), name);
+      if (['release-security', 'image-security-diagnostic'].includes(name)) {
+        assert.deepEqual(job.permissions, { contents: 'read', packages: 'read', actions: 'read' });
+        assert.ok(!job.steps.some((entry) => /release-ci-reuse\.mjs/u.test(entry.run ?? '')), name);
+      }
+      if (name === 'image-security-diagnostic') {
+        assert.match(job.if, /github\.ref == 'refs\/heads\/main'/u);
+        const download = step(job, "Download this attempt's immutable candidate record");
+        assert.equal(
+          download.with.name,
+          'candidate-' +
+            actionExpression('matrix.id') +
+            '-' +
+            actionExpression('github.run_attempt')
+        );
+        assert.equal(download.with['run-id'], undefined);
+        assert.match(
+          step(job, 'Diagnose current platform digests without granting release admission').run,
+          /release-security\.mjs --diagnostic --candidate/u
+        );
+      }
       continue;
     }
     const l0l2 = name !== 'nano-core-e2e';
@@ -978,11 +1048,13 @@ test('Worker publication and final verification retain the reviewed cadence step
     'Log in to GHCR',
     'Compute deterministic image identity',
     'Inspect existing immutable identity',
-    'Resolve the proved exact-P candidate digest',
+    'Download the security-admitted immutable candidate',
+    'Consume the proved and security-admitted candidate digest',
     'Promote the smoked digest',
     'Verify promoted identity',
     'Verify public worker base anonymous pull',
     'Write image release record',
+    'Retain public image finding identifiers',
     'Upload image release record',
   ]);
   assert.deepEqual(cadence('github-release'), [

@@ -109,7 +109,8 @@ RUN npm ci --prefix /opt/openkit-browser-tools --ignore-scripts --no-audit --no-
   && rm -rf /var/lib/apt/lists/*
 
 COPY scripts/install-security-tools.mjs scripts/security-tools.json /usr/local/lib/openkit/security-tools/
-RUN node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool zizmor --directory /usr/local/bin
+RUN node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool zizmor --directory /usr/local/bin \
+  && node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool osv-scanner --directory /usr/local/bin
 
 COPY containers/test-env/smoke.sh /usr/local/bin/openkit-test-env-smoke
 RUN chmod +x /usr/local/bin/openkit-test-env-smoke

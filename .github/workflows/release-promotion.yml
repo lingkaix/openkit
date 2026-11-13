@@ -13,8 +13,66 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  finding-admission:
+    name: Admit unchanged published source findings
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: stable-release
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - name: Checkout exact promoted source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up pinned tools
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install: true
+      - name: Install checksum-bound security tools
+        run: |
+          node scripts/install-security-tools.mjs --tool zizmor --directory "${RUNNER_TEMP}/security-tools"
+          node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+      - name: Lint before registry credentials
+        run: node scripts/check-workflows.mjs --all
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Read-only package login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install verifier dependencies without building assets
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Observe the existing same-commit source without publication
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENKIT_STABLE_PROMOTION: ${{ vars.OPENKIT_STABLE_PROMOTION }}
+        run: |
+          node scripts/release-promotion.mjs --check-only --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/security-promotion"
+      - name: Admit source locks and every published platform digest
+        env:
+          OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
+        run: |
+          node scripts/release-security.mjs --directory "${RUNNER_TEMP}/security-promotion/source" --repository "${GITHUB_REPOSITORY}" --sha "${GITHUB_SHA}" --repo-root . --output "${RUNNER_TEMP}/security-manifest.json" --public-record "${RUNNER_TEMP}/security-promotion.md"
+      - name: Retain the exact admitted existing manifest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: security-promotion-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/security-manifest.json
+            ${{ runner.temp }}/security-promotion.md
+          if-no-files-found: error
+
   promote:
     name: Promote verified prerelease without rebuild
+    needs: finding-admission
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: stable-release
@@ -70,6 +128,12 @@ jobs:
       - name: Install verifier dependencies without building assets
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Download the exact finding-admitted source manifest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: security-promotion-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/security-admitted
+
       - name: Promote and verify exact published bytes
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -77,7 +141,8 @@ jobs:
         run: |
           node scripts/release-promotion.mjs \
             --repository "${GITHUB_REPOSITORY}" --tag "${GITHUB_REF_NAME}" \
-            --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/promotion"
+            --sha "${GITHUB_SHA}" --output "${RUNNER_TEMP}/promotion" \
+            --security-manifest "${RUNNER_TEMP}/security-admitted/security-manifest.json"
 
       - name: Retain promotion evidence
         if: always()

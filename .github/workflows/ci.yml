@@ -192,11 +192,18 @@ jobs:
             OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST=${{ steps.local-image.outputs.digest }}
 
       - name: Run lightweight repository check in the job-local image
+        env:
+          SECURITY_BASE: ${{ github.event.pull_request.base.sha }}
+          SECURITY_HEAD: ${{ github.sha }}
         run: |
+          # A manual PR check explicitly checks the selected commit; PRs use their true base.
+          if [ -z "${SECURITY_BASE}" ]; then SECURITY_BASE="$(git rev-parse HEAD^)"; fi
+          export SECURITY_BASE
           docker run --rm --init \
             --volume "${GITHUB_WORKSPACE}:/workspace" --workdir /workspace \
+            --env SECURITY_BASE --env SECURITY_HEAD \
             --env CI=true openkit-test-env:check \
-            bash -c 'bash scripts/test-env.sh any pnpm install --frozen-lockfile && pnpm -w check:repo'
+            bash -c 'bash scripts/test-env.sh any pnpm install --frozen-lockfile && node scripts/check-security.mjs --base "${SECURITY_BASE}" --head "${SECURITY_HEAD}" && pnpm -w check:repo'
 
   nanohost-installer:
     name: NanoHost installer fixed-path gate (${{ matrix.runner }})
@@ -260,6 +267,21 @@ jobs:
       - name: Check release notes input
         run: node scripts/release-notes.mjs --check --repo-root . --tag "${GITHUB_REF_NAME}"
 
+      - name: Admit all lock files and the release diff
+        env:
+          OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
+        run: |
+          tags="$(git tag --merged "${GITHUB_SHA}^" --list 'v[0-9]*' --sort=-version:refname)"
+          base="${tags%%$'\n'*}"
+          if [ -z "${base}" ]; then base=EMPTY; fi
+          node scripts/check-security.mjs --release --base "${base}" --head "${GITHUB_SHA}" --public-record "${RUNNER_TEMP}/source.md"
+      - name: Retain public source finding identifiers
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: security-admitted-source-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source.md
+          if-no-files-found: error
+
   l0-l2-plan:
     name: L0-L2 shard inventory
     if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
@@ -280,7 +302,7 @@ jobs:
 
   l0-l2-build:
     name: L0-L2 shared build
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
+    if: (github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))) || (github.event_name == 'workflow_dispatch' && contains(fromJSON('["l0-l2","release-gate","full"]'), inputs.gate))
     needs: [test-image, l0-l2-plan]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -301,6 +323,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Cache pnpm store
         # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -310,6 +333,14 @@ jobs:
           restore-keys: pnpm-store-
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check main pushed range or explicitly selected manual commit
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        env:
+          SECURITY_BASE: ${{ github.event.before }}
+          SECURITY_HEAD: ${{ github.sha }}
+        run: |
+          if [ -z "${SECURITY_BASE}" ]; then SECURITY_BASE="$(git rev-parse "${SECURITY_HEAD}^")"; fi
+          node scripts/check-security.mjs --base "${SECURITY_BASE}" --head "${SECURITY_HEAD}"
       - name: Prepare all coverage prerequisites once
         run: |
           chown -R node:node "${GITHUB_WORKSPACE}" "${HOME}" "/pnpm/store" "/usr/local/cargo" "/usr/local/rustup"
@@ -1569,10 +1600,151 @@ jobs:
           path: app-evidence/${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}.json
           if-no-files-found: error
 
+  image-security-diagnostic:
+    name: Diagnose current candidate platform digests (${{ matrix.id }})
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.candidate-plan.outputs.enabled == 'true'
+    needs: [candidate-plan, candidate-index, container-image-matrix]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Read-only package login
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Download this attempt's immutable candidate record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: candidate-${{ matrix.id }}-${{ github.run_attempt }}
+          path: candidate-diagnostic
+      - name: Install checksum-bound scanner
+        run: |
+          node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+      - name: Diagnose current platform digests without granting release admission
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          CANDIDATE_TAG: ${{ needs.candidate-plan.outputs.tag }}
+        run: node scripts/release-security.mjs --diagnostic --candidate "candidate-diagnostic/${IMAGE_ID}.json" --repo-root .
+
+  release-security:
+    name: Admit candidate findings (${{ matrix.id }})
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+    needs: [container-image-matrix, build-app-candidate, smoke-app-native]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.container-image-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Set up pinned Node
+        uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+        with:
+          cache: false
+          install_args: node
+      - name: Install checksum-bound security tools and lint before credentials
+        run: |
+          node scripts/install-security-tools.mjs --tool zizmor --directory "${RUNNER_TEMP}/security-tools"
+          node scripts/install-security-tools.mjs --tool osv-scanner --directory "${RUNNER_TEMP}/security-tools"
+          echo "${RUNNER_TEMP}/security-tools" >> "${GITHUB_PATH}"
+          PATH="${RUNNER_TEMP}/security-tools:${PATH}" node scripts/check-workflows.mjs --all
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Log in with read-only package authority
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Resolve existing image identity
+        id: existing
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+        run: |
+          export CREATED="$(git show -s --format=%cI "${GITHUB_SHA}")"
+          image="$(node --input-type=module -e 'import { readFileSync } from "node:fs"; import { imageIdentity } from "./scripts/release-candidate.mjs"; const image = JSON.parse(readFileSync("containers/images.json", "utf8")).images.find(i => i.id === process.env.IMAGE_ID); if (!image) throw Error("Unknown image"); console.log(imageIdentity({ repository: process.env.GITHUB_REPOSITORY, sha: process.env.GITHUB_SHA, tag: process.env.GITHUB_REF_NAME, created: process.env.CREATED, image }).image)')"
+          echo "image=${image}" >> "${GITHUB_OUTPUT}"
+          node scripts/release-image-state.mjs --version-tag "${image}:${GITHUB_REF_NAME}" --version-without-v-tag "${image}:${GITHUB_REF_NAME#v}" --sha-tag "${image}:sha-${GITHUB_SHA:0:12}" --latest-tag "${image}:latest" >> "${GITHUB_OUTPUT}"
+      - name: Download current-attempt App candidate
+        if: matrix.id == 'app'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: app-candidate-${{ github.run_attempt }}
+          path: app-evidence
+      - name: Download current-attempt native observations
+        if: matrix.id == 'app'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: app-native-*-${{ github.run_attempt }}
+          merge-multiple: true
+          path: app-evidence
+      - name: Select the already-proved immutable candidate
+        id: selected
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          PRESENT: ${{ steps.existing.outputs.present }}
+          EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
+          LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${IMAGE_ID}" = app ]; then
+            node scripts/release-app-native.mjs join app-evidence/app-candidate.json app-evidence >> "${GITHUB_OUTPUT}"
+          elif [ "${PRESENT}" = true ]; then
+            echo "digest=${EXISTING_DIGEST}" >> "${GITHUB_OUTPUT}"
+          else
+            node scripts/release-candidate.mjs fetch --id "${IMAGE_ID}" --tag "${GITHUB_REF_NAME}" --directory "temp/security-${IMAGE_ID}" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Admit every platform digest before publication
+        env:
+          OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
+          IMAGE_ID: ${{ matrix.id }}
+          IMAGE: ${{ steps.existing.outputs.image }}
+          DIGEST: ${{ steps.selected.outputs.digest }}
+          PLATFORMS: ${{ matrix.platforms }}
+        run: |
+          mkdir -p security-admitted
+          node scripts/release-security.mjs --image "${IMAGE}" --digest "${DIGEST}" --platforms "${PLATFORMS}" --output "security-admitted/${IMAGE_ID}.digest" --public-record "security-admitted/${IMAGE_ID}.md"
+      - name: Retain only the admitted immutable digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: security-admitted-${{ matrix.id }}-${{ github.run_attempt }}
+          path: |
+            security-admitted/${{ matrix.id }}.digest
+            security-admitted/${{ matrix.id }}.md
+          if-no-files-found: error
+
   publish-app-image:
     name: Publish ${{ matrix.id }} image
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs:
+      - release-security
       - build-app-candidate
       - smoke-app-native
       - release-preflight
@@ -1689,6 +1861,12 @@ jobs:
           merge-multiple: true
           path: app-evidence
 
+      - name: Download the security-admitted immutable candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: security-admitted-${{ matrix.id }}-${{ github.run_attempt }}
+          path: security-admitted
+
       - name: Admit both native manifests of the unchanged index
         id: release
         env:
@@ -1696,6 +1874,13 @@ jobs:
           EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
           LATEST_BEFORE: ${{ steps.existing.outputs.latest_before }}
         run: node scripts/release-app-native.mjs join app-evidence/app-candidate.json app-evidence >> "${GITHUB_OUTPUT}"
+
+      - name: Require the same security-admitted App index
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+          DIGEST: ${{ steps.release.outputs.digest }}
+        run: |
+          node -e 'const fs=require("node:fs"); const digest=fs.readFileSync(`security-admitted/${process.env.IMAGE_ID}.digest`,"utf8").trim(); if (digest !== process.env.DIGEST || !/^sha256:[a-f0-9]{64}$/.test(digest)) throw Error("Security-admitted index changed");'
 
       - name: Promote the smoked digest
         if: steps.existing.outputs.present == 'false'
@@ -1812,6 +1997,15 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, fs.readFileSync(`release-records/${imageId}.md`));
           NODE
 
+      - name: Download public source finding identifiers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: security-admitted-source-${{ github.run_attempt }}
+          path: security-source
+      - name: Retain public source and App finding identifiers
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+        run: cat "security-source/source.md" "security-admitted/${IMAGE_ID}.md" >> "release-records/${IMAGE_ID}.md"
       - name: Upload image release record
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -1823,6 +2017,7 @@ jobs:
     name: Publish ${{ matrix.id }} image
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
     needs:
+      - release-security
       - release-preflight
       - l0-l2
       - nano-core-e2e
@@ -1925,21 +2120,26 @@ jobs:
             --sha-tag "${SHA_TAG}" \
             --latest-tag "${LATEST_TAG}" >> "${GITHUB_OUTPUT}"
 
-      - name: Resolve the proved exact-P candidate digest
+      - name: Download the security-admitted immutable candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: security-admitted-${{ matrix.id }}-${{ github.run_attempt }}
+          path: security-admitted
+
+      - name: Consume the proved and security-admitted candidate digest
         id: release
         env:
           IMAGE_ID: ${{ matrix.id }}
           EXISTING_DIGEST: ${{ steps.existing.outputs.digest }}
           PRESENT: ${{ steps.existing.outputs.present }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${PRESENT}" = "true" ]; then
-            echo "digest=${EXISTING_DIGEST}" >> "${GITHUB_OUTPUT}"
-            echo "reused=true" >> "${GITHUB_OUTPUT}"
-          else
-            node scripts/release-candidate.mjs fetch --id "${IMAGE_ID}" --tag "${GITHUB_REF_NAME}" --directory "temp/candidate-${IMAGE_ID}" >> "${GITHUB_OUTPUT}"
-            echo "reused=false" >> "${GITHUB_OUTPUT}"
-          fi
+          node <<'NODE' >> "${GITHUB_OUTPUT}"
+          const fs = require('node:fs');
+          const digest = fs.readFileSync(`security-admitted/${process.env.IMAGE_ID}.digest`, 'utf8').trim();
+          if (!/^sha256:[a-f0-9]{64}$/.test(digest) || !['true', 'false'].includes(process.env.PRESENT)) throw Error('Invalid admitted identity');
+          if (process.env.PRESENT === 'true' && process.env.EXISTING_DIGEST !== digest) throw Error('Immutable identity changed after security admission');
+          console.log(`digest=${digest}\nreused=${process.env.PRESENT}`);
+          NODE
 
       - name: Promote the smoked digest
         if: steps.existing.outputs.present == 'false'
@@ -2065,6 +2265,10 @@ jobs:
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, fs.readFileSync(`release-records/${imageId}.md`));
           NODE
 
+      - name: Retain public image finding identifiers
+        env:
+          IMAGE_ID: ${{ matrix.id }}
+        run: cat "security-admitted/${IMAGE_ID}.md" >> "release-records/${IMAGE_ID}.md"
       - name: Upload image release record
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

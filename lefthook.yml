@@ -1,7 +1,7 @@
 pre-commit:
   commands:
     staged-checks:
-      run: pnpm run lint:staged
+      run: pnpm run lint:staged && pnpm run check:security --staged
 
 commit-msg:
   commands:

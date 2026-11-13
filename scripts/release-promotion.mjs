@@ -15,7 +15,12 @@ import {
   validateReleasePreflight,
   validateStablePromotionIdentity,
 } from './release-preflight.mjs';
-import { createReleaseManifest, publicationManifest } from './release-record.mjs';
+import {
+  createReleaseManifest,
+  publicationManifest,
+  readPublishedManifest,
+} from './release-record.mjs';
+import { canonical } from './release-safety.mjs';
 import { verifyNanoHostRelease } from './verify-nanohost-release.mjs';
 
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -249,6 +254,7 @@ async function main() {
       sha: { type: 'string' },
       output: { type: 'string' },
       'check-only': { type: 'boolean', default: false },
+      'security-manifest': { type: 'string' },
     },
   });
   const { repository, tag, sha } = args;
@@ -296,29 +302,23 @@ async function main() {
   const sourceDir = join(dir, 'source');
   mkdirSync(sourceDir);
   run('gh', ['release', 'download', sourceTag, '--repo', repository, '--dir', sourceDir]);
-  const manifest = JSON.parse(
-    readFileSync(join(sourceDir, `openkit-release-${sourceTag}.json`), 'utf8')
-  );
   const recordsDir = join(dir, 'records');
-  mkdirSync(recordsDir);
-  for (const image of manifest.images)
-    writeFileSync(
-      join(recordsDir, `${image.id}.json`),
-      JSON.stringify({
-        ...image,
-        prerelease: true,
-        tags: [sourceTag, sourceTag.slice(1), `sha-${sha.slice(0, 12)}`],
-      })
-    );
-  publicationManifest({
+  const manifest = readPublishedManifest({
     repoRoot: process.cwd(),
-    tag: sourceTag,
+    assetsDir: sourceDir,
+    recordsDir,
+    sourceTag,
     sha,
     repository,
-    recordsDir,
-    assetsDir: sourceDir,
-    verify: true,
   });
+  if (!args['check-only'] && repository === 'lingkaix/openkit')
+    requireFact(args['security-manifest'], 'read-only finding admission is required');
+  if (args['security-manifest'])
+    requireFact(
+      canonical(JSON.parse(readFileSync(args['security-manifest'], 'utf8'))) ===
+        canonical(manifest),
+      'source manifest changed after finding admission'
+    );
   verifyArchives(process.cwd(), sourceDir, sourceTag);
   const registry = manifest.images.map((image) => {
     const index = JSON.parse(

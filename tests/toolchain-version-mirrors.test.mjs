@@ -184,8 +184,8 @@ test('the tracked hooks activate the root any-placed gates', () => {
   );
   assert.match(
     lefthookConfig,
-    /^pre-commit:\s*[\s\S]*?^\s+run:\s*pnpm run lint:staged\s*$/mu,
-    'lefthook.yml does not activate pre-commit through the root lint:staged any-placement script'
+    /^pre-commit:\s*[\s\S]*?^\s+run:\s*pnpm run lint:staged && pnpm run check:security --staged\s*$/mu,
+    'lefthook.yml must run the root lint:staged gate before the staged security gate'
   );
   assert.doesNotMatch(
     lefthookConfig,

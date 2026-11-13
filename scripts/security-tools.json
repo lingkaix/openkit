@@ -14,5 +14,19 @@
         "member": "zizmor"
       }
     }
+  },
+  "osv-scanner": {
+    "version": "2.7.1",
+    "publishedAt": "2026-11-09T04:15:04Z",
+    "platforms": {
+      "amd64": {
+        "url": "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_amd64",
+        "sha256": "fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8"
+      },
+      "arm64": {
+        "url": "https://github.com/google/osv-scanner/releases/download/v2.7.1/osv-scanner_linux_arm64",
+        "sha256": "983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81"
+      }
+    }
   }
 }
