@@ -26016,3 +26016,1152 @@ describe('inert initial private Login exchange through the concrete backend sess
     }
   );
 });
+// Persistent Worker Volumes: a local close is not a fence for a shared active writer.
+it('fences same-account Login replacement until the actual shared survivor settles', async ({
+  signal,
+}) => {
+  const coreDb = createFactoryCoreDb();
+  const ownerUserId = ensureLocalUser(coreDb);
+  const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+  const workspaceId = DEMO_WORKSPACE_ID;
+  recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+  const mutation = new WorkspaceMutationAdmission();
+  store.setWorkspaceMutationAdmission(mutation);
+  const interception = new PolicyInterception();
+  const vault = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(coreDb.dataRoot, 'vault'),
+  });
+  vault.unlock({
+    masterKey: Buffer.from(
+      randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+      'hex'
+    ),
+  });
+  const handles: ReturnType<typeof openWorkspaceDb>[] = [];
+  const userHandles: ReturnType<typeof createTestUserDb>[] = [];
+  let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+  let client: ReturnType<typeof connectHttp2> | undefined;
+  const authority = createNanoHostTransportSessionAuthority();
+  const physicalReady = Promise.withResolvers<object>();
+  const server = createHttp2Server((request, response) => {
+    const physical = readNanoHostPhysicalConnectionContext(request);
+    if (physical) physicalReady.resolve(physical);
+    else physicalReady.reject(new Error('Shared fixture has no authenticated H2 connection.'));
+    response.writeHead(204).end();
+  });
+  const gates = new Map<
+    string,
+    {
+      entered: ReturnType<typeof Promise.withResolvers<harnessRecords.NanoHostHarnessCommand>>;
+      release: ReturnType<typeof Promise.withResolvers<void>>;
+    }
+  >();
+  const startsSeen = new Set<string>();
+  const registeredStarts = new Map<string, { attemptId: string; agentSessionId: string }>();
+  const ownedDisposals = new Map<string, { release: () => void; complete: () => void }>();
+  let closing = false;
+  const admissions: Promise<unknown>[] = [];
+  const dispatches: Array<{
+    queue: string;
+    public: Promise<Awaited<ReturnType<typeof schedulerOwners.runSchedulerDispatchLoop>>>;
+    claim:
+      | Promise<Awaited<ReturnType<typeof schedulerOwners.runSchedulerDispatchLoop>>>
+      | undefined;
+  }> = [];
+  const executions: Array<{
+    turnId: string;
+    attemptId: string | undefined;
+    promise: ReturnType<import('./types.js').TurnExecutor['startTurn']>;
+  }> = [];
+  const observers: Array<{ mockRestore(): void }> = [];
+  const finished = Promise.withResolvers<void>();
+  const unblock = () => {
+    closing = true;
+    for (const owned of ownedDisposals.values()) {
+      owned.release();
+      owned.complete();
+    }
+  };
+  signal.addEventListener('abort', unblock, { once: true });
+  onTestFinished(async () => {
+    unblock();
+    await finished.promise;
+  });
+  const accountId = randomUUID();
+  const token = (generation: number) =>
+    [
+      Buffer.from('{}').toString('base64'),
+      Buffer.from(
+        JSON.stringify({
+          generation,
+          'https://api.openai.com/auth': { chatgpt_account_id: accountId },
+        })
+      ).toString('base64'),
+      'synthetic-signature',
+    ].join('.');
+  const refreshTokens = new Set<string>();
+  let oauthCalls = 0;
+  const oauth = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+    const request = new Request(input, init);
+    const form = new URLSearchParams(await request.text());
+    expect(request.url === 'https://auth.openai.com/oauth/token' && request.method === 'POST').toBe(
+      true
+    );
+    expect(
+      form.get('grant_type') === 'refresh_token' &&
+        refreshTokens.delete(form.get('refresh_token') ?? '')
+    ).toBe(true);
+    oauthCalls += 1;
+    if (oauthCalls > 8)
+      throw new Error('Shared fixture exceeded its finite synthetic OAuth script.');
+    const refresh = randomUUID();
+    refreshTokens.add(refresh);
+    return Response.json({
+      access_token: token(oauthCalls),
+      refresh_token: refresh,
+      expires_in: 3600,
+    });
+  });
+  try {
+    const repositoryWorkspaceDb = (id: string) => {
+      const db = openWorkspaceDb(coreDb.dataRoot, id);
+      applyScopedMigrations(db);
+      handles.push(db);
+      return db;
+    };
+    const repositoryUserDb = (id: string) => {
+      const handle = createTestUserDb(coreDb.dataRoot, id);
+      userHandles.push(handle);
+      return handle.userDb;
+    };
+    const initial = createRuntimeConfigManager({ dataRoot: coreDb.dataRoot });
+    const inflightCommands = new WeakMap();
+    const operationInputs = {
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      repositoryWorkspaceDb,
+      repositoryUserDb,
+      runtimeConfigManager: initial,
+      policyInterception: interception,
+      vaultUnlockState: vault,
+      workspaceMutationAdmission: mutation,
+      inflightCommands,
+      pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
+    };
+    const invoke = createOperationInvocation(operationInputs);
+    const actor = {
+      kind: 'public' as const,
+      actor: { kind: 'local' as const, userId: ownerUserId },
+    };
+    const reviewed = async (label: string) => {
+      const refresh = randomUUID();
+      refreshTokens.add(refresh);
+      const reference = await invoke(
+        'vault.bootstrap-codex-auth',
+        {
+          authJsonBase64: Buffer.from(
+            JSON.stringify({
+              tokens: { access_token: token(0), refresh_token: refresh, account_id: accountId },
+            })
+          ).toString('base64'),
+        },
+        actor
+      );
+      const consent = await store.createThread(workspaceId, `Shared Login consent ${label}`);
+      const request = await invoke(
+        'vault.grant-request',
+        {
+          workspaceId,
+          threadId: consent.id,
+          requestId: randomUUID(),
+          terms: {
+            referenceId: reference.referenceId,
+            ownerScope: 'workspace',
+            lifetime: 'workspace',
+            injectionPath: 'runtime-token',
+            expiresAt: '2099-01-01T00:00:00.000Z',
+          },
+        },
+        actor
+      );
+      await invoke(
+        'approval.respond',
+        {
+          workspaceId,
+          threadId: request.threadId,
+          turnId: request.raisingTurnId,
+          approvalRequestId: request.approvalRequestId,
+          decision: 'granted',
+          requestId: randomUUID(),
+        },
+        actor
+      );
+      const grant = await invoke(
+        'vault.grant-issue',
+        { workspaceId, threadId: request.threadId, approvalRequestId: request.approvalRequestId },
+        actor
+      );
+      if (!grant.grantId) throw new Error('Reviewed shared Login grant was not issued.');
+      const grantId = grant.grantId;
+      expect(getVaultGrant(coreDb, grantId)).toMatchObject({
+        status: 'active',
+        vaultReferenceId: reference.referenceId,
+      });
+      return { ...reference, grantId };
+    };
+    const a = await reviewed('A');
+    const b = await reviewed('B');
+    expect(a.grantId).not.toBe(b.grantId);
+    const privateRoute = {
+      providerProfileId: 'native-login-metadata',
+      providerModel: 'gpt-5.1-codex',
+    };
+    const setup = createTestAgentSetup({
+      privateRoute,
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+      credentialDeclarations: [
+        {
+          id: 'reviewed-login',
+          requirementId: 'reviewed-login',
+          visibility: 'runtime-token',
+          consumer: 'codex-login',
+          vaultGrantId: a.grantId,
+        },
+      ],
+    });
+    const providerRegistry = new ProviderRegistry([
+      {
+        id: privateRoute.providerProfileId,
+        displayName: 'Shared synthetic Login metadata',
+        kind: 'oauth',
+        vendor: 'openai-codex',
+        models: [privateRoute.providerModel],
+        modelMetadata: {
+          [privateRoute.providerModel]: {
+            limit: { context: 128_000, output: 16_000 },
+            modalities: { input: ['text', 'image'], output: ['text'] },
+            reasoning: true,
+            tool_call: true,
+          },
+        },
+      },
+    ]);
+    setup.logicalModels.allowed = resolveHarnessLogicalModelCatalog(
+      createTestGatewayConfig({ privateRoute }),
+      providerRegistry,
+      setup.logicalModels.allowed.map((model) => model.id)
+    );
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const authored = AuthoredAgentConfigSchema.parse({
+      ...setup.manifest,
+      requiredFeatures: ['worker.harness-login.v1'],
+      sandbox: {
+        ...setup.manifest.sandbox,
+        credentialDeclarations: [
+          {
+            id: 'reviewed-login',
+            requirementId: 'reviewed-login',
+            purpose: 'Use reviewed synthetic Login.',
+            required: true,
+            visibility: 'runtime-token',
+            consumer: 'codex-login',
+          },
+        ],
+      },
+    });
+    const source = initial
+      .current()
+      .workspaceConfigs.find((value) => value.workspaceId === workspaceId);
+    const provider = providerRegistry.get(privateRoute.providerProfileId);
+    if (!source || !provider)
+      throw new Error('Shared fixture has no canonical configuration sources.');
+    const writeConfig = (file: string, value: unknown) => {
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, JSON.stringify(value));
+    };
+    // Initial fixture sources precede native publication; later preference changes use public CAS/reload.
+    const { OpenKitNanoHostConfigSchema } = await import('@openkit/config-schema');
+    const { readDataRootLayoutMarker } = await import('../storage/fs-layout.js');
+    const nanohost = OpenKitNanoHostConfigSchema.parse({
+      bind: { host: '127.0.0.1', port: 3101 },
+      credentialRef: 'fixture-shared-login',
+      credentialSlots: {
+        A: {
+          companionPath: join(coreDb.dataRoot, 'nanohost-fixture/a-companion'),
+          secretPath: join(coreDb.dataRoot, 'nanohost-fixture/a-secret'),
+        },
+        B: {
+          companionPath: join(coreDb.dataRoot, 'nanohost-fixture/b-companion'),
+          secretPath: join(coreDb.dataRoot, 'nanohost-fixture/b-secret'),
+        },
+      },
+      deploymentId: readDataRootLayoutMarker(coreDb.dataRoot).deploymentId,
+      identityId: 'identity_local',
+      maxActiveTurnsPerSandbox: 2,
+      rendezvousUrl: 'http://127.0.0.1:3101',
+    });
+    writeConfig(join(coreDb.dataRoot, 'config/server.jsonc'), {
+      ...initial.current().openKitConfig,
+      schemaVersion: 1,
+      nanohost,
+    });
+    writeConfig(join(coreDb.dataRoot, 'config/agents/codex.agent.jsonc'), authored);
+    writeConfig(join(coreDb.dataRoot, 'config/providers/login.provider.jsonc'), {
+      ...provider,
+      schemaVersion: 1,
+      extensions: { openkit: { subscriptionAccount: { accountSlotId: 'synthetic-unconfigured' } } },
+    });
+    writeConfig(
+      join(coreDb.dataRoot, 'config/gateway.jsonc'),
+      createTestGatewayConfig({ privateRoute })
+    );
+    writeConfig(
+      source.path,
+      WorkspaceConfigSchema.parse({
+        ...source.config,
+        workspace: {
+          ...source.config.workspace,
+          agents: [
+            {
+              agentId: authored.id,
+              credentialBindings: [{ requirementId: 'reviewed-login', vaultGrantId: a.grantId }],
+            },
+          ],
+        },
+      })
+    );
+    const manager = createRuntimeConfigManager({ dataRoot: coreDb.dataRoot });
+    const dispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
+    native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => manager.current(),
+      vaultBackend: () => vault.backend(),
+      policyInterception: () => interception,
+      workspaceMutationAdmission: mutation,
+      nanoHostSessionDispatch: dispatch,
+    });
+    const f = native;
+    if (!dispatch.bindHarnessLogin || !dispatch.harnessLogin || !dispatch.readiness)
+      throw new Error('Shared fixture private dispatcher is absent.');
+    dispatch.bindHarnessLogin(
+      createHarnessLoginExchange({
+        operations: { ...operationInputs, runtimeConfigManager: manager },
+        gateway: f.workerControlGateway,
+        runtime: f.runtime,
+      })
+    );
+    await manager.bindNativePolicyPublication(coreDb);
+    const target = await recordTestNativeRuntimeTarget(coreDb);
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const address = server.address();
+    if (!address || typeof address === 'string')
+      throw new Error('Shared fixture has no H2 address.');
+    client = connectHttp2(`http://127.0.0.1:${address.port}`);
+    const stream = client.request({ ':method': 'POST', ':path': '/' });
+    const streamEnded = once(stream, 'end');
+    stream.resume();
+    stream.end();
+    const physical = await physicalReady.promise;
+    await streamEnded;
+    authority.admit({
+      identityId: target.identityId,
+      connectionGeneration: target.connectionGeneration,
+      physicalConnection: physical,
+    });
+    await dispatch.readiness(
+      physical,
+      Buffer.from(JSON.stringify({ physicalEpoch: target.physicalEpoch })),
+      {
+        coreDb,
+        targetId: target.targetId,
+        deploymentId: target.deploymentId,
+        identityId: target.identityId,
+      }
+    );
+    const db = repositoryWorkspaceDb(workspaceId);
+    const createAdmission = async (
+      threadId: string,
+      label: string,
+      choice?: SchedulerWorkerStorageChoice
+    ) => {
+      if (closing) throw new Error('Shared fixture disposal blocks new admissions.');
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:shared-login-${randomUUID()}`,
+        requestId: randomUUID(),
+        requestedAgentId: authored.id,
+        workspaceId,
+        threadId,
+        turnId: testEntityId('tu', randomUUID()),
+        turnInput: label,
+        ...(choice ? { workerStorageChoice: choice } : {}),
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      if (closing)
+        throw new Error('Shared fixture disposal blocks admission progression after publication.');
+      gates.set(entry.turnId, {
+        entered: Promise.withResolvers<harnessRecords.NanoHostHarnessCommand>(),
+        release: Promise.withResolvers<void>(),
+      });
+      return entry;
+    };
+    const originalDispatch = schedulerOwners.runSchedulerDispatchLoop;
+    if (vi.isMockFunction(originalDispatch))
+      throw new Error('Shared Scheduler pass-through unexpectedly already has an observer.');
+    observers.push(
+      vi.spyOn(schedulerOwners, 'runSchedulerDispatchLoop').mockImplementation((input) => {
+        const result = originalDispatch(input);
+        // The real loop installs its full claim synchronously before its first public race.
+        const claims = schedulerOwners.getSchedulerPreparationClaims(coreDb);
+        for (const [queue, claim] of claims)
+          if (!dispatches.some((job) => job.claim === claim)) {
+            dispatches.push({ queue, public: result, claim });
+            void claim.catch(() => undefined);
+          }
+        void result.catch(() => undefined);
+        return result;
+      })
+    );
+    const startOwner = f.executor.startTurn;
+    if (!vi.isMockFunction(startOwner))
+      throw new Error('The native fixture start observer is absent.');
+    const originalStart: typeof f.executor.startTurn | undefined =
+      startOwner.getMockImplementation();
+    if (!originalStart) throw new Error('The native fixture start implementation is absent.');
+    // Capture the immutable implementation, never the mutable mock. Native restore owns this spy.
+    startOwner.mockImplementation((...args: Parameters<typeof f.executor.startTurn>) => {
+      const result = originalStart.apply(f.executor, args);
+      executions.push({ turnId: args[1], attemptId: args[3]?.attemptId, promise: result });
+      void result.catch(() => undefined);
+      return result;
+    });
+    if (vi.isMockFunction(f.runtime.acceptNanoHostHarnessCommand))
+      throw new Error('Shared command acceptance unexpectedly already has an observer.');
+    const originalAccept = f.runtime.acceptNanoHostHarnessCommand.bind(f.runtime);
+    observers.push(
+      vi.spyOn(f.runtime, 'acceptNanoHostHarnessCommand').mockImplementation(async (...args) => {
+        const wire = await originalAccept(...args);
+        if (wire?.operation === 'turn.start') {
+          const turnId = String(wire.body.turnId);
+          const gate = gates.get(turnId);
+          const registration = registeredStarts.get(turnId);
+          if (
+            !gate ||
+            !registration ||
+            wire.body.leaseId !== registration.attemptId ||
+            wire.body.agentSessionId !== registration.agentSessionId
+          )
+            throw new Error('Unowned shared Login start command.');
+          // The real fixture entered this execution before its real owned wire could be returned.
+          const completion = f.executionFor(turnId).completion;
+          const owned = {
+            release: () => gate.release.resolve(),
+            complete: () => completion.resolve(),
+          };
+          ownedDisposals.set(turnId, owned);
+          startsSeen.add(turnId);
+          gate.entered.resolve(wire);
+          if (closing) {
+            owned.release();
+            owned.complete();
+          }
+          await gate.release.promise;
+        }
+        return wire;
+      })
+    );
+    const loginCall = (
+      wire: harnessRecords.NanoHostHarnessCommand,
+      body: Record<string, unknown>
+    ) => {
+      const context = HarnessLoginContextSchema.parse({
+        workspaceId: wire.body.workspaceId,
+        threadId: wire.body.threadId,
+        agentSessionId: wire.body.agentSessionId,
+        agentSessionRuntimeBindingId: wire.body.agentSessionRuntimeBindingId,
+        packageSnapshotId: wire.body.packageSnapshotId,
+        turnId: wire.body.turnId,
+        leaseId: wire.body.leaseId,
+        turnSequence: wire.body.turnSequence,
+        runtimeTargetId: target.targetId,
+        physicalEpoch: target.physicalEpoch,
+        connectionGeneration: target.connectionGeneration,
+      });
+      const {
+        runtimeTargetId: _target,
+        physicalEpoch: _epoch,
+        connectionGeneration: _generation,
+        ...lineage
+      } = context;
+      return dispatch.harnessLogin!(
+        physical,
+        new Request('http://module.invalid/worker-control/harness/login', {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${String(wire.body.workerControlToken)}`,
+          },
+          body: JSON.stringify({ ...lineage, ...body }),
+        })
+      );
+    };
+    const privateLogin = (threadId: string) =>
+      NativeThreadLoginSchema.parse(
+        readProduct(db.sqlite, { kind: 'workspace', workspaceId }, 'thread', threadId)!.record.login
+      );
+    const exchange = async (
+      wire: harnessRecords.NanoHostHarnessCommand,
+      grantId: string,
+      reason: 'activate' | 'refresh'
+    ) => {
+      const response = await loginCall(wire, { kind: 'acquire', reason });
+      expect(response.status).toBe(200);
+      const access = (await response.json()) as {
+        accessToken: string;
+        accountId: string;
+        planType: string | null;
+        receiptId: string;
+        materialGeneration: number;
+      };
+      expect(Object.keys(access).sort()).toEqual([
+        'accessToken',
+        'accountId',
+        'materialGeneration',
+        'planType',
+        'receiptId',
+      ]);
+      expect(access.accountId === accountId && access.accessToken.length > 0).toBe(true);
+      const complete = await loginCall(wire, {
+        kind: 'complete',
+        receiptId: access.receiptId,
+        materialGeneration: access.materialGeneration,
+      });
+      expect(complete.status).toBe(204);
+      expect(listVaultInjectionReceipts(coreDb)).toContainEqual(
+        expect.objectContaining({
+          receiptId: access.receiptId,
+          grantId,
+          agentSessionId: wire.body.agentSessionId,
+          planId: `plan_${String(wire.body.packageSnapshotId)}_reviewed-login`,
+          revocationStatus: 'active',
+        })
+      );
+      const uses = listVaultUseRecords(db).filter(
+        (use) =>
+          use.receiptId === access.receiptId &&
+          use.materialVersion === access.materialGeneration &&
+          use.outcome === 'succeeded'
+      );
+      expect(uses.length > 0).toBe(true);
+      expect(
+        uses.every(
+          (use) =>
+            use.grantId === grantId &&
+            use.agentSessionId === wire.body.agentSessionId &&
+            use.planId === `plan_${String(wire.body.packageSnapshotId)}_reviewed-login` &&
+            listWorkspaceAuditEvents(db, workspaceId, coreDb).some(
+              (audit) => audit.id === use.auditEventId && audit.outcome === 'succeeded'
+            )
+        )
+      ).toBe(true);
+      expect(privateLogin(String(wire.body.threadId))).toMatchObject({
+        referenceId: getVaultGrant(coreDb, grantId)!.vaultReferenceId,
+      });
+      return { receiptId: access.receiptId, materialGeneration: access.materialGeneration };
+    };
+    const start = async (entry: Awaited<ReturnType<typeof createAdmission>>) => {
+      if (closing) throw new Error('Shared fixture disposal blocks new admissions.');
+      const attemptId = testEntityId('attempt', randomUUID());
+      const sessionId = testEntityId('as', randomUUID());
+      registeredStarts.set(entry.turnId, { attemptId, agentSessionId: sessionId });
+      const admission = f.admitTurn(entry, {
+        attemptId,
+        agentSessionId: sessionId,
+        candidateAgentSessionId: sessionId,
+      });
+      admissions.push(admission);
+      void admission.catch(() => undefined);
+      const wire = await Promise.race([
+        gates.get(entry.turnId)!.entered.promise,
+        admission.then(() => {
+          throw new Error('Native admission returned before held Login start.');
+        }),
+      ]);
+      if (closing) throw new Error('Shared fixture disposal interrupted pending startup.');
+      const job = dispatches.find(
+        (value) => value.queue === entry.queueEntryId && value.claim && !usedClaims.has(value.claim)
+      );
+      if (!job?.claim) throw new Error('Original shared admission claim is unavailable.');
+      usedClaims.add(job.claim);
+      const pkg = requireAgentEnvironmentPackageSnapshot(
+        db,
+        workspaceId,
+        String(wire.body.packageSnapshotId)
+      ).snapshot;
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
+        turnId: entry.turnId,
+        agentSessionId: sessionId,
+        inputRef: pkg.snapshotId,
+        phase: 'open',
+      });
+      return { entry, wire, pkg, attemptId, admission, claim: job.claim };
+    };
+    const usedClaims = new Set<
+      Promise<Awaited<ReturnType<typeof schedulerOwners.runSchedulerDispatchLoop>>>
+    >();
+    const accept = async (resident: Awaited<ReturnType<typeof start>>) => {
+      gates.get(resident.entry.turnId)!.release.resolve();
+      return await resident.admission;
+    };
+    const finish = async (
+      resident: Awaited<ReturnType<typeof start>>,
+      admitted: Awaited<ReturnType<typeof accept>>
+    ) => {
+      await admitted.complete();
+      await resident.claim;
+      const owned = executions.filter((job) => job.attemptId === resident.attemptId);
+      expect(owned).toHaveLength(1);
+      await owned[0]!.promise;
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, resident.attemptId).phase).toBe(
+        'closed'
+      );
+      expect(store.getTurnById(resident.entry.turnId).status).toBe('completed');
+    };
+    const threadA = await store.createThread(workspaceId, 'Shared Login predecessor');
+    const first = await start(await createAdmission(threadA.id, 'Establish Login A'));
+    const initialReceipt = await exchange(first.wire, a.grantId, 'activate');
+    const admittedA = await accept(first);
+    await finish(first, admittedA);
+    const oldSession = store.getAgentSession(first.pkg.scope.agentSessionId);
+    if (!oldSession.retainedStorage) throw new Error('Canonical A attachment is absent.');
+    const oldStorage = oldSession.retainedStorage;
+    const oldGeneration = oldStorage.attachmentGeneration;
+    if (typeof oldGeneration !== 'number' || oldGeneration < 1)
+      throw new Error('Canonical A attachment generation is absent.');
+    const attached = getWorkerStorageBinding(coreDb, oldStorage)!;
+    const threadS = await store.createThread(workspaceId, 'Independent shared Login survivor');
+    const survivor = await start(
+      await createAdmission(threadS.id, 'Establish independent survivor', {
+        kind: 'selected',
+        storageRef: oldStorage.storageRef,
+        expectedRevision: attached.revision,
+        purpose: 'work',
+        goalId: null,
+        taskId: null,
+      })
+    );
+    await exchange(survivor.wire, a.grantId, 'activate');
+    const admittedS = await accept(survivor);
+    const survivorStorage = store.getAgentSession(survivor.pkg.scope.agentSessionId)
+      .retainedStorage!;
+    expect(survivorStorage).toMatchObject({
+      storageRef: oldStorage.storageRef,
+      attachmentGeneration: oldStorage.attachmentGeneration,
+    });
+    expect(survivorStorage.workSlotRef).not.toBe(oldStorage.workSlotRef);
+    const nativeRows = () =>
+      coreDb.sqlite
+        .prepare(
+          `SELECT b.agent_session_id AS sessionId, b.agent_session_runtime_binding_id AS bindingId, b.lifecycle_state AS state, b.current_attempt_id AS attemptId, h.sandbox_runtime_id AS sandboxId, s.sandbox_binding_ref AS sandboxBindingRef, s.origin_physical_epoch AS epoch FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id JOIN sandbox_runtime_records s ON s.sandbox_runtime_id=h.sandbox_runtime_id WHERE b.agent_session_id IN (?,?) ORDER BY b.agent_session_id`
+        )
+        .all(first.pkg.scope.agentSessionId, survivor.pkg.scope.agentSessionId) as Array<{
+        sessionId: string;
+        bindingId: string;
+        state: string;
+        attemptId: string | null;
+        sandboxId: string;
+        sandboxBindingRef: string;
+        epoch: string;
+      }>;
+    const geometry = nativeRows();
+    expect(geometry).toHaveLength(2);
+    expect(new Set(geometry.map((row) => row.bindingId)).size).toBe(2);
+    expect(new Set(geometry.map((row) => row.sandboxId)).size).toBe(1);
+    expect(
+      geometry.every(
+        (row) =>
+          row.epoch === target.physicalEpoch &&
+          row.sandboxBindingRef ===
+            getWorkerStorageBinding(coreDb, oldStorage)!.currentSandboxBindingRef
+      )
+    ).toBe(true);
+    expect(
+      geometry.find((row) => row.sessionId === survivor.pkg.scope.agentSessionId)
+    ).toMatchObject({ state: 'active', attemptId: survivor.attemptId });
+    expect(f.runtime.isTurnExecutionActive(survivor.entry.turnId)).toBe(true);
+    expect(f.effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
+    expect(first.pkg.credentials.declarations).toEqual(survivor.pkg.credentials.declarations);
+    expect(first.pkg.extensions).toMatchObject({
+      openkit: { workerStorage: { workSlotRef: oldStorage.workSlotRef } },
+    });
+    expect(survivor.pkg.extensions).toMatchObject({
+      openkit: { workerStorage: { workSlotRef: survivorStorage.workSlotRef } },
+    });
+    const cohortStorage = getWorkerStorageBinding(coreDb, oldStorage)!;
+    expect(cohortStorage.state).toBe('attached');
+    expect(cohortStorage.contributors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          threadId: threadA.id,
+          responsibleUserId: ownerUserId,
+          workSlotRef: oldStorage.workSlotRef,
+          attachmentGeneration: oldStorage.attachmentGeneration,
+        }),
+        expect.objectContaining({
+          threadId: threadS.id,
+          responsibleUserId: ownerUserId,
+          workSlotRef: survivorStorage.workSlotRef,
+          attachmentGeneration: survivorStorage.attachmentGeneration,
+        }),
+      ])
+    );
+    expect(cohortStorage.targets.length > 0).toBe(true);
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, survivor.attemptId)).toMatchObject({
+      phase: 'open',
+      disposition: 'accepted',
+      inputRef: survivor.pkg.snapshotId,
+    });
+    // Prove a real spare compatible operating slot, not only a configured value.
+    const sandboxId = geometry[0]!.sandboxId;
+    const operating = coreDb.sqlite
+      .prepare(
+        `SELECT s.sandbox_binding_ref AS sandboxBindingRef, s.max_active_turns AS sandboxCapacity, h.harness_instance_id AS harnessId, h.max_active_turns AS harnessCapacity, h.active_turn_count AS activeCount FROM sandbox_runtime_records s JOIN harness_instance_records h ON h.sandbox_runtime_id=s.sandbox_runtime_id WHERE s.sandbox_runtime_id=? ORDER BY h.harness_instance_id`
+      )
+      .all(sandboxId) as Array<{
+      sandboxBindingRef: string;
+      sandboxCapacity: number;
+      harnessId: string;
+      harnessCapacity: number;
+      activeCount: number;
+    }>;
+    expect(operating.length > 0).toBe(true);
+    expect(
+      operating.every(
+        (row) =>
+          row.sandboxBindingRef === cohortStorage.currentSandboxBindingRef &&
+          row.sandboxCapacity === 2 &&
+          row.harnessCapacity === 2
+      )
+    ).toBe(true);
+    expect(operating.reduce((count, row) => count + row.activeCount, 0)).toBe(1);
+    const activeOwners = coreDb.sqlite
+      .prepare(
+        `SELECT b.agent_session_id AS sessionId, b.agent_session_runtime_binding_id AS bindingId, b.current_attempt_id AS attemptId, h.harness_instance_id AS harnessId FROM agent_session_runtime_bindings b JOIN harness_instance_records h ON h.harness_instance_id=b.harness_instance_id WHERE h.sandbox_runtime_id=? AND b.lifecycle_state='active' ORDER BY b.agent_session_runtime_binding_id`
+      )
+      .all(sandboxId) as Array<{
+      sessionId: string;
+      bindingId: string;
+      attemptId: string;
+      harnessId: string;
+    }>;
+    expect(activeOwners).toEqual([
+      {
+        sessionId: survivor.pkg.scope.agentSessionId,
+        bindingId: geometry.find((row) => row.sessionId === survivor.pkg.scope.agentSessionId)!
+          .bindingId,
+        attemptId: survivor.attemptId,
+        harnessId: expect.any(String),
+      },
+    ]);
+    expect(
+      operating.some((row) => row.harnessId === activeOwners[0]!.harnessId && row.activeCount === 1)
+    ).toBe(true);
+    const heldOwners = coreDb.sqlite
+      .prepare(
+        `SELECT a.attempt_id AS attemptId, a.agent_session_id AS sessionId, a.input_ref AS packageSnapshotId FROM scheduler_execution_attempts a JOIN worker_backend_sessions w ON w.attempt_id=a.attempt_id WHERE a.backend_id='nanohost' AND w.runtime_target_id=? AND w.origin_physical_epoch=? AND a.phase<>'closed' ORDER BY a.attempt_id`
+      )
+      .all(cohortStorage.runtimeTargetId, geometry[0]!.epoch);
+    expect(heldOwners).toEqual([
+      {
+        attemptId: survivor.attemptId,
+        sessionId: survivor.pkg.scope.agentSessionId,
+        packageSnapshotId: survivor.pkg.snapshotId,
+      },
+    ]);
+    const app = appOwner.createApp({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      mode: 'local',
+      localUserId: ownerUserId,
+      runtimeConfigManager: manager,
+      turnExecutor: f.executor,
+      workerControlGateway: f.workerControlGateway,
+      workspaceMutationAdmission: mutation,
+    });
+    const fileId = `workspaces/${workspaceId}/workspace.jsonc`;
+    const read = await app.request(...operationRequest('runtime.file-read', { id: fileId }));
+    expect(read.status).toBe(200);
+    const file = (await read.json()) as { file: { revision: string }; content: string };
+    const document = JSON.parse(file.content);
+    document.workspace.agents[0].credentialBindings[0].vaultGrantId = b.grantId;
+    const captured = manager.current();
+    const save = await app.request(
+      ...operationRequest(
+        'runtime.file-update',
+        {},
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            id: fileId,
+            kind: 'workspace',
+            expectedRevision: file.file.revision,
+            content: JSON.stringify(document),
+          }),
+        }
+      )
+    );
+    expect(save.status).toBe(200);
+    expect(manager.current()).toBe(captured);
+    const reload = await app.request(
+      ...operationRequest('runtime.reload', {}, { body: JSON.stringify({ mode: 'safe' }) })
+    );
+    expect(reload.status).toBe(200);
+    expect(await reload.json()).toMatchObject({ status: 'applied' });
+    expect(manager.current().version).not.toBe(captured.version);
+    const continuation = await createAdmission(
+      threadA.id,
+      'Replace A only after the real survivor settles'
+    );
+    expect(continuation.workerStorageChoice).toBeNull();
+    const backend = vault.backend();
+    const actualBinding = f.executor.credentialBindingOperation;
+    if (!actualBinding) throw new Error('The actual governed binding operation is absent.');
+    if (vi.isMockFunction(actualBinding))
+      throw new Error('Shared binding pass-through unexpectedly already has an observer.');
+    const binding = actualBinding.bind(f.executor);
+    const replacements: Parameters<typeof binding>[1][] = [];
+    observers.push(
+      vi.spyOn(f.executor, 'credentialBindingOperation').mockImplementation((...args) => {
+        if (args[1].action === 'replace') replacements.push(args[1]);
+        return binding(...args);
+      })
+    );
+    const resolutions = vi.spyOn(backend, 'resolve');
+    observers.push(resolutions);
+    const rotations = vi.spyOn(backend, 'rotate');
+    observers.push(rotations);
+    const requiredContributorRefs = new Set(
+      cohortStorage.contributors
+        .filter(
+          (contributor) =>
+            contributor.attachmentGeneration === oldGeneration &&
+            [threadA.id, threadS.id].includes(contributor.threadId)
+        )
+        .map((contributor) => contributor.contributorRef)
+    );
+    const requiredAttachment = () => {
+      const storage = getWorkerStorageBinding(coreDb, oldStorage);
+      if (!storage) throw new Error('Shared attachment disappeared during the deciding interval.');
+      return {
+        storageRef: storage.storageRef,
+        state: storage.state,
+        currentSandboxBindingRef: storage.currentSandboxBindingRef,
+        runtimeTargetId: storage.runtimeTargetId,
+        deploymentId: storage.deploymentId,
+        workspaceId: storage.workspaceId,
+        scopeDigest: storage.scopeDigest,
+        attachmentGeneration: storage.attachmentGeneration,
+        purgedAt: storage.purgedAt,
+        layout: storage.layout,
+        layoutDigest: storage.layoutDigest,
+        targets: storage.targets,
+        contributors: storage.contributors
+          .filter((contributor) => requiredContributorRefs.has(contributor.contributorRef))
+          .map((contributor) => ({
+            contributorRef: contributor.contributorRef,
+            storageRef: contributor.storageRef,
+            attachmentGeneration: contributor.attachmentGeneration,
+            workspaceId: contributor.workspaceId,
+            threadId: contributor.threadId,
+            workSlotRef: contributor.workSlotRef,
+            responsibleUserId: contributor.responsibleUserId,
+            purpose: contributor.purpose,
+            goalId: contributor.goalId,
+            taskId: contributor.taskId,
+          })),
+      };
+    };
+    const snapshot = () => ({
+      survivor: nativeRows().find((row) => row.sessionId === survivor.pkg.scope.agentSessionId),
+      storage: requiredAttachment(),
+      affinity: privateLogin(threadS.id),
+      receipts: listVaultInjectionReceipts(coreDb).filter(
+        (receipt) => receipt.agentSessionId === survivor.pkg.scope.agentSessionId
+      ),
+      bUses: listVaultUseRecords(db).filter((use) => use.grantId === b.grantId),
+      bMaterial: getVaultReference(coreDb, b.referenceId),
+      physical: f.effects.filter((effect) =>
+        ['sandbox.delete', 'sandbox.create'].includes(effect.kind)
+      ).length,
+    });
+    const before = snapshot();
+    const busyAttempt = testEntityId('attempt', randomUUID());
+    const configuration = manager.current();
+    const busy = await schedulerOwners.runSchedulerDispatchLoop({
+      coreDb,
+      store,
+      turnExecutor: f.executor,
+      executionBackend: f.executor.executionBackend!,
+      ...configuration,
+      maxDispatches: 1,
+      createAttemptId: () => busyAttempt,
+      createAgentSessionId: () => testEntityId('as', randomUUID()),
+    });
+    expect(busy).toMatchObject({
+      startedTurns: [],
+      terminalResult: { status: 'queued', reason: 'backend-busy' },
+    });
+    const busyJob = dispatches.find((job) => job.queue === continuation.queueEntryId);
+    if (!busyJob?.claim) throw new Error('Busy pass did not retain its installed original claim.');
+    usedClaims.add(busyJob.claim);
+    await busyJob.claim;
+    await Promise.allSettled(
+      executions.filter((job) => job.attemptId === busyAttempt).map((job) => job.promise)
+    );
+    expect(
+      attempts.isSchedulerExecutionBusyRefusal(
+        attempts.requireSchedulerExecutionAttempt(coreDb, busyAttempt)
+      )
+    ).toBe(true);
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, busyAttempt).phase).toBe('closed');
+    expect(isDeepStrictEqual(snapshot(), before)).toBe(true);
+    expect(resolutions).not.toHaveBeenCalled();
+    expect(rotations).not.toHaveBeenCalled();
+    expect(f.runtime.isTurnExecutionActive(survivor.entry.turnId)).toBe(true);
+    expect(startsSeen.has(continuation.turnId)).toBe(false);
+    // Independent legitimate use is outside the deciding no-effects interval.
+    const refresh = await exchange(survivor.wire, a.grantId, 'refresh');
+    expect(refresh.materialGeneration).toBeGreaterThan(0);
+    expect(privateLogin(threadS.id)).toMatchObject({ referenceId: a.referenceId });
+    await finish(survivor, admittedS);
+    const readPredecessorHistory = () => {
+      const uses = listVaultUseRecords(db).filter((use) => use.vaultReferenceId === a.referenceId);
+      return {
+        receipts: listVaultInjectionReceipts(coreDb).filter(
+          (receipt) => receipt.grantId === a.grantId
+        ),
+        uses,
+        audits: listWorkspaceAuditEvents(db, workspaceId, coreDb).filter((audit) =>
+          uses.some((use) => use.auditEventId === audit.id)
+        ),
+      };
+    };
+    const predecessorHistory = readPredecessorHistory();
+    const beforeRetirement = {
+      resolutions: resolutions.mock.calls.length,
+      rotations: rotations.mock.calls.length,
+      oauthCalls,
+      uses: listVaultUseRecords(db).filter((use) => use.grantId === b.grantId),
+      receipts: listVaultInjectionReceipts(coreDb).filter(
+        (receipt) => receipt.grantId === b.grantId
+      ),
+      material: getVaultReference(coreDb, b.referenceId),
+    };
+    // The same queued request may earn A's close, then refuse its changed frozen affinity.
+    // This is a failed request, not activation or an automatic retry.
+    const retirementAttempt = testEntityId('attempt', randomUUID());
+    const retirement = schedulerOwners.runSchedulerDispatchLoop({
+      coreDb,
+      store,
+      turnExecutor: f.executor,
+      executionBackend: f.executor.executionBackend!,
+      ...manager.current(),
+      maxDispatches: 1,
+      createAttemptId: () => retirementAttempt,
+      createAgentSessionId: () => testEntityId('as', randomUUID()),
+    });
+    const retirementJob = dispatches.find(
+      (job) => job.queue === continuation.queueEntryId && job.claim && !usedClaims.has(job.claim)
+    );
+    if (!retirementJob?.claim)
+      throw new Error('Original retirement dispatch claim is unavailable.');
+    usedClaims.add(retirementJob.claim);
+    expect(retirementAttempt).not.toBe(busyAttempt);
+    expect(retirementJob.claim).not.toBe(busyJob.claim);
+    const refusal = await retirement.then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    expect(refusal).toMatchObject({
+      code: 'recovery_required',
+      message: 'The AgentSession runtime binding changed after scheduler dispatch.',
+    });
+    await expect(retirementJob.claim).rejects.toBe(refusal);
+    await Promise.allSettled(
+      executions.filter((job) => job.attemptId === retirementAttempt).map((job) => job.promise)
+    );
+    expect(attempts.requireSchedulerExecutionAttempt(coreDb, retirementAttempt)).toMatchObject({
+      phase: 'closed',
+      queueEntryId: continuation.queueEntryId,
+      turnId: continuation.turnId,
+    });
+    expect(store.getTurnById(continuation.turnId).status).toBe('failed');
+    expect(startsSeen.has(continuation.turnId)).toBe(false);
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
+        .get(first.pkg.scope.agentSessionId)
+    ).toBeUndefined();
+    const departed = privateLogin(threadA.id);
+    expect(departed.referenceId).toBeNull();
+    expect(departed.lastLeftAt[a.referenceId]).toEqual(expect.any(String));
+    expect(readPredecessorHistory()).toEqual(predecessorHistory);
+    expect({
+      resolutions: resolutions.mock.calls.length,
+      rotations: rotations.mock.calls.length,
+      oauthCalls,
+      uses: listVaultUseRecords(db).filter((use) => use.grantId === b.grantId),
+      receipts: listVaultInjectionReceipts(coreDb).filter(
+        (receipt) => receipt.grantId === b.grantId
+      ),
+      material: getVaultReference(coreDb, b.referenceId),
+    }).toEqual(beforeRetirement);
+    expect(replacements).toHaveLength(0);
+    // A genuinely new explicit request composes after the acknowledged departure.
+    const freshRequest = await createAdmission(
+      threadA.id,
+      'New explicit B request after A retirement'
+    );
+    expect(freshRequest.requestId).not.toBe(continuation.requestId);
+    expect(freshRequest.queueEntryId).not.toBe(continuation.queueEntryId);
+    expect(freshRequest.turnId).not.toBe(continuation.turnId);
+    expect(freshRequest.workerStorageChoice).toBeNull();
+    const next = await start(freshRequest);
+    expect(next.attemptId).not.toBe(busyAttempt);
+    expect(next.claim).not.toBe(busyJob.claim);
+    expect(next.attemptId).not.toBe(retirementAttempt);
+    expect(next.claim).not.toBe(retirementJob.claim);
+    expect(next.pkg.scope.threadId).toBe(threadA.id);
+    expect(next.pkg.credentials.declarations).toEqual([
+      {
+        id: 'reviewed-login',
+        requirementId: 'reviewed-login',
+        visibility: 'runtime-token',
+        consumer: 'codex-login',
+        vaultGrantId: b.grantId,
+      },
+    ]);
+    expect(next.pkg.extensions).toMatchObject({
+      openkit: { workerStorage: { workSlotRef: oldStorage.workSlotRef } },
+    });
+    const nextStorage = store.getAgentSession(next.pkg.scope.agentSessionId).retainedStorage!;
+    expect(nextStorage).toMatchObject({
+      storageRef: oldStorage.storageRef,
+      workSlotRef: oldStorage.workSlotRef,
+    });
+    expect(nextStorage.attachmentGeneration).toBeGreaterThan(oldGeneration);
+    expect(f.effects.filter((effect) => effect.kind === 'sandbox.delete').length > 0).toBe(true);
+    const delivered = await exchange(next.wire, b.grantId, 'activate');
+    const admittedNext = await accept(next);
+    await finish(next, admittedNext);
+    expect(
+      requireAgentEnvironmentPackageSnapshot(db, workspaceId, first.pkg.snapshotId).snapshot
+    ).toEqual(first.pkg);
+    expect(
+      requireAgentEnvironmentPackageSnapshot(db, workspaceId, survivor.pkg.snapshotId).snapshot
+    ).toEqual(survivor.pkg);
+    expect(getWorkerStorageBinding(coreDb, oldStorage)?.targets).toEqual(before.storage!.targets);
+    expect(store.getAgentSession(survivor.pkg.scope.agentSessionId).retainedStorage).toEqual(
+      survivorStorage
+    );
+    expect(replacements).toHaveLength(1);
+    const activation = replacements[0]!;
+    expect(activation).toMatchObject({
+      action: 'replace',
+      workspaceId,
+      threadId: threadA.id,
+      receiptId: delivered.receiptId,
+      coreAuthority: {
+        workspaceId,
+        requester: {
+          kind: 'worker',
+          lineage: {
+            workspaceId,
+            threadId: threadA.id,
+            turnId: next.entry.turnId,
+            agentSessionId: next.pkg.scope.agentSessionId,
+            packageSnapshotId: next.pkg.snapshotId,
+          },
+        },
+      },
+    });
+    expect(activation.expectedReceiptId).toBe(initialReceipt.receiptId);
+    expect(activation.policyProof).toBeDefined();
+    const proof = activation.policyProof!;
+    expect(policyDigest(proof.document)).toBe(proof.decision.policyRevision);
+    expect(policyProposalDigest(proof.proposal)).toBe(proof.decision.proposalDigest);
+    expect(proof.proposal).toMatchObject({
+      operation: 'vault.binding-replace',
+      workspaceId,
+      inputReferences: {
+        grantId: b.grantId,
+        receiptId: delivered.receiptId,
+        replacementPreviousReceiptId: initialReceipt.receiptId,
+        packageSnapshotId: next.pkg.snapshotId,
+        requestId: activation.requestId,
+      },
+    });
+    const decisions = listExportableWorkspacePermissionDecisions(db, workspaceId).filter(
+      (decision) =>
+        decision.enforcementPoint === 'vault.binding-replace@decide' &&
+        decision.mediation?.role === 'final'
+    );
+    expect(decisions).toEqual([
+      expect.objectContaining({
+        result: 'allow',
+        decisionId: proof.decision.decisionId,
+        policySnapshotId: proof.decision.policyRevision,
+        contextSummary: expect.objectContaining({ requestId: activation.requestId }),
+        mediation: expect.objectContaining({
+          proposalDigest: proof.decision.proposalDigest,
+          authorizationRevision: proof.decision.authorizationRevision,
+          subject: proof.proposal.subject,
+        }),
+      }),
+    ]);
+    expect(
+      listWorkspaceAuditEvents(db, workspaceId, coreDb).filter(
+        (audit) =>
+          audit.action === 'vault.binding-replace' &&
+          audit.outcome === 'succeeded' &&
+          audit.requestId === activation.requestId
+      )
+    ).toEqual([
+      expect.objectContaining({
+        actor: proof.proposal.subject.actor,
+        resource: `workspace:${workspaceId}`,
+      }),
+    ]);
+  } finally {
+    try {
+      unblock();
+      await Promise.allSettled(admissions);
+      await Promise.allSettled(executions.map((job) => job.promise));
+      await Promise.allSettled(
+        dispatches.flatMap((job) => (job.claim ? [job.public, job.claim] : [job.public]))
+      );
+      await native?.restore();
+      for (const observer of observers.reverse()) observer.mockRestore();
+      oauth.mockRestore();
+      client?.destroy();
+      await authority.closeAllPhysicalConnections();
+      if (server.listening)
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve()))
+        );
+      for (const handle of handles) handle.sqlite.close();
+      for (const handle of userHandles) handle.close();
+      vault.lock();
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+    } finally {
+      signal.removeEventListener('abort', unblock);
+      finished.resolve();
+    }
+  }
+}, 60_000);
