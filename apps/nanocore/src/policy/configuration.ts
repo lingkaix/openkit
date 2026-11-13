@@ -1,4 +1,7 @@
-import type { PolicyConfigurationWarning } from '@openkit/app-api-schemas';
+import type {
+  PolicyConfigurationWarning,
+  ProposeAdministrationConfigurationRequest,
+} from '@openkit/app-api-schemas';
 import { OpenKitConfigSchema } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
@@ -49,17 +52,6 @@ import {
   validatePolicyDocument,
 } from './statements.js';
 
-/** Bounded new Policy target consumed by the existing configuration candidate owner. */
-export interface PolicyConfigurationRequest {
-  readonly targetFamily: 'policy';
-  readonly targetId: 'server';
-  readonly expectedRevision: string;
-  readonly changes: {
-    readonly proposed: PolicyDocumentV1;
-    readonly rationale: string;
-  };
-}
-
 /** A statement from the single admitted Policy collection. */
 type PolicyStatement = PolicyDocumentV1['statements'][number];
 
@@ -105,7 +97,7 @@ function preservesRestriction(
 
 /** Native preparation preserves unrelated server configuration and stamps the real author. */
 export function preparePolicyConfiguration(input: {
-  readonly request: PolicyConfigurationRequest;
+  readonly request: Extract<ProposeAdministrationConfigurationRequest, { targetFamily: 'policy' }>;
   readonly actor: Actor;
   readonly coreDb: CoreDb;
   readonly files: Pick<RuntimeConfigFileService, 'readFile' | 'validate'>;

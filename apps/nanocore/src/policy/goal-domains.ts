@@ -54,9 +54,6 @@ import { PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 /** Existing delegation format with the Goal lineage required by its native consumer. */
 export type GoalDomainStatement = z.infer<typeof PolicyDelegationV1Schema>;
 
-/** Existing permission grammar; native admission supplies its current Goal delegation. */
-export type GoalDomainPermission = z.infer<typeof PolicyPermissionV1Schema>;
-
 /** The actual Coordinator and affected Worker are separate native authority facts. */
 export interface GoalDomainAdministrationInput {
   readonly workspaceDb: WorkspaceDb;
@@ -66,16 +63,10 @@ export interface GoalDomainAdministrationInput {
   readonly expectedPolicyRevision: string;
   readonly grant: {
     readonly id: string;
-    readonly scope: GoalDomainPermission['scope'];
-    readonly lifetime: GoalDomainPermission['lifetime'];
+    readonly scope: z.infer<typeof PolicyPermissionV1Schema>['scope'];
+    readonly lifetime: z.infer<typeof PolicyPermissionV1Schema>['lifetime'];
     readonly rationale: string;
   };
-}
-
-/** A Goal and its jointly approved request remain in their existing Workspace owner. */
-export interface GoalDomainKey {
-  readonly workspaceId: string;
-  readonly goalId: string;
 }
 
 /** Real read dependencies and the complete default writer share one existing Goal owner. */
@@ -324,7 +315,7 @@ function createGoalDomainPolicyReadOwner(deps: GoalDomainPolicyDependencies) {
   }
 
   function permissionAnchorCurrent(
-    permission: GoalDomainPermission,
+    permission: z.infer<typeof PolicyPermissionV1Schema>,
     context: GoalTaskPolicyContext
   ) {
     const anchor = permission.lifetime.anchor;
@@ -340,7 +331,7 @@ function createGoalDomainPolicyReadOwner(deps: GoalDomainPolicyDependencies) {
   }
 
   function readCurrent(
-    key: GoalDomainKey,
+    key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>>,
     ownDecision?: PolicyUseDecision
   ): GoalDomainStatement | null {
     const current = loaded();
@@ -369,7 +360,7 @@ function createGoalDomainPolicyReadOwner(deps: GoalDomainPolicyDependencies) {
   function readPermissions(input: {
     readonly context: GoalTaskPolicyContext;
     readonly decision?: PolicyUseDecision;
-  }): GoalDomainPermission[] {
+  }): z.infer<typeof PolicyPermissionV1Schema>[] {
     const { context, decision } = input;
     const key = { workspaceId: context.workspaceId, goalId: context.goalId };
     const current = loaded();
@@ -380,28 +371,30 @@ function createGoalDomainPolicyReadOwner(deps: GoalDomainPolicyDependencies) {
     currentGoalHuman(goal, context.workspaceId);
     const reference = { id: domain.id, digest: policyDigest(domain) };
     const db = deps.repositoryWorkspaceDb(context.workspaceId);
-    return current.document.statements.filter((value): value is GoalDomainPermission => {
-      if (
-        value.kind !== 'permission' ||
-        value.state !== 'active' ||
-        value.effect !== 'allow' ||
-        value.grant.kind !== 'ordinary' ||
-        value.authority.kind !== 'delegation' ||
-        policyDigest(value.authority.statement) !== policyDigest(reference) ||
-        policyDigest(value.author) !== policyDigest(domain.delegate) ||
-        value.scope.subjects.length !== 1 ||
-        value.scope.subjects[0]?.kind !== 'agent' ||
-        value.scope.subjects[0].id !== context.agentId ||
-        !policyScopeContains(domain.scope, value.scope) ||
-        !permissionAnchorCurrent(value, context) ||
-        (value.lifetime.notAfter && Date.now() >= Date.parse(value.lifetime.notAfter))
-      )
-        return false;
-      if (value.lifetime.uses === undefined) return true;
-      const ref = { id: value.id, digest: policyDigest(value) };
-      const own = decision && policyStatementUsedByDecision(db, ref, decision) ? 1 : 0;
-      return readPolicyStatementUseCount(db, ref) - own < value.lifetime.uses;
-    });
+    return current.document.statements.filter(
+      (value): value is z.infer<typeof PolicyPermissionV1Schema> => {
+        if (
+          value.kind !== 'permission' ||
+          value.state !== 'active' ||
+          value.effect !== 'allow' ||
+          value.grant.kind !== 'ordinary' ||
+          value.authority.kind !== 'delegation' ||
+          policyDigest(value.authority.statement) !== policyDigest(reference) ||
+          policyDigest(value.author) !== policyDigest(domain.delegate) ||
+          value.scope.subjects.length !== 1 ||
+          value.scope.subjects[0]?.kind !== 'agent' ||
+          value.scope.subjects[0].id !== context.agentId ||
+          !policyScopeContains(domain.scope, value.scope) ||
+          !permissionAnchorCurrent(value, context) ||
+          (value.lifetime.notAfter && Date.now() >= Date.parse(value.lifetime.notAfter))
+        )
+          return false;
+        if (value.lifetime.uses === undefined) return true;
+        const ref = { id: value.id, digest: policyDigest(value) };
+        const own = decision && policyStatementUsedByDecision(db, ref, decision) ? 1 : 0;
+        return readPolicyStatementUseCount(db, ref) - own < value.lifetime.uses;
+      }
+    );
   }
 
   return {
@@ -426,10 +419,14 @@ export function createGoalDomainPolicyService(deps: GoalDomainPolicyDependencies
   if (deps.mode === 'read') {
     const owner = createGoalDomainPolicyReadOwner(deps);
     return {
-      read(key: GoalDomainKey) {
+      read(key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>>) {
         return owner.readCurrent(key);
       },
-      readForDecision(key: GoalDomainKey & { readonly decision: PolicyUseDecision }) {
+      readForDecision(
+        key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>> & {
+          readonly decision: PolicyUseDecision;
+        }
+      ) {
         return owner.readCurrent(key, key.decision);
       },
       readPermissions: owner.readPermissions,
@@ -502,7 +499,7 @@ function createGoalDomainPolicyWriter(
     current: ReturnType<typeof saved>,
     document: PolicyDocumentV1,
     context: {
-      key: GoalDomainKey;
+      key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>>;
       actor?: Actor;
       requestId?: string;
       responsibleUserId: string;
@@ -775,19 +772,23 @@ function createGoalDomainPolicyWriter(
     },
 
     /** Rechecks the recorded human, exact Plan, saved/loaded revision and lifetime on every use. */
-    read(key: GoalDomainKey): GoalDomainStatement | null {
+    read(
+      key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>>
+    ): GoalDomainStatement | null {
       return readCurrent(key);
     },
 
     /** Dispatch-only readback: recognizes this exact allow's own use, never a new authorization. */
     readForDecision(
-      key: GoalDomainKey & { readonly decision: PolicyUseDecision }
+      key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>> & {
+        readonly decision: PolicyUseDecision;
+      }
     ): GoalDomainStatement | null {
       return readCurrent(key, key.decision);
     },
 
     /** Withdraws only this Goal without requiring its old Plan or human credential to remain valid. */
-    close(key: GoalDomainKey) {
+    close(key: Readonly<Pick<GoalDomainStatement['source'], 'workspaceId' | 'goalId'>>) {
       const current = saved();
       const statements = current.document.statements.map((statement) =>
         statement.kind === 'delegation' &&
