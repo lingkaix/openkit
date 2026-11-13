@@ -106,10 +106,6 @@ export function bindWorkspaceSqlite(
 
 let singleton: CoreDb | undefined;
 
-// Match better-sqlite3's native-owner default while Core still has residual Main writers.
-// Remove with https://github.com/lingkaix/openkit/issues/616; this is lock waiting, never retry.
-const CORE_BUSY_TIMEOUT_MS = 5000;
-
 /** Opens one connection; scoped admission and pure integrity inspection retain their separate policies. */
 function openSqliteConnection(
   path: string,
@@ -189,7 +185,7 @@ export function openCoreReadDb(dataRoot: string): CoreDb {
 }
 
 /**
- * Opens one server-scope Core database under the provided data root.
+ * Opens the boot or explicit setup Core writer; serving reads use openCoreReadDb.
  *
  * @param dataRoot Data root that will contain server/db/core.sqlite.
  * @param options Fresh-scope admission captured before boot writes layout metadata.
@@ -204,7 +200,7 @@ export function openCoreDb(
     (options.freshInitialization ?? isFreshCoreInitializationScope(dataRoot));
   ensureLayoutDirectories(dataRoot);
 
-  const sqlite = openOwnedSqlite(coreDbPath(dataRoot), 'core', {}, CORE_BUSY_TIMEOUT_MS);
+  const sqlite = openOwnedSqlite(coreDbPath(dataRoot), 'core');
 
   return bindCoreSqlite(sqlite, dataRoot, canInitializeLocalUser);
 }
@@ -244,7 +240,7 @@ export function openExistingCoreDbWithIntegrityCheck(dataRoot: string): CoreDb {
   readDataRootLayoutMarker(dataRoot);
   const path = coreDbPath(dataRoot);
   assertSqliteIntegrity(path);
-  const sqlite = openOwnedSqlite(path, 'core', { fileMustExist: true }, CORE_BUSY_TIMEOUT_MS);
+  const sqlite = openOwnedSqlite(path, 'core', { fileMustExist: true });
 
   return bindCoreSqlite(sqlite, dataRoot);
 }
@@ -369,14 +365,14 @@ export function openWorkspaceDbAtRoot(input: {
 }
 
 /**
- * Returns the process singleton Core database.
+ * Returns the existing read-only process Core view without creating storage or migrating.
  *
  * @param env Environment variables used to resolve the data root.
  * @returns Singleton raw SQLite and Drizzle handles.
  */
 export function getCoreDb(env: NodeJS.ProcessEnv = process.env): CoreDb {
   if (!singleton) {
-    singleton = openCoreDb(resolveDataRoot(env));
+    singleton = openCoreReadDb(resolveDataRoot(env));
   }
 
   return singleton;
