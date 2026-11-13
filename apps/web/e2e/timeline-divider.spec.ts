@@ -420,6 +420,7 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
       });
     });
     const readState = (threadId: string) => ({
+      scope: 'window',
       readItemIds: [] as string[],
       unreadItemIds: threadId === longThread.id ? [unread.itemId] : [],
     });
@@ -432,11 +433,15 @@ test('opens a long tail at the catch-up divider and follows a short one', async 
       });
     });
     await page.route('**/api/app/operations/thread.mark-read', async (route) => {
-      const request = route.request().postDataJSON() as { threadId?: string };
+      const request = route.request().postDataJSON() as { itemIds?: string[] };
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(readState(request.threadId ?? '')),
+        body: JSON.stringify(
+          request.itemIds
+            ? { scope: 'window', acknowledgedItemIds: request.itemIds }
+            : { scope: 'thread', acknowledgedCount: 0 }
+        ),
       });
     });
     await page.route('**/api/workspaces/**/events**', async (route) => {

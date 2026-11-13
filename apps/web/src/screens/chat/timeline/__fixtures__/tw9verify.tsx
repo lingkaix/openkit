@@ -170,7 +170,19 @@ export function client(operations: Record<string, unknown> = {}): CoreClient {
     operations: {
       'thread.dashboard': async () => dashboard(),
       'thread.items': async () => ({ items: [], nextCursor: null }),
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
+      'conversation.navigation': async () => ({
+        items: [
+          {
+            thread: { id: THREAD, name: null },
+            activity: 'chat',
+            state: 'idle',
+            lastActivityAt: AT,
+            unreadCount: 0,
+          },
+        ],
+        nextCursor: null,
+      }),
       'attention.list': async () => ({ items: [] }),
       'goal.read': async () => goal(),
       'conversation.targets': async () => ({

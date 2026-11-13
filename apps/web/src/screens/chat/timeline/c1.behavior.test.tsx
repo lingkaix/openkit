@@ -209,7 +209,9 @@ function client(samples: readonly (string | null)[]): CoreClient {
         body = dashboard(samples[Math.min(call++, samples.length - 1)] ?? null);
       } else if (name === 'thread.timeline') body = io.run ? runPage() : timeline;
       else if (name === 'thread.items') body = { items: [], nextCursor: null };
-      else if (name === 'thread.read-state') body = { readItemIds: [], unreadItemIds: [] };
+      else if (name === 'thread.read-state')
+        body = { scope: 'window', readItemIds: [], unreadItemIds: [] };
+      else if (name === 'conversation.navigation') body = { items: [], nextCursor: null };
       else if (name === 'attention.list') body = { items: [] };
       else if (name === 'conversation.targets')
         body = { workspaceId: WS, threadId: THREAD, targets: [], defaultTargetRef: null };

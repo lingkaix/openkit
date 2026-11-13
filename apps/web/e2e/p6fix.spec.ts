@@ -299,7 +299,8 @@ async function fixture(
         calls.push({ name, input });
         let body: unknown;
         if (name === 'thread.dashboard') body = dashboard();
-        else if (name === 'thread.read-state') body = { readItemIds: [], unreadItemIds: [] };
+        else if (name === 'thread.read-state')
+          body = { scope: 'window', readItemIds: [], unreadItemIds: [] };
         else if (name === 'attention.list') body = attention();
         else if (name === 'conversation.targets')
           body = {

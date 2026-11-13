@@ -53,13 +53,12 @@ test('records an actually displayed reply and retains it after Core restart', as
       client.operations['thread.items'](selector),
       client.operations['thread.dashboard'](selector),
       client.operations['conversation.navigation']({ workspaceId }),
-      client.operations['thread.read-state'](selector),
+      client.operations['thread.read-state']({ ...selector, itemIds: [message.id] }),
     ]);
     expect(navigation.items.find((item) => item.thread.id === thread.id)?.unreadCount).toBe(1);
-    expect(await client.operations['thread.read-state'](selector)).toEqual({
-      readItemIds: [],
-      unreadItemIds: [message.id],
-    });
+    expect(
+      await client.operations['thread.read-state']({ ...selector, itemIds: [message.id] })
+    ).toEqual({ scope: 'window', readItemIds: [], unreadItemIds: [message.id] });
 
     let displayedItemIds: unknown;
     page.on('request', (request) => {
@@ -81,13 +80,17 @@ test('records an actually displayed reply and retains it after Core restart', as
     // Receipt refresh can replace the body; the viewport assertion retries the current locator.
     await expect(body).toBeInViewport();
     await expect.poll(() => displayedItemIds).toEqual([message.id]);
-    const readState = { readItemIds: [message.id], unreadItemIds: [] };
-    await expect.poll(() => client.operations['thread.read-state'](selector)).toEqual(readState);
+    const readState = { scope: 'window', readItemIds: [message.id], unreadItemIds: [] };
+    await expect
+      .poll(() => client.operations['thread.read-state']({ ...selector, itemIds: [message.id] }))
+      .toEqual(readState);
 
     // Leave the body before restart so a second display cannot hide lost server persistence.
     await page.goto('about:blank');
     await stack.restartCore();
-    expect(await client.operations['thread.read-state'](selector)).toEqual(readState);
+    expect(
+      await client.operations['thread.read-state']({ ...selector, itemIds: [message.id] })
+    ).toEqual(readState);
   } finally {
     await stack.stop();
   }

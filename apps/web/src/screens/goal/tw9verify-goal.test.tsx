@@ -84,7 +84,11 @@ describe('TW9VERIFY Goal narrative links', () => {
       });
       const api = client({
         'thread.timeline': read,
-        'thread.read-state': async () => ({ readItemIds: [B, OUTSIDE], unreadItemIds: [EARLY] }),
+        'thread.read-state': async () => ({
+          scope: 'window',
+          readItemIds: [B, OUTSIDE],
+          unreadItemIds: [EARLY],
+        }),
       });
       render(
         <Frame api={api} cache={owner} entry={`/goals/${WS}/${THREAD}`}>

@@ -244,7 +244,8 @@ function fixture(empty = false) {
     'thread.timeline': timeline,
     'thread.dashboard': dashboard,
     'thread.read': () => thread,
-    'thread.read-state': () => ({ readItemIds: [], unreadItemIds: [] }),
+    'thread.read-state': () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
+    'conversation.navigation': () => ({ items: [], nextCursor: null }),
     'thread.items': () => ({ items: [], nextCursor: null }),
     'attention.list': () => ({ items: [] }),
   };

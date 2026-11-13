@@ -107,6 +107,7 @@ test('W6 a delayed null-to-count earlierUnread does not move the next run at 360
     await page.route('**/api/app/operations/thread.read-state', async (route) => {
       OPERATION_DEFINITIONS['thread.read-state'].inputSchema.parse(route.request().postDataJSON());
       const payload = OPERATION_DEFINITIONS['thread.read-state'].outputSchema.parse({
+        scope: 'window',
         readItemIds: [boundary.id, next.id],
         unreadItemIds: [earlier.id],
       });

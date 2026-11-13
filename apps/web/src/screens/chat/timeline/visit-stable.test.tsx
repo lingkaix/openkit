@@ -66,8 +66,12 @@ it('keeps the catch-up divider and the Unread mark after a later read clears unr
   renderChat(
     {
       'thread.timeline': async () => page([run([note('Boundary note B')])]),
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: unread }),
-      'thread.mark-read': async () => ({}),
+      'thread.read-state': async () => ({
+        scope: 'window',
+        readItemIds: [],
+        unreadItemIds: unread,
+      }),
+      'thread.mark-read': async () => ({ scope: 'thread', acknowledgedCount: 0 }),
     },
     cache
   );
@@ -90,10 +94,14 @@ it('hides Unread marks in place when Mark read is used and keeps the catch-up di
   renderChat(
     {
       'thread.timeline': async () => page([run([note('Boundary note B')])]),
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: unread }),
+      'thread.read-state': async () => ({
+        scope: 'window',
+        readItemIds: [],
+        unreadItemIds: unread,
+      }),
       'thread.mark-read': async () => {
         unread = [];
-        return {};
+        return { scope: 'thread', acknowledgedCount: 0 };
       },
     },
     cache
@@ -118,9 +126,9 @@ it('keeps the Unread mark and catch-up divider while an earlier page is still re
     {
       'thread.timeline': async () => page(runs),
       'thread.read-state': () => {
-        if (!hang) return Promise.resolve({ readItemIds: [], unreadItemIds: [B] });
+        if (!hang) return Promise.resolve({ scope: 'window', readItemIds: [], unreadItemIds: [B] });
         return new Promise((resolve) => {
-          release = () => resolve({ readItemIds: [], unreadItemIds: [] });
+          release = () => resolve({ scope: 'window', readItemIds: [], unreadItemIds: [] });
         });
       },
     },
@@ -149,7 +157,11 @@ it('does not add a catch-up divider after the thread opened without one', async 
   renderChat(
     {
       'thread.timeline': async () => page([run([note('Boundary note B')])]),
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: unread }),
+      'thread.read-state': async () => ({
+        scope: 'window',
+        readItemIds: [],
+        unreadItemIds: unread,
+      }),
     },
     cache
   );

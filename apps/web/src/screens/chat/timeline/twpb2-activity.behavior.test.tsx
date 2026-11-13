@@ -239,9 +239,13 @@ function transport(state: 'current-null' | 'current-omitted', legacy = false) {
     operations: {
       'thread.read': async (input: unknown) => checked('thread.read', input, thread),
       'thread.read-state': async (input: unknown) =>
-        checked('thread.read-state', input, { readItemIds: [], unreadItemIds: [] }),
+        checked('thread.read-state', input, {
+          scope: 'window',
+          readItemIds: [],
+          unreadItemIds: [],
+        }),
       'thread.mark-read': async (input: unknown) =>
-        checked('thread.mark-read', input, { readItemIds: [], unreadItemIds: [] }),
+        checked('thread.mark-read', input, { scope: 'window', acknowledgedItemIds: [] }),
       'attention.list': async (input: unknown) => checked('attention.list', input, { items: [] }),
       'thread.dashboard': async (input: unknown) => checked('thread.dashboard', input, board),
       'thread.items': async (input: unknown) =>

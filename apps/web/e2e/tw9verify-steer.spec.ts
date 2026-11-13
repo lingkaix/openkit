@@ -151,7 +151,7 @@ test('TW9VERIFY reads an older Accepted steer on the real Task screen after relo
         route.fulfill({
           status: 200,
           contentType: 'application/json',
-          body: JSON.stringify({ readItemIds: [steerId], unreadItemIds: [] }),
+          body: JSON.stringify({ scope: 'window', readItemIds: [steerId], unreadItemIds: [] }),
         })
       );
       await context.route('**/api/workspaces/**/events**', (route) =>

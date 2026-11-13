@@ -217,7 +217,8 @@ function fixture(kind: TargetKind) {
     'thread.timeline': timeline,
     'thread.read': () => thread,
     'thread.items': () => ({ items: [], nextCursor: null }),
-    'thread.read-state': () => ({ readItemIds: [], unreadItemIds: [] }),
+    'thread.read-state': () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
+    'conversation.navigation': () => ({ items: [], nextCursor: null }),
     'thread.dashboard': () => ({
       thread,
       viewerUserId: userId,

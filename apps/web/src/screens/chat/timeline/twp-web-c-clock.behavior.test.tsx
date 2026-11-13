@@ -137,7 +137,7 @@ function client(samples: readonly (string | null)[]): CoreClient {
       }),
     },
     operations: {
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
       'thread.dashboard': async () => {
         const sample = samples[Math.min(call, samples.length - 1)] ?? null;
         call += 1;

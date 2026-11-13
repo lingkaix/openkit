@@ -204,7 +204,19 @@ export function client(
     operations: {
       'workspace.list': async () => ({ items: [] }),
       'thread.dashboard': async () => dashboard(),
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
+      'conversation.navigation': async () => ({
+        items: [
+          {
+            thread: { id: THREAD, name: null },
+            activity: 'chat',
+            state: 'idle',
+            lastActivityAt: AT,
+            unreadCount: 0,
+          },
+        ],
+        nextCursor: null,
+      }),
       'thread.items': async () => ({ items: [], nextCursor: null }),
       'attention.list': async () => ({ items: [] }),
       ...operations,

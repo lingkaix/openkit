@@ -294,7 +294,7 @@ function fixture() {
     }),
     'thread.dashboard': dashboard,
     'thread.timeline': timeline,
-    'thread.read-state': () => ({ readItemIds: [], unreadItemIds: [] }),
+    'thread.read-state': () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
     'thread.items': () => ({ items: [], nextCursor: null }),
     'attention.list': () => ({ items: [] }),
     'conversation.targets': () => ({

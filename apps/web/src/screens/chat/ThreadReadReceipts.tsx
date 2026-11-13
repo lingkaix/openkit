@@ -1,3 +1,4 @@
+import type { CoreClient } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   createContext,
@@ -10,7 +11,55 @@ import {
 } from 'react';
 import { useCoreClient } from '../../app/core-client';
 import { Button, ErrorBanner } from '../../primitives';
-import { chatKeys, type ThreadItem } from './data';
+import { chatKeys, type ThreadItem, useConversationNavigation } from './data';
+
+/** Server window for one thread.read-state call. Larger loaded sets are chunked. */
+export const READ_STATE_CHUNK = 200;
+
+type WindowReadState = {
+  scope: 'window';
+  readItemIds: string[];
+  unreadItemIds: string[];
+};
+
+type MarkReadResult = Awaited<ReturnType<CoreClient['operations']['thread.mark-read']>>;
+
+/**
+ * Read membership for the loaded completed messages.
+ * Zero IDs issue no request. Each request carries at most READ_STATE_CHUNK ids.
+ * Chunks are unioned in first-seen order. A legacy thread-scoped body is refused.
+ */
+export async function readThreadWindowState(
+  client: CoreClient,
+  workspaceId: string,
+  threadId: string,
+  itemIds: readonly string[]
+): Promise<WindowReadState> {
+  const readItemIds: string[] = [];
+  const unreadItemIds: string[] = [];
+  const seenRead = new Set<string>();
+  const seenUnread = new Set<string>();
+  for (let start = 0; start < itemIds.length; start += READ_STATE_CHUNK) {
+    const chunk = itemIds.slice(start, start + READ_STATE_CHUNK);
+    const page = await client.operations['thread.read-state']({
+      workspaceId,
+      threadId,
+      itemIds: [...chunk],
+    });
+    if (page.scope !== 'window') throw new Error('thread.read-state returned a thread scope.');
+    for (const id of page.readItemIds) {
+      if (seenRead.has(id)) continue;
+      seenRead.add(id);
+      readItemIds.push(id);
+    }
+    for (const id of page.unreadItemIds) {
+      if (seenUnread.has(id)) continue;
+      seenUnread.add(id);
+      unreadItemIds.push(id);
+    }
+  }
+  return { scope: 'window', readItemIds, unreadItemIds };
+}
 
 /** Eligibility key shared by the receipt banner and the timeline unread marks. */
 export function readStateQueryKey(
@@ -29,6 +78,24 @@ export function readStateQueryKey(
   return ['thread-read-state', workspaceId, threadId, viewerUserId, completedIds] as const;
 }
 
+/** One windowed read for the completed IDs already stored on the query key. */
+function useWindowReadState(
+  workspaceId: string | null,
+  threadId: string,
+  viewerUserId: string | null | undefined,
+  items: readonly ThreadItem[],
+  disabled: boolean
+) {
+  const client = useCoreClient();
+  const queryKey = readStateQueryKey(workspaceId, threadId, viewerUserId, items);
+  const itemIds = queryKey[4];
+  return useQuery({
+    queryKey,
+    queryFn: () => readThreadWindowState(client, workspaceId!, threadId, itemIds),
+    enabled: Boolean(workspaceId && viewerUserId && !disabled && itemIds.length > 0),
+  });
+}
+
 /** Receipt unread set. Items before the catch-up anchor stay in the set. */
 export function useThreadUnreadIds(
   workspaceId: string | null,
@@ -37,12 +104,7 @@ export function useThreadUnreadIds(
   items: readonly ThreadItem[],
   disabled: boolean
 ): ReadonlySet<string> {
-  const client = useCoreClient();
-  const state = useQuery({
-    queryKey: readStateQueryKey(workspaceId, threadId, viewerUserId, items),
-    queryFn: () => client.operations['thread.read-state']({ workspaceId: workspaceId!, threadId }),
-    enabled: Boolean(workspaceId && viewerUserId && !disabled),
-  });
+  const state = useWindowReadState(workspaceId, threadId, viewerUserId, items, disabled);
   return useMemo(
     () => new Set(state.isSuccess && !disabled ? state.data.unreadItemIds : []),
     [disabled, state.data, state.isSuccess]
@@ -78,11 +140,11 @@ export function ThreadReadReceipts({
     [workspaceId, threadId, viewerUserId]
   );
   // A new completed message requires a fresh eligibility read; streaming token changes do not.
-  const state = useQuery({
-    queryKey: readStateQueryKey(workspaceId, threadId, viewerUserId, items),
-    queryFn: () => client.operations['thread.read-state']({ workspaceId: workspaceId!, threadId }),
-    enabled: Boolean(workspaceId && viewerUserId && !disabled),
-  });
+  const state = useWindowReadState(workspaceId, threadId, viewerUserId, items, disabled);
+  const navigation = useConversationNavigation(viewerUserId && !disabled ? workspaceId : null);
+  const threadUnreadCount = navigation.isSuccess
+    ? navigation.data?.find((row) => row.thread.id === threadId)?.unreadCount
+    : undefined;
   const pending = useRef(new Set<string>());
   const running = useRef(false);
   const failed = useRef(false);
@@ -94,7 +156,7 @@ export function ThreadReadReceipts({
     };
   }, []);
   const mark = useMutation({
-    mutationFn: (input: { itemIds?: string[] }) =>
+    mutationFn: (input: { itemIds?: string[] }): Promise<MarkReadResult> =>
       client.operations['thread.mark-read']({ workspaceId: workspaceId!, threadId, ...input }),
     onSuccess: async () => {
       await Promise.all([
@@ -155,32 +217,36 @@ export function ThreadReadReceipts({
               }}
             />
           ) : null}
-          {state.isSuccess ? (
-            unreadIds.size > 0 ? (
-              <div data-read-dock="bar" className="flex justify-start">
-                <Button
-                  variant="quiet"
-                  size="sm"
-                  className="self-start"
-                  isDisabled={mark.isPending}
-                  onPress={() =>
-                    mark.mutate(
-                      {},
-                      {
-                        onSuccess: () => {
-                          pending.current.clear();
-                          failed.current = false;
-                        },
-                      }
-                    )
-                  }
-                >
-                  Mark read
-                </Button>
-              </div>
-            ) : (
-              <p className="text-xs text-fg-muted">All replies read</p>
-            )
+          {threadUnreadCount != null && threadUnreadCount > 0 ? (
+            <p className="text-xs text-fg-muted">
+              {threadUnreadCount === 1 ? '1 unread reply' : `${threadUnreadCount} unread replies`}
+            </p>
+          ) : null}
+          {threadUnreadCount === 0 ? (
+            <p className="text-xs text-fg-muted">All replies read</p>
+          ) : null}
+          {unreadIds.size > 0 || threadUnreadCount == null || threadUnreadCount > 0 ? (
+            <div data-read-dock="bar" className="flex justify-start">
+              <Button
+                variant="quiet"
+                size="sm"
+                className="self-start"
+                isDisabled={mark.isPending}
+                onPress={() =>
+                  mark.mutate(
+                    {},
+                    {
+                      onSuccess: () => {
+                        pending.current.clear();
+                        failed.current = false;
+                      },
+                    }
+                  )
+                }
+              >
+                Mark read
+              </Button>
+            </div>
           ) : null}
         </div>
       ) : null}

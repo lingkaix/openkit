@@ -471,7 +471,7 @@ function streamClient(
         })),
     },
     operations: {
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
       ...rest,
     },
   } as unknown as CoreClient;

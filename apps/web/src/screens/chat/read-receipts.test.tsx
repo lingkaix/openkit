@@ -1,9 +1,13 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { CoreClient } from '@openkit/core-client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
+import { READ_STATE_CHUNK, readThreadWindowState } from './ThreadReadReceipts';
 import { ThreadStream } from './ThreadStream';
 
 afterEach(() => {
@@ -37,6 +41,7 @@ describe('displayed conversation receipts', () => {
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
     const readIds = new Set<string>();
     const state = () => ({
+      scope: 'window',
       readItemIds: [...readIds],
       unreadItemIds: ['first', 'second'].filter((id) => !readIds.has(id)),
     });
@@ -48,7 +53,9 @@ describe('displayed conversation receipts', () => {
         throw new Error('Save unavailable');
       }
       for (const id of input.itemIds ?? ['first', 'second']) readIds.add(id);
-      return state();
+      return input.itemIds
+        ? { scope: 'window' as const, acknowledgedItemIds: input.itemIds }
+        : { scope: 'thread' as const, acknowledgedCount: 2 };
     });
     const client = {
       core: { meta: async () => ({}) },
@@ -66,6 +73,18 @@ describe('displayed conversation receipts', () => {
           nextCursor: null,
         }),
         'thread.dashboard': async () => ({ viewerUserId: 'viewer', turns: [], participants: [] }),
+        'conversation.navigation': async () => ({
+          items: [
+            {
+              thread: { id: 'thread' },
+              activity: 'chat' as const,
+              state: 'idle' as const,
+              lastActivityAt: '2026-01-01T00:00:00.000Z',
+              unreadCount: ['first', 'second'].filter((id) => !readIds.has(id)).length,
+            },
+          ],
+          nextCursor: null,
+        }),
         'thread.read-state': read,
         'thread.mark-read': mark,
       },
@@ -196,8 +215,24 @@ describe('displayed conversation receipts', () => {
             nextCursor: null,
           }),
           'thread.dashboard': dashboard,
-          'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: ['first'] }),
-          'thread.mark-read': async () => ({ readItemIds: ['first'], unreadItemIds: [] }),
+          'conversation.navigation': async () => ({
+            items: [
+              {
+                thread: { id: 'thread' },
+                activity: 'chat' as const,
+                state: 'idle' as const,
+                lastActivityAt: '2026-01-01T00:00:00.000Z',
+                unreadCount: 1,
+              },
+            ],
+            nextCursor: null,
+          }),
+          'thread.read-state': async () => ({
+            scope: 'window',
+            readItemIds: [],
+            unreadItemIds: ['first'],
+          }),
+          'thread.mark-read': async () => ({ scope: 'window', acknowledgedItemIds: ['first'] }),
         },
       } as unknown as CoreClient;
       const queryClient = new QueryClient({
@@ -221,4 +256,61 @@ describe('displayed conversation receipts', () => {
       queryClient.clear();
     }
   );
+});
+
+function sourceFiles(dir: string): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      found.push(...sourceFiles(path));
+    } else if (/\.(ts|tsx)$/.test(entry.name)) found.push(path);
+  }
+  return found;
+}
+
+describe('windowed thread.read-state', () => {
+  it('chunks at 200, unions the windows, and issues no request for zero ids', async () => {
+    const calls: string[][] = [];
+    const client = {
+      operations: {
+        'thread.read-state': async (input: { itemIds?: string[] }) => {
+          const itemIds = input.itemIds ?? [];
+          calls.push(itemIds);
+          return { scope: 'window' as const, readItemIds: [], unreadItemIds: itemIds };
+        },
+      },
+    } as unknown as CoreClient;
+    const ids = Array.from({ length: READ_STATE_CHUNK + 1 }, (_, index) => `it_${index}`);
+    const page = await readThreadWindowState(client, 'workspace', 'thread', ids);
+    expect(calls).toEqual([ids.slice(0, READ_STATE_CHUNK), ids.slice(READ_STATE_CHUNK)]);
+    expect(page).toEqual({ scope: 'window', readItemIds: [], unreadItemIds: ids });
+    const idle = vi.fn();
+    const emptyClient = {
+      operations: { 'thread.read-state': idle },
+    } as unknown as CoreClient;
+    await expect(readThreadWindowState(emptyClient, 'workspace', 'thread', [])).resolves.toEqual({
+      scope: 'window',
+      readItemIds: [],
+      unreadItemIds: [],
+    });
+    expect(idle).not.toHaveBeenCalled();
+  });
+
+  it('passes itemIds on every Web thread.read-state call', () => {
+    const web = join(dirname(fileURLToPath(import.meta.url)), '../../..');
+    const calls: string[] = [];
+    for (const file of sourceFiles(web)) {
+      const source = readFileSync(file, 'utf8');
+      const pattern = /operations\[['"]thread\.read-state['"]\]\(/g;
+      for (const match of source.matchAll(pattern)) {
+        const call = source.slice(match.index ?? 0, source.indexOf(')', match.index ?? 0) + 1);
+        calls.push(call);
+        expect(call, file).toContain('itemIds');
+        expect(call, file).not.toMatch(/itemIds:\s*\[\s*\]/);
+      }
+    }
+    expect(calls.length).toBeGreaterThan(0);
+  });
 });

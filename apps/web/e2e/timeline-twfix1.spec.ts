@@ -345,7 +345,7 @@ test('decision sheet, new updates and live Now stay honest', async ({ page }) =>
         body: JSON.stringify(attention),
       });
     });
-    const readState = { readItemIds: [] as string[], unreadItemIds: [noteId] };
+    const readState = { scope: 'window', readItemIds: [] as string[], unreadItemIds: [noteId] };
     await page.route('**/api/app/operations/thread.read-state', async (route) => {
       await route.fulfill({
         status: 200,
@@ -357,7 +357,7 @@ test('decision sheet, new updates and live Now stay honest', async ({ page }) =>
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(readState),
+        body: JSON.stringify({ scope: 'window', acknowledgedItemIds: [noteId] }),
       });
     });
     // A completed simulator run must not overwrite the patched running turn.

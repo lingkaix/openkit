@@ -68,7 +68,11 @@ function mount(
     }),
     'attention.list': vi.fn(async () => options.attention ?? { items: [] }),
     'thread.items': vi.fn(async () => ({ items: [], nextCursor: null })),
-    'thread.read-state': vi.fn(async () => ({ readItemIds: [], unreadItemIds: [] })),
+    'thread.read-state': vi.fn(async () => ({
+      scope: 'window',
+      readItemIds: [],
+      unreadItemIds: [],
+    })),
     'conversation.targets': vi.fn(async () => ({ targets: [], defaultTargetRef: null })),
   };
   const subscribe = vi.fn(() => pipe);

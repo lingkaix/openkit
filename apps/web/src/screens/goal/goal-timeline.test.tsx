@@ -271,7 +271,11 @@ function mount(
     ...(timeline
       ? {
           'thread.timeline': vi.fn(timeline),
-          'thread.read-state': vi.fn(async () => ({ readItemIds: [], unreadItemIds: [] })),
+          'thread.read-state': vi.fn(async () => ({
+            scope: 'window',
+            readItemIds: [],
+            unreadItemIds: [],
+          })),
         }
       : {}),
   };

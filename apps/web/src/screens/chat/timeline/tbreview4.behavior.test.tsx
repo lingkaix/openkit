@@ -292,7 +292,9 @@ function fixture(options: { sameTurn?: boolean; recordedEnvironment?: boolean } 
     'thread.timeline': timeline,
     'thread.dashboard': dashboard,
     'thread.read': () => (threadRefused ? refused() : thread),
-    'thread.read-state': () => (threadRefused ? refused() : { readItemIds: [], unreadItemIds: [] }),
+    'thread.read-state': () =>
+      threadRefused ? refused() : { scope: 'window', readItemIds: [], unreadItemIds: [] },
+    'conversation.navigation': () => ({ items: [], nextCursor: null }),
     'thread.items': () => (threadRefused ? refused() : { items: [], nextCursor: null }),
     'attention.list': () => ({ items: [] }),
     'knowledge.notebook.list': (input) => ({

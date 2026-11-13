@@ -330,7 +330,7 @@ function client(): CoreClient {
       }),
     },
     operations: {
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
       'thread.dashboard': vi.fn(async () => dashboard),
       'thread.timeline': vi.fn(async (input: { view?: string }) => {
         if (input.view === 'items') {

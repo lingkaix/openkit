@@ -297,9 +297,11 @@ function fixture(options: { earlier?: 'scoped' | 'absent'; segments?: boolean } 
     'thread.read': () => thread,
     'thread.items': () => ({ items: [], nextCursor: null }),
     'thread.read-state': () => ({
+      scope: 'window',
       readItemIds: options.earlier === 'absent' ? [currentMessage.id] : [],
       unreadItemIds: options.earlier === 'absent' ? [earlierMessage.id] : [],
     }),
+    'conversation.navigation': () => ({ items: [], nextCursor: null }),
     'attention.list': () => ({ items: [] }),
     'conversation.targets': () => ({
       workspaceId,

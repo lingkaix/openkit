@@ -83,7 +83,11 @@ it('TW9VERIFY never reports a loaded unread subset as the exact count or oldest'
     <Frame
       api={client({
         'thread.timeline': read,
-        'thread.read-state': async () => ({ readItemIds: [B], unreadItemIds: [OUTSIDE, EARLY] }),
+        'thread.read-state': async () => ({
+          scope: 'window',
+          readItemIds: [B],
+          unreadItemIds: [OUTSIDE, EARLY],
+        }),
       })}
       cache={cache()}
     >

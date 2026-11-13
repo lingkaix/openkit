@@ -233,7 +233,7 @@ function client(): CoreClient {
       }),
     },
     operations: {
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
       'thread.dashboard': async () => dashboard,
       'thread.timeline': async (input: { view?: string }) => {
         if (input.view === 'items') {
@@ -393,7 +393,7 @@ function renderReported(activity: typeof reported | null, staleText: string | nu
       }),
     },
     operations: {
-      'thread.read-state': async () => ({ readItemIds: [], unreadItemIds: [] }),
+      'thread.read-state': async () => ({ scope: 'window', readItemIds: [], unreadItemIds: [] }),
       'thread.dashboard': async () => board,
       'thread.timeline': async (input: { view?: string }) => {
         if (input.view === 'items') {
