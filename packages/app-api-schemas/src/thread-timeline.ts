@@ -166,6 +166,14 @@ export const TimelineItemSchema = z.object({
   createdAt: TimestampSchema,
   completedAt: TimestampSchema.nullable(),
   actor: ActorRefSchema.nullable(),
+  /** Immutable first-publication position in this run's Item revision-append space, like plan boundaries. */
+  firstPublicationSequence: z
+    .number()
+    .int()
+    .positive()
+    .max(Number.MAX_SAFE_INTEGER)
+    .nullable()
+    .optional(),
   detail: TimelineItemDetailSchema,
   steer: TimelineSteerStateSchema.nullable(),
   policy: TimelinePolicyBadgeSchema.nullable().optional(),

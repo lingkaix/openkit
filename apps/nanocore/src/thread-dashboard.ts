@@ -108,14 +108,19 @@ export function readBoundedThreadDashboard(input: Parameters<typeof readThreadDa
       const planPosition = snapshot.currentPositions({ type: 'plan', limit: 1 })[0];
       const plan = planPosition ? snapshot.item(planPosition.itemId) : undefined;
       const latestPlan = plan
-        ? projectTimelineItem(plan, 4608, {
-            store,
-            coreDb,
-            actor,
-            administratorEligible,
-            repositoryWorkspaceDb: input.repositoryWorkspaceDb,
-            input: { workspaceId, threadId },
-          })
+        ? projectTimelineItem(
+            plan,
+            4608,
+            {
+              store,
+              coreDb,
+              actor,
+              administratorEligible,
+              repositoryWorkspaceDb: input.repositoryWorkspaceDb,
+              input: { workspaceId, threadId },
+            },
+            snapshot
+          )
         : null;
       const admission =
         coreDb && turnId

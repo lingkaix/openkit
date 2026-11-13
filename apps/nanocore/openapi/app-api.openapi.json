@@ -52102,6 +52102,18 @@
                           }
                         ]
                       },
+                      "firstPublicationSequence": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "exclusiveMinimum": 0,
+                            "maximum": 9007199254740991
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
                       "detail": {
                         "oneOf": [
                           {
@@ -55220,6 +55232,18 @@
                                   "additionalProperties": false
                                 }
                               ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "firstPublicationSequence": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
                             },
                             {
                               "type": "null"
@@ -58886,6 +58910,18 @@
                     }
                   ]
                 },
+                "firstPublicationSequence": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "detail": {
                   "oneOf": [
                     {
@@ -62038,6 +62074,18 @@
                                   "additionalProperties": false
                                 }
                               ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "firstPublicationSequence": {
+                          "anyOf": [
+                            {
+                              "type": "integer",
+                              "exclusiveMinimum": 0,
+                              "maximum": 9007199254740991
                             },
                             {
                               "type": "null"
@@ -71446,6 +71494,18 @@
                             "additionalProperties": false
                           }
                         ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "firstPublicationSequence": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
                       },
                       {
                         "type": "null"
@@ -179274,5 +179334,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e60ce618792f272a6d68d9d1949f12e415a7f9389d0d64cc0a0ab38fd9e28eb1"
+  "x-openkit-source-digest": "sha256:f77f49248e26891ece1978840f464f43177bbdf910b5ede22a3c5ad577e8155e"
 }

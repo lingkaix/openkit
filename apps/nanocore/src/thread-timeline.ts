@@ -139,8 +139,18 @@ export function projectTimelineItem(
   snapshot?: ThreadTimelineSnapshot
 ): TimelineItem {
   item = ItemSchema.parse(item);
+  // The owner's revision=1 position shares the plan boundary space; later body revisions never move it.
+  const position = snapshot?.position(item.id);
+  const firstPublicationSequence =
+    position?.itemId === item.id &&
+    position.turnId === item.turnId &&
+    Number.isSafeInteger(position.sequence) &&
+    position.sequence > 0
+      ? position.sequence
+      : null;
   const base = {
     id: item.id,
+    firstPublicationSequence,
     turnId: item.turnId,
     type: item.type,
     placement: THREAD_TIMELINE_PLACEMENT[item.type],
