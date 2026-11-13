@@ -1258,7 +1258,11 @@ export class PolicyInterception {
       ? {
           ...input.proposal.subject,
           principal: { kind: 'agent' as const, id: agent.agentId },
-          onBehalfOf: null,
+          // E10 preserves the requester separately from the reviewer's accountability chain.
+          onBehalfOf:
+            input.proposal.subject.principal.kind === 'human'
+              ? input.proposal.subject.principal.id
+              : input.proposal.subject.onBehalfOf,
           actor: {
             kind: 'agent' as const,
             id: agent.agentId,

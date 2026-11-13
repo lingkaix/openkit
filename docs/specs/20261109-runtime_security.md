@@ -1,6 +1,6 @@
 ---
 status: Accepted
-implementation: Not Started
+implementation: Partial
 kind: mechanism
 date: "2026-11-09"
 ---
@@ -426,7 +426,7 @@ Ordinary work gains no agent step: checks stay at current boundaries. The gate f
 
 ## Current Implementation Projection
 
-Nothing here is implemented; Background and the E11 inventory record the current state. The gate seam exists but its participant runs the default model in a loop (`policy/agent-gate-provider.ts`).
+The first E10 cut checks current resource authority when a Policy candidate removes or weakens an existing restriction or changes an admitted direct grant. It refuses self-relaxation of an existing restriction. Review-agent decisions preserve the direct human requester's on-behalf-of identity separately from the agent's accountable human. Full context intersection, presets, audience joins and the remaining runtime-security mechanisms are not implemented. Background and the E11 inventory describe the earlier baseline. The gate participant still runs the default model in a loop (`policy/agent-gate-provider.ts`).
 
 ## Alternatives Considered
 

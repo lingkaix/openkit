@@ -511,7 +511,7 @@ describe('agent gate at native I16', () => {
         actor: { kind: 'agent', id: agentId, responsibleUserId: userId },
         responsibleHumanId: userId,
         process: proposal.subject.process,
-        onBehalfOf: null,
+        onBehalfOf: human.id,
         credentialKind: 'worker-package',
       });
       expect(final.mediation?.subject).toEqual(proposal.subject);

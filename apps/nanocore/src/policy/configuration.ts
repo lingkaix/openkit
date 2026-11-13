@@ -15,7 +15,6 @@ import type { z } from 'zod';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
-  authorizeWorkspace,
   evaluateOwnedUserOperation,
   evaluateProductAuthorization,
   isCurrentServerPolicyAuthor,
@@ -43,9 +42,9 @@ import {
 import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
-  policyOperationDefinition,
   policyResourceUser,
   policyResourceWorkspace,
+  policyScopeContains,
   preparePolicyDocument,
   validatePolicyDocument,
 } from './statements.js';
@@ -59,6 +58,49 @@ export interface PolicyConfigurationRequest {
     readonly proposed: PolicyDocumentV1;
     readonly rationale: string;
   };
+}
+
+/** A statement from the single admitted Policy collection. */
+type PolicyStatement = PolicyDocumentV1['statements'][number];
+
+/** Only effective prohibitions, approval conditions and required gates constrain existing rights. */
+function isActiveRestriction(statement: PolicyStatement): boolean {
+  return (
+    statement.state === 'active' &&
+    ((statement.kind === 'binding' && statement.mode === 'gate') ||
+      (statement.kind === 'permission' && statement.effect !== 'allow'))
+  );
+}
+
+/** A self-targeted restriction may be strengthened, but not withdrawn or weakened by its subject. */
+function preservesRestriction(
+  before: PolicyStatement,
+  after: PolicyStatement | undefined
+): boolean {
+  if (!after || !isActiveRestriction(after)) return false;
+  const fixed = (statement: PolicyStatement) => {
+    const {
+      author: _author,
+      authoredAt: _time,
+      scope: _scope,
+      lifetime: _lifetime,
+      ...rest
+    } = statement;
+    return rest;
+  };
+  const bound = (value: string | number | undefined) =>
+    value === undefined
+      ? Number.POSITIVE_INFINITY
+      : typeof value === 'string'
+        ? Date.parse(value)
+        : value;
+  return (
+    policyDigest(fixed(before)) === policyDigest(fixed(after)) &&
+    policyScopeContains(after.scope, before.scope) &&
+    policyDigest(before.lifetime.anchor) === policyDigest(after.lifetime.anchor) &&
+    bound(after.lifetime.notAfter) >= bound(before.lifetime.notAfter) &&
+    bound(after.lifetime.uses) >= bound(before.lifetime.uses)
+  );
 }
 
 /** Native preparation preserves unrelated server configuration and stamps the real author. */
@@ -113,39 +155,82 @@ export function preparePolicyConfiguration(input: {
       409
     );
   const changedIds = new Set([...prepared.diff.added, ...prepared.diff.changed]);
-  for (const statement of prepared.document.statements) {
-    if (
-      statement.kind !== 'binding' ||
-      statement.state === 'inactive' ||
-      !changedIds.has(statement.id)
-    )
-      continue;
-    // Recheck the exact User or Workspace input owner at apply against current authority.
-
-    const resource = statement.inputDisclosure.resources[0];
-    const userId = resource ? policyResourceUser(resource) : null;
-    if (userId) {
-      if (
-        evaluateOwnedUserOperation(
-          input.coreDb,
-          input.actor,
-          userId,
-          policyOperationDefinition(statement.operation).policyOperation,
-          true
-        ).effect !== 'allow'
+  const replacedIds = new Set([...prepared.diff.changed, ...prepared.diff.removed]);
+  // E10's complete-diff ceiling includes the old constraint that a candidate removes or weakens.
+  const priorRestrictions = currentDocument.statements.filter(
+    (statement) =>
+      replacedIds.has(statement.id) &&
+      isActiveRestriction(statement) &&
+      !preservesRestriction(
+        statement,
+        prepared.document.statements.find((candidate) => candidate.id === statement.id)
       )
-        throw new Error('Policy binding input authority is unavailable.');
-      continue;
-    }
-    const workspaceId = resource ? policyResourceWorkspace(resource) : null;
+  );
+  for (const previous of priorRestrictions) {
     if (
-      !workspaceId ||
-      !authorizeWorkspace(input.coreDb, input.actor, workspaceId, {
-        mutating: true,
-        policyOperation: policyOperationDefinition(statement.operation).policyOperation,
-      })
+      previous.scope.subjects.some(
+        (subject) => subject.kind === 'human' && subject.id === input.actor.userId
+      )
     )
-      throw new Error('Policy binding input authority is unavailable.');
+      throw new Error('Policy authors cannot widen their own authority.');
+  }
+  const affected = [
+    ...prepared.document.statements.filter(
+      (statement) =>
+        changedIds.has(statement.id) &&
+        statement.state !== 'inactive' &&
+        // Adding a prohibition grants no effect or disclosure; current policy.write still applies.
+        (statement.kind !== 'permission' || statement.effect === 'allow')
+    ),
+    ...priorRestrictions,
+  ];
+  for (const statement of affected) {
+    // Finite maintenance and Goal delegation retain their dedicated authority owners.
+    if (
+      statement.kind !== 'binding' &&
+      !(
+        statement.kind === 'permission' &&
+        (statement.grant.kind === 'ordinary' || statement.grant.kind === 'storage-lease')
+      )
+    )
+      continue;
+    const scopes =
+      statement.kind === 'binding'
+        ? [statement.scope, statement.inputDisclosure]
+        : [statement.scope];
+    for (const scope of scopes) {
+      for (const resource of scope.resources) {
+        const userId = policyResourceUser(resource);
+        const workspaceId = policyResourceWorkspace(resource);
+        for (const operation of scope.actions) {
+          const kernel = userId
+            ? evaluateOwnedUserOperation(input.coreDb, input.actor, userId, operation, true)
+            : workspaceId
+              ? evaluateProductAuthorization(
+                  input.coreDb,
+                  input.actor,
+                  { kind: 'workspace', workspaceId },
+                  operation,
+                  true
+                )
+              : resource.kind === 'container' && resource.container.owner.kind === 'server'
+                ? evaluateProductAuthorization(
+                    input.coreDb,
+                    input.actor,
+                    { kind: 'server' },
+                    operation,
+                    true
+                  )
+                : null;
+          if (kernel?.effect !== 'allow')
+            throw new Error(
+              statement.kind === 'binding'
+                ? 'Policy binding input authority is unavailable.'
+                : 'Policy mutation exceeds current resource authority.'
+            );
+        }
+      }
+    }
   }
   // Restrictions may precede discovery. Their exact-name uncertainty belongs to the confirmed candidate, not a grant.
   const warnings: PolicyConfigurationWarning[] = [];
