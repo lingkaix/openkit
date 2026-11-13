@@ -63,7 +63,7 @@ jobs:
   # See the Test Execution Environment decision in docs/toolchain.md.
   test-image:
     name: Test execution image
-    if: github.event_name != 'workflow_dispatch' || inputs.gate != 'registry-admission'
+    if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || (inputs.gate != 'registry-admission' && inputs.gate != 'pr-check'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -73,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Resolve expected image identity from containers/images.json
         id: expected
@@ -157,35 +159,44 @@ jobs:
   pr-check:
     name: PR lightweight repo check
     if: github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && inputs.gate == 'pr-check')
-    needs: test-image
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      packages: read
-    container:
-      image: ${{ needs.test-image.outputs.image }}
-      options: --init
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Cache pnpm store
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Resolve local test image inputs
+        id: local-image
+        run: |
+          echo "context=$(node scripts/docker/test-image-tag.mjs --field context)" >> "${GITHUB_OUTPUT}"
+          echo "dockerfile=$(node scripts/docker/test-image-tag.mjs --field dockerfile)" >> "${GITHUB_OUTPUT}"
+          echo "digest=$(node scripts/docker/test-image-tag.mjs --digest)" >> "${GITHUB_OUTPUT}"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build job-local test execution image without publication
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          path: /pnpm/store
-          key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
-          restore-keys: pnpm-store-
+          context: ${{ steps.local-image.outputs.context }}
+          file: ${{ steps.local-image.outputs.dockerfile }}
+          load: true
+          push: false
+          tags: openkit-test-env:check
+          cache-from: type=gha
+          build-args: |
+            OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST=${{ steps.local-image.outputs.digest }}
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Run lightweight repository check
-        run: pnpm -w check:repo
+      - name: Run lightweight repository check in the job-local image
+        run: |
+          docker run --rm --init \
+            --volume "${GITHUB_WORKSPACE}:/workspace" --workdir /workspace \
+            --env CI=true openkit-test-env:check \
+            bash -c 'bash scripts/test-env.sh any pnpm install --frozen-lockfile && pnpm -w check:repo'
 
   nanohost-installer:
     name: NanoHost installer fixed-path gate (${{ matrix.runner }})
@@ -200,6 +211,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install Bubblewrap prerequisites
         run: |
@@ -220,7 +233,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -229,6 +242,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Fetch main ref
@@ -256,6 +270,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Derive complete deterministic owners
         id: plan
         run: |
@@ -275,7 +291,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -283,7 +299,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Cache pnpm store
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -321,7 +340,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.l0-l2-plan.outputs.matrix) }}
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -330,6 +349,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: ${{ matrix.id == 'static' && '0' || '1' }}
       - name: Reuse exact-commit candidate shard
         id: reuse
@@ -360,6 +380,7 @@ jobs:
           path: temp/ci-shards
       - name: Cache pnpm store
         if: steps.reuse.outputs.reused != 'true'
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -367,6 +388,7 @@ jobs:
           restore-keys: pnpm-store-
       - name: Cache locked build inputs and outputs
         if: steps.reuse.outputs.reused != 'true'
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -431,7 +453,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.l0-l2-plan.outputs.coverage) }}
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -439,6 +461,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Reuse exact-commit candidate coverage
         id: reuse
         if: github.event_name == 'push'
@@ -468,6 +492,7 @@ jobs:
           path: temp/ci-shards
       - name: Cache pnpm store
         if: steps.reuse.outputs.reused != 'true'
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -513,6 +538,8 @@ jobs:
         run: test "${PLAN_RESULT}" = success && test "${SHARDS_RESULT}" = success && test "${COVERAGE_RESULT}" = success
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Download complete shard observations
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -532,7 +559,7 @@ jobs:
       packages: read
       actions: read
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -540,6 +567,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Reuse exact-commit candidate job
         id: reuse
@@ -562,6 +591,7 @@ jobs:
 
       - name: Cache pnpm store
         if: steps.reuse.outputs.reused != 'true'
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -585,7 +615,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -593,8 +623,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Cache pnpm store
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -626,7 +659,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -634,8 +667,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Cache pnpm store
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -657,10 +693,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up the pinned root Node toolchain
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
+          cache: false
           install_args: node
 
       - name: Build the disposable app image
@@ -683,10 +722,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up the pinned NanoHost toolchain
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
+          cache: false
           working_directory: apps/nanohost
           install_args: rust
 
@@ -717,10 +759,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up the pinned NanoHost toolchain
         uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
         with:
+          cache: false
           working_directory: apps/nanohost
           install_args: rust
 
@@ -755,7 +800,7 @@ jobs:
       contents: read
       packages: read
     container:
-      image: ${{ needs.test-image.outputs.image }}
+      image: ${{ needs.test-image.outputs.image }} # zizmor: ignore[unpinned-images] test-image emits a verified repository@sha256 digest.
       options: --init
       credentials:
         username: ${{ github.actor }}
@@ -763,8 +808,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Cache pnpm store
+        # zizmor: ignore[cache-poisoning] PR jobs do not write this cache; only reviewed main/tag jobs share it.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: /pnpm/store
@@ -913,6 +961,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download exact NanoHost archive and checksum
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -1078,6 +1128,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Read release image manifest
         id: matrix
@@ -1129,6 +1181,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Select the committed intended prerelease
         id: plan
@@ -1150,6 +1203,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to GHCR
@@ -1207,6 +1262,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Log in to GHCR
@@ -1247,6 +1304,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -1283,6 +1341,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -1328,6 +1388,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -1477,6 +1538,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -1530,6 +1592,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -1778,6 +1841,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Docker Buildx
@@ -2022,6 +2086,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download image release records
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -2100,6 +2166,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1

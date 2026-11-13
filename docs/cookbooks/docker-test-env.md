@@ -22,7 +22,7 @@ This produces the `openkit/test-env:dev` local tag from the manifest. Gates do n
 node scripts/docker/test-image-tag.mjs
 ```
 
-The printed tag is a digest of the manifest-selected Dockerfile, smoke script, build context and platforms, plus `apps/web/package.json`, `scripts/retrieval-dictionary.py`, the vendored IPADIC archive and its COPYING notice. A change to any input yields a new tag, so a tree can never be tested against an image built from different image, Playwright package or retrieval dictionary inputs. CI resolves the same tag with `--owner` and publishes it to GHCR when it is absent. Adding or bumping the image Rust pin changes that digest and requires `scripts/docker/build-image.sh test-env` (local) plus CI republish of the new digest tag.
+The printed tag is a digest of the manifest-selected Dockerfile, smoke script, build context and platforms, plus `apps/web/package.json`, the locked browser package, the security-tool installer and pin manifest, `scripts/retrieval-dictionary.py`, the vendored IPADIC archive and its COPYING notice. A change to any input yields a new tag, so a tree can never be tested against an image built from different image, Playwright package or retrieval dictionary inputs. Main and tag CI resolve the same tag with `--owner` and publish it to GHCR when it is absent. Pull-request checks instead build and load a job-local image and publish nothing; their token is read-only. Adding or bumping the image Rust pin changes that digest and requires `scripts/docker/build-image.sh test-env` (local) plus CI republish of the new digest tag.
 
 The image embeds that full build-input digest. When `scripts/test-env.sh any` is already running inside the image, it compares the embedded value with the digest of the current mounted tree and exits before dependency installation or the requested command if they differ.
 
@@ -33,6 +33,8 @@ Node 26.13.0 from `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec4
 This image is an internal sibling of `worker-common` and is not built `FROM worker-common`. There is no publication dependency. A Node digest that does not equal the worker common stage is a mirror failure: update this `FROM` line in the same change as the worker baseline, which changes `OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST` and forces a rebuild.
 
 Contents come from what the gates execute. No worker runtime is installed: checks that drive a real Codex, OpenCode, or Pi runtime are host-placed and use the developer's own CLI and credentials. Adding a runtime here would also put its release cadence on the critical path of every unrelated gate, because its version pin is a build input and therefore part of the tag.
+
+The image also supplies the committed, checksum-pinned offline workflow linter. `check:repo` and release preflight require it. Native Linux hosts provision the same tool through the [toolchain guide](../toolchain.md#security-tool-provisioning). Browser files come from the digest-pinned Playwright supply stage; their CLI package uses a committed npm lock with scripts disabled. The final runtime remains on the Worker Node digest.
 
 Two environment declarations carry contract rather than tooling:
 
@@ -55,7 +57,7 @@ This is the supported way in: it resolves the tag, builds if needed, and applies
 scripts/docker/smoke-image.sh test-env
 ```
 
-It reports Node, pnpm, Git, jq, Python 3, rustc, cargo, clippy, rustfmt, and the installed Chromium. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
+It reports Node, pnpm, zizmor, Git, jq, Python 3, rustc, cargo, clippy, rustfmt, and the installed Chromium. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
 
 ## Reclaim Disk
 

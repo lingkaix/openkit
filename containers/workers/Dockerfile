@@ -18,9 +18,11 @@ RUN apt-get update \
     git \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g corepack@0.36.0 \
+RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} from "node:crypto"; const r=await fetch("https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz"); if(!r.ok) throw Error("Corepack download failed"); const b=Buffer.from(await r.arrayBuffer()); if(createHash("sha512").update(b).digest("hex")!=="4a2889b01859a9d0623c74c497a393dec012ad1aca21c61340cb15197c7a104fe033c5853306237885fc4edf11894e08bf627a2db4fc2a919f08eb01a51581ff") throw Error("Corepack checksum mismatch"); fs.writeFileSync("/tmp/corepack.tgz",b);' \
+  && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
+  && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3 --activate \
+  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
   && pnpm --version
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
@@ -116,9 +118,11 @@ RUN apt-get update \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
-RUN npm install -g corepack@0.36.0 \
+RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} from "node:crypto"; const r=await fetch("https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz"); if(!r.ok) throw Error("Corepack download failed"); const b=Buffer.from(await r.arrayBuffer()); if(createHash("sha512").update(b).digest("hex")!=="4a2889b01859a9d0623c74c497a393dec012ad1aca21c61340cb15197c7a104fe033c5853306237885fc4edf11894e08bf627a2db4fc2a919f08eb01a51581ff") throw Error("Corepack checksum mismatch"); fs.writeFileSync("/tmp/corepack.tgz",b);' \
+  && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
+  && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3 --activate \
+  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
   && pnpm --version
 
 RUN set -eux; \
@@ -159,6 +163,7 @@ COPY --chmod=0755 containers/workers/openkit-file-effect /usr/local/bin/openkit-
 COPY --chmod=0755 containers/workers/openkit-worker-shim /usr/local/bin/openkit-worker-shim
 COPY --chmod=0755 containers/workers/smoke-common.sh /usr/local/bin/openkit-worker-common-smoke
 COPY --chmod=0755 containers/workers/openkit-worker-common-base-smoke.sh /usr/local/bin/openkit-worker-common-base-smoke
+COPY --chmod=0644 containers/workers/python-tools.txt /usr/local/lib/openkit/python-tools.txt
 
 RUN /usr/sbin/groupmod --new-name sandbox node \
   && /usr/sbin/usermod --login sandbox --home /sandbox --shell /bin/bash node \
@@ -186,7 +191,8 @@ RUN /usr/sbin/groupmod --new-name sandbox node \
     /workspace/outputs \
     /workspace/scratch \
     /workspace/.openkit/cache \
-  && uv venv --python "${PYTHON_VERSION}" --seed /opt/openkit/venv \
+  && uv venv --python "${PYTHON_VERSION}" /opt/openkit/venv \
+  && uv pip install --python /opt/openkit/venv/bin/python --no-build --no-deps --require-hashes -r /usr/local/lib/openkit/python-tools.txt \
   && uv cache clean \
   && printf '%s\n' \
     'export PATH="/opt/openkit/venv/bin:/usr/local/bin:/usr/bin:/bin"' \
@@ -247,17 +253,15 @@ RUN export CODEX_HOME=/tmp/codex-home \
   set -eux; \
   mkdir -p "${CODEX_HOME}"; \
   case "${TARGETARCH:-amd64}" in \
-    amd64) codex_npm_arch="x64"; codex_npm_tag="linux-x64"; codex_target="x86_64-unknown-linux-musl" ;; \
-    arm64) codex_npm_arch="arm64"; codex_npm_tag="linux-arm64"; codex_target="aarch64-unknown-linux-musl" ;; \
+    amd64) codex_npm_tag="linux-x64"; codex_target="x86_64-unknown-linux-musl"; codex_sha512="0b10e6dfe0f57296c625e1eb77320da06fb7c27f4156770fe2aa5969a3589317bc88fb5124e6320899e73e8563591201bc8f6f3ca6d1a227ec312039c43694a7" ;; \
+    arm64) codex_npm_tag="linux-arm64"; codex_target="aarch64-unknown-linux-musl"; codex_sha512="c3449c02c06bf5a64ab4816b87a1cde8a536ca328a7920b361f6dbec307409c8f80583f3799b54790a6b6f270b0b0b97dc015075b7636a998b868da2a2def88d" ;; \
     *) echo "Unsupported Codex Docker target architecture: ${TARGETARCH}" >&2; exit 1 ;; \
   esac; \
-  npm install \
-    --prefix /tmp/codex-native \
-    --omit=dev \
-    --ignore-scripts \
-    "@openai/codex-linux-${codex_npm_arch}@npm:@openai/codex@${CODEX_CLI_VERSION}-${codex_npm_tag}"; \
+  curl --proto '=https' --tlsv1.2 -fsSL "https://registry.npmjs.org/@openai/codex/-/codex-${CODEX_CLI_VERSION}-${codex_npm_tag}.tgz" -o /tmp/codex.tgz; \
+  echo "${codex_sha512}  /tmp/codex.tgz" | sha512sum -c -; \
   mkdir -p /usr/local/lib/codex; \
-  cp -R "/tmp/codex-native/node_modules/@openai/codex-linux-${codex_npm_arch}/vendor/${codex_target}/." /usr/local/lib/codex/; \
+  tar -xzf /tmp/codex.tgz --strip-components=3 -C /usr/local/lib/codex "package/vendor/${codex_target}"; \
+  rm /tmp/codex.tgz; \
   ln -s /usr/local/lib/codex/bin/codex /usr/local/bin/codex; \
   codex --version; \
   codex exec --help >/dev/null; \
@@ -271,7 +275,11 @@ RUN export CODEX_HOME=/tmp/codex-home \
     /tmp/npm-cache
 
 # Native packages resolve from the shim's ancestor, without entering worker-common.
-RUN export HOME=/tmp/runtime-home \
+COPY containers/workers/runtime-supply/package.json containers/workers/runtime-supply/package-lock.json /usr/local/lib/openkit/runtime-supply/
+RUN test "$(node -p 'require("/usr/local/lib/openkit/runtime-supply/package.json").dependencies["@opencode/cli"]')" = "${OPENCODE_VERSION}" \
+  && test "$(node -p 'require("/usr/local/lib/openkit/runtime-supply/package.json").dependencies["@opencode/client"]')" = "${OPENCODE_VERSION}" \
+  && test "$(node -p 'require("/usr/local/lib/openkit/runtime-supply/package.json").dependencies["@deepseek-ai/dsh"]')" = "${DEEPSEEK_VERSION}" \
+  && export HOME=/tmp/runtime-home \
     NPM_CONFIG_CACHE=/tmp/npm-cache \
     XDG_CACHE_HOME=/tmp/runtime-cache \
     XDG_CONFIG_HOME=/tmp/runtime-config \
@@ -279,15 +287,28 @@ RUN export HOME=/tmp/runtime-home \
     XDG_STATE_HOME=/tmp/runtime-state \
     OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_MODELS_FETCH=1 \
-  && npm install --prefix /usr/local/lib/openkit/runtime-supply --omit=dev \
-    "@opencode/cli@${OPENCODE_VERSION}" \
-    "@opencode/client@${OPENCODE_VERSION}" \
-    "@deepseek-ai/dsh@${DEEPSEEK_VERSION}" \
+  && npm ci --prefix /usr/local/lib/openkit/runtime-supply --omit=dev --ignore-scripts --no-audit --no-fund \
   && ln -s runtime-supply/node_modules /usr/local/lib/openkit/node_modules \
   && ln -s /usr/local/lib/openkit/runtime-supply/node_modules/.bin/opencode /usr/local/bin/opencode \
   && ln -s /usr/local/lib/openkit/runtime-supply/node_modules/.bin/dsh /usr/local/bin/dsh \
+  && rm -rf /tmp/npm-cache /tmp/runtime-home /tmp/runtime-cache /tmp/runtime-config /tmp/runtime-data /tmp/runtime-state
+
+# OpenCode's existing allowlisted postinstall links its locked native optional package.
+# Enforce the canonical allowlist and prohibit any network download during that one script.
+COPY pnpm-workspace.yaml /tmp/runtime-build-policy/pnpm-workspace.yaml
+RUN --network=none cd /tmp/runtime-build-policy \
+  && pnpm config get onlyBuiltDependencies --json | node -e 'const fs=require("node:fs"); if(!JSON.parse(fs.readFileSync(0,"utf8")).includes("@opencode/cli")) throw Error("OpenCode build script is not allowlisted");' \
+  && export HOME=/tmp/runtime-home \
+    NPM_CONFIG_CACHE=/tmp/npm-cache \
+    XDG_CACHE_HOME=/tmp/runtime-cache \
+    XDG_CONFIG_HOME=/tmp/runtime-config \
+    XDG_DATA_HOME=/tmp/runtime-data \
+    XDG_STATE_HOME=/tmp/runtime-state \
+    OPENCODE_DISABLE_AUTOUPDATE=1 \
+    OPENCODE_DISABLE_MODELS_FETCH=1 \
+  && npm rebuild --prefix /usr/local/lib/openkit/runtime-supply @opencode/cli --offline --ignore-scripts=false --no-audit --no-fund \
   && opencode --version \
-  && rm -rf /tmp/npm-cache /tmp/runtime-home /tmp/runtime-cache /tmp/runtime-config /tmp/runtime-data /tmp/runtime-state \
+  && rm -rf /tmp/runtime-build-policy /tmp/npm-cache /tmp/runtime-home /tmp/runtime-cache /tmp/runtime-config /tmp/runtime-data /tmp/runtime-state \
   && test ! -e /etc/opencode
 
 # Preserve the frozen workspace patch and every transitive production asset.

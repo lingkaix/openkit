@@ -449,6 +449,11 @@ function makeReleaseFixture(options = {}) {
     chmodSync(cliPath, 0o755);
   }
 
+  mkdirSync(join(root, '.github', 'workflows'), { recursive: true });
+  writeFileSync(
+    join(root, '.github', 'workflows', 'fixture.yml'),
+    "name: Fixture\non: push\npermissions: {}\njobs:\n  check:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: 'true'\n"
+  );
   mkdirSync(join(root, 'apps', 'nanohost', 'deploy'), { recursive: true });
   mkdirSync(join(root, 'apps', 'nanohost', 'openshell'), { recursive: true });
   writeFileSync(

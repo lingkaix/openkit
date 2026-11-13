@@ -67,7 +67,7 @@ Use the [Sandbox Container Tests manual](./skills/openkit-ops/references/sandbox
 
 ### Start Contributing
 
-Read the [Contributing Guide](./CONTRIBUTING.md) for the development and review workflow. Use the [Toolchain guide](./docs/toolchain.md) for repository setup, dependencies, pinned tools, test environments, and canonical command ownership.
+Read the [Contributing Guide](./CONTRIBUTING.md) for the development and review workflow. Use the [Toolchain guide](./docs/toolchain.md) for repository setup, dependencies, pinned tools, test environments, and canonical command ownership. Native Linux checks also need the checksum-pinned security tools; `pnpm security:tools` installs them from the committed manifest. The test execution image already provides them.
 
 ### Understand The System
 

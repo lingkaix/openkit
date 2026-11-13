@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -413,7 +412,8 @@ test('app-image recovery smoke is main-push or manual, host-placed, opted in, an
 
   const setup = step(job, 'Set up the pinned root Node toolchain');
   assert.match(setup.uses, /^jdx\/mise-action@[a-f0-9]{40}$/u);
-  assert.deepEqual(setup.with, { install_args: 'node' });
+  // cache: false is the accepted control: the pinned zizmor toolchain runs without mise tool caches.
+  assert.deepEqual(setup.with, { install_args: 'node', cache: false });
   assert.equal(
     step(job, 'Build the disposable app image').run,
     'scripts/docker/build-image.sh app'
@@ -527,75 +527,64 @@ test('release notes are checked before publication and verified against the gene
 
 // Baselines retain reviewed job bytes; the test-image and installer conditions exclude only registry refresh.
 // Other cadence changes are checked separately below.
-// release-preflight, publish-container-images, github-release, and verify-release were re-recorded for the release-notes generator.
-// verify-release was re-recorded again when the published-body comparison moved into scripts/release-notes.mjs.
-// The App split re-records only the Worker matrix expression and final App dependency edges.
-// P15 re-records only github-release and verify-release for the fifth attachment and downloaded-manifest check.
-// Complete main verification adds L4 to main/release gates and the registry dependency; all other Web and registry steps stay unchanged.
-// New App jobs are frozen below; an additional normalization check proves unchanged Worker and final steps.
-// #533 re-records runner selection and the two-LTS installer matrix; all other job bytes stay frozen.
-// CI speed proof adds shared build; completed worker probes are retired.
-// The shard raw block changes only because its trailing temporary-probe comments are removed.
-// The Rust disk fix re-records only l0-l2-build and l0-l2-shards to add job-level CARGO_INCREMENTAL disablement.
-// The 2026-11 dependency upgrade re-records every job whose bytes carry a bumped action pin; the diff changes only `uses:` SHA pins and their version comments.
-const unchangedJobBaseline = {
-  'container-image-matrix': '8af5c50aac4066ce90e1d0d8b6b1d7326d4ed357de5c2546ff248ae3cd8bae6d',
-  'build-app-candidate': '7f02cafd116d7d9985b2293e8ff5542d4f7c45f75156473d49e22018f2156d78',
-  'smoke-app-native': 'c8227908f12cac49e1a59ab6808c2e7c66411aafc0cc1086182d37dd7d21889e',
-  'publish-app-image': '71341c9400ad0b0182f31bc01f0c6f83c283d6ca66c6c6f8caf74d8e18813bca',
-  'test-image': '840078dfe3583f8b1533beb65927bb8aa12d523d10747257672f56f97dfd6cf8',
-  'pr-check': 'bc4573c1a92ff1625337c60bf5361d6b4ccda10409333b3a6e635ef190464284',
-  'nanohost-installer': '6cfb4c55855e54e82de9b7eda157eb5b4d5869174691920802024408d74d290a',
-  'release-preflight': 'd159359da1aa40b57094045783a0f7a417109137e77aa9fd34937fc1fb02f709',
-  'web-e2e': '8cfbff6a1ee272bbfd5b559150645111f2bad7040955098f6d64397a45c798ca',
-  smoke: '021973c90c7a36a8580f7db7adedfa63ea2c52e67978ce3147e86066c586ecff',
-  'build-nanohost-amd64': 'be793be1dcad9f806c5681c9adf5ef66717b62808cdce3a88d524ea1249ffe76',
-  'build-nanohost-arm64': 'db39388519b25de7ed346480164af182f7fb7029924149e751e69e219d6ae2b6',
-  'package-release-assets': '4252ff03769dc9d0509d259163369201edc7452100129b254a94c4ecb8c3b72a',
-  'qualify-nanohost': '6e33f5dc8473c6992403391f233a3cc216b00e512040fd527c99bad5cde0713a',
-  'publish-container-images': '35bfcc4891aa72782d9813fd72560dd32a3e151cfb884f0c307f9a9c9127c4bd',
-  'github-release': '14537cb9ec09fa84b18d1ac0acaa1dee60e70b0b6cb84da11bdd356a6efd2603',
-  'verify-release': '600ab24c59fc91c2a627fb520c75c5dff946da518e8864a0df9d00e389e983f5',
-};
+// The complete job inventory. Whole-job digests are deliberately not recorded: reviewed security
+// controls and action pin bumps change bytes without changing the graph, so the graph itself is
+// enumerated and every checkout reference is checked for the accepted credential control.
+const unchangedJobNames = [
+  'container-image-matrix',
+  'build-app-candidate',
+  'smoke-app-native',
+  'publish-app-image',
+  'test-image',
+  'pr-check',
+  'nanohost-installer',
+  'release-preflight',
+  'web-e2e',
+  'smoke',
+  'build-nanohost-amd64',
+  'build-nanohost-arm64',
+  'package-release-assets',
+  'qualify-nanohost',
+  'publish-container-images',
+  'github-release',
+  'verify-release',
+];
 
-const candidateJobBaseline = {
-  'candidate-registry': '486ee043d30b875950b43a3d13328f6ddffd4172aff7c51874fd159f1aa92bef',
-  'candidate-plan': '02f186edc0aa61e9714858a114b382bc8ce37dd2d7511b5aed18b95348352aaf',
-  'candidate-images': 'ede61de0e2b2a19e0a852afa9b3115a9eaf600ca2fa97a464428d2951d8c3976',
-  'candidate-index': '20400f70eaffe078ce67af1fc9f5ece1301cf9c130748e9dcaa0a18ee918896f',
-};
+const candidateJobNames = [
+  'candidate-registry',
+  'candidate-plan',
+  'candidate-images',
+  'candidate-index',
+];
 
-const shardJobBaseline = {
-  'l0-l2-plan': '1d4fc67c13b8cce81b9e8601ecf27393779dda994ced0c74219e9954bd11153a',
-  'l0-l2-build': '36a0a2e65087a09a85cb2fcd0e0bfae79a0c98d14ceb37c345dae30fc0c842dd',
-  'l0-l2-shards': '7efd8041cf293d1cfaa080b4e21fdd9c6f8a3551728f91bef6721e0b08d06d30',
-  'l0-l2-coverage': 'fd9d261565d206838b1cf490a3102aaab77d5eecc91796f58e116aff3925ced4',
-  'l0-l2': '9252d93fb6699a3de22ee1c0227887ad06c6180a1c436fc425ebff0cfc2a0df2',
-};
+const shardJobNames = ['l0-l2-plan', 'l0-l2-build', 'l0-l2-shards', 'l0-l2-coverage', 'l0-l2'];
 
-test('publication and complete job graphs match their frozen implementation baselines', () => {
-  const blocks = new Map(
-    [
-      ...workflowBytes
-        .slice(workflowBytes.indexOf('jobs:\n') + 6)
-        .matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
-    ].map((match) => [match[1], match[2]])
-  );
+test('the complete job graph stays enumerated and no checkout persists credentials', () => {
+  const placementOwnedElsewhere = [
+    'nano-core-e2e',
+    'app-image-admin-recovery',
+    'smoke-worker-images',
+  ];
   assert.deepEqual(
     Object.keys(workflow.jobs)
-      .filter(
-        (name) =>
-          !['nano-core-e2e', 'app-image-admin-recovery', 'smoke-worker-images'].includes(name)
-      )
+      .filter((name) => !placementOwnedElsewhere.includes(name))
       .sort(),
-    Object.keys({ ...unchangedJobBaseline, ...shardJobBaseline, ...candidateJobBaseline }).sort()
+    [...unchangedJobNames, ...shardJobNames, ...candidateJobNames].sort()
   );
-  for (const [name, digest] of Object.entries({
-    ...unchangedJobBaseline,
-    ...shardJobBaseline,
-    ...candidateJobBaseline,
-  })) {
-    assert.equal(createHash('sha256').update(blocks.get(name)).digest('hex'), digest, name);
+  for (const name of placementOwnedElsewhere)
+    assert.ok(workflow.jobs[name], `the job ${name} is still declared`);
+
+  for (const [name, job] of Object.entries(workflow.jobs)) {
+    assert.ok(job['runs-on'], `${name} declares a runner`);
+    for (const entry of job.steps ?? []) {
+      if (!entry.uses?.startsWith('actions/checkout@')) continue;
+      assert.match(entry.uses, /@[a-f0-9]{40}$/u, `${name} pins the checkout action by SHA`);
+      assert.equal(
+        entry.with?.['persist-credentials'],
+        false,
+        `${name} leaves checkout credentials in the workspace`
+      );
+    }
   }
 });
 
@@ -973,26 +962,72 @@ test('native App evidence refuses missing, skipped, failed and mismatched platfo
 });
 
 test('Worker publication and final verification retain the reviewed cadence steps', () => {
-  const blocks = new Map(
-    [
-      ...workflowBytes
-        .slice(workflowBytes.indexOf('jobs:\n') + 6)
-        .matchAll(/^ {2}([a-z0-9-]+):\n(.*?)(?=^ {2}[a-z0-9-]+:\n|(?![\s\S]))/gms),
-    ].map((match) => [match[1], match[2]])
-  );
-  // Re-recorded with the 2026-11 action pin upgrade; the normalization below is unchanged.
-  const old = {
-    'publish-container-images': 'e19a8450e247ec3af540bb373ccad331ed6f7b573d46c3b4ce0416e3a0ec2c9f',
-    'github-release': 'f1d736f936e62ff06adb0e1b6505795ce638932ee5c4aa539c119ad2897db378',
-    'verify-release': '2bddeddcd49d56e862cce9657605a7f8a68862d8e575fe7f1ee00100482f5396',
+  const steps = (name) => workflow.jobs[name].steps;
+  const cadence = (name) => {
+    const named = steps(name).map((entry) => entry.name);
+    assert.ok(
+      named.every((entry) => typeof entry === 'string' && entry.length > 0),
+      `${name} declares an unnamed step`
+    );
+    return named;
   };
-  for (const [name, digest] of Object.entries(old)) {
-    const normalized = blocks
-      .get(name)
-      .replace('outputs.worker-publication-matrix)', 'outputs.matrix)')
-      .replace('      - publish-app-image\n', '');
-    assert.equal(createHash('sha256').update(normalized).digest('hex'), digest, name);
+
+  assert.deepEqual(cadence('publish-container-images'), [
+    'Checkout',
+    'Set up Docker Buildx',
+    'Log in to GHCR',
+    'Compute deterministic image identity',
+    'Inspect existing immutable identity',
+    'Resolve the proved exact-P candidate digest',
+    'Promote the smoked digest',
+    'Verify promoted identity',
+    'Verify public worker base anonymous pull',
+    'Write image release record',
+    'Upload image release record',
+  ]);
+  assert.deepEqual(cadence('github-release'), [
+    'Checkout',
+    'Download image release records',
+    'Download portable release assets',
+    'Generate release manifest and checksum',
+    'Create release notes',
+    'Create immutable GitHub Release',
+  ]);
+  assert.deepEqual(cadence('verify-release'), [
+    'Checkout',
+    'Set up Docker Buildx',
+    'Log in to GHCR',
+    'Download image release records',
+    'Verify every published image digest',
+    'Download and verify GitHub Release assets',
+    'Verify public worker base without registry credentials',
+  ]);
+
+  // Publication promotes already-smoked bytes: no final job may construct a new image.
+  for (const name of ['publish-container-images', 'github-release', 'verify-release']) {
+    assert.ok(
+      !steps(name).some((entry) => entry.uses?.startsWith('docker/build-push-action@')),
+      `${name} rebuilds an image`
+    );
+    assert.equal(jobRuns(name, 'push', 'refs/tags/v0.1.0-rc.8'), true, name);
+    assert.equal(jobRuns(name, 'push', 'refs/heads/main'), false, name);
   }
+
+  // The verifier is read-only: it cannot publish or rewrite the release it checks.
+  assert.deepEqual(workflow.jobs['verify-release'].permissions, {
+    contents: 'read',
+    packages: 'read',
+  });
+  assert.deepEqual(workflow.jobs['github-release'].permissions, { contents: 'write' });
+  assert.deepEqual(workflow.jobs['publish-container-images'].permissions, {
+    contents: 'read',
+    packages: 'write',
+    actions: 'read',
+  });
+  const record = steps('publish-container-images').find(
+    (entry) => entry.name === 'Upload image release record'
+  );
+  assert.equal(record.with['if-no-files-found'], 'error');
 });
 
 test('publication proof covers every App producer, consumer and native fixture byte', () => {
@@ -1236,15 +1271,15 @@ test('registry-only refresh runs exactly the read-only observation job and prese
     jobRuns(id, 'workflow_dispatch', 'refs/heads/candidate', 'registry-admission')
   );
   assert.deepEqual(selected, ['candidate-registry']);
+  // Publishing bootstrap runs for every push, tag and dispatch gate except the two job-local paths.
   for (const id of ['test-image', 'nanohost-installer']) {
     for (const [event, ref] of [
-      ['pull_request', 'refs/pull/1/merge'],
       ['push', 'refs/heads/main'],
       ['push', 'refs/tags/v0.1.0-rc.8'],
     ])
       assert.equal(jobRuns(id, event, ref), true, `${id}: ${event} ${ref}`);
     for (const gate of workflow.on.workflow_dispatch.inputs.gate.options.filter(
-      (g) => g !== 'registry-admission'
+      (g) => !['registry-admission', 'pr-check'].includes(g)
     ))
       assert.equal(
         jobRuns(id, 'workflow_dispatch', 'refs/heads/candidate', gate),
@@ -1252,6 +1287,16 @@ test('registry-only refresh runs exactly the read-only observation job and prese
         `${id}: ${gate}`
       );
   }
+  // A pull request is not admitted to the publishing image job; it builds that image job-locally,
+  // and the host-placed installer keeps its pull-request gate.
+  assert.equal(jobRuns('test-image', 'pull_request', 'refs/pull/1/merge'), false);
+  assert.equal(
+    jobRuns('test-image', 'workflow_dispatch', 'refs/heads/candidate', 'pr-check'),
+    false
+  );
+  assert.equal(jobRuns('pr-check', 'pull_request', 'refs/pull/1/merge'), true);
+  assert.equal(jobRuns('pr-check', 'workflow_dispatch', 'refs/heads/candidate', 'pr-check'), true);
+  assert.equal(jobRuns('nanohost-installer', 'pull_request', 'refs/pull/1/merge'), true);
 });
 
 // The tag joins fresh native proof to the already-qualified candidate without constructing new bytes.

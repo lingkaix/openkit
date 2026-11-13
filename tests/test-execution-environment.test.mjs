@@ -32,19 +32,23 @@ const rootManifest = JSON.parse(read('package.json'));
 const webManifest = JSON.parse(read('apps/web/package.json'));
 const ciWorkflow = parse(read('.github/workflows/ci.yml'));
 const turboTasks = JSON.parse(read('turbo.json')).tasks;
-const retrievalDictionaryInputs = [
+const additionalImageBuildInputs = [
+  'containers/test-env/browser-tools/package.json',
+  'containers/test-env/browser-tools/package-lock.json',
+  'scripts/install-security-tools.mjs',
+  'scripts/security-tools.json',
   'scripts/retrieval-dictionary.py',
   'packages/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
   'packages/retrieval-kernel/vendor/IPADIC-COPYING',
 ];
 
 /**
- * Supplies the exact dictionary build inputs required by the real image digest producer.
+ * Supplies the exact auxiliary inputs required by the real image digest producer.
  *
  * @param {string} fixtureRoot Isolated checkout-shaped fixture root.
  */
-function copyRetrievalDictionaryInputs(fixtureRoot) {
-  for (const relativePath of retrievalDictionaryInputs) {
+function copyImageBuildInputs(fixtureRoot) {
+  for (const relativePath of additionalImageBuildInputs) {
     const destination = join(fixtureRoot, relativePath);
     mkdirSync(dirname(destination), { recursive: true });
     copyFileSync(join(repoRoot, relativePath), destination);
@@ -322,7 +326,7 @@ test('inside-image placement rejects a stale build-input digest before running t
     ]) {
       writeFileSync(join(fixtureRoot, relativePath), read(relativePath));
     }
-    copyRetrievalDictionaryInputs(fixtureRoot);
+    copyImageBuildInputs(fixtureRoot);
     writeFileSync(fixtureIdentity, 'sha256:stale\n');
     writeFileSync(`${fixtureIdentity}-build-input-digest`, 'sha256:stale\n');
 
@@ -385,20 +389,42 @@ test('test image does not globally select the internal self-check executor', () 
 
 test('test image installs the exact workspace Playwright version', () => {
   const workspaceDeclaration = webManifest.devDependencies['@playwright/test'];
-  const workspaceVersion = workspaceDeclaration.replace(/^[~^]/u, '');
-  const dockerVersion = testImageDockerfile.match(/playwright@(\d+\.\d+\.\d+)\s+install/u)?.[1];
+  assert.match(
+    workspaceDeclaration,
+    /^\d+\.\d+\.\d+$/u,
+    'the workspace does not pin Playwright exactly'
+  );
+  const workspaceVersion = workspaceDeclaration;
 
-  assert.deepEqual(
-    {
-      dockerVersion,
-      workspaceDeclaration,
-      workspaceDeclarationIsExact: /^\d+\.\d+\.\d+$/u.test(workspaceDeclaration),
-    },
-    {
-      dockerVersion: workspaceVersion,
-      workspaceDeclaration: workspaceVersion,
-      workspaceDeclarationIsExact: true,
-    }
+  // The image installs the browser tooling from a committed, locked manifest instead of an
+  // unverified inline npx download, and the lock must resolve the workspace version.
+  const browserTools = JSON.parse(read('containers/test-env/browser-tools/package.json'));
+  assert.equal(browserTools.dependencies.playwright, workspaceVersion);
+  const browserLock = JSON.parse(read('containers/test-env/browser-tools/package-lock.json'));
+  assert.equal(browserLock.packages['node_modules/playwright'].version, workspaceVersion);
+  assert.match(
+    testImageDockerfile,
+    /^RUN npm ci --prefix \/opt\/openkit-browser-tools --ignore-scripts/mu,
+    'containers/test-env/Dockerfile does not install the locked browser tooling'
+  );
+  assert.doesNotMatch(
+    testImageDockerfile,
+    /npx\b[^\n]*playwright@/u,
+    'containers/test-env/Dockerfile still installs browser tooling from an unverified inline source'
+  );
+
+  // Browser bytes come from the digest-pinned official supplier at that same version.
+  const supplier = testImageDockerfile.match(
+    /^FROM mcr\.microsoft\.com\/playwright:v(\d+\.\d+\.\d+)-noble@sha256:([a-f0-9]{64}) AS browser-supply$/mu
+  );
+  assert.ok(
+    supplier,
+    'containers/test-env/Dockerfile does not copy browser bytes from a digest-pinned supplier stage'
+  );
+  assert.equal(supplier[1], workspaceVersion);
+  assert.match(
+    testImageDockerfile,
+    /^COPY --from=browser-supply \/ms-playwright\/ \/ms-playwright\/$/mu
   );
 });
 
@@ -412,7 +438,17 @@ test('test image smoke requires Playwright headless-shell and rejects Xvfb', () 
     mkdirSync(forbiddenBin);
     // Tool version probes are external effects of this browser-inventory check.
     // Isolate them so the host's installed runtimes and Xvfb cannot decide it.
-    for (const command of ['node', 'pnpm', 'git', 'jq', 'python3', 'rustc', 'cargo', 'rustfmt']) {
+    for (const command of [
+      'node',
+      'pnpm',
+      'zizmor',
+      'git',
+      'jq',
+      'python3',
+      'rustc',
+      'cargo',
+      'rustfmt',
+    ]) {
       writeFileSync(
         join(fakeBin, command),
         '#!/bin/sh\ncase "$*" in --version|"clippy --version") echo fixture-version;; *) exit 97;; esac\n',
@@ -560,7 +596,7 @@ test('test image content tag changes with every manifest-selected build input', 
       read('containers/test-env/smoke.sh')
     );
     writeFileSync(fixtureWebManifest, `${JSON.stringify(webManifest)}\n`);
-    copyRetrievalDictionaryInputs(fixtureRoot);
+    copyImageBuildInputs(fixtureRoot);
 
     const before = spawnSync(process.execPath, [tagScript], {
       cwd: fixtureRoot,
@@ -622,7 +658,7 @@ test('test image content tag changes with every manifest-selected build input', 
       'test image tag does not cover every manifest-selected build input'
     );
     writeFileSync(fixtureImageManifest, JSON.stringify(fixtureManifest));
-    for (const relativePath of retrievalDictionaryInputs) {
+    for (const relativePath of additionalImageBuildInputs) {
       const fixtureInput = join(fixtureRoot, relativePath);
       const original = readFileSync(fixtureInput);
       writeFileSync(fixtureInput, Buffer.concat([original, Buffer.from('changed fixture input')]));
@@ -678,7 +714,7 @@ function prepareInImageFixture(digestFileContents) {
   ]) {
     writeFileSync(join(fixtureRoot, relativePath), read(relativePath));
   }
-  copyRetrievalDictionaryInputs(fixtureRoot);
+  copyImageBuildInputs(fixtureRoot);
   writeFileSync(fixtureIdentity, 'identity\n');
   const digest =
     digestFileContents ??

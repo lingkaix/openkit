@@ -16,6 +16,7 @@ print_required_version() {
 # required for NanoHost Cargo gates inside the image.
 print_required_version "node" node --version
 print_required_version "pnpm" pnpm --version
+print_required_version "zizmor" zizmor --version
 print_required_version "git" git --version
 print_required_version "jq" jq --version
 print_required_version "python3" python3 --version

@@ -1,0 +1,10 @@
+{
+  "name": "openkit-worker-runtime-supply",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "@deepseek-ai/dsh": "0.2.1-rc.5",
+    "@opencode/cli": "2.2.5",
+    "@opencode/client": "2.2.5"
+  }
+}

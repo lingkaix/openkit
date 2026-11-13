@@ -1,9 +1,19 @@
 packages:
   - 'apps/*'
   - 'packages/*'
+minimumReleaseAge: 4320
+minimumReleaseAgeExclude: []
+strictDepBuilds: true
+blockExoticSubdeps: true
 patchedDependencies:
   '@earendil-works/pi-coding-agent@1.4.0': patches/pi-coding-agent-1.4.0-openkit-native-state.patch
 allowBuilds:
+  # Keep previously ignored optional runtime helpers disabled; no new script is enabled.
+  '@deepseek-ai/dsh-subprocess-local': false
+  '@mongodb-js/zstd': false
+  koffi: false
+  node-liblzma: false
+  node-pty: false
   '@google/genai': false
   '@opencode/cli': true
   better-sqlite3: true

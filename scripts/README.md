@@ -2,6 +2,8 @@
 
 Root `package.json` owns the command surface and `docs/toolchain.md` owns setup and execution placement. These scripts implement those commands; they do not supply design authority.
 
+`install-security-tools.mjs` installs only tools and platform archives in `security-tools.json`, verifying SHA-256 before extraction. Invoke it through `pnpm security:tools --tool zizmor --directory <tool-directory>` and put that directory on `PATH` for native checks. `check-workflows.mjs` runs the pinned offline `zizmor`; it prints only the finding id, severity and source location, never workflow source. `pnpm check:workflows --all`, `check:repo`, and release preflight run this check. The development image provides the same pinned tools.
+
 `release-tests.mjs` builds `@openkit/policy-kernel` and `@openkit/storage` before Worker Shim coverage collection. The transport tests use real NanoCore Gateway helpers; their native command and capture dependencies reach the Policy and Storage owners. This adds the required built packages to the existing preparation step without building NanoCore or changing test selection.
 
 `validate-test-governance.mjs --run -- <command>` retains command failures and rejects undeclared TAP skips. It also rejects positive unnamed skipped counts from Vitest and Node's default and spec reporters because those summaries cannot prove file-bound skip authorization. It removes ANSI decoration for skip parsing and retains the original output for display.

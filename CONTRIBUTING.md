@@ -63,11 +63,14 @@ Follow [`docs/cookbooks/nanohost-real-use-host.md`](./docs/cookbooks/nanohost-re
 # Install toolchain, dependencies, and tracked git hooks
 bash scripts/repo-init.sh
 
+# Install the checksum-pinned workflow linter for native Linux checks
+pnpm security:tools --tool zizmor --directory "$HOME/.local/bin"
+
 # Verify the repository baseline
 pnpm verify
 ```
 
-`repo-init.sh` installs the pinned toolchain with mise and then checks that bare `node` and `pnpm` resolve to it. If it reports otherwise, follow the `PATH` instruction it prints before running anything else: every command below assumes bare `pnpm` is the pinned pnpm.
+The chosen security-tool directory must be on `PATH` before checks run. The development image already contains these tools. `repo-init.sh` installs the pinned toolchain with mise and then checks that bare `node` and `pnpm` resolve to it. If it reports otherwise, follow the `PATH` instruction it prints before running anything else: every command below assumes bare `pnpm` is the pinned pnpm.
 
 Docker is not required for ordinary checks. They run on this machine by default; a Worker Agent sandbox is also permitted. CI runs the same gates inside the `test-env` image, which is authoritative on disagreement. An explicit `OPENKIT_TEST_USE_IMAGE=1` invocation is a labelled second opinion and never a retry. The Test Execution Environment decision in [`docs/toolchain.md`](./docs/toolchain.md) owns this, including the short list of gates that stay on the host because they drive Docker themselves.
 

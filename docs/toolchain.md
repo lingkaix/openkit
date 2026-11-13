@@ -107,10 +107,14 @@ Root `AGENTS.md` routes setup, CI, dependency, generator, and toolchain work her
 - Add dependencies through the package manager.
 - Prefer maintained current versions unless the user requests otherwise. "Latest" means the newest version at least 3 days old, including Worker runtime CLIs. [Development Security](specs/20261109-development_security.md#supply-chain-controls) owns the age rule and security exemption.
 - A security fix MAY use an exact-version `minimumReleaseAgeExclude` entry only when the commit names its advisory id. The next routine upgrade removes the exemption. Other ecosystems record publication dates under the same rule.
-- Installs MUST enforce `minimumReleaseAge: 4320`, `strictDepBuilds: true` and `blockExoticSubdeps: true`. `allowBuilds` is the sole script allowlist; a new enabled entry needs a reason and independent review.
+- Installs MUST enforce `minimumReleaseAge: 4320`, `strictDepBuilds: true` and `blockExoticSubdeps: true`. `allowBuilds` is the sole script allowlist; a new enabled entry needs a reason and independent review. An existing dependency tree can retain old unreviewed-build state after explicit denials are added: remove only the root `node_modules` and reinstall frozen before qualifying the new map. Do not enable a script merely to silence the strict check.
 - Every dependency change MUST update its lock file in the same commit. CI, local-gate and image installs MUST be frozen. Image-time installs, including global CLI supply, MUST use a committed lock file or integrity hash and disable scripts except for allowlisted packages. Downloads MUST verify against committed checksums.
 - When commits are authorized, commit the corresponding lockfile update with the dependency change.
 - If a dependency affects workflow or architecture, document why it exists: keep workflow rationale in the affected guide or this toolchain guide, and keep architecture rationale in the applicable accepted Core document or specification.
+
+### Security Tool Provisioning
+
+`pnpm security:tools --tool zizmor --directory <tool-directory>` installs the committed security-tool version on a native Linux host and verifies its archive checksum before extraction. Put that directory on `PATH`. `scripts/security-tools.json` owns these binary pins and publication dates; the development image installs the same manifest. This checksum-bound supply is required by [Development Security](specs/20261109-development_security.md#supply-chain-controls). `pnpm check:workflows --all` runs the pinned, offline workflow linter, and `check:repo` and release preflight include it. A missing or wrong tool version fails rather than skipping the check.
 
 ### Version Maintenance
 
@@ -179,7 +183,7 @@ The Command Links inventory is a hand-written derivable projection. Source: root
 
 ### Pull-Request Test Image Isolation
 
-Pull-request jobs MUST hold no write permission and publish nothing. If a pull request changes test-image inputs, build and run the image within its job, or transfer it as a workflow artifact for `docker load`. Keep the digest-tag admission rule. [Development Security](specs/20261109-development_security.md#supply-chain-controls) owns this requirement; the existing registry-publishing pull-request path remains an implementation gap until its executable unit lands.
+Pull-request jobs MUST hold no write permission and publish nothing. If a pull request changes test-image inputs, build and run the image within its job, or transfer it as a workflow artifact for `docker load`. Keep the digest-tag admission rule. [Development Security](specs/20261109-development_security.md#supply-chain-controls) owns this requirement. The `pr-check` job now builds and loads its own image and runs the checks there with a read-only token. Registry publication by `test-image` excludes pull requests; no PR job can publish its image.
 
 ### Test Temporary Directories
 

@@ -12,8 +12,16 @@ ARG TARGETARCH
 WORKDIR /build
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates curl g++ python3 pkg-config \
-  && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
-    | sh -s -- -y --default-toolchain "${RUST_VERSION}" --profile minimal \
+  && case "${TARGETARCH}" in \
+       amd64) rustup_target=x86_64-unknown-linux-gnu; rustup_sha256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55 ;; \
+       arm64) rustup_target=aarch64-unknown-linux-gnu; rustup_sha256=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282 ;; \
+       *) exit 1 ;; \
+     esac \
+  && curl --proto '=https' --tlsv1.2 -fsSL "https://static.rust-lang.org/rustup/archive/1.29.3/${rustup_target}/rustup-init" -o /tmp/rustup-init \
+  && echo "${rustup_sha256}  /tmp/rustup-init" | sha256sum -c - \
+  && chmod 0755 /tmp/rustup-init \
+  && /tmp/rustup-init -y --no-modify-path --default-toolchain "${RUST_VERSION}" --profile minimal \
+  && rm /tmp/rustup-init \
   && rm -rf /var/lib/apt/lists/*
 COPY Cargo.toml Cargo.lock ./
 COPY packages/retrieval-kernel/ packages/retrieval-kernel/
@@ -47,9 +55,11 @@ RUN apt-get update \
     python3 \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g corepack@0.36.0 \
+RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} from "node:crypto"; const r=await fetch("https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz"); if(!r.ok) throw Error("Corepack download failed"); const b=Buffer.from(await r.arrayBuffer()); if(createHash("sha512").update(b).digest("hex")!=="4a2889b01859a9d0623c74c497a393dec012ad1aca21c61340cb15197c7a104fe033c5853306237885fc4edf11894e08bf627a2db4fc2a919f08eb01a51581ff") throw Error("Corepack checksum mismatch"); fs.writeFileSync("/tmp/corepack.tgz",b);' \
+  && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
+  && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3 --activate \
+  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
   && pnpm --version
 
 COPY . .
@@ -108,9 +118,11 @@ RUN case "${TARGETARCH}" in \
   && tar -xzf /tmp/caddy.tar.gz -C /usr/share/licenses/caddy LICENSE \
   && rm /tmp/caddy.tar.gz
 
-RUN npm install -g corepack@0.36.0 \
+RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} from "node:crypto"; const r=await fetch("https://registry.npmjs.org/corepack/-/corepack-0.36.0.tgz"); if(!r.ok) throw Error("Corepack download failed"); const b=Buffer.from(await r.arrayBuffer()); if(createHash("sha512").update(b).digest("hex")!=="4a2889b01859a9d0623c74c497a393dec012ad1aca21c61340cb15197c7a104fe033c5853306237885fc4edf11894e08bf627a2db4fc2a919f08eb01a51581ff") throw Error("Corepack checksum mismatch"); fs.writeFileSync("/tmp/corepack.tgz",b);' \
+  && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
+  && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3 --activate \
+  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
   && pnpm --version
 
 COPY --from=retrieval-builder /out/retrieval-kernel /usr/local/bin/retrieval-kernel

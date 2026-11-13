@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { checkWorkflows } from './check-workflows.mjs';
 import { NANOHOST_TARGETS } from './lib/nanohost-elf.mjs';
 import { noSecrets } from './release-safety.mjs';
 
@@ -704,6 +705,7 @@ function main() {
     authorization: process.env.OPENKIT_STABLE_PROMOTION,
   });
 
+  checkWorkflows({ repoRoot: String(args['repo-root'] ?? process.cwd()), all: true });
   console.log(`Release preflight passed for ${result.version}.`);
   if (result.promotionSourceTag) console.log(`Promotion source: ${result.promotionSourceTag}`);
   console.log(`Release images: ${result.releaseImages.join(', ')}`);

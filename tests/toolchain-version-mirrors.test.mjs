@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
 import test from 'node:test';
+import { parse } from 'yaml';
 
 const read = (relativePath) => readFileSync(new URL(`../${relativePath}`, import.meta.url), 'utf8');
 
@@ -72,7 +73,20 @@ test('every declaration of the pnpm version agrees', () => {
     `.mise.toml pnpm pin "${pinned}" is not an exact version`
   );
   assert.equal(rootManifest.packageManager, `pnpm@${pinned}`);
-  assert.equal(testImagePin(/corepack prepare pnpm@(\S+) --activate/u, 'pnpm'), pinned);
+  // A Corepack activation may carry the committed integrity hash; the activated runtime version
+  // must still equal the exact mise pin, and the activation itself must be hash-bound.
+  const activation = testImagePin(/corepack prepare pnpm@(\S+) --activate/u, 'pnpm');
+  const [activated, integrity] = activation.split('+');
+  assert.equal(
+    activated,
+    pinned,
+    `the image activates pnpm ${activated}, not the mise pin ${pinned}`
+  );
+  assert.match(
+    integrity ?? '',
+    /^sha512\.[0-9a-f]{128}$/u,
+    'the activated pnpm carries a committed sha512 integrity hash'
+  );
 });
 
 test('every declaration of the exact Node version agrees', () => {
@@ -217,24 +231,58 @@ test('CI derives the test image build context and Dockerfile from the image mani
 });
 
 test('every any-placed CI gate runs inside the test execution image', () => {
-  const gateJobs = [
-    'pr-check',
-    'l0-l2-shards',
-    'nano-core-e2e',
-    'web-e2e',
-    'smoke',
-    'release-preflight',
-  ];
-
-  for (const job of gateJobs) {
-    const block = ciWorkflow.match(new RegExp(`\\n  ${job}:\\n(?:    .*\\n|\\n)+`, 'u'));
-    assert.ok(block, `ci.yml does not declare the ${job} job`);
-    assert.match(
-      block[0],
-      /container:\s*\n\s*image:\s*\$\{\{\s*needs\.test-image\.outputs\.image\s*\}\}/u,
+  const workflow = parse(ciWorkflow);
+  assert.ok(workflow?.jobs, 'ci.yml does not declare jobs');
+  const image = '$' + '{{ needs.test-image.outputs.image }}';
+  // Jobs admitted to consume the published image keep the container metadata naming it.
+  for (const job of ['l0-l2-shards', 'nano-core-e2e', 'web-e2e', 'smoke', 'release-preflight']) {
+    assert.equal(
+      workflow.jobs[job].container?.image,
+      image,
       `ci.yml job ${job} does not run inside the test execution image`
     );
   }
+
+  // A pull request cannot pull the published image, so pr-check resolves the same
+  // manifest-selected image, builds it job-locally, loads it, and runs the any-placed gate
+  // inside that container. Inside-image execution is preserved; only placement moves.
+  const steps = workflow.jobs['pr-check'].steps;
+  const resolve = steps.find((entry) => entry.id === 'local-image');
+  assert.ok(resolve, 'ci.yml pr-check does not resolve its job-local image inputs');
+  for (const field of ['context', 'dockerfile'])
+    assert.match(
+      resolve.run,
+      new RegExp(`test-image-tag\\.mjs --field ${field}\\)`, 'u'),
+      `ci.yml pr-check does not derive its ${field} from the image manifest`
+    );
+  assert.match(resolve.run, /test-image-tag\.mjs --digest/u);
+
+  const build = steps.find((entry) => entry.uses?.startsWith('docker/build-push-action@'));
+  assert.ok(build, 'ci.yml pr-check does not build the job-local test image');
+  assert.equal(build.with.context, '$' + '{{ steps.local-image.outputs.context }}');
+  assert.equal(build.with.file, '$' + '{{ steps.local-image.outputs.dockerfile }}');
+  assert.equal(build.with.load, true, 'the job-local image is not loaded for local use');
+  assert.equal(build.with.push, false, 'the job-local image would be published');
+  assert.equal(
+    build.with['build-args'].trim(),
+    'OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST=$' + '{{ steps.local-image.outputs.digest }}'
+  );
+
+  const gate = steps.find(
+    (entry) => entry.name === 'Run lightweight repository check in the job-local image'
+  );
+  assert.ok(gate, 'ci.yml pr-check does not run its any-placed gate in the job-local image');
+  assert.match(
+    gate.run,
+    /^docker run --rm --init \\$/mu,
+    'the any-placed gate does not start a container'
+  );
+  assert.ok(
+    gate.run.includes(` ${build.with.tags} \\\n`),
+    `the any-placed gate does not run inside ${build.with.tags}`
+  );
+  assert.match(gate.run, /bash scripts\/test-env\.sh any pnpm install --frozen-lockfile/u);
+  assert.match(gate.run, /pnpm -w check:repo/u);
 });
 
 test('the one NanoHost installer host gate runs outside the test image', () => {
