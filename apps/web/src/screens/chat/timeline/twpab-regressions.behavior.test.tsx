@@ -6,13 +6,14 @@ import {
 import type { CoreClient } from '@openkit/core-client';
 import { ItemSchema, ProductTurnSchema, ThreadSchema } from '@openkit/protocol';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { type ReactNode, useState } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CoreClientProvider } from '../../../app/core-client';
 import { ThreadStream } from '../ThreadStream';
+import { resetOpenIntervals } from './tb7';
 import { useRunItemWindow } from './use-timeline-window';
 
 function id(kind: string, value: number) {
@@ -88,7 +89,7 @@ const laterAnswer = record(4, {
 });
 
 type RecordItem = ReturnType<typeof record>;
-function dto(value: RecordItem, digest: string | null = null) {
+function dto(value: RecordItem, digest: string | null = null, sequence?: number | null) {
   return {
     id: value.id,
     turnId: value.turnId,
@@ -101,6 +102,7 @@ function dto(value: RecordItem, digest: string | null = null) {
     createdAt: value.createdAt,
     completedAt: value.completedAt,
     actor: 'actor' in value ? value.actor : null,
+    ...(sequence !== undefined ? { firstPublicationSequence: sequence } : {}),
     detail: { kind: 'complete' as const, value },
     steer: null,
     argumentDigest: digest,
@@ -300,6 +302,7 @@ beforeEach(() => {
   };
 });
 afterEach(() => {
+  resetOpenIntervals();
   for (const client of clients.splice(0)) client.clear();
   if (originalObserver) globalThis.IntersectionObserver = originalObserver;
   else Reflect.deleteProperty(globalThis, 'IntersectionObserver');
@@ -336,8 +339,25 @@ describe('TWPAB current-source regression oracles', () => {
     expect(within(entry).getAllByText(TOOL, { exact: true })).toHaveLength(2);
   });
 
-  it('S2a: an interval without proved member lineage says expansion is unavailable, not a duplicated summary', async () => {
-    const user = userEvent.setup();
+  it('S2a: a proved interval member is shown and an out-of-range item is not fabricated', async () => {
+    const reviewed = record(5, {
+      type: 'tool-call',
+      tool: 'Reviewed entry',
+      server: null,
+      arguments: null,
+      result: null,
+      error: null,
+      durationMs: 1,
+    });
+    const laterExport = record(6, {
+      type: 'tool-call',
+      tool: 'Later export',
+      server: null,
+      arguments: null,
+      result: null,
+      error: null,
+      durationMs: 1,
+    });
     const interval = {
       planItemId: id('it', 10),
       planRevision: 1,
@@ -349,29 +369,21 @@ describe('TWPAB current-source regression oracles', () => {
     };
     const fixture = transport({
       runs: page([{ ...run(), planSegments: { segments: [interval], coverage: 'partial' } }]),
+      currentItems: page([], [dto(reviewed, null, 2), dto(laterExport, null, 8)], 'items'),
     });
     renderSubject(fixture.client, <ThreadStream workspaceId={WS} threadId={THREAD} />);
     await screen.findByText('Current admitted request');
     const planList = () => screen.getByRole('list', { name: 'Plan progress' });
-    await waitFor(() =>
-      expect(within(planList()).getByText('Review entries · 2 steps')).toBeVisible()
-    );
-    const disclosure = within(planList()).queryByRole('button', {
-      name: 'Review entries · 2 steps',
+    await within(planList()).findByRole('button', { name: 'Review entries · 2 steps' });
+    fireEvent.click(within(planList()).getByRole('button', { name: 'Review entries · 2 steps' }), {
+      detail: 0,
+      button: 0,
     });
-    if (
-      disclosure &&
-      !disclosure.hasAttribute('disabled') &&
-      disclosure.getAttribute('aria-disabled') !== 'true'
-    ) {
-      await user.click(disclosure);
-    }
-    // The fixture has interval metadata only; no operation returned a proved Item-to-interval mapping.
-    expect(
-      screen.getByText(
-        /(?:interval|segment|expansion|members|steps|details).*?(?:unavailable|not available|cannot|can't)|(?:unavailable|not available|cannot|can't).*?(?:interval|segment|expansion|members|steps|details)/i
-      )
-    ).toBeVisible();
+    const member = await within(planList()).findByText('Reviewed entry');
+    expect(member.closest('[data-plan-member]')).not.toBeNull();
+    expect(planList().querySelectorAll('[data-plan-member]')).toHaveLength(1);
+    expect(screen.queryByText('Later export')).not.toBeInTheDocument();
+    expect(screen.queryByText('Interval members are unavailable.')).not.toBeInTheDocument();
     expect(within(planList()).getAllByText('Review entries · 2 steps')).toHaveLength(1);
     expect(screen.getByText('These counts are incomplete.')).toBeVisible();
   });
