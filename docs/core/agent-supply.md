@@ -246,6 +246,8 @@ one selected AgentManifest plus Workspace binding, nested profile, and User pref
 
 The resolved result is captured in one immutable launch package used to initialize an AgentSession.
 
+`Agent Environment Package` (AEP) is the name of that immutable launch package in its current realization for the first-party resource platform. An AEP is a resolved, immutable record that binds one exact worker launch to its lineage, runtime, Workspace inputs, supplied resources, governed access, and backend requirements. An AEP is an output of resolution and is never an authored setup. A material change to supply, Policy, Workspace inputs, or the request produces a new AEP. An external platform MAY consume another representation of the same launch package, and that representation MUST preserve the same authority chain. The [Core owners decision](../decisions/20261113-core_owners_for_vision_mechanisms.md) records why Core names this term.
+
 The exact resolved-setup, launch-package, and materialization records remain implementation-facing projections. They must preserve this authority chain without becoming additional authored setup models.
 
 ## Materialization

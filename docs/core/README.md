@@ -110,7 +110,7 @@ The current required core aspect set contains 21 documents. Future merge or reti
 
 ### Work
 
-- `work-model.md` — user-facing work model, Core workflow mechanisms, workflow modes and recipes, default setup, bounded steps, gates, human attention, deliverables, workflow evidence, and Judgement and Candidate Set.
+- `work-model.md` — user-facing work model, Core workflow mechanisms, workflow modes and recipes, default setup, bounded steps, gates, human attention, deliverables, workflow evidence, Judgement Grounding, Judgement and Candidate Set, and improvement inputs.
 - `knowledge.md` — workspace knowledge, source references, proposals, review, and context injection.
 - `generative-apps.md` — Light Apps, Generative Kernel, Generative UI, agent-first understanding and operation, optional generative presentation over admitted commands, and the non-goal distinguishing agent-generated apps from low-code/no-code builders.
 
@@ -126,7 +126,7 @@ The current required core aspect set contains 21 documents. Future merge or reti
 - `identity.md` — users, workspace membership, auth sessions, tokens, invitations, automations, integrations, and stable actor references.
 - `policy.md` — Policy authority model: principals, statements, decisions, approval, administration, workspace and administrator eligibility, and disclosure authorization.
 - `security.md` — security charter, trust boundaries, threat model, findings, response classes and levels, advisory feeds, inventory, and accepted limits.
-- `mediation.md` — operation definition and invocation, `<operation>@<stage>` mediation points, Capability Mediation Boundary, `CapabilityCall`, gateway projection and routing, transformer/advice/gate ordering, invocation evidence, vault injection, capability-call usage production, and rate-limit boundary.
+- `mediation.md` — operation definition and invocation, `<operation>@<stage>` mediation points, Capability Mediation Boundary, `CapabilityCall`, gateway projection and routing, transformer/advice/gate ordering, invocation evidence, vault injection, capability-call usage production, logical-model routing, and the rate-limit and Budget boundary.
 - `vault.md` — secret vault references, grants, injection boundaries, and secret handling constraints.
 
 ### State And Evidence
@@ -150,17 +150,17 @@ This index routes readers to the owner of each canonical term family. The owner 
 | App, Core, Agent layer boundary, Agent Adapter, workspace service, Internal Core Role, Core Assistant, Workflow Coordinator, Coordinator, Task Evaluator | `architecture.md` |
 | Fault Source, Durable Execution, Acknowledgement Point, Collection Before Loss, Safe Point, Danger Window, End-To-End Owner, owning-scope failure and Workspace quarantine, correctness properties under failure, guarantee limits | `fault-tolerance.md` |
 | Stability classes, stabilization mechanisms, contract evolution, retained data continuity, closed core and open extension, operation semantic promise, strict parsing, conformance dimensions, fixture expectations | `contract-evolution.md` |
-| Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection, Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence, Judgement, Candidate Set | `work-model.md` |
+| Product-facing task, chat mode, quick reply, task mode, goal mode projection, plan mode projection, Action Center projection, human attention projection, steering, review, redo, refinement, handoff projection, context compact projection, deliverable projection, Agent Workflow, Workflow Mechanism, Workflow Mode, Workflow Recipe, Default Workflow Setup, Goal Mode, Intent, Objective, Phase, Plan, Planning Phase, Plan Approval, Bounded Step, Workflow Loop, Gate, Human Attention Gate, Review Gate, Decision, Checkpoint, Context Compaction, Stop Condition, Workflow Evidence, Judgement Grounding, Judgement, Candidate Set, Improvement Input | `work-model.md` |
 | Personal Memory, Knowledge Store, Knowledge Page, Knowledge Source, Derived Representation, Knowledge Proposal, Knowledge Review, Knowledge Manager, Observation, Notebook, Agent-Near Context, Context Package | `knowledge.md` |
 | Light App, Light App Catalog, Generative Kernel, Generative UI, agent-first data and presentation composition | `generative-apps.md` |
 | Agent, Runtime, turn assignment, execution-substrate lifecycle | `runtime-model.md` |
 | AgentSession, continuity, exact reconnect, interruption, fresh-session fallback | `agent-session.md` |
 | Sandbox, sandbox scope, shared Sandbox, isolation level, isolation area, sandbox summary, backend containment | `sandbox.md` |
-| AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization | `agent-supply.md` |
+| AgentManifest, AgentProfile, AgentCatalog, AgentCatalogEntry, catalog readiness, setup materialization, Agent Environment Package | `agent-supply.md` |
 | User, WorkspaceMember, AuthSession, Token, Invitation, AutomationIdentity, IntegrationIdentity, ActorRef | `identity.md` |
 | Policy, Subject, Action, Resource, Context, PermissionDecision, policy statements and administration, delegated goal domain, approval gates, disclosure authorization, AssistantReadScope, OutputAudience | `policy.md` |
 | SecurityFinding, ResponseClass, ResponseLevel, AdvisoryFeed, ComponentInventory | `security.md` |
-| Operation, mediation point, enforcement point, Capability Mediation Boundary, CapabilityCall, gateway projection, gateway routing, transformer pipeline, capability traffic, rate limits | `mediation.md` |
+| Operation, mediation point, enforcement point, Capability Mediation Boundary, CapabilityCall, gateway projection, gateway routing, Logical Model, Model Route, Provider Profile, transformer pipeline, capability traffic, rate limits, Budget | `mediation.md` |
 | SecretVault, VaultReference, VaultGrant, VaultInjection, VaultInjectionPlan, VaultInjectionReceipt, VaultUse, future VaultAudit | `vault.md` |
 | Storage, Layer 1 (System State And Work Data: scope-owned transactional control authority, immutable content, item log persistence, retention and deletion classes, format markers, Workspace portability), Layer 2 (User Data And The Storage Service: shared file storage, `contentRef`, Policy access leases, Knowledge package byte layout) | `storage.md` |
 | AuditEvent, audit projection, audit producer boundary, UsageRecord, capability-call usage units and attribution, System-wide measurement, Non-gateway measurement, Aggregation, Cost projection, Capture Coverage, Telemetry | `evidence.md` |

@@ -30,6 +30,7 @@ This model supplies those cross-aspect invariants without replacing the speciali
 - Reliability and assurance should be proportional to the documented deployment scale, consequence, and trust boundary. Safe interruption, inspection, or a new authorized attempt may be the correct outcome when transparent recovery would require another authority or workflow.
 - Future scale, availability, and deployment hypotheses are non-authorizing until an accepted current design promotes them.
 - Core should coordinate and govern work while specialized agents and runtimes perform heavy execution.
+- Routine setup and management are work for Core and its agents, not for the user. The default path asks a human only for goals, constraints, authorization, preferences, and decisions that an owner reserves to a human. Core agents do routine configuration inside current authority. A need for wider authority or a new external effect goes to a human. The reason is recorded in [a decision record](../decisions/20261113-core_owners_for_vision_mechanisms.md).
 - External dependencies remain outside OpenKit's authority boundary. `docs/core/contract-evolution.md` owns their contract and missing-capability rules.
 
 ## Canonical Terms
@@ -77,6 +78,7 @@ Doctrine does not promise compatibility with obsolete internal contracts. Contra
 - Private runtime handles and unrestricted native payloads MUST remain private unless an owning Core boundary validates a bounded product-safe projection.
 - Missing authority, unverifiable lineage, ambiguous ownership, and unsupported required semantics MUST fail closed.
 - Heavy execution SHOULD remain in specialized agents and runtimes while Core coordinates, governs, and records the work.
+- A default work path SHOULD NOT require a user to author or maintain Workspace, Agent, Policy, or execution-environment configuration. An agent that does this work MUST act inside current authority and MUST NOT widen its own authority.
 
 ## Relationships To Other Core Aspects
 
