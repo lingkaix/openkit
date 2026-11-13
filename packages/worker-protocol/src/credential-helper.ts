@@ -92,3 +92,30 @@ export const WorkerCredentialHelperReplySchema = z.union([
 
 /** Private material/public-identity/signature response released only after governed completion. */
 export type WorkerCredentialHelperReply = z.infer<typeof WorkerCredentialHelperReplySchema>;
+
+/** Project only credential fields into the existing confidentiality comparison owner, never serving storage. */
+export function credentialHelperComparisonValues(
+  command: WorkerCredentialHelperCommand,
+  reply: WorkerCredentialHelperReply
+): readonly string[] {
+  if (command.protocol === 'ssh-agent') return [];
+  if (!('credential' in reply)) throw new Error('Credential unavailable.');
+  const fields =
+    command.protocol === 'git'
+      ? ['username', 'password']
+      : command.protocol === 'docker'
+        ? ['Username', 'Secret']
+        : command.protocol === 'aws'
+          ? ['AccessKeyId', 'SecretAccessKey', 'SessionToken']
+          : command.protocol === 'kubernetes'
+            ? ['token', 'clientCertificateData', 'clientKeyData']
+            : ['id_token', 'saml_response'];
+  const source = command.protocol === 'kubernetes' ? reply.credential.status : reply.credential;
+  if (!source || typeof source !== 'object' || Array.isArray(source))
+    throw new Error('Credential unavailable.');
+  const values = Object.entries(source).flatMap(([key, value]) =>
+    fields.includes(key) && typeof value === 'string' && value.length > 0 ? [value] : []
+  );
+  if (values.length === 0) throw new Error('Credential unavailable.');
+  return values;
+}

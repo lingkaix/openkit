@@ -28,6 +28,7 @@ import {
   HARNESS_DEFAULT_MAX_ACTIVE_TURNS,
   parseHarnessResultBody,
   WORKER_OBSERVATION_SOURCE_MAX_BYTES,
+  type WorkerLineage,
   WorkerRuntimeRawStreamManifestSchema,
   type WorkerStartupFailure,
   WorkerStartupFailureSchema,
@@ -393,6 +394,12 @@ export interface ConfiguredWorkerLifecycleRuntime {
   readonly advanceIdleCleanup: (selection: IdleCleanupSelection) => Promise<void>;
   /** Captures a bounded file using this same configured backend and original evidence. */
   readonly captureArtifact?: WorkerArtifactCapture;
+  /** Registers actual helper reply fields in the existing confidentiality-only native comparison owner. */
+  readonly registerCredentialHelperComparisonValues?: (
+    lineage: WorkerLineage,
+    receiptId: string,
+    values: readonly string[]
+  ) => void;
   /** Binds private Turn route tokens and returns `session.open` with its ephemeral Vault values. */
   readonly acceptNanoHostHarnessCommand: (
     command: NanoHostHarnessCommand
@@ -611,6 +618,8 @@ function createNanoHostWorkerLifecycleRuntime(
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
     advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
     captureArtifact: (input) => backend.captureArtifact(input),
+    registerCredentialHelperComparisonValues: (lineage, receiptId, values) =>
+      backend.registerCredentialHelperComparisonValues(lineage, receiptId, values),
     cleanupBackendSession: (identity) => backend.cleanupSession(identity),
     isTurnExecutionActive: (turnId) => turnExecutor.isTurnExecutionActive(turnId),
     prepareBackendCleanup: (identity) => backend.prepareCleanupRecovery(identity),
@@ -2281,6 +2290,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           declaration.visibility !== 'runtime-env' &&
           declaration.visibility !== 'runtime-file' &&
           !(
+            ((declaration.visibility === 'runtime-token' &&
+              declaration.consumer === 'credential-helper') ||
+              (declaration.visibility === 'external-handle' &&
+                declaration.consumer === 'ssh-agent')) &&
+            AgentEnvironmentCredentialDeclarationSchema.safeParse(declaration).success &&
+            environmentPackage.schemaVersion === 4 &&
+            environmentPackage.vault.grants.some((grant) => grant.id === declaration.vaultGrantId)
+          ) &&
+          !(
             declaration.visibility === 'runtime-token' &&
             declaration.consumer === 'codex-login' &&
             AgentEnvironmentCredentialDeclarationSchema.safeParse(declaration).success &&
@@ -2298,7 +2316,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       diagnostics.push({
         code: 'backend_missing_required_capability',
         path: '$.credentials.declarations',
-        message: 'NanoHost admits only runtime-env and verified runtime-file credentials.',
+        message: 'NanoHost credential declaration is not admitted.',
       });
     return diagnostics;
   }
@@ -3091,6 +3109,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           if (closed.state !== 'closed' || closed.privateState !== 'absent') {
             throw new Error('NanoHost Harness session.close result is incompatible.');
           }
+          // Collection completed before this proved close; these fields never become environment.
+          for (const key of Object.keys(session.runtimeCredentialValues ?? {}))
+            if (key.startsWith('helper#')) delete session.runtimeCredentialValues![key];
           session.sharedHarness.bindings.delete(session.environmentPackage.scope.agentSessionId);
         } catch (error) {
           if (!isCleanupRequiredRefusal(error)) {
@@ -6431,6 +6452,53 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return [...this.requireSession(packageSnapshotId).evidence];
   }
 
+  /** Records complete private reply fields before release, never as a credential serving cache. */
+  public registerCredentialHelperComparisonValues(
+    lineage: WorkerLineage,
+    receiptId: string,
+    values: readonly string[]
+  ): void {
+    const session = this.requireSession(lineage.packageSnapshotId);
+    const scope = session.environmentPackage.scope;
+    const resident = session.sharedHarness.bindings.get(scope.agentSessionId);
+    const comparison = session.runtimeCredentialValues;
+    const receipt = getVaultInjectionReceipt(this.coreDb, receiptId);
+    if (
+      !comparison ||
+      !resident ||
+      values.length === 0 ||
+      session.environmentPackage.snapshotId !== lineage.packageSnapshotId ||
+      scope.agentSessionId !== lineage.agentSessionId ||
+      scope.threadId !== lineage.threadId ||
+      scope.workspaceId !== lineage.workspaceId ||
+      scope.turnId !== lineage.turnId ||
+      getWorkerControlAcceptedFinalStatus(this.coreDb, lineage) ||
+      !receipt ||
+      receipt.agentSessionId !== scope.agentSessionId ||
+      !receipt.backendSummary.startsWith('credential-helper:') ||
+      !receipt.backendSummary.endsWith(':get-produced')
+    ) {
+      throw new Error('Credential comparison owner is unavailable.');
+    }
+    // Fresh repeated uses still audit/resolve; only duplicate comparison strings are coalesced.
+    const known = new Set(Object.values(comparison));
+    const additions: Record<string, string> = {};
+    for (const [index, value] of values.entries()) {
+      if (known.has(value)) continue;
+      known.add(value);
+      additions[credentialComparisonKey('helper', `${receiptId}:${index}`)] = value;
+    }
+    for (const [key, value] of Object.entries(additions))
+      if (key in comparison && comparison[key] !== value)
+        throw new Error('Credential comparison owner is unavailable.');
+    // Reuse the exact native command bound and validate the whole set before any mutation.
+    WorkspaceCollectCommandSchema.options[0].shape.checkValues.shape.runtimeEnv.parse(
+      Object.values({ ...comparison, ...additions })
+    );
+    Object.assign(comparison, additions);
+    resident.runtimeCredentialValues = comparison;
+  }
+
   /** Captures one eligible live output using the existing exact session/effect owner. @param input Core-derived identity, path, bound and cancellation. @returns Verified bytes and original private evidence. */
   public readonly captureArtifact: WorkerArtifactCapture = async (input) => {
     const session = this.requireSession(input.packageSnapshotId);
@@ -6797,6 +6865,18 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           cause: 'check_values_unavailable',
         });
       const cached = session.runtimeCredentialValues;
+      // Restart cannot reconstruct already-exposed helper scalars from an empty static tuple.
+      // Existing produced receipts are evidence of incomplete comparison, never serving authority.
+      if (
+        cached === null &&
+        this.coreDb.sqlite
+          .prepare(
+            `SELECT 1 FROM vault_injection_receipts WHERE agent_session_id = ?
+         AND backend_summary LIKE 'credential-helper:%:get-produced' LIMIT 1`
+          )
+          .get(consumer.scope.agentSessionId)
+      )
+        throw new Error('Helper comparison evidence is unavailable.');
       // Native evidence can wait behind withdrawal; reuse the original complete deciding read.
       const verify = (item: (typeof versions)[number]) => {
         const timestamp = new Date().toISOString();
@@ -6973,7 +7053,12 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
           if (verify(item).reference.currentVersion !== entries[index]!.referenceVersion)
             throw new Error('Original Vault reference does not match its grant.');
       }
-      return Object.fromEntries(entries.map(({ key, value }) => [key, value]));
+      return {
+        ...Object.fromEntries(
+          Object.entries(cached ?? {}).filter(([key]) => key.startsWith('helper#'))
+        ),
+        ...Object.fromEntries(entries.map(({ key, value }) => [key, value])),
+      };
     } catch {
       throw new WorkspaceCollectionError({
         outcome: 'recovery_required',

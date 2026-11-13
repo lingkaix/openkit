@@ -11,7 +11,9 @@ import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { asInvalidRequestError } from '../api-errors.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import type { OperationInvocationDependencies } from '../operation-composition.js';
 import type { CoreDb } from '../storage/db.js';
+import { createCredentialHelperHandler } from './credential-helper-exchange.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import {
   type NanoHostExecutionAttemptRecord,
@@ -56,11 +58,26 @@ export function registerWorkerControlRoutes({
   app,
   coreDb,
   workerControlGateway,
+  credentialHelperOperations,
+  credentialHelperRegister,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb: CoreDb | undefined;
   readonly workerControlGateway: WorkerControlGateway;
+  readonly credentialHelperOperations?: () => OperationInvocationDependencies;
+  readonly credentialHelperRegister?: NonNullable<
+    Parameters<typeof createCredentialHelperHandler>[0]['registerCredentialValues']
+  >;
 }): void {
+  app.post('/api/worker-control/credential-helper', async (c) => {
+    if (!credentialHelperOperations || !credentialHelperRegister)
+      return new Response(null, { status: 503, headers: { 'cache-control': 'no-store' } });
+    return createCredentialHelperHandler({
+      operations: credentialHelperOperations(),
+      gateway: workerControlGateway,
+      registerCredentialValues: credentialHelperRegister,
+    })(c.req.raw);
+  });
   app.post('/api/worker-control/heartbeat', async (c) => {
     const arrivedAt = new Date().toISOString();
     const parsed = await parseWorkerControlRequest(c, WorkerControlHeartbeatRequestReaderSchema);

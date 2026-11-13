@@ -322,7 +322,10 @@ function composeManifest(
   const reasoningEffort = profile?.reasoningEffort ?? config.models.reasoningEffort;
   const composed = {
     ...base,
-    ...(credentialDeclarations.some((declaration) => declaration.visibility === 'runtime-token')
+    ...(credentialDeclarations.some(
+      (declaration) =>
+        declaration.visibility === 'runtime-token' && declaration.consumer === 'codex-login'
+    )
       ? { requiredFeatures: [...new Set([...base.requiredFeatures, 'worker.harness-login.v1'])] }
       : {}),
     ...(profileId ? { defaultProfileId: profileId } : {}),

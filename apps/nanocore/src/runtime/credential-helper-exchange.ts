@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
+  credentialHelperComparisonValues,
   WORKER_CREDENTIAL_HELPER_BODY_MAX_BYTES,
   WorkerCredentialHelperCommandSchema,
   type WorkerCredentialHelperReply,
+  type WorkerLineage,
   WorkerLineageSchema,
 } from '@openkit/worker-protocol';
 import { z } from 'zod';
@@ -94,6 +96,12 @@ async function readHelperRequest(request: Request): Promise<z.infer<typeof reque
 export function createCredentialHelperHandler(input: {
   readonly operations: OperationInvocationDependencies;
   readonly gateway: WorkerControlGateway;
+  /** Native App composition supplies the actual comparison owner; dormant Core-use tests omit it. */
+  readonly registerCredentialValues?: (
+    lineage: WorkerLineage,
+    receiptId: string,
+    values: readonly string[]
+  ) => void;
 }): (request: Request) => Promise<Response> {
   return async (request) => {
     const { operations, gateway } = input;
@@ -232,6 +240,14 @@ export function createCredentialHelperHandler(input: {
       );
       await check();
       if (!reply || receipt.receiptId !== receiptId) return unavailable();
+      if ('credential' in reply && input.registerCredentialValues) {
+        input.registerCredentialValues(
+          command.lineage,
+          receiptId,
+          credentialHelperComparisonValues(command.request, reply)
+        );
+        await check();
+      }
       return Response.json(reply, { headers: { 'cache-control': 'no-store' } });
     } catch (error) {
       const status =

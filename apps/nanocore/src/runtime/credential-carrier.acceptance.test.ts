@@ -9,21 +9,35 @@ import {
   VAULT_OPERATION_DEFINITIONS,
 } from '@openkit/app-api-schemas';
 import {
+  AgentEnvironmentCredentialDeclarationSchema,
   WorkerCredentialBindingsSchema,
   type WorkerCredentialFileBinding,
   WorkerCredentialFileBindingSchema,
   WorkerCredentialProtectionSchema,
+  WorkspaceConfigSchema,
 } from '@openkit/config-schema';
+import { isRecord } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { resolveAgentSetup } from '../agents/setup-resolver.js';
+import { createApp as createProductionApp } from '../app.js';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
-import { loadRuntimeConfig } from '../config/runtime-config.js';
+import { loadOpenKitConfig } from '../config/openkit-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+  loadRuntimeConfig,
+} from '../config/runtime-config.js';
+import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
+import * as operationRoutes from '../operation-json-routes.js';
 import { PolicyInterception } from '../policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from '../policy/permission-decisions.js';
+import { ProviderRegistry } from '../providers/registry.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import {
@@ -36,7 +50,10 @@ import {
   createVerifiedWorkspaceExport,
   existingWorkspaceExportRoot,
 } from '../storage/workspace-transfer-routes.js';
-import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import {
+  createTestAgentSetup,
+  createTestGatewayConfig,
+} from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -64,12 +81,14 @@ import { readRuntimeCleanupView } from './administrator-cleanup-view.js';
 import {
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
+  resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import {
   type ExecutionCredentialReceipt,
   requireExecutionCredentialReceipts,
 } from './execution-backend.js';
+import { commandInputHash } from './idempotent-command.js';
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
@@ -87,7 +106,8 @@ afterEach(async () => {
 /** Creates only synthetic material and reaches valid lineage through existing owners. */
 async function fixture(
   allowedInjectionPaths: string[] = ['runtime-file'],
-  ownerScope: 'server' | 'workspace' = 'server'
+  ownerScope: 'server' | 'workspace' = 'server',
+  options: { helper?: boolean } = {}
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-carrier-acceptance-'));
   const coreDb = createTestCoreDb(root);
@@ -108,7 +128,9 @@ async function fixture(
   vault.unlock({ masterKey: randomBytes(32) });
   vault.backend().store({
     referenceId,
-    material,
+    material: options.helper
+      ? JSON.stringify({ username: 'synthetic-user', password: material })
+      : material,
     metadata: {
       ownerScope,
       ...(ownerScope === 'workspace' ? { workspaceId: DEMO_WORKSPACE_ID } : {}),
@@ -132,45 +154,103 @@ async function fixture(
     targetAgentSessionId: agentSessionId,
     allowedInjectionPaths,
   });
-  const turn = await store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Use synthetic file', {
-    kind: 'user',
-    id: userId,
-  });
-  await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
-  const entry = createSchedulerAdmissionEntry(coreDb, {
-    backendId: 'nanohost',
-    queueEntryId: `queue:${turn.id}`,
-    requestedAgentId: 'agent_codex_host',
-    workspaceId: DEMO_WORKSPACE_ID,
-    threadId: turn.threadId,
-    turnId: turn.id,
-    turnInput: 'Use synthetic file',
-    triggerActor: turn.triggerActor,
-    requestId: randomUUID(),
-  });
+  let turn: Awaited<ReturnType<typeof store.createTurn>>;
+  let entry: ReturnType<typeof createSchedulerAdmissionEntry>;
+  if (options.helper) {
+    const turnId = testEntityId('tu', randomUUID());
+    entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue:${turnId}`,
+      requestedAgentId: 'agent_codex_host',
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: DEMO_THREAD_ID,
+      turnId,
+      turnInput: 'Use synthetic file',
+      triggerActor: { kind: 'user', id: userId },
+      requestId: randomUUID(),
+    });
+    if (!entry.requestId) throw new Error('Canonical admission omitted its original request id.');
+    const createdAt = new Date().toISOString();
+    const scope = { workspaceId: entry.workspaceId, threadId: entry.threadId, actorId: userId };
+    turn = await store.createTurn(
+      entry.workspaceId,
+      entry.threadId,
+      entry.turnInput,
+      entry.triggerActor,
+      undefined,
+      {
+        turnId: entry.turnId,
+        status: 'pending',
+        agentId: entry.requestedAgentId,
+        executorKind: 'worker',
+        commandReceipt: {
+          key: commandRequestKey('turn.start', entry.requestId, scope),
+          command: 'turn.start',
+          requestId: entry.requestId,
+          scope,
+          inputHash: commandInputHash({
+            queueEntryId: entry.queueEntryId,
+            turnInput: entry.turnInput,
+          }),
+          responseKind: 'turn',
+          createdAt,
+          expiresAt: commandRequestExpiresAt(createdAt),
+        },
+      }
+    );
+  } else {
+    turn = await store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Use synthetic file', {
+      kind: 'user',
+      id: userId,
+    });
+    await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
+    entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue:${turn.id}`,
+      requestedAgentId: 'agent_codex_host',
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      turnInput: 'Use synthetic file',
+      triggerActor: turn.triggerActor,
+      requestId: randomUUID(),
+    });
+  }
   const attemptId = testEntityId('attempt', randomUUID());
   const sandboxBindingRef = `binding:${randomUUID()}`;
-  recordTestExecutionAttempt(coreDb, {
-    entry,
-    attemptId,
-    agentSessionId,
-    inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
-    bindingRef: sandboxBindingRef,
-    sessionCompatibilityKey: 'synthetic-static-file',
-    now: () => new Date().toISOString(),
-  });
+  if (!options.helper)
+    recordTestExecutionAttempt(coreDb, {
+      entry,
+      attemptId,
+      agentSessionId,
+      inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
+      bindingRef: sandboxBindingRef,
+      sessionCompatibilityKey: 'synthetic-static-file',
+      now: () => new Date().toISOString(),
+    });
   const agentSetup = createTestAgentSetup({
     imageRef: `sha256:${'a'.repeat(64)}`,
     requiredCapabilities: ['trusted-worker-inference-relay'],
-    credentialDeclarations: [
-      {
-        id: 'static_file',
-        ...(ownerScope === 'workspace' ? { requirementId: 'static_file' } : {}),
-        vaultGrantId: grantId,
-        visibility: 'runtime-file',
-        targetPath,
-      },
-    ],
+    credentialDeclarations: options.helper
+      ? [
+          {
+            id: 'native_helper',
+            requirementId: 'native_helper',
+            vaultGrantId: grantId,
+            visibility: 'runtime-token',
+            consumer: 'credential-helper',
+            helper: { protocol: 'git', scheme: 'https', host: 'fixture.invalid', path: 'scope' },
+          },
+        ]
+      : [
+          {
+            id: 'static_file',
+            ...(ownerScope === 'workspace' ? { requirementId: 'static_file' } : {}),
+            vaultGrantId: grantId,
+            visibility: 'runtime-file',
+            targetPath,
+          },
+        ],
   });
   admitTestNativeEnvironment(coreDb, agentSetup.manifest);
   cleanup.push(async () => {
@@ -203,6 +283,7 @@ async function fixture(
     coreDb,
     store,
     mutationAdmission,
+    helper: options.helper === true,
     material,
     targetPath,
     referenceId,
@@ -255,7 +336,14 @@ async function throwsWithCode(action: () => unknown, code: string): Promise<bool
 }
 
 /** Starts the real Core executor against the existing external NanoHost peer fixture. */
-async function start(f: Awaited<ReturnType<typeof fixture>>, fault?: 'mount' | 'import') {
+async function start(
+  f: Awaited<ReturnType<typeof fixture>>,
+  fault?: 'mount' | 'import',
+  runtimeOptions: Pick<
+    NonNullable<Parameters<typeof createNativeTaskAdmissionFixture>[2]>,
+    'readRuntimeConfig' | 'policyInterception'
+  > = {}
+) {
   const effects: NanoHostSessionEffectRequest[] = [];
   let crossedFault = false;
   const push = effects.push.bind(effects);
@@ -290,7 +378,7 @@ async function start(f: Awaited<ReturnType<typeof fixture>>, fault?: 'mount' | '
       failedExportPaths: [],
     },
   };
-  const interception = new PolicyInterception();
+  const interception = runtimeOptions.policyInterception?.() ?? new PolicyInterception();
   const native = await createNativeTaskAdmissionFixture(
     f.coreDb,
     f.store,
@@ -298,30 +386,43 @@ async function start(f: Awaited<ReturnType<typeof fixture>>, fault?: 'mount' | '
       vaultBackend: () => f.vault.backend(),
       workspaceMutationAdmission: f.mutationAdmission,
       policyInterception: () => interception,
-      readRuntimeConfig: () => loadRuntimeConfig(f.coreDb.dataRoot),
+      readRuntimeConfig:
+        runtimeOptions.readRuntimeConfig ?? (() => loadRuntimeConfig(f.coreDb.dataRoot)),
     },
     outside
   );
   let execution: Promise<void> | undefined;
+  let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
   cleanup.push(async () => {
     native.executionFor(f.turn.id).completion.resolve();
     await execution?.catch(() => {});
+    await admitted?.cleanup();
     await native.restore();
   });
-  execution = native.executor.startTurn(f.store, f.turn.id, 'Use synthetic file', {
-    agentSetup: f.agentSetup,
-    agentSessionId: f.agentSessionId,
-    attemptId: f.attemptId,
-    sandboxBindingRef: f.sandboxBindingRef,
-    triggerActor: f.turn.triggerActor,
-    requestId: f.entry.requestId,
-    workspaceRoots: [],
-  });
+  if (f.helper) {
+    admitted = await native.admitTurn(f.entry, {
+      attemptId: f.attemptId,
+      agentSessionId: f.agentSessionId,
+      candidateAgentSessionId: f.agentSessionId,
+    });
+    execution = admitted.execution;
+  } else {
+    execution = native.executor.startTurn(f.store, f.turn.id, 'Use synthetic file', {
+      agentSetup: f.agentSetup,
+      agentSessionId: f.agentSessionId,
+      attemptId: f.attemptId,
+      sandboxBindingRef: f.sandboxBindingRef,
+      triggerActor: f.turn.triggerActor,
+      requestId: f.entry.requestId,
+      workspaceRoots: [],
+    });
+  }
   void execution.catch(() => {});
   return {
     native,
     execution,
     ready: native.executionFor(f.turn.id).launched.promise,
+    environmentPackage: admitted?.pkg,
     crossedFault: () => crossedFault,
   };
 }
@@ -902,6 +1003,152 @@ describe('credential carrier slice 1: Core acceptance', () => {
     expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
   });
 
+  it('adds the actual helper reply scalar to subsequent collection checks and refuses an absent owner', async () => {
+    const f = await fixture(['runtime-token'], 'workspace', { helper: true });
+    const gatewayConfig = createTestGatewayConfig();
+    const configuration = loadRuntimeConfig(f.coreDb.dataRoot);
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: f.coreDb.dataRoot,
+      captureCoverage: f.store,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        ...configuration,
+        dataRoot: f.coreDb.dataRoot,
+        openKitConfig: loadOpenKitConfig(f.coreDb.dataRoot),
+        agentManifests: [f.agentSetup.manifest],
+        workspaceConfigs: [
+          ...configuration.workspaceConfigs.filter(
+            (entry) => entry.workspaceId !== DEMO_WORKSPACE_ID
+          ),
+          {
+            workspaceId: DEMO_WORKSPACE_ID,
+            path: join(f.coreDb.dataRoot, 'workspaces', DEMO_WORKSPACE_ID, 'workspace.yaml'),
+            config: WorkspaceConfigSchema.parse({
+              schemaVersion: 1,
+              workspace: {
+                name: 'Synthetic helper comparison',
+                agents: [
+                  {
+                    agentId: f.agentSetup.manifest.id,
+                    credentialBindings: [
+                      { requirementId: 'native_helper', vaultGrantId: f.grantId },
+                    ],
+                  },
+                ],
+              },
+            }),
+          },
+        ],
+        gatewayConfig,
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Synthetic helper discovery only',
+            kind: 'local',
+            baseUrl: 'http://127.0.0.1:0/v1',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      }),
+    });
+    const policy = new PolicyInterception();
+    const launched = await start(f, undefined, {
+      readRuntimeConfig: () => runtimeConfigManager.current(),
+      policyInterception: () => policy,
+    });
+    await launched.ready;
+    const lineage = launched.native.executor.nativeLineage;
+    const token = launched.native.executionFor(f.turn.id).workerControlToken;
+    const pkg = launched.environmentPackage;
+    if (!lineage || !token || !pkg || lineage.packageSnapshotId !== pkg.snapshotId)
+      throw new Error('Actual native admission omitted its package lineage or control credential.');
+    const dependencies = {
+      coreDb: f.coreDb,
+      dataRoot: f.coreDb.dataRoot,
+      store: f.store,
+      workspaceMutationAdmission: f.mutationAdmission,
+      vaultUnlockState: f.vault,
+      policyInterception: policy,
+      runtimeConfigManager,
+      gatewayConfig,
+      agentManifests: [f.agentSetup.manifest],
+      turnExecutor: launched.native.executor,
+      workerControlGateway: launched.native.workerControlGateway,
+    };
+    const app = createApp({
+      ...dependencies,
+      workerLifecycleRuntime: launched.native.runtime,
+    });
+    const input = {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        lineage,
+        declarationId: 'native_helper',
+        request: {
+          protocol: 'git',
+          operation: 'get',
+          attributes: { protocol: 'https', host: 'fixture.invalid', path: 'scope' },
+        },
+      }),
+    };
+    const response = await app.request('/api/worker-control/credential-helper', input);
+    expect(response.status).toBe(200);
+    const reply: unknown = await response.json();
+    if (
+      !isRecord(reply) ||
+      !isRecord(reply.credential) ||
+      typeof reply.credential.password !== 'string'
+    )
+      throw new Error('Actual Core helper omitted its validated private reply.');
+    const password = reply.credential.password;
+    expect(password === f.material).toBe(true);
+    const afterExposure = launched.native.effects.length;
+    const exportsBefore = launched.native.effects.filter(
+      (effect) => effect.kind === 'file.export'
+    ).length;
+    // Deliberately absent comparison owner; all authority/transport/configuration owners are real.
+    // Save only booleans/counts now, so OLD is decided by the subsequent real collection vector.
+    const missingOwnerApp = createApp(dependencies);
+    const missingOwner = await missingOwnerApp.request(
+      '/api/worker-control/credential-helper',
+      input
+    );
+    const missingOwnerRefused = missingOwner.status >= 400;
+    const missingOwnerContainsPrivate = (await missingOwner.text()).includes(password);
+    const missingOwnerAddedExport =
+      launched.native.effects.filter((effect) => effect.kind === 'file.export').length !==
+      exportsBefore;
+    launched.native.executionFor(f.turn.id).completion.resolve();
+    await launched.execution;
+    const collects = launched.native.effects
+      .slice(afterExposure)
+      .filter((effect) => effect.kind === 'workspace.collect');
+    expect(collects.length).toBeGreaterThan(0);
+    // A serialized Vault JSON string is NOT a complete comparison for the actual returned scalar.
+    expect(
+      collects.every((effect) => {
+        const checks = effect.input.checkValues;
+        return (
+          isRecord(checks) &&
+          Array.isArray(checks.runtimeEnv) &&
+          checks.runtimeEnv.includes(password)
+        );
+      }),
+      'actual helper reply scalar absent from the private collection exclusion vector'
+    ).toBe(true);
+    expect(missingOwnerRefused).toBe(true);
+    expect(missingOwnerContainsPrivate).toBe(false);
+    expect(missingOwnerAddedExport).toBe(false);
+    safe(
+      [
+        listVaultInjectionPlans(f.coreDb),
+        receipts.listVaultInjectionReceipts(f.coreDb),
+        listVaultUseRecords(f.coreDb),
+      ],
+      password
+    );
+  }, 60_000);
+
   it('launches a persistent Worker with a transient binding and receipts after the create/import acknowledgements', async () => {
     const f = await fixture();
     const observed: boolean[] = [];
@@ -1191,4 +1438,171 @@ describe('credential carrier slice 1: Core acceptance', () => {
       );
     }
   );
+});
+
+describe('typed native helper admission owner boundaries', () => {
+  it.each([
+    { label: 'grant-bound helper', bound: true },
+    { label: 'unbound helper', bound: false },
+  ])(
+    'validates $label at the actual native owner',
+    async ({ bound }) => {
+      const f = await fixture(['runtime-token'], 'workspace', { helper: true });
+      const native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
+        workspaceMutationAdmission: f.mutationAdmission,
+        vaultBackend: () => f.vault.backend(),
+      });
+      try {
+        const backend = native.executor.executionBackend;
+        if (
+          !backend ||
+          !('validatePackage' in backend) ||
+          typeof backend.validatePackage !== 'function'
+        )
+          throw new Error('Actual native package validation is unavailable.');
+        const preview = resolveAgentEnvironmentPackageMetadata({
+          coreDb: f.coreDb,
+          agentSetup: f.agentSetup,
+          agentSessionId: f.agentSessionId,
+          backend: { kind: 'openshell' },
+          turn: f.turn,
+          triggerActor: f.turn.triggerActor,
+          requestId: f.entry.requestId,
+          workspaceRoots: [],
+        });
+        expect(preview.schemaVersion).toBe(4);
+        expect(
+          preview.credentials.declarations.some(
+            (entry) => entry.id === 'native_helper' && entry.vaultGrantId === f.grantId
+          )
+        ).toBe(true);
+        expect(getVaultGrant(f.coreDb, f.grantId)?.status === 'active').toBe(true);
+        // Only the unbound branch is an explicit non-stored fault-input clone.
+        // Its actual grant remains; no revocation or fabricated canonical package is used.
+        const input = bound
+          ? preview
+          : {
+              ...preview,
+              credentials: {
+                ...preview.credentials,
+                declarations: preview.credentials.declarations.map((entry) => {
+                  if (entry.id !== 'native_helper') return entry;
+                  const { vaultGrantId, ...unbound } = entry;
+                  expect(vaultGrantId === f.grantId).toBe(true);
+                  return unbound;
+                }),
+              },
+            };
+        const diagnostics = await backend.validatePackage(input);
+        expect(Array.isArray(diagnostics)).toBe(true);
+        expect(Array.isArray(diagnostics) && diagnostics.length === 0).toBe(bound);
+        expect(getVaultGrant(f.coreDb, f.grantId)?.status === 'active').toBe(true);
+        expect(listVaultUseRecords(f.coreDb).length).toBe(0);
+        expect(receipts.listVaultInjectionReceipts(f.coreDb).length).toBe(0);
+      } finally {
+        await native.restore();
+      }
+    },
+    30_000
+  );
+
+  it('refuses an unknown helper consumer at the actual closed declaration schema', async () => {
+    const f = await fixture(['runtime-token'], 'workspace', { helper: true });
+    const declaration = f.agentSetup.manifest.sandbox?.credentialDeclarations?.[0];
+    if (!declaration) throw new Error('Actual fixture omitted its helper declaration.');
+    expect(
+      AgentEnvironmentCredentialDeclarationSchema.safeParse({
+        ...declaration,
+        consumer: 'unknown-consumer',
+      }).success
+    ).toBe(false);
+    expect(getVaultGrant(f.coreDb, f.grantId)?.status === 'active').toBe(true);
+    expect(listVaultUseRecords(f.coreDb).length).toBe(0);
+  }, 30_000);
+
+  it('keeps Codex Login behind the actual default App readiness gate', async () => {
+    const f = await fixture(['runtime-token'], 'workspace', { helper: true });
+    const registration = vi.spyOn(operationRoutes, 'registerOperationJsonRoutes');
+    const gatewayConfig = createTestGatewayConfig();
+    createProductionApp({
+      coreDb: f.coreDb,
+      dataRoot: f.coreDb.dataRoot,
+      store: f.store,
+      workspaceMutationAdmission: f.mutationAdmission,
+      openKitConfig: {},
+      agentManifests: [f.agentSetup.manifest],
+      gatewayConfig,
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Dormant admission discovery only',
+          kind: 'local',
+          baseUrl: 'http://127.0.0.1:0/v1',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+    });
+    expect(registration.mock.calls.length).toBe(1);
+    const supply = registration.mock.calls[0]?.[0].turnStartServices;
+    if (!supply) throw new Error('Actual App omitted its default admission services.');
+    if (!('supportedRequiredFeatures' in supply))
+      throw new Error('Actual App omitted its public feature capability projection.');
+    const supportedFeatures = supply.supportedRequiredFeatures;
+    expect(Array.isArray(supportedFeatures) && supportedFeatures.length === 0).toBe(true);
+    const verifiedSupportedFeatures = z.array(z.string()).parse(supportedFeatures);
+    const privateRoute = { providerProfileId: 'native-metadata', providerModel: 'gpt-5.1-codex' };
+    const login = createTestAgentSetup({
+      privateRoute,
+      credentialDeclarations: [
+        {
+          id: 'codex-subscription',
+          requirementId: 'codex-subscription',
+          vaultGrantId: f.grantId,
+          visibility: 'runtime-token',
+          consumer: 'codex-login',
+        },
+      ],
+    }).manifest;
+    expect((login.requiredFeatures ?? []).includes('worker.harness-login.v1')).toBe(false);
+    const result = resolveAgentSetup(login, {
+      ...supply,
+      supportedRequiredFeatures: verifiedSupportedFeatures,
+      gatewayConfig: createTestGatewayConfig({ privateRoute }),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'native-metadata',
+          displayName: 'Codex admission metadata only',
+          kind: 'oauth',
+          vendor: 'openai-codex',
+          models: [privateRoute.providerModel],
+          modelMetadata: {
+            [privateRoute.providerModel]: {
+              family: 'codex-metadata-fixture',
+              limit: { context: 128_000, output: 16_000 },
+              modalities: { input: ['text'], output: ['text'] },
+              reasoning: true,
+              tool_call: true,
+            },
+          },
+        },
+      ]),
+      subscriptionAccounts: {
+        gatewayUnavailableReason: () => {
+          throw new Error('Dormant Login must not consult Server account readiness.');
+        },
+      },
+      providerCredentialConfigured: () => {
+        throw new Error('Dormant Login must not consult Server key readiness.');
+      },
+    });
+    expect(result.setup === null).toBe(true);
+    expect(
+      result.diagnostics.some(
+        (entry) =>
+          entry.code === 'agent_setup.unsupported_required_feature' &&
+          entry.message.includes('worker.harness-login.v1')
+      )
+    ).toBe(true);
+    expect(listVaultUseRecords(f.coreDb).length).toBe(0);
+  }, 30_000);
 });

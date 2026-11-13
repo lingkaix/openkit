@@ -1856,11 +1856,34 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       });
   });
 
+  app.use('/api/worker-control/credential-helper', async (c, next) => {
+    c.header('Cache-Control', 'no-store');
+    await next();
+  });
   app.use('/api/worker-control/*', browserCors);
   registerWorkerControlRoutes({
     app,
     coreDb: options.coreDb,
     workerControlGateway,
+    ...(configuredWorkerRuntime?.registerCredentialHelperComparisonValues
+      ? {
+          credentialHelperRegister:
+            configuredWorkerRuntime.registerCredentialHelperComparisonValues,
+        }
+      : {}),
+    // Resolve after composition: these are the same live Policy/configuration/admission owners.
+    credentialHelperOperations: () => ({
+      coreDb: options.coreDb,
+      store: sharedStore,
+      repositoryWorkspaceDb,
+      workspaceMutationAdmission,
+      ...(vaultUnlockState ? { vaultUnlockState } : {}),
+      ...(runtimeConfigManager ? { runtimeConfigManager } : {}),
+      policyInterception,
+      goalTaskPolicy,
+      ...(dataRoot ? { dataRoot } : {}),
+      mode,
+    }),
   });
 
   app.use('/api/worker-inference/*', browserCors);

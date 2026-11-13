@@ -113,6 +113,7 @@ export async function createNativeTaskAdmissionFixture(
       context?: Parameters<TurnExecutor['startTurn']>[3];
       ownerStore?: FsStore;
       lineage?: Lineage;
+      workerControlToken?: string;
       events: unknown[];
       settled: boolean;
       started: boolean;
@@ -495,6 +496,8 @@ export async function createNativeTaskAdmissionFixture(
                 turn.acceptedStart = true;
                 executor.nativeLineage = turn.lineage;
                 executor.capabilityToken = String(wire.body.capabilityToken);
+                if (typeof wire.body.workerControlToken === 'string')
+                  turn.workerControlToken = wire.body.workerControlToken;
                 turn.observed.resolve(turn.execution!);
                 turn.launched.resolve();
               }
@@ -680,6 +683,8 @@ export async function createNativeTaskAdmissionFixture(
               turn!.observed.resolve(turn!.execution!);
               executor.nativeLineage = turn!.lineage!;
               executor.capabilityToken = String(wire.body.capabilityToken);
+              if (turn && typeof wire.body.workerControlToken === 'string')
+                turn.workerControlToken = wire.body.workerControlToken;
               turn!.launched.resolve();
             } else if (command.operation === 'turn.interrupt') {
               if (!turn?.lineage) throw new Error('Native interrupt lacks its original execution.');
@@ -737,6 +742,8 @@ export async function createNativeTaskAdmissionFixture(
         completion: turn.completion,
         launched: turn.launched,
         execution: turn.observed.promise,
+        workerControlToken: turn.workerControlToken,
+        launchContext: turn.context,
       };
     },
     /**
