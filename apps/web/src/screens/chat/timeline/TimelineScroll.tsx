@@ -26,9 +26,193 @@ function distanceToStart(scroller: HTMLElement): number {
   return scroller.scrollTop;
 }
 
+export type VisibleTextAnchor = {
+  entryId: string;
+  node: Text | null;
+  path: number[];
+  offset: number;
+  prefix: string;
+  fragment: string;
+  top: number;
+};
+
+type ViewBox = { x: number; y: number; width: number; height: number };
+
+function viewBox(scroller: HTMLElement): ViewBox {
+  const box = scroller.getBoundingClientRect();
+  const x = box.left + scroller.clientLeft;
+  const y = box.top + scroller.clientTop;
+  const right = Math.min(x + scroller.clientWidth, window.innerWidth);
+  const bottom = Math.min(y + scroller.clientHeight, window.innerHeight);
+  return {
+    x: Math.max(0, x),
+    y: Math.max(0, y),
+    width: Math.max(0, right - Math.max(0, x)),
+    height: Math.max(0, bottom - Math.max(0, y)),
+  };
+}
+
+function overlaps(box: ViewBox, view: ViewBox): boolean {
+  return (
+    box.height > 0 &&
+    box.width > 0 &&
+    box.y + box.height > view.y + 1 &&
+    box.y < view.y + view.height - 1 &&
+    box.x + box.width > view.x &&
+    box.x < view.x + view.width
+  );
+}
+
+function toBox(rect: DOMRect | DOMRectReadOnly): ViewBox {
+  return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+}
+
+function entryTextNodes(entry: HTMLElement): Text[] {
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(entry, NodeFilter.SHOW_TEXT);
+  for (let current = walker.nextNode(); current; current = walker.nextNode()) {
+    if (
+      current instanceof Text &&
+      current.data.trim() &&
+      !current.parentElement?.closest('button,input,textarea,svg,[aria-hidden="true"]')
+    ) {
+      nodes.push(current);
+    }
+  }
+  return nodes;
+}
+
+function characterBox(node: Text, offset: number): ViewBox | null {
+  if (offset < 0 || offset >= node.length) return null;
+  const range = document.createRange();
+  range.setStart(node, offset);
+  range.setEnd(node, offset + 1);
+  const rect = range.getClientRects()[0];
+  return rect ? toBox(rect) : null;
+}
+
+function nodePath(entry: HTMLElement, node: Node): number[] {
+  const path: number[] = [];
+  let current: Node | null = node;
+  while (current && current !== entry) {
+    const parent: ParentNode | null = current.parentNode;
+    if (!parent) return [];
+    path.unshift(Array.from(parent.childNodes).indexOf(current as ChildNode));
+    current = parent;
+  }
+  return path;
+}
+
+function caretAt(x: number, y: number): { node: Node; offset: number } | null {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  };
+  const range = doc.caretRangeFromPoint?.(x, y);
+  if (range?.startContainer) return { node: range.startContainer, offset: range.startOffset };
+  const position = doc.caretPositionFromPoint?.(x, y);
+  if (!position) return null;
+  return { node: position.offsetNode, offset: position.offset };
+}
+
+function textMatches(node: Text, saved: VisibleTextAnchor): boolean {
+  return (
+    node.data.startsWith(saved.prefix) &&
+    node.data.slice(saved.offset, saved.offset + 24) === saved.fragment
+  );
+}
+
+function resolveAnchoredText(entry: HTMLElement, saved: VisibleTextAnchor): Text | null {
+  if (saved.offset < 0) return null;
+  if (saved.node?.isConnected && entry.contains(saved.node) && textMatches(saved.node, saved)) {
+    return saved.node;
+  }
+  let candidate: Node | undefined = entry;
+  for (const index of saved.path) candidate = candidate?.childNodes[index];
+  if (candidate instanceof Text && textMatches(candidate, saved)) return candidate;
+  const found = entryTextNodes(entry).filter((node) => textMatches(node, saved));
+  return found.length === 1 ? found[0] : null;
+}
+
+/** Screen Y of the held visible text, or of the entry top when the run has no text. */
+export function measureVisibleTextAnchor(
+  scroller: HTMLElement,
+  saved: VisibleTextAnchor
+): number | null {
+  const entry = scroller.querySelector<HTMLElement>(
+    `[data-timeline-entry="${CSS.escape(saved.entryId)}"]`
+  );
+  if (!entry) return null;
+  if (saved.offset < 0) return entry.getBoundingClientRect().top;
+  const node = resolveAnchoredText(entry, saved);
+  if (!node) return null;
+  return characterBox(node, saved.offset)?.y ?? null;
+}
+
+function captureVisibleEntry(scroller: HTMLElement, view: ViewBox): VisibleTextAnchor | null {
+  const portTop = scroller.getBoundingClientRect().top;
+  for (const entry of scroller.querySelectorAll<HTMLElement>('[data-timeline-entry]')) {
+    const top = entry.getBoundingClientRect().top;
+    if (top < portTop - 2 || top >= view.y + view.height) continue;
+    const entryId = entry.dataset.timelineEntry ?? '';
+    if (!entryId) continue;
+    return { entryId, node: null, path: [], offset: -1, prefix: '', fragment: '', top };
+  }
+  return null;
+}
+
+/** First visible text character, else an entry whose top edge is inside the viewport. */
+export function captureVisibleTextAnchor(scroller: HTMLElement): VisibleTextAnchor | null {
+  const view = viewBox(scroller);
+  for (const entry of scroller.querySelectorAll<HTMLElement>('[data-timeline-entry]')) {
+    if (!overlaps(toBox(entry.getBoundingClientRect()), view)) continue;
+    const entryId = entry.dataset.timelineEntry ?? '';
+    if (!entryId) continue;
+    for (const node of entryTextNodes(entry)) {
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      for (const line of range.getClientRects()) {
+        if (!overlaps(toBox(line), view)) continue;
+        const caret = caretAt(
+          Math.max(line.left + 1, view.x + 1),
+          Math.max(line.top + 1, view.y + 1)
+        );
+        if (caret?.node !== node) continue;
+        let offset = Math.min(caret.offset, node.length - 1);
+        while (offset < node.length - 1 && !node.data[offset]?.trim()) offset += 1;
+        const box = characterBox(node, offset);
+        if (!box || !overlaps(box, view)) continue;
+        return {
+          entryId,
+          node,
+          path: nodePath(entry, node),
+          offset,
+          prefix: node.data.slice(0, 64),
+          fragment: node.data.slice(offset, offset + 24),
+          top: box.y,
+        };
+      }
+    }
+  }
+  return captureVisibleEntry(scroller, view);
+}
+
+function trackVisibleAnchor(
+  scroller: HTMLElement,
+  saved: VisibleTextAnchor | null
+): VisibleTextAnchor | null {
+  if (!saved) return captureVisibleTextAnchor(scroller);
+  const top = measureVisibleTextAnchor(scroller, saved);
+  const view = viewBox(scroller);
+  if (top != null && top >= view.y && top < view.y + view.height) return { ...saved, top };
+  return captureVisibleTextAnchor(scroller) ?? (top != null ? { ...saved, top } : saved);
+}
+
 /**
  * Paging chrome and scroll anchoring for the run window.
- * `overflow-anchor` is set on the scroller, and the manual correction always runs.
+ * `overflow-anchor` is set on the scroller. While the reader is not following,
+ * a visible text point is held and only its measured residual is corrected,
+ * including when native anchoring leaves that point where content moved it.
  */
 export function TimelineScroll({
   topEntryId,
@@ -80,6 +264,9 @@ export function TimelineScroll({
   const topSentinel = useRef<HTMLDivElement>(null);
   const bottomSentinel = useRef<HTMLDivElement>(null);
   const pending = useRef<{ id: string; top: number; height: number } | null>(null);
+  const held = useRef<VisibleTextAnchor | null>(null);
+  const correcting = useRef(false);
+  const tracking = useRef(false);
   const [following, setFollowing] = useState(initiallyFollowing);
   const followingRef = useRef(initiallyFollowing);
   const pinnedDivider = useRef(false);
@@ -103,13 +290,21 @@ export function TimelineScroll({
   }
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the scroll listener stays on the scroller and reads the latest follow callback through setFollow.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const scroller = scrollParent(frame.current);
     scroller.style.overflowAnchor = 'auto';
     const onScroll = () => {
       const next = isFollowing(distanceFromEnd(scroller));
       if (next !== followingRef.current) setFollow(next);
       writeTimelineHistory(window.history, { scrollTop: scroller.scrollTop });
+      if (correcting.current || tracking.current) return;
+      if (followingRef.current) {
+        held.current = null;
+        return;
+      }
+      tracking.current = true;
+      held.current = trackVisibleAnchor(scroller, held.current);
+      tracking.current = false;
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
     return () => scroller.removeEventListener('scroll', onScroll);
@@ -168,7 +363,11 @@ export function TimelineScroll({
     // then clear even when overflow-anchor already left a zero residual.
     if (scroller.scrollHeight === fix.height) return;
     const delta = scrollCorrection(fix.top, entry.getBoundingClientRect().top);
-    if (delta !== 0) scroller.scrollTop += delta;
+    if (delta !== 0) {
+      correcting.current = true;
+      scroller.scrollTop += delta;
+      correcting.current = false;
+    }
     pending.current = null;
   });
 
@@ -202,7 +401,10 @@ export function TimelineScroll({
   }, [followRequest]);
 
   useLayoutEffect(() => {
-    if (followingRef.current) pending.current = null;
+    if (followingRef.current) {
+      pending.current = null;
+      held.current = null;
+    }
     if (pinDivider || !followingRef.current || pending.current) return;
     const scroller = scrollParent(frame.current);
     scroller.scrollTop = scroller.scrollHeight;
@@ -241,6 +443,36 @@ export function TimelineScroll({
     const delta = divider.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
     if (Math.abs(delta) > 1) scroller.scrollTop += delta;
     pinnedDivider.current = true;
+  });
+
+  useLayoutEffect(() => {
+    const scroller = scrollParent(frame.current);
+    if (followingRef.current) {
+      held.current = null;
+      return;
+    }
+    tracking.current = true;
+    try {
+      const saved = held.current;
+      if (saved) {
+        const top = measureVisibleTextAnchor(scroller, saved);
+        if (top != null) {
+          const delta = scrollCorrection(saved.top, top);
+          if (delta !== 0) {
+            correcting.current = true;
+            scroller.scrollTop += delta;
+            correcting.current = false;
+          }
+        }
+      }
+      if (followingRef.current) {
+        held.current = null;
+        return;
+      }
+      held.current = trackVisibleAnchor(scroller, held.current);
+    } finally {
+      tracking.current = false;
+    }
   });
 
   // Inspecting steps leaves follow mode before their height changes.

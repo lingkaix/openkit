@@ -88,7 +88,13 @@ import {
   projectTimeline,
   runSeparatorCopy,
 } from './timeline/source';
-import { scrollParent, TimelineScroll } from './timeline/TimelineScroll';
+import {
+  captureVisibleTextAnchor,
+  measureVisibleTextAnchor,
+  scrollParent,
+  TimelineScroll,
+  type VisibleTextAnchor,
+} from './timeline/TimelineScroll';
 import { TimelineTime } from './timeline/TimelineTime';
 import {
   durationDateTime,
@@ -462,7 +468,7 @@ export function ThreadStream({
   const [followNew, setFollowNew] = useState({ count: 0, decision: false });
   const following = useRef(windowAnchor.kind === 'latest');
   const paintedRuns = useRef<TimelineRunEntry[] | null>(null);
-  const retainedView = useRef<{ id: string; top: number } | null>(null);
+  const retainedView = useRef<VisibleTextAnchor | null>(null);
   const retainArmed = useRef(false);
   const retainScope = useRef<string | null>(null);
   const knownRunIds = useRef<Set<string>>(new Set());
@@ -783,20 +789,21 @@ export function ThreadStream({
       `[data-timeline-entry="${CSS.escape(retainedHeadId)}"]`
     );
     const port = head ? scrollParent(head) : null;
-    if (head && port && head.getBoundingClientRect().top >= port.getBoundingClientRect().top - 2) {
-      retainedView.current = { id: retainedHeadId, top: head.getBoundingClientRect().top };
-    }
+    const point = port ? captureVisibleTextAnchor(port) : null;
+    if (point) retainedView.current = point;
   }
   useLayoutEffect(() => {
     const saved = retainedView.current;
     if (!saved || following.current) return;
     retainedView.current = null;
     const entry = document.querySelector<HTMLElement>(
-      `[data-timeline-entry="${CSS.escape(saved.id)}"]`
+      `[data-timeline-entry="${CSS.escape(saved.entryId)}"]`
     );
     if (!entry) return;
     const scroller = scrollParent(entry);
-    const delta = scrollCorrection(saved.top, entry.getBoundingClientRect().top);
+    const top = measureVisibleTextAnchor(scroller, saved);
+    if (top == null) return;
+    const delta = scrollCorrection(saved.top, top);
     if (delta !== 0) scroller.scrollTop += delta;
   });
   const anchoredItems = timelineWindow.data?.itemWindow
