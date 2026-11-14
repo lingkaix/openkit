@@ -3,6 +3,7 @@ import { RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
 import { advanceGoalForThread } from '../runtime/goal-native.js';
+import { approveMcpDefinitionInDb } from '../runtime/mcp-tool-schema-snapshots.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
@@ -380,8 +381,14 @@ export function applyControlPendingTransition(
   if (transition.input.action === 'grant-command' || transition.input.action === 'deny') {
     for (const id of result.requestIds) {
       const record = readPendingRequest(db.sqlite, id);
-      if (record && isCommandIntentApproval(record))
+      if (record && isCommandIntentApproval(record)) {
+        if (
+          transition.input.action === 'grant-command' &&
+          record.governedIntent?.operation === 'mcp.definition.approve'
+        )
+          approveMcpDefinitionInDb(db, record);
         advanceGoalForThread(db.sqlite, record.threadId);
+      }
     }
   }
   // A winning reservation has no command result yet; its later disposition commits the original receipt.

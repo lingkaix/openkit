@@ -629,6 +629,8 @@ export async function resolveCommandIntentApproval(input: {
       store: input.store,
       coreDb: input.coreDb,
       actor: input.actor,
+      sqlite: input.sqlite,
+      checkCommandIntent: input.checkCommandIntent,
     }).status !== 'available'
   )
     throw new PendingRequestCommandError(

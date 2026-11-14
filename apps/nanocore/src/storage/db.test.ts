@@ -377,7 +377,7 @@ describe('scoped storage databases', () => {
         .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
         .all();
       if ('activatesKnowledge' in factory) {
-        expect(reopenedMigrations).toHaveLength(retainedMigrations.length + 8);
+        expect(reopenedMigrations).toHaveLength(retainedMigrations.length + 9);
         expect(reopenedMigrations.slice(0, retainedMigrations.length)).toEqual(retainedMigrations);
         expect(listMigrationIds(sqlite, 'workspace').slice(retainedMigrations.length)).toEqual([
           'workspace_0019_knowledge_authority',
@@ -388,6 +388,7 @@ describe('scoped storage databases', () => {
           'workspace_0024_thread_failure_counts',
           'workspace_0025_timeline_plan_history',
           'workspace_0026_conversation_navigation',
+          'workspace_0027_mcp_definition_hold',
         ]);
       } else expect(reopenedMigrations).toEqual(retainedMigrations);
       expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -779,6 +780,7 @@ describe('scoped storage databases', () => {
         'workspace_0024_thread_failure_counts',
         'workspace_0025_timeline_plan_history',
         'workspace_0026_conversation_navigation',
+        'workspace_0027_mcp_definition_hold',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -1149,6 +1151,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'workspace_0024_thread_failure_counts',
         'workspace_0025_timeline_plan_history',
         'workspace_0026_conversation_navigation',
+        'workspace_0027_mcp_definition_hold',
       ]);
     } finally {
       userDb.sqlite.close();

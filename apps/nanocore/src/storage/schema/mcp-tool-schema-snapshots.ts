@@ -22,7 +22,9 @@ export const mcpToolSchemaSnapshots = sqliteTable(
     serverVersion: text('server_version'),
     /** Content digest for the tool schema list. */
     contentDigest: text('content_digest').notNull(),
-    /** JSON encoded product-safe tool names and input schemas. */
+    /** Exact last admitted definition digest; NULL historical/imported rows are not approval. */
+    approvedSchemaDigest: text('approved_schema_digest'),
+    /** JSON encoded product-safe names, descriptions and input schemas. */
     toolsJson: text('tools_json').notNull(),
     /** Snapshot source. */
     source: text('source').$type<McpToolSchemaSnapshotSource>().notNull(),

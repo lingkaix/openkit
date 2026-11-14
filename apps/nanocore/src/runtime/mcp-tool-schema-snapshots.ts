@@ -10,6 +10,8 @@ import { WorkerControlGatewayError } from '../operation-error.js';
 import type { WorkerCapabilityMcpToolSchema } from '../storage/control-store-input.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
+import { PendingRequestCommandError } from './pending-request-error.js';
+import type { PendingRequestRecord } from './pending-requests.js';
 
 const TRACKING_SNAPSHOT_RETENTION = 8;
 // Cache query plans on their actual owner connection, never schema rows or Turn bindings.
@@ -41,6 +43,7 @@ const StoredMcpToolV1Schema = z.object({
     .min(1)
     .max(256)
     .refine((value) => value === value.trim(), 'MCP tool names must not have outer whitespace.'),
+  description: z.string().optional(),
   inputSchema: z.record(z.string(), z.unknown()),
 });
 
@@ -175,8 +178,9 @@ export function recordMcpToolSchemaSnapshotInDb(
         content_digest,
         tools_json,
         source,
-        captured_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        captured_at,
+        approved_schema_digest
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       writeRetainedV1({}).schemaVersion,
@@ -188,7 +192,8 @@ export function recordMcpToolSchemaSnapshotInDb(
       contentDigest,
       toolsJson,
       input.source,
-      capturedAt.toISOString()
+      capturedAt.toISOString(),
+      previous ? previous.approved_schema_digest : contentDigest
     );
   const collision =
     inserted.changes === 0
@@ -233,13 +238,15 @@ export function recordMcpToolSchemaSnapshotInDb(
       ? snapshotId
       : (existing?.snapshot_id ?? collision?.snapshot_id ?? snapshotId);
   if (existing || collision) {
-    input.workspaceDb.sqlite
-      .prepare(
-        `UPDATE mcp_tool_schema_snapshots
-         SET captured_at = ?, server_version = ?, source = 'live', source_ref = NULL
-         WHERE snapshot_id = ?`
-      )
-      .run(capturedAt.toISOString(), input.serverVersion ?? null, schemaSnapshotId);
+    writeMcpSnapshotAdmission({
+      workspaceDb: input.workspaceDb,
+      workspaceId: input.workspaceId,
+      catalogEntryId: server.id,
+      schemaSnapshotId,
+      capturedAt: capturedAt.toISOString(),
+      serverVersion: input.serverVersion ?? null,
+      approvedSchemaDigest: previous ? previous.approved_schema_digest : null,
+    });
   }
   if (inserted.changes === 1 || collision?.source === 'aep') {
     recordWorkspaceAuditEvent({
@@ -279,11 +286,17 @@ export function recordMcpToolSchemaSnapshotInDb(
            FROM capability_calls
            WHERE schema_snapshot_id IS NOT NULL
          )
-       ORDER BY captured_at DESC, snapshot_id DESC
+       ORDER BY CASE WHEN content_digest = (
+         SELECT admitted.approved_schema_digest
+         FROM mcp_tool_schema_snapshots AS admitted
+         WHERE admitted.workspace_id = ? AND admitted.catalog_entry_id = ?
+           AND admitted.source = 'live'
+         ORDER BY admitted.captured_at DESC, admitted.snapshot_id DESC LIMIT 1
+       ) THEN 0 ELSE 1 END, captured_at DESC, snapshot_id DESC
        LIMIT -1 OFFSET ?
      )`
       )
-      .run(input.workspaceId, server.id, TRACKING_SNAPSHOT_RETENTION);
+      .run(input.workspaceId, server.id, input.workspaceId, server.id, TRACKING_SNAPSHOT_RETENTION);
   }
   input.onRecorded?.(schemaSnapshotId);
   return schemaSnapshotId;
@@ -379,7 +392,9 @@ export function importMcpToolSchemaSnapshots(
     // Old structured exports preserve nested member order; only their fixed Tool wrapper is restored.
     const toolsJson =
       snapshot.toolsJson ??
-      JSON.stringify(snapshot.tools.map(({ inputSchema, name }) => ({ inputSchema, name })));
+      (tools.some((tool) => tool.description !== undefined)
+        ? canonicalJsonText(canonicalMcpToolSchemas(tools))
+        : JSON.stringify(snapshot.tools.map(({ inputSchema, name }) => ({ inputSchema, name }))));
     if (
       sha256Hex(toolsJson) !== snapshot.contentDigest ||
       !isDeepStrictEqual(z.array(StoredMcpToolV1Schema).parse(JSON.parse(toolsJson)), tools)
@@ -423,7 +438,11 @@ export function importMcpToolSchemaSnapshots(
  * @returns Hexadecimal SHA-256 digest.
  */
 export function mcpToolSchemaContentDigest(
-  tools: Array<{ inputSchema: Record<string, unknown>; name: string }>
+  tools: Array<{
+    inputSchema: Record<string, unknown>;
+    name: string;
+    description?: string | undefined;
+  }>
 ): string {
   return sha256Hex(canonicalJsonText(canonicalMcpToolSchemas(tools)));
 }
@@ -466,16 +485,43 @@ export function readCurrentMcpToolSchemaSnapshot(input: {
   readonly workspaceDb: WorkspaceDb;
   readonly workspaceId: string;
 }): Pick<ExportableMcpToolSchemaSnapshot, 'schemaSnapshotId' | 'tools'> | null {
+  const row = readCurrentMcpSnapshotRow(input);
+  return row ? { schemaSnapshotId: row.snapshot_id, tools: readStoredMcpToolsV1(row) } : null;
+}
+
+interface McpSnapshotAdmissionRow {
+  schemaVersion: unknown;
+  snapshot_id: string;
+  content_digest: string;
+  tools_json: string;
+  captured_at: string;
+  server_version: string | null;
+  approved_schema_digest: string | null;
+  approvedSchemaVersion: unknown;
+  approved_tools_json: string | null;
+  approved_content_digest: string | null;
+}
+
+/** Shares the original current-row SQL site; the approval reference never becomes a serving cache. */
+function readCurrentMcpSnapshotRow(input: Parameters<typeof readCurrentMcpToolSchemaSnapshot>[0]) {
   let statement = currentSnapshotStatements.get(input.workspaceDb.sqlite);
   if (!statement) {
     statement = input.workspaceDb.sqlite.prepare(
-      `SELECT schema_version AS schemaVersion, snapshot_id, content_digest, tools_json
-       FROM mcp_tool_schema_snapshots
-       WHERE workspace_id = ?
-         AND catalog_entry_id = ?
-         AND source = 'live'
-         AND (? IS NULL OR snapshot_id = ?)
-       ORDER BY captured_at DESC, snapshot_id DESC
+      `SELECT current.schema_version AS schemaVersion, current.snapshot_id,
+         current.content_digest, current.tools_json, current.captured_at, current.server_version,
+         current.approved_schema_digest, approved.schema_version AS approvedSchemaVersion,
+         approved.tools_json AS approved_tools_json, approved.content_digest AS approved_content_digest
+       FROM mcp_tool_schema_snapshots AS current
+       LEFT JOIN mcp_tool_schema_snapshots AS approved
+         ON approved.workspace_id = current.workspace_id
+         AND approved.catalog_entry_id = current.catalog_entry_id
+         AND approved.source = 'live'
+         AND approved.content_digest = current.approved_schema_digest
+       WHERE current.workspace_id = ?
+         AND current.catalog_entry_id = ?
+         AND current.source = 'live'
+         AND (? IS NULL OR current.snapshot_id = ?)
+       ORDER BY current.captured_at DESC, current.snapshot_id DESC
        LIMIT 1`
     );
     currentSnapshotStatements.set(input.workspaceDb.sqlite, statement);
@@ -485,26 +531,164 @@ export function readCurrentMcpToolSchemaSnapshot(input: {
     input.catalogEntryId,
     input.pinnedSchemaSnapshotId,
     input.pinnedSchemaSnapshotId
-  ) as
-    | { schemaVersion: unknown; snapshot_id: string; content_digest: string; tools_json: string }
-    | undefined;
-
-  return row
-    ? {
-        schemaSnapshotId: row.snapshot_id,
-        tools: readStoredMcpToolsV1(row),
-      }
-    : null;
+  ) as McpSnapshotAdmissionRow | undefined;
+  return row;
 }
 
-/** Selects complete input schemas and stable Tool order; the shared encoder owns member order. */
+/** Reads native observed/approved facts without granting Tool-use authority or importing approval. */
+export function readMcpToolDefinitionAdmission(
+  input: Omit<Parameters<typeof readCurrentMcpToolSchemaSnapshot>[0], 'pinnedSchemaSnapshotId'>
+) {
+  const row = readCurrentMcpSnapshotRow({ ...input, pinnedSchemaSnapshotId: null });
+  if (!row) return null;
+  const approvedTools =
+    row.approved_tools_json !== null && row.approved_content_digest !== null
+      ? readStoredMcpToolsV1({
+          schemaVersion: row.approvedSchemaVersion,
+          tools_json: row.approved_tools_json,
+          content_digest: row.approved_content_digest,
+        })
+      : null;
+  return {
+    schemaSnapshotId: row.snapshot_id,
+    contentDigest: row.content_digest,
+    tools: readStoredMcpToolsV1(row),
+    capturedAt: row.captured_at,
+    serverVersion: row.server_version,
+    approvedSchemaDigest: row.approved_schema_digest,
+    approvedTools,
+  };
+}
+
+/** Applies the hold immediately before either actual tools/list return, including old Turn bindings. */
+export function admittedMcpToolDefinitions<T extends z.infer<typeof WorkerCapabilityMcpToolSchema>>(
+  input: Parameters<typeof readMcpToolDefinitionAdmission>[0],
+  tools: readonly T[]
+): T[] {
+  const admission = readMcpToolDefinitionAdmission(input);
+  if (!admission?.approvedTools) return [];
+  const definitions = (values: readonly z.infer<typeof WorkerCapabilityMcpToolSchema>[]) =>
+    new Map(
+      values.map((tool) => [tool.name, canonicalJsonText(canonicalMcpToolSchemas([tool])[0])])
+    );
+  const approved = definitions(admission.approvedTools);
+  return tools.filter((tool) => {
+    const definition = canonicalJsonText(canonicalMcpToolSchemas([tool])[0]);
+    // A later observation must not erase an already-admitted, fixed Turn definition.
+    return approved.get(tool.name) === definition;
+  });
+}
+
+// This effect owner alone interprets the existing Pending governed-intent JSON slot.
+const McpDefinitionApprovalIntentSchema = z
+  .object({
+    operation: z.literal('mcp.definition.approve'),
+    catalogEntryId: z.string().min(1),
+    catalogDigest: z.string().min(1),
+    schemaSnapshotId: z.string().min(1),
+    schemaDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+
+/** Requires the exact current observed candidate; a digest, old capture or foreign row grants nothing. */
+export function requireMcpDefinitionApprovalSource(
+  sqlite: WorkspaceDb['sqlite'],
+  workspaceId: string,
+  value: unknown
+) {
+  const intent = McpDefinitionApprovalIntentSchema.parse(value);
+  const admission = readMcpToolDefinitionAdmission({
+    workspaceDb: { sqlite } as WorkspaceDb,
+    workspaceId,
+    catalogEntryId: intent.catalogEntryId,
+  });
+  if (
+    !admission ||
+    admission.schemaSnapshotId !== intent.schemaSnapshotId ||
+    admission.contentDigest !== intent.schemaDigest ||
+    admission.approvedSchemaDigest === admission.contentDigest
+  )
+    throw new PendingRequestCommandError(
+      'approval_preview_unavailable',
+      'The current MCP definition candidate is unavailable.',
+      409
+    );
+  return { intent, admission };
+}
+
+/** Joins the actual human Pending grant on its original native transaction, before receipt/ACK. */
+export function approveMcpDefinitionInDb(db: WorkspaceDb, record: PendingRequestRecord): void {
+  if (
+    !db.sqlite.inTransaction ||
+    record.workspaceId !== db.workspaceId ||
+    record.kind !== 'approval' ||
+    record.serverId !== null ||
+    record.state !== 'resolved' ||
+    record.resolution !== 'granted' ||
+    record.decidingActor?.kind !== 'user' ||
+    record.decidingActor.id !== record.decidingActorContext?.userId
+  )
+    throw new PendingRequestCommandError(
+      'invalid_request',
+      'MCP definition grant source conflicts.',
+      409
+    );
+  const { intent, admission } = requireMcpDefinitionApprovalSource(
+    db.sqlite,
+    db.workspaceId,
+    record.governedIntent
+  );
+  writeMcpSnapshotAdmission({
+    workspaceDb: db,
+    workspaceId: db.workspaceId,
+    catalogEntryId: intent.catalogEntryId,
+    schemaSnapshotId: admission.schemaSnapshotId,
+    capturedAt: admission.capturedAt,
+    serverVersion: admission.serverVersion,
+    approvedSchemaDigest: admission.contentDigest,
+  });
+}
+
+/** The original MCP snapshot UPDATE site, shared by observation and exact native human disposition. */
+function writeMcpSnapshotAdmission(input: {
+  workspaceDb: WorkspaceDb;
+  workspaceId: string;
+  catalogEntryId: string;
+  schemaSnapshotId: string;
+  capturedAt: string;
+  serverVersion: string | null;
+  approvedSchemaDigest: string | null;
+}): void {
+  input.workspaceDb.sqlite
+    .prepare(
+      `UPDATE mcp_tool_schema_snapshots
+     SET captured_at = ?, server_version = ?, source = 'live', source_ref = NULL,
+       approved_schema_digest = ?
+     WHERE workspace_id = ? AND catalog_entry_id = ? AND snapshot_id = ?`
+    )
+    .run(
+      input.capturedAt,
+      input.serverVersion,
+      input.approvedSchemaDigest,
+      input.workspaceId,
+      input.catalogEntryId,
+      input.schemaSnapshotId
+    );
+}
+
+/** Selects complete definitions and stable Tool order; the shared encoder owns member order. */
 export function canonicalMcpToolSchemas(
-  tools: Array<{ inputSchema: Record<string, unknown>; name: string }>
-): Array<{ inputSchema: Record<string, unknown>; name: string }> {
+  tools: Array<{
+    inputSchema: Record<string, unknown>;
+    name: string;
+    description?: string | undefined;
+  }>
+): Array<{ inputSchema: Record<string, unknown>; name: string; description?: string | undefined }> {
   return tools
     .map((tool) => ({
       inputSchema: tool.inputSchema,
       name: tool.name,
+      ...(tool.description !== undefined ? { description: tool.description } : {}),
     }))
     .sort((left, right) => compareOrdinal(left.name, right.name));
 }
@@ -592,13 +776,13 @@ export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotI
   const previous = input.workspaceDb.sqlite
     .prepare(
       `SELECT schema_version AS schemaVersion, captured_at, snapshot_id, content_digest,
-                  server_version, tools_json, source_ref
+                  server_version, tools_json, source_ref, source, approved_schema_digest
            FROM mcp_tool_schema_snapshots
-           WHERE workspace_id = ? AND catalog_entry_id = ? AND source = ?
-           ORDER BY captured_at DESC, snapshot_id DESC
+           WHERE workspace_id = ? AND catalog_entry_id = ? AND source IN ('live', 'aep')
+           ORDER BY CASE WHEN source = 'live' THEN 0 ELSE 1 END, captured_at DESC, snapshot_id DESC
            LIMIT 1`
     )
-    .get(input.workspaceId, server.id, input.source) as
+    .get(input.workspaceId, server.id) as
     | {
         schemaVersion: unknown;
         captured_at: string;
@@ -607,6 +791,8 @@ export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotI
         server_version: string | null;
         tools_json: string;
         source_ref: string | null;
+        source: 'live' | 'aep';
+        approved_schema_digest: string | null;
       }
     | undefined;
   const previousTools = previous ? readStoredMcpToolsV1(previous) : null;
@@ -640,6 +826,7 @@ export function prepareMcpToolSchemaSnapshot(input: RecordMcpToolSchemaSnapshotI
   }
   if (
     previous &&
+    previous.source === 'live' &&
     (server.schemaPolicy !== 'pinned' || snapshotId === previous.snapshot_id) &&
     previous.server_version === (input.serverVersion ?? null) &&
     previous.source_ref === null &&

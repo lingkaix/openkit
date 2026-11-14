@@ -6,6 +6,7 @@ import { z } from 'zod';
 /** Closed MCP Tool input shared without importing its runtime persistence owner. */
 export const WorkerCapabilityMcpToolSchema = z.object({
   name: WorkspaceMcpToolNameSchema,
+  description: z.string().optional(),
   inputSchema: z.record(z.string(), z.unknown()),
 });
 

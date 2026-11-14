@@ -265,6 +265,7 @@ import {
 import { createWorkerEnvironmentOperations } from './worker-environments/worker-environment-operations.js';
 import { createWorkerEnvironmentPreparation } from './worker-environments/worker-environment-preparation.js';
 import {
+  checkMcpDefinitionReviewIntent,
   type RegisterWorkerMcpRoutesInput,
   registerWorkerMcpRoutes,
   reviewCapturedMcpPolicy,
@@ -2331,6 +2332,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           manager: runtimeConfigManager,
           files: runtimeConfigFileService({ get: () => actor }),
         },
+        record,
+        actor
+      );
+    else if (record.governedIntent?.operation === 'mcp.definition.approve')
+      checkMcpDefinitionReviewIntent(
+        { coreDb: options.coreDb!, sqlite, catalog: capturedMcpCatalog(record.workspaceId) },
         record,
         actor
       );

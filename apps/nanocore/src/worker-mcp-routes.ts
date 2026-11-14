@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { CancelledNotificationSchema } from '@modelcontextprotocol/core';
@@ -28,10 +28,12 @@ import {
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import Database from 'better-sqlite3';
 import type { Hono } from 'hono';
+import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
+  isCurrentDeploymentAdministrator,
   isCurrentServerPolicyAuthor,
 } from './auth/operation-authorizer.js';
 import { isThreadVisible } from './auth/thread-visibility.js';
@@ -92,11 +94,14 @@ import type { PreparedCapturedPendingCall } from './runtime/captured-pending-cal
 import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
 import type { InflightIdempotentCommand } from './runtime/idempotent-command.js';
 import {
+  admittedMcpToolDefinitions,
   mcpToolArgumentsContentDigest,
   mcpToolSchemaContentDigest,
   prepareMcpToolSchemaSnapshot,
   readCurrentMcpToolSchemaSnapshot as readCurrentMcpToolSchemaSnapshotInDb,
+  readMcpToolDefinitionAdmission,
   readTurnMcpToolSchemaSnapshot as readTurnMcpToolSchemaSnapshotInDb,
+  requireMcpDefinitionApprovalSource,
   WorkerCapabilityMcpToolSchema,
 } from './runtime/mcp-tool-schema-snapshots.js';
 import {
@@ -114,9 +119,11 @@ import {
   workRequestInputIsSecret,
 } from './runtime/openkit-work-mcp.js';
 import { approvalCardCopy } from './runtime/pending-request-disclosure.js';
+import { PendingRequestCommandError } from './runtime/pending-request-error.js';
 import { pendingToolResult, raiseRecordedPendingRequest } from './runtime/pending-request-flow.js';
 import {
   executionCallIdForRequest,
+  listThreadPendingRequests,
   type PendingRequestRecord,
   type RaisePendingRequestInput,
 } from './runtime/pending-requests.js';
@@ -983,6 +990,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 });
               }
               if (current) {
+                await ensureMcpDefinitionReview({
+                  input,
+                  environmentPackage,
+                  resolved,
+                  selected,
+                  serverId,
+                  workspaceDb,
+                });
                 await stampCapabilityCallSchemaSnapshot({
                   callId: call.id,
                   schemaSnapshotId: current.schemaSnapshotId,
@@ -996,7 +1011,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
                 requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
                 const result = {
-                  tools: current.tools.filter(
+                  tools: admittedMcpToolDefinitions(
+                    {
+                      workspaceDb,
+                      workspaceId: environmentPackage.scope.workspaceId,
+                      catalogEntryId: serverId,
+                    },
+                    current.tools
+                  ).filter(
                     (tool) =>
                       selected.allowedTools.includes(tool.name) &&
                       !currentWorkerMcpPermissions(
@@ -1043,7 +1065,14 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
               requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
               const result = {
-                tools: observed.snapshotTools.filter(
+                tools: admittedMcpToolDefinitions(
+                  {
+                    workspaceDb,
+                    workspaceId: environmentPackage.scope.workspaceId,
+                    catalogEntryId: serverId,
+                  },
+                  observed.snapshotTools
+                ).filter(
                   (tool) =>
                     selected.allowedTools.includes(tool.name) &&
                     !currentWorkerMcpPermissions(
@@ -2753,7 +2782,11 @@ async function observeWorkerMcpTools(input: {
   injections: readonly PendingMcpVaultInjection[];
   injectionsCompleted: boolean;
   snapshotId: string;
-  snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
+  snapshotTools: Array<{
+    inputSchema: Record<string, unknown>;
+    name: string;
+    description?: string | undefined;
+  }>;
 }> {
   if (
     input.resolved.credentialBindings.length > 0 &&
@@ -2863,11 +2896,19 @@ async function observeWorkerMcpTools(input: {
   }
   const injectionsCompleted = live.credentialsMaterialized !== false;
   if (injectionsCompleted) await completeInjections();
-  let snapshotTools: Array<{ inputSchema: Record<string, unknown>; name: string }>;
+  let snapshotTools: Array<{
+    inputSchema: Record<string, unknown>;
+    name: string;
+    description?: string | undefined;
+  }>;
   try {
     snapshotTools = live.tools
       .map((tool) =>
-        WorkerCapabilityMcpToolSchema.parse({ inputSchema: tool.inputSchema, name: tool.name })
+        WorkerCapabilityMcpToolSchema.parse({
+          inputSchema: tool.inputSchema,
+          name: tool.name,
+          ...(tool.description !== undefined ? { description: tool.description } : {}),
+        })
       )
       .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
     if (new Set(snapshotTools.map((tool) => tool.name)).size !== snapshotTools.length) {
@@ -2932,6 +2973,7 @@ async function observeWorkerMcpTools(input: {
     !('liveSnapshotId' in captured)
   )
     throw new TypeError('Invalid native MCP schema result.');
+  await ensureMcpDefinitionReview(input);
   if (
     input.selected.schemaPolicy === 'pinned' &&
     input.selected.pinnedSchemaSnapshotId !== captured.liveSnapshotId
@@ -2963,6 +3005,107 @@ async function observeWorkerMcpTools(input: {
     snapshotId,
     snapshotTools,
   };
+}
+
+/** The missing-route fallback is a real permission Pending, never a synthesized allowing verdict. */
+async function ensureMcpDefinitionReview(
+  input: Pick<
+    Parameters<typeof observeWorkerMcpTools>[0],
+    'input' | 'environmentPackage' | 'resolved' | 'selected' | 'serverId' | 'workspaceDb'
+  >
+): Promise<void> {
+  const scope = input.environmentPackage.scope;
+  const admission = readMcpToolDefinitionAdmission({
+    workspaceDb: input.workspaceDb,
+    workspaceId: scope.workspaceId,
+    catalogEntryId: input.serverId,
+  });
+  if (!admission || admission.approvedSchemaDigest === admission.contentDigest) return;
+  const intent = {
+    operation: 'mcp.definition.approve',
+    catalogEntryId: input.serverId,
+    catalogDigest: input.resolved.catalogDigest,
+    schemaSnapshotId: admission.schemaSnapshotId,
+    schemaDigest: admission.contentDigest,
+  };
+  if (
+    listThreadPendingRequests(input.workspaceDb.sqlite, scope.workspaceId, scope.threadId).some(
+      (record) =>
+        record.kind === 'approval' &&
+        record.serverId === null &&
+        record.state === 'pending' &&
+        canonicalJsonText(record.governedIntent) === canonicalJsonText(intent)
+    )
+  )
+    return;
+  const responsibleUserId =
+    readGoalTaskPolicyContext({
+      coreDb: input.input.coreDb!,
+      store: input.input.store,
+      db: input.workspaceDb,
+      lineage: { ...scope, packageSnapshotId: input.environmentPackage.snapshotId },
+    })?.responsibleUserId ?? responsibleUserIdForActor(scope.triggerActor);
+  if (!responsibleUserId)
+    throw new WorkerControlGatewayError(
+      'mcp-denied',
+      'MCP review responsibility is unavailable.',
+      403
+    );
+  const requestId = `ap_mcp_definition_${randomUUID()}`;
+  await raiseRecordedPendingRequest(input.input.store, input.workspaceDb.sqlite, {
+    requestId,
+    workspaceId: scope.workspaceId,
+    threadId: scope.threadId,
+    raisingTurnId: scope.turnId,
+    requestItemId: deriveEntityId('it', [requestId, 'request']),
+    kind: 'approval',
+    requesterKind: 'worker',
+    agentId: input.environmentPackage.agent.agentId,
+    agentSessionId: scope.agentSessionId,
+    responsibleUserId,
+    governedIntent: intent,
+    approval: {
+      kind: 'permission',
+      title: 'Review MCP definition change',
+      description: `Current administrator review is required for binding ${input.serverId}, snapshot ${admission.schemaSnapshotId}, digest ${admission.contentDigest}. This grants no Tool-use authority.`,
+    },
+    now: new Date().toISOString(),
+  });
+}
+
+/** Uses the existing current administrator/catalog owner before an exact Pending grant. */
+export function checkMcpDefinitionReviewIntent(
+  input: {
+    coreDb: CoreDb;
+    sqlite: WorkspaceDb['sqlite'];
+    catalog: WorkspaceMcpServerCatalog | null;
+  },
+  record: PendingRequestRecord,
+  actor: Actor
+): void {
+  if (!isCurrentDeploymentAdministrator(input.coreDb, actor))
+    throw new PendingRequestCommandError(
+      'forbidden',
+      'Current administrator authority is required.',
+      403
+    );
+  const { intent } = requireMcpDefinitionApprovalSource(
+    input.sqlite,
+    record.workspaceId,
+    record.governedIntent
+  );
+  if (
+    !input.catalog?.servers.some(
+      (server) => server.id === intent.catalogEntryId && server.enabled
+    ) ||
+    resolveWorkspaceMcpServer({ catalog: input.catalog, serverId: intent.catalogEntryId })
+      .catalogDigest !== intent.catalogDigest
+  )
+    throw new PendingRequestCommandError(
+      'approval_preview_unavailable',
+      'The current MCP binding has changed.',
+      409
+    );
 }
 
 /** Rechecks every credential binding immediately before Gateway registration or tool contact. */

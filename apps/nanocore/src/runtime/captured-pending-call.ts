@@ -22,7 +22,6 @@ import type { VaultBackend } from '../vault/vault-backend.js';
 import { getVaultGrant } from '../vault/vault-grants.js';
 import { getVaultReference } from '../vault/vault-references.js';
 import {
-  canonicalMcpToolSchemas,
   readCurrentMcpToolSchemaSnapshot,
   readRetainedMcpToolSchemaSnapshot,
 } from './mcp-tool-schema-snapshots.js';
@@ -282,12 +281,12 @@ export function evaluateCapturedPendingCall(input: {
       workspaceId: record.workspaceId,
     });
     const capturedTool = captured?.tools.find((tool) => tool.name === record.toolName);
-    // The complete requested schema includes nested descriptions and annotations.
+    // Captured execution still binds the complete requested input schema, including nested
+    // descriptions/annotations; later top-level definition review does not rewrite that call.
     schemaCurrent = Boolean(
       currentTool &&
         capturedTool &&
-        canonicalJsonText(canonicalMcpToolSchemas([currentTool])) ===
-          canonicalJsonText(canonicalMcpToolSchemas([capturedTool]))
+        canonicalJsonText(currentTool.inputSchema) === canonicalJsonText(capturedTool.inputSchema)
     );
   }
   return {

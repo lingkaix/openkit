@@ -51,6 +51,7 @@ import {
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import {
+  ApprovalRequestSchema,
   allocateEntityId,
   canonicalJsonText,
   deriveEntityId,
@@ -141,6 +142,10 @@ import {
   readPendingRequest,
 } from './runtime/pending-requests.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
+import {
+  getSchedulerPreparationClaims,
+  runSchedulerDispatchLoop,
+} from './runtime/scheduler-dispatch-loop.js';
 import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { isAlreadyDecidedWorkerMcpItem } from './runtime/worker-mcp-decision.js';
 import type { WorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
@@ -2998,6 +3003,77 @@ describe('worker MCP routes', () => {
       );
     const taskAdmissions = vi.spyOn(productTurnStart, 'observeTurnAdmission');
     let capabilityToken = '';
+    let definitionRequestId: string | undefined;
+    const definitionRequests = () => {
+      const db = openWorkspaceDb(dataRoot, workspaceId);
+      try {
+        return listThreadPendingRequests(db.sqlite, workspaceId, threadId);
+      } finally {
+        db.sqlite.close();
+      }
+    };
+    const drainDefinitionOutcome = async () => {
+      const grantedDefinition = definitionRequests().find(
+        (record) => record.requestId === definitionRequestId
+      );
+      if (grantedDefinition?.resolution === 'granted') {
+        const delivery = await vi.waitFor(
+          () => {
+            const turnId = definitionRequests().find(
+              (record) => record.requestId === definitionRequestId
+            )?.deliveryTurnId;
+            if (!turnId) throw new Error('The real B grant has not published its outcome Turn.');
+            const entry = findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId });
+            if (!entry)
+              throw new Error('The real B outcome has not published its scheduler entry.');
+            return { turnId, entry };
+          },
+          { timeout: 10_000 }
+        );
+        const outcome = native.executionFor(delivery.turnId);
+        const executionBackend = native.executor.executionBackend;
+        if (!executionBackend)
+          throw new Error(
+            'Actual native execution backend is unavailable for owned outcome cleanup.'
+          );
+        const dispatch = runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          executionBackend,
+          callerQueueEntryId: delivery.entry.queueEntryId,
+          maxDispatches: 1,
+          configVersion: runtimeConfig.version,
+          gatewayConfig: runtimeConfig.gatewayConfig,
+          providerRegistry: runtimeConfig.providerRegistry,
+          userConfigs: runtimeConfig.userConfigs,
+          workspaceConfigs: runtimeConfig.workspaceConfigs,
+          agentManifests: runtimeConfig.agentManifests,
+          workspaceDataSourceCatalogs: runtimeConfig.workspaceDataSourceCatalogs,
+          workspaceMcpServerCatalogs: runtimeConfig.workspaceMcpServerCatalogs,
+        });
+        void dispatch.catch(() => undefined);
+        await Promise.race([
+          outcome.launched.promise,
+          dispatch.then((result) => {
+            if (
+              !result.startedTurns.some(
+                (started) => started.dispatch.entry.turnId === delivery.turnId
+              )
+            )
+              throw new Error('Actual scheduler did not submit the owned B outcome.');
+            return outcome.launched.promise;
+          }),
+        ]);
+        const preparation = getSchedulerPreparationClaims(coreDb).get(delivery.entry.queueEntryId);
+        if (!preparation) throw new Error('The actual B outcome has no full closeout claim.');
+        await native.waitForStartup(delivery.turnId);
+        outcome.completion.resolve();
+        await outcome.execution;
+        await preparation;
+        await dispatch;
+      }
+    };
     const register = () => {
       const app = new Hono();
       registerWorkerMcpRoutes({
@@ -3037,6 +3113,15 @@ describe('worker MCP routes', () => {
       const firstTurn = StartTaskModeResponseSchema.parse(await started.json()).turn;
       const first = native.executionFor(firstTurn.id);
       await first.launched.promise;
+      const firstEntry = findSchedulerAdmissionForTurn(coreDb, {
+        workspaceId,
+        threadId,
+        turnId: firstTurn.id,
+      });
+      const firstPreparation =
+        firstEntry && getSchedulerPreparationClaims(coreDb).get(firstEntry.queueEntryId);
+      if (!firstPreparation)
+        throw new Error('The actual first Turn has no full scheduler closeout claim.');
       await native.waitForStartup(native.executor.nativeLineage!.turnId);
       capabilityToken = native.executor.capabilityToken;
       let environmentPackage = native.workerControlGateway.authenticatePackageToken(
@@ -3136,6 +3221,7 @@ describe('worker MCP routes', () => {
       expect(await request('tools/list')).toMatchObject({ result: { tools: original } });
       first.completion.resolve();
       await first.execution;
+      await firstPreparation;
       expect(store.getTurnById(firstTurnId).status).toBe('completed');
       const replay = await task(firstRequestId);
       expect(replay.status, await replay.clone().text()).toBe(202);
@@ -3159,6 +3245,152 @@ describe('worker MCP routes', () => {
         turnId: secondTurn.id,
       });
       expect(native.executor.launches).toBe(2);
+      // Capture real B on this admitted Turn before selecting its actual owner-raised review.
+      const schemaWrites = vi.spyOn(getControlStoreWorkerClient(), 'workspaceCapability');
+      let observedBId: string;
+      try {
+        await request('tools/list');
+        const captureIndex = schemaWrites.mock.calls.findIndex(
+          ([, command]) =>
+            command.kind === 'mcp-schema' &&
+            command.environmentPackage.scope.turnId === secondTurn.id
+        );
+        const result = schemaWrites.mock.results[captureIndex];
+        if (captureIndex < 0 || result?.type !== 'return')
+          throw new Error('The actual next-Turn B observation did not traverse native mcp-schema.');
+        const ack = await result.value;
+        if (typeof ack.liveSnapshotId !== 'string')
+          throw new Error('Actual native B capture acknowledgement is missing.');
+        observedBId = ack.liveSnapshotId;
+      } finally {
+        schemaWrites.mockRestore();
+      }
+      const definitionDb = openWorkspaceDb(dataRoot, workspaceId);
+      let observedB: ReturnType<typeof listExportableMcpToolSchemaSnapshots>[number] | undefined;
+      try {
+        const current = readCurrentMcpToolSchemaSnapshot({
+          catalogEntryId: 'echo',
+          pinnedSchemaSnapshotId: null,
+          workspaceDb: definitionDb,
+          workspaceId,
+        });
+        observedB = listExportableMcpToolSchemaSnapshots(definitionDb, workspaceId).find(
+          (snapshot) =>
+            snapshot.catalogEntryId === 'echo' &&
+            snapshot.schemaSnapshotId === observedBId &&
+            snapshot.schemaSnapshotId === current?.schemaSnapshotId
+        );
+      } finally {
+        definitionDb.sqlite.close();
+      }
+      const selectedB = environmentPackage.supply.mcpServers.find(
+        (selected) => selected.id === 'echo'
+      );
+      if (
+        !observedB ||
+        canonicalJsonText(observedB.tools) !== canonicalJsonText(changed) ||
+        !selectedB?.catalogDigest
+      )
+        throw new Error('Actual next-Turn B observation or selected binding proof is missing.');
+      const definitionIntent = {
+        operation: 'mcp.definition.approve',
+        catalogEntryId: 'echo',
+        catalogDigest: selectedB.catalogDigest,
+        schemaSnapshotId: observedB.schemaSnapshotId,
+        schemaDigest: observedB.contentDigest,
+      };
+      const definitionRequest = definitionRequests().find(
+        (record) =>
+          record.state === 'pending' &&
+          record.kind === 'approval' &&
+          record.approvalKind === 'permission' &&
+          record.requesterKind === 'worker' &&
+          [firstTurnId, secondTurn.id].includes(record.raisingTurnId) &&
+          record.governedIntent?.operation === 'mcp.definition.approve' &&
+          canonicalJsonText(record.governedIntent) === canonicalJsonText(definitionIntent)
+      );
+      if (
+        !definitionRequest ||
+        !store
+          .getTurnById(definitionRequest.raisingTurnId)
+          .items.some(
+            (item) =>
+              item.type === 'approval-request' &&
+              item.id === definitionRequest.requestItemId &&
+              item.approvalRequestId === definitionRequest.requestId
+          )
+      )
+        throw new Error(
+          'Actual B observation did not supply its real permission Pending and request Item.'
+        );
+      definitionRequestId = definitionRequest.requestId;
+      const administrator = createOpenKitAccessTokenRecord(coreDb, {
+        ownerUserId: actor.id,
+        scope: 'server-admin',
+        workspaceIds: [],
+        expiresAt: '2999-01-01T00:00:00.000Z',
+      });
+      const pendingWrites = vi.spyOn(getControlStoreWorkerClient(), 'pendingCommand');
+      try {
+        const granted = await taskApp.request(
+          ...operationRequest(
+            'approval.respond',
+            {
+              workspaceId,
+              threadId,
+              turnId: definitionRequest.raisingTurnId,
+              approvalRequestId: definitionRequest.requestId,
+            },
+            {
+              method: 'POST',
+              headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${administrator.secret}`,
+              },
+              body: JSON.stringify({ decision: 'granted', requestId: randomUUID() }),
+            }
+          )
+        );
+        if (granted.status !== 200)
+          throw new Error(
+            'Current administrator failed to admit actual B through approval.respond.'
+          );
+        const approval = ApprovalRequestSchema.parse(await granted.json());
+        if (approval.id !== definitionRequest.requestId || approval.status !== 'granted')
+          throw new Error(
+            'The actual administrator response did not grant the selected B request.'
+          );
+        const grantIndex = pendingWrites.mock.calls.findIndex(
+          ([, transition]) =>
+            transition.input.action === 'grant-command' &&
+            transition.input.requestId === definitionRequest.requestId
+        );
+        const result = pendingWrites.mock.results[grantIndex];
+        if (grantIndex < 0 || result?.type !== 'return')
+          throw new Error('Actual B review did not traverse the native Pending command.');
+        const ack = await result.value;
+        if (!ack.requestIds.includes(definitionRequest.requestId))
+          throw new Error('Native B grant acknowledgement is missing.');
+        const resolved = definitionRequests().find(
+          (record) => record.requestId === definitionRequest.requestId
+        );
+        if (
+          resolved?.state !== 'resolved' ||
+          resolved.resolution !== 'granted' ||
+          resolved.claim !== 'unclaimed' ||
+          resolved.disposition !== null ||
+          resolved.decidingActor?.id !== actor.id ||
+          resolved.decidingActorContext?.kind !== 'token' ||
+          resolved.decidingActorContext.tokenId !== administrator.tokenId ||
+          resolved.decidingActorContext.tokenScope !== 'server-admin' ||
+          canonicalJsonText(resolved.governedIntent) !== canonicalJsonText(definitionIntent)
+        )
+          throw new Error(
+            'The real B grant lost its current administrator, native state or exact intent.'
+          );
+      } finally {
+        pendingWrites.mockRestore();
+      }
       expect(await request('tools/list')).toMatchObject({ result: { tools: changed } });
       expect(await request('tools/call', { name: 'echo', arguments: { count: 1 } })).toMatchObject({
         result: { content: [{ text: 'called' }] },
@@ -3278,8 +3510,12 @@ describe('worker MCP routes', () => {
         db.sqlite.close();
       }
     } finally {
+      const preparations = [...getSchedulerPreparationClaims(coreDb).values()];
       for (const turn of store.listThreadTurns(workspaceId, threadId))
         native.executionFor(turn.id).completion.resolve();
+      await Promise.allSettled(preparations);
+      // Only after all original assertions: drain the real grant owner's outcome, not a new task.start.
+      await drainDefinitionOutcome();
       await Promise.allSettled(
         taskAdmissions.mock.results
           .filter((result) => result.type === 'return')

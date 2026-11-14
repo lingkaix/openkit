@@ -35,6 +35,14 @@ export function projectApprovalEffect(input: {
   store: FsStore;
   coreDb?: CoreDb | undefined;
   actor?: Actor | undefined;
+  sqlite?: import('better-sqlite3').Database | undefined;
+  checkCommandIntent?:
+    | ((
+        sqlite: import('better-sqlite3').Database,
+        record: PendingRequestRecord,
+        actor: Actor
+      ) => void)
+    | undefined;
 }): ApprovalEffectPreview {
   const { record, store, actor, coreDb } = input;
   const administrator = Boolean(coreDb && actor && isCurrentDeploymentAdministrator(coreDb, actor));
@@ -50,6 +58,12 @@ export function projectApprovalEffect(input: {
   )
     return { status: 'unavailable', reason: 'Current Thread access is unavailable.' };
   try {
+    if (record.governedIntent?.operation === 'mcp.definition.approve') {
+      // Reuse the actual command service's current authority/catalog check; absence cannot approve.
+      if (!input.sqlite || !input.checkCommandIntent)
+        return { status: 'unavailable', reason: 'Current MCP review admission is unavailable.' };
+      input.checkCommandIntent(input.sqlite, record, actor);
+    }
     if (record.governedIntent?.operation === 'memory.forget') {
       // Retained confirmation evidence must not become a model-readable copy of forgotten Memory.
       const owner = record.governedIntent.ownerScope as

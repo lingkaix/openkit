@@ -5,10 +5,16 @@ import { join } from 'node:path';
 import { allocateEntityId, canonicalJsonText } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
+import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../storage/db.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
-import { openTestNativeWorkspace } from '../test-support/store.js';
+import { seedDemoWorkspace } from '../test-support/demo-store.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  createTestCoreDb,
+  createTestStore,
+  openTestNativeWorkspace,
+} from '../test-support/store.js';
 import {
   canonicalMcpToolSchemas,
   importMcpToolSchemaSnapshots,
@@ -19,6 +25,22 @@ import {
   recordMcpToolSchemaSnapshot,
 } from './mcp-tool-schema-snapshots.js';
 
+/** Initializes the real current-format Workspace and empty Notebook before historical MCP import. */
+async function bootstrapSnapshotWorkspace(root: string): Promise<void> {
+  const coreDb = createTestCoreDb(root);
+  try {
+    ensureLocalUser(coreDb);
+  } finally {
+    coreDb.sqlite.close();
+  }
+  try {
+    await seedDemoWorkspace(createTestStore({ dataRoot: root }), undefined, []);
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    closeWorkspaceProductReadHandles(root);
+  }
+}
+
 /**
  * Creates one disposable native snapshot owner without a live MCP server or App.
  * @param tools Product-safe schemas for owner setup.
@@ -26,7 +48,7 @@ import {
  * @param toolsJson Exact current or captured representation supplied to import admission.
  * @returns Open owner, root, retained snapshot and selector.
  */
-function retainedSnapshotFixture(
+async function retainedSnapshotFixture(
   tools: Array<{ name: string; inputSchema: Record<string, unknown> }> = [
     { name: 'lookup', inputSchema: { type: 'object', description: 'Retained schema description' } },
   ],
@@ -35,13 +57,14 @@ function retainedSnapshotFixture(
 ) {
   const root = mkdtempSync(join(tmpdir(), 'openkit-retained-mcp-schema-'));
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
-  const db = openWorkspaceDb(root, workspaceId);
+  let db: ReturnType<typeof openWorkspaceDb> | undefined;
   onTestFinished(async () => {
     await shutdownControlStoreWorkerClient();
-    if (db.sqlite.open) db.sqlite.close();
+    if (db?.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  await bootstrapSnapshotWorkspace(root);
+  db = openWorkspaceDb(root, workspaceId);
   const snapshot = {
     workspaceId,
     schemaSnapshotId: 'mcp-schema-fixture',
@@ -87,7 +110,7 @@ describe('retained MCP Tool schema SQL format', () => {
       name: tool.name,
       inputSchema: tool.inputSchema,
     }));
-    const { db, root, snapshot, selector } = retainedSnapshotFixture(
+    const { db, root, snapshot, selector } = await retainedSnapshotFixture(
       historicalTools,
       historicalDigest,
       historical
@@ -177,9 +200,10 @@ describe('retained MCP Tool schema SQL format', () => {
         ['earlier structured row', earlierStructured],
       ] as const) {
         const destinationRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-schema-portable-'));
-        let destination = openWorkspaceDb(destinationRoot, snapshot.workspaceId);
+        let destination: ReturnType<typeof openWorkspaceDb> | undefined;
         try {
-          applyScopedMigrations(destination, undefined, 'pre-knowledge');
+          await bootstrapSnapshotWorkspace(destinationRoot);
+          destination = openWorkspaceDb(destinationRoot, snapshot.workspaceId);
           // Backup Export/Import: portable SQL rows cross strict line-oriented JSON transport.
           const jsonl = `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
           const transported = jsonl
@@ -286,7 +310,7 @@ describe('retained MCP Tool schema SQL format', () => {
           expect.soft(error, label).toBeUndefined();
         } finally {
           await shutdownControlStoreWorkerClient();
-          if (destination.sqlite.open) destination.sqlite.close();
+          if (destination?.sqlite.open) destination.sqlite.close();
           rmSync(destinationRoot, { recursive: true, force: true });
         }
       }
@@ -298,8 +322,8 @@ describe('retained MCP Tool schema SQL format', () => {
 
   it.each(['{', '[{"inputSchema":{"type":"string"},"name":"lookup"}]'])(
     'refuses a cold retained schema whose original digest no longer proves tools_json: %s',
-    (changed) => {
-      const { db, root, snapshot, selector } = retainedSnapshotFixture();
+    async (changed) => {
+      const { db, root, snapshot, selector } = await retainedSnapshotFixture();
       db.sqlite.prepare('UPDATE mcp_tool_schema_snapshots SET tools_json = ?').run(changed);
       db.sqlite.close();
       const reopened = openWorkspaceDb(root, snapshot.workspaceId);
@@ -317,7 +341,7 @@ describe('retained MCP Tool schema SQL format', () => {
   );
 
   it('writes v1 and reads exact nested schema annotations without changing stored bytes', async () => {
-    const { db, snapshot, selector } = retainedSnapshotFixture();
+    const { db, snapshot, selector } = await retainedSnapshotFixture();
     const before = db.sqlite.prepare('SELECT * FROM mcp_tool_schema_snapshots').get();
     expect(before).toMatchObject({ schema_version: 1 });
     expect(readRetainedMcpToolSchemaSnapshot(selector)?.tools).toEqual(snapshot.tools);
@@ -396,8 +420,8 @@ describe('retained MCP Tool schema SQL format', () => {
     }
   });
 
-  it('refuses an unknown row version before decoding malformed Tool JSON or importing over it', () => {
-    const { db, snapshot, selector } = retainedSnapshotFixture();
+  it('refuses an unknown row version before decoding malformed Tool JSON or importing over it', async () => {
+    const { db, snapshot, selector } = await retainedSnapshotFixture();
     db.sqlite
       .prepare("UPDATE mcp_tool_schema_snapshots SET schema_version=2, tools_json='{invalid'")
       .run();
