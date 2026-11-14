@@ -383,6 +383,7 @@ describe('database setup', () => {
         '0024_thread_dashboard.sql',
         '0025_harness_login_observations.sql',
         '0026_security_trigger.sql',
+        '0027_security_thread_destinations.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -418,6 +419,7 @@ describe('database setup', () => {
         'core_0024_thread_dashboard',
         'core_0025_harness_login_observations',
         'core_0026_security_trigger',
+        'core_0027_security_thread_destinations',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {

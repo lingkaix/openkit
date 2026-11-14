@@ -34,6 +34,14 @@ Stopping and all original alarm recipient rows are one native transaction. Autho
 
 Audit pages are bounded at 128 and keep original Core facts, including opaque Workspace links, without joining a Workspace database or content. Pending alarm pages are bounded at 128. N1 does not raise an alarm, mark it published, complete stopping, create a scheduler, call a Provider/feed, issue a credential or activate a canary/containment consumer. N2 detection/cursor and N3 Pending/Attention/drain remain required.
 
+## Initial native Thread destination (N3 preparation)
+
+`prepareSecurityThread` accepts an actual pending N1 R1/R8 request identity, not a caller recipient, generation or grant. The existing Core security worker validates original source tuples and current recipient eligibility, resolves the canonical Personal Workspace binding and reserves the initial generation. The composition then uses the original Personal Workspace and private Administration Thread native publishers. Only after the actual Workspace acknowledgement does Core mark this original destination ready. Core0027 retains generation/source/publication progress; the actual Thread stays in its Workspace. No cross-database transaction is claimed.
+
+`selectSecurityThread` is a read-only join of that original native binding and the actual private Administration Thread owner. Names and guessed IDs are not proof. A registered reserved, missing or mismatched tuple refuses instead of becoming ordinary work or being repaired. Historical archived security Threads keep their classification. Preparation reuses exact ready tuples, but refuses archived destinations; generation rollover remains with the later N3 Raise path. The facade requires both actual owners to share one Data Root.
+
+This cut creates no report, Turn, Pending Request, Attention or notice acknowledgement and does not mark an alarm raised or complete stopping. It exposes no activation route, credential, useful grant or scheduler. SEC-REPORT still owns actual principal/private-audience and effect admission.
+
 ## Checks
 
 Run the inventory and feeds owner suites with NanoCore's Vitest configuration and zero retries. Run `server.security.test.ts` in Config Schema for authored feed choices. Tests use fixture SBOMs, checksum bytes and injected recorded/hostile feed streams, not third-party endpoints.

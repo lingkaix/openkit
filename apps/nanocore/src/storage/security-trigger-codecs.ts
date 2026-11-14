@@ -1,11 +1,13 @@
 import {
   AccessTokenIdSchema,
   AuditEventSchema,
+  ThreadIdSchema,
   TimestampSchema,
   UserIdSchema,
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { SecurityThreadDestinationSchema } from './security-thread-destination-codecs.js';
 
 const Counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const PositiveCounter = Counter.positive();
@@ -72,6 +74,15 @@ export const ControlSecurityTriggerSchema = z.discriminatedUnion('action', [
     })
     .strict(),
   z.object({ action: z.literal('alarms') }).strict(),
+  z.object({ action: z.literal('destination-reserve'), requestId: z.string().uuid() }).strict(),
+  z.object({ action: z.literal('destination-read'), threadId: ThreadIdSchema }).strict(),
+  z
+    .object({
+      action: z.literal('destination-ready'),
+      threadId: ThreadIdSchema,
+      requestId: z.string().uuid(),
+    })
+    .strict(),
 ]);
 export type ControlSecurityTrigger = z.infer<typeof ControlSecurityTriggerSchema>;
 
@@ -89,6 +100,19 @@ export const ControlSecurityTriggerResultSchema = z.discriminatedUnion('kind', [
     .object({ kind: z.literal('audit-unavailable'), snapshot: SecurityTriggerSnapshotSchema })
     .strict(),
   z.object({ kind: z.literal('alarms'), rows: z.array(SecurityAlarmRowSchema).max(128) }).strict(),
+  z
+    .object({
+      kind: z.literal('destination'),
+      destination: SecurityThreadDestinationSchema,
+      fresh: z.boolean(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('destination-read'),
+      destination: SecurityThreadDestinationSchema.nullable(),
+    })
+    .strict(),
 ]);
 export type ControlSecurityTriggerResult = z.infer<typeof ControlSecurityTriggerResultSchema>;
 

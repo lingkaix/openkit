@@ -54,6 +54,7 @@ export type {
   SchedulerExecutionDisposition,
 } from './scheduler-execution-attempts.js';
 export { schedulerExecutionAttempts } from './scheduler-execution-attempts.js';
+export { securityThreadDestinations } from './security-thread-destinations.js';
 export {
   securityTriggerAlarms,
   securityTriggerOutbox,

@@ -9,9 +9,17 @@ import {
 } from '../auth/access-token-store.js';
 import { getLocalUserId } from '../auth/identity.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
-import { type SecurityItemKey, securityRequestId } from '../security/identifiers.js';
+import {
+  type SecurityItemKey,
+  securityRequestId,
+  securityThreadId,
+} from '../security/identifiers.js';
 import { ControlProductPreconditionError } from './control-store-product-records.js';
 import type { CoreDb } from './db.js';
+import {
+  type SecurityThreadDestination,
+  SecurityThreadDestinationSchema,
+} from './security-thread-destination-codecs.js';
 import {
   type ControlSecurityTrigger,
   type ControlSecurityTriggerResult,
@@ -20,6 +28,7 @@ import {
   SecurityTriggerRefusal,
   type SecurityTriggerSnapshot,
 } from './security-trigger-codecs.js';
+import { resolvePersonalWorkspaceIdInDb } from './workspace-owner-records.js';
 
 const Counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const StateSchema = z
@@ -259,52 +268,152 @@ function snapshot(db: CoreDb, view: View, now: Date): SecurityTriggerSnapshot {
   };
 }
 
+const outboxColumns = `schema_version AS schemaVersion,request_id AS requestId,
+  alarm_id AS alarmId,key_json AS keyJson,recipient_user_id AS recipientUserId,
+  occurrence_kind AS occurrenceKind,occurrence_n AS occurrenceN,raised`;
+function readAlarmRow(
+  db: CoreDb,
+  raw: unknown,
+  originals = new Map<string, Alarm>()
+): SecurityAlarmRow {
+  return retained(raw, (row) => {
+    if (
+      typeof row.alarmId !== 'string' ||
+      typeof row.keyJson !== 'string' ||
+      ![0, 1].includes(row.raised as number)
+    )
+      throw new TypeError('Invalid alarm row.');
+    let alarm = originals.get(row.alarmId);
+    if (!alarm) {
+      const original = db.sqlite
+        .prepare(`SELECT ${alarmColumns} FROM security_trigger_alarms WHERE id=?`)
+        .get(row.alarmId);
+      if (!original) recovery();
+      alarm = readAlarm(db, original);
+      originals.set(alarm.id, alarm);
+    }
+    const value = SecurityAlarmRowSchema.parse({
+      requestId: row.requestId,
+      recipientUserId: row.recipientUserId,
+      rule: alarm.rule,
+      key: JSON.parse(row.keyJson),
+      occurrence: { kind: row.occurrenceKind, n: row.occurrenceN },
+      raised: row.raised === 1,
+    });
+    if (
+      JSON.stringify(value.key) !== JSON.stringify(keyFor(alarm)) ||
+      securityRequestId({
+        key: value.key,
+        recipientUserId: value.recipientUserId,
+        occurrence: value.occurrence,
+      }) !== value.requestId
+    )
+      recovery();
+    return value;
+  });
+}
 function readAlarmRows(db: CoreDb): SecurityAlarmRow[] {
   readState(db);
   const rows = db.sqlite
-    .prepare(`SELECT schema_version AS schemaVersion,request_id AS requestId,
-    alarm_id AS alarmId,key_json AS keyJson,recipient_user_id AS recipientUserId,
-    occurrence_kind AS occurrenceKind,occurrence_n AS occurrenceN,raised
-    FROM security_trigger_outbox WHERE alarm_id IS NOT NULL AND raised=0 ORDER BY created_at,request_id LIMIT 128`)
-    .all() as Row[];
+    .prepare(`SELECT ${outboxColumns} FROM security_trigger_outbox
+    WHERE alarm_id IS NOT NULL AND raised=0 ORDER BY created_at,request_id LIMIT 128`)
+    .all();
   const originals = new Map<string, Alarm>();
-  return rows.map((raw) =>
-    retained(raw, (row) => {
-      if (
-        typeof row.alarmId !== 'string' ||
-        typeof row.keyJson !== 'string' ||
-        ![0, 1].includes(row.raised as number)
-      )
-        throw new TypeError('Invalid alarm row.');
-      let alarm = originals.get(row.alarmId);
-      if (!alarm) {
-        const original = db.sqlite
-          .prepare(`SELECT ${alarmColumns} FROM security_trigger_alarms WHERE id=?`)
-          .get(row.alarmId);
-        if (!original) recovery();
-        alarm = readAlarm(db, original);
-        originals.set(alarm.id, alarm);
-      }
-      const value = SecurityAlarmRowSchema.parse({
-        requestId: row.requestId,
-        recipientUserId: row.recipientUserId,
-        rule: alarm.rule,
-        key: JSON.parse(row.keyJson),
-        occurrence: { kind: row.occurrenceKind, n: row.occurrenceN },
-        raised: row.raised === 1,
-      });
-      if (
-        JSON.stringify(value.key) !== JSON.stringify(keyFor(alarm)) ||
-        securityRequestId({
-          key: value.key,
-          recipientUserId: value.recipientUserId,
-          occurrence: value.occurrence,
-        }) !== value.requestId
-      )
-        recovery();
-      return value;
-    })
+  return rows.map((raw) => readAlarmRow(db, raw, originals));
+}
+function readAlarmRequest(db: CoreDb, requestId: string): SecurityAlarmRow {
+  const raw = db.sqlite
+    .prepare(`SELECT ${outboxColumns} FROM security_trigger_outbox WHERE request_id=?`)
+    .get(requestId);
+  if (!raw) recovery();
+  return readAlarmRow(db, raw);
+}
+
+const DestinationRecord = SecurityThreadDestinationSchema.extend({ schemaVersion: z.literal(1) });
+const destinationColumns = `schema_version AS schemaVersion,recipient_user_id AS recipientUserId,
+  generation,workspace_id AS workspaceId,thread_id AS threadId,source_request_id AS sourceRequestId,status`;
+function readDestinationRow(db: CoreDb, raw: unknown): SecurityThreadDestination {
+  const { schemaVersion: _version, ...destination } = retained(raw, (value) =>
+    DestinationRecord.parse(value)
   );
+  if (
+    securityThreadId(destination.recipientUserId, destination.generation) !==
+      destination.threadId ||
+    readAlarmRequest(db, destination.sourceRequestId).recipientUserId !==
+      destination.recipientUserId
+  )
+    recovery();
+  return destination;
+}
+function readDestination(db: CoreDb, threadId: string): SecurityThreadDestination | null {
+  const raw = db.sqlite
+    .prepare(`SELECT ${destinationColumns} FROM security_thread_destinations WHERE thread_id=?`)
+    .get(threadId);
+  return raw ? readDestinationRow(db, raw) : null;
+}
+function assertDestinationRecipient(db: CoreDb, recipientUserId: string, now: Date): string {
+  if (!administrator(db, recipientUserId, now)) throw new SecurityTriggerRefusal('forbidden');
+  return resolvePersonalWorkspaceIdInDb(db, recipientUserId);
+}
+/** An actual owed alarm supplies the fixed alarm grant; native assignment never accepts caller IDs. */
+function reserveDestination(
+  db: CoreDb,
+  requestId: string,
+  now: Date
+): ControlSecurityTriggerResult {
+  const source = readAlarmRequest(db, requestId);
+  if (source.raised) throw new SecurityTriggerRefusal('forbidden');
+  const workspaceId = assertDestinationRecipient(db, source.recipientUserId, now);
+  const raw = db.sqlite
+    .prepare(`SELECT ${destinationColumns} FROM security_thread_destinations
+    WHERE recipient_user_id=? ORDER BY generation DESC LIMIT 1`)
+    .get(source.recipientUserId);
+  if (raw) {
+    const destination = readDestinationRow(db, raw);
+    if (destination.workspaceId !== workspaceId) recovery();
+    return { kind: 'destination', destination, fresh: false };
+  }
+  // This subcut allocates only the initial generation. Archive rollover belongs to the later Raise.
+  const generation = 1;
+  const threadId = securityThreadId(source.recipientUserId, generation);
+  db.sqlite
+    .prepare(`INSERT INTO security_thread_destinations
+    (schema_version,recipient_user_id,generation,workspace_id,thread_id,source_request_id,status,created_at)
+    VALUES (?,?,?,?,?,?,'reserved',?)`)
+    .run(
+      writeRetainedV1({}).schemaVersion,
+      source.recipientUserId,
+      generation,
+      workspaceId,
+      threadId,
+      requestId,
+      now.toISOString()
+    );
+  const destination = readDestination(db, threadId);
+  if (!destination) recovery();
+  return { kind: 'destination', destination, fresh: true };
+}
+/** Original Workspace ACK precedes this progress transition; it does not mark an alarm raised. */
+function readyDestination(
+  db: CoreDb,
+  requestId: string,
+  threadId: string,
+  now: Date
+): ControlSecurityTriggerResult {
+  const destination = readDestination(db, threadId);
+  if (!destination || destination.sourceRequestId !== requestId) recovery();
+  const source = readAlarmRequest(db, requestId);
+  if (source.raised) throw new SecurityTriggerRefusal('forbidden');
+  if (assertDestinationRecipient(db, destination.recipientUserId, now) !== destination.workspaceId)
+    recovery();
+  if (destination.status === 'reserved') {
+    const changed = db.sqlite
+      .prepare(`UPDATE security_thread_destinations SET status='ready'
+      WHERE thread_id=? AND source_request_id=? AND status='reserved'`)
+      .run(threadId, requestId);
+    if (changed.changes !== 1) throw new ControlProductPreconditionError();
+  }
+  return { kind: 'destination', destination: { ...destination, status: 'ready' }, fresh: false };
 }
 
 /** Executes only inside the existing Core control worker's product savepoint and covering FULL ACK. */
@@ -316,6 +425,11 @@ export function applySecurityTriggerInDb(
   // Caller timestamps describe the original observation; they never move credential expiry backwards.
   const now = new Date();
   if (input.action === 'alarms') return { kind: 'alarms', rows: readAlarmRows(db) };
+  if (input.action === 'destination-read')
+    return { kind: 'destination-read', destination: readDestination(db, input.threadId) };
+  if (input.action === 'destination-reserve') return reserveDestination(db, input.requestId, now);
+  if (input.action === 'destination-ready')
+    return readyDestination(db, input.requestId, input.threadId, now);
   if (input.action === 'enable' || input.action === 'stop') assertActor(db, input.actor, now);
   let view = checkCurrent(db, input.timestamp, now);
   if (input.action === 'enable' && view.state.state === 'off') {
