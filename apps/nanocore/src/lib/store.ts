@@ -328,6 +328,7 @@ import {
   type WorkspaceFileRecords,
   WorkspaceSystemRecordSchema,
   withNativeThreadTimelineSnapshot,
+  withNativeThreadTimelineSnapshotCooperative,
   workspaceFileRecordIdentities,
   writeWorkspaceConfiguration,
   writeWorkspaceFileRecords,
@@ -6108,6 +6109,31 @@ export class FsStore {
           .sort()
           .at(-1) ?? null,
     };
+  }
+
+  /** Uses the scoped private cooperative cut only for native public timeline projection. */
+  public async readThreadTimelineSnapshotCooperative<T>(
+    workspaceId: string,
+    threadId: string,
+    read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+    signal?: AbortSignal
+  ): Promise<T> {
+    this.getThread(workspaceId, threadId);
+    if (this.dataRoot)
+      return withNativeThreadTimelineSnapshotCooperative(
+        this.nativeScope({ kind: 'workspace', workspaceId }),
+        threadId,
+        read,
+        signal
+      );
+    // Keep the existing memory owner's synchronous read semantics.
+    return this.readThreadTimelineSnapshot(workspaceId, threadId, (snapshot) => {
+      const steps = read(snapshot);
+      for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+      }
+    });
   }
 
   /** Runs one bounded timeline selection in the existing Thread owner's read snapshot. */

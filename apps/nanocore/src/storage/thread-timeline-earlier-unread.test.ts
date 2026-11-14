@@ -179,70 +179,93 @@ function observeProbe(store: Fixture['store']) {
       observed.bodies.push(value.id);
     return value;
   });
+  const instrument = (snapshot: ThreadTimelineSnapshot) =>
+    new Proxy(snapshot, {
+      get(target, key) {
+        if (key === 'item')
+          return (itemId: string) => {
+            observed.legacy.push(itemId);
+            if (inProbe()) observed.beforeBLegacy.push(itemId);
+            return target.item(itemId);
+          };
+        if (key === 'itemWithinBytes')
+          return (itemId: string, maxBytes: number) => {
+            const selected = inProbe();
+            if (selected) {
+              observed.requests.push(itemId);
+              observed.limits.push(maxBytes);
+              expect(Number.isSafeInteger(maxBytes)).toBe(true);
+              expect(maxBytes).toBeGreaterThanOrEqual(0);
+              expect(maxBytes).toBeLessThanOrEqual(65_536);
+              expect(maxBytes).toBe(65_536 - observed.returnedBytes);
+            }
+            const result = target.itemWithinBytes(itemId, maxBytes);
+            if (selected && result) {
+              const encodedBytes = Buffer.byteLength(
+                JSON.stringify(writeRetainedV1(result.item)),
+                'utf8'
+              );
+              expect(result.byteLength).toBeGreaterThanOrEqual(encodedBytes);
+              expect(result.byteLength).toBeLessThanOrEqual(maxBytes);
+              observed.boundedBodies.push(result.item.id);
+              observed.returnedBytes += result.byteLength;
+            }
+            return result;
+          };
+        if (key === 'itemHead')
+          return (turnId: string) => {
+            if (inProbe()) observed.heads++;
+            return target.itemHead(turnId);
+          };
+        if (key === 'positions')
+          return (...args: Parameters<ThreadTimelineSnapshot['positions']>) => {
+            const selected = inProbe();
+            const rows = target.positions(...args);
+            if (selected) observed.positions += rows.length;
+            return rows;
+          };
+        if (key === 'turns')
+          return (...args: Parameters<ThreadTimelineSnapshot['turns']>) => {
+            const selected = inProbe();
+            const rows = target.turns(...args);
+            if (selected) observed.turnRows += rows.length;
+            return rows;
+          };
+        return Reflect.get(target, key);
+      },
+    });
+  const completeRead = () => {
+    expect(observed.requests.length).toBeLessThanOrEqual(128);
+    expect(observed.bytes).toBeLessThanOrEqual(65_536);
+    expect(observed.returnedBytes).toBeLessThanOrEqual(65_536);
+    expect(observed.beforeBLegacy).toEqual([]);
+  };
   vi.spyOn(store, 'readThreadTimelineSnapshot').mockImplementation((workspaceId, threadId, read) =>
     actual(workspaceId, threadId, (snapshot) => {
-      const result = read(
-        new Proxy(snapshot, {
-          get(target, key) {
-            if (key === 'item')
-              return (itemId: string) => {
-                observed.legacy.push(itemId);
-                if (inProbe()) observed.beforeBLegacy.push(itemId);
-                return target.item(itemId);
-              };
-            if (key === 'itemWithinBytes')
-              return (itemId: string, maxBytes: number) => {
-                const selected = inProbe();
-                if (selected) {
-                  observed.requests.push(itemId);
-                  observed.limits.push(maxBytes);
-                  expect(Number.isSafeInteger(maxBytes)).toBe(true);
-                  expect(maxBytes).toBeGreaterThanOrEqual(0);
-                  expect(maxBytes).toBeLessThanOrEqual(65_536);
-                  expect(maxBytes).toBe(65_536 - observed.returnedBytes);
-                }
-                const result = target.itemWithinBytes(itemId, maxBytes);
-                if (selected && result) {
-                  const encodedBytes = Buffer.byteLength(
-                    JSON.stringify(writeRetainedV1(result.item)),
-                    'utf8'
-                  );
-                  expect(result.byteLength).toBeGreaterThanOrEqual(encodedBytes);
-                  expect(result.byteLength).toBeLessThanOrEqual(maxBytes);
-                  observed.boundedBodies.push(result.item.id);
-                  observed.returnedBytes += result.byteLength;
-                }
-                return result;
-              };
-            if (key === 'itemHead')
-              return (turnId: string) => {
-                if (inProbe()) observed.heads++;
-                return target.itemHead(turnId);
-              };
-            if (key === 'positions')
-              return (...args: Parameters<ThreadTimelineSnapshot['positions']>) => {
-                const selected = inProbe();
-                const rows = target.positions(...args);
-                if (selected) observed.positions += rows.length;
-                return rows;
-              };
-            if (key === 'turns')
-              return (...args: Parameters<ThreadTimelineSnapshot['turns']>) => {
-                const selected = inProbe();
-                const rows = target.turns(...args);
-                if (selected) observed.turnRows += rows.length;
-                return rows;
-              };
-            return Reflect.get(target, key);
-          },
-        })
-      );
-      expect(observed.requests.length).toBeLessThanOrEqual(128);
-      expect(observed.bytes).toBeLessThanOrEqual(65_536);
-      expect(observed.returnedBytes).toBeLessThanOrEqual(65_536);
-      expect(observed.beforeBLegacy).toEqual([]);
+      const result = read(instrument(snapshot));
+      completeRead();
       return result;
     })
+  );
+  const actualCooperative = store.readThreadTimelineSnapshotCooperative.bind(store);
+  // The real generator is exhausted before the same end-of-read observations run.
+  vi.spyOn(store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+    <T>(
+      workspaceId: string,
+      threadId: string,
+      read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+      signal?: AbortSignal
+    ): Promise<T> =>
+      actualCooperative(
+        workspaceId,
+        threadId,
+        function* (snapshot: ThreadTimelineSnapshot) {
+          const result = yield* read(instrument(snapshot));
+          completeRead();
+          return result;
+        },
+        signal
+      )
   );
   return observed;
 }

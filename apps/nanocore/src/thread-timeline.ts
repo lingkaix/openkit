@@ -41,7 +41,7 @@ import {
   readTimelineReportedActivity,
   timelineArgumentDigest,
 } from './thread-timeline-attributes.js';
-import { readTimelineDigest } from './thread-timeline-digest.js';
+import { readTimelineDigestSteps } from './thread-timeline-digest.js';
 import { projectTurnErrorPresentation, turnErrorInspectAction } from './turn-error-presentation.js';
 
 const CursorSchema = z
@@ -80,6 +80,8 @@ export interface ThreadTimelineReadInput {
   readonly repositoryWorkspaceDb?: ((workspaceId: string) => WorkspaceDb) | undefined;
   readonly actor: Actor;
   readonly administratorEligible: boolean;
+  /** Request-local witnesses for the final current-source admission join; never reused by another read. */
+  readonly onSourceAdmissionCheck?: (recheck: () => boolean) => void;
   readonly input: ThreadTimelineInput;
 }
 
@@ -160,13 +162,7 @@ export function projectTimelineItem(
     actor: 'actor' in item ? item.actor : null,
     argumentDigest: timelineArgumentDigest(item),
     policy:
-      item.type === 'tool-call' &&
-      snapshot &&
-      owner.coreDb &&
-      isWorkspaceOperationAuthorized(owner.coreDb, owner.actor, owner.input.workspaceId, {
-        policyOperation: 'audit.read',
-        mutating: false,
-      })
+      item.type === 'tool-call' && snapshot && isThreadTimelinePolicyAllowed(owner, 'audit.read')
         ? projectTimelinePolicy(item, snapshot.policyEvidence(item))
         : null,
     steer: readTaskSteerState(owner.store, owner.input.workspaceId, owner.input.threadId, item, {
@@ -208,8 +204,31 @@ export function projectTimelineItem(
   }
 }
 
+/** Record actual granted projection policy, including grants that appear only during a cooperative release. */
+export function isThreadTimelinePolicyAllowed(
+  owner: ThreadTimelineReadInput,
+  policyOperation: 'workspace.read' | 'audit.read'
+): boolean {
+  const current = () =>
+    !!owner.coreDb &&
+    isWorkspaceOperationAuthorized(owner.coreDb, owner.actor, owner.input.workspaceId, {
+      policyOperation,
+      mutating: false,
+    });
+  const allowed = current();
+  if (allowed) owner.onSourceAdmissionCheck?.(current);
+  return allowed;
+}
+
 /** Structured references never inherit the shared work's audience. No joined body is read here. */
 export function isThreadItemSourceAllowed(item: Item, owner: ThreadTimelineReadInput): boolean {
+  const allowed = currentThreadItemSourceAllowed(item, owner);
+  if (allowed && (item.type === 'artifact-reference' || item.type === 'generative-ui-reference'))
+    owner.onSourceAdmissionCheck?.(() => currentThreadItemSourceAllowed(item, owner));
+  return allowed;
+}
+
+function currentThreadItemSourceAllowed(item: Item, owner: ThreadTimelineReadInput): boolean {
   if (
     item.type === 'artifact-reference' &&
     owner.coreDb &&
@@ -456,10 +475,7 @@ function recordedRunFacts(owner: ThreadTimelineReadInput, turnId: string, budget
     !coreDb ||
     !owner.repositoryWorkspaceDb ||
     !(['workspace.read', 'audit.read'] as const).every((policyOperation) =>
-      isWorkspaceOperationAuthorized(coreDb, owner.actor, owner.input.workspaceId, {
-        policyOperation,
-        mutating: false,
-      })
+      isThreadTimelinePolicyAllowed(owner, policyOperation)
     )
   )
     return unavailable;
@@ -651,13 +667,7 @@ function runEntry(
       placement: 'narrative',
       limit: 50,
     });
-  if (
-    owner.coreDb &&
-    isWorkspaceOperationAuthorized(owner.coreDb, owner.actor, owner.input.workspaceId, {
-      policyOperation: 'audit.read',
-      mutating: false,
-    })
-  ) {
+  if (owner.coreDb && isThreadTimelinePolicyAllowed(owner, 'audit.read')) {
     let actor: import('@openkit/protocol').ActorRef | null = null;
     if (turn.status === 'interrupted') {
       const workspaceDb = owner.repositoryWorkspaceDb?.(owner.input.workspaceId);
@@ -699,8 +709,8 @@ function runEntry(
   return base;
 }
 
-/** Reads bounded run and Item windows without materializing any complete Turn history. */
-export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimelineResponse {
+/** The same projection steps serve synchronous internal reads and cooperative public reads. */
+function threadTimelineReadSteps(owner: ThreadTimelineReadInput) {
   const { input } = owner;
   owner.store.getThread(input.workspaceId, input.threadId);
   const retained = owner.coreDb
@@ -712,7 +722,10 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
       })
     : [];
   const addressedAttention = requestAnchor(owner) ?? attentionAnchor(owner);
-  return owner.store.readThreadTimelineSnapshot(input.workspaceId, input.threadId, (snapshot) => {
+  return function* (
+    snapshot: ThreadTimelineSnapshot
+  ): Generator<void, ThreadTimelineResponse, void> {
+    yield;
     const cursor = input.cursor ? decode(input.cursor, input) : undefined;
     const catchUp = snapshot.catchUp(owner.actor.userId, retained);
     let anchor: ThreadItemPosition | { turnId: string; itemId?: string } | undefined =
@@ -742,7 +755,7 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
         : null,
       catchUpAnchor: catchUp ? { turnId: catchUp.turnId, itemId: catchUp.itemId } : null,
       earlierUnread: earlierUnread(owner, snapshot, catchUp, retained),
-      digest: readTimelineDigest(owner, snapshot, catchUp),
+      digest: yield* readTimelineDigestSteps(owner, snapshot, catchUp),
       restrictedReferences: false,
     };
     if (result.view === 'items' || (anchor && 'sequence' in anchor)) {
@@ -814,7 +827,11 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
     const runBudget = Math.floor(
       (THREAD_TIMELINE_LIMITS.bytes - bytes(result) - 8192) / Math.max(1, rows.length)
     );
-    result.runs = rows.map((row) => runEntry(owner, snapshot, row, runBudget));
+    for (const row of rows) {
+      yield;
+      result.runs.push(runEntry(owner, snapshot, row, runBudget));
+    }
+    yield;
     {
       const first = rows[0]?.admissionOrder,
         last = rows.at(-1)?.admissionOrder;
@@ -843,7 +860,36 @@ export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimeli
     }
     result.restrictedReferences ||= result.runs.some((run) => run.restrictedReferences);
     return result;
-  });
+  };
+}
+
+/** Retains the existing synchronous read cut for internal callers. */
+export function readThreadTimeline(owner: ThreadTimelineReadInput): ThreadTimelineResponse {
+  const read = threadTimelineReadSteps(owner);
+  return owner.store.readThreadTimelineSnapshot(
+    owner.input.workspaceId,
+    owner.input.threadId,
+    (snapshot) => {
+      const steps = read(snapshot);
+      for (;;) {
+        const step = steps.next();
+        if (step.done) return step.value;
+      }
+    }
+  );
+}
+
+/** Public native reads release Main between bounded projection steps on one private read cut. */
+export function readThreadTimelineCooperative(
+  owner: ThreadTimelineReadInput,
+  signal?: AbortSignal
+): Promise<ThreadTimelineResponse> {
+  return owner.store.readThreadTimelineSnapshotCooperative(
+    owner.input.workspaceId,
+    owner.input.threadId,
+    threadTimelineReadSteps(owner),
+    signal
+  );
 }
 
 /** Reads only the original current revision after all four lineage selectors and source admission agree. */

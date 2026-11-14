@@ -1,4 +1,10 @@
-import { readActiveThreadTurnSnapshot } from './control-store-product-records.js';
+import { performance } from 'node:perf_hooks';
+import { setImmediate as yieldTimelineMain } from 'node:timers/promises';
+import { OperationError } from '../operation-error-core.js';
+import {
+  readActiveThreadTurnSnapshot,
+  reserveMainScopeReadAcquisition,
+} from './control-store-product-records.js';
 import {
   type CurrentThreadItems,
   readCurrentThreadItemPositions,
@@ -1261,6 +1267,133 @@ export function readNativeThreadNavigationFacts(scope: NativeProductScope, threa
   }
 }
 
+/** Constructs only the existing bounded queries on the caller-owned read connection. */
+function threadTimelineSnapshot(
+  scope: NativeProductScope,
+  threadId: string,
+  reader: ReturnType<typeof openControlStoreProductReadHandle>
+): ThreadTimelineSnapshot {
+  return {
+    upperOrder: readThreadAdmissionHead(reader.sqlite, threadId),
+    policyEvidence: (item) => readTimelinePolicyEvidence(scope, reader, threadId, item),
+    planRevisions: (turnId) => {
+      if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return [];
+      const rows = reader.sqlite
+        .prepare(`SELECT sequence,revision FROM control_product_entries
+            WHERE kind='item' AND turn_id=? AND json_extract(identity_json,'$.type')='plan'
+            ORDER BY sequence DESC LIMIT 11`)
+        .all(turnId) as Array<{ sequence: number; revision: number }>;
+      return rows.reverse().map((row, index) => {
+        if (rows.length > 10 && index === 0) return { ...row, item: null };
+        const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0]!;
+        return {
+          sequence: row.sequence,
+          revision: row.revision,
+          item: readTimelineRevision(scope, threadId, turnId, entry),
+        };
+      });
+    },
+    segmentCounts: (turnId, after, before) => {
+      if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return {};
+      const rows = reader.sqlite
+        .prepare(`SELECT json_extract(identity_json,'$.type') AS type,count(*) AS count
+            FROM control_product_entries WHERE kind='item' AND turn_id=? AND revision=1 AND sequence>?
+            AND (? IS NULL OR sequence<?) GROUP BY json_extract(identity_json,'$.type')`)
+        .all(turnId, after, before, before) as Array<{ type: Item['type']; count: number }>;
+      return Object.fromEntries(rows.map((row) => [ItemTypeSchema.parse(row.type), row.count]));
+    },
+    activeTurn: () => readActiveThreadTurnSnapshot(reader.sqlite, scope.owner, threadId),
+    agentSession: (sessionId) => {
+      const row = readNativeProduct(scope, 'agent-session', sessionId, reader);
+      return row?.record.threadId === threadId ? row : undefined;
+    },
+    itemCreatedAt: (itemId) => {
+      const row = reader.sqlite
+        .prepare(`SELECT json_extract(e.read_metadata_json,'$.createdAt') AS createdAt
+            FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
+            WHERE e.kind='item' AND e.id=? AND e.revision=1 AND e.schema_version=1 AND t.thread_id=?`)
+        .get(itemId, threadId) as { createdAt: unknown } | undefined;
+      return typeof row?.createdAt === 'string' ? row.createdAt : undefined;
+    },
+    navigationMessageIds: () => readNavigationMessageItemIds(reader.sqlite, threadId),
+    currentPositions: (input) => readCurrentThreadItemPositions(reader.sqlite, threadId, input),
+    turnRanks: (turnId) => readThreadTurnRanks(reader.sqlite, threadId, turnId),
+    pendingAssociations: (requestId, itemId) =>
+      readPendingItemAssociations(reader.sqlite, requestId, itemId),
+    lastEventAt: (turnId) => readLastTurnEventTime(reader.sqlite, turnId),
+    turns: (window) => readThreadTurnWindow(reader.sqlite, scope.owner, threadId, window),
+    turn: (turnId) => readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId),
+    position: (itemId) => readThreadItemPosition(reader.sqlite, threadId, itemId),
+    positions: (turnId, input) => readTurnItemPositions(reader.sqlite, threadId, turnId, input),
+    item: (itemId) => readNativeThreadItem(scope, threadId, itemId, reader),
+    itemWithinBytes: (itemId, maximumBytes) => {
+      if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 65_536)
+        throw new TypeError('Invalid bounded timeline Item allowance.');
+      const row = reader.sqlite
+        .prepare(`SELECT json_extract(e.content_json,'$.byteLength') AS bytes
+            FROM control_product_entries e INDEXED BY control_product_current_idx JOIN control_turns t ON t.id=e.turn_id
+            WHERE e.kind='item' AND e.is_current=1 AND e.schema_version=1 AND e.id=? AND t.thread_id=?`)
+        .get(itemId, threadId) as { bytes: unknown } | undefined;
+      if (
+        typeof row?.bytes !== 'number' ||
+        !Number.isSafeInteger(row.bytes) ||
+        row.bytes < 0 ||
+        row.bytes > maximumBytes
+      )
+        return undefined;
+      const item = readNativeThreadItem(scope, threadId, itemId, reader);
+      return item ? { item, byteLength: row.bytes } : undefined;
+    },
+    itemHead: (turnId) => readTurnItemHead(reader.sqlite, threadId, turnId),
+    counts: (turnId) => reader.turnItemCounts(threadId, turnId) ?? {},
+    failures: (turnId) => {
+      if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return {};
+      const rows = reader.sqlite
+        .prepare(`SELECT json_extract(identity_json,'$.type') AS type,count(*) AS count
+            FROM control_product_entries WHERE kind='item' AND is_current=1 AND turn_id=?
+            AND json_extract(read_metadata_json,'$.failed')=1 GROUP BY json_extract(identity_json,'$.type')`)
+        .all(turnId) as Array<{ type: Item['type']; count: number }>;
+      return Object.fromEntries(rows.map((row) => [ItemTypeSchema.parse(row.type), row.count]));
+    },
+    revisionHead: (turnId) => {
+      if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return 0;
+      return (
+        reader.sqlite
+          .prepare(`SELECT coalesce(max(sequence),0) AS head
+            FROM control_product_entries WHERE kind='item' AND turn_id=?`)
+          .get(turnId) as { head: number }
+      ).head;
+    },
+    revisions: (turnId, after, limit) => {
+      const turn = readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId);
+      if (!turn) return [];
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64)
+        throw new TypeError('Invalid timeline revision window.');
+      return reader.entries(turnId, 'item', after, limit).map((entry) => ({
+        sequence: entry.sequence,
+        revision: entry.revision,
+        item: readTimelineRevision(scope, threadId, turnId, entry),
+      }));
+    },
+    revision: (turnId, itemId, revision) => {
+      if (!Number.isSafeInteger(revision) || revision < 1)
+        throw new TypeError('Invalid timeline revision.');
+      if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return undefined;
+      const row = reader.sqlite
+        .prepare(`SELECT sequence FROM control_product_entries
+            WHERE kind='item' AND id=? AND turn_id=? AND revision=?`)
+        .get(itemId, turnId, revision) as { sequence: number } | undefined;
+      if (!row) return undefined;
+      const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0];
+      if (!entry || entry.id !== itemId || entry.revision !== revision)
+        throw new Error('Native Item revision lineage is recovery_required.');
+      return readTimelineRevision(scope, threadId, turnId, entry);
+    },
+    catchUp: (userId, receipts) =>
+      readThreadCatchUpPosition(reader.sqlite, threadId, userId, receipts),
+  };
+}
+
 /** Keeps every selected metadata row and immutable descriptor in one existing Workspace read cut. */
 export function withNativeThreadTimelineSnapshot<T>(
   scope: NativeProductScope,
@@ -1269,130 +1402,124 @@ export function withNativeThreadTimelineSnapshot<T>(
 ): T {
   const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
   try {
-    return reader.sqlite.transaction(() =>
-      read({
-        upperOrder: readThreadAdmissionHead(reader.sqlite, threadId),
-        policyEvidence: (item) => readTimelinePolicyEvidence(scope, reader, threadId, item),
-        planRevisions: (turnId) => {
-          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return [];
-          const rows = reader.sqlite
-            .prepare(`SELECT sequence,revision FROM control_product_entries
-            WHERE kind='item' AND turn_id=? AND json_extract(identity_json,'$.type')='plan'
-            ORDER BY sequence DESC LIMIT 11`)
-            .all(turnId) as Array<{ sequence: number; revision: number }>;
-          return rows.reverse().map((row, index) => {
-            if (rows.length > 10 && index === 0) return { ...row, item: null };
-            const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0]!;
-            return {
-              sequence: row.sequence,
-              revision: row.revision,
-              item: readTimelineRevision(scope, threadId, turnId, entry),
-            };
-          });
-        },
-        segmentCounts: (turnId, after, before) => {
-          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return {};
-          const rows = reader.sqlite
-            .prepare(`SELECT json_extract(identity_json,'$.type') AS type,count(*) AS count
-            FROM control_product_entries WHERE kind='item' AND turn_id=? AND revision=1 AND sequence>?
-            AND (? IS NULL OR sequence<?) GROUP BY json_extract(identity_json,'$.type')`)
-            .all(turnId, after, before, before) as Array<{ type: Item['type']; count: number }>;
-          return Object.fromEntries(rows.map((row) => [ItemTypeSchema.parse(row.type), row.count]));
-        },
-        activeTurn: () => readActiveThreadTurnSnapshot(reader.sqlite, scope.owner, threadId),
-        agentSession: (sessionId) => {
-          const row = readNativeProduct(scope, 'agent-session', sessionId, reader);
-          return row?.record.threadId === threadId ? row : undefined;
-        },
-        itemCreatedAt: (itemId) => {
-          const row = reader.sqlite
-            .prepare(`SELECT json_extract(e.read_metadata_json,'$.createdAt') AS createdAt
-            FROM control_product_entries e JOIN control_turns t ON t.id=e.turn_id
-            WHERE e.kind='item' AND e.id=? AND e.revision=1 AND e.schema_version=1 AND t.thread_id=?`)
-            .get(itemId, threadId) as { createdAt: unknown } | undefined;
-          return typeof row?.createdAt === 'string' ? row.createdAt : undefined;
-        },
-        navigationMessageIds: () => readNavigationMessageItemIds(reader.sqlite, threadId),
-        currentPositions: (input) => readCurrentThreadItemPositions(reader.sqlite, threadId, input),
-        turnRanks: (turnId) => readThreadTurnRanks(reader.sqlite, threadId, turnId),
-        pendingAssociations: (requestId, itemId) =>
-          readPendingItemAssociations(reader.sqlite, requestId, itemId),
-        lastEventAt: (turnId) => readLastTurnEventTime(reader.sqlite, turnId),
-        turns: (window) => readThreadTurnWindow(reader.sqlite, scope.owner, threadId, window),
-        turn: (turnId) => readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId),
-        position: (itemId) => readThreadItemPosition(reader.sqlite, threadId, itemId),
-        positions: (turnId, input) => readTurnItemPositions(reader.sqlite, threadId, turnId, input),
-        item: (itemId) => readNativeThreadItem(scope, threadId, itemId, reader),
-        itemWithinBytes: (itemId, maximumBytes) => {
-          if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 65_536)
-            throw new TypeError('Invalid bounded timeline Item allowance.');
-          const row = reader.sqlite
-            .prepare(`SELECT json_extract(e.content_json,'$.byteLength') AS bytes
-            FROM control_product_entries e INDEXED BY control_product_current_idx JOIN control_turns t ON t.id=e.turn_id
-            WHERE e.kind='item' AND e.is_current=1 AND e.schema_version=1 AND e.id=? AND t.thread_id=?`)
-            .get(itemId, threadId) as { bytes: unknown } | undefined;
-          if (
-            typeof row?.bytes !== 'number' ||
-            !Number.isSafeInteger(row.bytes) ||
-            row.bytes < 0 ||
-            row.bytes > maximumBytes
-          )
-            return undefined;
-          const item = readNativeThreadItem(scope, threadId, itemId, reader);
-          return item ? { item, byteLength: row.bytes } : undefined;
-        },
-        itemHead: (turnId) => readTurnItemHead(reader.sqlite, threadId, turnId),
-        counts: (turnId) => reader.turnItemCounts(threadId, turnId) ?? {},
-        failures: (turnId) => {
-          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return {};
-          const rows = reader.sqlite
-            .prepare(`SELECT json_extract(identity_json,'$.type') AS type,count(*) AS count
-            FROM control_product_entries WHERE kind='item' AND is_current=1 AND turn_id=?
-            AND json_extract(read_metadata_json,'$.failed')=1 GROUP BY json_extract(identity_json,'$.type')`)
-            .all(turnId) as Array<{ type: Item['type']; count: number }>;
-          return Object.fromEntries(rows.map((row) => [ItemTypeSchema.parse(row.type), row.count]));
-        },
-        revisionHead: (turnId) => {
-          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId)) return 0;
-          return (
-            reader.sqlite
-              .prepare(`SELECT coalesce(max(sequence),0) AS head
-            FROM control_product_entries WHERE kind='item' AND turn_id=?`)
-              .get(turnId) as { head: number }
-          ).head;
-        },
-        revisions: (turnId, after, limit) => {
-          const turn = readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId);
-          if (!turn) return [];
-          if (!Number.isSafeInteger(limit) || limit < 1 || limit > 64)
-            throw new TypeError('Invalid timeline revision window.');
-          return reader.entries(turnId, 'item', after, limit).map((entry) => ({
-            sequence: entry.sequence,
-            revision: entry.revision,
-            item: readTimelineRevision(scope, threadId, turnId, entry),
-          }));
-        },
-        revision: (turnId, itemId, revision) => {
-          if (!Number.isSafeInteger(revision) || revision < 1)
-            throw new TypeError('Invalid timeline revision.');
-          if (!readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId))
-            return undefined;
-          const row = reader.sqlite
-            .prepare(`SELECT sequence FROM control_product_entries
-            WHERE kind='item' AND id=? AND turn_id=? AND revision=?`)
-            .get(itemId, turnId, revision) as { sequence: number } | undefined;
-          if (!row) return undefined;
-          const entry = reader.entries(turnId, 'item', row.sequence - 1, 1)[0];
-          if (!entry || entry.id !== itemId || entry.revision !== revision)
-            throw new Error('Native Item revision lineage is recovery_required.');
-          return readTimelineRevision(scope, threadId, turnId, entry);
-        },
-        catchUp: (userId, receipts) =>
-          readThreadCatchUpPosition(reader.sqlite, threadId, userId, receipts),
-      })
-    )();
+    return reader.sqlite.transaction(() => read(threadTimelineSnapshot(scope, threadId, reader)))();
   } finally {
     reader.close();
+  }
+}
+
+let activeTimelineReadCuts = 0;
+const timelineReadCutWaiters: Array<() => void> = [];
+
+function timelineReadUnavailable() {
+  return new OperationError(
+    'operation_storage_unavailable',
+    'Storage is busy. Inspect the original request outcome before retrying.',
+    503
+  );
+}
+
+/** The scoped reader pool bounds private connections; it retains no read result. */
+async function acquireTimelineReadCut(signal: AbortSignal): Promise<() => void> {
+  if (signal.aborted) throw timelineReadUnavailable();
+  if (activeTimelineReadCuts >= 2) {
+    await new Promise<void>((resolve, reject) => {
+      const ready = () => {
+        signal.removeEventListener('abort', abort);
+        activeTimelineReadCuts++;
+        resolve();
+      };
+      const abort = () => {
+        signal.removeEventListener('abort', abort);
+        const index = timelineReadCutWaiters.indexOf(ready);
+        if (index >= 0) timelineReadCutWaiters.splice(index, 1);
+        reject(timelineReadUnavailable());
+      };
+      timelineReadCutWaiters.push(ready);
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  } else activeTimelineReadCuts++;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeTimelineReadCuts--;
+    timelineReadCutWaiters.shift()?.();
+  };
+}
+
+/** A physical-close failure is retryable, never proof that the private permit is free. */
+function closeTimelineReader(
+  reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined
+): void {
+  try {
+    reader?.close();
+  } catch {
+    throw timelineReadUnavailable();
+  }
+}
+
+/**
+ * Scoped COORD exception: one private query-only snapshot may cross cooperative releases.
+ * At most two cuts exist, waiters share the same two-second wall cap, and no result is cached.
+ */
+export async function withNativeThreadTimelineSnapshotCooperative<T>(
+  scope: NativeProductScope,
+  threadId: string,
+  read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+  abort?: AbortSignal
+): Promise<T> {
+  const expires = performance.now() + 2000;
+  const timeout = AbortSignal.timeout(2000);
+  const signal = abort ? AbortSignal.any([abort, timeout]) : timeout;
+  // Retirement must drain an accepted queued acquisition before closing its original writer.
+  const releaseAcquisition = reserveMainScopeReadAcquisition(scope.path);
+  let release: (() => void) | undefined;
+  let reader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
+  let steps: Generator<void, T, void> | undefined;
+  const check = () => {
+    if (signal.aborted || performance.now() >= expires) throw timelineReadUnavailable();
+  };
+  try {
+    release = await acquireTimelineReadCut(signal);
+    check();
+    // No borrowed/cached connection: no other request can touch this read transaction.
+    reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    reader.sqlite.exec('BEGIN DEFERRED');
+    steps = read(threadTimelineSnapshot({ ...scope, sqlite: reader.sqlite }, threadId, reader));
+    for (;;) {
+      check();
+      const step = steps.next();
+      check();
+      if (step.done) return step.value;
+      // Each producer step is bounded; release before starting the next one.
+      try {
+        await yieldTimelineMain(undefined, { signal });
+      } catch (error) {
+        if (signal.aborted) throw timelineReadUnavailable();
+        throw error;
+      }
+    }
+  } finally {
+    try {
+      steps?.return(undefined as T);
+    } finally {
+      try {
+        if (reader?.sqlite.inTransaction) reader.sqlite.exec('ROLLBACK');
+      } finally {
+        try {
+          closeTimelineReader(reader);
+        } finally {
+          try {
+            // An unknown physical close retains its original exclusion; never allocate reader three.
+            if (!reader || !reader.sqlite.open) release?.();
+          } finally {
+            releaseAcquisition();
+          }
+        }
+      }
+    }
   }
 }
 

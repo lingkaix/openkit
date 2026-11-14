@@ -1,22 +1,38 @@
 import { THREAD_TIMELINE_LIMITS, type ThreadTimelineResponse } from '@openkit/app-api-schemas';
 import { type Item, TurnRecordSchema } from '@openkit/protocol';
 import { readScopedHumanAttention } from './action-center.js';
-import { isWorkspaceOperationAuthorized } from './auth/operation-authorizer.js';
 import type { ThreadItemPosition } from './storage/control-store-product-records.js';
 import { isRecordedItemFailure } from './storage/control-store-read-metadata.js';
 import type { ThreadTimelineSnapshot } from './storage/workspace-file-records.js';
 import { hasWorkspaceReviewArtifact } from './storage/workspace-review-records.js';
-import { isThreadItemSourceAllowed, type ThreadTimelineReadInput } from './thread-timeline.js';
+import {
+  isThreadItemSourceAllowed,
+  isThreadTimelinePolicyAllowed,
+  type ThreadTimelineReadInput,
+} from './thread-timeline.js';
 
 type Digest = ThreadTimelineResponse['digest'];
 type Kind = Digest['lines'][number]['kind'];
 
-/** Counts retained changes after B, never client display windows or generated prose. Partial counts are lower bounds. */
+/** Retains the synchronous internal owner while public reads consume the same bounded steps. */
 export function readTimelineDigest(
   owner: ThreadTimelineReadInput,
   snapshot: ThreadTimelineSnapshot,
   boundary: ThreadItemPosition | undefined
 ): Digest {
+  const steps = readTimelineDigestSteps(owner, snapshot, boundary);
+  for (;;) {
+    const step = steps.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** Counts the same retained changes, releasing between bounded revision and run work. */
+export function* readTimelineDigestSteps(
+  owner: ThreadTimelineReadInput,
+  snapshot: ThreadTimelineSnapshot,
+  boundary: ThreadItemPosition | undefined
+): Generator<void, Digest, void> {
   const lines = new Map<Kind, Digest['lines'][number]>();
   const seen = new Set<string>();
   const reviews = new Map<string, string>();
@@ -32,14 +48,10 @@ export function readTimelineDigest(
     !boundary ||
     position.admissionOrder > boundary.admissionOrder ||
     (position.admissionOrder === boundary.admissionOrder && position.sequence > boundary.sequence);
-  const auditAllowed =
-    !!owner.coreDb &&
-    isWorkspaceOperationAuthorized(owner.coreDb, owner.actor, owner.input.workspaceId, {
-      policyOperation: 'audit.read',
-      mutating: false,
-    });
+  const auditAllowed = isThreadTimelinePolicyAllowed(owner, 'audit.read');
   const workspaceDb = owner.repositoryWorkspaceDb?.(owner.input.workspaceId);
   try {
+    yield;
     // Reuse the bounded Action Center owner. A communication Item alone cannot create a need.
     if (workspaceDb) {
       const attention = readScopedHumanAttention({
@@ -54,6 +66,7 @@ export function readTimelineDigest(
       });
       if (attention.more) result.coverage = 'partial';
       for (const row of attention.items) {
+        yield;
         if (row.source.type === 'artifact_review') {
           reviews.set(
             `${row.source.turnId}:${row.source.artifactId}:${row.source.artifactVersion}`,
@@ -99,6 +112,7 @@ export function readTimelineDigest(
     const prior = new Map<string, Item | null>();
     const completedPlanSteps = new Set<string>();
     for (const row of rows) {
+      yield;
       const turn = TurnRecordSchema.parse({ ...row.record, items: [] });
       const terminal = ['completed', 'failed', 'interrupted', 'cancelled'].includes(turn.status);
       // B can be inside a run that completes later without publishing another message.
@@ -114,10 +128,11 @@ export function readTimelineDigest(
       let position = boundary?.turnId === turn.id ? boundary.sequence : 0;
       const head = snapshot.revisionHead(turn.id);
       while (remaining > 0 && position < head) {
-        const page = snapshot.revisions(turn.id, position, Math.min(64, remaining));
+        const page = snapshot.revisions(turn.id, position, 1);
         if (!page.length) break;
         remaining -= page.length;
         for (const entry of page) {
+          yield;
           position = entry.sequence;
           const item = entry.item;
           if (!item) {

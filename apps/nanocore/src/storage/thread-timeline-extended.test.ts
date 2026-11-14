@@ -13,6 +13,7 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { openWorkspaceDb } from './db.js';
+import type { ThreadTimelineSnapshot } from './workspace-file-records.js';
 
 const roots: string[] = [];
 const time = '2026-11-08T17:00:00.000Z';
@@ -454,36 +455,58 @@ describe('Thread timeline Extended catch-up digest', () => {
     const revisionPages: number[] = [];
     let predecessorReads = 0;
     const actual = f.store.readThreadTimelineSnapshot.bind(f.store);
+    const instrument = (snapshot: ThreadTimelineSnapshot) =>
+      new Proxy(snapshot, {
+        get(target, key, receiver) {
+          if (key === 'item')
+            return (itemId: string) => {
+              itemReads.push(itemId);
+              return target.item(itemId);
+            };
+          if (key === 'revisions')
+            return (turnId: string, after: number, limit: number) => {
+              expect(turnId).toBe(f.turn.id);
+              expect(after).toBeGreaterThanOrEqual(271);
+              expect(limit).toBeLessThanOrEqual(64);
+              const page = target.revisions(turnId, after, limit);
+              revisionPages.push(page.length);
+              for (const entry of page) if (entry.item) historicalItems.push(entry.item.id);
+              return page;
+            };
+          if (key === 'revision')
+            return (turnId: string, itemId: string, revision: number) => {
+              predecessorReads++;
+              return target.revision(turnId, itemId, revision);
+            };
+          return Reflect.get(target, key, receiver);
+        },
+      });
     vi.spyOn(f.store, 'readThreadTimelineSnapshot').mockImplementation(
       (workspaceId, threadId, read) =>
-        actual(workspaceId, threadId, (snapshot) =>
-          read(
-            new Proxy(snapshot, {
-              get(target, key, receiver) {
-                if (key === 'item')
-                  return (itemId: string) => {
-                    itemReads.push(itemId);
-                    return target.item(itemId);
-                  };
-                if (key === 'revisions')
-                  return (turnId: string, after: number, limit: number) => {
-                    expect(turnId).toBe(f.turn.id);
-                    expect(after).toBeGreaterThanOrEqual(271);
-                    expect(limit).toBeLessThanOrEqual(64);
-                    const page = target.revisions(turnId, after, limit);
-                    revisionPages.push(page.length);
-                    for (const entry of page) if (entry.item) historicalItems.push(entry.item.id);
-                    return page;
-                  };
-                if (key === 'revision')
-                  return (turnId: string, itemId: string, revision: number) => {
-                    predecessorReads++;
-                    return target.revision(turnId, itemId, revision);
-                  };
-                return Reflect.get(target, key, receiver);
-              },
-            })
-          )
+        actual(workspaceId, threadId, (snapshot) => {
+          const result = read(instrument(snapshot));
+
+          return result;
+        })
+    );
+    const actualCooperative = f.store.readThreadTimelineSnapshotCooperative.bind(f.store);
+    // The real generator is exhausted before the same end-of-read observations run.
+    vi.spyOn(f.store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+      <T>(
+        workspaceId: string,
+        threadId: string,
+        read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+        signal?: AbortSignal
+      ): Promise<T> =>
+        actualCooperative(
+          workspaceId,
+          threadId,
+          function* (snapshot: ThreadTimelineSnapshot) {
+            const result = yield* read(instrument(snapshot));
+
+            return result;
+          },
+          signal
         )
     );
     const result = digest(await f.read());
@@ -513,22 +536,44 @@ describe('Thread timeline Extended catch-up digest', () => {
     for (let index = 0; index < 128; index++) await append(index);
     let selectedRevisions = 0;
     const actual = f.store.readThreadTimelineSnapshot.bind(f.store);
+    const instrument = (snapshot: ThreadTimelineSnapshot) =>
+      new Proxy(snapshot, {
+        get(target, key, receiver) {
+          if (key === 'revisions')
+            return (turnId: string, after: number, limit: number) => {
+              const page = target.revisions(turnId, after, limit);
+              selectedRevisions += page.length;
+              return page;
+            };
+          return Reflect.get(target, key, receiver);
+        },
+      });
     vi.spyOn(f.store, 'readThreadTimelineSnapshot').mockImplementation(
       (workspaceId, threadId, read) =>
-        actual(workspaceId, threadId, (snapshot) =>
-          read(
-            new Proxy(snapshot, {
-              get(target, key, receiver) {
-                if (key === 'revisions')
-                  return (turnId: string, after: number, limit: number) => {
-                    const page = target.revisions(turnId, after, limit);
-                    selectedRevisions += page.length;
-                    return page;
-                  };
-                return Reflect.get(target, key, receiver);
-              },
-            })
-          )
+        actual(workspaceId, threadId, (snapshot) => {
+          const result = read(instrument(snapshot));
+
+          return result;
+        })
+    );
+    const actualCooperative = f.store.readThreadTimelineSnapshotCooperative.bind(f.store);
+    // The real generator is exhausted before the same end-of-read observations run.
+    vi.spyOn(f.store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+      <T>(
+        workspaceId: string,
+        threadId: string,
+        read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+        signal?: AbortSignal
+      ): Promise<T> =>
+        actualCooperative(
+          workspaceId,
+          threadId,
+          function* (snapshot: ThreadTimelineSnapshot) {
+            const result = yield* read(instrument(snapshot));
+
+            return result;
+          },
+          signal
         )
     );
     const exact = digest(await f.read());

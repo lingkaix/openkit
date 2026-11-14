@@ -16,7 +16,7 @@ import { getControlStoreWorkerClient } from './storage/control-store-worker-clie
 import type { UserDb } from './storage/db.js';
 import { markThreadRead, readThreadReadState } from './thread-read-state.js';
 import { archiveThread, createThread, updateThread } from './thread-routes.js';
-import { readThreadItemBody, readThreadTimeline } from './thread-timeline.js';
+import { readThreadItemBody, readThreadTimelineCooperative } from './thread-timeline.js';
 /** Joins Thread creation, record/history reads and dashboard projection without a second lifecycle. */
 export function createThreadOperationImplementations(
   dependencies: Pick<
@@ -118,18 +118,58 @@ export function createThreadOperationImplementations(
           reader = await opening;
           await context.recheckAdmission?.();
         }
-        return readThreadTimeline({
-          input,
-          store: dependencies.store!,
-          inflightCommands: dependencies.inflightCommands,
-          coreDb: dependencies.coreDb,
-          repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb,
-          actor: publicOperationActor(context),
-          administratorEligible: isCurrentDeploymentAdministrator(
-            dependencies.coreDb!,
-            publicOperationActor(context)
-          ),
-        });
+        let currentActor = publicOperationActor(context);
+        let administratorEligible = isCurrentDeploymentAdministrator(
+          dependencies.coreDb!,
+          currentActor
+        );
+        const originalAdministrator = administratorEligible;
+        const sourceChecks: Array<() => boolean> = [];
+        const result = await readThreadTimelineCooperative(
+          {
+            input,
+            store: dependencies.store!,
+            inflightCommands: dependencies.inflightCommands,
+            coreDb: dependencies.coreDb,
+            repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb,
+            get actor() {
+              return currentActor;
+            },
+            get administratorEligible() {
+              return administratorEligible;
+            },
+            onSourceAdmissionCheck: (check) => {
+              sourceChecks.push(check);
+            },
+          },
+          context.signal
+        );
+        await context.recheckAdmission?.();
+        currentActor = publicOperationActor(context);
+        administratorEligible = isCurrentDeploymentAdministrator(
+          dependencies.coreDb!,
+          currentActor
+        );
+        if (
+          !isThreadVisible(
+            dependencies.store!,
+            dependencies.store!.getThread(input.workspaceId, input.threadId),
+            currentActor.userId,
+            administratorEligible
+          )
+        )
+          throw new OperationError('not_found', 'Thread not found.', 404);
+        // No yield follows this actual current source/policy join. Changed authority retries the full read.
+        if (
+          administratorEligible !== originalAdministrator ||
+          sourceChecks.some((check) => !check())
+        )
+          throw new OperationError(
+            'operation_storage_unavailable',
+            'Storage is busy. Inspect the original request outcome before retrying.',
+            503
+          );
+        return result;
       } catch (error) {
         threadCommandFailure(error, 'not_found');
       } finally {

@@ -437,21 +437,43 @@ describe('Exact request-ID timeline anchors', () => {
     let bodyReads = 0;
     const actual = f.store.readThreadTimelineSnapshot.bind(f.store);
     // Observe the public snapshot read capability without changing any returned native fact.
+    const instrument = (snapshot: ThreadTimelineSnapshot) =>
+      new Proxy(snapshot, {
+        get(target, key) {
+          if (key === 'item')
+            return (itemId: string) => {
+              bodyReads++;
+              return target.item(itemId);
+            };
+          return Reflect.get(target, key);
+        },
+      });
     vi.spyOn(f.store, 'readThreadTimelineSnapshot').mockImplementation(
       (workspaceId, threadId, read) =>
-        actual(workspaceId, threadId, (snapshot) =>
-          read(
-            new Proxy(snapshot, {
-              get(target, key) {
-                if (key === 'item')
-                  return (itemId: string) => {
-                    bodyReads++;
-                    return target.item(itemId);
-                  };
-                return Reflect.get(target, key);
-              },
-            }) as ThreadTimelineSnapshot
-          )
+        actual(workspaceId, threadId, (snapshot) => {
+          const result = read(instrument(snapshot));
+
+          return result;
+        })
+    );
+    const actualCooperative = f.store.readThreadTimelineSnapshotCooperative.bind(f.store);
+    // The real generator is exhausted before the same end-of-read observations run.
+    vi.spyOn(f.store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+      <T>(
+        workspaceId: string,
+        threadId: string,
+        read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+        signal?: AbortSignal
+      ): Promise<T> =>
+        actualCooperative(
+          workspaceId,
+          threadId,
+          function* (snapshot: ThreadTimelineSnapshot) {
+            const result = yield* read(instrument(snapshot));
+
+            return result;
+          },
+          signal
         )
     );
     const result = await f.read();
@@ -497,7 +519,9 @@ describe('Exact request-ID timeline anchors', () => {
           channel,
           sql: sql.replace(/\s+/g, ' ').trim(),
           proof,
-          digest: stack.includes('at readTimelineDigest ('),
+          digest:
+            stack.includes('at readTimelineDigestSteps (') ||
+            stack.includes('at readTimelineDigest ('),
         });
       return prepare.call(this, sql);
     });
