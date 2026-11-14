@@ -166,7 +166,13 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
+import {
+  type CoreDb,
+  openAdmittedWorkspaceReadDb,
+  openCoreDb,
+  openWorkspaceDb,
+  type WorkspaceDb,
+} from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import {
@@ -4159,6 +4165,141 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
     }
   );
+
+  it('ORACLE S7 refuses direct ordinary native admission during preparation while the owed Worker closeout commits', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-preparation-bypass-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: LOCAL_USER_ID, workspaceId });
+    const turn = await createAssignedTurn(
+      store,
+      workspaceId,
+      'th_00000000-0000-7000-8000-000000000001',
+      'Finish already admitted work'
+    );
+    const agentSessionId = allocateEntityId('as');
+    const requestId = randomUUID();
+    await recordExecutorAttempt(coreDb, {
+      agentSessionId,
+      packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
+      requestId,
+      sandboxBindingRef: `lease-binding:${turn.id}`,
+      threadId: turn.threadId,
+      triggerActor: turn.triggerActor,
+      turnId: turn.id,
+      turnInput: 'Finish already admitted work',
+      workspaceId,
+    });
+    const gate = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(gate);
+    const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
+    const reached = Promise.withResolvers<void>();
+    const releasePreparation = Promise.withResolvers<void>();
+    let freezing: ReturnType<WorkspaceMutationAdmission['tryFreezeAfterDrain']> | undefined;
+    let frozen: Awaited<NonNullable<typeof freezing>> | undefined;
+    let refusal: unknown;
+    const callId = allocateEntityId('cap');
+    const backend = new FakeWorkerGovernanceBackend();
+    const collect = backend.collectTranscript.bind(backend);
+    const transcript = vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
+      const result = await collect();
+      freezing = gate.tryFreezeAfterDrain(
+        workspaceId,
+        async () => {
+          reached.resolve();
+          await releasePreparation.promise;
+        },
+        () => []
+      );
+      await reached.promise;
+      expect(gate.enter(workspaceId)).toBeNull();
+      // This ordinary call is outside the executor's later worker-turn-closeout admission.
+      let ordinary: Awaited<ReturnType<typeof startCapabilityCall>> | undefined;
+      try {
+        ordinary = await startCapabilityCall({
+          workspaceDb,
+          workspaceId,
+          callId,
+          authorityActor: turn.triggerActor,
+          family: 'llm',
+          operation: 'responses.create',
+          capabilityId: 'llm.responses',
+          requestId: randomUUID(),
+          redactionClass: 'metadata-only',
+        });
+      } catch (error) {
+        refusal = error;
+      }
+      if (ordinary) {
+        expect(ordinary.inserted).toBe(true);
+        // Honest cleanup is a prerequisite, never classified as an admission refusal.
+        await finishCapabilityCall({ workspaceDb, callId, status: 'aborted' });
+      }
+      return result;
+    });
+    const posts = vi.spyOn(NativeWorker.prototype, 'postMessage');
+    const replies = vi.spyOn(NativeWorker.prototype, 'emit');
+    const executor = new WorkerGovernanceTurnExecutor({
+      fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+      backend,
+      coreDb,
+      createAgentSessionId: () => agentSessionId,
+      environmentBackend: { kind: 'openshell' },
+      now: () => '2026-07-15T00:00:03.000Z',
+      workspaceMutationAdmission: gate,
+    });
+    try {
+      await executor.startTurn(store, turn.id, 'Finish already admitted work', {
+        attemptId: testEntityId('attempt', `lease_${turn.id}`),
+        agentSessionId,
+        sandboxBindingRef: `lease-binding:${turn.id}`,
+        agentSetup: createTestAgentSetup(),
+        requestId,
+        triggerActor: turn.triggerActor,
+        workspaceRoots: [],
+      });
+      expect(transcript).toHaveBeenCalledOnce();
+      expect(store.getTurnById(turn.id).status).toBe('completed');
+      expect(store.getAgentSession(agentSessionId).status).toBe('idle');
+      const terminals = posts.mock.calls
+        .map(([message]) => message)
+        .filter((message) => message.operation === 'terminal');
+      expect(terminals.length).toBeGreaterThan(0);
+      expect(
+        terminals.some((request) =>
+          replies.mock.calls.some(
+            ([event, reply]) =>
+              event === 'message' &&
+              reply?.id === request.id &&
+              reply?.operation === 'terminal' &&
+              reply?.status === 'ok'
+          )
+        )
+      ).toBe(true);
+      releasePreparation.resolve();
+      frozen = await freezing;
+      expect(frozen?.status).toBe('frozen');
+      expect(refusal).toMatchObject({ code: 'workspace_frozen', status: 409 });
+      expect(
+        workspaceDb.sqlite
+          .prepare('SELECT call_id FROM capability_calls WHERE call_id=?')
+          .get(callId)
+      ).toBeUndefined();
+    } finally {
+      releasePreparation.resolve();
+      frozen ??= await freezing;
+      if (frozen?.status === 'frozen') frozen.release();
+      transcript.mockRestore();
+      posts.mockRestore();
+      replies.mockRestore();
+      workspaceDb.sqlite.close();
+      coreDb.sqlite.close();
+      await shutdownControlStoreWorkerClient();
+      rmSync(dataRoot, { force: true, recursive: true });
+    }
+  }, 120_000);
 
   it('rejects worker output after the Workspace deletion fence closes', async () => {
     expect(WORKSPACE_MUTATION_LATE_PUBLISHERS).toEqual([
