@@ -290,6 +290,21 @@ describe('post-terminal write admission', () => {
     expect(refreshed.summary).toBe('Updated summary');
     expect(refreshed.createdAt).toBe(display.createdAt);
     expect(refreshed.title).toBe(display.title);
+    await expect(
+      store.updateItem(
+        display.id,
+        {
+          summary: 'Must not leak from a rejected patch',
+          createdAt: '2099-01-01T00:00:00.000Z',
+        },
+        DISPLAY_PROJECTION_REFRESH_ADMISSION
+      )
+    ).rejects.toThrow();
+    expect(
+      store.readThreadTimelineSnapshot(workspaceIdForOwner(turn.owner), turn.threadId, (snapshot) =>
+        snapshot.item(display.id)
+      )
+    ).toEqual(refreshed);
     expect(
       await store.updateItem(
         display.id,
