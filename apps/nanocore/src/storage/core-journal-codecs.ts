@@ -25,6 +25,14 @@ export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({
   reviewSeconds: 86_400,
 });
 
+/** Sensor and gap evidence have their own finite release bounds, independent of effect capacity. */
+export const SECURITY_OBSERVATION_LIMITS = Object.freeze({
+  perRun: 1,
+  workspaceWindow: 16,
+  serverWindow: 64,
+  gapWindow: 16,
+});
+
 /** Closed existing Core producer decisions; callers cannot provide permission or capacity results. */
 export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
   z
@@ -61,6 +69,19 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('containment-outcome'),
+      policy: PolicyDocumentV1Schema,
+      ref: stepRef,
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal('containment-review'), policy: PolicyDocumentV1Schema, ref: stepRef })
+    .strict(),
+  z
+    .object({ kind: z.literal('containment-stop'), policy: PolicyDocumentV1Schema, ref: stepRef })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('containment-stop-outcome'),
       policy: PolicyDocumentV1Schema,
       ref: stepRef,
     })

@@ -1430,7 +1430,10 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
         request.input.kind === 'containment-check' ||
         request.input.kind === 'containment-settle' ||
         request.input.kind === 'containment-cancel' ||
-        request.input.kind === 'containment-outcome'
+        request.input.kind === 'containment-outcome' ||
+        request.input.kind === 'containment-review' ||
+        request.input.kind === 'containment-stop' ||
+        request.input.kind === 'containment-stop-outcome'
       ) {
         lanes.add('security-containment');
         if (request.input.kind === 'containment-intent') {

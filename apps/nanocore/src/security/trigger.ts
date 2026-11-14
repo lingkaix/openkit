@@ -25,7 +25,10 @@ import {
 } from '../runtime/execution-journal.js';
 import type { TurnExecutor } from '../runtime/types.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { SECURITY_CONTAINMENT_LIMITS } from '../storage/core-journal-codecs.js';
+import {
+  SECURITY_CONTAINMENT_LIMITS,
+  SECURITY_OBSERVATION_LIMITS,
+} from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   type ControlSecurityTrigger,
@@ -72,6 +75,7 @@ export class SecurityTriggerStore {
     const count = z.number().int().nonnegative().safe();
     return {
       limits: SECURITY_CONTAINMENT_LIMITS,
+      observationLimits: SECURITY_OBSERVATION_LIMITS,
       usage: z
         .object({
           currentServer: count,
@@ -276,6 +280,11 @@ export class SecurityTriggerStore {
         policy,
         ref: { execution, stepId: 'quarantine' },
       });
+      await publishCoreJournal(this.db, {
+        kind: 'containment-review',
+        policy,
+        ref: { execution, stepId: 'review' },
+      });
       const ref = { execution, stepId: 'cancel' };
       const admitted = await publishCoreJournal(this.db, {
         kind: 'containment-cancel',
@@ -311,6 +320,44 @@ export class SecurityTriggerStore {
             await executor.executionBackend.inspect(schedulerExecutionCorrelation(attempt))
           );
         await publishCoreJournal(this.db, { kind: 'containment-outcome', policy, ref });
+      }
+      const stopRef = { execution, stepId: 'stop' };
+      const stop = await publishCoreJournal(this.db, {
+        kind: 'containment-stop',
+        policy,
+        ref: stopRef,
+      });
+      if (stop !== null) {
+        const intent = decodeExecutionJournalInvocation(stop);
+        const lineageRefs = intent.control.inputRefs.filter((value) =>
+          value.startsWith('lineage:')
+        );
+        if (lineageRefs.length !== 1 || !executor.revokeCredentialBindings)
+          throw new TypeError('Containment cleanup owner is unavailable.');
+        const lineage = WorkerLineageSchema.parse(JSON.parse(lineageRefs[0]!.slice(8)));
+        try {
+          await executor.revokeCredentialBindings(store, [lineage.agentSessionId]);
+        } finally {
+          await publishCoreJournal(this.db, {
+            kind: 'containment-stop-outcome',
+            policy,
+            ref: stopRef,
+          });
+        }
+      } else {
+        let originalStop: Awaited<ReturnType<typeof journal.readInvocation>>;
+        try {
+          originalStop = await journal.readInvocation(stopRef);
+        } catch {
+          continue;
+        }
+        if (originalStop.control.definitionVersion !== 'containment')
+          throw new TypeError('Containment cleanup provenance is unavailable.');
+        await publishCoreJournal(this.db, {
+          kind: 'containment-stop-outcome',
+          policy,
+          ref: stopRef,
+        });
       }
     }
   }

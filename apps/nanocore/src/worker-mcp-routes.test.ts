@@ -195,7 +195,12 @@ import { createNativeTaskAdmissionFixture } from './test-support/native-task-adm
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { openTestNativeWorkspace } from './test-support/store.js';
-import { createVaultGrant, narrowVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
+import {
+  createVaultGrant,
+  getVaultGrant,
+  narrowVaultGrant,
+  revokeVaultGrant,
+} from './vault/vault-grants.js';
 import { createVaultReference } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
 import {
@@ -3308,6 +3313,10 @@ describe('worker MCP routes', () => {
     'containment-intent-before-restriction',
     'containment-cap-flood-recovery',
     'containment-controls',
+    'containment-gaps',
+    'containment-controls-lost-ack',
+    'containment-controls-lost-cleanup',
+    'containment-controls-off',
   ] as const)(
     'observes only authenticated current exact native canary route calls: %s',
     { timeout: 60_000 },
@@ -3315,7 +3324,11 @@ describe('worker MCP routes', () => {
       const consumer =
         scenario === 'containment-intent-before-restriction' ||
         scenario === 'containment-cap-flood-recovery' ||
-        scenario === 'containment-controls';
+        scenario === 'containment-controls' ||
+        scenario === 'containment-gaps' ||
+        scenario === 'containment-controls-lost-ack' ||
+        scenario === 'containment-controls-lost-cleanup' ||
+        scenario === 'containment-controls-off';
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-canary-route-'));
       const coreDb = openCopiedMcpCore(dataRoot);
       const userId = await ensureCanonicalLocalUser(coreDb);
@@ -3926,6 +3939,10 @@ describe('worker MCP routes', () => {
           'containment-intent-before-restriction',
           'containment-cap-flood-recovery',
           'containment-controls',
+          'containment-gaps',
+          'containment-controls-lost-ack',
+          'containment-controls-lost-cleanup',
+          'containment-controls-off',
         ].includes(scenario);
         if (shouldTrip) {
           const facts = rows();
@@ -4081,7 +4098,82 @@ describe('worker MCP routes', () => {
             expect(sibling.body.result?.isError).not.toBe(true);
             expect(sibling.body).toHaveProperty('result.content');
           }
-          if (scenario === 'containment-controls') {
+          if (scenario === 'containment-controls-off') {
+            const ref = containmentRef(original);
+            const originalFence = await journal.readInvocation(ref);
+            expect(originalFence.control.deadlineUnixNano!).toBeGreaterThan(
+              BigInt(Date.now()) * 1_000_000n
+            );
+            expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
+              state: 'stopping',
+            });
+            const interrupted = vi.spyOn(native.executor, 'interruptTurn');
+            const cleaned = vi.spyOn(native.executor, 'revokeCredentialBindings');
+            await trigger.advanceContainment(runtimeManager, store, native.executor);
+            expect(interrupted).not.toHaveBeenCalled();
+            expect(cleaned).not.toHaveBeenCalled();
+            await expect(journal.readInvocation({ ...ref, stepId: 'cancel' })).rejects.toThrow();
+            expect(store.getTurnById(turn.id).status).toBe('running');
+            expect(
+              native.workerControlGateway.authenticatePackageToken(`Bearer ${capabilityToken}`, {
+                tokenFamily: 'capability',
+              }).snapshotId
+            ).toBe(original.snapshotId);
+            const refused = await rpc(
+              'openkit-work',
+              'tools/call',
+              { name: 'work_peer_list', arguments: {} },
+              490
+            );
+            expect(refused.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+            expect(
+              policyNow().statements.some((statement) => statement.id === ref.execution.executionId)
+            ).toBe(true);
+            interrupted.mockRestore();
+            cleaned.mockRestore();
+          }
+          if (
+            scenario === 'containment-controls' ||
+            scenario === 'containment-controls-lost-ack' ||
+            scenario === 'containment-controls-lost-cleanup'
+          ) {
+            const referenceId = allocateEntityId('vault');
+            await createVaultReference(coreDb, {
+              referenceId,
+              ownerScope: 'workspace',
+              workspaceId,
+              displayName: 'Containment native grant witness',
+              secretKind: 'api-token',
+              backendKind: 'encrypted-file',
+              backendLocator: `encrypted-file://workspace/${referenceId}`,
+            });
+            const suspectGrant = await createVaultGrant(coreDb, {
+              grantId: allocateEntityId('grant'),
+              vaultReferenceId: referenceId,
+              ownerScope: 'workspace',
+              workspaceId,
+              lifetime: 'agent-session',
+              targetAgentId: original.agent.agentId,
+              targetAgentSessionId: original.scope.agentSessionId,
+              allowedInjectionPaths: ['runtime-env'],
+            });
+            const sharedGrant = await createVaultGrant(coreDb, {
+              grantId: allocateEntityId('grant'),
+              vaultReferenceId: referenceId,
+              ownerScope: 'workspace',
+              workspaceId,
+              lifetime: 'workspace',
+              allowedInjectionPaths: ['runtime-env'],
+            });
+            const originalRevoke = native.executor.revokeCredentialBindings.bind(native.executor);
+            const revoked = vi
+              .spyOn(native.executor, 'revokeCredentialBindings')
+              .mockImplementation(async (...args) => {
+                await originalRevoke(...args);
+                if (scenario === 'containment-controls-lost-cleanup')
+                  throw new Error('Original cleanup reply was lost.');
+              });
+            const backendCancel = vi.spyOn(native.executor.executionBackend!, 'cancel');
             const interrupt = native.executor.interruptTurn.bind(native.executor);
             const cancelled = vi
               .spyOn(native.executor, 'interruptTurn')
@@ -4114,8 +4206,21 @@ describe('worker MCP routes', () => {
                   430
                 );
                 expect(denied.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
-                return interrupt(...args);
+                await interrupt(...args);
+                if (scenario === 'containment-controls-lost-ack')
+                  throw new Error('Original interruption reply was lost.');
               });
+            if (scenario === 'containment-controls-lost-ack') {
+              await expect(
+                trigger.advanceContainment(runtimeManager, store, native.executor)
+              ).rejects.toThrow('Original interruption reply was lost.');
+              await execution.execution;
+            }
+            if (scenario === 'containment-controls-lost-cleanup') {
+              await expect(
+                trigger.advanceContainment(runtimeManager, store, native.executor)
+              ).rejects.toThrow('Original cleanup reply was lost.');
+            }
             await trigger.advanceContainment(runtimeManager, store, native.executor);
             expect(cancelled).toHaveBeenCalledTimes(1);
             await execution.execution;
@@ -4129,6 +4234,23 @@ describe('worker MCP routes', () => {
               stepId: 'cancel',
             });
             expect(outcome.state).toBe('unknown'); // Native interrupt acceptance alone never proves stop.
+            const stopOutcome = await journal.readInvocation({
+              ...containmentRef(original),
+              stepId: 'stop',
+            });
+            expect(stopOutcome.state).toBe('completed');
+            expect(stopOutcome.control.operationId).toBe(outcome.control.operationId);
+            expect(
+              stopOutcome.control.outputRefs.some((ref) => ref.startsWith('native-cleanup:'))
+            ).toBe(true);
+            expect(
+              native.effects.filter((effect) => effect.kind === 'sandbox.delete')
+            ).toHaveLength(1);
+            expect(getVaultGrant(coreDb, suspectGrant.grantId)?.status).toBe('revoked');
+            expect(getVaultGrant(coreDb, sharedGrant.grantId)?.status).toBe('active');
+            expect(revoked).toHaveBeenCalledTimes(1);
+            expect(backendCancel).toHaveBeenCalledTimes(1);
+
             expect(
               outcome.control.outputRefs.some((ref) => ref.startsWith('scheduler-attempt:'))
             ).toBe(true);
@@ -4139,9 +4261,13 @@ describe('worker MCP routes', () => {
                 (statement) => statement.id === containmentRef(original).execution.executionId
               )
             ).toBe(true);
+            expect(revoked).toHaveBeenCalledTimes(1);
+            expect(backendCancel).toHaveBeenCalledTimes(1);
+            revoked.mockRestore();
+            backendCancel.mockRestore();
             cancelled.mockRestore();
           }
-          if (scenario === 'containment-cap-flood-recovery') {
+          if (scenario === 'containment-cap-flood-recovery' || scenario === 'containment-gaps') {
             for (let n = 0; n < 2; n++) {
               const prior = n === 0 ? execution : additionalExecutions.at(-1)!;
               prior.completion.resolve();
@@ -4195,6 +4321,45 @@ describe('worker MCP routes', () => {
             await expect(
               journal.readInvocation(containmentRef(witnesses[2]!.pkg))
             ).rejects.toThrow();
+            if (scenario === 'containment-gaps') {
+              for (let n = 0; n < 18; n++) {
+                const excess = await rpc(
+                  'openkit-security',
+                  'tools/call',
+                  { name: 'security_admin_export', arguments: {} },
+                  450 + n,
+                  witnesses[2]!.token
+                );
+                expect(excess.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+              }
+              const gaps = listServerAuditEvents(coreDb).filter(
+                (event) => event.action === 'security.containment.gap'
+              );
+              expect(gaps).toHaveLength(16);
+              const summaries = gaps
+                .map((event) => JSON.parse(event.summary))
+                .sort((a, b) => a.observedExcess - b.observedExcess);
+              expect(summaries.map((entry) => entry.observedExcess)).toEqual(
+                Array.from({ length: 16 }, (_, n) => n + 1)
+              );
+              expect(summaries.at(-1)).toMatchObject({
+                saturated: true,
+                gap: 'Additional excess observations are uncounted.',
+              });
+              expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
+                usage: { currentWorkspace: 2, cumulativeWorkspace: 2, pendingWorkspace: 0 },
+              });
+              await trigger.advanceContainment(runtimeManager, store, native.executor);
+              expect(
+                (await journal.readInvocation({ ...containmentRef(original), stepId: 'review' }))
+                  .state
+              ).toBe('intent');
+              expect(
+                listServerAuditEvents(coreDb).filter(
+                  (event) => event.action === 'security.containment.gap'
+                )
+              ).toHaveLength(16);
+            }
             const retained = policyNow();
             expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
               state: 'stopping',

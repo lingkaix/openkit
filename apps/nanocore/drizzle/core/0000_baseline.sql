@@ -970,6 +970,8 @@ CREATE INDEX `audit_events_permission_decision_idx` ON `audit_events` (`permissi
 --> statement-breakpoint
 CREATE INDEX `audit_events_request_idx` ON `audit_events` (`request_id`);
 --> statement-breakpoint
+CREATE INDEX `audit_events_security_window_idx` ON `audit_events` (`action`,`created_at`,`resource`);
+--> statement-breakpoint
 CREATE INDEX `audit_events_turn_action_idx` ON `audit_events` (`turn_id`, `action`, `created_at`, `audit_event_id`);
 --> statement-breakpoint
 CREATE INDEX `audit_events_vault_grant_idx` ON `audit_events` (`vault_grant_id`);

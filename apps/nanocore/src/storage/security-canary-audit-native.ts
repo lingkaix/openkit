@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
-import { responsibleUserIdForActor } from '@openkit/protocol';
-import { auditEventFromRow } from '../audit-events.js';
+import { deriveEntityId, responsibleUserIdForActor } from '@openkit/protocol';
+import { auditEventFromRow, recordServerAuditEvent } from '../audit-events.js';
 import { findNamedAgentEnvironmentPackageSnapshotAtDataRoot } from '../runtime/aep-snapshot-ledger.js';
 import {
   listRestorableNanoHostExecutionAttempts,
@@ -12,6 +12,7 @@ import {
   SECURITY_CANARY_TOOLS,
 } from '../security/canaries.js';
 import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { SECURITY_CONTAINMENT_LIMITS, SECURITY_OBSERVATION_LIMITS } from './core-journal-codecs.js';
 import type { CoreDb } from './db.js';
 import { applySecurityTriggerInDb } from './security-trigger-native.js';
 import {
@@ -29,7 +30,7 @@ import {
 export function prepareSecurityCanaryAuditInDb(
   coreDb: CoreDb,
   input: ControlStandaloneAuditInput
-): 'new' | 'existing' | 'inactive' {
+): 'new' | 'existing' | 'inactive' | 'excess' {
   const refuse = (): never => {
     throw new ControlProductPreconditionError();
   };
@@ -139,5 +140,84 @@ export function prepareSecurityCanaryAuditInDb(
       return refuse();
     return 'existing';
   }
+  const windowStart = containmentWindowStart();
+  const admitted = coreDb.sqlite
+    .prepare(`SELECT workspace_id AS workspaceId FROM audit_events
+    WHERE action='security.canary' AND created_at>=? LIMIT ?`)
+    .all(windowStart, SECURITY_OBSERVATION_LIMITS.serverWindow + 1) as {
+    workspaceId: string | null;
+  }[];
+  if (
+    admitted.length >= SECURITY_OBSERVATION_LIMITS.serverWindow ||
+    admitted.filter((row) => row.workspaceId === scope.workspaceId).length >=
+      SECURITY_OBSERVATION_LIMITS.workspaceWindow
+  ) {
+    recordContainmentGapInDb(
+      coreDb,
+      'observation-bound',
+      lineage.workspaceId,
+      null,
+      current.snapshot.enablingUserId
+    );
+    return 'excess';
+  }
   return 'new';
+}
+
+/** The fixed UTC window never comes from a sensor or a caller clock. */
+function containmentWindowStart(): string {
+  const width = SECURITY_CONTAINMENT_LIMITS.windowSeconds * 1000;
+  return new Date(Math.floor(Date.now() / width) * width).toISOString();
+}
+
+/**
+ * Append-only bounded excess evidence. The sixteenth observation explicitly saturates the count;
+ * later loss is unknown, never described as contained. No mutable Audit or counter owner is added.
+ */
+export function recordContainmentGapInDb(
+  db: CoreDb,
+  reason:
+    | 'observation-bound'
+    | 'capacity'
+    | 'review-overdue'
+    | 'shared-resource'
+    | 'control-unknown',
+  workspaceId: string | null,
+  sourceAuditEventId: string | null,
+  responsibleUserId: string | null
+): string | null {
+  const windowStart = containmentWindowStart();
+  const resource = `containment-gap:${windowStart}`;
+  const rows = db.sqlite
+    .prepare(`SELECT audit_event_id AS id FROM audit_events
+    WHERE action='security.containment.gap' AND resource=? AND created_at>=? LIMIT ?`)
+    .all(resource, windowStart, SECURITY_OBSERVATION_LIMITS.gapWindow + 1) as { id: string }[];
+  if (rows.length > SECURITY_OBSERVATION_LIMITS.gapWindow)
+    throw new ControlProductPreconditionError();
+  if (rows.length === SECURITY_OBSERVATION_LIMITS.gapWindow) return null;
+  const count = rows.length + 1;
+  const id = deriveEntityId('aud', ['containment-gap', windowStart, count]);
+  recordServerAuditEvent({
+    coreDb: db,
+    auditEventId: id,
+    workspaceId,
+    actor: { kind: 'system', id: 'security.containment', responsibleUserId },
+    action: 'security.containment.gap',
+    category: 'system',
+    outcome: 'denied',
+    severity: 'warning',
+    resource,
+    summary: JSON.stringify({
+      reason,
+      sourceAuditEventId,
+      windowStart,
+      observedExcess: count,
+      saturated: count === SECURITY_OBSERVATION_LIMITS.gapWindow,
+      gap:
+        count === SECURITY_OBSERVATION_LIMITS.gapWindow
+          ? 'Additional excess observations are uncounted.'
+          : 'No additional restriction is proved.',
+    }),
+  });
+  return id;
 }
