@@ -200,7 +200,7 @@ async function serverFixture() {
   });
   const admin = await tokenActor(f, owner.token);
   const backupUser = await signup(f, 'N1 independent administrator');
-  await f.tokens()['token.create'](
+  const delegatedBackupIssue = await f.tokens()['token.create'](
     {
       ownerUserId: backupUser.actor.userId,
       scope: 'server-admin',
@@ -227,6 +227,7 @@ async function serverFixture() {
     base: f,
     admin,
     backup,
+    delegatedBackupSecret: delegatedBackupIssue.token,
     backupEmail: backupUser.email,
     ownerTokenId: owner.record.tokenId,
   };
@@ -426,6 +427,11 @@ describe('N1 real-native Server security trigger authority and alarms', () => {
         assert.equal(result.user.status, 'disabled');
       }
       // Loss is first discovered by the real Audit entry. Its rejection must not roll back R8.
+      assert.equal(
+        await verifyOpenKitAccessTokenRecord(f.db, s.delegatedBackupSecret),
+        null,
+        'the fixed alarm grant must not restore a bearer whose issuer chain is no longer current'
+      );
       const lossEntry = f.trace.checkpoint();
       await assert.rejects(() => f.trigger.readAudit({ now: LATER }));
       f.trace.assertRoundTrip(lossEntry);

@@ -648,7 +648,7 @@ function listOwnedUsableServerAdminTokens(
  * @param ownerUserId Canonical user id.
  * @returns Owned server-admin records in issued-at then token-id descending order.
  */
-function listOwnedServerAdminTokenRecords(
+export function listOwnedServerAdminTokenRecords(
   coreDb: CoreDb,
   ownerUserId: string
 ): OpenKitAccessTokenRecord[] {

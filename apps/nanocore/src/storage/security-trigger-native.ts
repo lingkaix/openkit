@@ -13,6 +13,7 @@ import { auditEventFromRow } from '../audit-events.js';
 import { evaluateOpenKitAccessTokenUsability } from '../auth/access-token.js';
 import {
   getOpenKitAccessTokenRecord,
+  listOwnedServerAdminTokenRecords,
   resolveSessionDeploymentAdminTokenId,
 } from '../auth/access-token-store.js';
 import { getLocalUserId } from '../auth/identity.js';
@@ -137,14 +138,23 @@ function readState(db: CoreDb): View {
   return { state, alarms };
 }
 
-/** Current eligibility reuses canonical Identity and owned usable administrator-Token owners. */
-function administrator(db: CoreDb, userId: string, now: Date): boolean {
+/** Alarm recipients retain their own grant; delegated work also requires the current issuer chain. */
+function administrator(
+  db: CoreDb,
+  userId: string,
+  now: Date,
+  grant: 'delegated' | 'alarm'
+): boolean {
   if (!isCanonicalUserActive(db, userId)) return false;
   const user = db.sqlite.prepare('SELECT kind FROM users WHERE id=?').get(userId) as {
     kind: string;
   };
   if (user.kind === 'local') return getLocalUserId(db) === userId;
   if (user.kind !== 'human') throw new SecurityTriggerRefusal('unsupported_retained_format');
+  if (grant === 'alarm')
+    return listOwnedServerAdminTokenRecords(db, userId).some(
+      (token) => evaluateOpenKitAccessTokenUsability(token, now).usable
+    );
   return resolveSessionDeploymentAdminTokenId(db, userId, now) !== null;
 }
 function assertActor(
@@ -203,13 +213,13 @@ function keyFor(alarm: Alarm): SecurityItemKey {
 }
 
 /** One current eligibility owner for original alarms and new native event obligations. */
-function currentAdministrators(db: CoreDb, now: Date): string[] {
+function currentAdministrators(db: CoreDb, now: Date, grant: 'delegated' | 'alarm'): string[] {
   return (
     db.sqlite.prepare("SELECT id FROM users WHERE status='active' ORDER BY id").all() as {
       id: string;
     }[]
   )
-    .filter(({ id }) => administrator(db, id, now))
+    .filter(({ id }) => administrator(db, id, now, grant))
     .map(({ id }) => id);
 }
 
@@ -223,7 +233,7 @@ function insertAlarm(
 ): View {
   if (view.alarms.some((a) => a.rule === rule)) return view;
   if (view.state.state === 'off') throw new ControlProductPreconditionError();
-  const recipients = currentAdministrators(db, now);
+  const recipients = currentAdministrators(db, now, 'alarm');
   const alarm: Alarm = {
     schemaVersion: writeRetainedV1({}).schemaVersion,
     id: newAlarmRunId(),
@@ -280,7 +290,7 @@ function checkCurrent(db: CoreDb, timestamp: string, now: Date): View {
   if (
     view.state.state !== 'off' &&
     !view.alarms.some((a) => a.rule === 'R8') &&
-    !administrator(db, view.state.enabler!, now)
+    !administrator(db, view.state.enabler!, now, 'delegated')
   )
     view = insertAlarm(db, view, 'R8', timestamp, now);
   if (wasStopping && view.state.alarmCount === previousAlarmCount) {
@@ -311,7 +321,9 @@ function snapshot(db: CoreDb, view: View, now: Date): SecurityTriggerSnapshot {
     enableGeneration: view.state.generation,
     enablingUserId: view.state.enabler,
     delegationCurrent:
-      view.state.state !== 'off' && !lost && administrator(db, view.state.enabler!, now),
+      view.state.state !== 'off' &&
+      !lost &&
+      administrator(db, view.state.enabler!, now, 'delegated'),
     stoppingReason:
       view.state.state === 'stopping' ? (lost ? 'lost-authority' : 'monitoring-off') : null,
     failedOutcome: view.alarms.find((a) => a.failure)?.failure ?? null,
@@ -783,7 +795,7 @@ function detectAudit(
         decision.status === 'unsupported'
           ? []
           : decision.rule === 'R1'
-            ? currentAdministrators(db, now)
+            ? currentAdministrators(db, now, 'delegated')
             : [responsibleUserId];
       if (decision.status === 'detected' && recipients.length === 0) recovery();
       db.sqlite
@@ -888,7 +900,8 @@ function readDestination(db: CoreDb, threadId: string): SecurityThreadDestinatio
   return raw ? readDestinationRow(db, raw) : null;
 }
 function assertDestinationRecipient(db: CoreDb, recipientUserId: string, now: Date): string {
-  if (!administrator(db, recipientUserId, now)) throw new SecurityTriggerRefusal('forbidden');
+  if (!administrator(db, recipientUserId, now, 'alarm'))
+    throw new SecurityTriggerRefusal('forbidden');
   return resolvePersonalWorkspaceIdInDb(db, recipientUserId);
 }
 /** An actual owed alarm supplies the fixed alarm grant; native assignment never accepts caller IDs. */

@@ -10,6 +10,8 @@ Operation admission awaits administrator-bearer Quick Chat provisioning before i
 
 This directory owns NanoCore authentication middleware, Better Auth browser sessions, actor resolution, server access-token authentication, bootstrap credential flow, and request-scope authorization helpers.
 
+`listOwnedServerAdminTokenRecords` exposes the existing redacted owner-filtered facts to the native fixed alarm grant. It supplies no verified credential or live administration authority; alarm recipients repeat current User and own Token lifecycle checks independently of the lost enabling delegation.
+
 ## Boundaries
 
 - Presented bearer verification remains on Main. Its exact identity/hash proof enters the existing native Core owner, which rereads the current Token and active User, checks expiry, rotation grace and revocation, and publishes last-use before returning the existing redacted identity. No bearer, precomputed authority grant or secret returns through that internal command; other credential writers retain their existing ownership.
