@@ -1,6 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
-import { evaluateWorkerGitReadMaintenance } from './worker-git-read-maintenance.js';
+import { evaluatePolicyKernel, type WorkerGitReadMaintenanceFacts } from './workspace-access.js';
+
+/** Ports the original fixture tuple to the shared Kernel without changing its expected values. */
+function evaluateWorkerGitReadMaintenance(
+  document: unknown,
+  facts: WorkerGitReadMaintenanceFacts,
+  authorCurrent: (userId: string) => boolean
+) {
+  return evaluatePolicyKernel({
+    subject: { principal: { kind: 'human', id: facts.responsibleUserId }, process: null },
+    operation: 'administration.configuration.apply',
+    maintenance: { document, facts, authorCurrent },
+  });
+}
 
 const userId = 'usr_00000000-0000-7000-8000-000000000002';
 const container = { owner: { kind: 'server' as const }, kind: 'agent', id: 'agent_worker' };

@@ -10,6 +10,7 @@ import {
   canonicalIdentifierName,
   type PolicyBindingV1,
   type PolicyDocumentV1,
+  PolicyDocumentV1Schema,
   type PolicyResourceV1Schema,
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
@@ -77,6 +78,19 @@ type ExposureGraphFacts = {
   readonly exposure: { readonly group: string; readonly document: PolicyDocumentV1 };
 };
 
+/** Immutable current correction facts supplied by the configuration effect owner. */
+export interface WorkerGitReadMaintenanceFacts {
+  readonly responsibleUserId: string;
+  readonly agentId: string;
+  readonly networkGrantId: string;
+  readonly host: string;
+  readonly port: number;
+  readonly protocol: string;
+  readonly repositoryPath: string;
+  readonly binaries: readonly string[];
+  readonly now: Date;
+}
+
 /** Evaluates the shared projection once; native callers retain admission and fact ownership. */
 export function evaluatePolicyKernel(
   input:
@@ -87,6 +101,19 @@ export function evaluatePolicyKernel(
         readonly resource: z.infer<typeof PolicyResourceV1Schema>;
         /** Already current agent declaration; this scope grants no initiating-human authority. */
         readonly domain: { readonly id: string; readonly scope: PolicyBindingV1['scope'] };
+        readonly policy?: Omit<
+          NonNullable<Parameters<typeof evaluateProductAccess>[0]['policy']>,
+          'subject'
+        >;
+      }
+    | {
+        readonly subject: Pick<z.infer<typeof PolicySubjectV1Schema>, 'principal' | 'process'>;
+        readonly operation: 'administration.configuration.apply';
+        readonly maintenance: {
+          readonly document: unknown;
+          readonly facts: WorkerGitReadMaintenanceFacts;
+          readonly authorCurrent: (userId: string) => boolean;
+        };
         readonly policy?: Omit<
           NonNullable<Parameters<typeof evaluateProductAccess>[0]['policy']>,
           'subject'
@@ -184,8 +211,9 @@ export function compilePolicyGraph(
                 : 'server',
         ])}`
     : 'object:target';
-  const policyClass = `pc:${scope?.kind ?? 'agent-grant'}`;
-  const objects = `oa:${scope?.kind ?? 'agent-grant'}-resource`;
+  const scopeKind = scope?.kind ?? ('maintenance' in input ? 'server' : 'agent-grant');
+  const policyClass = `pc:${scopeKind}`;
+  const objects = `oa:${scopeKind}-resource`;
   const subject = 'ua:current-subject';
   const right = (operation: string) =>
     Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, operation)
@@ -377,34 +405,43 @@ export function compilePolicyGraph(
     return id;
   };
   const resource: z.infer<typeof PolicyResourceV1Schema> =
-    'resource' in input
-      ? input.resource
-      : input.target.kind === 'workspace'
-        ? {
-            kind: 'container',
-            container: {
-              owner: { kind: 'workspace', workspaceId: input.target.workspaceId },
-              kind: 'workspace',
-              id: input.target.workspaceId,
-            },
-          }
-        : input.target.kind === 'user'
+    'maintenance' in input
+      ? {
+          kind: 'container',
+          container: {
+            owner: { kind: 'server' },
+            kind: 'agent',
+            id: input.maintenance.facts.agentId,
+          },
+        }
+      : 'resource' in input
+        ? input.resource
+        : input.target.kind === 'workspace'
           ? {
               kind: 'container',
               container: {
-                owner: { kind: 'user', userId: input.target.userId ?? input.facts.userId },
-                kind: 'user',
-                id: input.target.userId ?? input.facts.userId,
+                owner: { kind: 'workspace', workspaceId: input.target.workspaceId },
+                kind: 'workspace',
+                id: input.target.workspaceId,
               },
             }
-          : {
-              kind: 'container',
-              container: {
-                owner: { kind: 'server' },
-                kind: input.target.kind,
-                id: input.target.kind === 'invitation' ? input.target.invitationId : 'server',
-              },
-            };
+          : input.target.kind === 'user'
+            ? {
+                kind: 'container',
+                container: {
+                  owner: { kind: 'user', userId: input.target.userId ?? input.facts.userId },
+                  kind: 'user',
+                  id: input.target.userId ?? input.facts.userId,
+                },
+              }
+            : {
+                kind: 'container',
+                container: {
+                  owner: { kind: 'server' },
+                  kind: input.target.kind,
+                  id: input.target.kind === 'invitation' ? input.target.invitationId : 'server',
+                },
+              };
   const selectedResource = resourceAttribute(resource);
   policy.assignments = [...policy.assignments, { child: target, parent: selectedResource }];
   const processId = process
@@ -424,6 +461,74 @@ export function compilePolicyGraph(
         targetAttribute: resourceAttribute(selected),
         accessRights: domain.scope.actions.map(right),
       }));
+  }
+  if ('maintenance' in input) {
+    const { facts, authorCurrent } = input.maintenance;
+    const parsed = PolicyDocumentV1Schema.safeParse(input.maintenance.document);
+    const candidates = parsed.success
+      ? parsed.data.statements.filter((statement) => {
+          if (
+            statement.kind !== 'permission' ||
+            statement.grant.kind !== 'worker-git-read-maintenance'
+          )
+            return false;
+          const recipient = statement.scope.subjects[0];
+          const selected = statement.scope.resources[0];
+          return (
+            statement.scope.subjects.length === 1 &&
+            recipient?.kind === 'human' &&
+            recipient.id === facts.responsibleUserId &&
+            statement.scope.resources.length === 1 &&
+            selected?.kind === 'container' &&
+            selected.container.owner.kind === 'server' &&
+            selected.container.kind === 'agent' &&
+            selected.container.id === facts.agentId &&
+            statement.grant.networkGrantId === facts.networkGrantId
+          );
+        })
+      : [];
+    const statement = candidates.length === 1 ? candidates[0] : null;
+    const grant =
+      statement?.kind === 'permission' && statement.grant.kind === 'worker-git-read-maintenance'
+        ? statement.grant
+        : null;
+    const now = facts.now.getTime();
+    const allowed =
+      principal.kind === 'human' &&
+      principal.id === facts.responsibleUserId &&
+      statement?.kind === 'permission' &&
+      grant !== null &&
+      statement.state === 'active' &&
+      statement.effect === 'allow' &&
+      statement.author.kind === 'human' &&
+      statement.authority.kind === 'human' &&
+      statement.author.id === statement.authority.userId &&
+      authorCurrent?.(statement.author.id) === true &&
+      statement.scope.actions.length === 1 &&
+      statement.scope.actions[0] === 'administration.configuration.apply' &&
+      statement.lifetime.anchor.owner.kind === 'server' &&
+      statement.lifetime.anchor.kind === 'agent' &&
+      statement.lifetime.anchor.id === facts.agentId &&
+      statement.lifetime.uses === undefined &&
+      statement.lifetime.notAfter !== undefined &&
+      Number.isFinite(now) &&
+      Date.parse(grant.validFrom) <= now &&
+      now < Date.parse(statement.lifetime.notAfter) &&
+      grant.host === facts.host &&
+      grant.port === facts.port &&
+      grant.protocol === facts.protocol &&
+      grant.repositoryPaths.includes(facts.repositoryPath) &&
+      facts.binaries.length > 0 &&
+      facts.binaries.every((binary) => grant.binaries.includes(binary));
+    if (allowed)
+      policy.associations = [
+        {
+          id: statement.id,
+          userAttribute: subject,
+          targetAttribute: objects,
+          accessRights: [right(input.operation)],
+        },
+      ];
   }
   for (const statement of input.policy?.document.statements ?? []) {
     if (

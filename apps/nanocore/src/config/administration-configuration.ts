@@ -50,7 +50,7 @@ import {
   recordPolicyWriteDecision,
 } from '../policy/configuration.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
-import { evaluateWorkerGitReadMaintenance } from '../policy/worker-git-read-maintenance.js';
+import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
@@ -379,11 +379,26 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
                 : null;
             const snapshot = options.runtimeConfig();
             const now = new Date();
-            const delegated = evaluateWorkerGitReadMaintenance(
-              snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
-              { ...prepared.facts, now },
-              (humanId) => isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime())
-            );
+            const document = snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+            const authorCurrent = (humanId: string) =>
+              isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime());
+            const delegated = evaluatePolicyKernel({
+              subject: {
+                principal: { kind: 'human', id: actor.userId },
+                process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
+              },
+              operation: 'administration.configuration.apply',
+              maintenance: { document, facts: { ...prepared.facts, now }, authorCurrent },
+              policy: {
+                document,
+                now: now.getTime(),
+                authorCurrent,
+                anchorCurrent: (anchor) =>
+                  anchor.owner.kind === 'server' &&
+                  ((anchor.kind === 'agent' && anchor.id === prepared.facts.agentId) ||
+                    (anchor.kind === 'server' && anchor.id === 'server')),
+              },
+            });
             // A valid ordinary maintenance delegation cannot enlarge E7's fixed agent grant.
             const decision = subject
               ? evaluateSecurityInvestigationOperation(
@@ -402,7 +417,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             ownerScope: 'server' as const,
             policyEngineVersion: subject
               ? 'nanocore-security-investigation:v1'
-              : 'nanocore-worker-git-read-maintenance:v1',
+              : 'nanocore-policy:v1',
             policySnapshotId: snapshot.contentHash,
             subjectSummary: subject ?? { userId: actor.userId },
             action: body.command,
