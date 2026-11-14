@@ -272,14 +272,36 @@ function insertAlarm(
   return readState(db);
 }
 
+/** A new loss intent commits first; only an earlier stop can complete without consuming notices. */
 function checkCurrent(db: CoreDb, timestamp: string, now: Date): View {
   let view = readState(db);
+  const wasStopping = view.state.state === 'stopping';
+  const previousAlarmCount = view.state.alarmCount;
   if (
     view.state.state !== 'off' &&
     !view.alarms.some((a) => a.rule === 'R8') &&
     !administrator(db, view.state.enabler!, now)
   )
     view = insertAlarm(db, view, 'R8', timestamp, now);
+  if (wasStopping && view.state.alarmCount === previousAlarmCount) {
+    const originals = new Map(view.alarms.map((alarm) => [alarm.id, alarm]));
+    const rows = db.sqlite
+      .prepare(`SELECT ${outboxColumns} FROM security_trigger_outbox
+      WHERE alarm_id IN (SELECT id FROM security_trigger_alarms WHERE enable_generation=?)
+      AND occurrence_kind='initial' AND occurrence_n=1`)
+      .all(view.state.generation)
+      .map((raw) => readAlarmRow(db, raw, originals));
+    if (rows.every((row) => row.raised)) {
+      // Validate the original native links, not a count or caller acknowledgement alone.
+      for (const row of rows) if (!readAlarmNotice(db, row.requestId)) recovery();
+      const changed = db.sqlite
+        .prepare(`UPDATE security_trigger_state SET state='off'
+        WHERE singleton=1 AND state='stopping' AND enable_generation=? AND expected_alarm_count=?`)
+        .run(view.state.generation, view.state.alarmCount);
+      if (changed.changes !== 1) throw new ControlProductPreconditionError();
+      view = readState(db);
+    }
+  }
   return view;
 }
 function snapshot(db: CoreDb, view: View, now: Date): SecurityTriggerSnapshot {

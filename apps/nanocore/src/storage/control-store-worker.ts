@@ -4484,6 +4484,8 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           finish,
           cohort,
           barrier:
+            // A stopping/R8 intent needs its own FULL commit before a sibling can complete it.
+            value.operation === 'security-trigger' ||
             value.operation === 'runtime-policy-publication' ||
             (value.operation === 'vault' && value.policyRead === true) ||
             value.operation === 'recovery-target-registration' ||

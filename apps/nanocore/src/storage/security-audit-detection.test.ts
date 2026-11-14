@@ -811,6 +811,17 @@ describe('N2 genuine native Core Audit assessment/outbox and durable compound pr
     f.trace.ack(entry);
     // Observational SELECT ONLY of the ORIGINAL N1 owner's durable failure tuple, before ANY facade read can mask a missing commit.
     // No SQL seed/delete/mutation, N2 private cursor query, new table/format or fake outcome is supplied.
+    const firstLoss = f.db.sqlite
+      .prepare('SELECT state FROM security_trigger_state WHERE singleton=1')
+      .get() as { state: string };
+    assert.equal(
+      firstLoss.state,
+      'stopping',
+      'loss first commits stopping before refusal; no same-check zero-row collapse'
+    );
+    const originalFailure = f.db.sqlite
+      .prepare('SELECT * FROM security_trigger_alarms ORDER BY created_at,id')
+      .all();
     const failed = f.db.sqlite
       .prepare(
         'SELECT rule,recipient_count AS recipientCount,failure FROM security_trigger_alarms ORDER BY created_at,id'
@@ -823,11 +834,16 @@ describe('N2 genuine native Core Audit assessment/outbox and durable compound pr
     assert.deepEqual(await f.trigger.readEventOutbox(), []);
     assert.deepEqual(await f.trigger.readAlarms(), []);
     const state = await f.trigger.current();
-    assert.equal(state.state, 'stopping');
+    assert.equal(state.state, 'off');
     assert.equal(state.failedOutcome, 'no-current-administrator');
     await f.reopen();
     assert.deepEqual(await f.trigger.readDetectionProgress(), { cursor: null, assessed: 0 });
     assert.equal((await f.trigger.current()).failedOutcome, 'no-current-administrator');
+    assert.deepEqual(
+      f.db.sqlite.prepare('SELECT * FROM security_trigger_alarms ORDER BY created_at,id').all(),
+      originalFailure,
+      'completion/reopen preserves the exact original zero-recipient R8 row and failure'
+    );
   });
 
   it('refuses off detection and invalid closed integer limits without a caller cursor/reset or durable progress change', async () => {

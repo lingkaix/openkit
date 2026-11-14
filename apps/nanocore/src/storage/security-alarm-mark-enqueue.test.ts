@@ -469,8 +469,8 @@ describe('N3 E4 transaction 3 original alarm mark and native Attention enqueue',
     );
     assert.equal(
       (await f.trigger.current()).state,
-      'stopping',
-      'mark/enqueue is not stopping-to-off completion'
+      'off',
+      'completed stop preserves the original queued notices without draining them'
     );
   });
 

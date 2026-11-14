@@ -408,7 +408,7 @@ describe('N3 genuine initial alarm publication and trusted original reader', () 
       await f.trigger.readAlarms(),
       alarms.filter((row) => row.requestId !== alarm.requestId)
     );
-    assert.equal((await f.trigger.current()).state, 'stopping');
+    assert.equal((await f.trigger.current()).state, 'off');
   });
 
   it('publishes actual R8 for the remaining current administrator despite lost enabling delegation', async () => {
