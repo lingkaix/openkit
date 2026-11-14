@@ -206,7 +206,6 @@ import {
   prepareControlEventAppend,
   prepareControlItemAppend,
   prepareControlPublication,
-  prepareControlTaskSteerReceipt,
   prepareControlTerminal,
 } from './control-store-products.js';
 import {
@@ -489,7 +488,6 @@ type WriteRequest = WriteCommand & {
   readonly preparedEvent?: Awaited<ReturnType<typeof prepareControlEventAppend>> | undefined;
   readonly preparedItem?: Awaited<ReturnType<typeof prepareControlItemAppend>> | undefined;
   readonly itemPublication?: ControlPublicationInput | undefined;
-  readonly preparedSteer?: Awaited<ReturnType<typeof prepareControlTaskSteerReceipt>> | undefined;
   readonly preparedEntries?: readonly PreparedControlEntry[] | undefined;
   readonly preparedPending?: PreparedControlPendingCommand | undefined;
   readonly preparedGoal?: PreparedControlGoalCommand | undefined;
@@ -2366,8 +2364,7 @@ function flush(owner: OwnedDatabase): void {
                 sqlite,
                 owner.productOwner,
                 request.transition,
-                request.preparedEntries ?? [],
-                request.preparedSteer
+                request.preparedEntries ?? []
               );
             }
             if (result && !result.replayed && owner.scopeDb?.scope === 'workspace')
@@ -4510,7 +4507,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedEvent: WriteRequest['preparedEvent'];
           let itemPublication: ControlPublicationInput | undefined;
           let preparedEntries: WriteRequest['preparedEntries'];
-          let preparedSteer: WriteRequest['preparedSteer'];
           let preparedPending: PreparedControlPendingCommand | undefined;
           let preparedGoal: PreparedControlGoalCommand | undefined;
           let preparedVaultRead: PreparedNativeVaultRead | undefined;
@@ -4866,18 +4862,16 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 await prepareAfterPredecessors(owner, queued, earlier);
                 if (owner.scopeDb?.scope !== 'workspace')
                   throw new ControlProductPreconditionError();
-                preparedSteer = await prepareControlTaskSteerReceipt(
-                  owner.scopeDb,
-                  value.transition,
-                  owner.contentMount
-                );
               }
               if (!owner.productOwner) throw new ControlProductPreconditionError();
               preparedEntries = await prepareControlEntries(
                 owner.productOwner,
                 owner.contentMount,
                 value.transition.entries,
-                newDirectories
+                newDirectories,
+                owner.scopeDb?.scope === 'workspace' || owner.scopeDb?.scope === 'core'
+                  ? owner.scopeDb
+                  : undefined
               );
               Object.assign(queued, { preparedEntries });
               if (value.transition.pending?.length && archivedThreads(value).length === 0) {
@@ -4972,7 +4966,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               preparedProvenance,
               preparedMaterial,
               preparedCapability,
-              preparedSteer,
               preparedDirectories: [...newDirectories.directories],
               preparedPublications: [...newDirectories.published],
               ...('content' in value &&

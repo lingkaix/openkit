@@ -45,6 +45,9 @@ export function prepareControlReadMetadata(kind: 'item' | 'event', value: unknow
     failed: isRecordedItemFailure(item),
     createdAt: item.createdAt,
     completedAt: item.completedAt,
+    ...(item.type === 'user-message' && item.steerDisposition
+      ? { steerDisposition: item.steerDisposition }
+      : {}),
     requestId:
       'approvalRequestId' in item
         ? item.approvalRequestId

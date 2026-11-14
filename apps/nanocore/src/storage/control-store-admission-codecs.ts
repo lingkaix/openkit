@@ -14,7 +14,6 @@ import {
 import { z } from 'zod';
 import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
-import { TaskSteerReceiptMetadataSchema } from '../runtime/task-steer-receipt.js';
 import {
   CONTROL_PRODUCT_LIMITS,
   ControlProductEntrySchema,
@@ -98,7 +97,6 @@ const ReceiptSchema = z
         kind: z.string().min(1),
         id: z.string().min(1),
         conversationMetadata: z.unknown().optional(),
-        steerMetadata: z.lazy(() => TaskSteerReceiptMetadataSchema).optional(),
       })
       .strict(),
     createdAt: z.string().datetime(),
@@ -123,21 +121,8 @@ export const ControlAdmissionSchema = z
     }),
   })
   .strict()
-  .superRefine((input, context) => {
-    const steer = input.receipt.command === 'task.steer';
-    if (
-      steer
-        ? input.products.length !== 0 ||
-          input.entries.length !== 0 ||
-          (input.pending?.length ?? 0) !== 0 ||
-          !input.receipt.response.steerMetadata ||
-          input.receipt.response.conversationMetadata !== undefined
-        : input.products.length === 0 || input.receipt.response.steerMetadata !== undefined
-    )
-      context.addIssue({
-        code: 'custom',
-        message: 'Only task.steer publishes a receipt without a product mutation.',
-      });
+  .refine((input) => input.products.length + input.entries.length > 0, {
+    message: 'Admission requires an original product or Item/event mutation.',
   });
 
 export type ControlAdmission = z.infer<typeof ControlAdmissionSchema>;

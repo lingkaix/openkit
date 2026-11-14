@@ -131,9 +131,9 @@ export function writeCommandRequestRecordInDb(
     .get(record.key) as CommandRequestRow | undefined;
   if (previous && db.scope !== 'app') readRetainedV1(previous, () => undefined);
   let responseJson =
-    response.conversationMetadata === undefined && response.steerMetadata === undefined
+    response.conversationMetadata === undefined
       ? null
-      : JSON.stringify(response.conversationMetadata ?? response.steerMetadata);
+      : JSON.stringify(response.conversationMetadata);
   if (
     previous?.responseJson &&
     previous.command === record.command &&

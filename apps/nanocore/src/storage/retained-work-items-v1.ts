@@ -33,6 +33,30 @@ const RetainedActorRefSchema = z.union([
   }),
 ]);
 
+/** Completed delivery belongs to the original instruction Item, independently of command-log expiry. */
+export const StoredTaskSteerDispositionV1Schema = z
+  .object({
+    inputHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    disposition: z.enum(['accepted', 'refused', 'unknown']),
+    reason: z.string().max(512).nullable(),
+    refusal: z
+      .object({
+        code: z.string().min(1).max(128),
+        status: z.number().int().min(400).max(599),
+        message: z.string().min(1).max(512),
+      })
+      .strict()
+      .optional(),
+    operationId: z.string().min(1).max(128),
+    executionId: z.string().min(1).max(128),
+  })
+  .strict();
+export type TaskSteerDisposition = z.infer<typeof StoredTaskSteerDispositionV1Schema>;
+/** Frozen known-core reader permits descriptive additions, unlike the closed current writer. */
+export const StoredTaskSteerDispositionV1ReaderSchema = StoredTaskSteerDispositionV1Schema.extend({
+  refusal: StoredTaskSteerDispositionV1Schema.shape.refusal.unwrap().strip().optional(),
+}).strip();
+
 /** Native maintenance result stored on a Status Item, independent of its current API projection. */
 const KnowledgeMaintenanceOutcomeSchema = z
   .object({
@@ -372,12 +396,17 @@ export const StoredItemPayloadV1Schema = z.discriminatedUnion('type', [
 ]);
 
 /** Root Item revision header; embedded event snapshots inherit the event's format instead. */
-const itemRows = StoredItemPayloadV1Schema.options.map((schema) =>
+const [, ...otherItemPayloads] = StoredItemPayloadV1Schema.options;
+const itemRows = otherItemPayloads.map((schema) =>
   schema.safeExtend({ schemaVersion: z.literal(RETAINED_FORMAT_VERSION) })
 );
 
-/** Fixed v1 Item row with its explicit retained marker. */
+/** Fixed v1 Item row; only the original instruction revision carries private delivery metadata. */
 export const StoredItemV1Schema = z.discriminatedUnion('type', [
+  UserMessageItemSchema.safeExtend({
+    schemaVersion: z.literal(RETAINED_FORMAT_VERSION),
+    steerDisposition: StoredTaskSteerDispositionV1ReaderSchema.optional(),
+  }),
   itemRows[0]!,
   ...itemRows.slice(1),
 ]);

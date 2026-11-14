@@ -1,4 +1,3 @@
-import type { TaskSteerReceiptMetadata } from '../runtime/task-steer-receipt.js';
 import {
   contextInfluenceWasCleared,
   contextIsExternallyInfluenced,
@@ -14,6 +13,10 @@ import {
   isRecordedItemFailure,
   prepareControlReadMetadata,
 } from '../storage/control-store-read-metadata.js';
+import {
+  StoredTaskSteerDispositionV1Schema,
+  type TaskSteerDisposition,
+} from '../storage/retained-work-items-v1.js';
 import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
@@ -656,7 +659,6 @@ export interface CommandRequestResponse {
   /** Bounded receipt metadata allowed only for `conversation.submit`. */
   conversationMetadata?: ConversationCommandReceiptMetadata;
   /** Completed Task steer result; native dispatch evidence stays with its existing Harness owner. */
-  steerMetadata?: TaskSteerReceiptMetadata;
 }
 
 /**
@@ -1482,32 +1484,80 @@ export class FsStore {
     await getControlStoreWorkerClient().recordCommandReceipt(this.dataRoot, receipt);
   }
 
-  /** Commits one completed steer receipt and Audit without changing live or terminal product content. */
-  public async publishTaskSteerReceipt(
-    admission: Pick<ControlAdmission, 'receipt' | 'audit'>
-  ): Promise<void> {
-    if (admission.receipt.command !== 'task.steer' || !admission.receipt.scope.workspaceId)
-      throw new Error('Task steer requires its original Workspace receipt scope.');
-    if (this.dataRoot) {
-      await this.writeNativeProducts(
-        this.nativeScope({ kind: 'workspace', workspaceId: admission.receipt.scope.workspaceId }),
-        [],
-        [],
-        admission
-      );
-    } else {
-      if (admission.receipt.response.kind !== 'turn' || !admission.receipt.response.steerMetadata)
-        throw new Error('Task steer requires its completed Turn disposition.');
-      this.recordCommandRequest({
-        ...admission.receipt,
-        command: 'task.steer',
-        response: {
-          kind: 'turn',
-          id: admission.receipt.response.id,
-          steerMetadata: admission.receipt.response.steerMetadata,
-        },
-      });
+  /** Commits the original instruction's completed disposition, pointer receipt and Audit, never a Turn-head update. */
+  public async settleTaskSteerDisposition(
+    admission: Pick<ControlAdmission, 'receipt' | 'audit'> & {
+      itemId: string;
+      disposition: TaskSteerDisposition;
     }
+  ): Promise<void> {
+    const { receipt, itemId } = admission;
+    const disposition = StoredTaskSteerDispositionV1Schema.parse(admission.disposition);
+    const workspaceId = receipt.scope.workspaceId;
+    const threadId = receipt.scope.threadId;
+    if (
+      receipt.command !== 'task.steer' ||
+      receipt.response.kind !== 'turn' ||
+      !workspaceId ||
+      !threadId ||
+      disposition.inputHash !== receipt.inputHash
+    )
+      throw new Error('Task steer requires its original Workspace Item and completed disposition.');
+    return this.publishTurn(
+      { kind: 'workspace', workspaceId },
+      [receipt.response.id],
+      admission,
+      async () => {
+        // Preserve retained fields omitted by the public Item projection.
+        const item = this.readThreadTimelineSnapshot(workspaceId, threadId, (snapshot) =>
+          snapshot.item(itemId)
+        );
+        if (
+          !item ||
+          item.type !== 'user-message' ||
+          item.turnId !== receipt.response.id ||
+          item.threadId !== receipt.scope.threadId ||
+          item.actor.kind !== 'user' ||
+          item.actor.id !== receipt.scope.actorId ||
+          item.causationId !== `task.steer:${receipt.requestId}`
+        )
+          throw new Error('Task steer disposition differs from its original instruction.');
+        const updated = { ...item, steerDisposition: disposition };
+        if (this.dataRoot) {
+          const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+          const existing = readNativeProductEntries(scope, item.turnId, 'item');
+          const previous = existing.filter((row) => row.id === itemId).at(-1);
+          if (!previous) throw new Error('Task steer instruction is not retained.');
+          const entry: ControlProductEntry = {
+            kind: 'item',
+            turnId: item.turnId,
+            sequence: existing.length + 1,
+            expectedRevision: previous.revision,
+            ...(await prepareRetainedProductJson(
+              scope.contentMount,
+              scope.owner,
+              join(dirname(dirname(scope.path)), 'runtime', 'staging'),
+              writeRetainedV1(updated)
+            )),
+          };
+          await this.writeNativeProducts(scope, [], [entry], { receipt, audit: admission.audit });
+        } else {
+          const turn = this.turns.get(item.turnId);
+          if (!turn) throw new Error('Task steer instruction has no original Turn.');
+          this.recordCommandRequest({
+            ...receipt,
+            command: 'task.steer',
+            response: { kind: 'turn', id: item.turnId },
+          });
+          this.itemRevisions.push(updated);
+          this.items.set(itemId, updated);
+          this.turns.set(turn.id, {
+            ...turn,
+            items: turn.items.map((candidate) => (candidate.id === itemId ? updated : candidate)),
+          });
+        }
+      }
+    );
   }
 
   /**

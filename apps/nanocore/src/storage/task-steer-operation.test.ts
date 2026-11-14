@@ -12,6 +12,7 @@ import { readTaskSteerState } from '../runtime/task-steer-receipt.js';
 import type { TaskSteerControl, TaskSteerTarget } from '../runtime/types.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import { openWorkspaceDb } from './db.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -100,12 +101,17 @@ describe('Task steer command receipt and Item boundaries', () => {
       });
       await control.complete({ disposition: 'accepted', reason: null });
       expect(
+        f.store.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+          snapshot.item(target.inputItemId)
+        )
+      ).toMatchObject({ id: target.inputItemId, steerDisposition: { disposition: 'accepted' } });
+      expect(
         f.store.getCommandRequest('task.steer', f.input.requestId, {
           actorId: actor.id,
           workspaceId: f.workspace.id,
           threadId: f.thread.id,
-        })?.response.steerMetadata?.disposition
-      ).toBe('accepted');
+        })?.response
+      ).toEqual({ kind: 'turn', id: f.turn.id });
     });
     const result = await steerTask(f.dependencies, f.input, f.context);
     expect(result).toEqual({
@@ -257,12 +263,17 @@ describe('Task steer command receipt and Item boundaries', () => {
       actor,
     });
     expect(
+      f.store.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+        snapshot.item(taskSteerInputItemId(f.input, actor.id))
+      )
+    ).toMatchObject({ steerDisposition: { disposition: 'refused' } });
+    expect(
       f.store.getCommandRequest('task.steer', f.input.requestId, {
         actorId: actor.id,
         workspaceId: f.workspace.id,
         threadId: f.thread.id,
-      })?.response.steerMetadata?.disposition
-    ).toBe('refused');
+      })?.response
+    ).toEqual({ kind: 'turn', id: f.turn.id });
   });
 
   it('retains exact input after lost Item append acknowledgement and fences recreated-owner retries', async () => {
@@ -326,8 +337,8 @@ describe('Task steer command receipt and Item boundaries', () => {
     'does not re-invoke native acceptance after public receipt failure: %s',
     async (fault) => {
       const f = await fixture();
-      const publish = f.store.publishTaskSteerReceipt.bind(f.store);
-      vi.spyOn(f.store, 'publishTaskSteerReceipt').mockImplementationOnce(async (admission) => {
+      const publish = f.store.settleTaskSteerDisposition.bind(f.store);
+      vi.spyOn(f.store, 'settleTaskSteerDisposition').mockImplementationOnce(async (admission) => {
         if (fault === 'lost-ack') await publish(admission);
         throw new Error('Injected original receipt publication failure.');
       });
@@ -359,4 +370,99 @@ describe('Task steer command receipt and Item boundaries', () => {
       actor,
     });
   });
+});
+
+// ORACLE S3 F23: the accepted Item-metadata projection must outlive replay TTL.
+// The external runtime is modeled; native Item/receipt persistence and cold reads are real.
+describe('ORACLE S3 durable steer disposition', () => {
+  it.each(['accepted', 'refused', 'unknown'] as const)(
+    'retains %s delivery evidence after eight days and cold reopen without native resend',
+    async (disposition) => {
+      const f = await fixture();
+      const reason =
+        disposition === 'accepted'
+          ? null
+          : disposition === 'refused'
+            ? ('stale' as const)
+            : ('outcome_unknown' as const);
+      f.turnExecutor.steerTurn.mockImplementation(async (_store, _target, control) => {
+        await control.admit({ operationId: 'a'.repeat(64), executionId: 'original-execution' });
+        await control.complete({ disposition, reason });
+      });
+      const submit = (store: typeof f.store) =>
+        steerTask({ ...f.dependencies, store }, f.input, f.context).then(
+          (value) => ({ ok: true, value }),
+          (error: unknown) => {
+            if (!(error instanceof OperationError)) throw error;
+            return { ok: false, code: error.code, status: error.status };
+          }
+        );
+      const turnBefore = f.store.getTurnById(f.turn.id);
+      const outcome = await submit(f.store);
+      const expected = {
+        requestId: f.input.requestId,
+        state: disposition === 'refused' ? 'not-delivered' : disposition,
+        reason,
+      };
+      const readItem = (store: typeof f.store) =>
+        store.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+          snapshot.item(taskSteerInputItemId(f.input, actor.id))
+        );
+      const originalItem = readItem(f.store);
+      if (!originalItem) throw new Error('Original steer Item is missing.');
+      expect(readTaskSteerState(f.store, f.workspace.id, f.thread.id, originalItem)).toEqual(
+        expected
+      );
+      const later = Date.now() + 8 * 24 * 60 * 60 * 1000;
+      await shutdownControlStoreWorkerClient();
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(later));
+      const cold = createTestStore({ dataRoot: f.root });
+      // A second real public command invokes the native owner's ordinary expiry maintenance.
+      await steerTask(
+        { ...f.dependencies, store: cold },
+        { ...f.input, requestId: randomUUID(), input: 'Later independent instruction' },
+        f.context
+      ).catch((error: unknown) => {
+        if (!(error instanceof OperationError)) throw error;
+      });
+      const db = openWorkspaceDb(f.root, f.workspace.id);
+      try {
+        expect(
+          db.sqlite
+            .prepare('SELECT count(*) AS count FROM idempotency_requests WHERE request_id = ?')
+            .get(f.input.requestId)
+        ).toEqual({ count: 0 });
+      } finally {
+        db.sqlite.close();
+      }
+      await shutdownControlStoreWorkerClient();
+      const reopened = createTestStore({ dataRoot: f.root });
+      expect(
+        reopened.getCommandRequest('task.steer', f.input.requestId, {
+          workspaceId: f.workspace.id,
+          threadId: f.thread.id,
+          actorId: actor.id,
+        })
+      ).toBeNull();
+      const retainedItem = readItem(reopened);
+      if (!retainedItem) throw new Error('Retained steer Item is missing.');
+      expect(retainedItem).toEqual(originalItem);
+      expect(readTaskSteerState(reopened, f.workspace.id, f.thread.id, retainedItem)).toEqual(
+        expected
+      );
+      expect(await submit(reopened)).toEqual(outcome);
+      await expect(
+        steerTask(
+          { ...f.dependencies, store: reopened },
+          { ...f.input, input: 'changed after expiry' },
+          f.context
+        )
+      ).rejects.toMatchObject({ code: 'idempotency_key_conflict' });
+      expect(f.turnExecutor.steerTurn).toHaveBeenCalledTimes(2);
+      expect(readItem(reopened)).toEqual(originalItem);
+      expect({ ...reopened.getTurnById(f.turn.id), items: turnBefore.items }).toEqual(turnBefore);
+    },
+    30_000
+  );
 });

@@ -486,7 +486,7 @@ Failures that raise no attention row, and opted-in completion, require an author
 | Action | Available when | Consequence shown first | Result shown |
 | --- | --- | --- | --- |
 | Send | No run in progress | Task: "Starts a new run of this Task." | *Sending*, then the authoritative Item |
-| Steer | Task run in progress; the adapter is qualified for `task.steer` | "Sends this note into the run in progress. Accepted means the worker's runtime took it, not that the model acted on it. Work already done is not undone." | *Sending*, then *Accepted by the running worker* / *Not delivered* (with reason) / *Delivery unknown*, from the retained receipt |
+| Steer | Task run in progress; the adapter is qualified for `task.steer` | "Sends this note into the run in progress. Accepted means the worker's runtime took it, not that the model acted on it. Work already done is not undone." | *Sending*, then *Accepted by the running worker* / *Not delivered* (with reason) / *Delivery unknown*, from the original retained Item disposition |
 | Keep draft | Run in progress, steer unavailable | "This Task is busy. Your message stays here. Send it when the run ends, or stop the run first." | Draft kept |
 | Stop | Run pending or running | "Stop this run? Finished steps and their effects stay. The step in progress is cut short." | *Stopping…* until the terminal status, then "Stopped by you" from the recorded interrupt |
 | Approve | Pending; the viewer may respond; the complete exact effect is displayed | Exact effect; whether work waits. Per owner: captured call, "Lets this call run once."; command intent, "Allows ‹owner› to ‹intent›. It runs later, through its owner." | "Approved by you", then the recorded disposition (executed, failed, outcome unknown) and delivery, each only when recorded |
@@ -507,7 +507,7 @@ Failures that raise no attention row, and opted-in completion, require an author
 `task.steer` is specified by [Task Mode](20260704-task_mode_worker_delegation.md#live-steer) and the [Task Live-Steer Rulings](../decisions/20261008-task_live_steer_rulings.md); the Composer owns the submission ([Explicit Live Input](20260831-unified_conversation_composer.md#explicit-live-input)).
 
 - **Rollout and fallback.** Steer is enabled per adapter, in the order Codex, Pi, OpenCode, each only after its qualification passes (races, interrupt, stale target and no spill into later runs). DeepSeek is unsupported. Workers on other adapters show "This worker can't take notes while running", with *Keep draft* and *Stop*.
-- **State survives reload.** The steer state is not mutation-local. The timeline read joins each steer `user-message` Item to its retained command receipt, so reload and other devices show the same state. An Item without a provable receipt shows *Delivery unknown*. Check and Retry reuse the exact target, text and request identifier. No receipt mechanism is added.
+- **State survives reload.** The steer state is not mutation-local. The timeline reads completed disposition from the original retained `user-message` Item revision, so reload, other devices and ordinary command-receipt pruning preserve the same state. An Item without provable completed disposition shows *Delivery unknown*. Check and Retry reuse the exact target, text and request identifier without native resend. No separate receipt mechanism is added.
 
 #### Core-Held Follow-up (After v0.1.0)
 
