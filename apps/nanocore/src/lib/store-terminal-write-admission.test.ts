@@ -15,11 +15,7 @@ import { recordTestAgentEnvironmentPackage } from '../test-support/agent-environ
 import { createDemoStore } from '../test-support/demo-store.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION,
-  type FsStore,
-} from './store.js';
+import type { FsStore } from './store.js';
 
 const LOCAL_ACTOR = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 const COMPLETED_AT = '2026-09-22T00:00:00.000Z';
@@ -168,27 +164,24 @@ async function seedMcpBootItem(input: {
   if (input.skipExistingItem) {
     return { dataRoot, store };
   }
-  await store.createItem(
-    {
-      arguments: null,
-      causationId: input.callId,
-      completedAt: COMPLETED_AT,
-      createdAt: input.createdAt,
-      durationMs: 0,
-      error: null,
-      id: input.itemId,
-      ...(input.parentItemId ? { parentItemId: input.parentItemId } : {}),
-      result: null,
-      server: 'echo',
-      status: 'completed',
-      threadId: turn.threadId,
-      tool: 'echo',
-      turnId: turn.id,
-      type: 'tool-call',
-      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-    },
-    ALREADY_DECIDED_PUBLICATION_ADMISSION
-  );
+  await store.publishSettledTurnItem({
+    arguments: null,
+    causationId: input.callId,
+    completedAt: COMPLETED_AT,
+    createdAt: input.createdAt,
+    durationMs: 0,
+    error: null,
+    id: input.itemId,
+    ...(input.parentItemId ? { parentItemId: input.parentItemId } : {}),
+    result: null,
+    server: 'echo',
+    status: 'completed',
+    threadId: turn.threadId,
+    tool: 'echo',
+    turnId: turn.id,
+    type: 'tool-call',
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+  });
   return { dataRoot, store };
 }
 
@@ -252,25 +245,22 @@ describe('post-terminal write admission', () => {
     });
     const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
-    const decided = await store.createItem(
-      statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary'),
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+    const decided = await store.publishSettledTurnItem(
+      statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary')
     );
     expect(
-      await store.createItem(
-        statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary'),
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
+      await store.publishSettledTurnItem(
+        statusItem(turn, 'it_00000000-0000-788b-954a-51d98089bbd8', 'Decided summary')
       )
     ).toEqual(decided);
     await expect(
-      store.createItem(
+      store.publishSettledTurnItem(
         statusItem(
           turn,
           'it_00000000-0000-788b-954a-51d98089bbd8',
           'Decided summary',
           '2026-09-22T00:00:01.000Z'
-        ),
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
+        )
       )
     ).rejects.toThrow(
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
@@ -304,11 +294,7 @@ describe('post-terminal write admission', () => {
       })
     ).toEqual(refreshed);
     await expect(
-      store.updateItem(
-        display.id,
-        { summary: 'Conflicting summary' },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      )
+      store.publishSettledTurnItem(display.id, { summary: 'Conflicting summary' })
     ).rejects.toThrow(
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
     );
@@ -438,26 +424,23 @@ describe('post-terminal write admission', () => {
       await shutdownControlStoreWorkerClient();
       conflictDb.sqlite.close();
     }
-    await conflictStore.createItem(
-      {
-        arguments: null,
-        causationId: 'cap_00000000-0000-7e5e-b47c-e8154829070d',
-        completedAt: COMPLETED_AT,
-        createdAt: COMPLETED_AT,
-        durationMs: 0,
-        error: null,
-        id: 'it_00000000-0000-7585-88a1-d483d1404105',
-        result: null,
-        server: 'echo',
-        status: 'failed',
-        threadId: conflictTurn.threadId,
-        tool: 'echo',
-        turnId: conflictTurn.id,
-        type: 'tool-call',
-        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(conflictTurn.owner) },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    await conflictStore.publishSettledTurnItem({
+      arguments: null,
+      causationId: 'cap_00000000-0000-7e5e-b47c-e8154829070d',
+      completedAt: COMPLETED_AT,
+      createdAt: COMPLETED_AT,
+      durationMs: 0,
+      error: null,
+      id: 'it_00000000-0000-7585-88a1-d483d1404105',
+      result: null,
+      server: 'echo',
+      status: 'failed',
+      threadId: conflictTurn.threadId,
+      tool: 'echo',
+      turnId: conflictTurn.id,
+      type: 'tool-call',
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(conflictTurn.owner) },
+    });
     await shutdownControlStoreWorkerClient();
     await verifyAndMigrateExistingScopedDatabases(conflictRoot);
     await expect(reconcileWorkerMcpItems(conflictRoot, conflictStore)).rejects.toThrow(
@@ -479,15 +462,12 @@ describe('post-terminal write admission', () => {
       testEntityId('it', `it_task_goal_goal_1_${turn.id}`),
       'Escalate because the work is a Goal.'
     );
-    expect((await store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION)).summary).toBe(
+    expect((await store.publishSettledTurnItem(item)).summary).toBe(
       'Escalate because the work is a Goal.'
     );
-    expect((await store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION)).id).toBe(item.id);
+    expect((await store.publishSettledTurnItem(item)).id).toBe(item.id);
     await expect(
-      store.createItem(
-        { ...item, summary: 'Different explanation' },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      )
+      store.publishSettledTurnItem({ ...item, summary: 'Different explanation' })
     ).rejects.toThrow(
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
     );
@@ -532,10 +512,9 @@ describe('post-terminal write admission', () => {
     await expect(store.createArtifact(artifactInput)).rejects.toThrow(
       `Turn ${turn.id} is terminal and does not admit this write.`
     );
-    const artifact = await store.createArtifact(
+    const artifact = await store.publishSettledTurnArtifact(
       { ...artifactInput, id: admittedId },
-      undefined,
-      CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
+      undefined
     );
     expect(artifact.contentDigest).toBe(digest);
     expect(
@@ -559,22 +538,19 @@ describe('post-terminal write admission', () => {
     });
     const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
-    const marker = await store.createItem(
-      {
-        id: 'it_00000000-0000-7930-99d0-7ca81784886e',
-        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-        threadId: turn.threadId,
-        turnId: turn.id,
-        type: 'status',
-        status: 'completed',
-        level: 'info',
-        title: 'Configuration application started',
-        summary: 'Request req_apply confirmed candidate digest.',
-        createdAt: COMPLETED_AT,
-        completedAt: COMPLETED_AT,
-      },
-      CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
-    );
+    const marker = await store.publishSettledTurnItem({
+      id: 'it_00000000-0000-7930-99d0-7ca81784886e',
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'status',
+      status: 'completed',
+      level: 'info',
+      title: 'Configuration application started',
+      summary: 'Request req_apply confirmed candidate digest.',
+      createdAt: COMPLETED_AT,
+      completedAt: COMPLETED_AT,
+    });
     expect(marker.title).toBe('Configuration application started');
   });
 

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { canonicalJsonText } from '@openkit/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -2929,18 +2929,15 @@ describe('pending requests', () => {
       createdAt: NOW,
       completedAt: NOW,
     };
-    await store.createItem(
-      { ...decision, id: 'it_00000000-0000-75e0-a0f5-4cc89dcbc3d9' },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-    await store.createItem(
-      {
-        ...decision,
-        id: 'it_00000000-0000-7a9d-8492-cb28e485aef7',
-        causationId: 'req_bad_decision_2',
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    await store.publishSettledTurnItem({
+      ...decision,
+      id: 'it_00000000-0000-75e0-a0f5-4cc89dcbc3d9',
+    });
+    await store.publishSettledTurnItem({
+      ...decision,
+      id: 'it_00000000-0000-7a9d-8492-cb28e485aef7',
+      causationId: 'req_bad_decision_2',
+    });
     const bad = readPendingRequest(
       openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001').sqlite,
       'ap_bad'

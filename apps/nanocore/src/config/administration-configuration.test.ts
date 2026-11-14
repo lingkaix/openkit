@@ -1026,10 +1026,10 @@ describe('administration catalog configuration', () => {
       'configuration_result',
       { userId: f.actor.userId, request },
     ]);
-    const publish = f.store.createArtifact.bind(f.store);
+    const publish = f.store.publishSettledTurnArtifact.bind(f.store);
     // Author descriptive additions before the real immutable v1 publisher receives its bytes.
     const publication = vi
-      .spyOn(f.store, 'createArtifact')
+      .spyOn(f.store, 'publishSettledTurnArtifact')
       .mockImplementation((artifact, payload) => {
         if (artifact.id !== outcomeId || artifact.content.format !== 'json')
           return publish(artifact, payload);

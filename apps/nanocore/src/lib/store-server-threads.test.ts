@@ -14,7 +14,7 @@ import {
   type WorkObservationDraft,
 } from '../storage/work-observations.js';
 import { disposeTestStore } from '../test-support/store.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
+import { FsStore } from './store.js';
 
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
 
@@ -237,32 +237,25 @@ describe('Server-owned canonical history', () => {
       const skipped = await reopened.createServerTurn(thread.id, 'Skipped: busy', actor, null, {
         status: 'completed',
       });
-      const skipItem = await reopened.createServerItem(
-        {
-          id: allocateEntityId('it'),
-          owner: { kind: 'server' },
-          threadId: thread.id,
-          turnId: skipped.id,
-          type: 'status',
-          level: 'info',
-          title: 'Skipped: busy',
-          summary: null,
-          status: 'completed',
-          createdAt: skipped.startedAt!,
-          completedAt: skipped.completedAt,
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
-      const skipEvent = await reopened.persistServerTurnEvent(
-        skipped.id,
-        {
-          event: 'item.completed',
-          threadId: thread.id,
-          turnId: skipped.id,
-          data: { type: 'item-completed', itemId: skipItem.id, item: skipItem },
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
+      const skipItem = await reopened.publishSettledTurnItem({
+        id: allocateEntityId('it'),
+        owner: { kind: 'server' },
+        threadId: thread.id,
+        turnId: skipped.id,
+        type: 'status',
+        level: 'info',
+        title: 'Skipped: busy',
+        summary: null,
+        status: 'completed',
+        createdAt: skipped.startedAt!,
+        completedAt: skipped.completedAt,
+      });
+      const skipEvent = await reopened.publishSettledTurnEvent(skipped.id, {
+        event: 'item.completed',
+        threadId: thread.id,
+        turnId: skipped.id,
+        data: { type: 'item-completed', itemId: skipItem.id, item: skipItem },
+      });
       reopened.emitServerTurnEvent(skipped.id, skipEvent);
       expect(reopened.getServerTurnTranscript(skipped.id)).toEqual([
         expect.objectContaining({

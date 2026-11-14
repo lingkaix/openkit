@@ -6,11 +6,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  type FsStore,
-  type TerminalTurnPublication,
-} from '../lib/store.js';
+import type { FsStore, TerminalTurnPublication } from '../lib/store.js';
 import { openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import {
   createExecutionStepJournalReader,
@@ -177,18 +173,14 @@ export async function terminalizeGovernedWorkerTurn(
   if (terminalSession?.status === terminalSessionStatus && !sessionEventExists && !composeSession) {
     try {
       notifications.push(
-        await input.store.persistTurnEvent(
-          input.turnId,
-          {
-            data: { agentSession: terminalSession, type: 'agent-session-updated' },
-            event: 'agent.session.updated',
-            requestId: input.requestId,
-            threadId: terminalTurn.threadId,
-            turnId: terminalTurn.id,
-            workspaceId: workspaceIdForOwner(terminalTurn.owner),
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        )
+        await input.store.publishSettledTurnEvent(input.turnId, {
+          data: { agentSession: terminalSession, type: 'agent-session-updated' },
+          event: 'agent.session.updated',
+          requestId: input.requestId,
+          threadId: terminalTurn.threadId,
+          turnId: terminalTurn.id,
+          workspaceId: workspaceIdForOwner(terminalTurn.owner),
+        })
       );
     } catch (error) {
       errors.push(error);
@@ -236,13 +228,7 @@ export async function terminalizeGovernedWorkerTurn(
               entry.data.agentSession.status === terminalSessionPublication.status
           );
         if (event)
-          notifications.push(
-            await input.store.persistTurnEvent(
-              input.turnId,
-              event,
-              ALREADY_DECIDED_PUBLICATION_ADMISSION
-            )
-          );
+          notifications.push(await input.store.publishSettledTurnEvent(input.turnId, event));
       }
       if (!terminalEventExists) {
         const event = input.store
@@ -251,13 +237,7 @@ export async function terminalizeGovernedWorkerTurn(
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           );
         if (event)
-          notifications.push(
-            await input.store.persistTurnEvent(
-              input.turnId,
-              event,
-              ALREADY_DECIDED_PUBLICATION_ADMISSION
-            )
-          );
+          notifications.push(await input.store.publishSettledTurnEvent(input.turnId, event));
       }
     } catch (error) {
       errors.push(error);
@@ -329,18 +309,14 @@ async function reconcileCompletedTurn(
   ) {
     try {
       notifications.push(
-        await input.store.persistTurnEvent(
-          input.turnId,
-          {
-            data: { agentSession: idleSession, type: 'agent-session-updated' },
-            event: 'agent.session.updated',
-            requestId: input.requestId,
-            threadId: completedTurn.threadId,
-            turnId: completedTurn.id,
-            workspaceId: workspaceIdForOwner(completedTurn.owner),
-          },
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
-        )
+        await input.store.publishSettledTurnEvent(input.turnId, {
+          data: { agentSession: idleSession, type: 'agent-session-updated' },
+          event: 'agent.session.updated',
+          requestId: input.requestId,
+          threadId: completedTurn.threadId,
+          turnId: completedTurn.id,
+          workspaceId: workspaceIdForOwner(completedTurn.owner),
+        })
       );
     } catch (error) {
       errors.push(error);
@@ -383,13 +359,7 @@ async function reconcileCompletedTurn(
             (event) => event.event === 'turn.completed' && event.data.type === 'turn-completed'
           );
         if (event)
-          notifications.push(
-            await input.store.persistTurnEvent(
-              input.turnId,
-              event,
-              ALREADY_DECIDED_PUBLICATION_ADMISSION
-            )
-          );
+          notifications.push(await input.store.publishSettledTurnEvent(input.turnId, event));
       }
     } catch (error) {
       errors.push(error);

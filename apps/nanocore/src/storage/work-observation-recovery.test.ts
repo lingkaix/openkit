@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { ModelCapture } from '../llm/model-capture.js';
 import { terminalizeGovernedWorkerTurn } from '../runtime/worker-turn-failure.js';
 import { createTestStore } from '../test-support/store.js';
@@ -352,18 +352,14 @@ describe('native terminal recovery observations', () => {
     'does not reap a Turn already sealed by another owner: %s',
     async (status) => {
       const f = await fixture();
-      const terminal = await f.store.updateTurn(
-        f.owner.turnId,
-        {
-          status,
-          completedAt,
-          error:
-            status === 'completed'
-              ? null
-              : { code: 'worker_governance_turn_failed', message: 'Other terminal owner.' },
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
+      const terminal = await f.store.completeTurn(f.owner.turnId, {
+        status,
+        completedAt,
+        error:
+          status === 'completed'
+            ? null
+            : { code: 'worker_governance_turn_failed', message: 'Other terminal owner.' },
+      });
       const observations = readWorkObservations(f.db, f.owner);
       expect(await recover(f)).toMatchObject({ status: terminal.status, error: terminal.error });
       expect(readWorkObservations(f.db, f.owner)).toEqual(observations);

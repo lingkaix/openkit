@@ -21,7 +21,7 @@ import {
   loadRuntimeConfig,
 } from './config/runtime-config.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
   acceptSchedulerExecutionObservation,
@@ -208,18 +208,14 @@ class RecordingTurnExecutor implements TurnExecutor {
       cause: 'turn-completed',
       outcomeRef: `turn:${turnId}:completed`,
     });
-    const completedEvent = await store.persistTurnEvent(
+    const completedEvent = await store.publishSettledTurnEvent(turnId, {
+      event: 'turn.completed',
+      requestId: context.requestId,
+      workspaceId: workspaceIdForOwner(turn.owner),
+      threadId: turn.threadId,
       turnId,
-      {
-        event: 'turn.completed',
-        requestId: context.requestId,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        threadId: turn.threadId,
-        turnId,
-        data: { type: 'turn-completed', stopReason: 'completed', turn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+      data: { type: 'turn-completed', stopReason: 'completed', turn },
+    });
     store.emitTurnEvent(turnId, completedEvent);
   }
 

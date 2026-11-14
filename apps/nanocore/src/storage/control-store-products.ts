@@ -1038,11 +1038,7 @@ async function prepareEntries(
 /** Closed existing Item/event admissions; each category keeps its accepted equality rule. */
 export const ControlPublicationInputSchema = z
   .object({
-    category: z.enum([
-      'already-decided-publication',
-      'display-projection-refresh',
-      'configuration-apply-pending-delayed-user-input',
-    ]),
+    category: z.enum(['already-decided-publication', 'display-projection-refresh']),
     turnId: z.string().min(1),
     expectedRevision: z.number().int().positive(),
     entries: z.array(ControlProductEntrySchema).min(1).max(CONTROL_PRODUCT_LIMITS.entries),
@@ -1102,7 +1098,6 @@ export function checkControlItemAppend(
     (previous ||
       !(
         category === 'already-decided-publication' ||
-        category === 'configuration-apply-pending-delayed-user-input' ||
         (category === 'display-projection-refresh' && item.type === 'status')
       ))
   )
@@ -1732,8 +1727,6 @@ export function applyControlPublication(
     if (seen.has(entry.id)) throw new ControlProductPreconditionError();
     seen.add(entry.id);
     const before = items.get(entry.id);
-    if (input.category === 'configuration-apply-pending-delayed-user-input' && before)
-      throw new ControlProductPreconditionError();
     const next = publicationItemPayload(entry);
     if (input.category === 'display-projection-refresh' && next.type !== 'status')
       throw new ControlProductPreconditionError();

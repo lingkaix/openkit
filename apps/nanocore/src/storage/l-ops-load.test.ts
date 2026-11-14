@@ -376,7 +376,6 @@ it('r2 envelope uses wall-clock offers, real owners, exact receipts and FULL ack
                   completedAt: stamp,
                   summary: `Progress ${row.ordinal} ${'x'.repeat(256)}`,
                 } as any,
-                undefined,
                 RETAINED_PROGRESS_PUBLICATION
               );
         });

@@ -466,11 +466,13 @@ async function fixture(
     expect(coreDb.sqlite.inTransaction).toBe(false);
     return write(...args);
   });
-  const publish = store.createArtifact.bind(store);
-  const publications = vi.spyOn(store, 'createArtifact').mockImplementation((...args) => {
-    observation.trace.push('artifact');
-    return publish(...args);
-  });
+  const publish = store.publishSettledTurnArtifact.bind(store);
+  const publications = vi
+    .spyOn(store, 'publishSettledTurnArtifact')
+    .mockImplementation((...args) => {
+      observation.trace.push('artifact');
+      return publish(...args);
+    });
   const record = store.publishCommandReceipt.bind(store);
   const receipts = vi.spyOn(store, 'publishCommandReceipt').mockImplementation(async (...args) => {
     const result = await record(...args);

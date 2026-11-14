@@ -14,7 +14,7 @@ import type { AgentTool } from '../internal-agents/internal-agent-loop.js';
 import type { ServerKnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
 import { internalContextDigest } from '../internal-agents/rolling-context.js';
 import { createServerRunHistory } from '../internal-agents/server-history.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
+import type { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import {
   commandInputHash,
@@ -189,7 +189,7 @@ export async function prepareServerKnowledgeMaintenance(
     }
     const item = resultItem(value);
     if (terminal) await store.completeTurn(turn.id, terminal, { items: [item] });
-    else await store.createServerItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION);
+    else await store.publishSettledTurnItem(item);
     settled = value;
     return value;
   };

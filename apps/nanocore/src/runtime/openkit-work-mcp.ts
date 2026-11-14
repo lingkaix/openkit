@@ -819,7 +819,7 @@ async function submitArtifact(
       // Durable files precede one native Item/Review/receipt commit. Notifications follow its acknowledgement.
       admit();
       reservation.assertAvailable();
-      await store.createArtifact(prepared.artifact, staged, undefined, {
+      await store.createArtifact(prepared.artifact, staged, {
         review: prepared.reviewInput,
         fileAdmission: input.fileAdmission,
         receipt: {

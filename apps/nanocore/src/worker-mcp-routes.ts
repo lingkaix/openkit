@@ -63,7 +63,7 @@ import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from './knowledge/notebook-workspace-selection.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from './lib/store.js';
+import type { FsStore } from './lib/store.js';
 import { serveStatelessMcp } from './mcp-stateless-http.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import {
@@ -1429,10 +1429,7 @@ export async function reconcileWorkerMcpItems(dataRoot: string, store: FsStore):
           // the one the grid admits filling. Leave the row for a later boot instead.
           continue;
         }
-        storedItems.set(
-          parsed.id,
-          await store.createItem(parsed, ALREADY_DECIDED_PUBLICATION_ADMISSION)
-        );
+        storedItems.set(parsed.id, await store.publishSettledTurnItem(parsed));
         recovered += 1;
       }
     } finally {
@@ -3725,7 +3722,7 @@ async function publishWorkerMcpItem(input: {
   const durationMs = ledger?.started_at
     ? Math.max(0, Date.parse(completedAt) - Date.parse(ledger.started_at))
     : input.durationMs;
-  await input.store.createItem(
+  await input.store.publishSettledTurnItem(
     {
       arguments: redactInternalAgentDiagnosticValue(input.arguments) as Record<string, unknown>,
       causationId: input.call.id,
@@ -3749,7 +3746,6 @@ async function publishWorkerMcpItem(input: {
       type: 'tool-call',
       owner: { kind: 'workspace', workspaceId: input.environmentPackage.scope.workspaceId },
     },
-    ALREADY_DECIDED_PUBLICATION_ADMISSION,
     undefined,
     input.mcpCall
   );

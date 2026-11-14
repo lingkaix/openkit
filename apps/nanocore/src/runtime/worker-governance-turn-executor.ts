@@ -71,7 +71,6 @@ import {
 import { workerInputWithKnowledgeOverview } from '../context/worker-overview-input.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
   type FsStore,
   StoreRecordNotFoundError,
   type TerminalTurnPublication,
@@ -5583,20 +5582,16 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     item: Awaited<ReturnType<FsStore['createItem']>>
   ): Promise<void> {
-    const itemCreatedEvent = await store.persistTurnEvent(
-      environmentPackage.scope.turnId,
-      {
-        data: { item, type: 'item-created' },
-        event: 'item.created',
-        requestId,
-        threadId: environmentPackage.scope.threadId,
-        turnId: environmentPackage.scope.turnId,
-        workspaceId: environmentPackage.scope.workspaceId,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const itemCreatedEvent = await store.publishSettledTurnEvent(environmentPackage.scope.turnId, {
+      data: { item, type: 'item-created' },
+      event: 'item.created',
+      requestId,
+      threadId: environmentPackage.scope.threadId,
+      turnId: environmentPackage.scope.turnId,
+      workspaceId: environmentPackage.scope.workspaceId,
+    });
     store.emitTurnEvent(environmentPackage.scope.turnId, itemCreatedEvent);
-    const itemCompletedEvent = await store.persistTurnEvent(
+    const itemCompletedEvent = await store.publishSettledTurnEvent(
       environmentPackage.scope.turnId,
       {
         data: { item, itemId: item.id, type: 'item-completed' },
@@ -5605,8 +5600,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         threadId: environmentPackage.scope.threadId,
         turnId: environmentPackage.scope.turnId,
         workspaceId: environmentPackage.scope.workspaceId,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+      }
     );
     store.emitTurnEvent(environmentPackage.scope.turnId, itemCompletedEvent);
   }
@@ -5625,7 +5619,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     requestId: string | null,
     agentSession: Awaited<ReturnType<FsStore['createAgentSession']>>
   ): Promise<void> {
-    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+    const agentSessionUpdatedEvent = await store.publishSettledTurnEvent(
       environmentPackage.scope.turnId,
       {
         data: { agentSession, type: 'agent-session-updated' },
@@ -5634,8 +5628,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         threadId: environmentPackage.scope.threadId,
         turnId: environmentPackage.scope.turnId,
         workspaceId: environmentPackage.scope.workspaceId,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+      }
     );
     store.emitTurnEvent(environmentPackage.scope.turnId, agentSessionUpdatedEvent);
   }
@@ -5668,7 +5661,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     }
     for (const artifactId of importResult.artifactIds) {
       const artifact = store.getArtifact(environmentPackage.scope.workspaceId, artifactId);
-      const artifactCreatedEvent = await store.persistTurnEvent(
+      const artifactCreatedEvent = await store.publishSettledTurnEvent(
         environmentPackage.scope.turnId,
         {
           data: { artifact, type: 'artifact-created' },
@@ -5677,8 +5670,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           threadId: environmentPackage.scope.threadId,
           turnId: environmentPackage.scope.turnId,
           workspaceId: environmentPackage.scope.workspaceId,
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
+        }
       );
       store.emitTurnEvent(environmentPackage.scope.turnId, artifactCreatedEvent);
     }
@@ -5884,23 +5876,18 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       );
     if (!retainedSessionEvent)
       throw new Error('Worker terminal Session event was not acknowledged.');
-    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+    const agentSessionUpdatedEvent = await store.publishSettledTurnEvent(
       turnScope.id,
-      retainedSessionEvent,
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+      retainedSessionEvent
     );
-    const turnCompletedEvent = await store.persistTurnEvent(
-      turnScope.id,
-      {
-        data: { stopReason, turn, type: 'turn-completed' },
-        event: 'turn.completed',
-        requestId,
-        threadId: turnScope.threadId,
-        turnId: turnScope.id,
-        workspaceId: workspaceIdForOwner(turnScope.owner),
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const turnCompletedEvent = await store.publishSettledTurnEvent(turnScope.id, {
+      data: { stopReason, turn, type: 'turn-completed' },
+      event: 'turn.completed',
+      requestId,
+      threadId: turnScope.threadId,
+      turnId: turnScope.id,
+      workspaceId: workspaceIdForOwner(turnScope.owner),
+    });
     // Completion and cleanup preparation finish before the synchronous notification tail.
     store.emitTurnEvent(turnScope.id, agentSessionUpdatedEvent);
     store.emitTurnEvent(turnScope.id, turnCompletedEvent);

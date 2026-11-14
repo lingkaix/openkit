@@ -93,11 +93,7 @@ import type { KnowledgeNotebook } from './knowledge/notebook.js';
 import { parseOkfDocument } from './knowledge/okf.js';
 import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  FsStore,
-  type FsStoreOptions,
-} from './lib/store.js';
+import { FsStore, type FsStoreOptions } from './lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
@@ -1603,18 +1599,14 @@ class FakeTurnExecutor implements TurnExecutor {
     );
     store.emitTurnEvent(
       turnId,
-      await store.persistTurnEvent(
+      await store.publishSettledTurnEvent(turnId, {
+        event: 'turn.completed',
+        requestId,
+        workspaceId: workspaceIdForOwner(turn.owner),
+        threadId: turn.threadId,
         turnId,
-        {
-          event: 'turn.completed',
-          requestId,
-          workspaceId: workspaceIdForOwner(turn.owner),
-          threadId: turn.threadId,
-          turnId,
-          data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-        },
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      )
+        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+      })
     );
     await this.releaseTurn(store, context);
   }
@@ -5287,18 +5279,14 @@ describe('nanocore server', () => {
         );
         runtimeStore.emitTurnEvent(
           turnId,
-          await runtimeStore.persistTurnEvent(
+          await runtimeStore.publishSettledTurnEvent(turnId, {
+            event: 'turn.completed',
+            requestId: context.requestId ?? null,
+            workspaceId: workspaceIdForOwner(turn.owner),
+            threadId: turn.threadId,
             turnId,
-            {
-              event: 'turn.completed',
-              requestId: context.requestId ?? null,
-              workspaceId: workspaceIdForOwner(turn.owner),
-              threadId: turn.threadId,
-              turnId,
-              data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
-            },
-            ALREADY_DECIDED_PUBLICATION_ADMISSION
-          )
+            data: { type: 'turn-completed', stopReason: 'error', turn: failedTurn },
+          })
         );
         await executor.releaseTurn(runtimeStore, context, 'turn-failed');
       }
@@ -5505,18 +5493,14 @@ describe('nanocore server', () => {
           );
           runtimeStore.emitTurnEvent(
             turnId,
-            await runtimeStore.persistTurnEvent(
+            await runtimeStore.publishSettledTurnEvent(turnId, {
+              event: 'turn.completed',
+              requestId: context.requestId ?? null,
+              workspaceId: workspaceIdForOwner(turn.owner),
+              threadId: turn.threadId,
               turnId,
-              {
-                event: 'turn.completed',
-                requestId: context.requestId ?? null,
-                workspaceId: workspaceIdForOwner(turn.owner),
-                threadId: turn.threadId,
-                turnId,
-                data: { type: 'turn-completed', stopReason, turn: terminalTurn },
-              },
-              ALREADY_DECIDED_PUBLICATION_ADMISSION
-            )
+              data: { type: 'turn-completed', stopReason, turn: terminalTurn },
+            })
           );
           await executor.releaseTurn(
             runtimeStore,

@@ -20,7 +20,6 @@ import * as knowledgeOwners from './knowledge-operations.js';
 import { artifactReferenceItemId } from './lib/artifact-reference-id.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from './lib/store.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
 import { ProviderRegistry } from './providers/registry.js';
 import { recordAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
@@ -324,18 +323,14 @@ class CompletingTurnExecutor extends SimulatedTurnExecutor {
       cause: 'turn-completed',
       outcomeRef: `turn:${turnId}:completed`,
     });
-    store.emitTurnEvent(
+    store.emitTurnEvent(turnId, {
+      event: 'turn.completed',
+      requestId: context.requestId ?? null,
+      workspaceId: workspaceIdForOwner(turn.owner),
+      threadId: turn.threadId,
       turnId,
-      {
-        event: 'turn.completed',
-        requestId: context.requestId ?? null,
-        workspaceId: workspaceIdForOwner(turn.owner),
-        threadId: turn.threadId,
-        turnId,
-        data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+      data: { type: 'turn-completed', stopReason: 'completed', turn: completedTurn },
+    });
   }
 }
 

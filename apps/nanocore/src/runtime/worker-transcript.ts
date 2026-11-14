@@ -16,11 +16,7 @@ import {
 } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
 import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  type FsStore,
-  StoreRecordNotFoundError,
-} from '../lib/store.js';
+import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
 import {
@@ -276,7 +272,7 @@ async function importItemRecords(
       throw new Error(`Worker transcript item replay conflict: ${item.id}`);
     }
     if (!existing) {
-      await store.createItem(item, ALREADY_DECIDED_PUBLICATION_ADMISSION);
+      await store.publishSettledTurnItem(item);
     }
 
     result.itemIds.push(item.id);

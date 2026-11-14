@@ -238,6 +238,7 @@ import {
 } from '../storage/control-store-product-records.js';
 import {
   type ControlItemAppend,
+  type ControlPublicationInput,
   type ControlTerminalTransition,
   checkControlItemAppend,
   eventAgreesWithSealedTurnOutcome,
@@ -910,37 +911,11 @@ export interface TurnAdmissionHooks {
   onTerminal?: (turn: Turn) => void | Promise<void>;
 }
 
-/** Completes an already-decided publication against a sealed-terminal Turn. */
-export const ALREADY_DECIDED_PUBLICATION_ADMISSION = {
-  category: 'already-decided-publication',
-} as const;
-
 /** Explicit trusted progress status producer; this grants no post-terminal authority or weaker ACK. */
 export const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
 
 /** Item fields admitted by the named post-terminal display-projection refresh. */
 export const DISPLAY_PROJECTION_REFRESH_FIELDS = ['level', 'title', 'summary'] as const;
-
-/**
- * Configuration-apply marker Item on the Turn that executes the apply.
- * Pending docs/specs/20260930-pending_requests.md; this category stays admitted.
- */
-export const CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION = {
-  category: 'configuration-apply-pending-delayed-user-input',
-} as const;
-
-/** Admission for completing an already-decided publication after terminal. */
-export type AlreadyDecidedPublicationAdmission = typeof ALREADY_DECIDED_PUBLICATION_ADMISSION;
-
-/** Admission for the configuration-apply marker pending delayed-user-input ownership. */
-export type ConfigurationApplyPendingDelayedUserInputAdmission =
-  typeof CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION;
-
-/** Declared post-terminal write category; the two equality rules stay separate types. */
-export type TerminalTurnWriteAdmission =
-  | AlreadyDecidedPublicationAdmission
-  | { readonly category: 'display-projection-refresh' }
-  | ConfigurationApplyPendingDelayedUserInputAdmission;
 
 /** Accepted store input for one workspace-only Artifact introduction. */
 export interface IntroduceArtifactInput {
@@ -3390,7 +3365,7 @@ export class FsStore {
     history: NonNullable<
       ReturnType<typeof readNativeTurnHistory> | ReturnType<typeof readNativeTurnWriteHead>
     >,
-    admission?: TerminalTurnWriteAdmission
+    admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<Item> {
     const scope = this.nativeScope(item.owner);
     const prior = history.itemRevisions.filter((row) => row.id === item.id);
@@ -3680,7 +3655,7 @@ export class FsStore {
     scope: NativeProductScope,
     history: { turn: Pick<Turn, 'id'>; revision: number },
     entries: ControlProductEntry[],
-    category: TerminalTurnWriteAdmission['category']
+    category: ControlPublicationInput['category']
   ): Promise<void> {
     const client = getControlStoreWorkerClient();
     const database = `${scope.owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`;
@@ -4707,9 +4682,8 @@ export class FsStore {
   }
 
   /** Appends a full Item revision to its Server Turn before publishing its in-memory projection. */
-  public async createServerItem(
-    ...args: Parameters<FsStore['createServerItemPublication']>
-  ): Promise<Item> {
+  public async createServerItem(input: Item): Promise<Item> {
+    const args = [input] as const;
     return this.publishTurn({ kind: 'server' }, [args[0].turnId], args, (owned) =>
       this.createServerItemPublication(...owned)
     );
@@ -4718,7 +4692,7 @@ export class FsStore {
   /** Applies the original checks inside the admitted same-Turn boundary. */
   private async createServerItemPublication(
     input: Item,
-    admission?: AlreadyDecidedPublicationAdmission
+    admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<Item> {
     const item = ItemSchema.parse(input);
     if (item.owner.kind !== 'server') throw new Error('Server Item requires Server ownership.');
@@ -4795,8 +4769,10 @@ export class FsStore {
 
   /** Publishes an existing transcript event family under a Server Turn without a Workspace selector. */
   public async persistServerTurnEvent(
-    ...args: Parameters<FsStore['persistServerTurnEventPublication']>
+    turnId: string,
+    event: ServerTurnEventInput
   ): Promise<ServerTurnEventEnvelope> {
+    const args = [turnId, event] as const;
     return this.publishTurn({ kind: 'server' }, [args[0]], args, (owned) =>
       this.persistServerTurnEventPublication(...owned)
     );
@@ -4806,7 +4782,7 @@ export class FsStore {
   private async persistServerTurnEventPublication(
     turnId: string,
     event: ServerTurnEventInput,
-    admission?: AlreadyDecidedPublicationAdmission
+    admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<ServerTurnEventEnvelope> {
     const itemId =
       'item' in event.data
@@ -5601,7 +5577,7 @@ export class FsStore {
         | 'internalExecution'
       >
     >,
-    admission?: (TerminalTurnWriteAdmission | { category?: never }) & {
+    admission?: {
       journalIntents?: readonly ExecutionJournalIntent[];
       /** Original command receipt and local Audit acknowledged with this live Turn snapshot. */
       commandAdmission?: Pick<ControlAdmission, 'receipt' | 'audit'>;
@@ -5659,16 +5635,7 @@ export class FsStore {
       if (alreadyDecidedPublicationBytesEqual(turn, updated)) {
         return turn;
       }
-      if (
-        admission?.category === 'already-decided-publication' &&
-        !decidedTurnFieldsConflict(turn, updated)
-      ) {
-        // Fill-only completion of an already-decided terminal Turn.
-      } else if (admission?.category === 'already-decided-publication') {
-        throw terminalTurnPublicationConflict(turnId);
-      } else {
-        throw terminalTurnWriteRejected(turnId);
-      }
+      throw terminalTurnWriteRejected(turnId);
     }
     if (this.dataRoot) {
       const scope = this.nativeScope(turn.owner);
@@ -6040,13 +6007,23 @@ export class FsStore {
   }
 
   /**
-   * Creates or returns one Item, admitting post-terminal completion or display-projection create when declared.
+   * Creates or returns one ordinary Item through its original publication owner.
    *
-   * @param args Core-minted Item identity and payload, plus optional admitted post-terminal category; retained caller-chosen IDs enter through import admission.
+   * @param input Core-minted Item identity and payload; retained caller-chosen IDs enter through import admission.
+   * @param progress Original explicitly retained progress producer, without post-terminal authority.
    * @returns Stored Item.
    * @throws Error when lineage is invalid or a post-terminal write is not admitted.
    */
-  public async createItem(...args: Parameters<FsStore['createItemPublication']>): Promise<Item> {
+  public async createItem(
+    input: Item,
+    progress?: typeof RETAINED_PROGRESS_PUBLICATION,
+    mcpCall?: ControlMcpItemCall
+  ): Promise<Item> {
+    return this.publishItem(input, undefined, progress, mcpCall);
+  }
+
+  /** Original Item publication, progress, artifact protection and closeout boundary. */
+  private async publishItem(...args: Parameters<FsStore['createItemPublication']>): Promise<Item> {
     const publish = () =>
       this.publishTurn(
         args[0].owner,
@@ -6069,6 +6046,52 @@ export class FsStore {
       : publish();
   }
 
+  /** Publishes the exact already-settled Item through its original Workspace or Server owner. */
+  public publishSettledTurnItem(
+    item: Item,
+    progress?: typeof RETAINED_PROGRESS_PUBLICATION,
+    mcpCall?: ControlMcpItemCall
+  ): Promise<Item>;
+  public publishSettledTurnItem(itemId: string, patch: Partial<Item>): Promise<Item>;
+  public async publishSettledTurnItem(
+    itemOrId: Item | string,
+    patchOrProgress?: Partial<Item> | typeof RETAINED_PROGRESS_PUBLICATION,
+    mcpCall?: ControlMcpItemCall
+  ): Promise<Item> {
+    if (typeof itemOrId === 'string') {
+      if (!patchOrProgress || typeof patchOrProgress !== 'object' || mcpCall !== undefined)
+        throw new TypeError('Settled Item replay requires its original patch.');
+      const item = this.workspaceItemById(itemOrId);
+      if (!item) throw new StoreRecordNotFoundError(`Item not found: ${itemOrId}`);
+      return this.publishTurn(
+        item.owner,
+        [item.turnId],
+        { itemId: itemOrId, patch: patchOrProgress },
+        (owned) =>
+          this.updateItemPublication(owned.itemId, owned.patch, {
+            category: 'already-decided-publication',
+          })
+      );
+    }
+    if (patchOrProgress !== undefined && patchOrProgress !== RETAINED_PROGRESS_PUBLICATION)
+      throw new TypeError('Settled Item creation accepts only its original progress publication.');
+    if (itemOrId.owner.kind === 'server') {
+      if (patchOrProgress !== undefined || mcpCall !== undefined)
+        throw new TypeError(
+          'Server Item publication accepts neither Workspace progress nor MCP settlement.'
+        );
+      return this.publishTurn(itemOrId.owner, [itemOrId.turnId], itemOrId, (owned) =>
+        this.createServerItemPublication(owned, { category: 'already-decided-publication' })
+      );
+    }
+    return this.publishItem(
+      itemOrId,
+      { category: 'already-decided-publication' },
+      patchOrProgress,
+      mcpCall
+    );
+  }
+
   /** Creates or field-limited refreshes the original display projection through the existing Item publication owner. */
   public refreshDisplayProjectionItem(
     item: Item,
@@ -6084,7 +6107,11 @@ export class FsStore {
         throw new TypeError(
           'Display projection creation accepts only its original progress publication.'
         );
-      return this.createItem(itemOrId, { category: 'display-projection-refresh' }, patchOrProgress);
+      return this.publishItem(
+        itemOrId,
+        { category: 'display-projection-refresh' },
+        patchOrProgress
+      );
     }
     if (!patchOrProgress || typeof patchOrProgress !== 'object')
       throw new TypeError('Display projection refresh requires its original patch.');
@@ -6118,7 +6145,7 @@ export class FsStore {
   /** Applies the original checks inside the admitted same-Turn boundary. */
   private async createItemPublication(
     input: Item,
-    admission?: TerminalTurnWriteAdmission,
+    admission?: Pick<ControlPublicationInput, 'category'>,
     _progress?: typeof RETAINED_PROGRESS_PUBLICATION,
     mcpCall?: ControlMcpItemCall
   ): Promise<Item> {
@@ -6166,13 +6193,15 @@ export class FsStore {
   }
 
   /**
-   * Updates one Item, admitting a named display-projection refresh after the owning Turn is sealed.
+   * Updates one ordinary Item through its original publication owner.
    *
-   * @param args Item identity, revision patch and optional admitted post-terminal category.
+   * @param itemId Original Item identity.
+   * @param input Original revision patch.
    * @returns Updated Item.
    * @throws Error when the Item does not exist, identity would change, or a post-terminal write is not admitted.
    */
-  public async updateItem(...args: Parameters<FsStore['updateItemPublication']>): Promise<Item> {
+  public async updateItem(itemId: string, input: Partial<Item>): Promise<Item> {
+    const args = [itemId, input] as const;
     const item = this.workspaceItemById(args[0]);
     if (!item) throw new StoreRecordNotFoundError(`Item not found: ${args[0]}`);
     return this.publishTurn(item.owner, [item.turnId], args, (owned) =>
@@ -6184,7 +6213,7 @@ export class FsStore {
   private async updateItemPublication(
     itemId: string,
     input: Partial<Item>,
-    admission?: TerminalTurnWriteAdmission
+    admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<Item> {
     let item = this.workspaceItemById(itemId);
 
@@ -6967,7 +6996,6 @@ export class FsStore {
    *
    * @param input Complete Artifact authority.
    * @param filePayload Exact privately staged original for file-backed content.
-   * @param admission Declared post-terminal category for the producing Turn artifact-reference Item.
    * @param submission Complete original Worker command joined on the native writer; absent for other existing producers.
    * @returns Imported Artifact synchronously, or turn output after its native tuple acknowledgement.
    * @throws ArtifactAuthorityError when content proof or create-only ownership is invalid.
@@ -6975,25 +7003,41 @@ export class FsStore {
   public createArtifact(
     input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'imported' }> },
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission,
     submission?: ArtifactSubmissionPublication
   ): Artifact;
   public createArtifact(
     input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'turn-output' }> },
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission,
     submission?: ArtifactSubmissionPublication
   ): Promise<Artifact>;
   public createArtifact(
     input: Artifact,
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission,
     submission?: ArtifactSubmissionPublication
   ): Artifact | Promise<Artifact>;
   public createArtifact(
     input: Artifact,
     filePayload?: StagedArtifactPayload,
-    admission?: TerminalTurnWriteAdmission,
+    submission?: ArtifactSubmissionPublication
+  ): Artifact | Promise<Artifact> {
+    return this.createArtifactPublication(input, filePayload, undefined, submission);
+  }
+
+  /** Publishes a settled configuration/output Artifact and its exact producing-Turn Item. */
+  public async publishSettledTurnArtifact(
+    input: Artifact & { origin: Extract<Artifact['origin'], { kind: 'turn-output' }> },
+    filePayload?: StagedArtifactPayload
+  ): Promise<Artifact> {
+    return this.createArtifactPublication(input, filePayload, {
+      category: 'already-decided-publication',
+    });
+  }
+
+  /** Original Artifact validation, file publication, rollback and native submission owner. */
+  private createArtifactPublication(
+    input: Artifact,
+    filePayload?: StagedArtifactPayload,
+    admission?: Pick<ControlPublicationInput, 'category'>,
     submission?: ArtifactSubmissionPublication
   ): Artifact | Promise<Artifact> {
     const parsed = ArtifactSchema.safeParse(input);
@@ -7114,7 +7158,10 @@ export class FsStore {
     if (submission && reference)
       return this.publishArtifactSubmission(artifact, versionRecord, reference, submission);
     if (reference) {
-      return this.createItem(reference, admission).then(() => artifact);
+      const publication = admission
+        ? this.publishSettledTurnItem(reference)
+        : this.createItem(reference);
+      return publication.then(() => artifact);
     }
     return artifact;
   }
@@ -8545,15 +8592,15 @@ export class FsStore {
   }
 
   /**
-   * Emits one Turn event, admitting completion of an already-decided terminal event after the Turn is sealed.
+   * Emits one ordinary Turn event through its original stream owner.
    *
-   * @param args Turn identity, event payload and optional admitted post-terminal category.
+   * @param turnId Original Turn identity.
+   * @param event Original event payload.
    * @returns Stored envelope.
    * @throws Error when the stream is missing, lineage is invalid, or a post-terminal write is not admitted.
    */
-  public async persistTurnEvent(
-    ...args: Parameters<FsStore['persistTurnEventPublication']>
-  ): Promise<SseEventEnvelope> {
+  public async persistTurnEvent(turnId: string, event: TurnEventInput): Promise<SseEventEnvelope> {
+    const args = [turnId, event] as const;
     const owner = this.dataRoot
       ? { kind: 'workspace' as const, workspaceId: args[1].workspaceId }
       : this.getTurnById(args[0]).owner;
@@ -8562,11 +8609,42 @@ export class FsStore {
     );
   }
 
+  /** Publishes the already-settled event through the unchanged native stream/ACK owner. */
+  public publishSettledTurnEvent(turnId: string, event: TurnEventInput): Promise<SseEventEnvelope>;
+  public publishSettledTurnEvent(
+    turnId: string,
+    event: ServerTurnEventInput
+  ): Promise<ServerTurnEventEnvelope>;
+  public async publishSettledTurnEvent(
+    turnId: string,
+    event: TurnEventInput | ServerTurnEventInput
+  ): Promise<SseEventEnvelope | ServerTurnEventEnvelope> {
+    if (typeof event.workspaceId !== 'string')
+      return this.publishTurn(
+        { kind: 'server' },
+        [turnId],
+        { turnId, event: event as ServerTurnEventInput },
+        (owned) =>
+          this.persistServerTurnEventPublication(owned.turnId, owned.event, {
+            category: 'already-decided-publication',
+          })
+      );
+    const workspaceEvent = event as TurnEventInput;
+    const owner = this.dataRoot
+      ? { kind: 'workspace' as const, workspaceId: workspaceEvent.workspaceId }
+      : this.getTurnById(turnId).owner;
+    return this.publishTurn(owner, [turnId], { turnId, event: workspaceEvent }, (owned) =>
+      this.persistTurnEventPublication(owned.turnId, owned.event, {
+        category: 'already-decided-publication',
+      })
+    );
+  }
+
   /** Applies the original checks inside the admitted same-Turn boundary. */
   private async persistTurnEventPublication(
     turnId: string,
     event: TurnEventInput,
-    admission?: TerminalTurnWriteAdmission
+    admission?: Pick<ControlPublicationInput, 'category'>
   ): Promise<SseEventEnvelope> {
     if (this.dataRoot) {
       const scope = this.nativeScope({ kind: 'workspace', workspaceId: event.workspaceId });

@@ -40,11 +40,7 @@ import {
   isCurrentServerPolicyAuthor,
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
-import {
-  CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION,
-  type FsStore,
-  quickChatWorkspaceIdForUser,
-} from '../lib/store.js';
+import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import {
   preparePolicyConfiguration,
   readAdmittedPolicyDocument,
@@ -224,31 +220,30 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     turnId: string,
     requestId: string,
     id = allocateEntityId('ar'),
-    admission?: typeof CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
+    settled = false
   ) {
     const timestamp = new Date().toISOString();
     const text = JSON.stringify(body);
-    const artifact = await store.createArtifact(
-      {
-        id,
-        workspaceId,
-        threadId,
-        turnId,
-        kind: 'report',
-        status: 'ready',
-        version: 1,
-        title: 'Configuration candidate and outcome',
-        summary: null,
-        content: { body: text, format: 'json' },
-        contentDigest: digest(text),
-        origin: { kind: 'turn-output', threadId, turnId, requestId },
-        lastMutationRequestId: requestId,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      },
-      undefined,
-      admission
-    );
+    const input = {
+      id,
+      workspaceId,
+      threadId,
+      turnId,
+      kind: 'report',
+      status: 'ready',
+      version: 1,
+      title: 'Configuration candidate and outcome',
+      summary: null,
+      content: { body: text, format: 'json' },
+      contentDigest: digest(text),
+      origin: { kind: 'turn-output', threadId, turnId, requestId },
+      lastMutationRequestId: requestId,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    } satisfies Parameters<typeof store.publishSettledTurnArtifact>[0];
+    const artifact = settled
+      ? await store.publishSettledTurnArtifact(input)
+      : await store.createArtifact(input);
     return {
       artifactId: artifact.id,
       artifactVersion: 1 as const,
@@ -477,22 +472,19 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         if (JSON.stringify(currentPrepared.after) !== JSON.stringify(prepared.after))
           fail('configuration_candidate_conflict');
         const timestamp = new Date().toISOString();
-        await store.createItem(
-          {
-            id: markerId,
-            owner: { kind: 'workspace', workspaceId: workspaceId },
-            threadId,
-            turnId,
-            type: 'status',
-            status: 'completed',
-            level: 'info',
-            title: 'Configuration application started',
-            summary: `Request ${request.requestId} admitted candidate ${request.candidate.contentDigest}.`,
-            createdAt: timestamp,
-            completedAt: timestamp,
-          },
-          CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
-        );
+        await store.publishSettledTurnItem({
+          id: markerId,
+          owner: { kind: 'workspace', workspaceId: workspaceId },
+          threadId,
+          turnId,
+          type: 'status',
+          status: 'completed',
+          level: 'info',
+          title: 'Configuration application started',
+          summary: `Request ${request.requestId} admitted candidate ${request.candidate.contentDigest}.`,
+          createdAt: timestamp,
+          completedAt: timestamp,
+        });
         let persisted = false;
         let revision: string | null = null;
         let reload: ApplyAdministrationConfigurationResponse['reload'] = 'not-attempted';
@@ -592,14 +584,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         });
         // Settle this original outcome after reload, before its separate Artifact and receipt.
         await getControlStoreWorkerClient().standaloneAudit(coreDb, { stage, event });
-        await publish(
-          result,
-          threadId,
-          turnId,
-          request.requestId,
-          outcomeId,
-          CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION
-        );
+        await publish(result, threadId, turnId, request.requestId, outcomeId, true);
         if (store.getDataRoot() !== null) {
           const { responseKind, ...facts } = receipt;
           await store.publishCommandReceipt({

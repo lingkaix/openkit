@@ -14,7 +14,7 @@ import {
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import type { FsStore } from '../lib/store.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from '../lib/store.js';
+
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-records.js';
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
@@ -1436,16 +1436,13 @@ async function publishOutcomeItems(
   restart = false
 ): Promise<void> {
   for (const item of pendingOutcomeItems(records, turnId, now))
-    await writeItem(store, item, restart ? ALREADY_DECIDED_PUBLICATION_ADMISSION : undefined);
+    await writeItem(store, item, restart);
 }
 
-async function writeItem(
-  store: FsStore,
-  item: Item,
-  admission?: typeof ALREADY_DECIDED_PUBLICATION_ADMISSION
-): Promise<void> {
+async function writeItem(store: FsStore, item: Item, restart = false): Promise<void> {
   if (store.listAllItems().some((candidate) => candidate.id === item.id)) return;
-  await store.createItem(item, admission);
+  if (restart) await store.publishSettledTurnItem(item);
+  else await store.createItem(item);
 }
 
 function syncApproval(store: FsStore, record: PendingRequestRecord): void {

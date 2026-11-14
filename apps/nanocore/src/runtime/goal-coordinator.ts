@@ -35,7 +35,7 @@ import {
   internalContextFailure,
   prepareInternalAgentContext,
 } from '../internal-agents/rolling-context.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, type FsStore } from '../lib/store.js';
+import type { FsStore } from '../lib/store.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -607,11 +607,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       const turn = await executeTurn(store, turnId);
       const event = turn && store.getTurnEvents(turnId).find((e) => e.event === 'turn.completed');
       if (!event) return;
-      const acknowledged = await store.persistTurnEvent(
-        turnId,
-        event,
-        ALREADY_DECIDED_PUBLICATION_ADMISSION
-      );
+      const acknowledged = await store.publishSettledTurnEvent(turnId, event);
       store.emitTurnEvent(turnId, acknowledged);
     });
   }

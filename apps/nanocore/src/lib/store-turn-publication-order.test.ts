@@ -26,7 +26,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createTestStore } from '../test-support/store.js';
-import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
+import { FsStore } from './store.js';
 
 // Independent trusted-producer token; old createItem accepts the extra runtime argument without this feature.
 const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
@@ -478,7 +478,7 @@ describe('Store same-Turn publication order through the real native worker', () 
       onTerminal: async () => {
         entered.release();
         await release.reached;
-        await f.store.createItem(decided, ALREADY_DECIDED_PUBLICATION_ADMISSION);
+        await f.store.publishSettledTurnItem(decided);
         order.push('hook');
       },
     });
@@ -793,7 +793,7 @@ for (const pressure of [
     ];
     const terminal = unmarkedStatus
       ? vi.spyOn(f.store, 'refreshDisplayProjectionItem')
-      : vi.spyOn(f.store, 'createItem');
+      : vi.spyOn(f.store, 'publishSettledTurnItem');
     let final:
       | Promise<
           | { status: 'ok'; value: { diagnostics: unknown[]; itemIds: string[] } }
@@ -888,7 +888,7 @@ for (const pressure of [
       await Promise.all(offers);
       await final;
       await competing;
-      calls = terminal.mock.calls
+      calls = (terminal.mock.calls as unknown as Array<[Item | string, ...unknown[]]>)
         .filter(
           ([item]) =>
             typeof item !== 'string' &&
@@ -928,10 +928,8 @@ for (const pressure of [
     const outcome = await final!;
     if (outcome.status !== 'ok') throw new Error('The original final transcript failed.');
     expect(calls).toHaveLength(1); // No hidden owner retry substitutes for guaranteed admission.
-    expect(calls[0]![1]).toEqual(
-      unmarkedStatus ? undefined : ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
-    expect(calls[0]![unmarkedStatus ? 1 : 2]).toBeUndefined(); // Generic status/terminal category must not imply progress.
+    expect(calls[0]!).toHaveLength(1); // The selected public API carries its settled/display category.
+    expect(calls[0]![1]).toBeUndefined(); // Generic status/terminal category must not imply progress.
     if (laterBytePressure) expect(await competing).toEqual({ status: 'ok', value: laterDurable });
     expect(state.progressCopyBytes).toBeInstanceOf(Map);
     expect(observations).toBeGreaterThan(0);
@@ -1024,11 +1022,11 @@ it('does not wait for progress queued behind its own durable predecessor under c
     };
     const observe = promise => promise.then(value => ({ status: 'ok', value }),
       error => ({ status: 'error', code: error.code, commit: error.commit }));
-    const first = observe(store.createItem(p0, undefined, RETAINED_PROGRESS_PUBLICATION));
+    const first = observe(store.createItem(p0, RETAINED_PROGRESS_PUBLICATION));
     await held;
     // No await between these three authentic caller admissions: later large input is owned before D1 prepares.
     const middle = observe(store.createItem(d1));
-    const laterProgress = observe(store.createItem(p1, undefined, RETAINED_PROGRESS_PUBLICATION));
+    const laterProgress = observe(store.createItem(p1, RETAINED_PROGRESS_PUBLICATION));
     const large = observe(store.createItem(d2));
     process.send({ phase: 'three-public-offers-after-real-progress-ACK' });
     // Later progress must refuse BEFORE it can become a byte-drain dependency of its predecessor.

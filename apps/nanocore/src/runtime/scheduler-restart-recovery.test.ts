@@ -23,12 +23,7 @@ import {
 } from '../config/runtime-config.js';
 import { listStoredWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  commandRequestExpiresAt,
-  commandRequestKey,
-  FsStore,
-} from '../lib/store.js';
+import { commandRequestExpiresAt, commandRequestKey, FsStore } from '../lib/store.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
@@ -1347,12 +1342,7 @@ describe('terminal failed-start product recovery', () => {
           .find((event) => event.event === 'turn.completed')!;
         f.store.emitTurnEvent(
           f.turnId,
-          await f.store.persistTurnEvent(
-            f.turnId,
-            terminalEvent,
-            ALREADY_DECIDED_PUBLICATION_ADMISSION
-          ),
-          ALREADY_DECIDED_PUBLICATION_ADMISSION
+          await f.store.publishSettledTurnEvent(f.turnId, terminalEvent)
         );
         const eventsSource = f;
         expect(f.store.getTurnById(f.turnId).status).toBe('failed');

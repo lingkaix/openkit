@@ -37,7 +37,6 @@ import {
   prepareInternalAgentContext,
 } from '../internal-agents/rolling-context.js';
 import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
   type FsStore,
   StoreRecordNotFoundError,
   type TerminalTurnPublication,
@@ -954,22 +953,19 @@ async function failedAdministrationTurn(
   const turn = store.getTurnById(turnId);
   const completedAt = new Date().toISOString();
   try {
-    const item = await store.createItem(
-      {
-        id: deriveEntityId('it', ['administration_refused', turn.id]),
-        owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-        threadId: turn.threadId,
-        turnId: turn.id,
-        type: 'status',
-        status: 'completed',
-        level: 'warning',
-        title: 'Administration request did not complete',
-        summary: explanation,
-        createdAt: completedAt,
-        completedAt,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const item = await store.publishSettledTurnItem({
+      id: deriveEntityId('it', ['administration_refused', turn.id]),
+      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'status',
+      status: 'completed',
+      level: 'warning',
+      title: 'Administration request did not complete',
+      summary: explanation,
+      createdAt: completedAt,
+      completedAt,
+    });
     const completedTurn = await store.completeTurn(
       turn.id,
       {

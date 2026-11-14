@@ -6671,7 +6671,7 @@ describe('worker MCP routes', () => {
       }
 
       const itemCountBeforePublicationFailure = store.listAllItems().length;
-      const createItem = vi.spyOn(store, 'createItem').mockImplementationOnce(() => {
+      const createItem = vi.spyOn(store, 'publishSettledTurnItem').mockImplementationOnce(() => {
         throw new Error('injected MCP Item publication failure');
       });
       await expect(
@@ -9655,16 +9655,18 @@ describe('MCP native admission and original closeout', () => {
     async ({ kind, pool }) => {
       const f = await createMcpCommitFixture();
       const publicationErrors: unknown[] = [];
-      const createItem = f.store.createItem.bind(f.store);
-      const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (...args) => {
-        try {
-          return await createItem(...args);
-        } catch (error) {
-          // Observe the original exception without changing the publication or its failure.
-          publicationErrors.push(error);
-          throw error;
-        }
-      });
+      const createItem = f.store.publishSettledTurnItem.bind(f.store);
+      const publication = vi
+        .spyOn(f.store, 'publishSettledTurnItem')
+        .mockImplementation(async (...args) => {
+          try {
+            return await createItem(...args);
+          } catch (error) {
+            // Observe the original exception without changing the publication or its failure.
+            publicationErrors.push(error);
+            throw error;
+          }
+        });
       const client = getControlStoreWorkerClient();
       const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
       const siblingId = testEntityId('ws', 'mcp-pressure');
@@ -9912,15 +9914,19 @@ describe('MCP native admission and original closeout', () => {
     const publicationEntered = Promise.withResolvers<void>();
     const publicationErrors: unknown[] = [];
     const createItem = f.store.createItem.bind(f.store);
-    const publication = vi.spyOn(f.store, 'createItem').mockImplementation(async (...args) => {
-      if (args[0].id === itemId) publicationEntered.resolve();
-      try {
-        return await createItem(...args);
-      } catch (error) {
-        publicationErrors.push(error);
-        throw error;
-      }
-    });
+    const publishSettledTurnItem = f.store.publishSettledTurnItem.bind(f.store);
+    const publication = vi
+      .spyOn(f.store, 'publishSettledTurnItem')
+      .mockImplementation(async (...args) => {
+        if ((args[0] as unknown as Parameters<FsStore['createItem']>[0]).id === itemId)
+          publicationEntered.resolve();
+        try {
+          return await publishSettledTurnItem(...args);
+        } catch (error) {
+          publicationErrors.push(error);
+          throw error;
+        }
+      });
     const client = getControlStoreWorkerClient();
     const state = client as unknown as {
       backing: Map<string, { inputBytes: number }>;
@@ -10024,7 +10030,7 @@ describe('MCP native admission and original closeout', () => {
       >
     > = [];
     const offer = (item: (typeof progress)[number]) =>
-      createItem(item, undefined, RETAINED_PROGRESS_PUBLICATION).then(
+      createItem(item, RETAINED_PROGRESS_PUBLICATION).then(
         (value) => ({ status: 'ok' as const, value }),
         (error) => ({ status: 'error' as const, error })
       );
@@ -10052,11 +10058,7 @@ describe('MCP native admission and original closeout', () => {
         void producer.catch(() => undefined);
       }
       await expect(
-        createItem(
-          { ...progress[0]!, id: allocateEntityId('it') },
-          undefined,
-          RETAINED_PROGRESS_PUBLICATION
-        )
+        createItem({ ...progress[0]!, id: allocateEntityId('it') }, RETAINED_PROGRESS_PUBLICATION)
       ).rejects.toMatchObject({ code: 'busy', commit: 'not-committed' });
       effect.resolve();
       await publicationEntered.promise;
@@ -10197,7 +10199,7 @@ describe('MCP native admission and original closeout', () => {
       for (const forward of held.splice(0)) forward();
     };
     const offer = (item: (typeof progress)[number]) =>
-      f.store.createItem(item, undefined, RETAINED_PROGRESS_PUBLICATION).then(
+      f.store.createItem(item, RETAINED_PROGRESS_PUBLICATION).then(
         (value) => ({ status: 'ok' as const, value }),
         (error) => ({ status: 'error' as const, error })
       );

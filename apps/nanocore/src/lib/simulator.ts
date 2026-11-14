@@ -120,7 +120,6 @@ import { readDataRootLayoutMarker, resolveDataRootPath } from '../storage/fs-lay
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import { isCurrentAgentSessionStatus } from '../storage/workspace-file-records.js';
 import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
   commandRequestExpiresAt,
   commandRequestKey,
   type FsStore,
@@ -1296,9 +1295,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
             data: { type: 'turn-completed', stopReason: 'completed', turn },
           } satisfies Parameters<FsStore['persistTurnEvent']>[1],
         ]) {
-          notifications.push(
-            await store.persistTurnEvent(state.turnId, event, ALREADY_DECIDED_PUBLICATION_ADMISSION)
-          );
+          notifications.push(await store.publishSettledTurnEvent(state.turnId, event));
         }
         // Native completion acknowledges the whole ordered tuple before its notification tail.
         for (const event of notifications) store.emitTurnEvent(state.turnId, event);
@@ -1473,23 +1470,18 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       );
     if (!retainedSessionEvent)
       throw new Error('Simulator terminal Session event was not acknowledged.');
-    const agentSessionUpdatedEvent = await store.persistTurnEvent(
+    const agentSessionUpdatedEvent = await store.publishSettledTurnEvent(
       turnId,
-      retainedSessionEvent,
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+      retainedSessionEvent
     );
-    const turnCompletedEvent = await store.persistTurnEvent(
+    const turnCompletedEvent = await store.publishSettledTurnEvent(turnId, {
+      event: 'turn.completed',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
       turnId,
-      {
-        event: 'turn.completed',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId,
-        data: { type: 'turn-completed', stopReason: 'aborted', turn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+      data: { type: 'turn-completed', stopReason: 'aborted', turn },
+    });
     // All durable writes finish before observers can start interrupted closeout.
     store.emitTurnEvent(turnId, agentSessionUpdatedEvent);
     store.emitTurnEvent(turnId, turnCompletedEvent);
@@ -1811,7 +1803,7 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           turnId: environmentPackage.scope.turnId,
           packageSnapshotId: environmentPackage.snapshotId,
         };
-        await store.createArtifact(prepared.artifact, staged, undefined, {
+        await store.createArtifact(prepared.artifact, staged, {
           review: prepared.reviewInput,
           fileAdmission: admission,
           receipt: {
@@ -1965,18 +1957,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     if (!artifactItem) {
       throw new Error(`Artifact reference was not persisted: ${artifact.id}`);
     }
-    const artifactCreatedEvent = await store.persistTurnEvent(
-      state.turnId,
-      {
-        event: 'artifact.created',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data: { type: 'artifact-created', artifact },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const artifactCreatedEvent = await store.publishSettledTurnEvent(state.turnId, {
+      event: 'artifact.created',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'artifact-created', artifact },
+    });
     store.emitTurnEvent(state.turnId, artifactCreatedEvent);
     await this.emitItemCreated(store, state, artifactItem);
     await this.emitItemDelta(
@@ -2033,24 +2021,19 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
       );
     if (!retainedSessionEvent)
       throw new Error('Simulator terminal Session event was not acknowledged.');
-    const sessionNotification = await store.persistTurnEvent(
+    const sessionNotification = await store.publishSettledTurnEvent(
       state.turnId,
-      retainedSessionEvent,
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
+      retainedSessionEvent
     );
     store.emitTurnEvent(state.turnId, sessionNotification);
-    const turnCompletedEvent = await store.persistTurnEvent(
-      state.turnId,
-      {
-        event: 'turn.completed',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data: { type: 'turn-completed', stopReason: 'completed', turn },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const turnCompletedEvent = await store.publishSettledTurnEvent(state.turnId, {
+      event: 'turn.completed',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'turn-completed', stopReason: 'completed', turn },
+    });
     store.emitTurnEvent(state.turnId, turnCompletedEvent);
   }
 
@@ -2081,18 +2064,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     state: SimulatedTurnState,
     item: Awaited<ReturnType<FsStore['createItem']>>
   ): Promise<void> {
-    const itemCreatedEvent = await store.persistTurnEvent(
-      state.turnId,
-      {
-        event: 'item.created',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data: { type: 'item-created', item },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const itemCreatedEvent = await store.publishSettledTurnEvent(state.turnId, {
+      event: 'item.created',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'item-created', item },
+    });
     store.emitTurnEvent(state.turnId, itemCreatedEvent);
   }
 
@@ -2125,18 +2104,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
           : { ...base, deltaKind, delta }
     );
 
-    const itemDeltaEvent = await store.persistTurnEvent(
-      state.turnId,
-      {
-        event: 'item.delta',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data,
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const itemDeltaEvent = await store.publishSettledTurnEvent(state.turnId, {
+      event: 'item.delta',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data,
+    });
     store.emitTurnEvent(state.turnId, itemDeltaEvent);
   }
 
@@ -2148,18 +2123,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     state: SimulatedTurnState,
     item: RuntimeItem
   ): Promise<void> {
-    const itemCompletedEvent = await store.persistTurnEvent(
-      state.turnId,
-      {
-        event: 'item.completed',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data: { type: 'item-completed', itemId: item.id, item },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const itemCompletedEvent = await store.publishSettledTurnEvent(state.turnId, {
+      event: 'item.completed',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'item-completed', itemId: item.id, item },
+    });
     store.emitTurnEvent(state.turnId, itemCompletedEvent);
   }
 
@@ -2171,18 +2142,14 @@ export class SimulatedTurnExecutor implements TurnExecutor, ExecutionBackend {
     state: SimulatedTurnState,
     agentSession: Awaited<ReturnType<FsStore['updateAgentSession']>>
   ): Promise<void> {
-    const agentSessionUpdatedEvent = await store.persistTurnEvent(
-      state.turnId,
-      {
-        event: 'agent.session.updated',
-        requestId: state.requestId,
-        workspaceId: state.workspaceId,
-        threadId: state.threadId,
-        turnId: state.turnId,
-        data: { type: 'agent-session-updated', agentSession },
-      },
-      ALREADY_DECIDED_PUBLICATION_ADMISSION
-    );
+    const agentSessionUpdatedEvent = await store.publishSettledTurnEvent(state.turnId, {
+      event: 'agent.session.updated',
+      requestId: state.requestId,
+      workspaceId: state.workspaceId,
+      threadId: state.threadId,
+      turnId: state.turnId,
+      data: { type: 'agent-session-updated', agentSession },
+    });
     store.emitTurnEvent(state.turnId, agentSessionUpdatedEvent);
   }
 }
