@@ -254,7 +254,7 @@ describe('administration conversation route', () => {
         modelMetadata: {
           model: {
             family: 'test',
-            limit: { context: 20_000, output: 1_000 },
+            limit: { context: 64_000, output: 1_000 },
             modalities: { input: ['text'], output: ['text'] },
             tool_call: true,
           },
@@ -271,8 +271,8 @@ describe('administration conversation route', () => {
             {
               id: 'administration',
               displayName: 'Administration',
-              // 10000 stays inside the 20000 physical context and leaves headroom for eight Tool schemas plus instructions.
-              contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
+              // Flow capacity must fit the immutable Policy Tool schemas; runtime model limits still apply.
+              contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
               routes: restorePrimary
                 ? [
                     { id: 'primary', providerProfileId: 'primary', providerModel: 'model' },
@@ -498,7 +498,7 @@ describe('administration conversation route', () => {
       modelMetadata: {
         model: {
           family: 'test',
-          limit: { context: 20_000, output: 1_000 },
+          limit: { context: 64_000, output: 1_000 },
           modalities: { input: ['text'], output: ['text'] },
           tool_call: true,
         },
@@ -515,8 +515,8 @@ describe('administration conversation route', () => {
           {
             id: 'administration',
             displayName: 'Administration',
-            // 10000 stays inside the 20000 physical context and leaves headroom for eight Tool schemas plus instructions.
-            contextManagement: [{ type: 'compaction', compactThreshold: 10_000 }],
+            // Flow capacity must fit the immutable Policy Tool schemas; runtime model limits still apply.
+            contextManagement: [{ type: 'compaction', compactThreshold: 32_000 }],
             routes: [
               { id: 'primary', providerProfileId: providerProfile.id, providerModel: 'model' },
             ],
