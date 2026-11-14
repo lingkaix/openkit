@@ -1,4 +1,8 @@
-import type { OpenKitAccessTokenRecord, OpenKitAccessTokenScope } from '@openkit/app-api-schemas';
+import type {
+  NanoHostTransportTokenRecord,
+  OpenKitAccessTokenRecord,
+  OpenKitAccessTokenScope,
+} from '@openkit/app-api-schemas';
 import { ApiCallError } from '@openkit/core-client';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
@@ -27,6 +31,7 @@ import {
 } from './LongList';
 
 const QUERY_KEY = ['settings', 'access-tokens'] as const;
+const NANOHOST_QUERY_KEY = ['settings', 'nanohost-transport-tokens'] as const;
 const SCOPE_ITEMS = [
   { id: 'server-admin', label: 'server-admin' },
   { id: 'workspace', label: 'workspace' },
@@ -241,7 +246,166 @@ export function AccessTokensScreen() {
           }
         />
       )}
+      <NanoHostTransportTokens />
     </Page>
+  );
+}
+
+/** Administrator list and revoke for redacted NanoHost transport tokens. */
+function NanoHostTransportTokens() {
+  const client = useCoreClient();
+  const queryClient = useQueryClient();
+  const [reviewId, setReviewId] = useState<string | null>(null);
+  const listed = useQuery({
+    queryKey: NANOHOST_QUERY_KEY,
+    queryFn: () => client.operations['nanohost.token-list']({}),
+    retry: false,
+  });
+  const revoke = useMutation({
+    mutationFn: (tokenId: string) => client.operations['nanohost.token-revoke']({ tokenId }),
+    onSuccess: () => {
+      setReviewId(null);
+      void queryClient.invalidateQueries({ queryKey: NANOHOST_QUERY_KEY });
+    },
+  });
+  const denied = isAccessDenied(listed.error);
+  const items = listed.data?.items;
+
+  return (
+    <section className="flex flex-col gap-3" aria-label="NanoHost transport tokens">
+      <h2 className="text-sm font-bold text-fg-strong">NanoHost transport tokens</h2>
+      {listed.isLoading ? (
+        <Skeleton lines={3} />
+      ) : listed.isError && isNanoHostServerModeOnly(listed.error) ? (
+        <EmptyState
+          icon="key"
+          title="NanoHost transport tokens are used only when OpenKit runs as a server."
+        />
+      ) : listed.isError && denied ? (
+        <EmptyState
+          icon="key"
+          title="Access denied"
+          hint="NanoHost transport token administration requires derived server-admin authority on the signed-in session."
+          action={
+            <Button variant="outline" className="min-h-11" onPress={() => void listed.refetch()}>
+              Retry NanoHost tokens
+            </Button>
+          }
+        />
+      ) : listed.isError ? (
+        <ErrorBanner
+          message="Couldn't load NanoHost transport tokens."
+          onRetry={() => void listed.refetch()}
+        />
+      ) : !items || items.length === 0 ? (
+        <EmptyState
+          icon="key"
+          title="No NanoHost transport tokens"
+          hint="Issued transport tokens appear here with redacted metadata only."
+        />
+      ) : (
+        <LongList
+          summary={(filter) => {
+            const lines = items
+              .filter(
+                (item) =>
+                  isAttention(item.status) &&
+                  matchesLoadedRow(filter, {
+                    outcome: item.status,
+                    title: item.tokenType,
+                    at: item.issuedAt,
+                  })
+              )
+              .map((item) => (
+                <p key={item.tokenId}>
+                  {attentionSentence(attentionClause(item.status), item.scope, item.issuedAt)}
+                </p>
+              ));
+            return lines.length > 0 ? (
+              lines
+            ) : (
+              <p>Nothing failed, was denied, or needs a decision.</p>
+            );
+          }}
+          records={(filter) =>
+            items
+              .filter((item) =>
+                matchesLoadedRow(filter, {
+                  outcome: item.status,
+                  title: item.tokenId,
+                  at: item.issuedAt,
+                })
+              )
+              .map((item) => (
+                <NanoHostTokenRow
+                  key={item.tokenId}
+                  item={item}
+                  reviewing={reviewId === item.tokenId}
+                  busy={revoke.isPending}
+                  failed={revoke.isError && revoke.variables === item.tokenId}
+                  onReview={() => setReviewId(reviewId === item.tokenId ? null : item.tokenId)}
+                  onRevoke={() => revoke.mutate(item.tokenId)}
+                />
+              ))
+          }
+        />
+      )}
+    </section>
+  );
+}
+
+function NanoHostTokenRow({
+  item,
+  reviewing,
+  busy,
+  failed,
+  onReview,
+  onRevoke,
+}: {
+  item: NanoHostTransportTokenRecord;
+  reviewing: boolean;
+  busy: boolean;
+  failed: boolean;
+  onReview: () => void;
+  onRevoke: () => void;
+}) {
+  const revoked = item.status === 'revoked';
+  return (
+    <ListRow className="flex-wrap">
+      <div className="min-w-0 flex-1 basis-full sm:basis-auto">
+        <p className="truncate text-sm font-bold text-fg-strong">{item.tokenId}</p>
+        <p className="text-xs text-fg-muted">
+          {item.scope} · {item.status} · host {item.ownerNanoHostIdentityId}
+        </p>
+      </div>
+      {failed ? (
+        <div className="basis-full">
+          <ErrorBanner message="Couldn't revoke the NanoHost transport token." />
+        </div>
+      ) : null}
+      <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+        <Button
+          size="sm"
+          variant="outline"
+          className="min-h-11"
+          isDisabled={busy || revoked}
+          onPress={onReview}
+        >
+          {reviewing ? 'Keep transport token' : 'Review revoke'}
+        </Button>
+        {reviewing ? (
+          <Button
+            size="sm"
+            variant="quiet"
+            className="min-h-11"
+            isDisabled={busy || revoked}
+            onPress={onRevoke}
+          >
+            Revoke transport token
+          </Button>
+        ) : null}
+      </div>
+    </ListRow>
   );
 }
 
@@ -301,4 +465,11 @@ function isAccessDenied(error: unknown): boolean {
 /** Local mode refuses token administration with this exact code. */
 function isServerModeOnly(error: unknown): boolean {
   return error instanceof ApiCallError && error.code === 'access_token_admin_server_mode_required';
+}
+
+/** Local mode refuses NanoHost transport administration with this exact code. */
+function isNanoHostServerModeOnly(error: unknown): boolean {
+  return (
+    error instanceof ApiCallError && error.code === 'nanohost_transport_admin_server_mode_required'
+  );
 }
