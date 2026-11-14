@@ -309,62 +309,11 @@ describe('retained Policy version-one contracts', () => {
   });
 
   it('refuses deferred retained families until their activating behavior lands', () => {
-    expect(
-      PolicyGrantV1Schema.safeParse({
-        kind: 'storage-lease',
-        knowledgeBaseId: workspaceId,
-        mount: 'work',
-        pathPrefix: '',
-        mode: 'read-only',
-      }).success
-    ).toBe(false);
     for (const kind of ['agent-principal'])
       expect(
         PolicyDocumentV1Schema.safeParse({ schemaVersion: 1, statements: [{ ...binding, kind }] })
           .success
       ).toBe(false);
-  });
-
-  it('retains storage leases with normalized prefixes and the statement expiry only', () => {
-    const grant = {
-      kind: 'storage-lease',
-      knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001',
-      mount: 'local',
-      pathPrefix: '',
-      mode: 'read-only',
-    };
-    const statement = {
-      kind: 'permission',
-      id: 'read-originals',
-      state: 'inactive',
-      author: principal,
-      authority: { kind: 'human', userId },
-      authoredAt: binding.authoredAt,
-      scope: {
-        subjects: [principal],
-        actions: ['knowledge.read'],
-        resources: [{ kind: 'container', container: anchor }],
-      },
-      lifetime: { anchor, notAfter: '2026-10-19T00:00:00Z' },
-      effect: 'allow',
-      grant,
-    };
-    expect(
-      PolicyDocumentV1Schema.parse({ schemaVersion: 1, statements: [statement] }).statements
-    ).toEqual([statement]);
-    expect(
-      PolicyGrantV1Schema.parse({ ...grant, pathPrefix: 'docs/chapter', mode: 'staged-write' })
-    ).toEqual({ ...grant, pathPrefix: 'docs/chapter', mode: 'staged-write' });
-    expect(
-      PolicyDocumentV1Schema.safeParse({
-        schemaVersion: 1,
-        statements: [{ ...statement, lifetime: { anchor } }],
-      }).success
-    ).toBe(false);
-    for (const pathPrefix of ['/docs', '../docs', 'docs//chapter'])
-      expect(PolicyGrantV1Schema.safeParse({ ...grant, pathPrefix }).success).toBe(false);
-    for (const extra of [{ audience: [principal] }, { expiresAt: statement.lifetime.notAfter }])
-      expect(PolicyGrantV1Schema.safeParse({ ...grant, ...extra }).success).toBe(false);
   });
 
   it('validates canonical maintenance host syntax including bracketed IPv6', () => {

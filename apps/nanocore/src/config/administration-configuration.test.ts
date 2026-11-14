@@ -2,16 +2,13 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   allocateEntityId,
   deriveEntityId,
-  type PolicyBindingV1,
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
   writeRetainedV1,
 } from '@openkit/protocol';
-import { LocalStorage } from '@openkit/storage';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
@@ -22,16 +19,10 @@ import {
 } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
-import {
-  currentWorkspaceAuthority,
-  evaluateProductAuthorization,
-  isCurrentServerPolicyAuthor,
-} from '../auth/operation-authorizer.js';
-import { disableCanonicalUser } from '../auth/user-lifecycle.js';
+import { isCurrentServerPolicyAuthor } from '../auth/operation-authorizer.js';
 import { createMcpConfig, updateMcpBinding } from '../catalog/resource-catalog.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
-import * as policyConfiguration from '../policy/configuration.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import {
   applyMcpToolProhibitions,
@@ -57,7 +48,6 @@ import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
-import { readDefaultKnowledgeBaseId } from './knowledge-base.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
@@ -398,289 +388,6 @@ describe('administration catalog configuration', () => {
         (row) => row.mediation?.operation === 'policy.write'
       )
     ).toEqual([]);
-  });
-
-  it('admits current human storage leases for exact reads and staging without publication', async () => {
-    const f = await fixture();
-    recordWorkspaceOwnerMembership({
-      coreDb: f.coreDb,
-      workspaceId: f.workspaceId,
-      ownerUserId: f.actor.userId,
-    });
-    const ownerScope = { kind: 'workspace' as const, workspaceId: f.workspaceId };
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: ownerScope });
-    const principal = { kind: 'human' as const, id: f.actor.userId };
-    const anchor = { owner: ownerScope, kind: 'workspace', id: f.workspaceId };
-    const notAfter = new Date(Date.now() + 120_000).toISOString();
-    const lease = {
-      id: 'read-raw',
-      kind: 'permission',
-      state: 'active',
-      author: principal,
-      authority: { kind: 'human', userId: f.actor.userId },
-      authoredAt: new Date().toISOString(),
-      scope: {
-        subjects: [principal],
-        actions: ['knowledge.read'],
-        resources: [{ kind: 'container', container: anchor }],
-      },
-      lifetime: { anchor, notAfter },
-      effect: 'allow',
-      grant: {
-        kind: 'storage-lease',
-        knowledgeBaseId,
-        mount: 'local',
-        pathPrefix: 'docs',
-        mode: 'read-only',
-      },
-    };
-    const proposed = PolicyDocumentV1Schema.parse({
-      schemaVersion: 1,
-      statements: [
-        lease,
-        {
-          ...lease,
-          id: 'stage-raw',
-          scope: { ...lease.scope, actions: ['knowledge.write'] },
-          grant: { ...lease.grant, mode: 'staged-write' },
-        },
-      ],
-    });
-    const proposal = await f.service.propose(
-      {
-        targetFamily: 'policy',
-        targetId: 'server',
-        expectedRevision: f.files.readFile('server.jsonc').file.revision!,
-        changes: { proposed, rationale: 'Read and stage exact admitted raw bytes.' },
-      },
-      f.home
-    );
-    expect(await f.service.apply(f.confirm(proposal))).toMatchObject({
-      persisted: true,
-      reload: 'applied',
-    });
-    const policy = f.manager.current().openKitConfig.policy!.mediation;
-    expect(readAdmittedPolicyDocument(f.coreDb, policy).statements).toHaveLength(2);
-    const decision = listServerPermissionDecisions(f.coreDb).find(
-      (row) => row.mediation?.operation === 'policy.write'
-    );
-    expect(decision).toMatchObject({ result: 'allow', mediation: { kernel: { effect: 'allow' } } });
-    expect(listServerAuditEvents(f.coreDb)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          action: 'policy.write',
-          permissionDecisionId: decision?.decisionId,
-          outcome: 'succeeded',
-        }),
-      ])
-    );
-    const actor = { kind: 'user' as const, id: f.actor.userId };
-    const subject = {
-      principal,
-      onBehalfOf: null,
-      actor,
-      process: null,
-      credentialKind: 'token' as const,
-      responsibleHumanId: f.actor.userId,
-    };
-    const kernels: PolicyDecision[] = [];
-    expect(
-      currentWorkspaceAuthority(f.coreDb, f.workspaceId, actor, 'knowledge.read', true, f.actor, {
-        dependencyFailure: 'throw',
-        onEvaluation: ({ decision: current }) => kernels.push(current),
-      })
-    ).not.toBeNull();
-    expect(kernels[0]?.effect).toBe('allow');
-    const input = {
-      coreDb: f.coreDb,
-      policy,
-      statementId: lease.id,
-      subject,
-      ownerScope,
-      knowledgeBaseId,
-      action: 'knowledge.read' as const,
-      kernel: kernels[0]!,
-      anchorCurrent: (container: PolicyBindingV1['lifetime']['anchor']) =>
-        container.kind === 'workspace' &&
-        container.id === f.workspaceId &&
-        f.store.getWorkspace(f.workspaceId).status === 'active',
-      now: Date.now(),
-    };
-    const access = policyConfiguration.readStorageLeaseAccess(input);
-    expect(access).toMatchObject({
-      basis: 'lease',
-      knowledgeBaseId,
-      ownerScope,
-      mount: 'local',
-      pathPrefix: 'docs',
-      mode: 'read-only',
-      expiresAt: notAfter,
-      revoked: false,
-    });
-    if (!access) throw new Error('Expected current storage lease.');
-    const root = join(f.dataRoot, 'lease-originals');
-    const stagingRoot = join(f.dataRoot, 'lease-staging');
-    mkdirSync(join(root, 'docs'), { recursive: true });
-    mkdirSync(join(root, 'docs-other'));
-    mkdirSync(stagingRoot);
-    const bytes = Buffer.from([0, 255, 128, 13, 10]);
-    writeFileSync(join(root, 'docs/original.bin'), bytes);
-    writeFileSync(join(root, 'docs-other/private.bin'), 'Sibling secret');
-    const storage = new LocalStorage({
-      mounts: [{ knowledgeBaseId, ownerScope, name: 'local', root }],
-      stagingRoot,
-    });
-    const locator = { ownerScope, mount: 'local', path: 'docs/original.bin' };
-    try {
-      const observed = await storage.stat({ access, locator });
-      expect(observed.status).toBe('ok');
-      if (observed.status !== 'ok') throw new Error('Expected admitted original metadata.');
-      expect(observed.value.reference.contentDigest).toBe(
-        `sha256:${createHash('sha256').update(bytes).digest('hex')}`
-      );
-      expect(
-        await storage.read({ access, content: observed.value, offset: 0, length: bytes.length })
-      ).toEqual({
-        status: 'ok',
-        value: { data: bytes.toString('base64'), offset: 0, nextOffset: null },
-      });
-      expect(
-        await storage.stat({ access, locator: { ...locator, path: 'docs-other/private.bin' } })
-      ).toEqual({ status: 'denied' });
-      expect(await storage.beginStage({ access, locator, maxByteLength: 3 })).toEqual({
-        status: 'denied',
-      });
-      const stageKernel = evaluateProductAuthorization(
-        f.coreDb,
-        f.actor,
-        { kind: 'workspace', workspaceId: f.workspaceId },
-        'knowledge.write',
-        true
-      );
-      const staged = policyConfiguration.readStorageLeaseAccess({
-        ...input,
-        statementId: 'stage-raw',
-        action: 'knowledge.write',
-        kernel: stageKernel,
-      });
-      expect(staged?.mode).toBe('staged-write');
-      if (!staged) throw new Error('Expected current staged-write lease.');
-      expect(await storage.stat({ access: staged, locator })).toEqual({ status: 'denied' });
-      expect(
-        await storage.read({ access: staged, content: observed.value, offset: 0, length: 1 })
-      ).toEqual({ status: 'denied' });
-      const stage = await storage.beginStage({ access: staged, locator, maxByteLength: 3 });
-      expect(stage.status).toBe('ok');
-      if (stage.status !== 'ok') throw new Error('Expected admitted temporary stage.');
-      expect(
-        await storage.writeStage({
-          access: staged,
-          handle: stage.value.handle,
-          data: Buffer.from('new').toString('base64'),
-        })
-      ).toEqual({ status: 'ok', value: { byteLength: 3 } });
-      expect(
-        (await storage.finishStage({ access: staged, handle: stage.value.handle })).status
-      ).toBe('ok');
-      expect(readFileSync(join(root, locator.path))).toEqual(bytes);
-      expect(
-        policyConfiguration.readStorageLeaseAccess({ ...input, now: Date.parse(notAfter) })
-      ).toBeNull();
-      expect(
-        policyConfiguration.readStorageLeaseAccess({ ...input, anchorCurrent: () => false })
-      ).toBeNull();
-      const revokedToken = createOpenKitAccessTokenRecord(f.coreDb, {
-        ownerUserId: f.actor.userId,
-        scope: 'server-admin',
-        workspaceIds: [],
-        expiresAt: '2999-01-01T00:00:00.000Z',
-      });
-      revokeOpenKitAccessTokenRecord(f.coreDb, revokedToken.tokenId);
-      expect(
-        policyConfiguration.readStorageLeaseAccess({
-          ...input,
-          kernel: evaluateProductAuthorization(
-            f.coreDb,
-            { ...f.actor, tokenId: revokedToken.tokenId },
-            { kind: 'workspace', workspaceId: f.workspaceId },
-            'knowledge.read'
-          ),
-        })
-      ).toBeNull();
-      expect(
-        policyConfiguration.readStorageLeaseAccess({
-          ...input,
-          knowledgeBaseId: allocateEntityId('kb'),
-        })
-      ).toBeNull();
-      expect(
-        policyConfiguration.readStorageLeaseAccess({
-          ...input,
-          action: 'knowledge.write',
-          kernel: stageKernel,
-        })
-      ).toBeNull();
-      expect(
-        policyConfiguration.readStorageLeaseAccess({ ...input, ownerScope: { kind: 'server' } })
-      ).toBeNull();
-      expect(
-        policyConfiguration.readStorageLeaseAccess({
-          ...input,
-          subject: { ...subject, principal: { kind: 'human', id: allocateEntityId('usr') } },
-        })
-      ).toBeNull();
-      const withdrawal = await f.service.propose(
-        {
-          targetFamily: 'policy',
-          targetId: 'server',
-          expectedRevision: f.files.readFile('server.jsonc').file.revision!,
-          changes: {
-            proposed: { schemaVersion: 1, statements: [] },
-            rationale: 'Withdraw both leases.',
-          },
-        },
-        f.home
-      );
-      expect(await f.service.apply(f.confirm(withdrawal))).toMatchObject({
-        persisted: true,
-        reload: 'applied',
-      });
-      expect(
-        listServerPermissionDecisions(f.coreDb).some(
-          (row) => row.decisionId === decision?.decisionId
-        )
-      ).toBe(true);
-      expect(
-        policyConfiguration.readStorageLeaseAccess({
-          ...input,
-          policy: f.manager.current().openKitConfig.policy!.mediation,
-        })
-      ).toBeNull();
-      const renewed = await f.service.propose(
-        {
-          targetFamily: 'policy',
-          targetId: 'server',
-          expectedRevision: f.files.readFile('server.jsonc').file.revision!,
-          changes: { proposed, rationale: 'Issue new leases through a new human request.' },
-        },
-        { ...f.home, requestId: randomUUID() }
-      );
-      expect(await f.service.apply(f.confirm(renewed))).toMatchObject({
-        persisted: true,
-        reload: 'applied',
-      });
-      f.coreDb.sqlite.transaction(() =>
-        disableCanonicalUser(f.coreDb, f.actor.userId, new Date())
-      )();
-      expect(
-        policyConfiguration.readStorageLeaseAccess({
-          ...input,
-          policy: f.manager.current().openKitConfig.policy!.mediation,
-        })
-      ).toBeNull();
-    } finally {
-      await storage.close();
-    }
   });
 
   it('retains admitted Policy evidence but refuses a credential revoked during its ACK wait before Item or file publication', async () => {

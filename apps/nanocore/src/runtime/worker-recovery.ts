@@ -1023,14 +1023,6 @@ export function classifyClosedWorkerUserInputGate(
   return { ...closure, responseRequestId: terminalEvent.requestId };
 }
 
-/** The human Gate is gone. Retained callers observe no active Gate. */
-export function hasExactActiveHumanGate(
-  _store: FsStore,
-  _turn: ReturnType<FsStore['getTurnById']>
-): boolean {
-  return false;
-}
-
 /**
  * Materializes only checkpoints whose existing owners prove an interrupted worker closeout.
  *

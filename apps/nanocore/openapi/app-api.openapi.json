@@ -42471,43 +42471,6 @@
                                         "validFrom"
                                       ],
                                       "additionalProperties": false
-                                    },
-                                    {
-                                      "type": "object",
-                                      "properties": {
-                                        "kind": {
-                                          "type": "string",
-                                          "const": "storage-lease"
-                                        },
-                                        "knowledgeBaseId": {
-                                          "type": "string",
-                                          "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                                        },
-                                        "mount": {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        "pathPrefix": {
-                                          "type": "string",
-                                          "maxLength": 4096,
-                                          "description": "Normalized relative path; empty means mount root. Canonical Zod validation rejects traversal and invalid separators."
-                                        },
-                                        "mode": {
-                                          "type": "string",
-                                          "enum": [
-                                            "read-only",
-                                            "staged-write"
-                                          ]
-                                        }
-                                      },
-                                      "required": [
-                                        "kind",
-                                        "knowledgeBaseId",
-                                        "mount",
-                                        "pathPrefix",
-                                        "mode"
-                                      ],
-                                      "additionalProperties": false
                                     }
                                   ]
                                 }
@@ -42525,7 +42488,7 @@
                                 "grant"
                               ],
                               "additionalProperties": false,
-                              "description": "Storage-lease and finite maintenance permissions require lifetime.notAfter; maintenance validFrom precedes it. Use canonical Zod validation for cross-field rules."
+                              "description": "Finite maintenance permissions require lifetime.notAfter; validFrom precedes it. Use canonical Zod validation for cross-field rules."
                             },
                             {
                               "type": "object",
@@ -45244,43 +45207,6 @@
                                         "validFrom"
                                       ],
                                       "additionalProperties": false
-                                    },
-                                    {
-                                      "type": "object",
-                                      "properties": {
-                                        "kind": {
-                                          "type": "string",
-                                          "const": "storage-lease"
-                                        },
-                                        "knowledgeBaseId": {
-                                          "type": "string",
-                                          "pattern": "^kb_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
-                                        },
-                                        "mount": {
-                                          "type": "string",
-                                          "minLength": 1
-                                        },
-                                        "pathPrefix": {
-                                          "type": "string",
-                                          "maxLength": 4096,
-                                          "description": "Normalized relative path; empty means mount root. Canonical Zod validation rejects traversal and invalid separators."
-                                        },
-                                        "mode": {
-                                          "type": "string",
-                                          "enum": [
-                                            "read-only",
-                                            "staged-write"
-                                          ]
-                                        }
-                                      },
-                                      "required": [
-                                        "kind",
-                                        "knowledgeBaseId",
-                                        "mount",
-                                        "pathPrefix",
-                                        "mode"
-                                      ],
-                                      "additionalProperties": false
                                     }
                                   ]
                                 }
@@ -45298,7 +45224,7 @@
                                 "grant"
                               ],
                               "additionalProperties": false,
-                              "description": "Storage-lease and finite maintenance permissions require lifetime.notAfter; maintenance validFrom precedes it. Use canonical Zod validation for cross-field rules."
+                              "description": "Finite maintenance permissions require lifetime.notAfter; validFrom precedes it. Use canonical Zod validation for cross-field rules."
                             },
                             {
                               "type": "object",
@@ -182981,5 +182907,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8339c6f838ea50605027b86f0cd61f2a1e2da0797c091b3875819a18e741b2b2"
+  "x-openkit-source-digest": "sha256:24168c8313a1bd8a4ea5febfb088a4a70611397f20a83a548a8841d547840191"
 }
