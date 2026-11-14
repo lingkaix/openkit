@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import type { HttpBindings } from '@hono/node-server';
+import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import {
   type BootReadinessSnapshot,
   OPERATION_DEFINITIONS,
@@ -874,10 +876,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     await workerMcpGateway.closeCredentialGrants(grantIds);
   };
   const app = new Hono<{ Variables: AuthVariables }>();
-  // Default-on at the Core response boundary, including early refusals and unmatched routes.
+  // Default-on for ordinary Fetch responses and native transport responses sent directly.
   app.use(async (c, next) => {
+    const policy = "script-src 'self'; object-src 'none'; base-uri 'self'";
+    const outgoing = (c.env as Partial<HttpBindings> | undefined)?.outgoing;
+    outgoing?.setHeader?.('Content-Security-Policy', policy);
     await next();
-    c.header('Content-Security-Policy', "script-src 'self'; object-src 'none'; base-uri 'self'");
+    // Finalized header mutation clones the response; preserve the adapter's already-sent sentinel.
+    if (c.res !== RESPONSE_ALREADY_SENT) c.header('Content-Security-Policy', policy);
   });
   app.use(createHttpTelemetryMiddleware());
   const nanohostTransportSessionAuthority =
