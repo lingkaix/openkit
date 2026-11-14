@@ -324,6 +324,70 @@ describe('Proposed Plan eligibility', () => {
     };
   }
 
+  it.each(['private-thread', 'inconsistent-plan'] as const)(
+    'ORACLE S4 refuses a Task citation with %s before linking, then accepts its original valid authority',
+    async (fault) => {
+      const f = await fixture();
+      try {
+        const plan = await f.propose();
+        await f.resolve(plan.pendingRequestId);
+        await f.consume(plan.pendingRequestId);
+        const task = await f.store.createThread(f.scope.workspaceId, 'Shared Task');
+        const input = {
+          goalId: f.scope.goalId,
+          cardId: f.card.cardId,
+          planVersionId: plan.planVersionId,
+          cardRevision: 0,
+          intentRevision: 0,
+          withinCurrentIntent: true,
+          withinPermittedAdjustments: true,
+          rationale: 'Within the approved design.',
+        };
+        let target = task.id;
+        if (fault === 'private-thread') {
+          target = (
+            await f.store.createThread(
+              f.scope.workspaceId,
+              'Private Task',
+              undefined,
+              'conversation',
+              { visibility: 'private', privateOwnerUserId: f.human.actor.userId }
+            )
+          ).id;
+        }
+        const originalPlan = f.db.sqlite
+          .prepare('SELECT payload_json FROM goal_plan_versions WHERE plan_version_id = ?')
+          .get(plan.planVersionId) as { payload_json: string };
+        if (fault === 'inconsistent-plan') {
+          // Deliberate corruption only after the real owner produced the immutable Plan.
+          const damaged = JSON.parse(originalPlan.payload_json);
+          damaged.bytes += '\n';
+          f.db.sqlite
+            .prepare('UPDATE goal_plan_versions SET payload_json = ? WHERE plan_version_id = ?')
+            .run(JSON.stringify(damaged), plan.planVersionId);
+        }
+        expect(() =>
+          f.db.sqlite.transaction(() => reserveGoalTask(f.store, f.db, input, target))()
+        ).toThrow(fault === 'private-thread' ? 'ordinary shared Thread' : 'inconsistent');
+        expect(
+          f.db.sqlite
+            .prepare('SELECT count(*) AS count FROM goal_card_tasks WHERE goal_id = ?')
+            .get(f.scope.goalId)
+        ).toEqual({ count: 0 });
+        if (fault === 'inconsistent-plan')
+          f.db.sqlite
+            .prepare('UPDATE goal_plan_versions SET payload_json = ? WHERE plan_version_id = ?')
+            .run(originalPlan.payload_json, plan.planVersionId);
+        f.db.sqlite.transaction(() => reserveGoalTask(f.store, f.db, input, task.id))();
+        expect(
+          (await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db)).tasks
+        ).toHaveLength(1);
+      } finally {
+        f.db.sqlite.close();
+      }
+    }
+  );
+
   const retainedFamilies = [
     'goals',
     'goal_cards',
@@ -1018,6 +1082,13 @@ describe('Proposed Plan eligibility', () => {
       expect(() => reserve({ ...admission, withinPermittedAdjustments: false })).toThrow(
         'not authorized'
       );
+      expect(() => reserveGoalTask(f.store, f.db, admission, task.id)).toThrow(
+        'reservation transaction'
+      );
+      expect(() => reserve({ ...admission, rationale: ' \n ' })).toThrow('not authorized');
+      expect(
+        (await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db)).tasks
+      ).toHaveLength(0);
       reserve(admission);
       const linked = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
       expect(linked.tasks[0]).toMatchObject({ cardRevision: 1, planVersionId: plan.planVersionId });
