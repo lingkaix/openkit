@@ -17,6 +17,7 @@ import {
   loadRuntimeConfig,
 } from './config/runtime-config.js';
 import * as knowledgeOwners from './knowledge-operations.js';
+import { artifactReferenceItemId } from './lib/artifact-reference-id.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import type { FsStore } from './lib/store.js';
 import { ALREADY_DECIDED_PUBLICATION_ADMISSION } from './lib/store.js';
@@ -68,7 +69,6 @@ import {
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { ensureConfigTemplateSurface } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
-import { artifactReferenceItemId } from './storage/workspace-file-records.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp, createAppWithWorkspaceAuthority } from './test-support/app.js';
 import { createDemoStore } from './test-support/demo-store.js';

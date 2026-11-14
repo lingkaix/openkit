@@ -17,6 +17,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { BUILT_IN_SYSTEM_PROMPTS } from './internal-agents/builtin-prompts.js';
 import type { KnowledgeNotebook } from './knowledge/notebook.js';
+import { artifactReferenceItemId } from './lib/artifact-reference-id.js';
 import { FsStore } from './lib/store.js';
 import { GatewayAttemptFailure } from './llm/gateway-execution.js';
 import { PiAiGatewayClient } from './llm/pi-ai-client.js';
@@ -38,7 +39,7 @@ import {
 } from './storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { readWorkObservations } from './storage/work-observations.js';
-import { artifactReferenceItemId, nativeProductScope } from './storage/workspace-file-records.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import {
   type CreateAppOptions,

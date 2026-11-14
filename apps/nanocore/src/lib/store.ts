@@ -57,6 +57,7 @@ export { commandRequestExpiresAt, commandRequestKey } from '../storage/command-r
 
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { setImmediate as yieldToMain } from 'node:timers/promises';
 import {
@@ -182,8 +183,10 @@ import type {
 import {
   loadApprovalProjections,
   loadApprovalProjectionsFromSqlite,
+  pendingRequestSystemActor,
 } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
+import { securityPublicationIds, securityReportArtifactId } from '../security/identifiers.js';
 import type { AppDb } from '../storage/app-db.js';
 import {
   artifactVersionRecordPath,
@@ -277,7 +280,6 @@ import {
 import { assertServerTurnEventLineage } from '../storage/server-turn-event-lineage.js';
 import {
   AgentSessionRecordSchema,
-  artifactReferenceItemId,
   assertCanonicalDirectory,
   assertCanonicalRegularFile,
   assertImmutableItemAttribution,
@@ -335,6 +337,7 @@ import {
 } from '../storage/workspace-file-records.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
+import { artifactReferenceItemId } from './artifact-reference-id.js';
 
 type WorkspaceRecord = import('zod').infer<typeof WorkspaceRecordSchema>;
 type ProtocolWorkspaceResources = import('zod').infer<typeof WorkspaceResourcesSchema>;
@@ -3791,6 +3794,203 @@ export class FsStore {
     };
   }
 
+  /** Reads this report through the original file owner, refusing unresolved native/file settlement. */
+  public async readSecurityAlarmReport(
+    workspaceId: string,
+    artifactId: string
+  ): Promise<Artifact | null> {
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
+    const key = JSON.stringify([
+      await realpath(this.nativeScope({ kind: 'workspace', workspaceId }).path),
+      artifactId,
+    ]);
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
+    if (this.pendingArtifactSubmissions.has(artifactId) || pendingArtifactReferences.has(key))
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Security report publication settlement is unavailable.'
+      );
+    try {
+      return this.getArtifact(workspaceId, artifactId);
+    } catch (error) {
+      if (error instanceof StoreRecordNotFoundError) return null;
+      throw error;
+    }
+  }
+
+  /** Publishes one original fixed security report and Pending request through the existing owners. */
+  public async publishSecurityAlarmTurn(input: {
+    requestId: string;
+    workspaceId: string;
+    threadId: string;
+    recipientUserId: string;
+    rule: 'R1' | 'R8';
+  }): Promise<'published' | 'busy'> {
+    const { requestId, workspaceId, threadId, recipientUserId, rule } = input;
+    this.assertWorkspacePublicationAcknowledged(workspaceId);
+    const thread = this.getThread(workspaceId, threadId);
+    if (
+      !this.dataRoot ||
+      thread.status !== 'active' ||
+      thread.entryPath !== 'administration' ||
+      thread.visibility !== 'private' ||
+      thread.privateOwnerUserId !== recipientUserId
+    )
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Security publication requires its original private destination.'
+      );
+    const ids = securityPublicationIds(requestId);
+    const artifactId = securityReportArtifactId(requestId);
+    if (
+      this.artifacts.has(artifactId) ||
+      this.findNativeOwner('turn', ids.raiseTurnId) ||
+      this.findNativeOwner('item', ids.reportItemId) ||
+      this.findNativeOwner('item', ids.requestItemId)
+    )
+      throw new ArtifactAuthorityError(
+        'recovery_required',
+        'Security publication has an existing original tuple.'
+      );
+    if (this.readThreadNavigationFacts(workspaceId, threadId).activeTurn) return 'busy';
+    const now = new Date().toISOString();
+    const actor = pendingRequestSystemActor(recipientUserId);
+    const title =
+      rule === 'R1' ? 'Security monitoring stopped' : 'Security monitoring authority lost';
+    const body =
+      rule === 'R1'
+        ? '# Security monitoring stopped\n\nMonitoring is stopping. Confirm whether this change was expected.\n'
+        : '# Security monitoring authority lost\n\nThe original enabling delegation is unavailable. Review this loss or start a response.\n';
+    const artifact = ArtifactSchema.parse({
+      id: artifactId,
+      workspaceId,
+      threadId,
+      turnId: ids.raiseTurnId,
+      kind: 'report',
+      title,
+      status: 'ready',
+      summary: null,
+      version: 1,
+      content: { format: 'markdown', body },
+      contentDigest: `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`,
+      lastMutationRequestId: requestId,
+      origin: { kind: 'turn-output', threadId, turnId: ids.raiseTurnId, requestId },
+      createdAt: now,
+      updatedAt: now,
+    });
+    const version = ArtifactVersionRecordSchema.parse({
+      artifact,
+      version: { actor, threadId, turnId: ids.raiseTurnId },
+    });
+    const labels = rule === 'R1' ? ['Expected', 'Not expected'] : ['Reviewed', 'Start a response'];
+    const questions = [
+      {
+        id: 'acknowledgement',
+        header: 'Security monitoring',
+        question: title,
+        options: labels.map((label) => ({ label, description: label })),
+        isOther: false,
+        isSecret: false,
+      },
+    ];
+    const reference = ItemSchema.parse({
+      id: artifactReferenceItemId(artifactId, ids.raiseTurnId),
+      owner: { kind: 'workspace', workspaceId },
+      threadId,
+      turnId: ids.raiseTurnId,
+      type: 'artifact-reference',
+      status: 'completed',
+      artifactId,
+      artifactVersion: 1,
+      title,
+      summary: null,
+      lastMutationRequestId: requestId,
+      createdAt: now,
+      completedAt: now,
+    });
+    const question = ItemSchema.parse({
+      id: ids.requestItemId,
+      owner: { kind: 'workspace', workspaceId },
+      threadId,
+      turnId: ids.raiseTurnId,
+      type: 'user-input-request',
+      status: 'completed',
+      userInputRequestId: requestId,
+      responsibleUserId: recipientUserId,
+      prompt: title,
+      questions,
+      createdAt: now,
+      completedAt: now,
+    });
+    let submitted = false;
+    this.pendingArtifactSubmissions.add(artifactId);
+    try {
+      await this.protectArtifactReference(workspaceId, artifactId, async () => {
+        // The full existing owner inventory, not a one-Artifact adapter, publishes the real initial version.
+        this.artifacts.set(artifactId, artifact);
+        this.refreshWorkspaceCounts(workspaceId);
+        this.persist(workspaceId, false, { record: version });
+        this.artifactVersions.set(artifactId, [version]);
+        submitted = true;
+        await this.publishPendingRequestServiceTurn(workspaceId, threadId, {
+          turnId: ids.raiseTurnId,
+          summary: title,
+          actor,
+          now,
+          triggerSource: { kind: 'automation', summary: title },
+          items: [reference, question],
+          pending: [
+            {
+              action: 'raise',
+              workspaceId,
+              threadId,
+              input: {
+                requestId,
+                workspaceId,
+                threadId,
+                raisingTurnId: ids.raiseTurnId,
+                requestItemId: ids.requestItemId,
+                kind: 'user-input',
+                requesterKind: 'automation',
+                agentId: null,
+                agentSessionId: null,
+                responsibleUserId: recipientUserId,
+                questions,
+                now,
+              },
+            },
+          ],
+        });
+      });
+      this.pendingArtifactSubmissions.delete(artifactId);
+      return 'published';
+    } catch (error) {
+      const refused = error instanceof ControlStoreWorkerError && error.commit === 'not-committed';
+      // Unknown native or file settlement retains the real files and explicit recovery gap.
+      if ((refused || !submitted) && !this.unacknowledgedWorkspaces.has(workspaceId)) {
+        const key = JSON.stringify([
+          await realpath(this.nativeScope({ kind: 'workspace', workspaceId }).path),
+          artifactId,
+        ]);
+        if (this.unacknowledgedWorkspaces.has(workspaceId) || pendingArtifactReferences.has(key))
+          throw error;
+        this.pendingArtifactSubmissions.delete(artifactId);
+        this.artifacts.delete(artifactId);
+        this.artifactVersions.delete(artifactId);
+        this.refreshWorkspaceCounts(workspaceId);
+        try {
+          this.persist(workspaceId);
+        } catch (cleanupError) {
+          this.pendingArtifactSubmissions.add(artifactId);
+          throw new ArtifactPayloadCleanupError([error, cleanupError]);
+        }
+        if (refused && this.readThreadNavigationFacts(workspaceId, threadId).activeTurn)
+          return 'busy';
+      }
+      throw error;
+    }
+  }
+
   /** Publishes an actual Core-local Pending Turn, its row associations, Items and terminal event in one native tuple. */
   public async publishPendingRequestServiceTurn(
     ...args: Parameters<FsStore['publishPendingRequestServiceTurnPublication']>
@@ -3816,10 +4016,12 @@ export class FsStore {
       pending: readonly ControlPendingCommandInput[];
       admission?: ControlAdmission;
       archive?: boolean;
+      triggerSource?: { kind: 'automation'; summary: string };
     }
   ): Promise<Turn> {
     const scope = this.nativeScope({ kind: 'workspace', workspaceId });
     const existing = readNativeTurnHistory(scope, input.turnId);
+    if (input.triggerSource && existing) throw terminalTurnPublicationConflict(input.turnId);
     const turn = TurnSchema.parse({
       ...(existing?.turn ?? {
         id: input.turnId,
@@ -3831,7 +4033,7 @@ export class FsStore {
         startedAt: input.now,
         agentId: null,
         agentSessionId: null,
-        triggerSource: { kind: 'system-input', summary: input.summary },
+        triggerSource: input.triggerSource ?? { kind: 'system-input', summary: input.summary },
       }),
       status: 'completed',
       completedAt: existing?.turn.completedAt ?? input.now,
@@ -6179,6 +6381,7 @@ export class FsStore {
     return read({
       upperOrder: metadata.length,
       policyEvidence: () => null,
+      pendingRequest: () => null,
       itemWithinBytes: (itemId, maximumBytes) => {
         if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 65_536)
           throw new TypeError('Invalid bounded timeline Item allowance.');

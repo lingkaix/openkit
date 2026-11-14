@@ -1,6 +1,7 @@
 import { deriveEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import { uuidv5 } from '../generative-kernel/uuid.js';
+import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 
 const Text = z.string().min(1);
 const AssignedCounter = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
@@ -70,6 +71,11 @@ export function securityThreadId(recipientUserId: string, generation: number): s
   ]);
 }
 
+/** Derives the original report Artifact identity from the exact E4 request. */
+export function securityReportArtifactId(requestId: string): string {
+  return deriveEntityId('ar', ['security-report', Text.parse(requestId)]);
+}
+
 /**
  * Recomputes the closed E4 publication tuple using the existing entity-id owner.
  * Pending Request capability identity remains with Pending Requests, not this helper.
@@ -88,7 +94,10 @@ export function securityPublicationIds(requestId: string): {
   return {
     raiseTurnId: deriveEntityId('tu', ['security-raise', requestId]),
     statusTurnId: deriveEntityId('tu', ['security-status', requestId]),
-    reportItemId: deriveEntityId('it', [requestId, 'report']),
+    reportItemId: artifactReferenceItemId(
+      securityReportArtifactId(requestId),
+      deriveEntityId('tu', ['security-raise', requestId])
+    ),
     requestItemId: deriveEntityId('it', [requestId, 'request']),
     statusItemId: deriveEntityId('it', [requestId, 'status']),
   };

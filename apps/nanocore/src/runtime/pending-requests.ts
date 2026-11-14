@@ -193,7 +193,7 @@ export function refuseCommandIntentGrant(
 }
 
 /** Who asked. */
-export type PendingRequesterKind = 'worker' | 'assistant' | 'coordinator' | 'person';
+export type PendingRequesterKind = 'worker' | 'assistant' | 'coordinator' | 'person' | 'automation';
 
 /** Record kind. */
 export type PendingRequestKind = 'approval' | 'user-input';
@@ -518,7 +518,13 @@ const SELECT_COLUMNS = `
 `;
 
 const KINDS = new Set<PendingRequestKind>(['approval', 'user-input']);
-const REQUESTERS = new Set<PendingRequesterKind>(['worker', 'assistant', 'coordinator', 'person']);
+const REQUESTERS = new Set<PendingRequesterKind>([
+  'worker',
+  'assistant',
+  'coordinator',
+  'person',
+  'automation',
+]);
 const STATES = new Set<PendingRequestState>(['pending', 'resolved', 'ended']);
 const RESOLUTIONS = new Set<PendingRequestResolution>(['granted', 'denied', 'answered']);
 const ENDINGS = new Set<PendingRequestEnding>(['withdrawn', 'invalidated']);
@@ -1640,7 +1646,18 @@ export function validateCanonicalLoad(
     (['worker', 'coordinator'].includes(record.requesterKind) && !record.agentId) ||
     (record.requesterKind === 'coordinator' &&
       (record.agentSessionId !== null || !isCommandIntentApproval(record))) ||
-    (record.requesterKind === 'person' && record.agentId)
+    (record.requesterKind === 'person' && record.agentId) ||
+    (record.requesterKind === 'automation' &&
+      (record.kind !== 'user-input' ||
+        record.agentId !== null ||
+        record.agentSessionId !== null ||
+        Boolean(raising.agentId || raising.agentSessionId) ||
+        raising.triggerSource?.kind !== 'automation' ||
+        raising.triggerActor.kind !== 'system' ||
+        raising.triggerActor.id !== 'nanocore-pending-request' ||
+        record.serverId !== null ||
+        record.governedIntent !== null ||
+        record.assistantHandoff !== null))
   ) {
     return { requestId: record.requestId, reason: 'parties' };
   }
@@ -2879,8 +2896,16 @@ export function applyControlPendingCommand(
       const input = command.input;
       if (input.workspaceId !== command.workspaceId || input.threadId !== command.threadId)
         pendingNativeConflict('The raised request does not match its command scope.');
-      if (thread(input.threadId).status !== 'active')
+      const destination = thread(input.threadId);
+      if (destination.status !== 'active')
         pendingNativeConflict('The request Thread no longer admits new requests.');
+      if (
+        input.requesterKind === 'automation' &&
+        (destination.visibility !== 'private' ||
+          destination.privateOwnerUserId !== input.responsibleUserId ||
+          destination.entryPath !== 'administration')
+      )
+        pendingNativeConflict('Automation requires its original private Administration recipient.');
       const raising = turn(input.raisingTurnId, input.threadId);
       const candidate = [
         ...prepared.entries,

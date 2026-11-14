@@ -1184,7 +1184,7 @@ async function admitNextOutcome(
     const person = ready.find((record) => record.requesterKind === 'person');
     const coordinator = ready.find((record) => record.requesterKind === 'coordinator');
     const first = worker ?? assistant ?? coordinator ?? person;
-    if (!first) return;
+    if (!first || first.requesterKind === 'automation') return;
     const batch = selectReadyOutcomes(ready, {
       executor: first.requesterKind,
       agentId: first.agentId,

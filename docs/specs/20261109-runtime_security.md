@@ -136,7 +136,9 @@ Feeds are Server configuration that only administrators change. Kinds are closed
 | Request | `uuidv5` (URL namespace, `generative-kernel/uuid.ts`) over the JSON text `{"kind":"security-request","key":K,"recipientUserId":U,"occurrence":{"kind":O,"n":N}}` | K is `["finding", feedId, purl, advisoryId]`, `["event", auditEventId]` or `["gap", enableGeneration, gapKind, runId]`. O is `initial`, `reopen`, `reminder`, `renotice` or `conflict`. N counts from 1 per (K, U, O), assigned when the outbox row is inserted; for `conflict`, N is the triage revision. |
 | Security Thread | `deriveEntityId('th', ['security', U, G])` | G is the recipient's Thread generation, from 1; Raise increments it in its own Core SQLite transaction when it finds that generation archived |
 | Raise Turn; status Turn | `deriveEntityId('tu', ['security-raise' or 'security-status', requestId])` | One status per copy (E6) |
-| Items | `deriveEntityId('it', [requestId, role])`, role `report`, `request` or `status` | The capability id stays the owner's (`pending-requests.ts:553`) |
+| Report Artifact | `deriveEntityId('ar', ['security-report', requestId])` | The actual Artifact owner publishes its initial version and content digest |
+| Report reference Item | `artifactReferenceItemId(reportArtifactId, raiseTurnId)` | Reuse the existing Artifact owner, `deriveEntityId('it', [artifactId, turnId])`; no second report-reference formula |
+| Request and status Items | `deriveEntityId('it', [requestId, role])`, role `request` or `status` | The capability id stays the Pending Request owner's |
 
 Retry and recovery recompute every id from the stored row, so a retry finds its earlier tuple. Independent allocations, such as audit event ids, stay UUIDv7.
 

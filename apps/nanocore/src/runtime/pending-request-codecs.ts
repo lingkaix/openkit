@@ -75,7 +75,7 @@ const NativeRaisePendingRequestSchema = z
     raisingTurnId: TurnIdSchema,
     requestItemId: ItemIdSchema,
     kind: z.enum(['approval', 'user-input']),
-    requesterKind: z.enum(['worker', 'assistant', 'coordinator', 'person']),
+    requesterKind: z.enum(['worker', 'assistant', 'coordinator', 'person', 'automation']),
     agentId: z.string().min(1).nullable().optional(),
     agentSessionId: z.string().min(1).nullable().optional(),
     responsibleUserId: z.string().min(1),

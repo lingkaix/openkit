@@ -16,6 +16,7 @@ import { createArtifactReview, listExportableArtifactReviews } from '../artifact
 import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
+import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { FsStore } from '../lib/store.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
@@ -49,7 +50,6 @@ import {
   writeWorkspaceExportTree as writeWorkspaceExportTreeOwner,
 } from './workspace-export.js';
 import {
-  artifactReferenceItemId,
   listUnresolvedUserInputRequestItemIds,
   serializeKnowledgeProposalRecord,
 } from './workspace-file-records.js';

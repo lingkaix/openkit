@@ -30,6 +30,7 @@ import {
   ControlReviewCommandResultSchema,
 } from './artifact-review-codecs.js';
 import { StoredArtifactReviewV1Schema } from './artifact-review-v1.js';
+import { artifactReferenceItemId } from './lib/artifact-reference-id.js';
 import { IdempotencyKeyConflictError } from './operation-error.js';
 import { readArtifactVersionRecord } from './storage/artifacts/artifact-version-records.js';
 import {
@@ -58,7 +59,7 @@ import type { WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import { projectTurnEventRequestId } from './storage/retained-work-events-v1.js';
 import type { artifactReviews } from './storage/schema/artifact-reviews.js';
-import { artifactReferenceItemId, nativeProductScope } from './storage/workspace-file-records.js';
+import { nativeProductScope } from './storage/workspace-file-records.js';
 import {
   assertWorkspaceMaterialRange,
   getWorkspaceMaterial,

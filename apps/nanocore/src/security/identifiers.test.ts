@@ -111,7 +111,7 @@ describe('E4 pure deterministic owner-declared security identifiers', () => {
     const expected = {
       raiseTurnId: 'tu_1eb3941e-7f5f-5cb1-844d-1645b7289b4c',
       statusTurnId: 'tu_83f70cb9-af98-579e-a28a-173e03188f65',
-      reportItemId: 'it_1304bd77-0fa2-58e2-9662-5192973a18ae',
+      reportItemId: 'it_f8fcdc4a-71c2-5761-a9a5-b4d7d9357cc6',
       requestItemId: 'it_20349998-ddab-52d5-b9dd-4b6bed4ca2b0',
       statusItemId: 'it_aac4d086-eff0-59d3-9329-b0eac8a44500',
     };

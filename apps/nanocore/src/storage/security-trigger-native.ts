@@ -425,6 +425,8 @@ export function applySecurityTriggerInDb(
   // Caller timestamps describe the original observation; they never move credential expiry backwards.
   const now = new Date();
   if (input.action === 'alarms') return { kind: 'alarms', rows: readAlarmRows(db) };
+  if (input.action === 'alarm-read')
+    return { kind: 'alarm', row: readAlarmRequest(db, input.requestId) };
   if (input.action === 'destination-read')
     return { kind: 'destination-read', destination: readDestination(db, input.threadId) };
   if (input.action === 'destination-reserve') return reserveDestination(db, input.requestId, now);

@@ -74,6 +74,7 @@ export const ControlSecurityTriggerSchema = z.discriminatedUnion('action', [
     })
     .strict(),
   z.object({ action: z.literal('alarms') }).strict(),
+  z.object({ action: z.literal('alarm-read'), requestId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('destination-reserve'), requestId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('destination-read'), threadId: ThreadIdSchema }).strict(),
   z
@@ -100,6 +101,7 @@ export const ControlSecurityTriggerResultSchema = z.discriminatedUnion('kind', [
     .object({ kind: z.literal('audit-unavailable'), snapshot: SecurityTriggerSnapshotSchema })
     .strict(),
   z.object({ kind: z.literal('alarms'), rows: z.array(SecurityAlarmRowSchema).max(128) }).strict(),
+  z.object({ kind: z.literal('alarm'), row: SecurityAlarmRowSchema }).strict(),
   z
     .object({
       kind: z.literal('destination'),

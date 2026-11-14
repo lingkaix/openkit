@@ -142,7 +142,7 @@ const ReceiptSchema = z
         kind: z.string().min(1),
         id: z.string().min(1),
         conversationMetadata: z.unknown().optional(),
-        steerMetadata: TaskSteerReceiptMetadataSchema.optional(),
+        steerMetadata: z.lazy(() => TaskSteerReceiptMetadataSchema).optional(),
       })
       .strict(),
     createdAt: z.string().datetime(),

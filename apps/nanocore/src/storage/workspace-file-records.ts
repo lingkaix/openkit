@@ -1,6 +1,8 @@
 import { performance } from 'node:perf_hooks';
 import { setImmediate as yieldTimelineMain } from 'node:timers/promises';
+import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { OperationError } from '../operation-error-core.js';
+import { type PendingRequestRecord, readPendingRequest } from '../runtime/pending-requests.js';
 import {
   readActiveThreadTurnSnapshot,
   reserveMainScopeReadAcquisition,
@@ -110,7 +112,6 @@ import {
   type ArtifactVersionRecord,
   ArtifactVersionRecordSchema,
   compareCodeUnits,
-  deriveEntityId,
   type ItemSchema,
   ItemTypeSchema,
   isSealedTurnTerminal,
@@ -263,17 +264,6 @@ export function isCurrentAgentSessionStatus(status: AgentSession['status']): boo
 
 /** Maximum canonical replay window retained in memory after reload. */
 export const TURN_STREAM_EVENT_WINDOW_SIZE = 100;
-
-/**
- * Derives the stable Item identity for one Artifact and communicating Turn.
- *
- * @param artifactId Artifact communicated by the Item.
- * @param turnId Turn that owns the Item.
- * @returns Stable non-secret Item id.
- */
-export function artifactReferenceItemId(artifactId: string, turnId: string): string {
-  return deriveEntityId('it', [artifactId, turnId]);
-}
 
 /**
  * Lists unresolved user-input request Item ids from the latest canonical revisions.
@@ -1242,6 +1232,8 @@ export interface ThreadTimelineSnapshot {
     requestItemId: string
   ): ReturnType<typeof readPendingItemAssociations>;
   lastEventAt(turnId: string): string | null;
+  /** Exact original Pending record from this existing native read cut; never a display projection. */
+  pendingRequest(requestId: string): PendingRequestRecord | null;
 }
 
 /** Reads one navigation row's bounded metadata and indexed timestamp endpoints in a released cut. */
@@ -1321,6 +1313,17 @@ function threadTimelineSnapshot(
     pendingAssociations: (requestId, itemId) =>
       readPendingItemAssociations(reader.sqlite, requestId, itemId),
     lastEventAt: (turnId) => readLastTurnEventTime(reader.sqlite, turnId),
+    pendingRequest: (requestId) => {
+      const record = readPendingRequest(reader.sqlite, requestId);
+      if (
+        record &&
+        (scope.owner.kind !== 'workspace' ||
+          record.workspaceId !== scope.owner.workspaceId ||
+          record.threadId !== threadId)
+      )
+        throw new TypeError('Pending source does not belong to this native read cut.');
+      return record;
+    },
     turns: (window) => readThreadTurnWindow(reader.sqlite, scope.owner, threadId, window),
     turn: (turnId) => readThreadTurnSnapshot(reader.sqlite, scope.owner, threadId, turnId),
     position: (itemId) => readThreadItemPosition(reader.sqlite, threadId, itemId),

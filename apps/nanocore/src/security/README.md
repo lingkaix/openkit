@@ -40,7 +40,13 @@ Audit pages are bounded at 128 and keep original Core facts, including opaque Wo
 
 `selectSecurityThread` is a read-only join of that original native binding and the actual private Administration Thread owner. Names and guessed IDs are not proof. A registered reserved, missing or mismatched tuple refuses instead of becoming ordinary work or being repaired. Historical archived security Threads keep their classification. Preparation reuses exact ready tuples, but refuses archived destinations; generation rollover remains with the later N3 Raise path. The facade requires both actual owners to share one Data Root.
 
-This cut creates no report, Turn, Pending Request, Attention or notice acknowledgement and does not mark an alarm raised or complete stopping. It exposes no activation route, credential, useful grant or scheduler. SEC-REPORT still owns actual principal/private-audience and effect admission.
+The destination-only cut creates no report, Turn, Pending Request, Attention or notice acknowledgement and does not mark an alarm raised or complete stopping. It exposes no activation route, credential, useful grant or scheduler. SEC-REPORT still owns actual principal/private-audience and effect admission.
+
+## Initial actual alarm publication
+
+`publishSecurityAlarm` composes only an actual owed N1 R1/R8 source with its current native recipient and private destination. The existing complete-inventory Artifact owner publishes the real version1 markdown report. Its reference reuses the single `artifactReferenceItemId(artifactId, turnId)` owner. The original Pending/terminal operation publishes a completed agentless automation Turn and canonical `automation` user-input request together, with truthful Core system history and fixed code-written choices. Its existing native transaction repeats the actual idle check; a known busy Thread admits no publication tuple. Unknown file/native settlement remains unavailable rather than being treated as rollback.
+
+`readSecurityAlarmPublication` joins the original alarm, destination and actual file/version/reference/Turn/Pending owners. Only a wholly absent publication returns null; collisions, partial tuples and mismatched scope require recovery without repair. Complete replay reuses the original tuple. Archived complete history remains readable; new publication to an archived destination refuses. This prefix leaves raised flags and original notice obligations unchanged. Attention, triage, archive rollover, scheduling/drain and stopping-to-off remain separate incomplete joins. No useful grant, public activation or effect admission is introduced.
 
 ## Checks
 

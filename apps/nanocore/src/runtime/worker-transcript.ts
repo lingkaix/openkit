@@ -15,13 +15,13 @@ import {
   getArtifactReview,
 } from '../artifact-reviews.js';
 import type { WorkerContextPackageTrace } from '../context/worker-context-package.js';
+import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   type FsStore,
   StoreRecordNotFoundError,
 } from '../lib/store.js';
 import type { WorkspaceDb } from '../storage/db.js';
-import { artifactReferenceItemId } from '../storage/workspace-file-records.js';
 import { getWorkspaceMaterial, getWorkspaceMaterialRevision } from '../workspace-materials.js';
 import {
   type CredentialCheckValues,

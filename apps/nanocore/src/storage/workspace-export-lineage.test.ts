@@ -37,6 +37,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
+import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { snapshotDigest } from '../runtime/aep-snapshot-ledger.js';
 import {
   canonicalMcpToolSchemas,
@@ -59,7 +60,7 @@ import {
   type WriteWorkspaceExportTreeInput,
   writeWorkspaceExportTree,
 } from './workspace-export.js';
-import { artifactReferenceItemId, parseOwnedKnowledgePage } from './workspace-file-records.js';
+import { parseOwnedKnowledgePage } from './workspace-file-records.js';
 import { writeWorkspacePortableFileState } from './workspace-portable-file-state.js';
 
 const timestamp = '2026-07-12T00:00:00.000Z';

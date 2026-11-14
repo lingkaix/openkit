@@ -34,6 +34,7 @@ import {
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { WorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { exportWorkspaceSources } from '../knowledge/source-workspace-portability.js';
+import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
@@ -69,7 +70,6 @@ import {
 import { assertWorkspaceArchiveFilePath } from './workspace-archive.js';
 import {
   artifactContentFileName,
-  artifactReferenceItemId,
   assertSafeWorkspacePathSegment,
   type CaptureCoverageBinding,
   CaptureCoverageBindingSchema,

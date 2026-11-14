@@ -76,6 +76,7 @@ import {
 } from './internal-agents/worker-coordinator.js';
 import { NotebookError } from './knowledge/notebook.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
+import { artifactReferenceItemId } from './lib/artifact-reference-id.js';
 import {
   type CommandRequestRecord,
   type ConversationCommandReceiptMetadata,
@@ -188,7 +189,6 @@ import { ControlStoreWorkerError } from './storage/control-store-worker-client.j
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
 import {
-  artifactReferenceItemId,
   isCurrentAgentSessionStatus,
   verifyTurnFileInputs,
 } from './storage/workspace-file-records.js';
