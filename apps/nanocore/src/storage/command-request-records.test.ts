@@ -20,7 +20,6 @@ import {
   readCommandRequestRecordPagesFromSqlite,
   readCommandRequestRecordsFromSqlite,
   readDurableCommandRequestRecords,
-  recordCommandRequestRecord,
   recordCommandRequestRecordInDb,
 } from './command-request-records.js';
 import { ControlAdmissionSchema } from './control-store-admission-codecs.js';
@@ -37,6 +36,7 @@ import {
   type UserDb,
   type WorkspaceDb,
 } from './db.js';
+import { coreDbPath } from './fs-layout.js';
 import { applyScopedMigrations } from './migrate.js';
 import { controlThreads } from './schema/index.js';
 
@@ -316,8 +316,9 @@ describe('kind-named command response pointers', () => {
     }
   );
 
-  it('validates a Core response pointer before creating its database or directories', async () => {
+  it('validates Core pointers and refuses Main backfill without mutating its initialized owner', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-receipt-before-owner-'));
+    let ownerReader: ReturnType<typeof openControlStoreProductReadHandle> | undefined;
     const userId = testEntityId('usr', 'receipt-disabled-user');
     const scope = { coreId: 'server', actorId: userId, targetUserId: userId };
     // A format-only DTO, not fabricated durable history. Actual native tuple
@@ -333,18 +334,23 @@ describe('kind-named command response pointers', () => {
       expiresAt: '2999-01-01T00:00:00.000Z',
     };
     try {
-      const validRoot = join(root, 'valid');
+      const store = createTestStore({ dataRoot: root });
+      ownerReader = openControlStoreProductReadHandle(coreDbPath(root), { kind: 'server' });
+      const rows = () =>
+        ownerReader!.sqlite
+          .prepare('SELECT * FROM idempotency_requests ORDER BY request_key')
+          .all();
+      const before = rows();
       expect(normalizeCommandRequestResponse(record.command, record.response)).toEqual(
         record.response
       );
-      // A valid pointer cannot authorize standalone Main backfill of a native
-      // receipt, and refusal must not create even an empty Core layout.
-      expect(() => recordCommandRequestRecord(validRoot, record)).toThrow(
+      // The path-opening Main writer is gone. A real Store requires its initialized
+      // owner; pointer validation and Main refusal cannot mutate that owner's rows.
+      expect(() => store.recordCommandRequest(record)).toThrow(
         'Native admission receipts belong to the database worker.'
       );
-      expect(existsSync(validRoot)).toBe(false);
-      for (const [index, id] of ['legacy', testEntityId('ws', 'wrong-user-pointer')].entries()) {
-        const invalidRoot = join(root, `invalid-${index}`);
+      expect(rows()).toEqual(before);
+      for (const id of ['legacy', testEntityId('ws', 'wrong-user-pointer')]) {
         const response = { kind: 'user' as const, id };
         let pointerError: unknown;
         try {
@@ -353,12 +359,13 @@ describe('kind-named command response pointers', () => {
           pointerError = error;
         }
         expect(pointerError).toBeInstanceOf(Error);
-        expect(() => recordCommandRequestRecord(invalidRoot, { ...record, response })).toThrow(
+        expect(() => store.recordCommandRequest({ ...record, response })).toThrow(
           pointerError as Error
         );
-        expect(existsSync(invalidRoot)).toBe(false);
+        expect(rows()).toEqual(before);
       }
     } finally {
+      ownerReader?.close();
       await shutdownControlStoreWorkerClient();
       rmSync(root, { recursive: true, force: true });
     }

@@ -1,4 +1,3 @@
-import { APP_NATIVE_COMMANDS } from '../generative-kernel/native-command-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 
 export { commandInputHash } from '../storage/control-store-input.js';
@@ -20,10 +19,7 @@ import {
   type FsStore,
 } from '../lib/store.js';
 import type { AppDb } from '../storage/app-db.js';
-import { isControlNativeReceiptCommand } from '../storage/control-store-admission-codecs.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
-import { workspaceDbPath } from '../storage/fs-layout.js';
 
 /** Original command facts passed to the existing producer before its single native tuple; the product owner supplies the final response pointer. */
 export type IdempotentCommandReceipt = Readonly<
@@ -91,8 +87,8 @@ export function findExactConversationWorkerOwnerReceipt(
   return matches.length === 1 ? matches[0]! : null;
 }
 
-/** Options shared by synchronous transactional and ordinary idempotent commands. */
-interface IdempotentCommandBaseOptions<T> {
+/** One native producer and its original scoped replay contract. */
+interface IdempotentCommandOptions<T> {
   /** Store that owns the idempotency ledger. */
   readonly store: FsStore;
   /** Process-local in-flight command maps keyed by actor-scoped store. */
@@ -113,273 +109,42 @@ interface IdempotentCommandBaseOptions<T> {
   readonly replay: (record: CommandRequestRecord) => Promise<T> | T;
   /** Extracts the response resource id from a fresh command result. */
   readonly responseId: (result: T) => string;
+  /** Producer commits its original native tuple or post-effect receipt before it returns. */
+  readonly execute: (receipt: IdempotentCommandReceipt) => Promise<T> | T;
+  /** Explicit original Core or User receipt owner; this connection is used only for reads. */
+  readonly receiptDb?: UserDb | CoreDb;
+  /** Optional original Workspace receipt reader. */
+  readonly workspaceDb?: WorkspaceDb;
+  /** Optional original App receipt reader; expired App identities still refuse reuse. */
+  readonly appDb?: AppDb;
 }
-
-/** Options for one idempotent command, discriminated by its transaction boundary. */
-type IdempotentCommandOptions<T> = IdempotentCommandBaseOptions<T> &
-  (
-    | {
-        /** Executes synchronously inside the required Workspace transaction. */
-        readonly execute: () => T;
-        /** Open Workspace database that owns both the business record and receipt. */
-        readonly workspaceDb: WorkspaceDb;
-        /** Runs synchronous command execution and receipt writing in one Workspace transaction. */
-        readonly workspaceTransaction: true;
-        /** Core transaction mode is not selected. */
-        readonly coreTransaction?: undefined;
-        /** Core database is not selected. */
-        readonly coreDb?: undefined;
-        /** App transaction mode is not selected. */
-        readonly appTransaction?: undefined;
-        /** App database is not selected. */
-        readonly appDb?: undefined;
-      }
-    | {
-        /** Executes synchronously inside the required Core transaction. */
-        readonly execute: () => T;
-        /** Open Core database that owns both the business record and receipt. */
-        readonly coreDb: CoreDb;
-        /** Runs synchronous command execution and receipt writing in one Core transaction. */
-        readonly coreTransaction: true;
-        /** Workspace transaction mode is not selected. */
-        readonly workspaceTransaction?: undefined;
-        /** Workspace database is not selected. */
-        readonly workspaceDb?: undefined;
-        /** App transaction mode is not selected. */
-        readonly appTransaction?: undefined;
-        /** App database is not selected. */
-        readonly appDb?: undefined;
-      }
-    | {
-        /** Executes synchronously inside the required App transaction. */
-        readonly execute: () => T;
-        /** Open App database that owns both the business record and receipt. */
-        readonly appDb: AppDb;
-        /** Runs synchronous command execution and receipt writing in one App transaction. */
-        readonly appTransaction: true;
-        /** Workspace transaction mode is not selected. */
-        readonly workspaceTransaction?: undefined;
-        /** Workspace database is not selected. */
-        readonly workspaceDb?: undefined;
-        /** Core transaction mode is not selected. */
-        readonly coreTransaction?: undefined;
-        /** Core database is not selected. */
-        readonly coreDb?: undefined;
-      }
-    | {
-        /** Executes the producer with original receipt facts; native products and that receipt must commit together before it returns. */
-        readonly execute: (receipt: IdempotentCommandReceipt) => Promise<T> | T;
-        /** Explicit existing User or Core receipt owner for a non-transactional effect such as Git publication. */
-        readonly receiptDb?: UserDb | CoreDb;
-        /** Optional open Workspace database for receipt-first reads and writes. */
-        readonly workspaceDb?: WorkspaceDb;
-        /** Optional open App database for receipt-first reads and writes. */
-        readonly appDb?: AppDb;
-        /** Transactional execution is enabled only by the explicit true literal. */
-        readonly workspaceTransaction?: undefined;
-        /** App transactional execution is enabled only by the explicit true literal. */
-        readonly appTransaction?: undefined;
-        /** Core database is not selected for ordinary commands. */
-        readonly coreDb?: undefined;
-        /** Core transactional execution is enabled only by the explicit true literal. */
-        readonly coreTransaction?: undefined;
-      }
-  );
-
-/**
- * Executes or replays one app-local idempotent command.
- *
- * @param options Command identity, input, ledger, execution, and replay behavior.
- * @returns Fresh or replayed command result.
- * @throws IdempotencyKeyConflictError when the same request id is reused with different input.
- * @throws Error when transaction mode lacks its database or receives asynchronous execution.
- */
+/** Executes or replays one command, retaining actor-scoped in-flight collapse and native receipt authority. */
 export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<T>): Promise<T> {
-  if (options.conversationResponseMetadata && options.command !== 'conversation.submit') {
+  if (options.conversationResponseMetadata && options.command !== 'conversation.submit')
     throw new Error('Only conversation.submit may store extra command receipt metadata.');
-  }
-  let transaction:
-    | { readonly db: CoreDb | WorkspaceDb | AppDb; readonly execute: () => T }
-    | undefined;
-
-  if (options.workspaceTransaction) {
-    if (!options.workspaceDb) {
-      throw new Error('workspaceTransaction requires an open Workspace database.');
-    }
-    if (Object.prototype.toString.call(options.execute) === '[object AsyncFunction]') {
-      throw new Error('workspaceTransaction commands must execute synchronously.');
-    }
-    transaction = { db: options.workspaceDb, execute: options.execute };
-  }
-  if (options.coreTransaction) {
-    if (!options.coreDb) {
-      throw new Error('coreTransaction requires an open Core database.');
-    }
-    if (Object.prototype.toString.call(options.execute) === '[object AsyncFunction]') {
-      throw new Error('coreTransaction commands must execute synchronously.');
-    }
-    transaction = { db: options.coreDb, execute: options.execute };
-  }
-  if (options.appTransaction) {
-    if (!options.appDb) {
-      throw new Error('appTransaction requires an open App database.');
-    }
-    if (Object.prototype.toString.call(options.execute) === '[object AsyncFunction]') {
-      throw new Error('appTransaction commands must execute synchronously.');
-    }
-    transaction = { db: options.appDb, execute: options.execute };
-  }
-
   const inputHash = commandInputHash(options.input);
-  const commandDb =
-    'receiptDb' in options && options.receiptDb
-      ? options.receiptDb
-      : (options.coreDb ?? options.workspaceDb ?? options.appDb);
-  const workerOwnedApp =
-    options.scope.appId !== undefined &&
-    APP_NATIVE_COMMANDS.some((command) => command === options.command);
-  const workerOwned =
-    workerOwnedApp ||
-    (options.store.getDataRoot() !== null &&
-      options.scope.userId !== undefined &&
-      options.scope.coreId === undefined &&
-      options.scope.workspaceId === undefined &&
-      options.scope.appId === undefined &&
-      isControlNativeReceiptCommand(options.command, 'user')) ||
-    (options.store.getDataRoot() !== null &&
-      (isControlNativeReceiptCommand(
-        options.command,
-        options.scope.workspaceId === undefined ? 'core' : 'workspace'
-      ) ||
-        (options.command === 'evaluation.judgement-add' &&
-          options.input !== null &&
-          typeof options.input === 'object' &&
-          'judgement' in options.input &&
-          options.input.judgement !== null &&
-          typeof options.input.judgement === 'object' &&
-          'target' in options.input.judgement &&
-          options.input.judgement.target !== null &&
-          typeof options.input.judgement.target === 'object' &&
-          'kind' in options.input.judgement.target &&
-          (options.input.judgement.target.kind === 'artifact-version' ||
-            options.input.judgement.target.kind === 'material-range' ||
-            options.input.judgement.target.kind === 'candidate-set'))) &&
-      (options.scope.coreId === 'server' || options.scope.workspaceId !== undefined) &&
-      options.scope.userId === undefined &&
-      options.scope.appId === undefined);
-
-  const dataRoot = options.store.getDataRoot();
-  const mainWorkspaceDatabase =
-    !workerOwned &&
-    dataRoot !== null &&
-    options.scope.workspaceId !== undefined &&
-    options.scope.appId === undefined &&
-    options.scope.userId === undefined &&
-    options.scope.coreId === undefined
-      ? `workspace:${workspaceDbPath(dataRoot, options.scope.workspaceId)}`
-      : undefined;
-  // An explicit receipt connection only reads here; path-opening Main lookup also prunes.
-  const resumeLookup =
-    mainWorkspaceDatabase && commandDb === undefined
-      ? await getControlStoreWorkerClient().pauseForDataRootBackup(mainWorkspaceDatabase)
-      : undefined;
-  let existingRecord: CommandRequestRecord | null;
-  try {
-    existingRecord = options.store.getCommandRequest(
-      options.command,
-      options.requestId,
-      options.scope,
-      commandDb
-    );
-  } finally {
-    resumeLookup?.();
-  }
-
+  const commandDb = options.receiptDb ?? options.workspaceDb ?? options.appDb;
+  const existingRecord = options.store.getCommandRequest(
+    options.command,
+    options.requestId,
+    options.scope,
+    commandDb
+  );
   if (existingRecord) {
-    if (existingRecord.inputHash !== inputHash) {
-      throw new IdempotencyKeyConflictError();
-    }
-
+    if (existingRecord.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
     return options.replay(existingRecord);
   }
-
   const key = commandRequestKey(options.command, options.requestId, options.scope);
-  if (workerOwned && transaction) {
-    throw new Error(
-      'Native product commands must commit their whole tuple in the database worker.'
-    );
+  let inflight = options.inflightCommands.get(options.store);
+  if (!inflight) {
+    inflight = new Map();
+    options.inflightCommands.set(options.store, inflight);
   }
-  let storeInflightCommands = options.inflightCommands.get(options.store);
-
-  if (!storeInflightCommands) {
-    storeInflightCommands = new Map<string, InflightIdempotentCommand>();
-    options.inflightCommands.set(options.store, storeInflightCommands);
+  const prior = inflight.get(key);
+  if (prior) {
+    if (prior.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
+    return (await prior.promise) as T;
   }
-
-  const existingInflight = storeInflightCommands.get(key);
-
-  if (existingInflight) {
-    if (existingInflight.inputHash !== inputHash) {
-      throw new IdempotencyKeyConflictError();
-    }
-
-    return (await existingInflight.promise) as T;
-  }
-
-  /**
-   * Records the receipt for one freshly executed command result.
-   *
-   * @param result Fresh command result whose resource pointer is recorded.
-   * @returns The same result after its receipt is durable.
-   */
-  const recordResult = (result: T): T => {
-    // User work acknowledges its personal-Workspace effect before its separate User receipt; keep that original receipt rather than rewriting it after model work.
-    if (workerOwned || ('receiptDb' in options && options.receiptDb?.scope === 'user')) {
-      const committed = options.store.getCommandRequest(
-        options.command,
-        options.requestId,
-        options.scope,
-        commandDb
-      );
-      if (!committed && workerOwned) {
-        throw new Error('Native product command returned without its original committed receipt.');
-      }
-      if (committed) {
-        if (committed.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
-        if (
-          committed.response.kind !== options.responseKind ||
-          committed.response.id !== options.responseId(result)
-        ) {
-          throw new Error(
-            workerOwned
-              ? 'Native product result differs from its original committed receipt.'
-              : 'User command result differs from its original committed receipt.'
-          );
-        }
-        return result;
-      }
-    }
-    options.store.recordCommandRequest(
-      {
-        command: options.command,
-        requestId: options.requestId,
-        scope: options.scope,
-        inputHash,
-        createdAt: receipt.createdAt,
-        expiresAt: receipt.expiresAt,
-        response: {
-          kind: options.responseKind,
-          id: options.responseId(result),
-          ...(options.conversationResponseMetadata
-            ? { conversationMetadata: options.conversationResponseMetadata(result) }
-            : {}),
-        },
-      },
-      commandDb
-    );
-
-    return result;
-  };
   const createdAt = new Date().toISOString();
   const receipt: IdempotentCommandReceipt = {
     key,
@@ -392,49 +157,42 @@ export async function runIdempotentCommand<T>(options: IdempotentCommandOptions<
     expiresAt: commandRequestExpiresAt(createdAt),
   };
   const promise = (async () => {
-    if (transaction) {
-      const resume =
-        mainWorkspaceDatabase && transaction.db.scope === 'workspace'
-          ? await getControlStoreWorkerClient().pauseForDataRootBackup(mainWorkspaceDatabase)
-          : undefined;
-      try {
-        return transaction.db.sqlite.transaction(() => {
-          const result = transaction.execute();
-
-          if (
-            result !== null &&
-            (typeof result === 'object' || typeof result === 'function') &&
-            typeof (result as { then?: unknown }).then === 'function'
-          ) {
-            throw new Error('Transactional commands must execute synchronously.');
-          }
-
-          return recordResult(result as T);
-        })();
-      } finally {
-        resume?.();
-      }
-    }
-
     const result = await options.execute(receipt);
-    const resume = mainWorkspaceDatabase
-      ? await getControlStoreWorkerClient().pauseForDataRootBackup(mainWorkspaceDatabase)
-      : undefined;
-    try {
-      return recordResult(result);
-    } finally {
-      resume?.();
+    if (options.store.getDataRoot() !== null || commandDb !== undefined) {
+      // Never backfill a tuple after its native owner returned: this is observation, not publication.
+      const committed = options.store.getCommandRequest(
+        options.command,
+        options.requestId,
+        options.scope,
+        commandDb
+      );
+      if (!committed)
+        throw new Error('Native command returned without its original committed receipt.');
+      if (committed.inputHash !== inputHash) throw new IdempotencyKeyConflictError();
+      if (
+        committed.response.kind !== options.responseKind ||
+        committed.response.id !== options.responseId(result)
+      )
+        throw new Error('Native command result differs from its original committed receipt.');
+    } else {
+      options.store.recordCommandRequest({
+        ...receipt,
+        response: {
+          kind: options.responseKind,
+          id: options.responseId(result),
+          ...(options.conversationResponseMetadata
+            ? { conversationMetadata: options.conversationResponseMetadata(result) }
+            : {}),
+        },
+      });
     }
+    return result;
   })();
-
-  storeInflightCommands.set(key, { inputHash, promise });
-
+  inflight.set(key, { inputHash, promise });
   try {
     return await promise;
   } finally {
-    if (storeInflightCommands.get(key)?.promise === promise) {
-      storeInflightCommands.delete(key);
-    }
+    if (inflight.get(key)?.promise === promise) inflight.delete(key);
   }
 }
 

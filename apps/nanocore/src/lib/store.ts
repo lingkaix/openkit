@@ -4,6 +4,7 @@ import {
   contextIsExternallyInfluenced,
   receivedItemInfluences,
 } from '../security/context-influence.js';
+import { commandRequestOwner } from '../storage/command-request-codecs.js';
 import {
   type CommandReceipt,
   ControlCommandReceiptAdmissionSchema,
@@ -213,8 +214,6 @@ import {
   normalizeCommandRequestResponse,
   prepareControlCommandRequestStatement,
   readCommandRequestRecordsFromSqlite,
-  recordCommandRequestRecord,
-  recordCommandRequestRecordInDb,
 } from '../storage/command-request-records.js';
 import {
   type ControlAdmission,
@@ -510,8 +509,6 @@ export type CommandRequestName =
   | 'turn.start'
   | 'turn.input.submit'
   | 'turn.interrupt'
-  | 'git_push.approval.request'
-  | 'git_push.execute'
   | 'approval.respond'
   | 'user_input.answer'
   | 'pending_request.withdraw'
@@ -527,18 +524,8 @@ export type CommandRequestName =
   | 'goal.plan.propose'
   | 'goal.cancel'
   | 'goal.completion.accept'
-  | 'goal.start'
-  | 'goal.plan'
   | 'goal.plan.approve'
-  | 'goal.plan.revise'
   | 'goal.intent.revise'
-  | 'goal.pause'
-  | 'goal.resume'
-  | 'goal.step'
-  | 'goal.review.decide'
-  | 'goal.steering.send'
-  | 'goal.steering.follow_up'
-  | 'goal.steering.cancel'
   | 'worker.recovery.retry'
   | 'worker_environment.purge'
   | 'worker_environment.prepare'
@@ -1524,16 +1511,12 @@ export class FsStore {
   }
 
   /**
-   * Records the resource pointer for a completed idempotent command.
+   * Records a completed command's in-memory pointer; persistent receipts belong to native admission.
    *
    * @param input Idempotency record input.
-   * @param commandDb Optional open Core, User, Workspace or App database for owner-local writes.
-   * @returns Persisted idempotency record.
+   * @returns In-memory idempotency record.
    */
-  public recordCommandRequest(
-    input: CommandRequestRecordInput,
-    commandDb?: CoreDb | UserDb | WorkspaceDb | AppDb
-  ): CommandRequestRecord {
+  public recordCommandRequest(input: CommandRequestRecordInput): CommandRequestRecord {
     const createdAt = input.createdAt ?? now();
     const record: CommandRequestRecord = {
       key: commandRequestKey(input.command, input.requestId, input.scope),
@@ -1546,13 +1529,11 @@ export class FsStore {
       expiresAt: input.expiresAt ?? commandRequestExpiresAt(createdAt),
     };
 
-    if (commandDb) {
-      recordCommandRequestRecordInDb(commandDb, record);
-    } else if (this.dataRoot) {
-      recordCommandRequestRecord(this.dataRoot, record);
-    } else {
-      this.commandRequests.set(record.key, record);
+    if (this.dataRoot) {
+      commandRequestOwner(record.scope);
+      throw new Error('Native admission receipts belong to the database worker.');
     }
+    this.commandRequests.set(record.key, record);
 
     return record;
   }

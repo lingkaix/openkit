@@ -19,7 +19,6 @@ import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { isControlNativeReceiptCommand } from './control-store-admission-codecs.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
@@ -696,9 +695,6 @@ it.each(commands)(
     effect(f);
     audit(f);
     receipt(f);
-    expect(isControlNativeReceiptCommand(command, 'core')).toBe(command !== workspaceCommand);
-    expect(isControlNativeReceiptCommand(command, 'workspace')).toBe(command === workspaceCommand);
-    expect(isControlNativeReceiptCommand(command, 'user')).toBe(false);
     const retained = f.snapshot();
     await f.cold();
     expect(f.snapshot()).toEqual(retained);

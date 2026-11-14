@@ -20,8 +20,6 @@ import {
   ControlProductEntrySchema,
   ControlProductMutationSchema,
 } from './control-store-product-records.js';
-/** Creator receipts belong to User; Server MCP to Core; metadata, environment and local catalog receipts to Workspace. */
-export const WORKSPACE_USER_COMMAND_RECEIPTS = ['workspace.create'] as const;
 /** Five noncredential Server MCP commands retain their original Core receipt partition. */
 export const SERVER_MCP_CORE_COMMAND_RECEIPTS = [
   'administration.server-mcp-create',
@@ -30,30 +28,6 @@ export const SERVER_MCP_CORE_COMMAND_RECEIPTS = [
   'administration.server-mcp-update-binding',
   'administration.server-mcp-remove',
 ] as const;
-/** Existing closed metadata, environment and catalog commands share this physical Workspace receipt partition. */
-export const WORKSPACE_LOCAL_COMMAND_RECEIPTS = [
-  'workspace.update',
-  'worker_environment.prepare',
-  'worker_environment.activate',
-  'worker_environment.purge',
-  'catalog.skill-import',
-  'catalog.skill-select',
-  'catalog.skill-pin',
-  'catalog.skill-remove',
-  'catalog.skill-purge',
-  'artifact.import',
-  'artifact.version-commit',
-  'artifact.version-file-commit',
-  'artifact.introduce',
-  'catalog.light-app-import',
-  'catalog.light-app-history-import',
-  'catalog.light-app-select',
-  'catalog.light-app-pin',
-  'catalog.shared-mcp-set-disabled',
-  'administration.configuration.apply',
-  'workspace_sync.review.decide',
-] as const;
-
 /** These three original standalone Catalog receipts have separate record and maintenance commits. */
 export const CATALOG_COMMAND_RECEIPTS = [
   'catalog.skill-candidate-submit',
@@ -110,104 +84,6 @@ export const CONTROL_ADMISSION_COMMANDS = [
   'conversation.submit',
   'turn.interrupt',
 ] as const;
-
-/** Activated native command partitions share the original receipt owner, not a second ledger or Main backfill. */
-export const CONTROL_NATIVE_RECEIPT_COMMANDS = [
-  ...CONTROL_ADMISSION_COMMANDS,
-  'vault.server-mcp-secret-create',
-  'vault.server-mcp-secret-rotate',
-  'vault.server-mcp-secret-revoke',
-  'vault.server-mcp-grant-create',
-  'vault.server-mcp-grant-revoke',
-  'vault.server-mcp-grant-narrow',
-  'approval.respond',
-  'user_input.answer',
-  'pending_request.withdraw',
-  'artifact.submit',
-  'artifact.review.select',
-  'artifact.review.decide',
-  'goal.create',
-  'goal.intent.revise',
-  'goal.card.create',
-  'goal.card.edit',
-  'goal.card.cancel',
-  'goal.plan.propose',
-  'goal.plan.approve',
-  'goal.cancel',
-  'goal.completion.accept',
-  'knowledge.maintain',
-  'knowledge.tell',
-  'knowledge.server.maintain',
-  'knowledge.server.tell',
-  'material.create',
-  'material.save',
-  'material.bind',
-  'material.unbind',
-  'material.exclude',
-  'material.restore',
-  'material.range-correct',
-  'worker.recovery.retry',
-  'generative-ui.publish',
-  'evaluation.candidate-set-create',
-  'evaluation.candidate-set-select',
-  'workspace.invitation.create',
-  'workspace.invitation.accept',
-  'workspace.invitation.decline',
-  'workspace.invitation.revoke',
-  'workspace.member.remove',
-  'workspace.leave',
-  'workspace.ownership.transfer',
-  'workspace.access.recover',
-  'workspace.delete',
-  'workspace_sync.recovery.decide',
-] as const satisfies readonly CommandRequestName[];
-
-/** Workspace Knowledge commands commit their original receipt with SQL publication; other scopes retain their current writer. */
-export const CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS = [
-  'knowledge.schema.apply',
-  'knowledge.notebook.update',
-  'knowledge.notebook.restore',
-  'knowledge.notebook.create',
-  'knowledge.notebook.delete',
-  'knowledge.proposal.draft',
-  'knowledge.proposal.decide',
-  'knowledge.proposal.reverse',
-  'knowledge.package.import',
-  'knowledge.source.register',
-] as const satisfies readonly CommandRequestName[];
-
-/** Complete lifecycle receipts owned only by the canonical Core tuple, never Workspace or User stores. */
-export const CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS = [
-  'user.disable',
-  'workspace.retire-quarantined',
-] as const satisfies readonly CommandRequestName[];
-
-/** Current native User receipt producers, without activating their names in other scopes. */
-export const CONTROL_NATIVE_USER_RECEIPT_COMMANDS = [
-  ...SCOPED_NOTEBOOK_USER_RECEIPTS,
-  ...WORKSPACE_USER_COMMAND_RECEIPTS,
-] as const;
-
-/** Selects each activated physical-scope partition without activating another scope. */
-export function isControlNativeReceiptCommand(
-  command: string,
-  scope: 'core' | 'workspace' | 'user'
-): boolean {
-  if (scope === 'user')
-    return CONTROL_NATIVE_USER_RECEIPT_COMMANDS.some((name) => name === command);
-  if (scope === 'core' && command === 'scheduler.external-trigger.admit') return true;
-  return (
-    CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
-    (scope === 'core' &&
-      (CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS.some((name) => name === command) ||
-        SCOPED_NOTEBOOK_SERVER_RECEIPTS.some((name) => name === command) ||
-        SERVER_MCP_CORE_COMMAND_RECEIPTS.some((name) => name === command))) ||
-    (scope === 'workspace' &&
-      (CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS.some((name) => name === command) ||
-        CATALOG_COMMAND_RECEIPTS.some((name) => name === command) ||
-        WORKSPACE_LOCAL_COMMAND_RECEIPTS.some((name) => name === command)))
-  );
-}
 
 /** Original receipt facts; expiry policy remains with the existing command producer, not another ledger. */
 const ReceiptSchema = z

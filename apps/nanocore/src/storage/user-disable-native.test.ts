@@ -22,7 +22,6 @@ import { commandRequestKey, FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import { getCommandRequestRecordFromDb } from './command-request-records.js';
-import { isControlNativeReceiptCommand } from './control-store-admission-codecs.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { isControlWorkerRequest } from './control-store-worker-protocol.js';
 import { type CoreDb, openCoreDb } from './db.js';
@@ -613,12 +612,6 @@ it('keeps the closed User command and non-secret mutation reply shapes', async (
       value: { ...result.user, disabledAt: 'retained-non-ISO' },
     }).success
   ).toBe(true);
-});
-
-it('does not activate User-disable receipts for Workspace or User stores', () => {
-  expect(isControlNativeReceiptCommand('user.disable', 'core')).toBe(true);
-  expect(isControlNativeReceiptCommand('user.disable', 'workspace')).toBe(false);
-  expect(isControlNativeReceiptCommand('user.disable', 'user')).toBe(false);
 });
 
 it('refuses the complete native tuple owner on a Main SQLite connection', async () => {

@@ -48,19 +48,6 @@ import {
 } from './control-store-products.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 
-/** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
-export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
-  AND response_kind='evaluation_judgement' AND response_id=request_id
-  AND (EXISTS (SELECT 1 FROM artifact_reviews AS review, json_each(review.judgements) AS annotation
-    WHERE review.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
-      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)
-    OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision, json_each(revision.judgements) AS annotation
-    WHERE revision.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
-      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)
-    OR EXISTS (SELECT 1 FROM evaluation_candidate_sets AS candidate, json_each(candidate.payload_json,'$.judgements') AS annotation
-    WHERE candidate.workspace_id=json_extract(idempotency_requests.scope_json,'$.workspaceId')
-      AND json_extract(annotation.value,'$.requestId')=idempotency_requests.request_id)))`;
-
 /** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */
 function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, string>): void {
   if (

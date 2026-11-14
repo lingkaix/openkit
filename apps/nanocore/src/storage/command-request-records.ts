@@ -22,11 +22,7 @@ import {
   prepareControlCommandRequestStatement,
   readCommandResponseMetadata,
 } from './command-request-codecs.js';
-import {
-  CONTROL_NATIVE_EVALUATION_RECEIPT_SQL,
-  pruneControlAdmissionReceipts,
-} from './control-store-admission.js';
-import { isControlNativeReceiptCommand } from './control-store-admission-codecs.js';
+import { pruneControlAdmissionReceipts } from './control-store-admission.js';
 import {
   ControlProductPreconditionError,
   openControlStoreProductReadHandle,
@@ -91,97 +87,26 @@ function commandRequestSelect(db: CommandRequestDb): string {
 export { normalizeCommandRequestResponse, prepareControlCommandRequestStatement };
 
 /**
- * Stores one command idempotency request in its owning scoped database.
+ * Stores an App command only on its actual native worker connection.
  *
- * @param dataRoot Data root that owns the databases.
- * @param record Command request record to store.
- * @throws Error when the scope has no exact Core, User, or Workspace owner.
- */
-export function recordCommandRequestRecord(dataRoot: string, record: CommandRequestRecord): void {
-  const owner = commandRequestOwner(record.scope);
-  const response = normalizeCommandRequestResponse(record.command, record.response);
-
-  if (owner.scope === 'workspace' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
-    throw new Error(`Workspace not found: ${owner.workspaceId}`);
-  }
-  if (owner.scope === 'app' && !workspaceRecordExists(dataRoot, owner.workspaceId)) {
-    throw new Error(`Workspace not found: ${owner.workspaceId}`);
-  }
-
-  // Validate the pointer first, then refuse standalone native backfill before
-  // opening a database or creating layout for a command owned by a whole tuple.
-  if (
-    (owner.scope === 'core' || owner.scope === 'workspace' || owner.scope === 'user') &&
-    isControlNativeReceiptCommand(record.command, owner.scope)
-  )
-    throw new Error('Native admission receipts belong to the database worker.');
-
-  const db = openCommandRequestDb(dataRoot, owner);
-
-  try {
-    recordCommandRequestRecordInDb(db, { ...record, response });
-  } finally {
-    db.sqlite.close();
-  }
-}
-
-/** Resolves shared judgement receipt ownership from its actual retained target, never a new scope marker. */
-function nativeEvaluationReceipt(db: CommandRequestDb, record: CommandRequestRecord): boolean {
-  if (db.scope !== 'workspace' || record.command !== 'evaluation.judgement-add') return false;
-  return (
-    !!db.sqlite
-      .prepare(
-        `SELECT 1 FROM idempotency_requests WHERE request_key=? AND ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}`
-      )
-      .get(record.key) ||
-    !!db.sqlite
-      .prepare(`SELECT 1 WHERE EXISTS (SELECT 1 FROM artifact_reviews AS review,json_each(review.judgements) AS annotation WHERE review.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)
-      OR EXISTS (SELECT 1 FROM workspace_material_revisions AS revision,json_each(revision.judgements) AS annotation WHERE revision.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)
-      OR EXISTS (SELECT 1 FROM evaluation_candidate_sets AS candidate,json_each(candidate.payload_json,'$.judgements') AS annotation WHERE candidate.workspace_id=? AND json_extract(annotation.value,'$.requestId')=?)`)
-      .get(
-        db.workspaceId,
-        record.requestId,
-        db.workspaceId,
-        record.requestId,
-        db.workspaceId,
-        record.requestId
-      )
-  );
-}
-
-/**
- * Stores one command request through an already open scoped database.
- *
- * @param db Open database that owns the request scope.
+ * @param db Native App database that owns the request scope.
  * @param record Complete command request record.
  */
-export function recordCommandRequestRecordInDb(
-  db: CommandRequestDb,
-  record: CommandRequestRecord
-): void {
-  assertCommandRequestDbOwner(db, record.scope);
-  if (db.scope === 'app') assertControlProductWriter(db.sqlite);
-  if (
-    (db.scope === 'core' || db.scope === 'workspace' || db.scope === 'user') &&
-    (isControlNativeReceiptCommand(record.command, db.scope) || nativeEvaluationReceipt(db, record))
-  ) {
+export function recordCommandRequestRecordInDb(db: AppDb, record: CommandRequestRecord): void {
+  if (db.scope !== 'app')
     throw new Error('Native admission receipts belong to the database worker.');
-  }
+  assertControlProductWriter(db.sqlite);
+  assertCommandRequestDbOwner(db, record.scope);
   writeCommandRequestRecordInDb(db, record);
 }
 
-/** Writes one original native receipt inside its complete owning command tuple, with only the native operation/scope maintenance partition. */
+/** Writes the original receipt in its complete native tuple and prunes ordinary expiry only on that physical owner. */
 export function recordControlCommandRequestRecordInDb(
   db: CoreDb | WorkspaceDb | UserDb,
   record: CommandRequestRecord
 ): void {
   assertControlProductWriter(db.sqlite);
   assertCommandRequestDbOwner(db, record.scope);
-  if (
-    !isControlNativeReceiptCommand(record.command, db.scope) &&
-    !nativeEvaluationReceipt(db, record)
-  )
-    throw new Error('The command has no native receipt owner.');
   writeCommandRequestRecordInDb(db, record);
   pruneControlAdmissionReceipts(
     db.sqlite,
@@ -275,33 +200,25 @@ export function getCommandRequestRecord(
     return null;
   }
 
-  // commandRequestKey owns the operation prefix; this selects maintenance, never authority.
-  const separator = key.indexOf('|');
-  const command = separator < 0 ? '' : key.slice(0, separator);
-  const workerOwnedKey =
-    owner.scope !== 'app' &&
-    (isControlNativeReceiptCommand(command, owner.scope) ||
-      ((owner.scope === 'core' || owner.scope === 'workspace') &&
-        command === 'evaluation.judgement-add'));
-  if (workerOwnedKey && owner.scope === 'workspace')
-    assertScopeAdmitted(dataRoot, 'workspace', owner.workspaceId);
-  // Native admission owns migration and pruning. Observation only opens an existing reader.
+  if (owner.scope === 'workspace') assertScopeAdmitted(dataRoot, 'workspace', owner.workspaceId);
+  // Every Core/Workspace/User observation uses the existing read-only owner, never a Main migration or pruning writer.
   const reader =
-    workerOwnedKey && owner.scope !== 'user'
+    owner.scope === 'core' || owner.scope === 'workspace'
       ? openControlStoreProductReadHandle(
           path,
-          owner.scope === 'workspace'
-            ? { kind: 'workspace', workspaceId: owner.workspaceId }
-            : { kind: 'server' }
+          owner.scope === 'core'
+            ? { kind: 'server' }
+            : { kind: 'workspace', workspaceId: owner.workspaceId }
         )
       : undefined;
-  const db = reader
-    ? owner.scope === 'workspace'
-      ? bindWorkspaceSqlite(reader.sqlite, dataRoot, owner.workspaceId)
-      : bindCoreSqlite(reader.sqlite, dataRoot)
-    : workerOwnedKey && owner.scope === 'user'
-      ? openUserReadDb(dataRoot, owner.userId)
-      : openCommandRequestDb(dataRoot, owner);
+  const db =
+    owner.scope === 'app'
+      ? openExistingAppDb(dataRoot, owner.workspaceId, owner.appId, 'format-upgrade')
+      : owner.scope === 'user'
+        ? openUserReadDb(dataRoot, owner.userId)
+        : owner.scope === 'workspace'
+          ? bindWorkspaceSqlite(reader!.sqlite, dataRoot, owner.workspaceId)
+          : bindCoreSqlite(reader!.sqlite, dataRoot);
 
   try {
     return getCommandRequestRecordFromDb(db, key, referenceTime);
@@ -567,18 +484,24 @@ export function listCommandRequestRecords(
     if (owner.scope === 'workspace') assertScopeAdmitted(dataRoot, 'workspace', owner.workspaceId);
     if (owner.scope === 'user') assertScopeAdmitted(dataRoot, 'user', owner.userId);
     const reader =
-      owner.scope === 'workspace'
-        ? openControlStoreProductReadHandle(workspaceDbPath(dataRoot, owner.workspaceId), {
-            kind: 'workspace',
-            workspaceId: owner.workspaceId,
-          })
+      owner.scope === 'core' || owner.scope === 'workspace'
+        ? openControlStoreProductReadHandle(
+            owner.scope === 'core'
+              ? coreDbPath(dataRoot)
+              : workspaceDbPath(dataRoot, owner.workspaceId),
+            owner.scope === 'core'
+              ? { kind: 'server' }
+              : { kind: 'workspace', workspaceId: owner.workspaceId }
+          )
         : undefined;
     const db =
-      reader && owner.scope === 'workspace'
-        ? bindWorkspaceSqlite(reader.sqlite, dataRoot, owner.workspaceId)
-        : owner.scope === 'user'
-          ? openUserReadDb(dataRoot, owner.userId)
-          : openCommandRequestDb(dataRoot, owner);
+      owner.scope === 'user'
+        ? openUserReadDb(dataRoot, owner.userId)
+        : owner.scope === 'app'
+          ? openExistingAppDb(dataRoot, owner.workspaceId, owner.appId, 'format-upgrade')
+          : owner.scope === 'workspace'
+            ? bindWorkspaceSqlite(reader!.sqlite, dataRoot, owner.workspaceId)
+            : bindCoreSqlite(reader!.sqlite, dataRoot);
 
     try {
       return (
@@ -602,32 +525,6 @@ export function listCommandRequestRecords(
     (left, right) =>
       compareCodeUnits(left.createdAt, right.createdAt) || compareCodeUnits(left.key, right.key)
   );
-}
-
-/**
- * Opens and migrates the database that owns one command request scope.
- *
- * @param dataRoot Data root that owns the database.
- * @param owner Exact Core, User, or Workspace database owner.
- * @returns Open migrated scoped database.
- */
-function openCommandRequestDb(dataRoot: string, owner: CommandRequestOwner): CommandRequestDb {
-  if (owner.scope === 'app') {
-    return openExistingAppDb(dataRoot, owner.workspaceId, owner.appId, 'format-upgrade');
-  }
-  const db =
-    owner.scope === 'core'
-      ? openCoreDb(dataRoot)
-      : owner.scope === 'user'
-        ? openUserDb(dataRoot, owner.userId)
-        : openWorkspaceDb(dataRoot, owner.workspaceId);
-
-  if (db.scope === 'core') {
-    applyMigrations(db);
-  } else {
-    applyScopedMigrations(db);
-  }
-  return db;
 }
 
 /**
