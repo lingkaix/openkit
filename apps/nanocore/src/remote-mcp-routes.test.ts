@@ -1257,6 +1257,7 @@ describe('remote MCP App endpoint', () => {
           .map(([id]) => id)
           .sort();
         expect(excluded).toEqual([
+          'administration.report-prepare',
           'artifact.download',
           'artifact.import',
           'artifact.version-file-commit',
@@ -1304,7 +1305,9 @@ describe('remote MCP App endpoint', () => {
               expect(JSON.parse(result.content[0].text).code).toBe(
                 definition.returnsOneTimeSecret
                   ? 'mcp_secret_returning_operation'
-                  : 'mcp_streaming_operation'
+                  : definition.binding === 'json'
+                    ? 'mcp_person_only_operation'
+                    : 'mcp_streaming_operation'
               );
             }
             expect(native.mock.calls.length).toBe(before);

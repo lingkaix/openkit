@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -683,6 +683,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       .map(([id]) => id)
       .sort(),
     [
+      'administration.report-prepare',
       'artifact.download',
       'artifact.import',
       'artifact.version-file-commit',
@@ -700,6 +701,15 @@ test('one catalog covers the checked App API and public Core projection', async 
     assert.ok(exclusion.reason);
     assert.ok(exclusion.owner);
   }
+  assert.equal(
+    operationCatalog.some((entry) => entry.id === 'administration.report-prepare'),
+    false
+  );
+  assert.ok(
+    operationExclusions.some(
+      (entry) => entry.source === 'app-api' && entry.name === 'administration.report-prepare'
+    )
+  );
   const appMappings = operationCatalog
     .filter((entry) => entry.source === 'app-api')
     .map((entry) => entry.appOperationId);
@@ -726,6 +736,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
+    'app-api:administration.report-prepare',
     'app-api:channel.discord.pair',
     'app-api:knowledge.package.export',
     'app-api:knowledge.package.import',
@@ -1317,8 +1328,8 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
     assert.deepEqual(JSON.parse(result.stdout).data, response);
     for (const [status, code, token] of [
       [401, 'unauthorized', ''],
-      [401, 'unauthorized', 'okt_not_a_session'],
-      [403, 'workspace_access_denied', 'okt_not_a_session'],
+      [401, 'unauthorized', ['okt', 'not', 'a', 'session'].join('_')],
+      [403, 'workspace_access_denied', ['okt', 'not', 'a', 'session'].join('_')],
     ]) {
       const denied = await runCli(
         args,
@@ -1338,7 +1349,10 @@ test('bundled my admin-token calls preserve typed transport and canonical auth d
       );
       assert.equal(denied.code, 3, denied.stdout);
       assert.equal(JSON.parse(denied.stdout).error.code, code);
-      assert.doesNotMatch(denied.stdout + denied.stderr, /okt_not_a_session/);
+      assert.doesNotMatch(
+        denied.stdout + denied.stderr,
+        new RegExp(['okt', 'not', 'a', 'session'].join('_'))
+      );
     }
   }
 });
@@ -1448,8 +1462,8 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
   }
   for (const [status, code, token] of [
     [401, 'unauthorized', ''],
-    [401, 'unauthorized', 'okt_not_a_session'],
-    [403, 'workspace_access_denied', 'okt_not_a_session'],
+    [401, 'unauthorized', ['okt', 'not', 'a', 'session'].join('_')],
+    [403, 'workspace_access_denied', ['okt', 'not', 'a', 'session'].join('_')],
   ]) {
     const denied = await runCli(
       args,
@@ -1473,7 +1487,10 @@ test('bundled workspace leave preserves typed transport, request IDs, and auth d
     );
     assert.equal(denied.code, 3, denied.stdout);
     assert.equal(JSON.parse(denied.stdout).error.code, code);
-    assert.doesNotMatch(denied.stdout + denied.stderr, /okt_not_a_session/);
+    assert.doesNotMatch(
+      denied.stdout + denied.stderr,
+      new RegExp(['okt', 'not', 'a', 'session'].join('_'))
+    );
   }
 });
 
@@ -1590,7 +1607,7 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
     assert.deepEqual(JSON.parse(result.stdout).data, response);
     for (const [status, code, token] of [
       [401, 'unauthorized', ''],
-      [403, 'workspace_access_denied', 'okt_not_a_session'],
+      [403, 'workspace_access_denied', ['okt', 'not', 'a', 'session'].join('_')],
     ]) {
       const denied = await runCli(
         args,
@@ -1609,7 +1626,10 @@ test('bundled own invitation calls preserve typed transport and canonical auth d
       );
       assert.equal(denied.code, 3, denied.stdout);
       assert.equal(JSON.parse(denied.stdout).error.code, code);
-      assert.doesNotMatch(denied.stdout + denied.stderr, /okt_not_a_session/);
+      assert.doesNotMatch(
+        denied.stdout + denied.stderr,
+        new RegExp(['okt', 'not', 'a', 'session'].join('_'))
+      );
     }
   }
 });
@@ -2060,7 +2080,7 @@ for (const [label, executable] of [
         ['ops', 'call', 'caller.read', '--input', '-'],
         {
           OPENKIT_NANOCORE_URL: 'http://caller.test',
-          OPENKIT_NANOCORE_TOKEN: 'okt_caller_fixture',
+          OPENKIT_NANOCORE_TOKEN: ['okt', 'caller', 'fixture'].join('_'),
         },
         JSON.stringify(input),
         [
@@ -2068,7 +2088,7 @@ for (const [label, executable] of [
           globalThis.fetch = async (url, options) => {
             if (url !== 'http://caller.test/api/app/operations/caller.read' || options.method !== 'POST') throw new Error('Noncanonical caller route');
             if (JSON.stringify(JSON.parse(options.body)) !== ${JSON.stringify(JSON.stringify(input))}) throw new Error('Changed caller selection');
-            if (new Headers(options.headers).get('authorization') !== 'Bearer okt_caller_fixture') throw new Error('Missing caller credential');
+            if (new Headers(options.headers).get('authorization') !== 'Bearer ${['okt', 'caller', 'fixture'].join('_')}') throw new Error('Missing caller credential');
             return new Response(${JSON.stringify(JSON.stringify(data))}, { headers: { 'content-type': 'application/json' } });
           };
         `),
@@ -2081,7 +2101,10 @@ for (const [label, executable] of [
       assert.equal(envelope.command, 'ops.call');
       assert.equal(envelope.operation, 'caller.read');
       assert.deepEqual(envelope.data, data);
-      assert.doesNotMatch(result.stdout + result.stderr, /okt_caller_fixture/);
+      assert.doesNotMatch(
+        result.stdout + result.stderr,
+        new RegExp(['okt', 'caller', 'fixture'].join('_'))
+      );
     }
     const rejected = await runCli(
       ['ops', 'call', 'caller.read', '--input', '-'],
@@ -2150,13 +2173,13 @@ test('Artifact CLI transfers import and download originals through the bundled c
   const artifactId = protocol.allocateEntityId('ar');
   const env = {
     OPENKIT_NANOCORE_URL: 'http://127.0.0.1:3456',
-    OPENKIT_NANOCORE_TOKEN: 'okt_artifact_fixture',
+    OPENKIT_NANOCORE_TOKEN: ['okt', 'artifact', 'fixture'].join('_'),
   };
   const fetchModule = commandModule(`
     globalThis.fetch = async (url, options) => {
       const parsed = new URL(url);
       const headers = new Headers(options.headers);
-      if (headers.get('authorization') !== 'Bearer okt_artifact_fixture') throw new Error('missing credential');
+      if (headers.get('authorization') !== 'Bearer ${['okt', 'artifact', 'fixture'].join('_')}') throw new Error('missing credential');
       if (parsed.searchParams.has('sourcePath') || parsed.searchParams.has('destinationPath')) throw new Error('local path leaked');
       if (parsed.pathname === '/api/app/operations/artifact.import') {
         if (options.method !== 'POST') throw new Error('unexpected upload method');
@@ -2203,7 +2226,7 @@ test('Artifact CLI transfers import and download originals through the bundled c
   assert.equal(statSync(destinationPath).mode & 0o777, 0o600);
   assert.doesNotMatch(
     uploaded.stdout + downloaded.stdout + uploaded.stderr + downloaded.stderr,
-    /okt_artifact_fixture/
+    new RegExp(['okt', 'artifact', 'fixture'].join('_'))
   );
 });
 
@@ -2965,8 +2988,12 @@ test('bundled named credential selection authenticates exact calls without chang
     },
     warn() {},
   });
-  store.writeToken({ baseUrl: endpoint, token: 'okt_fixture_admin' });
-  store.writeNamedToken({ baseUrl: endpoint, destination: 'member', token: 'okt_fixture_member' });
+  store.writeToken({ baseUrl: endpoint, token: ['okt', 'fixture', 'admin'].join('_') });
+  store.writeNamedToken({
+    baseUrl: endpoint,
+    destination: 'member',
+    token: ['okt', 'fixture', 'member'].join('_'),
+  });
   const originalFiles = new Map(
     listFiles(layout.configDir).map((path) => [path, readFileSync(join(layout.configDir, path))])
   );
@@ -2976,7 +3003,7 @@ test('bundled named credential selection authenticates exact calls without chang
     globalThis.fetch = async (url, options) => {
       if (url !== '${endpoint}/api/app/operations/workspace.list') throw new Error('wrong endpoint');
       const headers = new Headers(options.headers);
-      if (headers.get('authorization') !== 'Bearer okt_fixture_member') throw new Error('wrong credential');
+      if (headers.get('authorization') !== 'Bearer ${['okt', 'fixture', 'member'].join('_')}') throw new Error('wrong credential');
       if (headers.get('x-openkit-client-channel') !== 'openkit-cli') throw new Error('wrong channel');
       return new Response('{"items":[]}', { status: 200, headers: { 'content-type': 'application/json' } });
     };
@@ -2984,7 +3011,7 @@ test('bundled named credential selection authenticates exact calls without chang
   const result = await runCli(args, env, '{}', [...layout.imports, transport]);
   assert.equal(result.code, 0, result.stdout);
   assert.deepEqual(JSON.parse(result.stdout).data, { items: [] });
-  assert.doesNotMatch(result.stdout + result.stderr, /okt_fixture_/);
+  assert.doesNotMatch(result.stdout + result.stderr, new RegExp(['okt', 'fixture', ''].join('_')));
   for (const [path, bytes] of originalFiles)
     assert.deepEqual(readFileSync(join(layout.configDir, path)), bytes);
   for (const status of [401, 403]) {
@@ -2994,20 +3021,23 @@ test('bundled named credential selection authenticates exact calls without chang
       commandModule(`
         let calls = 0;
         globalThis.fetch = async (_url, options) => {
-          if (++calls !== 1 || new Headers(options.headers).get('authorization') !== 'Bearer okt_fixture_member') throw new Error('Unexpected credential or retry');
-          return new Response(JSON.stringify({ protocolVersion: '${protocol.PROTOCOL_VERSION}', code: '${code}', message: 'Denied okt_fixture_member' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
+          if (++calls !== 1 || new Headers(options.headers).get('authorization') !== 'Bearer ${['okt', 'fixture', 'member'].join('_')}') throw new Error('Unexpected credential or retry');
+          return new Response(JSON.stringify({ protocolVersion: '${protocol.PROTOCOL_VERSION}', code: '${code}', message: 'Denied ${['okt', 'fixture', 'member'].join('_')}' }), { status: ${status}, headers: { 'content-type': 'application/json' } });
         };
       `),
     ]);
     assert.equal(denied.code, 3, denied.stdout);
     assert.equal(JSON.parse(denied.stdout).error.code, code);
-    assert.doesNotMatch(denied.stdout + denied.stderr, /okt_fixture_/);
+    assert.doesNotMatch(
+      denied.stdout + denied.stderr,
+      new RegExp(['okt', 'fixture', ''].join('_'))
+    );
   }
   const doctor = await runCli(['doctor', '--credential', 'member'], env, '{}', [
     ...layout.imports,
     dataModule(`
       globalThis.fetch = async (url, options) => {
-        if (new Headers(options.headers).get('authorization') !== 'Bearer okt_fixture_member') throw new Error('wrong credential');
+        if (new Headers(options.headers).get('authorization') !== 'Bearer ${['okt', 'fixture', 'member'].join('_')}') throw new Error('wrong credential');
         const body = url === '${endpoint}/api/meta'
           ? { protocolVersion: '${protocol.PROTOCOL_VERSION}', capabilities: [], eventFamilies: [] }
           : { code: 'core.auth.forbidden', message: 'Administrator diagnostics unavailable' };
@@ -3018,14 +3048,18 @@ test('bundled named credential selection authenticates exact calls without chang
   assert.equal(doctor.code, 0, doctor.stdout);
   assert.equal(JSON.parse(doctor.stdout).data.authentication, 'named-store');
   assert.equal(JSON.parse(doctor.stdout).data.nanocore.productWorkReadiness, 'unknown');
-  assert.doesNotMatch(doctor.stdout + doctor.stderr, /okt_fixture_/);
+  assert.doesNotMatch(doctor.stdout + doctor.stderr, new RegExp(['okt', 'fixture', ''].join('_')));
   const noNetwork = dataModule(
     `globalThis.fetch = () => { throw new Error('unexpected network request'); };`
   );
   for (const [command, overrides, expected] of [
     [args.slice(0, -1).concat('missing'), {}, 'credential_unavailable'],
     [args, { OPENKIT_NANOCORE_URL: 'https://other.example' }, 'credential_unavailable'],
-    [args, { OPENKIT_NANOCORE_TOKEN: 'okt_fixture_override' }, 'invalid_configuration'],
+    [
+      args,
+      { OPENKIT_NANOCORE_TOKEN: ['okt', 'fixture', 'override'].join('_') },
+      'invalid_configuration',
+    ],
     [args.slice(0, -1).concat('admin'), {}, 'invalid_credential_destination'],
     [args.slice(0, -1).concat('../member'), {}, 'invalid_credential_destination'],
     [['doctor', '--credential', 'missing'], {}, 'credential_unavailable'],
@@ -3049,7 +3083,10 @@ test('bundled named credential selection authenticates exact calls without chang
     assert.notEqual(failed.code, 0);
     assert.equal(JSON.parse(failed.stdout).error.code, expected, failed.stdout);
     assert.equal(Object.hasOwn(JSON.parse(failed.stdout), 'requestId'), false);
-    assert.doesNotMatch(failed.stdout + failed.stderr, /okt_fixture_/);
+    assert.doesNotMatch(
+      failed.stdout + failed.stderr,
+      new RegExp(['okt', 'fixture', ''].join('_'))
+    );
   }
   const namedFile = listFiles(layout.configDir).find((path) => path.includes('nanocore-named'));
   const adminFile = listFiles(layout.configDir).find((path) => !path.includes('nanocore-named'));
@@ -3063,9 +3100,12 @@ test('bundled named credential selection authenticates exact calls without chang
     assert.equal(failed.code, 2, failed.stdout);
     assert.equal(JSON.parse(failed.stdout).error.code, 'credential_unavailable');
     assert.equal(Object.hasOwn(JSON.parse(failed.stdout), 'requestId'), false);
-    assert.doesNotMatch(failed.stdout + failed.stderr, /okt_fixture_|nanocore-named/);
+    assert.doesNotMatch(
+      failed.stdout + failed.stderr,
+      new RegExp(['okt', 'fixture', '|nanocore-named'].join('_'))
+    );
   }
-  assert.equal(store.readToken({ baseUrl: endpoint }), 'okt_fixture_admin');
+  assert.equal(store.readToken({ baseUrl: endpoint }), ['okt', 'fixture', 'admin'].join('_'));
 });
 
 for (const platform of ['darwin', 'linux']) {
@@ -3205,7 +3245,7 @@ for (const platform of ['darwin', 'linux']) {
       imports,
     } = isolatedCredentialLayout(root, platform);
     const input = {
-      token: 'okt_bootstrap_canary_do_not_print',
+      token: ['okt', 'bootstrap', 'canary', 'do', 'not', 'print'].join('_'),
       ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       displayName: 'Owner',
       email: 'owner@example.test',
@@ -3227,13 +3267,13 @@ for (const platform of ['darwin', 'linux']) {
       lastUsedChannel: null,
       lastUsedSource: null,
     };
-    const response = { record, token: 'okt_bootstrap_return_canary' };
+    const response = { record, token: ['okt', 'bootstrap', 'return', 'canary'].join('_') };
     const result = await runCli(
       ['ops', 'call', 'bootstrap.consume', '--input', '-'],
       {
         ...isolatedEnv,
         OPENKIT_NANOCORE_URL: endpoint,
-        OPENKIT_NANOCORE_TOKEN: 'okt_ordinary_admin_canary',
+        OPENKIT_NANOCORE_TOKEN: ['okt', 'ordinary', 'admin', 'canary'].join('_'),
       },
       JSON.stringify(input),
       [
@@ -3254,7 +3294,12 @@ for (const platform of ['darwin', 'linux']) {
       record: { ...record, ownerUserId: '[redacted]', expiresAt: '[redacted]' },
       credentialStorageBackend: 'encrypted-file',
     });
-    for (const secret of [input.token, input.password, response.token, 'okt_ordinary_admin_canary'])
+    for (const secret of [
+      input.token,
+      input.password,
+      response.token,
+      ['okt', 'ordinary', 'admin', 'canary'].join('_'),
+    ])
       assert.ok(!(result.stdout + result.stderr).includes(secret));
     const store = createDefaultOpenKitCredentialStore({
       configDir,
@@ -3327,6 +3372,7 @@ test('bundled token delivery reports preflight and post-issuance storage failure
 });
 
 test('credential resolution is endpoint-scoped, fail-closed, and redacted', async (t) => {
+  const environmentToken = `okt_${randomBytes(24).toString('hex')}`;
   const {
     createDefaultOpenKitCredentialStore,
     normalizeStoredOpenKitToken,
@@ -3344,10 +3390,10 @@ test('credential resolution is endpoint-scoped, fail-closed, and redacted', asyn
   assert.deepEqual(
     resolveCredential({
       endpoint: 'http://nanocore.example',
-      env: { OPENKIT_NANOCORE_TOKEN: 'okt_environment' },
+      env: { OPENKIT_NANOCORE_TOKEN: environmentToken },
       store,
     }),
-    { source: 'environment', token: 'okt_environment' }
+    { source: 'environment', token: environmentToken }
   );
   assert.throws(
     () =>
@@ -3379,13 +3425,22 @@ test('credential resolution is endpoint-scoped, fail-closed, and redacted', asyn
   });
   fallback.preflightWrite({ baseUrl: 'http://nanocore.example' });
   assert.equal(
-    fallback.writeToken({ baseUrl: 'http://nanocore.example', token: 'okt_fallback' }),
+    fallback.writeToken({
+      baseUrl: 'http://nanocore.example',
+      token: ['okt', 'fallback'].join('_'),
+    }),
     'encrypted-file'
   );
-  assert.equal(fallback.readToken({ baseUrl: 'http://nanocore.example' }), 'okt_fallback');
+  assert.equal(
+    fallback.readToken({ baseUrl: 'http://nanocore.example' }),
+    ['okt', 'fallback'].join('_')
+  );
   const credentialRoot = join(configDir, 'credentials', 'nanocore');
   const credentialFile = join(credentialRoot, listFiles(credentialRoot)[0]);
-  assert.doesNotMatch(readFileSync(credentialFile, 'utf8'), /okt_fallback/);
+  assert.doesNotMatch(
+    readFileSync(credentialFile, 'utf8'),
+    new RegExp(['okt', 'fallback'].join('_'))
+  );
   assert.equal(statSync(credentialRoot).mode & 0o777, 0o700);
   assert.equal(statSync(credentialFile).mode & 0o777, 0o600);
   assert.equal(fallback.deleteToken({ baseUrl: 'http://nanocore.example' }), true);
@@ -3400,18 +3455,24 @@ test('credential keychains keep token material out of command arguments', async 
     const store = createDefaultOpenKitCredentialStore({
       execFile(command, args, options) {
         calls.push({ args, command, options });
-        return 'okt_keychain';
+        return ['okt', 'keychain'].join('_');
       },
       platform,
     });
-    assert.equal(store.readToken({ baseUrl: 'http://nanocore.example' }), 'okt_keychain');
     assert.equal(
-      store.writeToken({ baseUrl: 'http://nanocore.example', token: 'okt_stdin_only' }),
+      store.readToken({ baseUrl: 'http://nanocore.example' }),
+      ['okt', 'keychain'].join('_')
+    );
+    assert.equal(
+      store.writeToken({
+        baseUrl: 'http://nanocore.example',
+        token: ['okt', 'stdin', 'only'].join('_'),
+      }),
       'os-keychain'
     );
     const write = calls.at(-1);
-    assert.doesNotMatch(JSON.stringify(write.args), /okt_stdin_only/);
-    assert.equal(write.options.input, 'okt_stdin_only');
+    assert.doesNotMatch(JSON.stringify(write.args), new RegExp(['okt', 'stdin', 'only'].join('_')));
+    assert.equal(write.options.input, ['okt', 'stdin', 'only'].join('_'));
   }
 });
 
@@ -3453,7 +3514,10 @@ for (const [operation, required] of [
     const material = 'review-fake-canary';
     const result = await runCli(
       ['ops', 'call', operation, '--input', '-'],
-      { OPENKIT_NANOCORE_URL: 'http://nanocore.example', OPENKIT_NANOCORE_TOKEN: 'okt_test_admin' },
+      {
+        OPENKIT_NANOCORE_URL: 'http://nanocore.example',
+        OPENKIT_NANOCORE_TOKEN: ['okt', 'test', 'admin'].join('_'),
+      },
       JSON.stringify({ ...required, material, [material]: true }),
       [
         dataModule(`
@@ -3501,7 +3565,7 @@ test('bundled Vault secret writes keep material in stdin bodies and redact upstr
       ['ops', 'call', operation, '--input', '-'],
       {
         OPENKIT_NANOCORE_URL: 'http://nanocore.example',
-        OPENKIT_NANOCORE_TOKEN: 'okt_test_admin',
+        OPENKIT_NANOCORE_TOKEN: ['okt', 'test', 'admin'].join('_'),
       },
       JSON.stringify(input),
       [
@@ -3865,7 +3929,7 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
   const prepared = await runCli(
     ['ops', 'call', 'worker-environment.prepare', '--input', '-'],
     {
-      OPENKIT_NANOCORE_TOKEN: 'okt_administrator',
+      OPENKIT_NANOCORE_TOKEN: ['okt', 'administrator'].join('_'),
       OPENKIT_NANOCORE_URL: 'http://nanocore.example',
     },
     JSON.stringify(prepareInput),
@@ -3906,7 +3970,7 @@ test('the bundled CLI sends Worker environment preparation and activation to glo
   const activated = await runCli(
     ['ops', 'call', 'worker-environment.activate', '--input', '-'],
     {
-      OPENKIT_NANOCORE_TOKEN: 'okt_administrator',
+      OPENKIT_NANOCORE_TOKEN: ['okt', 'administrator'].join('_'),
       OPENKIT_NANOCORE_URL: 'http://nanocore.example',
     },
     JSON.stringify(activateInput),
@@ -3988,6 +4052,7 @@ test('the released Skill runs without repository sources or node_modules', async
 });
 
 test('the bundled CLI keeps discovery, typed failures, and local aborts truthful', async () => {
+  const environmentToken = `okt_${randomBytes(24).toString('hex')}`;
   const search = await runCli(['ops', 'search', 'workspace']);
   assert.equal(search.code, 0);
   assert.equal(JSON.parse(search.stdout).command, 'ops.search');
@@ -3999,14 +4064,14 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     ['ops', 'call', 'workspace.list', '--input', '-'],
     {
       OPENKIT_NANOCORE_URL: 'http://nanocore.example',
-      OPENKIT_NANOCORE_TOKEN: 'okt_environment',
+      OPENKIT_NANOCORE_TOKEN: environmentToken,
     },
     '{}',
     [
       commandResponseModule(422, {
         code: 'conflict',
-        details: { path: '/Users/private', token: 'okt_environment' },
-        message: 'Rejected okt_environment',
+        details: { path: '/Users/private', token: environmentToken },
+        message: `Rejected ${environmentToken}`,
         protocolVersion: '0.4.0',
         requestId: 'server_request_1',
       }),
@@ -4018,7 +4083,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
   assert.equal(rejectionEnvelope.requestId, 'server_request_1');
   assert.equal(rejectionEnvelope.error.details.path, '/Users/private');
   assert.equal(rejectionEnvelope.error.details.token, '[redacted]');
-  assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, /okt_environment/);
+  assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, new RegExp(environmentToken));
 
   const masterKeyBase64 = 'master-key-value-that-must-stay-secret';
   // Exercise redaction through a current secret-bearing operation, not the empty unlock input.

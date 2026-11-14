@@ -207,8 +207,16 @@ export function composeOperationTables<const T extends readonly object[]>(
 }
 
 /** Result eligibility does not grant admission or widen immutable worker supply. */
-export function operationMcpEligible(definition: OperationProjectionFacts): boolean {
-  return definition.binding === 'json' && definition.returnsOneTimeSecret === false;
+export function operationMcpEligible(
+  definition: OperationProjectionFacts & { readonly credentials: readonly OperationCredential[] }
+): boolean {
+  return (
+    definition.binding === 'json' &&
+    definition.returnsOneTimeSecret === false &&
+    definition.credentials.some(
+      (credential) => credential !== 'local-user' && credential !== 'user-session'
+    )
+  );
 }
 
 /** Selects the actorless bootstrap procedure only from an exclusive credential declaration. */

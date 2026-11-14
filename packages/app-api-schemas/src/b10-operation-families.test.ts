@@ -3,15 +3,29 @@ import { z } from 'zod';
 import {
   ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS,
   APP_UPDATE_OPERATION_DEFINITIONS,
+  OPERATION_DEFINITIONS,
+  operationMcpEligible,
   operationModelInput,
   WORKER_ENVIRONMENT_OPERATION_DEFINITIONS,
 } from './operation-definitions.js';
 
 describe('B10 family declarations', () => {
-  it('composes seven Worker environment, two administration and four App-update operations', () => {
+  it('composes seven Worker environment, three administration and four App-update operations', () => {
     expect(Object.keys(WORKER_ENVIRONMENT_OPERATION_DEFINITIONS)).toHaveLength(7);
-    expect(Object.keys(ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS)).toHaveLength(2);
+    expect(Object.keys(ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS)).toHaveLength(3);
+    expect(Object.keys(ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS).sort()).toEqual([
+      'administration.configuration-apply',
+      'administration.conversation-submit',
+      'administration.report-prepare',
+    ]);
     expect(Object.keys(APP_UPDATE_OPERATION_DEFINITIONS)).toHaveLength(4);
+  });
+
+  it('keeps person-only report preparation out of MCP without treating it as a secret operation', () => {
+    const definition = OPERATION_DEFINITIONS['administration.report-prepare'];
+    expect(definition.credentials).toEqual(['local-user', 'user-session']);
+    expect(definition.returnsOneTimeSecret).toBe(false);
+    expect(operationMcpEligible(definition)).toBe(false);
   });
 
   it('preserves strict preparation and recovery inputs, defaults and omitted identity views', () => {

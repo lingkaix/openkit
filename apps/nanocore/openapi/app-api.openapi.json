@@ -328,6 +328,7 @@
     "worker-environment.prepare": "release-coupled",
     "worker-environment.recover": "release-coupled",
     "worker-environment.activate": "release-coupled",
+    "administration.report-prepare": "release-coupled",
     "administration.configuration-apply": "release-coupled",
     "administration.conversation-submit": "release-coupled",
     "administration.cleanup-read": "release-coupled",
@@ -17612,6 +17613,67 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/worker-environment.activate.output"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Protocol error envelope.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/app/operations/administration.report-prepare": {
+      "post": {
+        "operationId": "administration.report-prepare",
+        "x-openkit-stability": "release-coupled",
+        "tags": [
+          "administration"
+        ],
+        "summary": "Prepare local private report drafts, person-selected non-security Task proposals or operator guidance from a private source. No automatic work or upstream submission.",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "x-openkit-request-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/administration.report-prepare.input"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prepare local private report drafts, person-selected non-security Task proposals or operator guidance from a private source. No automatic work or upstream submission.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/administration.report-prepare.output"
                 }
               }
             }
@@ -161427,6 +161489,269 @@
         ],
         "additionalProperties": false
       },
+      "administration.report-prepare.input": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "threadId": {
+            "type": "string",
+            "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "sourceRequestId": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+          },
+          "route": {
+            "type": "string",
+            "enum": [
+              "public-advisory",
+              "private-vulnerability",
+              "managed-issue",
+              "third-party"
+            ]
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "required": [
+          "threadId",
+          "sourceRequestId",
+          "route",
+          "description"
+        ],
+        "additionalProperties": false
+      },
+      "administration.report-prepare.output": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "guidance"
+              },
+              "source": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactVersion": {
+                    "type": "number",
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "artifactId",
+                  "artifactVersion"
+                ],
+                "additionalProperties": false
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "message"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "handoff"
+              },
+              "source": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactVersion": {
+                    "type": "number",
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "artifactId",
+                  "artifactVersion"
+                ],
+                "additionalProperties": false
+              },
+              "handoff": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "task"
+                      },
+                      "targetWorkspaceId": {
+                        "type": "string",
+                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "input": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536
+                      },
+                      "agentId": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "modelId": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "targetWorkspaceId",
+                      "input"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "allOf": [
+                          {
+                            "type": "string",
+                            "const": "task"
+                          },
+                          {
+                            "type": "string",
+                            "const": "goal"
+                          }
+                        ]
+                      },
+                      "targetWorkspaceId": {
+                        "type": "string",
+                        "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                      },
+                      "intent": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "targetWorkspaceId",
+                      "intent"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "handoff"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "private-draft"
+              },
+              "source": {
+                "type": "object",
+                "properties": {
+                  "requestId": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactVersion": {
+                    "type": "number",
+                    "const": 1
+                  }
+                },
+                "required": [
+                  "requestId",
+                  "artifactId",
+                  "artifactVersion"
+                ],
+                "additionalProperties": false
+              },
+              "draft": {
+                "type": "object",
+                "properties": {
+                  "artifactId": {
+                    "type": "string",
+                    "pattern": "^ar_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  },
+                  "artifactVersion": {
+                    "type": "number",
+                    "const": 1
+                  },
+                  "contentDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[0-9a-f]{64}$"
+                  },
+                  "turnId": {
+                    "type": "string",
+                    "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                  }
+                },
+                "required": [
+                  "artifactId",
+                  "artifactVersion",
+                  "contentDigest",
+                  "turnId"
+                ],
+                "additionalProperties": false
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "kind",
+              "source",
+              "draft",
+              "message"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
       "administration.configuration-apply.input": {
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "type": "object",
@@ -182907,5 +183232,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:24168c8313a1bd8a4ea5febfb088a4a70611397f20a83a548a8841d547840191"
+  "x-openkit-source-digest": "sha256:e1e0677b118a75fc8b2a34492eb4f6ab05c830bac7e4dbcfa67c7274b59f5e51"
 }

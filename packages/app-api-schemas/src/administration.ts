@@ -1,6 +1,7 @@
 import {
   AgentSessionIdSchema,
   ArtifactIdSchema,
+  AssistantHandoffSchema,
   PolicyDocumentV1Schema,
   PolicyWriteProposalV1Schema,
   RequestIdSchema,
@@ -32,6 +33,67 @@ export type SubmitAdministrationConversationRequest = z.infer<
 /** Response from one private administration conversation turn. */
 export type SubmitAdministrationConversationResponse = z.infer<
   typeof SubmitAdministrationConversationResponseSchema
+>;
+
+/** Explicit human reporting choice; source selectors never supply actor or finding authority. */
+export const PrepareAdministrationReportRequestSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    threadId: ThreadIdSchema,
+    sourceRequestId: RequestIdSchema,
+    route: z.enum(['public-advisory', 'private-vulnerability', 'managed-issue', 'third-party']),
+    description: z.string().min(1).max(2000),
+  })
+  .strict();
+
+const ReportPreparationSourceSchema = z
+  .object({
+    requestId: RequestIdSchema,
+    artifactId: ArtifactIdSchema,
+    artifactVersion: z.literal(1),
+  })
+  .strict();
+
+/** Local preparation is guidance, a private draft, or a Task proposal; never upstream submission. */
+export const PrepareAdministrationReportResponseSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('guidance'),
+      source: ReportPreparationSourceSchema,
+      message: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('handoff'),
+      source: ReportPreparationSourceSchema,
+      handoff: z.intersection(AssistantHandoffSchema, z.object({ kind: z.literal('task') })),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('private-draft'),
+      source: ReportPreparationSourceSchema,
+      draft: z
+        .object({
+          artifactId: ArtifactIdSchema,
+          artifactVersion: z.literal(1),
+          contentDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+          turnId: TurnIdSchema,
+        })
+        .strict(),
+      message: z.string().min(1),
+    })
+    .strict(),
+]);
+
+/** Human-requested report preparation input; native owners independently verify every source. */
+export type PrepareAdministrationReportRequest = z.infer<
+  typeof PrepareAdministrationReportRequestSchema
+>;
+/** Preparation result; a private draft is local only, with no Task or upstream effect. */
+export type PrepareAdministrationReportResponse = z.infer<
+  typeof PrepareAdministrationReportResponseSchema
 >;
 
 /** Exact immutable catalog candidate identity, never a mutable latest pointer. */

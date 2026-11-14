@@ -17,6 +17,10 @@
       "stability": "release-coupled",
       "state": "active"
     },
+    "administration.report-prepare": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
     "administration.server-mcp-create": {
       "stability": "release-coupled",
       "state": "active"
