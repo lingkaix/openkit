@@ -8,6 +8,7 @@ import { after, before, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createReleaseManifest } from '../release-record.mjs';
 import { sha } from '../release-safety.mjs';
+import { sbomAssetNames } from '../release-sbom.mjs';
 
 let retainedCheckout;
 let createOperatorLive;
@@ -120,6 +121,7 @@ async function fixture(t) {
     checksums: [
       `openkit-ops-skill-${tag}.tar.gz`,
       ...['amd64', 'arm64'].map((arch) => `openkit-nanohost-${tag}-linux-${arch}.tar.gz`),
+      ...sbomAssetNames(tag),
     ]
       .map((name) => `${known.target.archiveSha256}  ${name}`)
       .join('\n'),

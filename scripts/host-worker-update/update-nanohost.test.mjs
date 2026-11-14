@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createReleaseManifest } from '../release-record.mjs';
+import { sbomAssetNames } from '../release-sbom.mjs';
 
 const target = 'https://staging.example.invalid';
 const tag = 'v0.1.0-rc.8';
@@ -56,6 +57,7 @@ async function fixture(t, platform = 'linux/amd64') {
     checksums: [
       `openkit-ops-skill-${tag}.tar.gz`,
       ...['amd64', 'arm64'].map((arch) => `openkit-nanohost-${tag}-linux-${arch}.tar.gz`),
+      ...sbomAssetNames(tag),
     ]
       .map((name) => `${'f'.repeat(64)}  ${name}`)
       .join('\n'),

@@ -10,6 +10,7 @@ import {
   workerEnvironmentActivationConfirmation,
 } from '../../packages/app-api-schemas/dist/index.js';
 import { createReleaseManifest } from '../release-record.mjs';
+import { sbomAssetNames } from '../release-sbom.mjs';
 
 const target = 'https://staging.example.invalid';
 const sourceCommit = 'a'.repeat(40);
@@ -50,6 +51,7 @@ function parameters(platform = 'linux/arm64') {
       ...['amd64', 'arm64'].map(
         (architecture) => `openkit-nanohost-${tag}-linux-${architecture}.tar.gz`
       ),
+      ...sbomAssetNames(tag),
     ]
       .map((name) => `${'f'.repeat(64)}  ${name}`)
       .join('\n'),

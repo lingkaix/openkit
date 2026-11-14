@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { createReleaseManifest } from '../scripts/release-record.mjs';
+import { sbomAssetNames } from '../scripts/release-sbom.mjs';
 import { updateApp, validateUpdate } from '../scripts/release-update-app.mjs';
 
 const target = 'https://staging.example.invalid',
@@ -67,6 +68,7 @@ function params() {
     checksums: [
       `openkit-ops-skill-${tag}.tar.gz`,
       ...['amd64', 'arm64'].map((a) => `openkit-nanohost-${tag}-linux-${a}.tar.gz`),
+      ...sbomAssetNames(tag),
     ]
       .map((n) => `${'d'.repeat(64)}  ${n}`)
       .join('\n'),
