@@ -53,6 +53,7 @@ import type {
 import {
   AgentEnvironmentCredentialDeclarationSchema,
   materializeWorkspaceRoots,
+  resolveWorkspaceMcpServer,
   validateAgentEnvironmentPackageForBackend,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
@@ -327,6 +328,8 @@ import {
   prepareWorkerTurnContextPackage,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
+import { bindMcpCaptureAdmission, enterMcpCaptureCall } from './worker-mcp-capture.js';
+import { createDefaultWorkerMcpGateway, WorkerMcpGatewayCallError } from './worker-mcp-gateway.js';
 import {
   createWorkerRuntimeOriginRef,
   type ImportWorkerRuntimeProvenanceInput,
@@ -4158,7 +4161,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
   );
 
   it('rejects worker output after the Workspace deletion fence closes', async () => {
-    expect(WORKSPACE_MUTATION_LATE_PUBLISHERS).toEqual(['worker-turn-closeout']);
+    expect(WORKSPACE_MUTATION_LATE_PUBLISHERS).toEqual([
+      'worker-turn-closeout',
+      'mcp-workspace-data',
+    ]);
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-deletion-fence-'));
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
@@ -4176,13 +4182,54 @@ describe('WorkerGovernanceTurnExecutor', () => {
     );
     await recordExecutorAttempt(coreDb, {
       agentSessionId: testEntityId('as', 'as_governance_deletion_fence_1'),
-      packageSnapshotId: `aepsnap_${turn.id}_as_governance_deletion_fence_1`,
+      packageSnapshotId: `aepsnap_${turn.id}_${testEntityId('as', 'as_governance_deletion_fence_1')}`,
+      requestId: '00000000-0000-4000-8000-000000000236',
       sandboxBindingRef: `lease-binding:${turn.id}`,
       threadId: turn.threadId,
+      triggerActor: turn.triggerActor,
       turnId: turn.id,
+      turnInput: 'Do not publish fenced output',
+      workspaceId: workspaceIdForOwner(turn.owner),
     });
     const backend = new FakeWorkerGovernanceBackend();
     const mutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceId = workspaceIdForOwner(turn.owner);
+    bindMcpCaptureAdmission(dataRoot, mutationAdmission);
+    const mcpGateway = createDefaultWorkerMcpGateway(coreDb);
+    const mcpSpawnMarker = join(dataRoot, 'unexpected-late-mcp-spawn');
+    const mcpInput = {
+      workspaceId,
+      server: resolveWorkspaceMcpServer({
+        catalog: {
+          schemaVersion: 1,
+          servers: [
+            {
+              id: 'deletion-fence-output',
+              enabled: true,
+              allowedTools: ['echo'],
+              credentialBindings: [],
+              schemaPolicy: 'tracking',
+              pinnedSchemaSnapshotId: null,
+              packageRootDigest: null,
+              timeoutMs: 1_000,
+              transport: {
+                kind: 'stdio',
+                cwd: null,
+                command: process.execPath,
+                args: [
+                  '-e',
+                  "require('node:fs').writeFileSync(process.argv[1], 'unexpected late MCP spawn'); process.exit(70);",
+                  mcpSpawnMarker,
+                ],
+                environment: {},
+                environmentValues: {},
+              },
+            },
+          ],
+        },
+        serverId: 'deletion-fence-output',
+      }),
+    };
     const collectTranscript = backend.collectTranscript.bind(backend);
     vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
       const transcript = await collectTranscript();
@@ -4200,6 +4247,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
     });
 
     try {
+      // Exercise the original MCP bridge while this same deletion gate is open.
+      const releaseMcp = enterMcpCaptureCall(dataRoot, workspaceId);
+      expect(releaseMcp).toBeTypeOf('function');
+      releaseMcp?.();
+      expect(mcpGateway.getServerHealth(mcpInput)).toBe('inactive');
+      expect(existsSync(mcpSpawnMarker)).toBe(false);
       await expect(
         executor.startTurn(store, turn.id, 'Do not publish fenced output', {
           attemptId: testEntityId('attempt', `lease_${turn.id}`),
@@ -4216,10 +4269,33 @@ describe('WorkerGovernanceTurnExecutor', () => {
         error: { code: 'workspace_access_denied' },
         status: 'interrupted',
       });
+      expect(backend.collectTranscript).toHaveBeenCalledOnce();
+      expect(mutationAdmission.isLifecycleClosed(workspaceId)).toBe(true);
+      const mcpData = join(dataRoot, 'workspaces', workspaceId, 'catalog', 'mcp-data');
+      const beforeMcpData = existsSync(mcpData)
+        ? readdirSync(mcpData, { recursive: true }).sort()
+        : null;
+      const lateMcpCall = mcpGateway.callTool({ ...mcpInput, toolName: 'echo', arguments: {} });
+      await expect(lateMcpCall).rejects.toBeInstanceOf(WorkerMcpGatewayCallError);
+      await expect(lateMcpCall).rejects.toMatchObject({
+        code: 'mcp-server-unavailable',
+        message: 'Workspace MCP capture is in progress.',
+        status: 503,
+        upstreamEffect: 'not-contacted',
+      });
+      expect(existsSync(mcpSpawnMarker)).toBe(false);
+      expect(mcpGateway.getServerHealth(mcpInput)).toBe('inactive');
+      expect(existsSync(mcpData) ? readdirSync(mcpData, { recursive: true }).sort() : null).toEqual(
+        beforeMcpData
+      );
     } finally {
-      coreDb.sqlite.close();
-      await shutdownControlStoreWorkerClient();
-      rmSync(dataRoot, { force: true, recursive: true });
+      try {
+        await mcpGateway.close();
+      } finally {
+        coreDb.sqlite.close();
+        await shutdownControlStoreWorkerClient();
+        rmSync(dataRoot, { force: true, recursive: true });
+      }
     }
   });
 
