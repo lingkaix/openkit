@@ -8,9 +8,14 @@ import {
 } from './operation-definitions.js';
 
 describe('B10 family declarations', () => {
-  it('composes seven Worker environment, two administration and four App-update operations', () => {
+  it('composes seven Worker environment, three administration and four App-update operations', () => {
     expect(Object.keys(WORKER_ENVIRONMENT_OPERATION_DEFINITIONS)).toHaveLength(7);
-    expect(Object.keys(ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS)).toHaveLength(2);
+    expect(Object.keys(ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS)).toHaveLength(3);
+    expect(Object.keys(ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS).sort()).toEqual([
+      'administration.configuration-apply',
+      'administration.conversation-submit',
+      'administration.report-prepare',
+    ]);
     expect(Object.keys(APP_UPDATE_OPERATION_DEFINITIONS)).toHaveLength(4);
   });
 
