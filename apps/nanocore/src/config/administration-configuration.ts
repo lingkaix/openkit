@@ -24,9 +24,14 @@ import {
   PolicyDocumentV1Schema,
   PolicyWriteOutcomeV1Schema,
   readRetainedV1,
+  responsibleUserIdForActor,
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import {
+  evaluateSecurityInvestigationOperation,
+  SECURITY_INVESTIGATION_AGENT_ID,
+} from '../administration/security-investigation-authority.js';
 import { prepareServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -43,7 +48,10 @@ import {
   readAdmittedPolicyDocument,
   recordPolicyWriteDecision,
 } from '../policy/configuration.js';
-import { recordPermissionDecision } from '../policy/permission-decisions.js';
+import {
+  recordPermissionDecision,
+  recordProductPermissionDecision,
+} from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { evaluateWorkerGitReadMaintenance } from '../policy/worker-git-read-maintenance.js';
 import {
@@ -354,31 +362,52 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             fail('configuration_candidate_conflict');
           const currentMaintenance = () => {
             requireHome(invocation.threadId, invocation.turnId);
-            if (
-              store.getTurn(workspaceId, invocation.threadId, invocation.turnId).status !==
-                'running' ||
-              invocation.signal?.aborted
-            )
+            const execution = store.getTurn(workspaceId, invocation.threadId, invocation.turnId);
+            if (execution.status !== 'running' || invocation.signal?.aborted)
               fail('configuration_cancelled');
+            const subject =
+              execution.agentId === SECURITY_INVESTIGATION_AGENT_ID
+                ? {
+                    principal: { kind: 'agent' as const, id: SECURITY_INVESTIGATION_AGENT_ID },
+                    onBehalfOf: actor.userId,
+                    actor: {
+                      kind: 'agent' as const,
+                      id: SECURITY_INVESTIGATION_AGENT_ID,
+                      responsibleUserId: responsibleUserIdForActor(execution.triggerActor),
+                    },
+                    responsibleHumanId: actor.userId,
+                    credentialKind: actor.kind,
+                    process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
+                  }
+                : null;
             const snapshot = options.runtimeConfig();
             const now = new Date();
-            const decision = evaluateWorkerGitReadMaintenance(
+            const delegated = evaluateWorkerGitReadMaintenance(
               snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
               { ...prepared.facts, now },
               (humanId) => isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime())
             );
-            return { snapshot, now, decision };
+            // A valid ordinary maintenance delegation cannot enlarge E7's fixed agent grant.
+            const decision = subject
+              ? evaluateSecurityInvestigationOperation(
+                  'administration.configuration.dispatch',
+                  subject,
+                  delegated
+                )
+              : delegated;
+            return { snapshot, now, decision, subject };
           };
-          const { snapshot, now, decision } = currentMaintenance();
+          const { snapshot, now, decision, subject } = currentMaintenance();
           permissionDecisionId = allocateEntityId('pd');
-          await recordPermissionDecision({
+          const permissionRecord = {
             coreDb,
             decisionId: permissionDecisionId,
-            ownerScope: 'server',
-            policyDecision: decision,
-            policyEngineVersion: 'nanocore-worker-git-read-maintenance:v1',
+            ownerScope: 'server' as const,
+            policyEngineVersion: subject
+              ? 'nanocore-security-investigation:v1'
+              : 'nanocore-worker-git-read-maintenance:v1',
             policySnapshotId: snapshot.contentHash,
-            subjectSummary: { userId: actor.userId },
+            subjectSummary: subject ?? { userId: actor.userId },
             action: body.command,
             resourceSummary: { targetFamily: 'agent', targetId: body.targetId, scope: 'server' },
             contextSummary: {
@@ -412,14 +441,33 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
               ),
             },
             enforcementPoint: 'administration.configuration.apply',
-            auditActor: { kind: 'user', id: actor.userId },
+            auditActor: subject?.actor ?? { kind: 'user' as const, id: actor.userId },
             now,
-          });
-          if (decision.effect !== 'allow') fail('configuration_delegation_required');
+          };
+          if (subject)
+            await recordProductPermissionDecision({
+              ...permissionRecord,
+              result: decision.effect,
+              reasonCode:
+                decision.reasons[0]?.code === 'missing-privilege'
+                  ? 'not_granted'
+                  : (decision.reasons[0]?.code ?? 'unknown'),
+              contextSummary: {
+                ...permissionRecord.contextSummary,
+                kernelTrace: {
+                  matchedAssociations: decision.trace.matchedAssociations,
+                  matchedProhibitions: decision.trace.matchedProhibitions,
+                },
+              },
+            });
+          else await recordPermissionDecision({ ...permissionRecord, policyDecision: decision });
+          if (decision.effect !== 'allow')
+            fail(subject ? 'not_granted' : 'configuration_delegation_required');
           const current = currentMaintenance();
           if (current.snapshot.contentHash !== snapshot.contentHash)
             fail('configuration_candidate_conflict');
-          if (current.decision.effect !== 'allow') fail('configuration_delegation_required');
+          if (current.decision.effect !== 'allow')
+            fail(current.subject ? 'not_granted' : 'configuration_delegation_required');
         }
         // Native evidence cannot preserve a stale Home, actor or confirmed candidate.
         requireHome(threadId, turnId);

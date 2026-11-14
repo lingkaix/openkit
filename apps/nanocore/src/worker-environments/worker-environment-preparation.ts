@@ -24,14 +24,19 @@ import {
   compareCodeUnits,
   deriveEntityId,
   isSealedTurnTerminal,
+  responsibleUserIdForActor,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
-
+import {
+  evaluateSecurityInvestigationGrant,
+  SECURITY_INVESTIGATION_AGENT_ID,
+} from '../administration/security-investigation-authority.js';
 import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { OperationError } from '../operation-error.js';
 import {
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
@@ -252,17 +257,52 @@ export function createWorkerEnvironmentPreparation(
     };
   };
 
+  /** Applies E7 at the effect owner using the actual private invocation, never report text. */
+  function requireInvestigationGrant(
+    context: WorkerEnvironmentPreparationContext,
+    request: PrepareWorkerEnvironmentRequest,
+    workspaceId: string
+  ): void {
+    if (!context.administrationTurnId) return;
+    const execution = dependencies.store.getTurn(
+      workspaceId,
+      request.administrationThreadId,
+      context.administrationTurnId
+    );
+    if (execution.agentId !== SECURITY_INVESTIGATION_AGENT_ID) return;
+    const decision = evaluateSecurityInvestigationGrant(`worker-environment.${request.mode}`, {
+      principal: { kind: 'agent', id: SECURITY_INVESTIGATION_AGENT_ID },
+      onBehalfOf: context.actor.userId,
+      actor: {
+        kind: 'agent',
+        id: SECURITY_INVESTIGATION_AGENT_ID,
+        responsibleUserId: responsibleUserIdForActor(execution.triggerActor),
+      },
+      responsibleHumanId: context.actor.userId,
+      credentialKind: context.actor.kind,
+      process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
+    });
+    if (decision.effect !== 'allow')
+      throw new OperationError(
+        'not_granted',
+        'The investigation grant does not permit environment preparation or recovery.',
+        403
+      );
+  }
+
   return {
     async prepare(context, unsafeRequest) {
       const request = PrepareWorkerEnvironmentRequestSchema.parse(unsafeRequest);
       dependencies.requireCurrentAdministrator(context.actor);
       const workspaceId = dependencies.privateWorkspaceIdForUser(context.actor.userId);
       requireAdministrationThread(dependencies.store, workspaceId, request.administrationThreadId);
+      requireInvestigationGrant(context, request, workspaceId);
 
       const response = await runIdempotentCommand({
         command: 'worker_environment.prepare',
         execute: async (receipt) => {
           dependencies.requireCurrentAdministrator(context.actor);
+          requireInvestigationGrant(context, request, workspaceId);
           const response = await (request.mode === 'prepare'
             ? executeInitialPreparation(context, request, workspaceId)
             : executeRecovery(context, request, workspaceId));

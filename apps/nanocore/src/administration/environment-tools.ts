@@ -169,6 +169,8 @@ async function operationResult(
 }
 
 function safeOperationFailure(code: unknown): { readonly code: string; readonly message: string } {
+  if (code === 'not_granted')
+    return { code, message: 'The current execution grant does not permit this operation.' };
   if (
     code === 'recovery_required' ||
     code === 'thread_busy' ||

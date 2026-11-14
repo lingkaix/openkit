@@ -918,3 +918,115 @@ describe('finite delegated Worker Git-read application', () => {
     expect(f.reload).not.toHaveBeenCalled();
   });
 });
+
+// Append unchanged to the existing delegated-worker-git-read.test.ts owner fixture.
+// Runtime Security E7: a real investigation Turn cannot borrow finite ordinary delegation.
+// No new selector or Subject callback is used. Entry selection is a separate obligation.
+describe('E7 delegated configuration effect boundary', () => {
+  it.each(['assistant', 'security-investigation'] as const)(
+    'intersects actual %s execution with the valid ordinary delegation',
+    async (executionAgentId) => {
+      const f = await fixture();
+      const proposal = await f.propose();
+      const before = f.files.readFile('agents/registered.agent.jsonc');
+      await f.store.updateTurn(f.home.turnId, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const applyingTurn = await f.store.createTurn(
+        f.workspaceId,
+        f.home.threadId,
+        'Apply the exact prepared correction under the current grant.',
+        { kind: 'user', id: f.actor.userId },
+        null,
+        { agentId: executionAgentId }
+      );
+      expect(f.store.getTurn(f.workspaceId, f.home.threadId, applyingTurn.id)).toMatchObject({
+        agentId: executionAgentId,
+        status: 'running',
+        triggerActor: { kind: 'user', id: f.actor.userId },
+      });
+      const request = { requestId: randomUUID(), candidate: proposal.candidate };
+      const invocation = { threadId: f.home.threadId, turnId: applyingTurn.id };
+      const outcome = await f.service.applyDelegated(request, invocation).then(
+        (value) => ({ kind: 'applied' as const, value }),
+        (error: unknown) => ({ kind: 'refused' as const, error })
+      );
+      if (executionAgentId === 'assistant') {
+        expect(outcome).toMatchObject({
+          kind: 'applied',
+          value: { persisted: true, reload: 'applied' },
+        });
+        expect(f.files.readFile('agents/registered.agent.jsonc').file.revision).not.toBe(
+          before.file.revision
+        );
+        expect(
+          f.manager.current().agentManifests.find((entry) => entry.id === agentId)?.sandbox
+            ?.network[0]?.rules
+        ).toEqual(correctedRules);
+      } else {
+        expect
+          .soft(outcome.kind, 'Investigation must refuse before the configuration effect.')
+          .toBe('refused');
+        expect.soft(f.files.readFile('agents/registered.agent.jsonc').content).toBe(before.content);
+        expect
+          .soft(f.files.readFile('agents/registered.agent.jsonc').file.revision)
+          .toBe(before.file.revision);
+        expect
+          .soft(
+            f.manager.current().agentManifests.find((entry) => entry.id === agentId)?.sandbox
+              ?.network[0]?.rules
+          )
+          .toEqual(originalRules);
+        expect.soft(listServerPermissionDecisions(f.coreDb)).toContainEqual(
+          expect.objectContaining({
+            result: 'deny',
+            reasonCode: 'not_granted',
+            contextSummary: expect.objectContaining({
+              threadId: invocation.threadId,
+              turnId: invocation.turnId,
+              requestId: request.requestId,
+            }),
+          })
+        );
+      }
+    }
+  );
+});
+
+// Append to the existing delegated-worker-git-read.test.ts; E7 reserves proposal application to a person.
+it('E7 keeps explicit human confirmation of a security-origin proposal available', async () => {
+  const f = await fixture();
+  await f.store.updateTurn(f.home.turnId, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
+  const investigation = await f.store.createTurn(
+    f.workspaceId,
+    f.home.threadId,
+    'Prepare a correction for a person to review.',
+    { kind: 'user', id: f.actor.userId },
+    null,
+    { agentId: 'security-investigation' }
+  );
+  const proposal = await f.service.propose(f.request, {
+    threadId: f.home.threadId,
+    turnId: investigation.id,
+    requestId: randomUUID(),
+  });
+  const origin = f.store.getArtifact(f.workspaceId, proposal.candidate.artifactId).origin;
+  expect(origin).toMatchObject({ kind: 'turn-output', turnId: investigation.id });
+  const result = await f.service.apply({
+    requestId: randomUUID(),
+    candidate: proposal.candidate,
+    confirmation: {
+      action: 'administration.configuration.apply',
+      contentDigest: proposal.candidate.contentDigest,
+    },
+  });
+  expect(result).toMatchObject({ persisted: true, reload: 'applied' });
+  expect(
+    f.manager.current().agentManifests.find((entry) => entry.id === agentId)?.sandbox?.network[0]
+      ?.rules
+  ).toEqual(correctedRules);
+});

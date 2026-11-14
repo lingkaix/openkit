@@ -635,3 +635,90 @@ describe('Worker environment preparation', () => {
     expect(fixture.runtimeEffects.prepareImage).not.toHaveBeenCalled();
   });
 });
+
+// Append to existing worker-environment-preparation.test.ts and reuse its owner fixture.
+// E7 final effect guard only; this does not prove trusted N1 entry selection.
+describe('E7 environment effect boundary', () => {
+  it.each([
+    { operation: 'prepare', executionAgentId: 'assistant' },
+    { operation: 'recover', executionAgentId: 'assistant' },
+    { operation: 'prepare', executionAgentId: 'security-investigation' },
+    { operation: 'recover', executionAgentId: 'security-investigation' },
+  ] as const)(
+    '$operation in actual $executionAgentId Turn',
+    async ({ operation, executionAgentId }) => {
+      const f = await createFixture();
+      const service = f.createService();
+      // Recovery must cross the backend, not reuse an already resolved candidate.
+      // An injected lost response leaves genuine authored-only state through its owner.
+      let seed: { artifactId: string; artifactVersion: 1; contentDigest: string } | null = null;
+      if (operation === 'recover') {
+        vi.mocked(f.runtimeEffects.prepareImage).mockRejectedValueOnce(new Error('lost response'));
+        await expect(
+          service.prepare({ actor }, prepareRequest(f.thread.id, f.configuration))
+        ).rejects.toMatchObject({ code: 'effect_failed' });
+        const retained = f.store.listArtifacts(f.workspace.id);
+        expect(retained).toHaveLength(1);
+        const authored = retained[0]!;
+        expect(authored.origin.kind).toBe('turn-output');
+        if (authored.origin.kind !== 'turn-output')
+          throw new Error('Expected authored Turn output.');
+        expect(f.store.getTurn(f.workspace.id, f.thread.id, authored.origin.turnId).status).toBe(
+          'failed'
+        );
+        seed = {
+          artifactId: authored.id,
+          artifactVersion: 1,
+          contentDigest: authored.contentDigest,
+        };
+      }
+      const turn = await f.store.createTurn(
+        f.workspace.id,
+        f.thread.id,
+        'Run the selected environment operation.',
+        { kind: 'user', id: actor.userId },
+        null,
+        { agentId: executionAgentId }
+      );
+      const request = seed
+        ? {
+            administrationThreadId: f.thread.id,
+            mode: 'recover' as const,
+            recoverFrom: seed,
+            requestId: randomUUID(),
+          }
+        : prepareRequest(f.thread.id, f.configuration);
+      vi.mocked(f.runtimeEffects.prepareImage).mockClear();
+      vi.mocked(f.runtimeEffects.recoverImageEffect).mockClear();
+      const artifacts = f.store.listArtifacts(f.workspace.id);
+      const outcome = await service.prepare({ actor, administrationTurnId: turn.id }, request).then(
+        (value) => ({ kind: 'prepared' as const, value }),
+        (error: unknown) => ({ kind: 'refused' as const, error })
+      );
+      if (executionAgentId === 'assistant') {
+        expect(outcome.kind).toBe('prepared');
+        expect(f.runtimeEffects.prepareImage).toHaveBeenCalledOnce();
+        if (operation === 'recover')
+          expect(f.runtimeEffects.recoverImageEffect).toHaveBeenCalledOnce();
+      } else {
+        expect
+          .soft(outcome.kind, 'Investigation must refuse before environment effects.')
+          .toBe('refused');
+        expect.soft(f.runtimeEffects.prepareImage).not.toHaveBeenCalled();
+        expect.soft(f.runtimeEffects.recoverImageEffect).not.toHaveBeenCalled();
+        expect.soft(f.store.listArtifacts(f.workspace.id)).toEqual(artifacts);
+      }
+    }
+  );
+
+  it('keeps explicit human environment preparation available', async () => {
+    const f = await createFixture();
+    await expect(
+      f.createService().prepare({ actor }, prepareRequest(f.thread.id, f.configuration))
+    ).resolves.toMatchObject({
+      authoredCandidate: expect.anything(),
+      resolvedCandidate: expect.anything(),
+    });
+    expect(f.runtimeEffects.prepareImage).toHaveBeenCalledOnce();
+  });
+});
