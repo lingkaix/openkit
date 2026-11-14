@@ -7,6 +7,7 @@ import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
+import type { ThreadTimelineSnapshot } from './workspace-file-records.js';
 
 const roots: string[] = [];
 const time = '2026-11-12T08:00:00.000Z';
@@ -150,22 +151,31 @@ describe('Recorded plan segment counts', () => {
     const f = await fixture();
     await f.plan([{ id: 'a', title: 'First', status: 'in_progress' }]);
     const step = await f.step('x'.repeat(90_000));
+    /** Observes real snapshot reads on both public projection paths without replacing results. */
+    const observeSnapshot = (snapshot: ThreadTimelineSnapshot) =>
+      new Proxy(snapshot, {
+        get(target, key, receiver) {
+          if (key === 'item')
+            return (id: string) => {
+              expect(id, 'Segment counts must not materialize step bodies').not.toBe(step.id);
+              return target.item(id);
+            };
+          return Reflect.get(target, key, receiver);
+        },
+      });
     const actual = f.store.readThreadTimelineSnapshot.bind(f.store);
     vi.spyOn(f.store, 'readThreadTimelineSnapshot').mockImplementation(
       (workspaceId, threadId, read) =>
-        actual(workspaceId, threadId, (snapshot) =>
-          read(
-            new Proxy(snapshot, {
-              get(target, key, receiver) {
-                if (key === 'item')
-                  return (id: string) => {
-                    expect(id, 'Segment counts must not materialize step bodies').not.toBe(step.id);
-                    return target.item(id);
-                  };
-                return Reflect.get(target, key, receiver);
-              },
-            })
-          )
+        actual(workspaceId, threadId, (snapshot) => read(observeSnapshot(snapshot)))
+    );
+    const actualCooperative = f.store.readThreadTimelineSnapshotCooperative.bind(f.store);
+    vi.spyOn(f.store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+      (workspaceId, threadId, read, signal) =>
+        actualCooperative(
+          workspaceId,
+          threadId,
+          (snapshot) => read(observeSnapshot(snapshot)),
+          signal
         )
     );
     expect((await f.read()).segments[0].steps).toBe(1);

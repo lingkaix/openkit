@@ -681,10 +681,12 @@ describe('Bounded earlier-unread proof before B', () => {
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
     const snapshots = vi.spyOn(f.store, 'readThreadTimelineSnapshot');
+    const cooperativeSnapshots = vi.spyOn(f.store, 'readThreadTimelineSnapshotCooperative');
     const denied = await f.read({}, { authorization: `Bearer ${token.secret}` });
     expect(denied.response.status).toBe(404);
     expect(JSON.stringify(denied.body)).not.toContain('Private unread content');
     expect(snapshots).not.toHaveBeenCalled();
+    expect(cooperativeSnapshots).not.toHaveBeenCalled();
   }, 30_000);
 
   it('seeks original message positions without traversing old revisions or a long non-message prefix', async () => {

@@ -487,6 +487,24 @@ it('retains the actual User reader through Timeline current-admission continuati
       return result;
     }
   );
+  // The native public route now awaits this owner; keep the synchronous control above intact.
+  const originalCooperativeSnapshot = f.store.readThreadTimelineSnapshotCooperative.bind(f.store);
+  vi.spyOn(f.store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+    async <T>(
+      workspaceId: string,
+      threadId: string,
+      read: (snapshot: ThreadTimelineSnapshot) => Generator<void, T, void>,
+      signal?: AbortSignal
+    ): Promise<T> => {
+      projections++;
+      expect(retained.open).toBe(true);
+      expect(Atomics.load(gate, 2)).toBe(0);
+      const result = await originalCooperativeSnapshot(workspaceId, threadId, read, signal);
+      expect(retained.open).toBe(true);
+      expect(Atomics.load(gate, 2)).toBe(0);
+      return result;
+    }
+  );
   const closeBefore = acks('close', f.database).length;
   const closing = f.client.close(f.database);
   pending.push(closing);

@@ -9,6 +9,7 @@ import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { openWorkspaceDb } from './db.js';
 import * as immutableBodies from './immutable-content-read.js';
+import type { ThreadTimelineSnapshot } from './workspace-file-records.js';
 
 const roots: string[] = [];
 const time = '2026-11-12T05:20:00.000Z';
@@ -41,38 +42,45 @@ async function fixture() {
     completedAt: time,
   };
   const bodyForbidden = new Set<string>();
+  /** Observes real snapshot reads on both public projection paths without replacing results. */
+  const observeSnapshot = (snapshot: ThreadTimelineSnapshot) =>
+    new Proxy(snapshot, {
+      get(target, key, receiver) {
+        if (key === 'item')
+          return (id: string) => {
+            expect(bodyForbidden.has(id), `Statistics must not read step body ${id}`).toBe(false);
+            return target.item(id);
+          };
+        if (key === 'revision')
+          return (turnId: string, id: string, revision: number) => {
+            expect(bodyForbidden.has(id), `Statistics must not read step revision ${id}`).toBe(
+              false
+            );
+            return target.revision(turnId, id, revision);
+          };
+        if (key === 'revisions')
+          return (turnId: string, after: number, limit: number) => {
+            const entries = target.revisions(turnId, after, limit);
+            for (const entry of entries)
+              if (entry.item) expect(bodyForbidden.has(entry.item.id)).toBe(false);
+            return entries;
+          };
+        return Reflect.get(target, key, receiver);
+      },
+    });
   const actual = store.readThreadTimelineSnapshot.bind(store);
   vi.spyOn(store, 'readThreadTimelineSnapshot').mockImplementation((workspaceId, threadId, read) =>
-    actual(workspaceId, threadId, (snapshot) =>
-      read(
-        new Proxy(snapshot, {
-          get(target, key, receiver) {
-            if (key === 'item')
-              return (id: string) => {
-                expect(bodyForbidden.has(id), `Statistics must not read step body ${id}`).toBe(
-                  false
-                );
-                return target.item(id);
-              };
-            if (key === 'revision')
-              return (turnId: string, id: string, revision: number) => {
-                expect(bodyForbidden.has(id), `Statistics must not read step revision ${id}`).toBe(
-                  false
-                );
-                return target.revision(turnId, id, revision);
-              };
-            if (key === 'revisions')
-              return (turnId: string, after: number, limit: number) => {
-                const entries = target.revisions(turnId, after, limit);
-                for (const entry of entries)
-                  if (entry.item) expect(bodyForbidden.has(entry.item.id)).toBe(false);
-                return entries;
-              };
-            return Reflect.get(target, key, receiver);
-          },
-        })
+    actual(workspaceId, threadId, (snapshot) => read(observeSnapshot(snapshot)))
+  );
+  const actualCooperative = store.readThreadTimelineSnapshotCooperative.bind(store);
+  vi.spyOn(store, 'readThreadTimelineSnapshotCooperative').mockImplementation(
+    (workspaceId, threadId, read, signal) =>
+      actualCooperative(
+        workspaceId,
+        threadId,
+        (snapshot) => read(observeSnapshot(snapshot)),
+        signal
       )
-    )
   );
   async function operation(name: string, input: Record<string, unknown> = {}) {
     const response = await app.request(`/api/app/operations/${name}`, {
