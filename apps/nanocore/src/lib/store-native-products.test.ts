@@ -51,7 +51,7 @@ import {
   readWorkspaceKnowledgeProposalInventory,
 } from '../storage/workspace-file-records.js';
 import { createThread as createThreadCommand } from '../thread-routes.js';
-import { commandRequestKey, DISPLAY_PROJECTION_REFRESH_ADMISSION, FsStore } from './store.js';
+import { commandRequestKey, FsStore } from './store.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -496,11 +496,7 @@ describe('native Store authority and immutable closure', () => {
       ]);
       if (kind === 'display') {
         // The accepted Conversation Worker result path permits only this display refresh.
-        await f.store.updateItem(
-          first.id,
-          { summary: 'Later display' },
-          DISPLAY_PROJECTION_REFRESH_ADMISSION
-        );
+        await f.store.refreshDisplayProjectionItem(first.id, { summary: 'Later display' });
         expect(f.store.getTurnById(f.turn.id).items[0]).toMatchObject({ summary: 'Later display' });
         expect(f.store.listWorkspaceItemRevisions(f.workspace.id)).toHaveLength(4);
         expect(f.store.getTurnEventsForExport(f.turn.id)).toEqual(events);

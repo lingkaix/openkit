@@ -18,7 +18,6 @@ import { reconcileWorkerMcpItems } from '../worker-mcp-routes.js';
 import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION,
-  DISPLAY_PROJECTION_REFRESH_ADMISSION,
   type FsStore,
 } from './store.js';
 
@@ -220,9 +219,8 @@ describe('post-terminal write admission', () => {
     });
     const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
-    const created = await store.createItem(
-      statusItem(turn, 'it_00000000-0000-72b3-a0f0-5a7ff4b63cfb', 'Display'),
-      DISPLAY_PROJECTION_REFRESH_ADMISSION
+    const created = await store.refreshDisplayProjectionItem(
+      statusItem(turn, 'it_00000000-0000-72b3-a0f0-5a7ff4b63cfb', 'Display')
     );
 
     await expect(store.updateTurn(turn.id, { agentId: 'agent_codex_host' })).rejects.toThrow(
@@ -278,27 +276,20 @@ describe('post-terminal write admission', () => {
       `Turn ${turn.id} is terminal and the publication conflicts with the already-decided record.`
     );
 
-    const display = await store.createItem(
-      statusItem(turn, 'it_00000000-0000-726f-a328-737bcd0a4586', 'Original summary'),
-      DISPLAY_PROJECTION_REFRESH_ADMISSION
+    const display = await store.refreshDisplayProjectionItem(
+      statusItem(turn, 'it_00000000-0000-726f-a328-737bcd0a4586', 'Original summary')
     );
-    const refreshed = await store.updateItem(
-      display.id,
-      { summary: 'Updated summary' },
-      DISPLAY_PROJECTION_REFRESH_ADMISSION
-    );
+    const refreshed = await store.refreshDisplayProjectionItem(display.id, {
+      summary: 'Updated summary',
+    });
     expect(refreshed.summary).toBe('Updated summary');
     expect(refreshed.createdAt).toBe(display.createdAt);
     expect(refreshed.title).toBe(display.title);
     await expect(
-      store.updateItem(
-        display.id,
-        {
-          summary: 'Must not leak from a rejected patch',
-          createdAt: '2099-01-01T00:00:00.000Z',
-        },
-        DISPLAY_PROJECTION_REFRESH_ADMISSION
-      )
+      store.refreshDisplayProjectionItem(display.id, {
+        summary: 'Must not leak from a rejected patch',
+        createdAt: '2099-01-01T00:00:00.000Z',
+      })
     ).rejects.toThrow();
     expect(
       store.readThreadTimelineSnapshot(workspaceIdForOwner(turn.owner), turn.threadId, (snapshot) =>
@@ -306,11 +297,11 @@ describe('post-terminal write admission', () => {
       )
     ).toEqual(refreshed);
     expect(
-      await store.updateItem(
-        display.id,
-        { level: 'info', title: display.title, summary: 'Updated summary' },
-        DISPLAY_PROJECTION_REFRESH_ADMISSION
-      )
+      await store.refreshDisplayProjectionItem(display.id, {
+        level: 'info',
+        title: display.title,
+        summary: 'Updated summary',
+      })
     ).toEqual(refreshed);
     await expect(
       store.updateItem(

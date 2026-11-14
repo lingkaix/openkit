@@ -82,7 +82,6 @@ import {
   type ConversationCommandReceiptMetadata,
   commandRequestExpiresAt,
   commandRequestKey,
-  DISPLAY_PROJECTION_REFRESH_ADMISSION,
   type FsStore,
   type TerminalTurnPublication,
 } from './lib/store.js';
@@ -281,7 +280,7 @@ function conversationWorkerTurnPresentation(
  * Creates or updates the durable selected-Worker conversation status Item from the current Turn.
  *
  * The Item identity and createdAt stay fixed after the first write. Closeout and the immediate
- * failure race only refresh product-safe presentation fields through `FsStore.updateItem` when
+ * failure race only refresh product-safe presentation fields through `FsStore.refreshDisplayProjectionItem` when
  * those fields changed. A same-id Item with a different type or lineage is left unchanged and
  * reported as contradictory.
  *
@@ -306,22 +305,19 @@ async function persistConversationWorkerResultItem(
   const existing = turn.items.find((item) => item.id === itemId);
   if (!existing) {
     const createdAt = new Date().toISOString();
-    return store.createItem(
-      {
-        id: itemId,
-        owner: { kind: 'workspace', workspaceId: workspaceId },
-        threadId,
-        turnId,
-        type: 'status',
-        status: 'completed',
-        level: presentation.level,
-        title: presentation.title,
-        summary: presentation.summary,
-        createdAt,
-        completedAt: createdAt,
-      },
-      DISPLAY_PROJECTION_REFRESH_ADMISSION
-    );
+    return store.refreshDisplayProjectionItem({
+      id: itemId,
+      owner: { kind: 'workspace', workspaceId: workspaceId },
+      threadId,
+      turnId,
+      type: 'status',
+      status: 'completed',
+      level: presentation.level,
+      title: presentation.title,
+      summary: presentation.summary,
+      createdAt,
+      completedAt: createdAt,
+    });
   }
   if (
     existing.type !== 'status' ||
@@ -338,15 +334,11 @@ async function persistConversationWorkerResultItem(
   ) {
     return existing;
   }
-  return store.updateItem(
-    itemId,
-    {
-      level: presentation.level,
-      title: presentation.title,
-      summary: presentation.summary,
-    },
-    DISPLAY_PROJECTION_REFRESH_ADMISSION
-  );
+  return store.refreshDisplayProjectionItem(itemId, {
+    level: presentation.level,
+    title: presentation.title,
+    summary: presentation.summary,
+  });
 }
 
 /**

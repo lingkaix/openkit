@@ -921,11 +921,6 @@ export const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
 /** Item fields admitted by the named post-terminal display-projection refresh. */
 export const DISPLAY_PROJECTION_REFRESH_FIELDS = ['level', 'title', 'summary'] as const;
 
-/** Named field-limited display-projection refresh; this is not already-decided publication. */
-export const DISPLAY_PROJECTION_REFRESH_ADMISSION = {
-  category: 'display-projection-refresh',
-} as const;
-
 /**
  * Configuration-apply marker Item on the Turn that executes the apply.
  * Pending docs/specs/20260930-pending_requests.md; this category stays admitted.
@@ -937,9 +932,6 @@ export const CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION = {
 /** Admission for completing an already-decided publication after terminal. */
 export type AlreadyDecidedPublicationAdmission = typeof ALREADY_DECIDED_PUBLICATION_ADMISSION;
 
-/** Admission for a named field-limited display-projection refresh after terminal. */
-export type DisplayProjectionRefreshAdmission = typeof DISPLAY_PROJECTION_REFRESH_ADMISSION;
-
 /** Admission for the configuration-apply marker pending delayed-user-input ownership. */
 export type ConfigurationApplyPendingDelayedUserInputAdmission =
   typeof CONFIGURATION_APPLY_PENDING_DELAYED_USER_INPUT_ADMISSION;
@@ -947,7 +939,7 @@ export type ConfigurationApplyPendingDelayedUserInputAdmission =
 /** Declared post-terminal write category; the two equality rules stay separate types. */
 export type TerminalTurnWriteAdmission =
   | AlreadyDecidedPublicationAdmission
-  | DisplayProjectionRefreshAdmission
+  | { readonly category: 'display-projection-refresh' }
   | ConfigurationApplyPendingDelayedUserInputAdmission;
 
 /** Accepted store input for one workspace-only Artifact introduction. */
@@ -6075,6 +6067,38 @@ export class FsStore {
       args[0].owner.kind === 'workspace'
       ? this.protectArtifactReference(args[0].owner.workspaceId, args[0].artifactId, publish)
       : publish();
+  }
+
+  /** Creates or field-limited refreshes the original display projection through the existing Item publication owner. */
+  public refreshDisplayProjectionItem(
+    item: Item,
+    progress?: typeof RETAINED_PROGRESS_PUBLICATION
+  ): Promise<Item>;
+  public refreshDisplayProjectionItem(itemId: string, patch: Partial<Item>): Promise<Item>;
+  public async refreshDisplayProjectionItem(
+    itemOrId: Item | string,
+    patchOrProgress?: Partial<Item> | typeof RETAINED_PROGRESS_PUBLICATION
+  ): Promise<Item> {
+    if (typeof itemOrId !== 'string') {
+      if (patchOrProgress !== undefined && patchOrProgress !== RETAINED_PROGRESS_PUBLICATION)
+        throw new TypeError(
+          'Display projection creation accepts only its original progress publication.'
+        );
+      return this.createItem(itemOrId, { category: 'display-projection-refresh' }, patchOrProgress);
+    }
+    if (!patchOrProgress || typeof patchOrProgress !== 'object')
+      throw new TypeError('Display projection refresh requires its original patch.');
+    const item = this.workspaceItemById(itemOrId);
+    if (!item) throw new StoreRecordNotFoundError(`Item not found: ${itemOrId}`);
+    return this.publishTurn(
+      item.owner,
+      [item.turnId],
+      { itemId: itemOrId, patch: patchOrProgress },
+      (owned) =>
+        this.updateItemPublication(owned.itemId, owned.patch, {
+          category: 'display-projection-refresh',
+        })
+    );
   }
 
   /** Matches the native transaction's restrictive facts without adding another state owner. */

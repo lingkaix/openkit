@@ -26,11 +26,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { createTestStore } from '../test-support/store.js';
-import {
-  ALREADY_DECIDED_PUBLICATION_ADMISSION,
-  DISPLAY_PROJECTION_REFRESH_ADMISSION,
-  FsStore,
-} from './store.js';
+import { ALREADY_DECIDED_PUBLICATION_ADMISSION, FsStore } from './store.js';
 
 // Independent trusted-producer token; old createItem accepts the extra runtime argument without this feature.
 const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
@@ -793,22 +789,18 @@ for (const pressure of [
     const durableStatus = { ...progress[0]!, id: allocateEntityId('it') };
     const gate = holdReply('item', new Set(progress.map((item) => item.id)));
     const offers = [
-      observe(
-        f.store.createItem(
-          progress[0]!,
-          DISPLAY_PROJECTION_REFRESH_ADMISSION,
-          RETAINED_PROGRESS_PUBLICATION
-        )
-      ),
+      observe(f.store.refreshDisplayProjectionItem(progress[0]!, RETAINED_PROGRESS_PUBLICATION)),
     ];
-    const terminal = vi.spyOn(f.store, 'createItem');
+    const terminal = unmarkedStatus
+      ? vi.spyOn(f.store, 'refreshDisplayProjectionItem')
+      : vi.spyOn(f.store, 'createItem');
     let final:
       | Promise<
           | { status: 'ok'; value: { diagnostics: unknown[]; itemIds: string[] } }
           | { status: 'error'; error: unknown }
         >
       | undefined;
-    let calls: Array<Parameters<FsStore['createItem']>> = [];
+    let calls: unknown[][] = [];
     const laterDurable = laterBytePressure
       ? ItemSchema.parse({
           ...progress[0]!,
@@ -827,13 +819,7 @@ for (const pressure of [
         // Offer both genuine caller continuations before the progress inner-copy refusal can settle.
         for (const item of progress.slice(1))
           offers.push(
-            observe(
-              f.store.createItem(
-                item,
-                DISPLAY_PROJECTION_REFRESH_ADMISSION,
-                RETAINED_PROGRESS_PUBLICATION
-              )
-            )
+            observe(f.store.refreshDisplayProjectionItem(item, RETAINED_PROGRESS_PUBLICATION))
           );
         final = observe(
           importWorkerTranscript(f.store, f.environmentPackage, payload, { recordedAt: stamp })
@@ -873,18 +859,12 @@ for (const pressure of [
         }
         for (const item of progress.slice(1))
           offers.push(
-            observe(
-              f.store.createItem(
-                item,
-                DISPLAY_PROJECTION_REFRESH_ADMISSION,
-                RETAINED_PROGRESS_PUBLICATION
-              )
-            )
+            observe(f.store.refreshDisplayProjectionItem(item, RETAINED_PROGRESS_PUBLICATION))
           );
         final = observe(
           unmarkedStatus
             ? f.store
-                .createItem(durableStatus, DISPLAY_PROJECTION_REFRESH_ADMISSION)
+                .refreshDisplayProjectionItem(durableStatus)
                 .then((item) => ({ diagnostics: [], itemIds: [item.id] }))
             : importWorkerTranscript(f.store, f.environmentPackage, payload, { recordedAt: stamp })
         );
@@ -909,8 +889,10 @@ for (const pressure of [
       await final;
       await competing;
       calls = terminal.mock.calls
-        .filter(([item]) =>
-          unmarkedStatus ? item.id === durableStatus.id : item.type === 'assistant-message'
+        .filter(
+          ([item]) =>
+            typeof item !== 'string' &&
+            (unmarkedStatus ? item.id === durableStatus.id : item.type === 'assistant-message')
         )
         .map((args) => [...args]);
       terminal.mockRestore();
@@ -947,9 +929,9 @@ for (const pressure of [
     if (outcome.status !== 'ok') throw new Error('The original final transcript failed.');
     expect(calls).toHaveLength(1); // No hidden owner retry substitutes for guaranteed admission.
     expect(calls[0]![1]).toEqual(
-      unmarkedStatus ? DISPLAY_PROJECTION_REFRESH_ADMISSION : ALREADY_DECIDED_PUBLICATION_ADMISSION
+      unmarkedStatus ? undefined : ALREADY_DECIDED_PUBLICATION_ADMISSION
     );
-    expect(calls[0]![2]).toBeUndefined(); // Generic status/terminal category must not imply progress.
+    expect(calls[0]![unmarkedStatus ? 1 : 2]).toBeUndefined(); // Generic status/terminal category must not imply progress.
     if (laterBytePressure) expect(await competing).toEqual({ status: 'ok', value: laterDurable });
     expect(state.progressCopyBytes).toBeInstanceOf(Map);
     expect(observations).toBeGreaterThan(0);
@@ -1136,7 +1118,7 @@ it('releases only unallocated progress booking after a genuine lost Item ACK and
   };
   const gate = holdReply('item', new Set([item.id]));
   const original = observe(
-    f.store.createItem(item, DISPLAY_PROJECTION_REFRESH_ADMISSION, RETAINED_PROGRESS_PUBLICATION)
+    f.store.refreshDisplayProjectionItem(item, RETAINED_PROGRESS_PUBLICATION)
   );
   let settled = false;
   void original.then(() => {
