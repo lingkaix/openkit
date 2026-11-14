@@ -189,6 +189,7 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
     workspaceId,
     dataRoot,
     dispatcher,
+    serverApp: () => createApp({ ...options, mode: 'server' }),
     manager,
     files,
     credentialResolver,
@@ -203,6 +204,37 @@ async function fixture(missingKey = false, enabled = true, managedConfiguration 
     },
   };
 }
+
+it('keeps private decision transport out of authenticated public discovery and endpoint registration', async () => {
+  const f = await fixture();
+  try {
+    const app = f.serverApp();
+    const token = createOpenKitAccessTokenRecord(f.coreDb, {
+      ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const headers = { authorization: `Bearer ${token.secret}`, 'content-type': 'application/json' };
+    const discovery = await app.request('/v1/models', { headers });
+    expect(discovery.status).toBe(200);
+    const models = await discovery.json();
+    expect(models.data.map((model: { id: string }) => model.id)).toContain('tier');
+    expect(JSON.stringify(models)).not.toContain('"decisions"');
+    expect(JSON.stringify(models)).not.toContain('"llm.decision"');
+    expect(app.routes.some((route) => route.path === '/v1/decisions')).toBe(false);
+    const response = await app.request('/v1/decisions', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ model: 'tier', input: 'not a public category' }),
+    });
+    expect(response.status).toBe(404);
+    expect(f.primary.state.callCount).toBe(0);
+    expect(f.backup.state.callCount).toBe(0);
+  } finally {
+    await f.close();
+  }
+});
 
 describe('public Gateway decision Audit call linkage', () => {
   for (const endpoint of ['responses', 'chat/completions']) {

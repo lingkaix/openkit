@@ -9,6 +9,7 @@ import {
   resolveEffectiveModelMetadata,
   resolveLogicalModel,
   resolveLogicalModelCatalog,
+  resolveHarnessLogicalModelCatalog,
 } from './logical-models.js';
 
 function profile(
@@ -57,6 +58,52 @@ function gateway(input: {
 }
 
 describe('resolveLogicalModelCatalog', () => {
+  it('keeps private decision capability out of nonempty public and admitted harness model projections', () => {
+    const config = gateway({
+      id: 'ordinary-model',
+      routes: [
+        { id: 'selected', providerProfileId: 'openai-profile', providerModel: 'gpt-6-luna' },
+      ],
+    });
+    const providers = new ProviderRegistry([
+      profile({ id: 'openai-profile', vendor: 'openai', models: ['gpt-6-luna'] }),
+    ]);
+    const publicModels = resolveLogicalModelCatalog(config, providers);
+    // Harness inventory requires its own explicit Codex mapping, not Gateway API-key supply.
+    const harnessConfig = gateway({
+      id: 'ordinary-model',
+      routes: [{ id: 'selected', providerProfileId: 'codex-profile', providerModel: 'gpt-5.4' }],
+    });
+    const harnessProviders = new ProviderRegistry([
+      profile({
+        id: 'codex-profile',
+        kind: 'oauth',
+        vendor: 'openai-codex',
+        models: ['gpt-5.4'],
+        modelMetadata: {
+          'gpt-5.4': {
+            limit: { context: 128_000, output: 16_000 },
+            modalities: { input: ['text', 'image'], output: ['text'] },
+            reasoning: true,
+            tool_call: true,
+          },
+        },
+      }),
+    ]);
+    const harnessModels = resolveHarnessLogicalModelCatalog(harnessConfig, harnessProviders, [
+      'ordinary-model',
+    ]);
+    for (const projection of [publicModels, harnessModels]) {
+      expect(projection).toHaveLength(1);
+      expect(projection[0]?.id).toBe('ordinary-model');
+      expect(projection[0]!.capabilities.length).toBeGreaterThan(0);
+      expect(projection[0]!.capabilities).not.toContain('decision');
+      expect(projection[0]!.capabilities).not.toContain('decisions');
+      expect(projection[0]!.capabilities).not.toContain('llm.decision');
+    }
+    expect(publicModels[0]!.capabilities).toContain('responses');
+    expect(resolveHarnessLogicalModelCatalog(config, providers, [])).toEqual([]);
+  });
   it.each(['absent', 'delisted'])(
     'derives the complete contract without constraining a %s backup',
     (kind) => {
