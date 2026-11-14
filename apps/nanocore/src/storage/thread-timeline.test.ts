@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as policyKernel from '@openkit/policy-kernel';
 import { allocateEntityId, type Item } from '@openkit/protocol';
-import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as auditOwner from '../audit-events.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -17,9 +16,7 @@ import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { commandRequestKey } from './command-request-records.js';
 import { commandInputHash } from './control-store-input.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './db.js';
-import { workspaceDbPath } from './fs-layout.js';
 
 const databases: CoreDb[] = [];
 const roots: string[] = [];
@@ -379,49 +376,66 @@ describe('Thread timeline windows', () => {
       });
       examples.push({ item, requestId, disposition });
     }
-    await shutdownControlStoreWorkerClient();
-    // Retained completed receipts qualify the read projection, not a native steering exchange.
-    // The Task service and its complete native writer/acceptance qualification land with TB6.
-    const sqlite = new Database(workspaceDbPath(f.root, f.selector.workspaceId));
-    try {
-      for (const example of examples) {
-        if (example.disposition === 'missing' || example.item.type !== 'user-message') continue;
-        const scope = {
-          workspaceId: f.selector.workspaceId,
-          threadId: f.thread.id,
-          actorId: f.actor.id,
-        };
-        const hash = commandInputHash({
+    // Delivery authority is the original retained Item disposition, committed with its pointer and Audit.
+    for (const example of examples) {
+      if (example.disposition === 'missing' || example.item.type !== 'user-message') continue;
+      const scope = {
+        workspaceId: f.selector.workspaceId,
+        threadId: f.thread.id,
+        actorId: f.actor.id,
+      };
+      const hash = commandInputHash({
+        workspaceId: f.selector.workspaceId,
+        threadId: f.thread.id,
+        turnId: f.turn.id,
+        input: example.item.text,
+      });
+      const createdAt = '2026-11-08T17:00:00.000Z';
+      await f.store.settleTaskSteerDisposition({
+        itemId: example.item.id,
+        disposition: {
+          inputHash: hash,
+          disposition: example.disposition,
+          reason: null,
+          executionId: 'private-fixture-execution',
+          operationId: 'private-fixture-operation',
+        },
+        receipt: {
+          key: commandRequestKey('task.steer', example.requestId, scope),
+          command: 'task.steer',
+          requestId: example.requestId,
+          scope,
+          inputHash: hash,
+          response: { kind: 'turn', id: f.turn.id },
+          createdAt,
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        },
+        audit: {
+          id: allocateEntityId('aud'),
           workspaceId: f.selector.workspaceId,
           threadId: f.thread.id,
           turnId: f.turn.id,
-          input: example.item.text,
-        });
-        sqlite
-          .prepare(`INSERT INTO idempotency_requests (schema_version,request_key,command_name,request_id,
-          scope_json,input_hash,response_kind,response_id,response_json,created_at,expires_at)
-          VALUES (1,?,'task.steer',?,?,?,'turn',?,?,?,?)`)
-          .run(
-            commandRequestKey('task.steer', example.requestId, scope),
-            example.requestId,
-            JSON.stringify(scope),
-            hash,
-            f.turn.id,
-            JSON.stringify({
-              turnId: f.turn.id,
-              inputItemId: example.item.id,
-              inputHash: hash,
-              disposition: example.disposition,
-              reason: null,
-              executionId: 'private-fixture-execution',
-              operationId: 'private-fixture-operation',
-            }),
-            '2026-11-08T17:00:00.000Z',
-            '2099-01-01T00:00:00.000Z'
-          );
-      }
-    } finally {
-      sqlite.close();
+          itemId: example.item.id,
+          capabilityCallId: null,
+          permissionDecisionId: null,
+          vaultGrantId: null,
+          requestId: example.requestId,
+          actor: f.actor,
+          subject: null,
+          agentId: null,
+          agentSessionId: null,
+          category: 'command',
+          action: 'task.steer',
+          resource: `turn:${f.turn.id}`,
+          resourceRevision: null,
+          outcome: example.disposition === 'accepted' ? 'succeeded' : 'failed',
+          severity: 'info',
+          summary: `Steer delivery ${example.disposition}.`,
+          errorCode: null,
+          createdAt,
+          occurredAt: createdAt,
+        },
+      });
     }
     const result = await f.read({ view: 'items', turnId: f.turn.id });
     expect(result.response.status).toBe(200);
