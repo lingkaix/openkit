@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   type NativeOperationDefinition,
+  NON_API_EXPOSURE_DEFINITIONS,
   OPERATION_REGISTRY,
   type OperationDefinition,
 } from '@openkit/app-api-schemas';
@@ -88,11 +89,70 @@ export function policyProposalDigest(proposal: PolicyProposal): string {
 /** Empty Policy still has an exact revision and cannot supply a participant grant. */
 export const EMPTY_POLICY_DOCUMENT: PolicyDocumentV1 = { schemaVersion: 1, statements: [] };
 
+/** Reserved exposure controls are resource availability, never a caller permission or grant. */
+function routeGroupSwitchGroup(statement: PolicyDocumentV1['statements'][number]): string | null {
+  const resources = [...statement.scope.resources];
+  if (statement.kind === 'binding') resources.push(...statement.inputDisclosure.resources);
+  const reserved =
+    statement.lifetime.anchor.kind === 'route-group-switch' ||
+    resources.some(
+      (resource) =>
+        resource.kind === 'container' && resource.container.kind === 'route-group-switch'
+    );
+  if (!reserved) return null;
+  if (statement.kind !== 'permission')
+    throw new Error('Route-group switches require an ordinary human prohibition.');
+  const subject = statement.scope.subjects[0];
+  const resource = statement.scope.resources[0];
+  const anchor = statement.lifetime.anchor;
+  if (
+    !['active', 'inactive'].includes(statement.state) ||
+    statement.effect !== 'prohibit' ||
+    statement.grant.kind !== 'ordinary' ||
+    statement.author.kind !== 'human' ||
+    statement.authority.kind !== 'human' ||
+    statement.author.id !== statement.authority.userId ||
+    statement.scope.subjects.length !== 1 ||
+    subject?.kind !== 'human' ||
+    subject.id !== statement.author.id ||
+    statement.scope.actions.length !== 1 ||
+    statement.scope.actions[0] !== 'workspace.configure' ||
+    statement.scope.resources.length !== 1 ||
+    resource?.kind !== 'container' ||
+    resource.container.owner.kind !== 'server' ||
+    resource.container.kind !== 'route-group-switch' ||
+    anchor.owner.kind !== 'server' ||
+    anchor.kind !== 'server' ||
+    anchor.id !== 'server' ||
+    statement.lifetime.notAfter !== undefined ||
+    statement.lifetime.uses !== undefined
+  )
+    throw new Error('Route-group switches require exact human Server control scope and lifetime.');
+  const group = resource.container.id;
+  if (
+    !Object.values(NON_API_EXPOSURE_DEFINITIONS).some(
+      (descriptor) =>
+        descriptor.exposure.kind === 'switchable' &&
+        descriptor.exposure.owner.length > 0 &&
+        descriptor.exposure.group === group
+    )
+  )
+    throw new Error('Route-group switch group is unavailable.');
+  return group;
+}
+
 /** Checks the native subset before an authored Policy collection can be admitted. */
 export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   const document = PolicyDocumentV1Schema.parse(input);
   const positions = new Set<string>();
+  const exposureGroups = new Set<string>();
   for (const statement of document.statements) {
+    const group = routeGroupSwitchGroup(statement);
+    if (group !== null) {
+      if (exposureGroups.has(group)) throw new Error('Duplicate route-group switch control.');
+      exposureGroups.add(group);
+      continue;
+    }
     if (statement.state === 'inactive') continue;
     if (statement.kind === 'agent-principal') {
       if (

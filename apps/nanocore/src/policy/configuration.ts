@@ -95,6 +95,29 @@ function preservesRestriction(
   );
 }
 
+/** Only removal of a validator-admitted exposure control restores shared resource availability. */
+function removesRouteGroupSwitch(
+  before: PolicyStatement,
+  after: PolicyStatement | undefined
+): boolean {
+  if (
+    after !== undefined ||
+    before.kind !== 'permission' ||
+    !before.scope.resources.some(
+      (resource) =>
+        resource.kind === 'container' && resource.container.kind === 'route-group-switch'
+    )
+  )
+    return false;
+  try {
+    // Reuse the native canonical-form owner; no duplicate grammar or authority/IO fallback.
+    validatePolicyDocument({ schemaVersion: 1, statements: [before] });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Native preparation preserves unrelated server configuration and stamps the real author. */
 export function preparePolicyConfiguration(input: {
   readonly request: Extract<ProposeAdministrationConfigurationRequest, { targetFamily: 'policy' }>;
@@ -162,6 +185,10 @@ export function preparePolicyConfiguration(input: {
     if (
       previous.scope.subjects.some(
         (subject) => subject.kind === 'human' && subject.id === input.actor.userId
+      ) &&
+      !removesRouteGroupSwitch(
+        previous,
+        prepared.document.statements.find((candidate) => candidate.id === previous.id)
       )
     )
       throw new Error('Policy authors cannot widen their own authority.');

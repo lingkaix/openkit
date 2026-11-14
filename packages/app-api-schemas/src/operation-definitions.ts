@@ -308,6 +308,19 @@ export const OPERATION_REGISTRY: typeof API_OPERATION_DEFINITIONS &
   NATIVE_OPERATION_DEFINITIONS
 );
 
+/** Source-only non-API descriptors; metadata never adds an operation or transport projection. */
+export const NON_API_EXPOSURE_DEFINITIONS = {
+  'GET /v1/models': {
+    exposure: { kind: 'switchable', owner: 'llm', group: 'llm-gateway' },
+  },
+  'POST /v1/chat/completions': {
+    exposure: { kind: 'switchable', owner: 'llm', group: 'llm-gateway' },
+  },
+  'POST /v1/responses': {
+    exposure: { kind: 'switchable', owner: 'llm', group: 'llm-gateway' },
+  },
+} as const;
+
 /** Existing API projections are selected from the single composed registry. */
 export const OPERATION_DEFINITIONS = Object.fromEntries(
   Object.entries(OPERATION_REGISTRY).filter(([, definition]) => definition.binding !== 'native')
