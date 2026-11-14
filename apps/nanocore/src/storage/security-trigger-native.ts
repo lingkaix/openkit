@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { readRetainedV1, TimestampSchema, UserIdSchema, writeRetainedV1 } from '@openkit/protocol';
+import {
+  type ActorRef,
+  type AuditEvent,
+  AuditEventSchema,
+  readRetainedV1,
+  TimestampSchema,
+  UserIdSchema,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { auditEventFromRow } from '../audit-events.js';
 import { evaluateOpenKitAccessTokenUsability } from '../auth/access-token.js';
@@ -25,6 +33,14 @@ import {
   type ControlSecurityTriggerResult,
   type SecurityAlarmRow,
   SecurityAlarmRowSchema,
+  type SecurityAuditAction,
+  SecurityAuditActionSchema,
+  type SecurityAuditAssessment,
+  SecurityAuditAssessmentSchema,
+  type SecurityAuditCursor,
+  type SecurityAuditMissingField,
+  type SecurityEventOutboxRow,
+  SecurityEventOutboxRowSchema,
   SecurityTriggerRefusal,
   type SecurityTriggerSnapshot,
 } from './security-trigger-codecs.js';
@@ -179,6 +195,17 @@ function keyFor(alarm: Alarm): SecurityItemKey {
   ];
 }
 
+/** One current eligibility owner for original alarms and new native event obligations. */
+function currentAdministrators(db: CoreDb, now: Date): string[] {
+  return (
+    db.sqlite.prepare("SELECT id FROM users WHERE status='active' ORDER BY id").all() as {
+      id: string;
+    }[]
+  )
+    .filter(({ id }) => administrator(db, id, now))
+    .map(({ id }) => id);
+}
+
 /** Original alarm, all original recipient rows and stopping state share the existing savepoint. */
 function insertAlarm(
   db: CoreDb,
@@ -189,13 +216,7 @@ function insertAlarm(
 ): View {
   if (view.alarms.some((a) => a.rule === rule)) return view;
   if (view.state.state === 'off') throw new ControlProductPreconditionError();
-  const recipients = (
-    db.sqlite.prepare("SELECT id FROM users WHERE status='active' ORDER BY id").all() as {
-      id: string;
-    }[]
-  )
-    .filter(({ id }) => administrator(db, id, now))
-    .map(({ id }) => id);
+  const recipients = currentAdministrators(db, now);
   const alarm: Alarm = {
     schemaVersion: writeRetainedV1({}).schemaVersion,
     id: newAlarmRunId(),
@@ -329,6 +350,393 @@ function readAlarmRequest(db: CoreDb, requestId: string): SecurityAlarmRow {
   return readAlarmRow(db, raw);
 }
 
+const ProgressRecord = z
+  .object({
+    schemaVersion: z.literal(1),
+    sourceRowId: Counter.positive().nullable(),
+    createdAt: TimestampSchema.nullable(),
+    auditEventId: z.string().min(1).nullable(),
+    assessed: Counter,
+  })
+  .strict();
+type Progress = z.infer<typeof ProgressRecord>;
+const AssessmentRecord = SecurityAuditAssessmentSchema.extend({
+  schemaVersion: z.literal(1),
+  sourceRowId: Counter.positive(),
+  responsibleUserId: UserIdSchema,
+  outcome: AuditEventSchema.shape.outcome,
+});
+type Assessment = z.infer<typeof AssessmentRecord>;
+const assessmentColumns = `schema_version AS schemaVersion,audit_event_id AS auditEventId,
+  source_rowid AS sourceRowId,created_at AS createdAt,enable_generation AS enableGeneration,
+  action,actor_json AS actorJson,target_user_id AS targetUserId,outcome,
+  responsible_user_id AS responsibleUserId,status,rule,notify,missing_fields_json AS missingFieldsJson,
+  recipient_count AS recipientCount`;
+
+const requiredFacts: Record<SecurityAuditAction, readonly SecurityAuditMissingField[]> = {
+  'user.disable': ['actor', 'target-user', 'successful-outcome'],
+  'auth.admin-recovery.issue': ['actor', 'target-user', 'successful-outcome'],
+  'auth.token.issue': ['token-id', 'scope', 'owner', 'principal', 'actor', 'expiry'],
+  'auth.token.revoke': ['token-id', 'scope', 'actor'],
+  'auth.token.rotate': ['token-id', 'scope', 'actor'],
+  'auth.bootstrap.consume': [],
+  'administration.configuration.apply': ['changed-sections', 'actor'],
+  'server.config.update': ['changed-keys', 'actor'],
+  'policy.write': ['scope', 'full-diff-classification', 'actor'],
+  'app.update.start': ['target-digest', 'actor'],
+  'channel.pairing.bind': [
+    'channel-kind',
+    'target-user',
+    'binding-revision',
+    'actor',
+    'administrator-at-event',
+  ],
+  'channel.pairing.unbind': [
+    'channel-kind',
+    'target-user',
+    'binding-revision',
+    'actor',
+    'administrator-at-event',
+  ],
+  'auth.failure-threshold': ['kind', 'key-kind', 'window', 'count'],
+  'auth.revoked-credential-presented': ['token-id', 'scope', 'status', 'source'],
+};
+
+/** Only admitted original facts are available; resources/summaries/current records are not history. */
+function assessFacts(
+  action: SecurityAuditAction,
+  actor: ActorRef | null,
+  targetUserId: string | null,
+  outcome: AuditEvent['outcome'],
+  responsibleUserId: string
+): Pick<SecurityAuditAssessment, 'status' | 'rule' | 'notify' | 'missingFields'> {
+  const missingFields: SecurityAuditMissingField[] =
+    action === 'auth.bootstrap.consume'
+      ? [actor === null ? 'actor' : 'bootstrap-actor-semantics']
+      : requiredFacts[action].filter((field) => {
+          if (field === 'actor') return actor === null;
+          if (field === 'target-user') return targetUserId === null;
+          if (field === 'successful-outcome') return outcome !== 'succeeded';
+          return true;
+        });
+  if (missingFields.length)
+    return { status: 'unsupported', rule: null, notify: null, missingFields };
+  if (action === 'auth.admin-recovery.issue')
+    return { status: 'detected', rule: 'R1', notify: 'immediate', missingFields };
+  if (action !== 'user.disable') return recovery();
+  return {
+    status: 'detected',
+    rule: 'R1d',
+    notify: actor?.kind === 'user' && actor.id === responsibleUserId ? 'daily' : 'immediate',
+    missingFields,
+  };
+}
+
+function readAssessment(db: CoreDb, raw: unknown): Assessment {
+  return retained(raw, (row) => {
+    const { actorJson, missingFieldsJson, ...fields } = row;
+    const value = AssessmentRecord.parse({
+      ...fields,
+      actor: actorJson === null ? null : JSON.parse(z.string().parse(actorJson)),
+      missingFields: JSON.parse(z.string().parse(missingFieldsJson)),
+    });
+    const original = db.sqlite
+      .prepare('SELECT * FROM audit_events WHERE rowid=?')
+      .get(value.sourceRowId);
+    if (!original) recovery();
+    const source = auditEventFromRow(original as Row);
+    if (
+      source.id !== value.auditEventId ||
+      source.createdAt !== value.createdAt ||
+      source.action !== value.action ||
+      source.outcome !== value.outcome ||
+      JSON.stringify(source.actor ?? null) !== JSON.stringify(value.actor) ||
+      (source.subject?.kind === 'user' ? source.subject.id : null) !== value.targetUserId
+    )
+      recovery();
+    const decision = assessFacts(
+      value.action,
+      value.actor,
+      value.targetUserId,
+      value.outcome,
+      value.responsibleUserId
+    );
+    if (
+      decision.status !== value.status ||
+      decision.rule !== value.rule ||
+      decision.notify !== value.notify ||
+      JSON.stringify(decision.missingFields) !== JSON.stringify(value.missingFields) ||
+      (value.status === 'unsupported' && value.recipientCount !== 0) ||
+      (value.rule === 'R1d' && value.recipientCount !== 1) ||
+      (value.rule === 'R1' && value.recipientCount === 0)
+    )
+      recovery();
+    return value;
+  });
+}
+function assessmentProjection(record: Assessment): SecurityAuditAssessment {
+  const {
+    schemaVersion: _version,
+    sourceRowId: _position,
+    responsibleUserId: _responsible,
+    outcome: _outcome,
+    ...value
+  } = record;
+  return value;
+}
+
+/** Includes zero-row loss: returning an empty outbox must not hide an original owed recipient. */
+function validateEventCounts(db: CoreDb): void {
+  const mismatch = db.sqlite
+    .prepare(`SELECT a.audit_event_id FROM security_trigger_audit_assessments a
+    LEFT JOIN security_trigger_outbox o ON o.audit_event_id=a.audit_event_id
+    GROUP BY a.audit_event_id,a.recipient_count
+    HAVING COUNT(o.request_id)<>a.recipient_count OR COUNT(DISTINCT o.recipient_user_id)<>a.recipient_count LIMIT 1`)
+    .get();
+  const orphan = db.sqlite
+    .prepare(`SELECT o.request_id FROM security_trigger_outbox o
+    LEFT JOIN security_trigger_audit_assessments a ON a.audit_event_id=o.audit_event_id
+    WHERE o.audit_event_id IS NOT NULL AND (a.audit_event_id IS NULL OR o.alarm_id IS NOT NULL
+    OR o.occurrence_kind<>'initial' OR o.occurrence_n<>1) LIMIT 1`)
+    .get();
+  if (mismatch || orphan) recovery();
+}
+function progressCursor(progress: Progress): SecurityAuditCursor | null {
+  if (progress.sourceRowId === null) return null;
+  if (progress.createdAt === null || progress.auditEventId === null) return recovery();
+  return { createdAt: progress.createdAt, auditEventId: progress.auditEventId };
+}
+function readProgress(db: CoreDb): Progress {
+  const raw = db.sqlite
+    .prepare(`SELECT schema_version AS schemaVersion,cursor_rowid AS sourceRowId,
+    cursor_created_at AS createdAt,cursor_audit_event_id AS auditEventId,assessed_count AS assessed
+    FROM security_trigger_audit_progress WHERE singleton=1`)
+    .get();
+  if (!raw) recovery();
+  const progress = retained(raw, (value) => ProgressRecord.parse(value));
+  if (
+    (progress.sourceRowId === null) !== (progress.createdAt === null) ||
+    (progress.sourceRowId === null) !== (progress.auditEventId === null)
+  )
+    recovery();
+  const count = db.sqlite
+    .prepare(`SELECT COUNT(*) AS total,MAX(source_rowid) AS last
+    FROM security_trigger_audit_assessments`)
+    .get() as { total: number; last: number | null };
+  if (
+    count.total !== progress.assessed ||
+    (count.last !== null && count.last > (progress.sourceRowId ?? 0))
+  )
+    recovery();
+  if (progress.sourceRowId !== null) {
+    const original = db.sqlite
+      .prepare('SELECT * FROM audit_events WHERE rowid=?')
+      .get(progress.sourceRowId);
+    if (!original) recovery();
+    const source = auditEventFromRow(original as Row);
+    if (source.id !== progress.auditEventId || source.createdAt !== progress.createdAt) recovery();
+  }
+  validateEventCounts(db);
+  return progress;
+}
+
+function readDetections(
+  db: CoreDb,
+  input: Extract<ControlSecurityTrigger, { action: 'detections' }>
+): ControlSecurityTriggerResult {
+  readProgress(db);
+  const after = input.after;
+  const rows = after
+    ? db.sqlite
+        .prepare(`SELECT ${assessmentColumns} FROM security_trigger_audit_assessments
+      WHERE created_at>? OR (created_at=? AND audit_event_id>?) ORDER BY created_at,audit_event_id LIMIT ?`)
+        .all(after.createdAt, after.createdAt, after.auditEventId, input.limit)
+    : db.sqlite
+        .prepare(`SELECT ${assessmentColumns} FROM security_trigger_audit_assessments
+      ORDER BY created_at,audit_event_id LIMIT ?`)
+        .all(input.limit);
+  const events = rows.map((row) => assessmentProjection(readAssessment(db, row)));
+  const last = events.at(-1);
+  return {
+    kind: 'detections',
+    events,
+    next:
+      last && events.length === input.limit
+        ? { createdAt: last.createdAt, auditEventId: last.auditEventId }
+        : null,
+  };
+}
+function readEventOutbox(db: CoreDb): SecurityEventOutboxRow[] {
+  readProgress(db);
+  const rows = db.sqlite
+    .prepare(`SELECT ${outboxColumns},audit_event_id AS auditEventId
+    FROM security_trigger_outbox WHERE audit_event_id IS NOT NULL AND raised=0
+    ORDER BY created_at,request_id LIMIT 128`)
+    .all();
+  const originals = new Map<string, Assessment>();
+  return rows.map((raw) =>
+    retained(raw, (row) => {
+      if (
+        typeof row.auditEventId !== 'string' ||
+        row.alarmId !== null ||
+        typeof row.keyJson !== 'string' ||
+        ![0, 1].includes(row.raised as number)
+      )
+        return recovery();
+      let original = originals.get(row.auditEventId);
+      if (!original) {
+        const source = db.sqlite
+          .prepare(`SELECT ${assessmentColumns} FROM security_trigger_audit_assessments
+        WHERE audit_event_id=?`)
+          .get(row.auditEventId);
+        if (!source) recovery();
+        original = readAssessment(db, source);
+        originals.set(row.auditEventId, original);
+      }
+      if (original.status !== 'detected') return recovery();
+      const value = SecurityEventOutboxRowSchema.parse({
+        requestId: row.requestId,
+        recipientUserId: row.recipientUserId,
+        key: JSON.parse(row.keyJson),
+        rule: original.rule,
+        notify: original.notify,
+        occurrence: { kind: row.occurrenceKind, n: row.occurrenceN },
+        raised: row.raised === 1,
+      });
+      if (
+        value.key[1] !== original.auditEventId ||
+        (value.rule === 'R1d' && value.recipientUserId !== original.responsibleUserId) ||
+        securityRequestId({
+          key: value.key,
+          recipientUserId: value.recipientUserId,
+          occurrence: value.occurrence,
+        }) !== value.requestId
+      )
+        recovery();
+      return value;
+    })
+  );
+}
+
+/** Append source, assessment, all recipients and cursor advance stay in the original savepoint. */
+function detectAudit(
+  db: CoreDb,
+  input: Extract<ControlSecurityTrigger, { action: 'audit-detect' }>,
+  view: View,
+  now: Date
+): ControlSecurityTriggerResult {
+  const before = readProgress(db);
+  const responsibleUserId = view.state.enabler;
+  if (!responsibleUserId) return recovery();
+  // A timestamp is an original fact, not append authority: late earlier-clock inserts still count.
+  const rows = db.sqlite
+    .prepare('SELECT rowid AS sourceRowId,* FROM audit_events WHERE rowid>? ORDER BY rowid LIMIT ?')
+    .all(before.sourceRowId ?? 0, input.limit) as Row[];
+  let detected = 0,
+    unsupported = 0;
+  let progress = before;
+  for (const raw of rows) {
+    const { sourceRowId, ...sourceRow } = raw;
+    if (!Counter.positive().safeParse(sourceRowId).success) recovery();
+    const source = auditEventFromRow(sourceRow);
+    const createdAt = TimestampSchema.parse(source.createdAt);
+    const action = SecurityAuditActionSchema.safeParse(source.action);
+    if (action.success) {
+      const actor = source.actor ?? null;
+      const targetUserId = source.subject?.kind === 'user' ? source.subject.id : null;
+      const decision = assessFacts(
+        action.data,
+        actor,
+        targetUserId,
+        source.outcome,
+        responsibleUserId
+      );
+      const recipients =
+        decision.status === 'unsupported'
+          ? []
+          : decision.rule === 'R1'
+            ? currentAdministrators(db, now)
+            : [responsibleUserId];
+      if (decision.status === 'detected' && recipients.length === 0) recovery();
+      db.sqlite
+        .prepare(`INSERT INTO security_trigger_audit_assessments
+        (schema_version,audit_event_id,source_rowid,created_at,enable_generation,action,actor_json,target_user_id,
+        outcome,responsible_user_id,status,rule,notify,missing_fields_json,recipient_count)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(
+          writeRetainedV1({}).schemaVersion,
+          source.id,
+          sourceRowId as number,
+          createdAt,
+          view.state.generation,
+          action.data,
+          actor === null ? null : JSON.stringify(actor),
+          targetUserId,
+          source.outcome,
+          responsibleUserId,
+          decision.status,
+          decision.rule,
+          decision.notify,
+          JSON.stringify(decision.missingFields),
+          recipients.length
+        );
+      const key: ['event', string] = ['event', source.id];
+      const occurrence = { kind: 'initial' as const, n: 1 };
+      for (const recipientUserId of recipients) {
+        db.sqlite
+          .prepare(`INSERT INTO security_trigger_outbox
+          (request_id,schema_version,audit_event_id,key_json,recipient_user_id,occurrence_kind,occurrence_n,raised,created_at)
+          VALUES (?,?,?,?,?,?,?,0,?)`)
+          .run(
+            securityRequestId({ key, recipientUserId, occurrence }),
+            writeRetainedV1({}).schemaVersion,
+            source.id,
+            JSON.stringify(key),
+            recipientUserId,
+            occurrence.kind,
+            occurrence.n,
+            input.timestamp
+          );
+      }
+      if (decision.status === 'detected') detected++;
+      else unsupported++;
+    }
+    progress = {
+      ...progress,
+      sourceRowId: sourceRowId as number,
+      createdAt,
+      auditEventId: source.id,
+    };
+  }
+  if (rows.length) {
+    const assessed = before.assessed + detected + unsupported;
+    if (!Number.isSafeInteger(assessed)) recovery();
+    const changed = db.sqlite
+      .prepare(`UPDATE security_trigger_audit_progress SET cursor_rowid=?,cursor_created_at=?,
+      cursor_audit_event_id=?,assessed_count=? WHERE singleton=1 AND cursor_rowid IS ?
+      AND cursor_created_at IS ? AND cursor_audit_event_id IS ? AND assessed_count=?`)
+      .run(
+        progress.sourceRowId,
+        progress.createdAt,
+        progress.auditEventId,
+        assessed,
+        before.sourceRowId,
+        before.createdAt,
+        before.auditEventId,
+        before.assessed
+      );
+    if (changed.changes !== 1) throw new ControlProductPreconditionError();
+    progress = readProgress(db);
+  }
+  return {
+    kind: 'audit-detection',
+    cursor: progressCursor(progress),
+    scanned: rows.length,
+    detected,
+    unsupported,
+  };
+}
+
 const DestinationRecord = SecurityThreadDestinationSchema.extend({ schemaVersion: z.literal(1) });
 const destinationColumns = `schema_version AS schemaVersion,recipient_user_id AS recipientUserId,
   generation,workspace_id AS workspaceId,thread_id AS threadId,source_request_id AS sourceRequestId,status`;
@@ -424,6 +832,16 @@ export function applySecurityTriggerInDb(
   if (db.scope !== 'core' || !db.sqlite.inTransaction) throw new ControlProductPreconditionError();
   // Caller timestamps describe the original observation; they never move credential expiry backwards.
   const now = new Date();
+  if (input.action === 'detection-progress') {
+    const progress = readProgress(db);
+    return {
+      kind: 'detection-progress',
+      cursor: progressCursor(progress),
+      assessed: progress.assessed,
+    };
+  }
+  if (input.action === 'detections') return readDetections(db, input);
+  if (input.action === 'event-outbox') return { kind: 'event-outbox', rows: readEventOutbox(db) };
   if (input.action === 'alarms') return { kind: 'alarms', rows: readAlarmRows(db) };
   if (input.action === 'alarm-read')
     return { kind: 'alarm', row: readAlarmRequest(db, input.requestId) };
@@ -446,6 +864,10 @@ export function applySecurityTriggerInDb(
     view = insertAlarm(db, view, 'R1', input.timestamp, now);
   }
   const current = snapshot(db, view, now);
+  if (input.action === 'audit-detect') {
+    if (!current.delegationCurrent) return { kind: 'audit-unavailable', snapshot: current };
+    return detectAudit(db, input, view, now);
+  }
   if (input.action !== 'audit') return { kind: 'state', snapshot: current };
   if (!current.delegationCurrent) return { kind: 'audit-unavailable', snapshot: current };
   // Server is the physical Core Audit home, not workspace_id IS NULL. Opaque links remain original facts.
