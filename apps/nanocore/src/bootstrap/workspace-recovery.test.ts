@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import {
@@ -32,6 +33,7 @@ import {
   readRecurringPortableFiles,
   readRecurringPortableHistory,
 } from '../storage/recurring-portable-history.js';
+import { WORKSPACE_BACKUP_DATABASE_FORMATS } from '../storage/workspace-backup.js';
 import { withVerifiedWorkspaceBackupBundle } from '../storage/workspace-backup-bundle.js';
 import {
   finishWorkspaceMove,
@@ -795,7 +797,7 @@ async function recurringBundle(f: Awaited<ReturnType<typeof recurringFixture>>) 
       stagingParent,
       admission: new FileStorageAdmission(f.commandRoot, () => 0n),
       expectedRelease: { version: 'v0.1.0-rc.11', buildId: '1'.repeat(40) },
-      supportedDatabaseFormats: { 'drizzle.workspace': 26 },
+      supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
       supportedRequiredFeatures: ['workspace.recurring-triggers.v1'],
     },
     async (verified) => {

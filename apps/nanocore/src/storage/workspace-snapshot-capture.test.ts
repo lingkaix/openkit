@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -121,6 +122,7 @@ import {
   readWorkspaceRecoveryBlockers,
   runWorkspaceSnapshotMaintenance,
   stageWorkspaceBackup,
+  WORKSPACE_BACKUP_DATABASE_FORMATS,
   WORKSPACE_BACKUP_POLICY,
 } from './workspace-backup.js';
 import {
@@ -532,16 +534,7 @@ const roots: string[] = [];
 const databaseHandles: { readonly sqlite: Database.Database }[] = [];
 const workspaceId = DEMO_WORKSPACE_ID;
 const release = { version: '0.1.0-c-a-oracle', buildId: 'independent-snapshot-oracle' };
-const formats = {
-  'drizzle.workspace': 26,
-  'drizzle.app.1': 1,
-  'drizzle.app.2': 2,
-  'drizzle.app.3': 3,
-  'drizzle.app.4': 4,
-  'drizzle.app.5': 5,
-  'light-app.kernel.1': 1,
-  'light-app.kernel.2': 2,
-};
+const formats = WORKSPACE_BACKUP_DATABASE_FORMATS;
 const unavailable = { kind: 'unavailable', reason: 'unavailable', actions: [] };
 
 /** Computes expected identity from fixture bytes without the subject's digest helper. */
@@ -1039,9 +1032,12 @@ describe('C-a snapshot authoritative blockers', () => {
     databaseHandles.push(db);
     db.sqlite.pragma('ignore_check_constraints = ON');
     try {
+      // Keep JSON valid for expression indexes while corrupting a required retained Turn field.
       db.sqlite
-        .prepare('UPDATE control_turns SET record_json=? WHERE id=?')
-        .run('{invalid retained body', turn.id);
+        .prepare(
+          "UPDATE control_turns SET record_json=json_set(record_json,'$.triggerActor',NULL) WHERE id=?"
+        )
+        .run(turn.id);
     } finally {
       db.sqlite.pragma('ignore_check_constraints = OFF');
     }

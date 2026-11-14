@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -56,6 +57,7 @@ import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
   createWorkspaceBackup,
   stageWorkspaceBackup,
+  WORKSPACE_BACKUP_DATABASE_FORMATS,
   type WorkspaceBackupCreateInput,
   type WorkspaceBackupSource,
   type WorkspaceBackupStageInput,
@@ -375,16 +377,7 @@ function inputFor(
     stagingParent: join(f.root, 'staging'),
     admission: new FileStorageAdmission(f.root, () => 0n),
     expectedRelease: release,
-    supportedDatabaseFormats: {
-      'drizzle.workspace': 26,
-      'drizzle.app.1': 1,
-      'drizzle.app.2': 2,
-      'drizzle.app.3': 3,
-      'drizzle.app.4': 4,
-      'drizzle.app.5': 5,
-      'light-app.kernel.1': 1,
-      'light-app.kernel.2': 2,
-    },
+    supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
   };
 }
 
@@ -703,7 +696,10 @@ describe('D0-1: capture complete stopped authority', () => {
     expect(capturedDatabases[appIndex]).toEqual(f.appRows);
     expect(verified.manifest.databaseFormats).toEqual(
       expect.arrayContaining([
-        { path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 26 } },
+        {
+          path: 'db/workspace.sqlite',
+          markers: { 'drizzle.workspace': WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace']! },
+        },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,
           markers: { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
@@ -1054,7 +1050,7 @@ async function sealedFixture(f: Fixture) {
         path,
         markers:
           path === 'db/workspace.sqlite'
-            ? { 'drizzle.workspace': 26 }
+            ? { 'drizzle.workspace': WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace']! }
             : { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },
       })),
     capture: { startedAt: timestamp, completedAt: timestamp, consistency: 'quiescent' },
@@ -1141,7 +1137,10 @@ describe('D0-1: full staging, independently sealed real-owner fixtures', () => {
     const { input, manifest } = await sealedFixture(f);
     expect(manifest.databaseFormats).toEqual(
       expect.arrayContaining([
-        { path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 26 } },
+        {
+          path: 'db/workspace.sqlite',
+          markers: { 'drizzle.workspace': WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace']! },
+        },
         {
           path: `light-apps/${f.app.appId}/data.sqlite`,
           markers: { 'drizzle.app.5': 5, 'light-app.kernel.2': 2 },

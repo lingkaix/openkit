@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -36,6 +37,7 @@ import { inventoryRegularFiles, writeHotDataRootBackup } from './data-root-backu
 import { type CoreDb, openCoreDb } from './db.js';
 import { coreDbPath, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
+import { WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
 import {
   parseWorkspaceBackupManifest,
   withVerifiedWorkspaceBackupBundle,
@@ -183,7 +185,12 @@ async function fixture() {
     priorMoves: [],
     release: { version: release.releaseTag, buildId: release.sourceCommit },
     requiredFeatures: [],
-    databaseFormats: [{ path: 'db/workspace.sqlite', markers: { 'drizzle.workspace': 26 } }],
+    databaseFormats: [
+      {
+        path: 'db/workspace.sqlite',
+        markers: { 'drizzle.workspace': WORKSPACE_BACKUP_DATABASE_FORMATS['drizzle.workspace']! },
+      },
+    ],
     capture: { startedAt: now, completedAt: now, consistency: 'quiescent' },
     inventory,
     inventoryDigest: sha(JSON.stringify(inventory)),
@@ -222,7 +229,7 @@ async function fixture() {
       stagingParent: join(root, 'staging'),
       admission: new FileStorageAdmission(root, () => 0n),
       expectedRelease: manifest.release,
-      supportedDatabaseFormats: { 'drizzle.workspace': 26 },
+      supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
     },
     async (verified) => {
       expect(verified.manifest).toEqual(manifest);

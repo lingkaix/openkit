@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import {
   cpSync,
   existsSync,
@@ -27,7 +28,7 @@ import {
 } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
-import { createWorkspaceBackup } from './workspace-backup.js';
+import { createWorkspaceBackup, WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
 
 type Fields = Record<string, unknown>;
 type Client = ReturnType<typeof getControlStoreWorkerClient>;
@@ -461,16 +462,7 @@ async function exercise(fault: boolean) {
       stagingParent,
       admission,
       expectedRelease: { version: '0.1.0-c-a-oracle', buildId: 'independent-snapshot-oracle' },
-      supportedDatabaseFormats: {
-        'drizzle.workspace': 26,
-        'drizzle.app.1': 1,
-        'drizzle.app.2': 2,
-        'drizzle.app.3': 3,
-        'drizzle.app.4': 4,
-        'drizzle.app.5': 5,
-        'light-app.kernel.1': 1,
-        'light-app.kernel.2': 2,
-      },
+      supportedDatabaseFormats: WORKSPACE_BACKUP_DATABASE_FORMATS,
     };
     const actual = start(() => createWorkspaceBackup(input));
     captureState = 'pending';

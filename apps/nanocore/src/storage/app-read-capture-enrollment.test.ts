@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 // Independent outside-repository draft. UNRUN / not type-qualified.
 import { randomUUID } from 'node:crypto';
 import {
@@ -38,7 +39,7 @@ import { closeWorkspaceProductReadHandles } from './control-store-product-record
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openAdmittedWorkspaceReadDb, openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
-import { createWorkspaceBackup } from './workspace-backup.js';
+import { createWorkspaceBackup, WORKSPACE_BACKUP_DATABASE_FORMATS } from './workspace-backup.js';
 
 type Fields = Record<string, unknown>;
 type Mode = 'core-pin' | 'copy' | 'enumeration';
@@ -331,16 +332,7 @@ function identity(path: string) {
 }
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 const releasePolicy = { version: '0.1.0-c-a-oracle', buildId: 'independent-snapshot-oracle' };
-const formats = {
-  'drizzle.workspace': 26,
-  'drizzle.app.1': 1,
-  'drizzle.app.2': 2,
-  'drizzle.app.3': 3,
-  'drizzle.app.4': 4,
-  'drizzle.app.5': 5,
-  'light-app.kernel.1': 1,
-  'light-app.kernel.2': 2,
-};
+const formats = WORKSPACE_BACKUP_DATABASE_FORMATS;
 type Produced = {
   app: Awaited<ReturnType<typeof createLightApp>>;
   row: Awaited<ReturnType<typeof createRecord>>;
