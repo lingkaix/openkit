@@ -36,6 +36,7 @@ import {
 } from '../auth/thread-visibility.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
+import type { GatewayDecisionResult } from '../llm/gateway-decision.js';
 import type { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
 import { requireNativeCoordinatorGoal } from '../runtime/goal-owner.js';
@@ -90,6 +91,71 @@ import {
 
 const GateOutput = z.object({ decision: z.enum(['allow', 'deny', 'escalate']) }).strict();
 const ObservationOutput = z.object({ observed: z.literal(true) }).strict();
+/** Closed S11 result; its native probability and bridge confidence are distinct evidence. */
+const SecurityReviewOutput: z.ZodType<GatewayDecisionResult> = z
+  .object({
+    decision: z.enum(['allow', 'block', 'escalate']),
+    reasonCode: z.enum(['no_objection', 'policy_risk', 'insufficient_evidence', 'review_failed']),
+    metric: z.discriminatedUnion('kind', [
+      z
+        .object({
+          kind: z.literal('native_probability'),
+          allowProbability: z.number().min(0).max(1),
+          confidence: z.number().min(0).max(1),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('bridge_confidence'),
+          confidence: z.number().min(0).max(1),
+        })
+        .strict(),
+      z
+        .object({
+          kind: z.literal('failure'),
+          code: z.enum([
+            'invalid_input',
+            'unsupported',
+            'unavailable',
+            'refusal',
+            'incomplete',
+            'invalid_output',
+            'timeout',
+            'cancelled',
+            'usage_unavailable',
+          ]),
+        })
+        .strict(),
+    ]),
+    usageRecordIds: z.array(z.string().min(1)),
+    capabilityCallId: z.string().min(1),
+    route: z
+      .object({
+        logicalModelId: z.string().min(1),
+        routeId: z.string().min(1),
+        mode: z.enum(['native', 'bridged']),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine((review) =>
+    review.metric.kind === 'failure'
+      ? review.decision === 'escalate' && review.reasonCode === 'review_failed'
+      : review.reasonCode !== 'review_failed' &&
+        review.route.mode === (review.metric.kind === 'native_probability' ? 'native' : 'bridged')
+  );
+
+/** A confident no-objection is neutral; only the final Kernel can authorize the effect. */
+function securityReviewContribution(review: GatewayDecisionResult): PermissionDecisionResult {
+  if (review.metric.kind === 'failure' || review.decision === 'escalate')
+    return 'require_escalation';
+  if (review.decision === 'block') return 'deny';
+  const confidence =
+    review.metric.kind === 'native_probability'
+      ? review.metric.allowProbability
+      : review.metric.confidence;
+  return confidence >= 0.9 ? 'not_applicable' : 'require_escalation';
+}
 type InvocationReference = PolicyDecisionV1['invocations'][number];
 
 /** One injected deterministic participant; this is not a provider adapter or loader. */
@@ -1247,21 +1313,35 @@ export class PolicyInterception {
           }),
           timeout,
         ]);
+        const securityReview =
+          binding.mode === 'gate' &&
+          binding.participant.kind === 'agent' &&
+          binding.participant.id === 'security-review';
         const parsed =
           binding.mode === 'gate'
-            ? (binding.participant.kind === 'agent'
-                ? PolicyAgentGateOutputV1Schema
-                : GateOutput
+            ? (securityReview
+                ? SecurityReviewOutput
+                : binding.participant.kind === 'agent'
+                  ? PolicyAgentGateOutputV1Schema
+                  : GateOutput
               ).safeParse(output)
             : ObservationOutput.safeParse(output);
-        if (
-          !parsed.success ||
-          (binding.mode === 'gate' &&
-            !policyOperationDefinition(input.proposal.operation).points.gateResults.includes(
-              binding.participant.kind === 'agent'
+        const review =
+          securityReview && parsed.success ? SecurityReviewOutput.parse(parsed.data) : undefined;
+        const gate =
+          parsed.success && binding.mode === 'gate'
+            ? review
+              ? review.decision === 'block'
+                ? 'deny'
+                : review.decision
+              : binding.participant.kind === 'agent'
                 ? PolicyAgentGateOutputV1Schema.parse(parsed.data).decision
                 : GateOutput.parse(parsed.data).decision
-            ))
+            : undefined;
+        if (
+          !parsed.success ||
+          (gate !== undefined &&
+            !policyOperationDefinition(input.proposal.operation).points.gateResults.includes(gate))
         )
           outcome = 'malformed';
         else if (!input.stillCurrent()) outcome = 'stale';
@@ -1279,11 +1359,14 @@ export class PolicyInterception {
           outcome = 'completed';
           output = parsed.data;
           if (binding.mode === 'gate') {
-            const gate =
-              binding.participant.kind === 'agent'
-                ? PolicyAgentGateOutputV1Schema.parse(parsed.data).decision
-                : GateOutput.parse(parsed.data).decision;
-            result = gate === 'escalate' ? 'require_escalation' : gate;
+            if (review) result = securityReviewContribution(review);
+            else {
+              const gate =
+                binding.participant.kind === 'agent'
+                  ? PolicyAgentGateOutputV1Schema.parse(parsed.data).decision
+                  : GateOutput.parse(parsed.data).decision;
+              result = gate === 'escalate' ? 'require_escalation' : gate;
+            }
           } else {
             result = 'not_applicable';
           }

@@ -10,6 +10,7 @@ import { createAdministrationConfiguration } from '../config/administration-conf
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
+import type { GatewayDecisionResult } from '../llm/gateway-decision.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -120,11 +121,11 @@ function agentDeclaration(id: string, responsibility = human, responsibleHumanId
 }
 
 /** Real schema/admission is the producer of the document consumed by interception. */
-function agentDocument(responsibleHumanId = userId) {
+function agentDocument(responsibleHumanId = userId, participantId = agentId) {
   const root = { kind: 'human' as const, id: responsibleHumanId };
   const supervisor = agentDeclaration(supervisorId, root, responsibleHumanId);
   const declaration = {
-    ...agentDeclaration(agentId, root, responsibleHumanId),
+    ...agentDeclaration(participantId, root, responsibleHumanId),
     responsibility: { kind: 'agent', id: supervisorId },
   };
   const raw = {
@@ -134,7 +135,10 @@ function agentDocument(responsibleHumanId = userId) {
       declaration,
       {
         ...deterministicBinding(),
-        participant: { kind: 'agent', id: agentId, version: policyDigest(declaration) },
+        ...(participantId === 'security-review'
+          ? { lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } } }
+          : {}),
+        participant: { kind: 'agent', id: participantId, version: policyDigest(declaration) },
       },
     ],
   };
@@ -292,6 +296,110 @@ async function configurationFixture() {
     });
   return { ...options, service, manager, workspaceDb, serverPath, request, propose };
 }
+
+/** Projection-only requester effect: no route evaluation or native usage receipt is fabricated. */
+function reviewResult(metric: GatewayDecisionResult['metric']): GatewayDecisionResult {
+  return {
+    decision: 'allow',
+    reasonCode: 'no_objection',
+    metric,
+    usageRecordIds: [],
+    capabilityCallId: allocateEntityId('cap'),
+    route: {
+      logicalModelId: 'outside-requester-projection',
+      routeId: 'projection-only',
+      mode: metric.kind === 'bridge_confidence' ? 'bridged' : 'native',
+    },
+  };
+}
+
+describe('P3 Security Review result through the public interception boundary', () => {
+  it('uses inclusive native allow probability, never native confidence, for restrict-only projection', async () => {
+    for (const [allowProbability, confidence, gateResult, finalResult] of [
+      [0.9, 0.01, 'not_applicable', 'allow'],
+      [0.899, 0.99, 'require_escalation', 'require_escalation'],
+    ] as const) {
+      const input = fixture(agentDocument(userId, 'security-review'));
+      const binding = admittedBinding(input.document);
+      const invoke = vi.fn(async () =>
+        reviewResult({ kind: 'native_probability', allowProbability, confidence })
+      );
+      const result = await new PolicyInterception(undefined, {
+        id: 'security-review',
+        version: binding.participant.version,
+        invoke,
+      }).decide(input);
+      expect(invoke).toHaveBeenCalledOnce();
+      expect(result.result).toBe(finalResult);
+      const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+      expect(rows.find((row) => row.mediation?.role === 'gate')?.result).toBe(gateResult);
+      expect(
+        rows.find((row) => row.decisionId === result.decisionId)?.mediation?.kernel?.effect
+      ).toBe('allow');
+    }
+  });
+
+  it('uses the separate inclusive bridge confidence threshold without contributing allow', async () => {
+    for (const [confidence, expected] of [
+      [0.9, 'not_applicable'],
+      [0.899, 'require_escalation'],
+    ] as const) {
+      const input = fixture(agentDocument(userId, 'security-review'));
+      const binding = admittedBinding(input.document);
+      const result = await new PolicyInterception(undefined, {
+        id: 'security-review',
+        version: binding.participant.version,
+        invoke: async () => reviewResult({ kind: 'bridge_confidence', confidence }),
+      }).decide(input);
+      const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+      expect(rows.find((row) => row.mediation?.role === 'gate')?.result).toBe(expected);
+      expect(result.result).toBe(expected === 'not_applicable' ? 'allow' : expected);
+    }
+  });
+
+  it('keeps actual Kernel denial and human-only approval stronger than an E9 no-objection', async () => {
+    for (const humanRequired of [true, false]) {
+      const input = fixture(agentDocument(userId, 'security-review'));
+      const binding = admittedBinding(input.document);
+      const document = humanRequired ? withHumanMcpApproval(input) : input.document;
+      const permissions = selectMcpToolPermissions({
+        document,
+        proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
+        authorCurrent: input.authorCurrent,
+      });
+      const finalKernel = vi.fn(() => kernel(humanRequired));
+      const result = await new PolicyInterception(undefined, {
+        id: 'security-review',
+        version: binding.participant.version,
+        invoke: async () =>
+          reviewResult({
+            kind: 'native_probability',
+            allowProbability: 0.95,
+            confidence: 0.95,
+          }),
+      }).decide({ ...input, document, permissions, finalKernel });
+      expect(finalKernel).toHaveBeenCalledOnce();
+      expect(result.result).toBe(humanRequired ? 'require_approval' : 'deny');
+      const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+      expect(rows.find((row) => row.mediation?.role === 'gate')?.result).toBe('not_applicable');
+    }
+  });
+
+  it('does not accept the ordinary legacy freeform allow as a Security Review result', async () => {
+    const input = fixture(agentDocument(userId, 'security-review'));
+    const binding = admittedBinding(input.document);
+    const invoke = vi.fn(async () => assessment('allow'));
+    const result = await new PolicyInterception(undefined, {
+      id: 'security-review',
+      version: binding.participant.version,
+      invoke,
+    }).decide(input);
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(result.result).toBe('require_escalation');
+    const rows = listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId);
+    expect(rows.find((row) => row.mediation?.role === 'gate')?.result).toBe('require_escalation');
+  });
+});
 
 describe('agent gate at native I16', () => {
   it('ends an exhausted agent gate on later calls while checking the final-use attempt before release', async () => {
