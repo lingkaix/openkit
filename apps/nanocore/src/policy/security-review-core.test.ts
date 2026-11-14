@@ -373,6 +373,10 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
     throw new Error('The real declaration was not admitted.');
   const binding = {
     ...common,
+    // P1's no-shadow amendment is Server-only; the ordinary reviewer keeps its Workspace anchor.
+    ...(agentId === 'security-review'
+      ? { lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } } }
+      : {}),
     kind: 'binding',
     id: BINDING,
     scope,
@@ -584,8 +588,8 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
 describe('Security Review through real Core Policy, native Kernel/decisions and Pending', () => {
   it('directly admits the human restrict-only security reviewer, never falls back to the default loop, and escalates a Kernel-allowed effect', async () => {
     const f = await fixture('security-review');
-    // E9's narrow no-shadow amendment is a PRODUCT expectation. OLD may first fail
-    // here with policy_shadow_evidence_required; then model-contact assertions are NOT reached.
+    // Server-only no-shadow admission is a PRODUCT expectation. OLD refuses its Server anchor;
+    // later model-contact and native Pending assertions are then NOT reached.
     await f.install('active');
     expect(f.loaded().statements.find((entry) => entry.id === BINDING)).toMatchObject({
       state: 'active',

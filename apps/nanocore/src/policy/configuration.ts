@@ -329,6 +329,9 @@ export function preparePolicyConfiguration(input: {
     // Its unavailable decision route escalates instead of using the ordinary agent loop.
     if (
       binding.participant.id === 'security-review' &&
+      binding.lifetime.anchor.owner.kind === 'server' &&
+      binding.lifetime.anchor.kind === 'server' &&
+      binding.lifetime.anchor.id === 'server' &&
       binding.mode === 'gate' &&
       binding.stage === 'decide' &&
       binding.failure === 'escalate-to-human'

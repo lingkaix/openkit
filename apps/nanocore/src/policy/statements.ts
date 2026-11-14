@@ -6,7 +6,6 @@ import {
   type OperationDefinition,
 } from '@openkit/app-api-schemas';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
-import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import {
   canonicalIdentifierName,
   compareCodeUnits,
@@ -19,6 +18,7 @@ import {
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Safe current references supplied by each native operation owner, never caller material. */
 export interface PolicyProposal {
@@ -141,19 +141,55 @@ function routeGroupSwitchGroup(statement: PolicyDocumentV1['statements'][number]
   return group;
 }
 
+/** The restrict-only Server reviewer has no Turn lifetime or ordinary agent approval authority. */
+function isServerSecurityReviewBinding(binding: PolicyBindingV1): boolean {
+  const anchor = binding.lifetime.anchor;
+  return (
+    binding.participant.kind === 'agent' &&
+    binding.participant.id === 'security-review' &&
+    binding.mode === 'gate' &&
+    binding.stage === 'decide' &&
+    binding.failure === 'escalate-to-human' &&
+    anchor.owner.kind === 'server' &&
+    anchor.kind === 'server' &&
+    anchor.id === 'server'
+  );
+}
+
 /** Checks the native subset before an authored Policy collection can be admitted. */
 export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   const document = PolicyDocumentV1Schema.parse(input);
   const positions = new Set<string>();
   const exposureGroups = new Set<string>();
   for (const statement of document.statements) {
+    const scopes =
+      statement.kind === 'binding'
+        ? [statement.scope, statement.inputDisclosure]
+        : [statement.scope];
+    if (
+      scopes.some((scope) => scope.subjects.some((subject) => subject.kind === 'process')) &&
+      (statement.kind !== 'permission' || statement.effect !== 'prohibit')
+    )
+      throw new Error('Process selectors are only available for prohibitions.');
+    const quarantine = statement.lifetime.anchor.kind === 'quarantine';
+    if (
+      quarantine &&
+      (statement.kind !== 'permission' ||
+        statement.effect !== 'prohibit' ||
+        statement.grant.kind !== 'ordinary' ||
+        statement.lifetime.notAfter !== undefined ||
+        statement.lifetime.uses !== undefined)
+    )
+      throw new Error('Quarantine requires an ordinary prohibition without expiry or uses.');
     const group = routeGroupSwitchGroup(statement);
     if (group !== null) {
       if (exposureGroups.has(group)) throw new Error('Duplicate route-group switch control.');
       exposureGroups.add(group);
       continue;
     }
-    if (statement.state === 'inactive') continue;
+    // The native containment producer validates activation authority. Reading its committed
+    // restriction must not depend on a delegation or author that can later be withdrawn.
+    if (quarantine || statement.state === 'inactive') continue;
     if (statement.kind === 'agent-principal') {
       if (
         statement.author.kind !== 'human' ||
@@ -261,6 +297,32 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     if (
       statement.kind === 'permission' &&
       statement.grant.kind === 'ordinary' &&
+      statement.effect === 'prohibit' &&
+      statement.scope.subjects.some((subject) => subject.kind === 'process')
+    ) {
+      const anchor = statement.lifetime.anchor;
+      const workspaceId = anchor.owner.kind === 'workspace' ? anchor.owner.workspaceId : null;
+      if (
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        anchor.owner.kind !== 'workspace' ||
+        anchor.kind !== 'workspace' ||
+        anchor.id !== anchor.owner.workspaceId ||
+        statement.lifetime.uses !== undefined ||
+        statement.scope.subjects.some(
+          (subject) => subject.kind === 'process' && subject.workspaceId !== workspaceId
+        ) ||
+        statement.scope.resources.some(
+          (resource) => policyResourceWorkspace(resource) !== workspaceId
+        )
+      )
+        throw new Error('Process prohibitions require their exact human-authored Workspace scope.');
+      continue;
+    }
+    if (
+      statement.kind === 'permission' &&
+      statement.grant.kind === 'ordinary' &&
       statement.authority.kind === 'human'
     ) {
       const anchor = statement.lifetime.anchor;
@@ -324,23 +386,25 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     const workspaceIds = new Set(resources.map(policyResourceWorkspace));
     const anchor = statement.lifetime.anchor;
     const userIds = new Set(resources.map(policyResourceUser));
+    const serverReview = isServerSecurityReviewBinding(statement);
     const userOwner =
       userIds.size === 1 &&
       !userIds.has(null) &&
-      anchor.owner.kind === 'user' &&
-      userIds.has(anchor.owner.userId) &&
-      anchor.kind === 'user' &&
-      anchor.id === anchor.owner.userId &&
-      statement.participant.kind !== 'agent';
-    if (
-      !userOwner &&
-      (workspaceIds.size !== 1 ||
-        workspaceIds.has(null) ||
-        anchor.owner.kind !== 'workspace' ||
-        !workspaceIds.has(anchor.owner.workspaceId) ||
-        !['workspace', 'turn'].includes(anchor.kind) ||
-        (anchor.kind === 'workspace' && anchor.id !== anchor.owner.workspaceId))
-    )
+      (serverReview ||
+        (anchor.owner.kind === 'user' &&
+          userIds.has(anchor.owner.userId) &&
+          anchor.kind === 'user' &&
+          anchor.id === anchor.owner.userId &&
+          statement.participant.kind !== 'agent'));
+    const workspaceOwner =
+      workspaceIds.size === 1 &&
+      !workspaceIds.has(null) &&
+      (serverReview ||
+        (anchor.owner.kind === 'workspace' &&
+          workspaceIds.has(anchor.owner.workspaceId) &&
+          ['workspace', 'turn'].includes(anchor.kind) &&
+          (anchor.kind !== 'workspace' || anchor.id === anchor.owner.workspaceId)));
+    if (!userOwner && !workspaceOwner)
       throw new Error(
         'Active binding requires one Workspace transaction owner and a current Workspace or Turn anchor.'
       );
@@ -362,6 +426,7 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
     document.statements.some(
       (statement) =>
         statement.authority.kind === 'delegation' &&
+        statement.lifetime.anchor.kind !== 'quarantine' &&
         (statement.kind !== 'permission' ||
           statement.grant.kind !== 'ordinary' ||
           statement.author.kind !== 'agent' ||
@@ -581,8 +646,10 @@ export function selectPolicyBindings(input: {
       const lifetime = statement.lifetime;
       const anchor = lifetime.anchor;
       const userId = policyResourceUser(proposal.resource);
+      const serverReview = isServerSecurityReviewBinding(statement);
       if (
-        proposal.workspaceId === null
+        !serverReview &&
+        (proposal.workspaceId === null
           ? userId === null ||
             anchor.owner.kind !== 'user' ||
             anchor.owner.userId !== userId ||
@@ -592,10 +659,12 @@ export function selectPolicyBindings(input: {
           : anchor.owner.kind !== 'workspace' ||
             anchor.owner.workspaceId !== proposal.workspaceId ||
             (anchor.kind === 'turn' && anchor.id !== proposal.subject.process?.turnId) ||
-            (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId)
+            (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId))
       )
         return false;
-      if (!input.anchorCurrent(anchor)) return false;
+      // The Server itself has no closeable Workspace/Turn anchor. Its exact admitted
+      // reviewer still has the binding's expiry, scope and pinned accountability checks.
+      if (!serverReview && !input.anchorCurrent(anchor)) return false;
       if (lifetime.notAfter && Date.parse(lifetime.notAfter) <= input.now) return false;
       if (statement.author.kind !== 'human') return false;
       // A required agent gate cannot disappear when its activation author loses authority.
@@ -659,38 +728,19 @@ export function readPolicyAgentPrincipal(input: {
     )
       throw new Error('Current agent accountability is unavailable.');
     seen.add(current.agentId);
-    const resource = proposal.resource;
-    const operation = policyOperationDefinition(proposal.operation).policyOperation;
-    const policy: PolicyState = {
-      elements: [
-        { id: 'agent', kind: 'user' },
-        { id: 'domain', kind: 'userAttribute' },
-        { id: 'target', kind: 'object' },
-        { id: 'resources', kind: 'objectAttribute' },
-        { id: 'scope', kind: 'policyClass' },
-      ],
-      assignments: [
-        { child: 'agent', parent: 'domain' },
-        { child: 'domain', parent: 'scope' },
-        { child: 'target', parent: 'resources' },
-        { child: 'resources', parent: 'scope' },
-      ],
-      operations: [{ id: operation, accessRights: [operation] }],
-      associations:
-        current.scope.subjects.some((s) => s.kind === 'agent' && s.id === current.agentId) &&
-        current.scope.resources.some((r) => policyDigest(r) === policyDigest(resource)) &&
-        current.scope.actions.includes(operation)
-          ? [
-              {
-                id: current.id,
-                userAttribute: 'domain',
-                targetAttribute: 'resources',
-                accessRights: [operation],
-              },
-            ]
-          : [],
-    };
-    if (evaluateAccess(policy, { user: 'agent', operation, target: 'target' }).effect !== 'allow')
+    const decision = evaluatePolicyKernel({
+      subject: { principal: { kind: 'agent', id: current.agentId }, process: null },
+      operation: policyOperationDefinition(proposal.operation).policyOperation,
+      resource: proposal.resource,
+      domain: { id: current.id, scope: current.scope },
+      policy: {
+        document: input.document,
+        now: input.now,
+        authorCurrent: input.authorCurrent,
+        anchorCurrent: input.anchorCurrent,
+      },
+    });
+    if (decision.effect !== 'allow')
       throw new Error('Current agent domain does not cover the proposal.');
     if (current.responsibility.kind === 'human') {
       if (current.responsibility.id !== root.responsibleHumanId)

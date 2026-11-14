@@ -57,12 +57,20 @@ export const PolicyContainerV1Schema = z
             ? WorkspaceIdSchema
             : container.kind === 'user'
               ? UserIdSchema
-              : null;
+              : container.kind === 'quarantine'
+                ? AuditEventIdSchema
+                : null;
     if (schema && !schema.safeParse(container.id).success)
       context.addIssue({
         code: 'custom',
         path: ['id'],
         message: 'Invalid native container identity.',
+      });
+    if (container.kind === 'quarantine' && container.owner.kind !== 'server')
+      context.addIssue({
+        code: 'custom',
+        path: ['owner'],
+        message: 'Quarantine anchors belong to the Server.',
       });
   });
 /** Scope and lifetime are independent; once is uses one, not a second lifetime kind. */
@@ -77,6 +85,20 @@ export const PolicyLifetimeV1Schema = z
 export const PolicyPrincipalV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('human'), id: UserIdSchema }).strict(),
   z.object({ kind: z.literal('agent'), id: AgentIdSchema }).strict(),
+]);
+/** An exact execution selector can restrict a process, but never author or receive a grant. */
+export const PolicyProcessSelectorV1Schema = z
+  .object({
+    kind: z.literal('process'),
+    workspaceId: WorkspaceIdSchema,
+    threadId: ThreadIdSchema,
+    turnId: TurnIdSchema,
+  })
+  .strict();
+/** Scope subjects include restrict-only process selectors without changing principal identity. */
+export const PolicyScopeSubjectV1Schema = z.discriminatedUnion('kind', [
+  ...PolicyPrincipalV1Schema.options,
+  PolicyProcessSelectorV1Schema,
 ]);
 /** Native resource selectors are explicit, rather than inferred from a path or operation. */
 export const PolicyResourceV1Schema = z.discriminatedUnion('kind', [
@@ -93,7 +115,7 @@ export const PolicyResourceV1Schema = z.discriminatedUnion('kind', [
 /** An empty selector set matches nothing; omission never means every subject or resource. */
 export const PolicyScopeV1Schema = z
   .object({
-    subjects: z.array(PolicyPrincipalV1Schema).min(1),
+    subjects: z.array(PolicyScopeSubjectV1Schema).min(1),
     actions: z.array(z.string().min(1)).min(1),
     resources: z.array(PolicyResourceV1Schema).min(1),
   })

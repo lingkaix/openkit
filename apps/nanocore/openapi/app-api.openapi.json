@@ -41482,6 +41482,34 @@
                                               "id"
                                             ],
                                             "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
+                                            ],
+                                            "additionalProperties": false
                                           }
                                         ]
                                       }
@@ -41842,6 +41870,34 @@
                                               "id"
                                             ],
                                             "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
+                                            ],
+                                            "additionalProperties": false
                                           }
                                         ]
                                       }
@@ -42192,6 +42248,34 @@
                                             "required": [
                                               "kind",
                                               "id"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
                                             ],
                                             "additionalProperties": false
                                           }
@@ -42699,6 +42783,34 @@
                                             "required": [
                                               "kind",
                                               "id"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
                                             ],
                                             "additionalProperties": false
                                           }
@@ -43593,6 +43705,34 @@
                                             "required": [
                                               "kind",
                                               "id"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
                                             ],
                                             "additionalProperties": false
                                           }
@@ -44218,6 +44358,34 @@
                                               "id"
                                             ],
                                             "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
+                                            ],
+                                            "additionalProperties": false
                                           }
                                         ]
                                       }
@@ -44578,6 +44746,34 @@
                                               "id"
                                             ],
                                             "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
+                                            ],
+                                            "additionalProperties": false
                                           }
                                         ]
                                       }
@@ -44928,6 +45124,34 @@
                                             "required": [
                                               "kind",
                                               "id"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
                                             ],
                                             "additionalProperties": false
                                           }
@@ -45435,6 +45659,34 @@
                                             "required": [
                                               "kind",
                                               "id"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
                                             ],
                                             "additionalProperties": false
                                           }
@@ -46329,6 +46581,34 @@
                                             "required": [
                                               "kind",
                                               "id"
+                                            ],
+                                            "additionalProperties": false
+                                          },
+                                          {
+                                            "type": "object",
+                                            "properties": {
+                                              "kind": {
+                                                "type": "string",
+                                                "const": "process"
+                                              },
+                                              "workspaceId": {
+                                                "type": "string",
+                                                "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "threadId": {
+                                                "type": "string",
+                                                "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              },
+                                              "turnId": {
+                                                "type": "string",
+                                                "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                                              }
+                                            },
+                                            "required": [
+                                              "kind",
+                                              "workspaceId",
+                                              "threadId",
+                                              "turnId"
                                             ],
                                             "additionalProperties": false
                                           }
@@ -110020,6 +110300,34 @@
                           "required": [
                             "kind",
                             "id"
+                          ],
+                          "additionalProperties": false
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "const": "process"
+                            },
+                            "workspaceId": {
+                              "type": "string",
+                              "pattern": "^ws_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "threadId": {
+                              "type": "string",
+                              "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            },
+                            "turnId": {
+                              "type": "string",
+                              "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "workspaceId",
+                            "threadId",
+                            "turnId"
                           ],
                           "additionalProperties": false
                         }
@@ -183232,5 +183540,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:e1e0677b118a75fc8b2a34492eb4f6ab05c830bac7e4dbcfa67c7274b59f5e51"
+  "x-openkit-source-digest": "sha256:8e1633093dde54a50f1ef7a1f954ceeccb0461817222c519cce6ac6c9b54418c"
 }

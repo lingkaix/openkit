@@ -32,6 +32,7 @@ import {
   createTestWorkspaceDb,
   disposeTestStore,
 } from '../test-support/store.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
@@ -283,7 +284,7 @@ describe('E13 Phase A reserved Server selector', () => {
 });
 
 /** Real SDK human sessions, native bootstrap credentials, auth facade, private Home and config owners. */
-async function fixture() {
+async function fixture(withReviewerDomain = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-e13-selector-'));
   const coreDb = createTestCoreDb(dataRoot);
   const workspaces: ReturnType<typeof createTestWorkspaceDb>[] = [];
@@ -353,6 +354,15 @@ async function fixture() {
   ).toBe('allow');
   const store = createTestStore({ dataRoot });
   const personal = await store.ensureQuickChatWorkspace(first.userId);
+  const reviewerDomain = withReviewerDomain
+    ? await store.createWorkspace('P1 real reviewer domain')
+    : personal;
+  if (withReviewerDomain)
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: first.userId,
+      workspaceId: reviewerDomain.id,
+    });
   const thread = await store.createThread(
     personal.id,
     'Review E13 control',
@@ -369,6 +379,10 @@ async function fixture() {
   );
   const workspaceDb = createTestWorkspaceDb(dataRoot, personal.id);
   workspaces.push(workspaceDb);
+  const reviewerDb = withReviewerDomain
+    ? createTestWorkspaceDb(dataRoot, reviewerDomain.id)
+    : workspaceDb;
+  if (withReviewerDomain) workspaces.push(reviewerDb);
   mkdirSync(join(dataRoot, 'config'), { recursive: true });
   writeFileSync(
     join(dataRoot, 'config/server.jsonc'),
@@ -378,7 +392,7 @@ async function fixture() {
   const files = new RuntimeConfigFileService({
     dataRoot,
     userId: first.userId,
-    workspaceIds: [personal.id],
+    workspaceIds: withReviewerDomain ? [personal.id, reviewerDomain.id] : [personal.id],
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
@@ -390,8 +404,9 @@ async function fixture() {
     runtimeConfig: () => manager.current(),
     reload: async () => await manager.reload({ mode: 'safe', dryRun: false }),
     repositoryWorkspaceDb: (id) => {
-      if (id !== personal.id) throw new Error('No fixture authority for another Workspace.');
-      return workspaceDb;
+      if (id === personal.id) return workspaceDb;
+      if (withReviewerDomain && id === reviewerDomain.id) return reviewerDb;
+      throw new Error('No fixture authority for another Workspace.');
     },
     inflightCommands: new WeakMap(),
   });
@@ -430,6 +445,7 @@ async function fixture() {
     coreDb,
     app,
     personal,
+    reviewerDomain,
     service,
     files,
     manager,
@@ -443,6 +459,120 @@ async function fixture() {
 }
 
 describe('E13 Phase A native human configuration', () => {
+  it.each([
+    ['Server security-review', 'security-review', 'server', true],
+    ['Workspace security-review', 'security-review', 'workspace', false],
+    ['ordinary policy-reviewer', 'policy-reviewer', 'workspace', false],
+  ] as const)(
+    'admits only Server security-review without prior shadow: %s',
+    async (_name, participantId, anchorKind, noShadow) => {
+      const f = await fixture(true);
+      const domain = f.reviewerDomain;
+      expect(
+        evaluateProductAuthorization(
+          f.coreDb,
+          f.actor,
+          { kind: 'workspace', workspaceId: domain.id },
+          'tool.use',
+          true
+        ).effect
+      ).toBe('allow');
+      const human = { kind: 'human' as const, id: f.first.userId };
+      const scope = {
+        subjects: [human],
+        actions: ['tool.use'],
+        resources: [
+          {
+            kind: 'mcp-tool' as const,
+            workspaceId: domain.id,
+            serverId: 'issues',
+            toolName: 'read',
+          },
+        ],
+      };
+      const declaration = {
+        id: 'p1-reviewer-principal',
+        kind: 'agent-principal' as const,
+        state: 'active' as const,
+        author: human,
+        authority: { kind: 'human' as const, userId: f.first.userId },
+        authoredAt: new Date().toISOString(),
+        scope: { ...scope, subjects: [{ kind: 'agent' as const, id: participantId }] },
+        lifetime: {
+          anchor: {
+            owner: { kind: 'workspace' as const, workspaceId: domain.id },
+            kind: 'workspace',
+            id: domain.id,
+          },
+        },
+        agentId: participantId,
+        creator: human,
+        responsibleHumanId: f.first.userId,
+        responsibility: human,
+      };
+      const identityCandidate = await f.propose(document(declaration));
+      expect(await f.apply(identityCandidate)).toMatchObject({
+        persisted: true,
+        reload: 'applied',
+      });
+      const admitted = f.loaded().statements.find((statement) => statement.id === declaration.id);
+      if (admitted?.kind !== 'agent-principal')
+        throw new Error('The native reviewer was not admitted.');
+      const binding = {
+        id: 'p1-shadow-boundary',
+        kind: 'binding' as const,
+        state: 'active' as const,
+        author: human,
+        authority: { kind: 'human' as const, userId: f.first.userId },
+        authoredAt: new Date().toISOString(),
+        scope,
+        lifetime: {
+          anchor:
+            anchorKind === 'server'
+              ? { owner: { kind: 'server' as const }, kind: 'server', id: 'server' }
+              : {
+                  owner: { kind: 'workspace' as const, workspaceId: domain.id },
+                  kind: 'workspace',
+                  id: domain.id,
+                },
+        },
+        operation: 'mcp.call-tool',
+        stage: 'decide' as const,
+        mode: 'gate' as const,
+        participant: {
+          kind: 'agent' as const,
+          id: participantId,
+          version: policyDigest(admitted),
+        },
+        inputDisclosure: scope,
+        order: 0,
+        timeoutMs: 2_000,
+        failure: 'escalate-to-human' as const,
+        circuit: { failures: 1, recoveryAfterMs: 60_000 },
+      };
+      const original = f.bytes();
+      if (noShadow) {
+        const candidate = await f.propose(document(admitted, binding));
+        expect(f.bytes()).toBe(original);
+        expect(await f.apply(candidate)).toMatchObject({ persisted: true, reload: 'applied' });
+        expect(f.loaded().statements).toEqual([
+          admitted,
+          expect.objectContaining({
+            id: binding.id,
+            state: 'active',
+            lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+          }),
+        ]);
+      } else {
+        await expect(f.propose(document(admitted, binding))).rejects.toMatchObject({
+          code: 'policy_shadow_evidence_required',
+          status: 409,
+        });
+        expect(f.bytes()).toBe(original);
+      }
+    }
+  );
+
   it('stamps the actual human, preserves immutable confirmation, admits/reloads, and clears only by current widening', async () => {
     const f = await fixture();
     const original = f.bytes();
