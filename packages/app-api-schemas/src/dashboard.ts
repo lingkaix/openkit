@@ -209,7 +209,8 @@ export const ConversationNavigationResponseSchema = z.object({
       activity: z.enum(['chat', 'task', 'goal', 'unknown']),
       state: z.enum(['working', 'needs-you', 'idle']),
       lastActivityAt: TimestampSchema,
-      unreadCount: z.number().int().nonnegative(),
+      /** Exact current eligible total proved within the fixed navigation allowance; null is unknown. */
+      unreadCount: z.number().int().nonnegative().nullable(),
     })
   ),
   nextCursor: z.string().nullable().optional(),

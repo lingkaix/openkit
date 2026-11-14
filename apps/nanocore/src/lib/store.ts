@@ -5964,6 +5964,50 @@ export class FsStore {
     return this.listThreadTurns(workspaceId, threadId).flatMap((turn) => turn.items);
   }
 
+  /** Proves all current message bodies inside one released source cut, or returns unknown. */
+  public readThreadNavigationMessages(
+    workspaceId: string,
+    threadId: string,
+    maximumBytes: number
+  ): Item[] | null {
+    this.getThread(workspaceId, threadId);
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > 65_536)
+      throw new TypeError('Invalid navigation message allowance.');
+    if (this.dataRoot)
+      return withNativeThreadTimelineSnapshot(
+        this.nativeScope({ kind: 'workspace', workspaceId }),
+        threadId,
+        (snapshot) => {
+          const ids = snapshot.navigationMessageIds();
+          if (ids === null) return null;
+          const items: Item[] = [];
+          let remaining = maximumBytes;
+          for (const id of ids) {
+            const source = snapshot.itemWithinBytes(id, remaining);
+            if (!source) return null;
+            remaining -= source.byteLength;
+            items.push(source.item);
+          }
+          return items;
+        }
+      );
+    const items: Item[] = [];
+    let remaining = maximumBytes;
+    for (const item of this.items.values()) {
+      if (
+        item.threadId !== threadId ||
+        workspaceIdForOwner(item.owner) !== workspaceId ||
+        (item.type !== 'assistant-message' && item.type !== 'user-message')
+      )
+        continue;
+      if (items.length === 64) return null;
+      remaining -= Buffer.byteLength(JSON.stringify(writeRetainedV1(item)));
+      if (remaining < 0) return null;
+      items.push(item);
+    }
+    return items;
+  }
+
   /** Navigation selects active/latest headers and activity endpoints without loading Item histories. */
   public readThreadNavigationFacts(
     workspaceId: string,
@@ -6095,6 +6139,15 @@ export class FsStore {
         return session?.workspaceId === workspaceId && session.threadId === threadId
           ? { revision: 1, record: writeRetainedV1(session) }
           : undefined;
+      },
+      navigationMessageIds: () => {
+        const ids = positions
+          .filter((row) => {
+            const type = this.items.get(row.itemId)!.type;
+            return type === 'assistant-message' || type === 'user-message';
+          })
+          .map((row) => row.itemId);
+        return ids.length > 64 ? null : ids;
       },
       currentPositions: (input) =>
         positions

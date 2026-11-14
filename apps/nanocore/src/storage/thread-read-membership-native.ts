@@ -11,6 +11,22 @@ import { THREAD_READ_RECEIPT_INVALID } from './thread-read-membership-codecs.js'
 
 const itemIdsSchema = ItemIdSchema.array();
 
+/** Metadata-only receipt preflight. The caller retains the same User transaction through decoding. */
+export function readThreadReadReceiptByteSize(
+  userDb: UserDb,
+  workspaceId: string,
+  threadId: string
+): number {
+  WorkspaceIdSchema.parse(workspaceId);
+  ThreadIdSchema.parse(threadId);
+  const row = userDb.sqlite
+    .prepare(
+      'SELECT octet_length(item_ids_json) AS bytes FROM thread_read_receipts WHERE workspace_id=? AND thread_id=?'
+    )
+    .get(workspaceId, threadId) as { bytes: number } | undefined;
+  return row?.bytes ?? 0;
+}
+
 /**
  * Reads the User-owned set of recorded read message identities without advancing it.
  * Callers enforce current Workspace/Thread access and message eligibility.

@@ -63,6 +63,8 @@ Thread dashboard schemas include the nullable authenticated viewer id and a narr
 
 Dashboard work-status and active-work schemas carry recorded activity and output summaries without product mode or routing fields. Their descriptive readers discard unknown additive fields; conversation, Task and Goal results retain their own mode and handoff contracts.
 
+Conversation navigation `unreadCount` is `number | null`: a number is the exact eligible total proved within 64 candidates and 64 KiB of combined canonical message and receipt bytes; null is unknown. It is not a capped or partial count. Only exact zero supports an all-read claim, and unknown keeps Mark read available. This projection changes no retained receipt or Item.
+
 `@openkit/app-api-schemas` owns runtime-neutral Zod schemas for NanoCore App API payloads.
 
 `knowledge-schema.ts` projects the read-only Workspace schema draft preview. Exact schema digests and the Notebook base identify the inspected bytes. `coverage: workspace` includes per-family admitted dependency inventories; `inventoryComplete` reports observed coverage, not an atomic global snapshot. An unreadable container makes its family incomplete without private identifiers or a digest of hidden records. `completeMigration: false` grants no activation authority. Existing scope, Source and human authority remain native joins.

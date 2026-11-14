@@ -35,6 +35,7 @@ import { readAuthorizedWorkspaceNotebookPages } from './retrieval-knowledge-adap
 import { listGoalsForThread, readGoalAttentionScope } from './runtime/goal-owner.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './storage/db.js';
+import { readThreadReadReceiptByteSize } from './storage/thread-read-membership-native.js';
 import { readThreadReadReceipt } from './storage/thread-read-receipts.js';
 import { readBoundedThreadDashboard } from './thread-dashboard.js';
 import { receiptMessageItemIds } from './thread-read-state.js';
@@ -591,14 +592,25 @@ export async function readConversationNavigation({
       .filter((thread) => thread.status === 'active')
       .map((thread) => {
         const facts = store.readThreadNavigationFacts(workspaceId, thread.id);
-        // Cut 1 leaves only unread on its original full-history owner until the bounded probe lands.
-        const items = store.listThreadItems(workspaceId, thread.id);
-        const readIds = new Set(
-          userDb ? readThreadReadReceipt(userDb, workspaceId, thread.id) : []
-        );
-        const unreadCount = receiptMessageItemIds(items, actor.userId).filter(
-          (id) => !readIds.has(id)
-        ).length;
+        // The User cut covers metadata preflight through membership decode. The nested source cut is synchronous.
+        const proveUnread = (): number | null => {
+          const receiptBytes = userDb
+            ? readThreadReadReceiptByteSize(userDb, workspaceId, thread.id)
+            : 0;
+          if (receiptBytes > 65_536) return null;
+          const messages = store.readThreadNavigationMessages(
+            workspaceId,
+            thread.id,
+            65_536 - receiptBytes
+          );
+          if (messages === null) return null;
+          const readIds = new Set(
+            userDb ? readThreadReadReceipt(userDb, workspaceId, thread.id) : []
+          );
+          return receiptMessageItemIds(messages, actor.userId).filter((id) => !readIds.has(id))
+            .length;
+        };
+        const unreadCount = userDb ? userDb.sqlite.transaction(proveUnread)() : proveUnread();
         const activeTurn = facts.activeTurn;
         const latestTurn = facts.latestTurn;
         const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];

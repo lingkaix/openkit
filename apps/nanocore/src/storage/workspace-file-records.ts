@@ -3,6 +3,7 @@ import {
   type CurrentThreadItems,
   readCurrentThreadItemPositions,
   readLastTurnEventTime,
+  readNavigationMessageItemIds,
   readPendingItemAssociations,
   readThreadNavigationPositions,
   readThreadTurnRanks,
@@ -1220,6 +1221,8 @@ export interface ThreadTimelineSnapshot {
   /** An exact predecessor lookup is independent of the number of later revisions. */
   revision(turnId: string, itemId: string, revision: number): Item | null | undefined;
   catchUp(userId: string, receipts: readonly string[]): ThreadItemPosition | undefined;
+  /** All current message identities only when the 64-candidate proof is exhaustive. */
+  navigationMessageIds(): string[] | null;
   currentPositions(input: CurrentThreadItems): ThreadItemPosition[];
   turnRanks(turnId: string): ReturnType<typeof readThreadTurnRanks>;
   pendingAssociations(
@@ -1303,6 +1306,7 @@ export function withNativeThreadTimelineSnapshot<T>(
             .get(itemId, threadId) as { createdAt: unknown } | undefined;
           return typeof row?.createdAt === 'string' ? row.createdAt : undefined;
         },
+        navigationMessageIds: () => readNavigationMessageItemIds(reader.sqlite, threadId),
         currentPositions: (input) => readCurrentThreadItemPositions(reader.sqlite, threadId, input),
         turnRanks: (turnId) => readThreadTurnRanks(reader.sqlite, threadId, turnId),
         pendingAssociations: (requestId, itemId) =>

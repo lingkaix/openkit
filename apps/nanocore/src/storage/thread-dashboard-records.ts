@@ -35,6 +35,22 @@ export function readCurrentThreadItemPositions(
     ) as ThreadItemPosition[];
 }
 
+/** Covering message-kind seek with one lookahead; only a proved finite set opens exact row identities. */
+export function readNavigationMessageItemIds(
+  sqlite: Database.Database,
+  threadId: string
+): string[] | null {
+  const heads = sqlite
+    .prepare(`SELECT rowid AS entry FROM control_product_entries INDEXED BY control_items_thread_read_idx
+    WHERE kind='item' AND is_current=1 AND json_extract(identity_json,'$.threadId')=?
+    AND json_extract(identity_json,'$.type') IN ('assistant-message','user-message')
+    ORDER BY json_extract(identity_json,'$.type'),turn_admission_order,item_order LIMIT 65`)
+    .all(threadId) as Array<{ entry: number }>;
+  if (heads.length > 64) return null;
+  const identity = sqlite.prepare('SELECT id FROM control_product_entries WHERE rowid=?');
+  return heads.map((head) => (identity.get(head.entry) as { id: string }).id);
+}
+
 /** Navigation uses indexed endpoints, not admission order or complete run/Item histories. */
 export function readThreadNavigationPositions(sqlite: Database.Database, threadId: string) {
   const latest = sqlite

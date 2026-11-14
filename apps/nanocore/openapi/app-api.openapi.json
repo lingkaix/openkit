@@ -116177,9 +116177,16 @@
                   "minLength": 1
                 },
                 "unreadCount": {
-                  "type": "integer",
-                  "minimum": 0,
-                  "maximum": 9007199254740991
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               },
               "required": [
@@ -179473,5 +179480,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:fc2fd4d42a3422ab2f214c25cbea76b5fe6440bee36f2837b1e4f0bfc2cfcccd"
+  "x-openkit-source-digest": "sha256:536632846f2b8f8cd64adf7ce71f338d19e6dd3d1cb2697dd6905b3770f9885a"
 }
