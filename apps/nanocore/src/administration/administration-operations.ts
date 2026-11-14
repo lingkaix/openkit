@@ -11,8 +11,10 @@ import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
+  isCurrentDeploymentAdministrator,
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
+import { isThreadVisible } from '../auth/thread-visibility.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import type { CoreMode } from '../config/mode.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
@@ -50,6 +52,7 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import type { TurnCommandRuntimeContext } from '../runtime/types.js';
+import { readSecurityAlarmPublication } from '../security/publication.js';
 import { selectSecurityThread } from '../security/threads.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
@@ -58,6 +61,8 @@ import {
 } from './administration-tools.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
+import { renderOperatorReportDraft } from './operator-report-draft.js';
+import { preparePrivateReportDraft } from './private-report-draft.js';
 import { SECURITY_INVESTIGATION_AGENT_ID } from './security-investigation-authority.js';
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
@@ -162,6 +167,145 @@ export function createAdministrationOperationImplementations(input: Administrati
     });
   }
   return {
+    'administration.report-prepare': async (request, context) => {
+      // HTTP authentication supplies human delivery; neither model arguments nor an on-behalf user
+      // can turn an Agent/Worker/coordinator invocation into a person-selected reporting action.
+      if (
+        context.kind !== 'public' ||
+        context.delivery !== 'human' ||
+        context.actor.kind === 'token' ||
+        context.actorRef.kind !== 'user' ||
+        context.actorRef.id !== context.actor.userId ||
+        context.queryContext !== undefined ||
+        context.scope.kind !== 'workspace'
+      )
+        throw new OperationError(
+          'not_granted',
+          'Person-invoked report preparation is required.',
+          403
+        );
+      const { actor } = context;
+      const { workspaceId } = context.scope;
+      const coreDb = input.coreDb;
+      if (!coreDb)
+        throw new OperationError(
+          'deployment_admin_required',
+          'Current deployment administrator authority is required.',
+          403
+        );
+      const assertAuthorized = () => {
+        if (!isCurrentDeploymentAdministrator(coreDb, actor))
+          throw new OperationError(
+            'deployment_admin_required',
+            'Current deployment administrator authority is required.',
+            403
+          );
+        try {
+          const thread = input.store.getThread(workspaceId, request.threadId);
+          if (
+            thread.entryPath !== 'administration' ||
+            thread.visibility !== 'private' ||
+            thread.privateOwnerUserId !== actor.userId ||
+            !isThreadVisible(
+              input.store,
+              thread,
+              actor.userId,
+              isCurrentDeploymentAdministrator(coreDb, actor)
+            )
+          )
+            throw new Error('Unavailable private destination.');
+        } catch {
+          throw new OperationError('not_found', 'The private report source is unavailable.', 404);
+        }
+      };
+      assertAuthorized();
+      let publication: Awaited<ReturnType<typeof readSecurityAlarmPublication>>;
+      try {
+        publication = await readSecurityAlarmPublication({
+          coreDb,
+          store: input.store,
+          workspaceId,
+          threadId: request.threadId,
+          requestId: request.sourceRequestId,
+        });
+      } catch (error) {
+        context.signal?.throwIfAborted();
+        throw new OperationError(
+          'security_report_unavailable',
+          'The original report publication is unavailable; inspect its owner before retrying.',
+          409,
+          { cause: error }
+        );
+      }
+      await context.recheckAdmission?.();
+      assertAuthorized();
+      if (!publication)
+        throw new OperationError(
+          'security_report_unavailable',
+          'The report is not published.',
+          409
+        );
+      if (publication.recipientUserId !== actor.userId)
+        throw new OperationError('not_granted', 'The report recipient is unavailable.', 403);
+      const source = {
+        requestId: publication.requestId,
+        artifactId: publication.artifactId,
+        artifactVersion: publication.artifactVersion,
+      };
+      if (request.route === 'public-advisory')
+        return {
+          kind: 'guidance' as const,
+          source,
+          message:
+            'Public component advisories are not reported upstream. Update or rebuild the affected component.',
+        };
+      if (request.route === 'third-party')
+        return {
+          kind: 'guidance' as const,
+          source,
+          message: `${renderOperatorReportDraft(request.description)}\n\nThe source alarm is context, not a finding identity or permission.`,
+        };
+      if (request.route === 'private-vulnerability') {
+        const draft = await preparePrivateReportDraft({
+          coreDb,
+          store: input.store,
+          actor,
+          workspaceId,
+          threadId: request.threadId,
+          requestId: request.requestId,
+          sourceRequestId: publication.requestId,
+          description: request.description,
+          ...(context.signal ? { signal: context.signal } : {}),
+        });
+        return {
+          kind: 'private-draft' as const,
+          source,
+          draft,
+          message:
+            'Local unsubmitted, unverified draft. Inspect and review it before manual private submission; no upstream action or Task was started.',
+        };
+      }
+      const points = Array.from(request.description);
+      const description = points.slice(0, 1200).join('');
+      return {
+        kind: 'handoff' as const,
+        source,
+        handoff: {
+          kind: 'task' as const,
+          targetWorkspaceId: workspaceId,
+          input: [
+            'Person-selected Task: report a non-security defect.',
+            'Use only an existing GitHub Gateway Issues-only binding under require_approval.',
+            'Show exact issue text to the person for approval. No PR; no credentials or alternate transport.',
+            'This proposal starts no work and grants no authority. If the binding or approval is unavailable, return a draft.',
+            'Do not copy private reports or their contents.',
+            `Source alarm context (not finding identity or permission): ${publication.requestId}`,
+            `Untrusted description (JSON-quoted${points.length > 1200 ? ', truncated at 1200 codepoints' : ', limited to 1200 codepoints'}):`,
+            JSON.stringify(description),
+          ].join('\n'),
+        },
+      };
+    },
     'administration.configuration-apply': async (request, context) => {
       try {
         const actor = publicOperationActor(context);

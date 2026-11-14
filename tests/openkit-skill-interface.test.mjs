@@ -1,7 +1,7 @@
 // openkit-test-platform: posix
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   cpSync,
@@ -683,6 +683,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       .map(([id]) => id)
       .sort(),
     [
+      'administration.report-prepare',
       'artifact.download',
       'artifact.import',
       'artifact.version-file-commit',
@@ -700,6 +701,15 @@ test('one catalog covers the checked App API and public Core projection', async 
     assert.ok(exclusion.reason);
     assert.ok(exclusion.owner);
   }
+  assert.equal(
+    operationCatalog.some((entry) => entry.id === 'administration.report-prepare'),
+    false
+  );
+  assert.ok(
+    operationExclusions.some(
+      (entry) => entry.source === 'app-api' && entry.name === 'administration.report-prepare'
+    )
+  );
   const appMappings = operationCatalog
     .filter((entry) => entry.source === 'app-api')
     .map((entry) => entry.appOperationId);
@@ -726,6 +736,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
+    'app-api:administration.report-prepare',
     'app-api:channel.discord.pair',
     'app-api:knowledge.package.export',
     'app-api:knowledge.package.import',
@@ -3327,6 +3338,7 @@ test('bundled token delivery reports preflight and post-issuance storage failure
 });
 
 test('credential resolution is endpoint-scoped, fail-closed, and redacted', async (t) => {
+  const environmentToken = `okt_${randomBytes(24).toString('hex')}`;
   const {
     createDefaultOpenKitCredentialStore,
     normalizeStoredOpenKitToken,
@@ -3344,10 +3356,10 @@ test('credential resolution is endpoint-scoped, fail-closed, and redacted', asyn
   assert.deepEqual(
     resolveCredential({
       endpoint: 'http://nanocore.example',
-      env: { OPENKIT_NANOCORE_TOKEN: 'okt_environment' },
+      env: { OPENKIT_NANOCORE_TOKEN: environmentToken },
       store,
     }),
-    { source: 'environment', token: 'okt_environment' }
+    { source: 'environment', token: environmentToken }
   );
   assert.throws(
     () =>
@@ -3988,6 +4000,7 @@ test('the released Skill runs without repository sources or node_modules', async
 });
 
 test('the bundled CLI keeps discovery, typed failures, and local aborts truthful', async () => {
+  const environmentToken = `okt_${randomBytes(24).toString('hex')}`;
   const search = await runCli(['ops', 'search', 'workspace']);
   assert.equal(search.code, 0);
   assert.equal(JSON.parse(search.stdout).command, 'ops.search');
@@ -3999,14 +4012,14 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
     ['ops', 'call', 'workspace.list', '--input', '-'],
     {
       OPENKIT_NANOCORE_URL: 'http://nanocore.example',
-      OPENKIT_NANOCORE_TOKEN: 'okt_environment',
+      OPENKIT_NANOCORE_TOKEN: environmentToken,
     },
     '{}',
     [
       commandResponseModule(422, {
         code: 'conflict',
-        details: { path: '/Users/private', token: 'okt_environment' },
-        message: 'Rejected okt_environment',
+        details: { path: '/Users/private', token: environmentToken },
+        message: `Rejected ${environmentToken}`,
         protocolVersion: '0.4.0',
         requestId: 'server_request_1',
       }),
@@ -4018,7 +4031,7 @@ test('the bundled CLI keeps discovery, typed failures, and local aborts truthful
   assert.equal(rejectionEnvelope.requestId, 'server_request_1');
   assert.equal(rejectionEnvelope.error.details.path, '/Users/private');
   assert.equal(rejectionEnvelope.error.details.token, '[redacted]');
-  assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, /okt_environment/);
+  assert.doesNotMatch(`${rejection.stdout}${rejection.stderr}`, new RegExp(environmentToken));
 
   const masterKeyBase64 = 'master-key-value-that-must-stay-secret';
   // Exercise redaction through a current secret-bearing operation, not the empty unlock input.

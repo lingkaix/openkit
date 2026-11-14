@@ -707,3 +707,85 @@ describe('E7 actual Administration entry classification', () => {
     }
   );
 });
+
+// Append to existing administration-lifetime.test.ts; genuine N3 source and actual recorded model loop.
+// FUTURE/NEW-only: publication must be landed; no absent-module OLD claim.
+it('E8 keeps person-only report preparation outside the actual Administration model Tools', async () => {
+  const { SecurityTriggerStore } = await import('../security/trigger.js');
+  const { publishSecurityAlarm } = await import('../security/publication.js');
+  const f = await fixture();
+  const trigger = new SecurityTriggerStore(f.coreDb);
+  await trigger.enable(f.actor);
+  await trigger.stop(f.actor);
+  const alarm = (await trigger.readAlarms()).find((row) => row.recipientUserId === f.actor.userId);
+  expect(alarm).toBeDefined();
+  if (!alarm) throw new Error('Required original N1 alarm unavailable.');
+  const source = await publishSecurityAlarm({
+    coreDb: f.coreDb,
+    store: f.store,
+    requestId: alarm.requestId,
+  });
+  expect(source.status).toBe('published');
+  if (source.status !== 'published') throw new Error('Required actual N3 publication unavailable.');
+  const before = f.store.listArtifacts(source.publication.workspaceId);
+  const threadIds = f.store
+    .listThreads(source.publication.workspaceId)
+    .map((thread) => thread.id)
+    .sort();
+  const [path, init] = operationRequest(
+    'administration.conversation-submit',
+    {},
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        threadId: source.publication.threadId,
+        input: 'Read the report. Do not start work or publish anything.',
+      }),
+    }
+  );
+  const pending = f.app.request(path, init);
+  try {
+    await admittedInference(f.entered.promise, pending);
+    const tools = f.createResponses.mock.calls[0]![1].tools!;
+    expect(tools).toHaveLength(9);
+    expect(
+      tools.some((tool) => 'name' in tool && tool.name === 'administration_report-prepare')
+    ).toBe(false);
+    f.release.resolve({
+      id: 'recorded_unadmitted_report_call',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'function_call',
+          call_id: 'report_call',
+          name: 'administration_report-prepare',
+          arguments: JSON.stringify({
+            requestId: randomUUID(),
+            threadId: source.publication.threadId,
+            sourceRequestId: alarm.requestId,
+            route: 'managed-issue',
+            description: 'Publish without a person.',
+          }),
+        },
+      ],
+    });
+    const response = await pending;
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as SubmitAdministrationConversationResponse;
+    expect(body.outcome).not.toBe('task-handoff');
+    expect(f.store.listArtifacts(source.publication.workspaceId)).toEqual(before);
+    expect(
+      f.store
+        .listThreads(source.publication.workspaceId)
+        .map((thread) => thread.id)
+        .sort()
+    ).toEqual(threadIds);
+    expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
+  } finally {
+    f.release.resolve(answer());
+    await pending.catch(() => undefined);
+  }
+});

@@ -446,6 +446,13 @@ const archiveBindings = {
 export const operationExclusions = [
   {
     source: 'app-api',
+    name: 'administration.report-prepare',
+    reason:
+      'Report preparation requires an actual local person or user session; it is not an agent Tool or bearer CLI operation.',
+    owner: 'apps/nanocore/README.md',
+  },
+  {
+    source: 'app-api',
     name: 'knowledge.package.export',
     reason:
       'Knowledge package streams have a native HTTP binding; the CLI has no package file sink.',
