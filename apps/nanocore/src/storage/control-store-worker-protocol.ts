@@ -159,9 +159,11 @@ import {
   ControlCatalogCommandReceiptInputSchema,
 } from './catalog-command-receipt-codecs.js';
 import {
-  type ControlAdmission,
+  type ControlAdmissionInput,
+  ControlAdmissionInputSchema,
   type ControlAdmissionResult,
-  ControlAdmissionSchema,
+  type ControlKnowledgeAdmissionResult,
+  ControlKnowledgeAdmissionResultSchema,
 } from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandResult,
@@ -181,12 +183,6 @@ import {
   controlKnowledgeContentSchema,
   decodeControlKnowledgeHead,
 } from './control-store-knowledge-heads.js';
-import {
-  type ControlMaintenanceAdmissionInput,
-  ControlMaintenanceAdmissionInputSchema,
-  type ControlMaintenanceAdmissionResult,
-  ControlMaintenanceAdmissionResultSchema,
-} from './control-store-maintenance-codecs.js';
 import {
   type ControlPendingTransition,
   ControlPendingTransitionSchema,
@@ -790,7 +786,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'recovery-move-out'; readonly input: ControlRecoveryMoveOutInput }
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
-      | { readonly operation: 'transition'; readonly transition: ControlAdmission }
+      | { readonly operation: 'transition'; readonly transition: ControlAdmissionInput }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | {
           readonly operation: 'item';
@@ -842,7 +838,6 @@ export type ControlWorkerCommand =
       | { readonly operation: 'nanohost-transport'; readonly input: ControlNanoHostTransportInput }
       | { readonly operation: 'journal'; readonly input: ControlExecutionJournalInput }
       | { readonly operation: 'pending'; readonly input: ControlPendingTransition }
-      | { readonly operation: 'maintenance'; readonly input: ControlMaintenanceAdmissionInput }
       | {
           readonly operation: 'schema-application';
           readonly input: ControlSchemaApplicationWire;
@@ -1130,7 +1125,6 @@ interface OrdinaryControlWorkerDomainRefusal {
     | 'evaluation-candidate'
     | 'goal'
     | 'capability'
-    | 'maintenance'
     | 'schema-application'
     | 'material'
     | 'review'
@@ -1507,7 +1501,7 @@ export type ControlWorkerReply = {
   | {
       readonly status: 'ok';
       readonly operation: 'transition';
-      readonly result: ControlAdmissionResult;
+      readonly result: ControlAdmissionResult | ControlKnowledgeAdmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -1528,11 +1522,6 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'goal';
       readonly result: ControlGoalCommandResult;
-    }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'maintenance';
-      readonly result: ControlMaintenanceAdmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -1772,7 +1761,7 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
           (['source_digest_mismatch', 'invalid_request'].includes(String(value.code)) &&
             value.status === 400) ||
           (value.code === 'not_found' && value.status === 404))) ||
-      (value.operation === 'maintenance' &&
+      (value.operation === 'transition' &&
         ((value.code === 'invalid_request' && value.status === 400) ||
           ((value.code === 'recovery_required' || value.code === 'idempotency_key_conflict') &&
             value.status === 409)))) &&
@@ -2005,8 +1994,6 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ApplyKnowledgeSchemaResponseSchema.safeParse(reply.result).success;
   if (reply.operation === 'material')
     return ControlMaterialCommandResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'maintenance')
-    return ControlMaintenanceAdmissionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'goal') {
     return (
       isRecord(reply.result) &&
@@ -2021,12 +2008,13 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
   if (reply.operation === 'transition') {
     return (
-      isRecord(reply.result) &&
-      typeof reply.result.replayed === 'boolean' &&
-      isRecord(reply.result.response) &&
-      ['thread', 'turn'].includes(String(reply.result.response.kind)) &&
-      typeof reply.result.response.id === 'string' &&
-      reply.result.response.id.length > 0
+      ControlKnowledgeAdmissionResultSchema.safeParse(reply.result).success ||
+      (isRecord(reply.result) &&
+        typeof reply.result.replayed === 'boolean' &&
+        isRecord(reply.result.response) &&
+        ['thread', 'turn'].includes(String(reply.result.response.kind)) &&
+        typeof reply.result.response.id === 'string' &&
+        reply.result.response.id.length > 0)
     );
   }
   if (reply.operation === 'reclaim') return typeof reply.complete === 'boolean';
@@ -2316,12 +2304,17 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
   if (value.operation === 'transition' || value.operation === 'products') {
     try {
       const schema =
-        value.operation === 'transition' ? ControlAdmissionSchema : ControlProductTransitionSchema;
+        value.operation === 'transition'
+          ? ControlAdmissionInputSchema
+          : ControlProductTransitionSchema;
       const parsed = schema.safeParse(value.transition);
       return (
         exactFields(value, [...scoped, 'transition']) &&
         parsed.success &&
-        controlProductMetadataJson(value.transition as typeof parsed.data).length <= 2 * 1024 * 1024
+        ('products' in parsed.data
+          ? controlProductMetadataJson(parsed.data).length <= 2 * 1024 * 1024
+          : Buffer.byteLength(JSON.stringify(parsed.data.input)) <=
+            CONTROL_PRODUCT_LIMITS.payloadBytes)
       );
     } catch {
       return false;
@@ -2735,7 +2728,6 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     value.operation === 'journal' ||
     value.operation === 'project-cleanup' ||
     value.operation === 'goal' ||
-    value.operation === 'maintenance' ||
     value.operation === 'review' ||
     value.operation === 'core-sharing' ||
     value.operation === 'evaluation-candidate' ||
@@ -2759,11 +2751,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
                       ? ControlGoalInputSchema
                       : value.operation === 'review'
                         ? ControlReviewCommandInputSchema
-                        : value.operation === 'maintenance'
-                          ? ControlMaintenanceAdmissionInputSchema
-                          : value.operation === 'terminal'
-                            ? ControlTerminalTransitionSchema
-                            : ControlWorkObservationInputSchema;
+                        : value.operation === 'terminal'
+                          ? ControlTerminalTransitionSchema
+                          : ControlWorkObservationInputSchema;
       return (
         exactFields(value, [...scoped, 'input']) &&
         schema.safeParse(value.input).success &&

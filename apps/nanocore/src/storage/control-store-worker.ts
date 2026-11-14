@@ -172,7 +172,7 @@ import {
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
 import { readControlScalarText } from './control-store-input.js';
-import { applyControlMaintenanceAdmission } from './control-store-maintenance-native.js';
+
 import {
   applyControlPendingTransition,
   prepareControlPendingArchive,
@@ -459,7 +459,6 @@ type WriteCommand = Extract<
       | 'pending'
       | 'journal'
       | 'goal'
-      | 'maintenance'
       | 'material'
       | 'review'
       | 'terminal';
@@ -1222,7 +1221,7 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     (error instanceof ArtifactReviewError || error instanceof IdempotencyKeyConflictError)
   ) {
     domain = { operation, code: error.code, message: error.message, status: error.status };
-  } else if (operation === 'maintenance') {
+  } else if (operation === 'transition') {
     if (error instanceof IdempotencyKeyConflictError)
       domain = { operation, code: error.code, message: error.message, status: error.status };
     else if (
@@ -1358,7 +1357,8 @@ function unschedule(owner: OwnedDatabase): void {
 
 /** Identifies existing standalone metadata tuples; complete closeout uses the terminal/Pending owner. */
 function archivedThreads(request: WriteCommand): string[] {
-  return request.operation === 'products' || request.operation === 'transition'
+  return (request.operation === 'products' || request.operation === 'transition') &&
+    'products' in request.transition
     ? request.transition.products
         .filter((input) => input.kind === 'thread' && input.record.status === 'archived')
         .map((input) => String(input.record.id))
@@ -1498,6 +1498,10 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     }
     case 'transition':
     case 'products':
+      if ('kind' in request.transition) {
+        lanes.add(request.transition.input.turnId);
+        break;
+      }
       add(request.transition);
       if (request.operation === 'transition' && request.transition.receipt.command === 'task.steer')
         lanes.add(request.transition.receipt.response.id);
@@ -1528,7 +1532,6 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     case 'generative-presentation':
     case 'provenance':
     case 'project-cleanup':
-    case 'maintenance':
       lanes.add(request.input.turnId);
       break;
     case 'capability': {
@@ -1633,7 +1636,7 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
 /** Returns only Pending commands executed by this request's actual owner branch. */
 function pendingCommands(request: WriteCommand): readonly ControlPendingCommandInput[] {
   if (request.operation === 'transition' || request.operation === 'products')
-    return request.transition.pending ?? [];
+    return 'pending' in request.transition ? (request.transition.pending ?? []) : [];
   if (request.operation === 'terminal') return request.input.pending ?? [];
   if (request.operation === 'pending')
     return [request.input.input, ...(request.input.terminal?.pending ?? [])];
@@ -1841,7 +1844,9 @@ async function prepareAfterPredecessors(
         }
         const hasEntries =
           request.operation === 'products' || request.operation === 'transition'
-            ? request.transition.entries.length
+            ? 'entries' in request.transition
+              ? request.transition.entries.length
+              : 0
             : request.operation === 'pending'
               ? request.input.entries.length
               : request.operation === 'goal' && !('kind' in request.input)
@@ -2165,6 +2170,7 @@ function flush(owner: OwnedDatabase): void {
     try {
       retainedReceipt =
         first.operation === 'transition' &&
+        'receipt' in first.transition &&
         owner.sqlite
           .prepare('SELECT 1 FROM idempotency_requests WHERE request_key=? AND expires_at>?')
           .get(first.transition.receipt.key, first.transition.receipt.createdAt);
@@ -2342,19 +2348,25 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'transition') {
             if (!owner.productOwner) throw new ControlProductPreconditionError();
-            const result = applyControlAdmission(
-              sqlite,
-              owner.productOwner,
-              request.transition,
-              request.preparedEntries ?? [],
-              request.preparedSteer
-            );
+            const result =
+              'kind' in request.transition
+                ? (() => {
+                    if (!owner.scopeDb) throw new ControlProductPreconditionError();
+                    return applyControlAdmission(owner.scopeDb, request.transition);
+                  })()
+                : applyControlAdmission(
+                    sqlite,
+                    owner.productOwner,
+                    request.transition,
+                    request.preparedEntries ?? [],
+                    request.preparedSteer
+                  );
             if (!result.replayed && owner.scopeDb?.scope === 'workspace')
               for (const threadId of archivedThreads(request)) {
                 if (!request.preparedPending) throw new ControlProductPreconditionError();
                 assertControlPendingArchive(owner.scopeDb, threadId, request.preparedPending);
               }
-            if (!result.replayed)
+            if (!result.replayed && 'products' in request.transition)
               for (const command of request.transition.pending ?? []) {
                 if (owner.scopeDb?.scope !== 'workspace')
                   throw new ControlProductPreconditionError();
@@ -3221,16 +3233,6 @@ function flush(owner: OwnedDatabase): void {
               id: request.id,
               status: 'ok',
               operation: 'recovery-cleanup',
-            };
-          } else if (request.operation === 'maintenance') {
-            if (!owner.scopeDb || !owner.productOwner) throw new ControlProductPreconditionError();
-            const result = applyControlMaintenanceAdmission(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'maintenance',
-              result,
             };
           } else if (request.operation === 'thread-read-membership') {
             const { userId, workspaceId, threadId } = request.input;
@@ -4405,7 +4407,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'pending' ||
       value.operation === 'journal' ||
       value.operation === 'goal' ||
-      value.operation === 'maintenance' ||
       value.operation === 'worker-storage-binding' ||
       value.operation === 'workspace-apply-plan' ||
       value.operation === 'automation-scanner' ||
@@ -4865,7 +4866,10 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 newDirectories
               );
             }
-            if (value.operation === 'transition' || value.operation === 'products') {
+            if (
+              (value.operation === 'transition' || value.operation === 'products') &&
+              'products' in value.transition
+            ) {
               if (
                 value.operation === 'transition' &&
                 value.transition.receipt.command === 'task.steer'

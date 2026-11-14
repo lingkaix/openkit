@@ -23,11 +23,9 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { ControlKnowledgeAdmissionInputSchema } from '../storage/control-store-admission-codecs.js';
 import type { CoreDb } from '../storage/db.js';
-import {
-  admitControlMaintenance,
-  ControlMaintenanceAdmissionInputSchema,
-} from './knowledge-agent-maintenance.js';
+import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import {
   createNotebookAgentEditing,
@@ -241,7 +239,7 @@ export async function prepareServerKnowledgeMaintenance(
   const admitted = await admitControlMaintenance(
     coreDb.dataRoot,
     undefined,
-    ControlMaintenanceAdmissionInputSchema.parse({
+    ControlKnowledgeAdmissionInputSchema.parse({
       purpose: 'maintenance',
       ownerScope: { kind: 'server' },
       actor: input.actor,

@@ -15,6 +15,7 @@ import {
 import { runKnowledgeManagerAgent } from '../internal-agents/knowledge-manager-agent.js';
 import { commandRequestKey, FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
+import type { ControlKnowledgeAdmissionInput } from '../storage/control-store-admission-codecs.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -23,7 +24,6 @@ import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { initializeTestCore } from '../test-support/store.js';
-import type { ControlMaintenanceAdmissionInput } from './knowledge-agent-maintenance.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge-maintenance-schedule.js';
 import { NotebookError } from './notebook.js';
 import { runUserMemoryMaintenanceCommand } from './user-memory-agent-maintenance.js';
@@ -44,7 +44,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
   const require = createRequire(import.meta.url);
   const loader = pathToFileURL(require.resolve('tsx/esm/api')).href;
   const modules = {
-    admission: new URL('../storage/control-store-maintenance-native.ts', import.meta.url).href,
+    admission: new URL('../storage/control-store-admission.ts', import.meta.url).href,
     db: new URL('../storage/db.ts', import.meta.url).href,
     products: new URL('../storage/control-store-products.ts', import.meta.url).href,
     bootstrap: new URL('../storage/control-store-admission.ts', import.meta.url).href,
@@ -56,7 +56,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
     import ${JSON.stringify(modules.bootstrap)};
     import { parentPort, workerData } from 'node:worker_threads';
     import { openCoreDb, openWorkspaceDb } from ${JSON.stringify(modules.db)};
-    import { applyControlMaintenanceAdmission } from ${JSON.stringify(modules.admission)};
+    import { applyControlAdmission } from ${JSON.stringify(modules.admission)};
     import { applyControlProducts } from ${JSON.stringify(modules.products)};
       const db = workerData.kind === 'server' ? openCoreDb(workerData.root) : openWorkspaceDb(workerData.root, workerData.workspaceId);
       if (workerData.kind !== 'server') db.sqlite.transaction(() => applyControlProducts(db.sqlite,
@@ -67,7 +67,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
       parentPort.on('message', ({ id, action, input, sql }) => {
         try {
           let result;
-          if (action === 'apply') result = db.sqlite.transaction(() => applyControlMaintenanceAdmission(db, input)).immediate();
+          if (action === 'apply') result = db.sqlite.transaction(() => applyControlAdmission(db, {kind:'knowledge-work', input})).immediate();
           else if (action === 'sql') result = db.sqlite.prepare(sql).all();
           else if (action === 'exec') { db.sqlite.exec(sql); result = null; }
           parentPort.postMessage({id,result});
@@ -136,7 +136,7 @@ function fixture(kind: 'server' | 'workspace' | 'user' = 'workspace') {
       });
     });
   };
-  const input = (receipt = kind !== 'user'): ControlMaintenanceAdmissionInput => {
+  const input = (receipt = kind !== 'user'): ControlKnowledgeAdmissionInput => {
     const requestId = randomUUID();
     const scope =
       kind === 'server'
@@ -205,7 +205,9 @@ describe('native Knowledge maintenance admission', () => {
     const { client, database } = await f.transport();
     const actor = { kind: 'system' as const, id: 'knowledge-manager', responsibleUserId: null };
     const daily = { ...f.input(false), actor, trigger: 'schedule' as const };
-    await expect(client.maintenance(database, daily)).resolves.toEqual({
+    await expect(
+      client.transition(database, { kind: 'knowledge-work', input: daily })
+    ).resolves.toEqual({
       threadId: daily.threadId,
       turnId: daily.turnId,
       busy: false,
@@ -230,7 +232,7 @@ describe('native Knowledge maintenance admission', () => {
       scope,
       key: commandRequestKey('knowledge.server.maintain', original.requestId, scope),
     };
-    const denied: ControlMaintenanceAdmissionInput[] = [
+    const denied: ControlKnowledgeAdmissionInput[] = [
       { ...daily, trigger: 'request' },
       { ...daily, actor: { ...actor, id: 'unrelated-system' } },
       { ...daily, requestId: original.requestId, receipt },
@@ -249,7 +251,7 @@ describe('native Knowledge maintenance admission', () => {
     for (const variant of denied) {
       const input = { ...variant, turnId: allocateEntityId('tu') };
       const refusal: unknown = await client
-        .maintenance(database, input)
+        .transition(database, { kind: 'knowledge-work', input })
         .catch((error: unknown) => error);
       expect(refusal).toBeInstanceOf(NotebookError);
       expect(refusal).toMatchObject({ code: 'invalid_request' });
@@ -274,7 +276,7 @@ describe('native Knowledge maintenance admission', () => {
       const before = await Promise.all(tables.map((table) => f.sql(`SELECT * FROM ${table}`)));
       const actor = { kind: 'system' as const, id: 'knowledge-manager', responsibleUserId: null };
       const daily = { ...f.input(false), actor, trigger: 'schedule' as const };
-      const denied: ControlMaintenanceAdmissionInput[] = [
+      const denied: ControlKnowledgeAdmissionInput[] = [
         daily,
         { ...daily, ownerScope: { kind: 'server' } },
         { ...daily, purpose: 'query', trigger: 'request', outputThreadId: first.threadId },
@@ -282,7 +284,7 @@ describe('native Knowledge maintenance admission', () => {
       ];
       for (const input of denied) {
         const refusal: unknown = await client
-          .maintenance(database, input)
+          .transition(database, { kind: 'knowledge-work', input })
           .catch((error: unknown) => error);
         expect(refusal).toBeInstanceOf(NotebookError);
         expect(refusal).toMatchObject({ code: 'invalid_request' });
@@ -301,7 +303,9 @@ describe('native Knowledge maintenance admission', () => {
         "CREATE TRIGGER refuse_receipt BEFORE INSERT ON idempotency_requests BEGIN SELECT RAISE(ABORT, 'receipt refused'); END"
       );
       const { client, database } = await f.transport();
-      await expect(client.maintenance(database, input)).rejects.toMatchObject({
+      await expect(
+        client.transition(database, { kind: 'knowledge-work', input })
+      ).rejects.toMatchObject({
         code: 'constraint',
         commit: 'not-committed',
         message: 'Control database writer operation failed.',
@@ -309,31 +313,41 @@ describe('native Knowledge maintenance admission', () => {
       for (const table of ['control_threads', 'control_turns', 'idempotency_requests'])
         expect(await f.sql(`SELECT * FROM ${table}`)).toEqual([]);
       await f.exec('DROP TRIGGER refuse_receipt');
-      await expect(client.maintenance(database, input)).resolves.toEqual({
-        threadId: input.threadId,
-        turnId: input.turnId,
-        busy: false,
-        replayed: false,
-      });
-      await expect(client.maintenance(database, input)).resolves.toEqual({
-        threadId: input.threadId,
-        turnId: input.turnId,
-        busy: false,
-        replayed: true,
-      });
+      await expect(client.transition(database, { kind: 'knowledge-work', input })).resolves.toEqual(
+        {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          busy: false,
+          replayed: false,
+        }
+      );
+      await expect(client.transition(database, { kind: 'knowledge-work', input })).resolves.toEqual(
+        {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          busy: false,
+          replayed: true,
+        }
+      );
       expect(await f.sql('SELECT response_id FROM idempotency_requests')).toEqual([
         { response_id: input.turnId },
       ]);
       await expect(
-        client.maintenance(database, {
-          ...input,
-          receipt: { ...input.receipt!, inputHash: commandInputHash({ changed: true }) },
+        client.transition(database, {
+          kind: 'knowledge-work',
+          input: {
+            ...input,
+            receipt: { ...input.receipt!, inputHash: commandInputHash({ changed: true }) },
+          },
         })
       ).rejects.toBeInstanceOf(IdempotencyKeyConflictError);
       await expect(
-        client.maintenance(database, {
-          ...f.input(),
-          ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
+        client.transition(database, {
+          kind: 'knowledge-work',
+          input: {
+            ...f.input(),
+            ownerScope: { kind: 'workspace', workspaceId: allocateEntityId('ws') },
+          },
         })
       ).rejects.toBeInstanceOf(NotebookError);
     }, 30_000);
@@ -374,6 +388,17 @@ describe('native Knowledge maintenance admission', () => {
     expect(
       await f.sql("SELECT json_extract(record_json,'$.futureNote') AS note FROM control_threads")
     ).toEqual([{ note: 'retain me' }]);
+    // ORACLE S2 F13: a busy request is born terminal in the same physical owner;
+    // a replay or input conflict cannot add another Turn, receipt or projection revision.
+    expect(
+      await f.sql(`SELECT status,json_extract(record_json,'$.durationMs') AS duration,
+      json_extract(record_json,'$.completedAt') AS completedAt
+      FROM control_turns WHERE id='${next.turnId}'`)
+    ).toEqual([{ status: 'completed', duration: 0, completedAt: next.startedAt }]);
+    const originalTurns = await f.sql('SELECT * FROM control_turns ORDER BY id');
+    const originalReceipts = await f.sql('SELECT * FROM idempotency_requests ORDER BY request_key');
+    expect(originalReceipts).toHaveLength(2);
+
     const replay = { ...first, threadId: allocateEntityId('th'), turnId: allocateEntityId('tu') };
     await expect(f.apply(replay)).resolves.toMatchObject({
       threadId: first.threadId,
@@ -383,6 +408,10 @@ describe('native Knowledge maintenance admission', () => {
     await expect(
       f.apply({ ...replay, receipt: { ...first.receipt!, inputHash: commandInputHash('changed') } })
     ).rejects.toMatchObject({ name: 'IdempotencyKeyConflictError' });
+    expect(await f.sql('SELECT * FROM control_turns ORDER BY id')).toEqual(originalTurns);
+    expect(await f.sql('SELECT * FROM idempotency_requests ORDER BY request_key')).toEqual(
+      originalReceipts
+    );
     expect(await f.sql('SELECT count(*) AS count FROM control_turns')).toEqual([{ count: 2 }]);
   }, 30_000);
 
