@@ -19,6 +19,10 @@ import { TurnStartValidationError } from '../operation-error.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 import { AgentSessionRetainedStorageSchema } from '../storage/workspace-file-records.js';
+import {
+  readCoreHarnessConsumption,
+  recordCoreHarnessConsumption,
+} from './core-journal-records.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { requireHarnessLoginBinding } from './harness-login-authority.js';
 import type { HarnessLoginReplacementRead } from './harness-login-selection.js';
@@ -1235,7 +1239,7 @@ export function prepareNanoHostHarnessOperation(
   if (input.operation === 'turn.steer') {
     if (!['idle', 'settled'].includes(harness.operation_state))
       throw new Error('NanoHost Harness steer slot is busy.');
-    requireConsumedHarnessResult(harness);
+    requireConsumedHarnessResult(coreDb, harness);
   }
   requireOperationLineage(coreDb, harness, input.operation, body);
   let wireBody = body;
@@ -1285,7 +1289,7 @@ export function queueNanoHostHarnessOperation(
     if (!['idle', 'settled'].includes(harness.operation_state)) {
       throw new Error('NanoHost Harness already has an unsettled operation.');
     }
-    if (input.operation === 'turn.steer') requireConsumedHarnessResult(harness);
+    if (input.operation === 'turn.steer') requireConsumedHarnessResult(coreDb, harness);
     // Queueing retains the predecessor receipt; only physical dispatch may retire it.
     if (
       (input.operation === 'session.open' || input.operation === 'turn.start') &&
@@ -1368,11 +1372,18 @@ export function dispatchNanoHostHarnessOperation(
       return null;
     }
     readRetainedV1(harness, () => harness);
-    const receipt = readHarnessResultReceipt(harness);
-    if (receipt && receipt.retained.consumption === undefined) {
+    const receipt = readRetainedHarnessResult(harness);
+    if (
+      receipt &&
+      readCoreHarnessConsumption(coreDb, {
+        harnessBindingRef: harness.harness_binding_ref,
+        operationId: receipt.result.operationId,
+        sequence: receipt.result.sequence,
+        resultFingerprint: receipt.resultFingerprint,
+      }) === null
+    )
       return null;
-    }
-    requireConsumedHarnessResult(harness);
+    requireConsumedHarnessResult(coreDb, harness);
     const now = input.now?.() ?? new Date().toISOString();
     if (Date.parse(now) >= Date.parse(harness.updated_at) + NANO_HOST_HARNESS_RESULT_BUDGET_MS) {
       setHarnessUnknown(coreDb, harness.harness_instance_id, now, 'queued');
@@ -1609,7 +1620,7 @@ export function settleNanoHostHarnessOperation(
         ? readJsonObject(harness.command_body_json)
         : null;
     const idleConsumerReceipt = command
-      ? readNanoHostIdleCloseConsumerReceipt(coreDb, {
+      ? readNanoHostIdleCloseAuthority(coreDb, {
           harnessInstanceId: harness.harness_instance_id,
           harnessBindingRef: harness.harness_binding_ref,
           agentSessionId: requireIdentity(command.agentSessionId, 'close AgentSession'),
@@ -1619,23 +1630,24 @@ export function settleNanoHostHarnessOperation(
           ),
         })
       : null;
-    const consumption: HarnessResultConsumption | undefined =
-      idleConsumerReceipt === null
-        ? undefined
-        : {
-            consumerReceipt: idleConsumerReceipt,
-            harnessBindingRef: harness.harness_binding_ref,
-            operationId: input.result.operationId,
-            sequence: input.result.sequence,
-            resultFingerprint: sha256Hex(
-              canonicalJson(input.result as unknown as Record<string, unknown>)
-            ),
-          };
     const resultJson = canonicalJson({
       ...input.result,
       ...(consumerContext ? { consumerContext } : {}),
-      ...(consumption ? { consumption } : {}),
     });
+    if (idleConsumerReceipt !== null)
+      recordCoreHarnessConsumption(
+        coreDb,
+        {
+          harnessBindingRef: harness.harness_binding_ref,
+          operationId: input.result.operationId,
+          sequence: input.result.sequence,
+          resultFingerprint: sha256Hex(
+            canonicalJson(input.result as unknown as Record<string, unknown>)
+          ),
+        },
+        canonicalJson(idleConsumerReceipt),
+        input.timestamp
+      );
     if (
       input.result.disposition === 'refused' &&
       input.result.body.reasonCode === 'cleanup_required'
@@ -2128,17 +2140,8 @@ function harnessOperationId(
   );
 }
 
-/** Existing result receipt progress; this metadata grants no new execution authority. */
-interface HarnessResultConsumption {
-  readonly consumerReceipt: string;
-  readonly harnessBindingRef: string;
-  readonly operationId: string;
-  readonly sequence: number;
-  readonly resultFingerprint: string;
-}
-
-/** Reads the original normalized result separately from receiver-owned progress metadata. */
-function readHarnessResultReceipt(harness: HarnessRow): {
+/** Reads immutable normalized result bytes; consumer progress belongs only to the Core journal. */
+function readRetainedHarnessResult(harness: HarnessRow): {
   readonly retained: Record<string, unknown>;
   readonly result: NanoHostHarnessResult;
   readonly resultFingerprint: string;
@@ -2152,7 +2155,6 @@ function readHarnessResultReceipt(harness: HarnessRow): {
     throw new Error('NanoHost Harness retained result fingerprint conflicts.');
   const retained = readJsonObject(harness.result_json);
   const original = { ...retained };
-  delete original.consumption;
   delete original.consumerContext;
   const result = HarnessResultEnvelopeReaderSchema.parse(original);
   if (result.harnessInstanceId !== harness.harness_instance_id)
@@ -2160,54 +2162,32 @@ function readHarnessResultReceipt(harness: HarnessRow): {
   return { retained, result, resultFingerprint: sha256Hex(canonicalJson(original)) };
 }
 
-/** Exact existing Workspace-step or Core idle-binding consumer identity. */
-type HarnessConsumerReceipt =
-  | {
-      readonly workspaceId: string;
-      readonly turnId: string;
-      readonly executionId: string;
-      readonly stepId: string;
-    }
-  | {
-      readonly workspaceId: string;
-      readonly threadId: string;
-      readonly agentSessionId: string;
-      readonly agentSessionRuntimeBindingId: string;
-    };
-
-/** Checks closed consumer identity without crossing into Workspace SQL. */
-function readHarnessConsumerReceipt(value: unknown): HarnessConsumerReceipt {
-  if (typeof value !== 'string' || value.length > 4096)
-    throw new Error('NanoHost Harness consumer receipt is invalid.');
-  const receipt = readJsonObject(value);
-  const fields = Object.keys(receipt).sort().join(',');
-  if (fields === 'agentSessionId,agentSessionRuntimeBindingId,threadId,workspaceId') {
-    return {
-      workspaceId: requireIdentity(receipt.workspaceId, 'consumer Workspace'),
-      threadId: requireIdentity(receipt.threadId, 'consumer Thread'),
-      agentSessionId: requireIdentity(receipt.agentSessionId, 'consumer AgentSession'),
-      agentSessionRuntimeBindingId: requireIdentity(
-        receipt.agentSessionRuntimeBindingId,
-        'consumer binding'
-      ),
-    };
-  }
-  if (fields !== 'executionId,stepId,turnId,workspaceId')
-    throw new Error('NanoHost Harness consumer receipt fields are invalid.');
-  return {
-    workspaceId: requireIdentity(receipt.workspaceId, 'consumer Workspace'),
-    turnId: requireIdentity(receipt.turnId, 'consumer Turn'),
-    executionId: requireIdentity(receipt.executionId, 'consumer execution'),
-    stepId: requireIdentity(receipt.stepId, 'consumer step'),
-  };
-}
+/** The two existing consumer authorities; Core never invents a Workspace transaction. */
+const harnessConsumerSchema = z.union([
+  z
+    .object({
+      workspaceId: z.string().min(1).max(512),
+      turnId: z.string().min(1).max(512),
+      executionId: z.string().min(1).max(512),
+      stepId: z.string().min(1).max(512),
+    })
+    .strict(),
+  z
+    .object({
+      workspaceId: z.string().min(1).max(512),
+      threadId: z.string().min(1).max(512),
+      agentSessionId: z.string().min(1).max(512),
+      agentSessionRuntimeBindingId: z.string().min(1).max(512),
+    })
+    .strict(),
+]);
 
 /**
  * Reads positive idle Core binding authority under AgentSession Core and DX receipt consumption.
  * Missing binding or any open/closing attempt supplies no idle authority. Historical Turns and
  * process-local callback presence cannot establish this Core lifecycle owner.
  */
-export function readNanoHostIdleCloseConsumerReceipt(
+export function readNanoHostIdleCloseAuthority(
   coreDb: CoreDb,
   input: {
     readonly harnessInstanceId: string;
@@ -2215,7 +2195,12 @@ export function readNanoHostIdleCloseConsumerReceipt(
     readonly agentSessionId: string;
     readonly agentSessionRuntimeBindingId: string;
   }
-): string | null {
+): {
+  readonly workspaceId: string;
+  readonly threadId: string;
+  readonly agentSessionId: string;
+  readonly agentSessionRuntimeBindingId: string;
+} | null {
   const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
   if (harness.harness_instance_id !== input.harnessInstanceId)
     throw new Error('NanoHost idle close Harness binding conflicts.');
@@ -2256,12 +2241,12 @@ export function readNanoHostIdleCloseConsumerReceipt(
       throw new Error('NanoHost idle close attempt phase is invalid.');
     if (attempt.phase !== 'closed') return null;
   }
-  return canonicalJson({
+  return {
     workspaceId: requireIdentity(binding.workspaceId, 'idle Workspace'),
     threadId: requireIdentity(binding.threadId, 'idle Thread'),
     agentSessionId: binding.agentSessionId,
     agentSessionRuntimeBindingId: input.agentSessionRuntimeBindingId,
-  });
+  };
 }
 
 /** Captures the existing exact Core receiver before its original close is queued. */
@@ -2319,24 +2304,19 @@ function readHarnessConsumerContext(
 }
 
 /** Validates exact consumer progress before a successor may retire this result. */
-function requireConsumedHarnessResult(harness: HarnessRow): HarnessResultConsumption | null {
-  const receipt = readHarnessResultReceipt(harness);
+function requireConsumedHarnessResult(coreDb: CoreDb, harness: HarnessRow): string | null {
+  const receipt = readRetainedHarnessResult(harness);
   if (!receipt) return null;
-  const value = receipt.retained.consumption;
-  if (!value || typeof value !== 'object' || Array.isArray(value))
+  const consumption = readCoreHarnessConsumption(coreDb, {
+    harnessBindingRef: harness.harness_binding_ref,
+    operationId: receipt.result.operationId,
+    sequence: receipt.result.sequence,
+    resultFingerprint: receipt.resultFingerprint,
+  });
+  if (consumption === null)
     throw new Error('NanoHost Harness retained result has no exact consumer acknowledgement.');
-  const consumption = value as Record<string, unknown>;
-  if (
-    Object.keys(consumption).sort().join(',') !==
-      'consumerReceipt,harnessBindingRef,operationId,resultFingerprint,sequence' ||
-    consumption.harnessBindingRef !== harness.harness_binding_ref ||
-    consumption.operationId !== receipt.result.operationId ||
-    consumption.sequence !== receipt.result.sequence ||
-    consumption.resultFingerprint !== receipt.resultFingerprint
-  )
-    throw new Error('NanoHost Harness retained consumer acknowledgement conflicts.');
-  const consumer = readHarnessConsumerReceipt(consumption.consumerReceipt);
-  if (canonicalJson(consumer) !== consumption.consumerReceipt)
+  const consumer = harnessConsumerSchema.parse(readJsonObject(consumption));
+  if (canonicalJson(consumer) !== consumption)
     throw new Error('NanoHost Harness retained consumer receipt is not canonical.');
   if ('agentSessionRuntimeBindingId' in consumer) {
     const context = receipt.retained.consumerContext;
@@ -2350,7 +2330,7 @@ function requireConsumedHarnessResult(harness: HarnessRow): HarnessResultConsump
     )
       throw new Error('NanoHost idle Core consumer namespace conflicts.');
   }
-  return consumption as unknown as HarnessResultConsumption;
+  return consumption;
 }
 
 /**
@@ -2375,7 +2355,7 @@ export function requireNanoHostLoginRemoval(
   }
 ): string {
   const harness = requireHarness(coreDb, input.harnessInstanceId);
-  const receipt = readHarnessResultReceipt(harness);
+  const receipt = readRetainedHarnessResult(harness);
   if (
     !receipt ||
     harness.operation !== 'session.close' ||
@@ -2409,7 +2389,7 @@ export function requireNanoHostLoginRemoval(
     Object.keys(context).sort().join(',') !== 'threadId,workspaceId' ||
     Reflect.get(context, 'workspaceId') !== input.workspaceId ||
     Reflect.get(context, 'threadId') !== input.threadId ||
-    !requireConsumedHarnessResult(harness)
+    !requireConsumedHarnessResult(coreDb, harness)
   )
     throw new Error('Native Login removal owner conflicts.');
   // Reference equality alone cannot distinguish old A -> new A: a successor makes late removal ambiguous.
@@ -2436,14 +2416,23 @@ export function readConsumedNanoHostHarnessResult(
 } | null {
   const incoming = HarnessResultEnvelopeReaderSchema.parse(result);
   const harness = requireHarness(coreDb, incoming.harnessInstanceId);
-  const receipt = readHarnessResultReceipt(harness);
-  if (!receipt || receipt.retained.consumption === undefined) return null;
+  const receipt = readRetainedHarnessResult(harness);
+  if (
+    !receipt ||
+    readCoreHarnessConsumption(coreDb, {
+      harnessBindingRef: harness.harness_binding_ref,
+      operationId: receipt.result.operationId,
+      sequence: receipt.result.sequence,
+      resultFingerprint: receipt.resultFingerprint,
+    }) === null
+  )
+    return null;
   if (
     incoming.operationId !== receipt.result.operationId ||
     incoming.sequence !== receipt.result.sequence
   )
     return null;
-  requireConsumedHarnessResult(harness);
+  requireConsumedHarnessResult(coreDb, harness);
   const operations =
     harness.operation_id === incoming.operationId && harness.operation
       ? [harness.operation]
@@ -2519,7 +2508,7 @@ export function readConsumedNanoHostHarnessResult(
  * Records exact native consumer ACK after its Workspace outcome and consume intent commit.
  * The trusted internal consumer supplies its existing receipt after Worker ACK. Core checks
  * the original keyed result, binding and namespace without claiming cross-database atomicity.
- * Additive consumption and close-only consumerContext remain inside the existing result cell.
+ * Consumption belongs to the Core journal; settled result bytes never change.
  */
 export function acknowledgeNanoHostHarnessResult(
   coreDb: CoreDb,
@@ -2531,12 +2520,14 @@ export function acknowledgeNanoHostHarnessResult(
   }
 ): void {
   const incoming = HarnessResultEnvelopeReaderSchema.parse(input.result);
-  const consumer = readHarnessConsumerReceipt(input.consumerReceipt);
+  const consumer = harnessConsumerSchema.parse(
+    readJsonObject(z.string().max(4096).parse(input.consumerReceipt))
+  );
   const consumerReceipt = canonicalJson(consumer);
 
   try {
     const harness = requireHarnessByBinding(coreDb, input.harnessBindingRef);
-    const receipt = readHarnessResultReceipt(harness);
+    const receipt = readRetainedHarnessResult(harness);
     if (
       !receipt ||
       incoming.harnessInstanceId !== harness.harness_instance_id ||
@@ -2579,21 +2570,15 @@ export function acknowledgeNanoHostHarnessResult(
           'NanoHost Harness consumer result conflicts with retained normalized core.'
         );
     }
-    const consumption: HarnessResultConsumption = {
-      consumerReceipt,
+    const key = {
       harnessBindingRef: input.harnessBindingRef,
       operationId: incoming.operationId,
       sequence: incoming.sequence,
       resultFingerprint: receipt.resultFingerprint,
     };
-    if (receipt.retained.consumption !== undefined) {
-      const previous = requireConsumedHarnessResult(harness);
-      if (
-        canonicalJson(previous as unknown as Record<string, unknown>) !==
-        canonicalJson(consumption as unknown as Record<string, unknown>)
-      )
+    if (readCoreHarnessConsumption(coreDb, key) !== null) {
+      if (requireConsumedHarnessResult(coreDb, harness) !== consumerReceipt)
         throw new Error('NanoHost Harness consumer acknowledgement replay conflicts.');
-
       return;
     }
     if (
@@ -2628,21 +2613,7 @@ export function acknowledgeNanoHostHarnessResult(
       (command.turnId !== undefined && command.turnId !== consumer.turnId)
     )
       throw new Error('NanoHost Harness consumer namespace conflicts with exact command.');
-    const resultJson = canonicalJson({ ...receipt.retained, consumption });
-    const update = coreDb.sqlite
-      .prepare(`UPDATE harness_instance_records SET result_json = ?, result_fingerprint = ?
-        WHERE harness_instance_id = ? AND result_fingerprint = ?
-          AND operation_id = ? AND operation_sequence = ?`)
-      .run(
-        resultJson,
-        sha256Hex(resultJson),
-        harness.harness_instance_id,
-        harness.result_fingerprint,
-        incoming.operationId,
-        incoming.sequence
-      );
-    if (update.changes !== 1)
-      throw new Error('NanoHost Harness consumer acknowledgement changed concurrently.');
+    recordCoreHarnessConsumption(coreDb, key, consumerReceipt, input.timestamp);
   } catch (error) {
     throw error;
   }

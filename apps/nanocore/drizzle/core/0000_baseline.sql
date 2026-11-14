@@ -966,6 +966,10 @@ CREATE INDEX `capability_calls_thread_idx` ON `capability_calls` (`thread_id`,`t
 --> statement-breakpoint
 CREATE INDEX `command_receipts_pending_target_idx` ON `idempotency_requests` (coalesce(json_extract(scope_json,'$.approvalRequestId'),json_extract(scope_json,'$.userInputRequestId'),json_extract(scope_json,'$.pendingRequestId')));
 --> statement-breakpoint
+CREATE UNIQUE INDEX `control_execution_steps_harness_consumption_idx`
+ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'), json_extract(`invocation_json`, '$.carriage.requestId'), json_extract(`invocation_json`, '$.carriage.sequence'))
+WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-harness-consume/v1';
+--> statement-breakpoint
 CREATE INDEX `control_execution_steps_idle_resident_idx`
 ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'))
 WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-idle-cleanup/v1'

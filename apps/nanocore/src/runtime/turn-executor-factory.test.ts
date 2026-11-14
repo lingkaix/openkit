@@ -26546,7 +26546,7 @@ describe('inert initial private Login exchange through the concrete backend sess
                 )
             ).toBe(true);
             expect(listVaultInjectionReceipts(coreDb)).toEqual(afterReceipts);
-            expect(native.runtime.readCompletedHarnessLoginReceipt(context)).toEqual({
+            expect(native.runtime.readCompletedHarnessLoginSupply(context)).toEqual({
               receiptId: next.receiptId,
               materialGeneration: next.materialGeneration,
             });
