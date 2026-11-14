@@ -1,0 +1,18 @@
+# P8 existing behavior oracles
+
+Baseline: `464be22a0ec12a78ec2c7062769bdbde24552091`. This is a pure-refactor inventory, not a new test mechanism or a passing-run receipt. Paths are relative to `apps/nanocore/src`. Keep these whole-file assertions when porting removed imports; do not preserve obsolete wrappers.
+
+| Behavior | Existing public-boundary oracle |
+| --- | --- |
+| Credential owner/currentness; no member fallback for an invalid administrator bearer | `auth/operation-authorizer.test.ts`: `binds a presented admin bearer to its active human owner without member fallback`; `revalidates the recorded administrator token instead of falling back to membership` |
+| Non-JSON route failure ordering and retained-state responses | Same file: `projects a frozen retained Gateway route refusal without replacing unauthorized denial` (`workspace_frozen`, `recovery_required`); retain its native route-declared Workspace and opaque Turn tests |
+| E11 every-issuer intersection, read-only mutation, cascading revocation | `auth/mcp-client-access.test.ts`: `requires every issuer Kernel, not just the immediate issuer or terminal User`; `refuses an inactive intermediate credential or disabled terminal issuer despite remaining grants`; `keeps a read-only Token restrictive for the exact registered mutation` |
+| Same admission from authenticated HTTP, JSON and Skill entrypoints | `operation-projections.test.ts`: `preserves typed read-only denial through authenticated HTTP and rejects a revoked next call`; `enforces read-only credentials and current revocation at native admission`; retain all existing private-Thread response and owner-withdrawal controls |
+| Search reads no unauthorized or quarantined Workspace | `app-search.scope-admission.test.ts`: `searches healthy authorized siblings without reading quarantined or unauthorized Workspaces (%s)` |
+| Notebook ownership before publication; shared OKF failure preserves active bytes | `knowledge-manager.test.ts`: `denies a proposal whose durable owner is not the authorized path Workspace`; `rejects an invalid update without replacing the active Knowledge Page bytes` |
+| Recheck actual publishing credential, not a stale forecast | `knowledge-schema-revalidation.test.ts`: `refuses schema publication when the actual writer token is revoked before the native forecast decision` |
+| No first-save binding/publication before Knowledge authority | `auth/qp2-knowledge-authority.test.ts`: `refuses the public first Memory save before binding or publication when Knowledge write is denied`; `refuses an unknown scoped target even for an administrator with an existing User target` |
+| Exact Source/version forgetting, private context, non-initializing UserDb and failure truth | `knowledge/memory-forget.test.ts`: `refuses an absent grant and mismatched private context without changing content`; `refuses corrupt Sources before preparation and never opens a replacement User database for a retained preview`; `withholds confirmation prose after suppression even when Git publication fails and never repeats it` |
+| Self-only retrieval and suppression despite retained Source bytes | `retrieval-memory.test.ts`: `delivers only the pinned self Memory root and withholds it after suppression`; `refuses %s context before private generation or trace publication` |
+
+No new gap case is needed for the accepted P8 refactor. No OLD round or duplicate unchanged-owner run was added. Production qualification must reuse the whole owners above and retain exact 401/403/404/409, disclosure, content, receipt and no-effect assertions. This inventory grants no route, credential, publication or model activation.
