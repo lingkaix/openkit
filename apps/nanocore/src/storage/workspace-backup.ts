@@ -45,6 +45,7 @@ import {
   TurnSchema,
   TurnStatusSchema,
 } from '@openkit/protocol';
+import type { StorageContent } from '@openkit/storage';
 import {
   copyFileForCut,
   copyVerifiedFile as copyStorageFile,
@@ -162,23 +163,24 @@ import {
 import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import { loadWorkspace, nativeProductScope, readNativeProduct } from './workspace-file-records.js';
 import {
-  captureRecoveryOrigin,
-  prepareRecoveryAdmission,
-  type RecoveryAdmission,
-  type RecoveryProof,
-  readRecoveryAdmission,
-  recoveryReport,
-  refuseRecovery as refuse,
-  resumeWorkspaceCaptureOwner,
-  unresolvedRecoveryAdmissions,
-  withSourceRecoveryProofFile,
-  workspaceRecoveryPredecessorRoot,
-} from './workspace-recovery-admissions.js';
-import {
   WorkspaceRecoveryError,
   type WorkspaceRecoveryErrorCode,
 } from './workspace-recovery-error.js';
-import type { ControlRecoveryTargetProofFile } from './workspace-recovery-target-codecs.js';
+import {
+  captureRecoveryOrigin,
+  listRecoveryExecutions,
+  prepareRecoveryExecution,
+  publishRecoveryProof,
+  type RecoveryExecution,
+  type RecoveryProof,
+  readRecoveryExecution,
+  readWorkspaceRecoveryProof,
+  recoveryReport,
+  refuseRecovery as refuse,
+  resumeWorkspaceCaptureOwner,
+  unresolvedRecoveryExecutions,
+  workspaceRecoveryPredecessorRoot,
+} from './workspace-recovery-journal.js';
 
 /** The backup-directory branch requires verification by the implementation, not the caller. */
 export type WorkspaceBackupSource =
@@ -250,11 +252,11 @@ export function readBlockers(input: {
 export function readWorkspaceRecoveryBlockers(
   input: Parameters<typeof readBlockers>[0],
   selected:
-    | RecoveryAdmission
+    | RecoveryExecution
     | { readonly captureId: string }
     | {
         readonly deletionRequest: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord;
-        readonly admission?: RecoveryAdmission;
+        readonly admission?: RecoveryExecution;
       }
 ): readonly WorkspaceBlocker[] {
   if ('deletionRequest' in selected) {
@@ -282,7 +284,7 @@ export function readWorkspaceRecoveryBlockers(
           selected.admission.proof.capture.manifestDigest !==
             deletion.recoveryBackupManifestDigest ||
           !isDeepStrictEqual(
-            readRecoveryAdmission(coreDb, selected.admission.admission_id),
+            readRecoveryExecution(coreDb, selected.admission.admission_id),
             selected.admission
           )))
     )
@@ -291,7 +293,7 @@ export function readWorkspaceRecoveryBlockers(
       return readWorkspaceBlockerFacts(input, selected.admission);
     if (
       registry.status !== 'deleted' ||
-      unresolvedRecoveryAdmissions(coreDb, workspaceId).some(
+      unresolvedRecoveryExecutions(coreDb, workspaceId).some(
         (row) => row.admission_id !== selected.admission?.admission_id
       ) ||
       (captureWorkerActive?.dataRoot === resolve(coreDb.dataRoot) &&
@@ -312,7 +314,7 @@ export function readWorkspaceRecoveryBlockers(
     return [];
   }
   const captureId = 'captureId' in selected ? selected.captureId : undefined;
-  const current = readRecoveryAdmission(
+  const current = readRecoveryExecution(
     input.coreDb,
     'captureId' in selected ? selected.captureId : selected.admission_id
   );
@@ -354,7 +356,7 @@ export function readWorkspaceRecoveryBlockers(
       .get(input.workspaceId)
   ) {
     if (
-      unresolvedRecoveryAdmissions(input.coreDb, input.workspaceId).some(
+      unresolvedRecoveryExecutions(input.coreDb, input.workspaceId).some(
         (row) => row.admission_id !== current.admission_id
       )
     )
@@ -367,7 +369,7 @@ export function readWorkspaceRecoveryBlockers(
 /** One authoritative census serves ordinary and exact-recovery lifecycle inspection. */
 function readWorkspaceBlockerFacts(
   input: Parameters<typeof readBlockers>[0],
-  selected?: RecoveryAdmission,
+  selected?: RecoveryExecution,
   captureId?: string
 ): readonly WorkspaceBlocker[] {
   const blockers: WorkspaceBlocker[] = [];
@@ -716,11 +718,8 @@ function readWorkspaceBlockerFacts(
         );
     }
     addCaptureBlockers();
-    for (const id of coreIds(
-      "SELECT admission_id FROM workspace_recovery_admissions WHERE workspace_id=? AND state NOT IN ('finished','abandoned')"
-    )) {
-      const recovery = readRecoveryAdmission(coreDb, id);
-      if (!recovery) throw new Error('Missing recovery authority.');
+    for (const recovery of listRecoveryExecutions(coreDb, workspaceId, 'prepared')) {
+      const id = recovery.admission_id;
       if (selected && isDeepStrictEqual(recovery, selected)) continue;
       if (recovery.state === 'prepared')
         add({
@@ -1378,13 +1377,7 @@ function validateCaptureHistory(dataRoot: string, workspaceId: string, coreRoot?
       .pluck()
       .all(workspaceId) as string[])
       getWorkerStorageBinding(core, { storageRef: id });
-    for (const id of coreSqlite
-      .prepare(
-        "SELECT admission_id FROM workspace_recovery_admissions WHERE workspace_id=? AND state<>'prepared'"
-      )
-      .pluck()
-      .all(workspaceId) as string[])
-      readRecoveryAdmission(core, id);
+    listRecoveryExecutions(core, workspaceId, 'terminal');
   } finally {
     coreSqlite.close();
   }
@@ -1453,7 +1446,7 @@ export type WorkspaceCapturePhase =
   | 'cleanup-end';
 /** Closed, request-private worker control; it carries no product body or authorization grant. */
 export type WorkspaceCaptureControl =
-  | { kind: 'source-proof'; file: ControlRecoveryTargetProofFile }
+  | { kind: 'source-proof'; file: StorageContent }
   | { kind: 'candidate'; workspaceId: string }
   | { kind: 'phase'; phase: WorkspaceCapturePhase; at: number; path?: string }
   | { kind: 'capacity'; action: 'reserve'; writes: FileWriteCapacity }
@@ -1535,18 +1528,12 @@ async function retainWorkspaceSnapshots(input: WorkspaceCaptureWorkerInput): Pro
   });
   try {
     const core = bindCoreSqlite(coreReader.sqlite, dataRoot);
-    for (const row of coreReader.sqlite
-      .prepare(
-        'SELECT admission_id, proof_json FROM workspace_recovery_admissions WHERE workspace_id=?'
-      )
-      .all(workspaceId) as { admission_id: string; proof_json: string }[]) {
-      // Check required semantics on original proof content before its owner strips descriptive fields.
+    for (const recovery of listRecoveryExecutions(core, workspaceId)) {
+      // Retention checks the original declarations, not the narrowed manifest projection.
       assertWorkspaceBackupRequiredFeatures(
-        JSON.parse(row.proof_json),
+        readWorkspaceRecoveryProof(core, recovery.admission_id),
         new Set(input.supportedRequiredFeatures ?? [])
       );
-      const recovery = readRecoveryAdmission(core, row.admission_id);
-      if (!recovery) refuse('recovery-required');
       protectedIds.add(recovery.backup_id);
       protectedInventories.push(recovery.proof.manifest.inventory);
     }
@@ -1669,10 +1656,10 @@ export async function runWorkspaceCaptureWorker(
         at: performance.timeOrigin + performance.now(),
         ...(path ? { path } : {}),
       }),
-    (proof, admission) =>
-      withSourceRecoveryProofFile(dataRoot, selected.backupId, proof, admission, (file) => {
-        control({ kind: 'source-proof', file });
-      })
+    async (proof, admission) => {
+      const file = await publishRecoveryProof(dataRoot, proof, admission);
+      control({ kind: 'source-proof', file });
+    }
   );
   if (automatic) {
     // Reuse the same exclusion and posted-ACK drain; never collect over a new publisher.
@@ -2805,7 +2792,7 @@ async function captureWorkspaceBackup(
       } else {
         const core = openExistingCoreDbWithIntegrityCheck(sourceRoot);
         try {
-          prepareRecoveryAdmission(core, input.backupId, output, proof);
+          prepareRecoveryExecution(core, input.backupId, output, proof);
         } finally {
           core.sqlite.close();
         }
@@ -3100,7 +3087,7 @@ function workspaceSnapshotLocalSource(
       if (!release) {
         // A finished MOVE retains its exact source exclusion while supplying the sealed bundle.
         owned.currentAuthority();
-        const proof = readRecoveryAdmission(owned.coreDb, input.backupId);
+        const proof = readRecoveryExecution(owned.coreDb, input.backupId);
         const source = readNativeProduct(
           nativeProductScope(owned.dataRoot, { kind: 'workspace', workspaceId: input.workspaceId }),
           'workspace',
@@ -3220,7 +3207,7 @@ export async function inspectWorkspaceSnapshot(
     if (
       freeze &&
       result.manifest.purpose === 'move' &&
-      !readRecoveryAdmission(owned.coreDb, input.backupId)
+      !readRecoveryExecution(owned.coreDb, input.backupId)
     )
       assertWorkspaceBackupCut(owned.dataRoot, result.candidateRoot, result.manifest, owned.coreDb);
     return result;

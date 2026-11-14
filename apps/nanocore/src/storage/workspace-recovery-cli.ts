@@ -18,8 +18,8 @@ import {
   reactivateWorkspace,
 } from './workspace-move.js';
 import type { WorkspaceMoveMemberMapping } from './workspace-move-mapping.js';
-import { recoveryReport } from './workspace-recovery-admissions.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import { recoveryReport } from './workspace-recovery-journal.js';
 import {
   abandonWorkspaceRecovery,
   admitWorkspaceBackup,

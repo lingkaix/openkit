@@ -30,7 +30,7 @@ import {
   readPublishedAgentSessionIds,
   readPublishedTurnFileRecords,
 } from '../storage/workspace-file-records.js';
-import { listWorkspaceRecoveryPredecessors } from '../storage/workspace-recovery-admissions.js';
+import { listWorkspaceRecoveryPredecessors } from '../storage/workspace-recovery-journal.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from './aep-snapshot-ledger.js';
 import {
   listSchedulerExecutionAttemptsForTurn,

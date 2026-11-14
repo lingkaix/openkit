@@ -251,7 +251,7 @@ import { getControlStoreWorkerClient } from './storage/control-store-worker-clie
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
-import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-admissions.js';
+import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
 import { registerWorkspaceTransferRoutes } from './storage/workspace-transfer-routes.js';
 import { createHttpTelemetryMiddleware } from './telemetry.js';
 import { registerTurnEventRoutes } from './turn-event-routes.js';

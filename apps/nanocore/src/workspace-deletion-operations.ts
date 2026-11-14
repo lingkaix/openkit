@@ -55,13 +55,13 @@ import {
   readNativeProduct,
   WorkspaceSystemRecordSchema,
 } from './storage/workspace-file-records.js';
-import type { RecoveryAdmission } from './storage/workspace-recovery-admissions.js';
+import type { RecoveryExecution } from './storage/workspace-recovery-journal.js';
 import {
   bindWorkspaceDeletionNativeOwner,
   bindWorkspaceRecoveryReadmissionNativeOwner,
-  readRecoveryAdmission,
+  readRecoveryExecution,
   resumeWorkspaceRecoveryOwner,
-} from './storage/workspace-recovery-admissions.js';
+} from './storage/workspace-recovery-journal.js';
 import {
   activateWorkspaceRecoveryAtCore,
   admitWorkspaceBackupAtCore,
@@ -319,7 +319,7 @@ async function recoverOriginalDeletedWorkspace(
       throw value.accessDenied;
     const actual = readWorkspaceDeletionRequest(dataRoot, workspaceId, value.deletionRequestId);
     if (!isDeepStrictEqual(actual, deletion)) throw recoveryRequired();
-    const previous = readRecoveryAdmission(core, requestId);
+    const previous = readRecoveryExecution(core, requestId);
     if (
       previous &&
       (previous.workspace_id !== workspaceId ||
@@ -336,7 +336,7 @@ async function recoverOriginalDeletedWorkspace(
     );
   };
   currentAuthority();
-  const previous = readRecoveryAdmission(core, requestId);
+  const previous = readRecoveryExecution(core, requestId);
   const project = (
     report: import('./storage/workspace-recovery-cli.js').WorkspaceRecoveryCliReport
   ) =>
@@ -459,7 +459,7 @@ async function recoverOriginalDeletedWorkspace(
       },
     });
     currentAuthority();
-    const completed = readRecoveryAdmission(core, requestId)!;
+    const completed = readRecoveryExecution(core, requestId)!;
     if (!previous)
       gate.transferDeletionRecovery(workspaceId, freeze, deletionOrigin, {
         admissionId: requestId,
@@ -487,7 +487,7 @@ async function recoverOriginalDeletedWorkspace(
       })
     );
   } catch (error) {
-    const retained = readRecoveryAdmission(core, requestId);
+    const retained = readRecoveryExecution(core, requestId);
     if (
       retained &&
       retained.workspace_id === workspaceId &&
@@ -1059,7 +1059,7 @@ function requireTerminalDeletionTruth(
     coreDb: CoreDb;
     store: FsStore;
     workspaceId: string;
-    recovery?: RecoveryAdmission;
+    recovery?: RecoveryExecution;
   },
   request: WorkspaceDeletionRequestRecord
 ): { auditEventId: string; commandReceiptKey: string } {

@@ -29,6 +29,8 @@ export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
 export const CORE_IDLE_CLEANUP_EXECUTION_DEFINITION = 'core-idle-cleanup/v1';
 /** Local Core acknowledgement of an immutable Harness result, never native dispatch authority. */
 export const CORE_HARNESS_CONSUME_EXECUTION_DEFINITION = 'core-harness-consume/v1';
+/** Exact Workspace recovery decisions; local completion never proves physical close or readmission. */
+export const CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION = 'core-workspace-recovery/v1';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
@@ -264,6 +266,7 @@ const definition = z.enum([
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+  CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -542,7 +545,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
     db.scope === 'core'
       ? value === CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
         value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
-        value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION
+        value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
+        value === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -599,6 +603,11 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
     !['inspect-cleanup', 'collect', 'release', 'consume-receipt'].includes(control.kind)
   )
     throw new Error('Core idle cleanup step has no admitted producer.');
+  if (
+    root.definitionVersion === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION &&
+    !['admit', 'inspect-cleanup'].includes(control.kind)
+  )
+    throw new Error('Core recovery step has no admitted producer.');
   if (
     root.definitionVersion === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION &&
     control.kind !== 'consume-receipt'
@@ -773,6 +782,11 @@ export function writeExecutionJournalIntent(
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
+  if (
+    admission.definitionVersion === CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION &&
+    !['admit', 'inspect-cleanup'].includes(control.kind)
+  )
+    throw new Error('Core recovery step has no admitted producer.');
   if (
     admission.definitionVersion === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION &&
     control.kind !== 'consume-receipt'

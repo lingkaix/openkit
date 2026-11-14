@@ -28,25 +28,26 @@ import {
 } from './workspace-backup-bundle.js';
 import { validateWorkspaceMoveMapping } from './workspace-move-mapping.js';
 import { recordWorkspaceOwnerMembership } from './workspace-owner-records.js';
-import {
-  endRecoveryAdmission,
-  prepareRecoveryAdmission,
-  type RecoveryProof,
-  readRecoveryAdmission,
-  refuseRecovery,
-  sourceRecoveryProofRoot,
-  validateRecoveryProof,
-} from './workspace-recovery-admissions.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
 import {
+  finishRecoveryExecution,
+  listRecoveryExecutions,
+  prepareRecoveryExecution,
+  type RecoveryProof,
+  readRecoveryExecution,
+  readRecoveryProofContent,
+  refuseRecovery,
+  reviseRecoveryProof,
+  validateRecoveryProof,
+} from './workspace-recovery-journal.js';
+import {
   type ControlRecoverySourcePreparationInput,
   type ControlRecoveryTargetPreparationInput,
   ControlRecoveryTargetPreparationInputSchema,
-  type ControlRecoveryTargetProofFile,
   type ControlRecoveryTargetRegistrationInput,
   ControlRecoveryTargetRegistrationInputSchema,
   ControlRecoveryTargetRegistrationResultSchema,
@@ -60,7 +61,7 @@ export function applyControlRecoveryTargetRegistration(
   assertControlProductWriter(core.sqlite);
   if (core.scope !== 'core') throw new ControlProductPreconditionError();
   const value = ControlRecoveryTargetRegistrationInputSchema.parse(raw);
-  const owned = readRecoveryAdmission(core, value.admissionId);
+  const owned = readRecoveryExecution(core, value.admissionId);
   if (
     !owned ||
     owned.workspace_id !== value.workspaceId ||
@@ -174,7 +175,7 @@ export function applyControlRecoveryTargetRegistration(
   }
   if (!ControlRecoveryTargetRegistrationResultSchema.safeParse(report).success)
     refuseRecovery('recovery-required');
-  endRecoveryAdmission(core, owned.admission_id, 'finished', report);
+  finishRecoveryExecution(core, owned.admission_id, 'finished', report);
   return report;
 }
 
@@ -250,7 +251,7 @@ export function prepareControlRecoveryTargetPreparation(
   const root = `${resolve(core.dataRoot)}.workspace-recovery-${input.admissionId}`;
   // Retained descriptor paths remain historical after a data-root move; they do not choose the file root.
   const owned =
-    input.kind === 'prepare' ? undefined : readRecoveryAdmission(core, input.admissionId);
+    input.kind === 'prepare' ? undefined : readRecoveryExecution(core, input.admissionId);
   if (
     input.kind !== 'prepare' &&
     (!owned ||
@@ -261,7 +262,14 @@ export function prepareControlRecoveryTargetPreparation(
     refuseRecovery('recovery-required');
   const candidate = owned?.candidate_ref ?? join(root, 'workspaces', input.workspaceId);
   try {
-    const proof = readRecoveryStageProof(input.admissionId, input.file, root, candidate);
+    assertCanonicalDirectory(root);
+    if (realpathSync(root) !== root) refuseRecovery('recovery-required');
+    const proof = readRecoveryProofContent(
+      core.dataRoot,
+      input.admissionId,
+      candidate,
+      input.file
+    ).originalProof;
     if (
       proof.manifest.workspaceId !== input.workspaceId ||
       (proof.input.command !== 'restore' && proof.input.command !== 'move-in')
@@ -272,34 +280,6 @@ export function prepareControlRecoveryTargetPreparation(
       proof.manifest.sourceDeploymentId !== readDataRootLayoutMarker(core.dataRoot).deploymentId
     )
       refuseRecovery('deployment-mismatch');
-    return proof;
-  } catch (error) {
-    if (error instanceof WorkspaceRecoveryError) throw error;
-    return refuseRecovery('recovery-required');
-  }
-}
-
-/** Reads the original bounded immutable proof file for either existing Core lifecycle owner. */
-function readRecoveryStageProof(
-  admissionId: string,
-  file: ControlRecoveryTargetProofFile,
-  root: string,
-  candidate: string
-): RecoveryProof {
-  try {
-    assertCanonicalDirectory(root);
-    if (realpathSync(root) !== root || file.byteLength > WORKSPACE_BACKUP_MAX_FILE_BYTES)
-      refuseRecovery('recovery-required');
-    const path = join(root, file.name);
-    const metadata = lstatSync(path);
-    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1)
-      refuseRecovery('recovery-required');
-    const bytes = readCanonicalFile(path, file.byteLength);
-    if (realpathSync(root) !== root) refuseRecovery('recovery-required');
-    if (`sha256:${createHash('sha256').update(bytes).digest('hex')}` !== file.digest)
-      refuseRecovery('recovery-required');
-    const proof = JSON.parse(bytes.toString('utf8')) as RecoveryProof;
-    validateRecoveryProof(admissionId, candidate, proof);
     return proof;
   } catch (error) {
     if (error instanceof WorkspaceRecoveryError) throw error;
@@ -324,10 +304,12 @@ function prepareSourceProof(
   core: CoreDb,
   input: ControlRecoverySourcePreparationInput
 ): RecoveryProof {
-  const root = sourceRecoveryProofRoot(core.dataRoot, input.workspaceId, input.admissionId);
+  const root = join(resolve(core.dataRoot), 'server/backups/workspaces', input.workspaceId);
+  assertCanonicalDirectory(root);
+  if (realpathSync(root) !== root) refuseRecovery('recovery-required');
   const candidate = join(root, input.admissionId);
   const owned =
-    input.kind === 'source-prepare' ? undefined : readRecoveryAdmission(core, input.admissionId);
+    input.kind === 'source-prepare' ? undefined : readRecoveryExecution(core, input.admissionId);
   if (
     input.kind !== 'source-prepare' &&
     (!owned ||
@@ -337,7 +319,12 @@ function prepareSourceProof(
       commandInputHash(owned.proof) !== input.proofHash)
   )
     refuseRecovery('recovery-required');
-  const proof = readRecoveryStageProof(input.admissionId, input.file, root, candidate);
+  const proof = readRecoveryProofContent(
+    core.dataRoot,
+    input.admissionId,
+    candidate,
+    input.file
+  ).originalProof;
   if (
     proof.manifest.workspaceId !== input.workspaceId ||
     proof.manifest.purpose !== 'move' ||
@@ -362,10 +349,7 @@ function applySourcePreparation(
     authority: { mode: 'live', actor: input.authority.actor },
     deletedRecovery: undefined,
   });
-  const candidate = join(
-    sourceRecoveryProofRoot(core.dataRoot, input.workspaceId, input.admissionId),
-    input.admissionId
-  );
+  const candidate = join(resolve(core.dataRoot), 'server/backups/workspaces', input.workspaceId, input.admissionId);
   validateRecoveryProof(input.admissionId, candidate, proof);
   if (
     proof.manifest.workspaceId !== input.workspaceId ||
@@ -378,10 +362,10 @@ function applySourcePreparation(
   if (input.kind === 'source-prepare') {
     if (proof.result.command !== 'capture' || proof.result.disposition !== 'prepared')
       refuseRecovery('request-conflict');
-    prepareRecoveryAdmission(core, input.admissionId, candidate, proof);
+    prepareRecoveryExecution(core, input.admissionId, candidate, proof);
     return;
   }
-  const owned = readRecoveryAdmission(core, input.admissionId);
+  const owned = readRecoveryExecution(core, input.admissionId);
   if (
     !owned ||
     owned.workspace_id !== input.workspaceId ||
@@ -413,7 +397,7 @@ function applySourcePreparation(
   )
     refuseRecovery('request-conflict');
   ControlRecoveryTargetRegistrationResultSchema.parse(report);
-  endRecoveryAdmission(
+  finishRecoveryExecution(
     core,
     input.admissionId,
     input.kind === 'source-finish' ? 'finished' : 'abandoned',
@@ -447,12 +431,12 @@ export function applyControlRecoveryTargetPreparation(
       refuseRecovery('recovery-required');
     const workspaceId = input.workspaceId;
     if (
-      readRecoveryAdmission(core, input.admissionId) ||
-      core.sqlite
-        .prepare(
-          "SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=? AND (state='prepared' OR (state='abandoned' AND json_extract(proof_json,'$.result.disposition')!='abandoned'))"
-        )
-        .get(workspaceId)
+      readRecoveryExecution(core, input.admissionId) ||
+      listRecoveryExecutions(core, workspaceId).some(
+        (row) =>
+          row.state === 'prepared' ||
+          (row.state === 'abandoned' && row.proof.result.disposition !== 'abandoned')
+      )
     )
       refuseRecovery('recovery-required');
     const lifecycle = getWorkspaceRegistryLifecycleFact(core, workspaceId);
@@ -476,11 +460,9 @@ export function applyControlRecoveryTargetPreparation(
     } else if (proof.input.command === 'move-in') {
       if (
         lifecycle ||
-        core.sqlite
-          .prepare(
-            "SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=? AND NOT (state='abandoned' AND json_extract(proof_json,'$.result.disposition')='abandoned')"
-          )
-          .get(workspaceId)
+        listRecoveryExecutions(core, workspaceId).some(
+          (row) => row.state !== 'abandoned' || row.proof.result.disposition !== 'abandoned'
+        )
       )
         refuseRecovery('identity-collision');
       validateRecoveryTargetMapping(
@@ -495,10 +477,10 @@ export function applyControlRecoveryTargetPreparation(
       'workspaces',
       workspaceId
     );
-    prepareRecoveryAdmission(core, input.admissionId, candidate, proof);
+    prepareRecoveryExecution(core, input.admissionId, candidate, proof);
     return;
   }
-  const owned = readRecoveryAdmission(core, input.admissionId);
+  const owned = readRecoveryExecution(core, input.admissionId);
   if (
     !owned ||
     owned.workspace_id !== input.workspaceId ||
@@ -510,7 +492,7 @@ export function applyControlRecoveryTargetPreparation(
     refuseRecovery('request-conflict');
   if (input.kind === 'abandon') {
     if (owned.state === 'finished') refuseRecovery('request-conflict');
-    endRecoveryAdmission(core, input.admissionId, 'abandoned');
+    finishRecoveryExecution(core, input.admissionId, 'abandoned');
     return;
   }
   if (!proof || !equalExcept(proof, owned.proof, ['candidateDigest', 'result']))
@@ -535,9 +517,7 @@ export function applyControlRecoveryTargetPreparation(
       proof.capture.manifestDigest
     );
     ControlRecoveryTargetRegistrationResultSchema.parse(proof.result);
-    core.sqlite
-      .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-      .run(JSON.stringify(proof), input.admissionId);
+    reviseRecoveryProof(core, owned, proof);
     return;
   }
   const report = proof.result;
@@ -553,5 +533,5 @@ export function applyControlRecoveryTargetPreparation(
   )
     refuseRecovery('recovery-required');
   ControlRecoveryTargetRegistrationResultSchema.parse(report);
-  endRecoveryAdmission(core, input.admissionId, 'abandoned', report);
+  finishRecoveryExecution(core, input.admissionId, 'abandoned', report);
 }

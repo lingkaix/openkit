@@ -39,7 +39,7 @@ import {
   WORKSPACE_BACKUP_POLICY,
 } from './workspace-backup.js';
 import { completeCapture, inspectCapture, protectCapture } from './workspace-capture-protection.js';
-import * as recovery from './workspace-recovery-admissions.js';
+import * as recovery from './workspace-recovery-journal.js';
 
 const roots: string[] = [];
 const handles: (CoreDb | WorkspaceDb)[] = [];
@@ -355,7 +355,7 @@ describe('retained capture exclusion rejoin', () => {
       admission: new FileStorageAdmission(root, () => 0n),
     });
     expect(captured.disposition).toBe('prepared');
-    const prepared = recovery.readRecoveryAdmission(core, captureId);
+    const prepared = recovery.readRecoveryExecution(core, captureId);
     expect(prepared?.state).toBe('prepared');
     const db = openWorkspaceDb(dataRoot, workspaceId);
     handles.push(db);
@@ -366,8 +366,8 @@ describe('retained capture exclusion rejoin', () => {
     const first = resume();
     if (first.status !== 'frozen') throw new Error('Expected the prepared source capture owner.');
     completeCapture(db, workspaceId, captureId);
-    recovery.endRecoveryAdmission(core, captureId, 'finished');
-    expect(recovery.readRecoveryAdmission(core, captureId)?.revision).toBe(prepared!.revision + 1);
+    recovery.finishRecoveryExecution(core, captureId, 'finished');
+    expect(recovery.readRecoveryExecution(core, captureId)?.revision).toBe(prepared!.revision + 1);
     expect(() =>
       recovery.bindWorkspaceCaptureNativeOwner(core, workspaceId, captureId, gate, first)
     ).not.toThrow();

@@ -1,27 +1,50 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { isEntityId, RequestIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
-import { assertCanonicalDirectory, publishDurableFile, removeDurableFile } from '@openkit/storage';
+import {
+  assertCanonicalDirectory,
+  publishDurableFile,
+  type StorageContent,
+  syncCanonicalDirectory,
+  syncCanonicalDirectoryAsync,
+  writeCanonicalFileAtomic,
+} from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { z } from 'zod';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { scopeAdmissionFailures } from '../bootstrap/readiness.js';
+import { localCoreJournalIntent } from '../runtime/core-journal-records.js';
+import {
+  CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
+  decodeExecutionJournalSpan,
+  readExecutionJournalInvocation,
+  readExecutionJournalRoot,
+  settleExecutionJournalStep,
+  writeExecutionJournalIntent,
+} from '../runtime/execution-journal.js';
+import type { ExecutionStepRef } from '../runtime/execution-step-journal.js';
 import type {
   WorkspaceFreezeAdmission,
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
   WorkspaceRecoveryFreezeOrigin,
 } from '../workspace-mutation-admission.js';
+import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { configureOwnedSqlite } from './control-store.js';
-import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
+import { commandInputHash } from './control-store-input.js';
+import {
+  closeWorkspaceProductReadHandles,
+  fileContentSchema,
+} from './control-store-product-records.js';
 import type {
   ControlRecoveryNativeBinding,
   ControlRecoveryNativeCall,
 } from './control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck, openWorkspaceReadDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
+import { readImmutableContentBytes } from './immutable-content-read.js';
 import type { WorkspaceBackupCreateInput, WorkspaceBackupReport } from './workspace-backup.js';
 import {
   parseWorkspaceBackupManifest,
@@ -38,7 +61,6 @@ import {
   WorkspaceRecoveryError,
   type WorkspaceRecoveryErrorCode,
 } from './workspace-recovery-error.js';
-import type { ControlRecoveryTargetProofFile } from './workspace-recovery-target-codecs.js';
 
 /** Closed proof retained by the offline admission owner, not the command receipt ledger. */
 export interface RecoveryProof {
@@ -54,8 +76,8 @@ export interface RecoveryProof {
   result: WorkspaceRecoveryCliReport;
   readonly candidateDigest?: string;
 }
-/** One native request whose proof and candidate survive registration rollback. */
-export interface RecoveryAdmission {
+/** A read projection: existing journal facts and original proof, never a parallel admission record. */
+export interface RecoveryExecution {
   readonly admission_id: string;
   readonly backup_id: string;
   readonly workspace_id: string;
@@ -69,18 +91,18 @@ export interface RecoveryAdmission {
 /** Rejoins the exact boot-restored exclusion without clearing scoped authority failure. */
 export function resumeWorkspaceRecoveryOwner(
   core: CoreDb,
-  owned: RecoveryAdmission,
+  owned: RecoveryExecution,
   admission: WorkspaceMutationAdmission,
   readBlockers: Parameters<WorkspaceMutationAdmission['tryFreeze']>[1]
 ): WorkspaceFreezeAdmission {
-  const current = readRecoveryAdmission(core, owned.admission_id);
+  const current = readRecoveryExecution(core, owned.admission_id);
   const failures = scopeAdmissionFailures(core.dataRoot).filter(
     (failure) =>
       failure.scope === 'workspace' &&
       failure.id === owned.workspace_id &&
       failure.check !== 'index'
   );
-  const unresolved = unresolvedRecoveryAdmissions(core, owned.workspace_id);
+  const unresolved = unresolvedRecoveryExecutions(core, owned.workspace_id);
   if (
     !current ||
     !isDeepStrictEqual(current, owned) ||
@@ -117,8 +139,8 @@ export function readWorkspaceRecoveryReadmission(
   id: string,
   admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
-): RecoveryAdmission {
-  const owned = readRecoveryAdmission(core, id);
+): RecoveryExecution {
+  const owned = readRecoveryExecution(core, id);
   if (
     !owned ||
     (owned.state !== 'finished' &&
@@ -129,7 +151,7 @@ export function readWorkspaceRecoveryReadmission(
       )) ||
     !RequestIdSchema.safeParse(id).success ||
     !['restore', 'move-in'].includes(owned.proof.input.command) ||
-    unresolvedRecoveryAdmissions(core, owned.workspace_id).length !== 0 ||
+    unresolvedRecoveryExecutions(core, owned.workspace_id).length !== 0 ||
     !admission.ownsRecoveryOrigin(owned.workspace_id, freeze, {
       admissionId: owned.admission_id,
       revision: owned.revision - 1,
@@ -141,11 +163,11 @@ export function readWorkspaceRecoveryReadmission(
 }
 
 /** The same unresolved-owner predicate binds boot rejoin and terminal serving readmission. */
-export function unresolvedRecoveryAdmissions(
+export function unresolvedRecoveryExecutions(
   core: CoreDb,
   workspaceId: string
-): RecoveryAdmission[] {
-  return recoveryAdmissions(core, workspaceId).filter(
+): RecoveryExecution[] {
+  return listRecoveryExecutions(core, workspaceId).filter(
     (row) =>
       row.state === 'prepared' ||
       (row.admission_id.startsWith('wsbak_') && row.state === 'finished') ||
@@ -155,27 +177,35 @@ export function unresolvedRecoveryAdmissions(
 }
 
 /** Uses the existing Core selection for both predecessor discovery and exclusive recovery ownership. */
-function recoveryAdmissions(core: CoreDb, workspaceId?: string): RecoveryAdmission[] {
+export function listRecoveryExecutions(
+  core: CoreDb,
+  workspaceId?: string,
+  state?: 'prepared' | 'terminal'
+): RecoveryExecution[] {
   const ids = core.sqlite
-    .prepare(
-      'SELECT admission_id FROM workspace_recovery_admissions WHERE (? IS NULL OR workspace_id=?)'
-    )
-    .all(workspaceId ?? null, workspaceId ?? null) as { admission_id: string }[];
-  return ids.map(({ admission_id }) => readRecoveryAdmission(core, admission_id)!);
+    .prepare(`SELECT DISTINCT json_extract(s.invocation_json,'$.carriage.requestId') AS id
+    FROM control_executions e JOIN control_execution_steps s ON s.execution_id=e.id
+    WHERE e.definition_version='core-workspace-recovery/v1'
+    ${workspaceId === undefined ? '' : 'AND e.work_id=?'} ${state === undefined ? '' : 'AND e.phase=?'}`)
+    .all(
+      ...(workspaceId === undefined ? [] : [workspaceId]),
+      ...(state === undefined ? [] : [state === 'prepared' ? 'open' : 'closed'])
+    ) as { id: string }[];
+  return ids.map(({ id }) => readRecoveryExecution(core, id)!);
 }
 
 /** Selects the unique finished original recovery; this grants no serving or replacement authority. */
 export function readFinishedDeletedWorkspaceRecovery(
   core: CoreDb,
   deletion: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord
-): RecoveryAdmission | undefined {
+): RecoveryExecution | undefined {
   if (
     !['deleted', 'cleaned'].includes(deletion.phase) ||
     !deletion.recoveryBackupId ||
     !deletion.closureDigest
   )
     return undefined;
-  const matches = recoveryAdmissions(core, deletion.workspaceId).filter(
+  const matches = listRecoveryExecutions(core, deletion.workspaceId).filter(
     (row) =>
       row.state === 'finished' &&
       row.proof.input.command === 'restore' &&
@@ -192,14 +222,14 @@ export function readFinishedDeletedWorkspaceRecovery(
 /** Binds the exact prepared recovery's physical databases to its still-live mutation freeze. */
 export function bindWorkspaceRecoveryNativeOwner(
   core: CoreDb,
-  owned: RecoveryAdmission,
+  owned: RecoveryExecution,
   admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): {
   readonly canonical?: ControlRecoveryNativeCall;
   readonly candidate: ControlRecoveryNativeCall;
 } {
-  const current = readRecoveryAdmission(core, owned.admission_id);
+  const current = readRecoveryExecution(core, owned.admission_id);
   const sourceDataRoot = resolve(core.dataRoot);
   const privateDataRoot = `${sourceDataRoot}.workspace-recovery-${owned.admission_id}`;
   if (
@@ -239,7 +269,7 @@ export function bindWorkspaceRecoveryNativeOwner(
 /** Binds only the placed terminal target for open/close before exact serving readmission. */
 export function bindWorkspaceRecoveryReadmissionNativeOwner(
   core: CoreDb,
-  owned: RecoveryAdmission,
+  owned: RecoveryExecution,
   admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): ControlRecoveryNativeCall {
@@ -348,8 +378,8 @@ export function captureRecoveryOrigin(
   } finally {
     db.sqlite.close();
   }
-  const owned = readRecoveryAdmission(core, captureId);
-  if (unresolvedRecoveryAdmissions(core, workspaceId).some((row) => row.admission_id !== captureId))
+  const owned = readRecoveryExecution(core, captureId);
+  if (unresolvedRecoveryExecutions(core, workspaceId).some((row) => row.admission_id !== captureId))
     refuseRecovery('recovery-required');
   if (!owned) return { captureId };
   if (
@@ -404,7 +434,7 @@ export function bindWorkspaceCaptureNativeOwner(
 }
 
 /** Keeps original identities under the existing private recovery container, outside live discovery. */
-export function workspaceRecoveryPredecessorRoot(owned: RecoveryAdmission): string {
+export function workspaceRecoveryPredecessorRoot(owned: RecoveryExecution): string {
   return join(
     dirname(dirname(owned.candidate_ref)),
     'predecessor',
@@ -418,7 +448,7 @@ export function listWorkspaceRecoveryPredecessors(
   core: CoreDb
 ): readonly { dataRoot: string; workspaceId: string }[] {
   const predecessors: { dataRoot: string; workspaceId: string }[] = [];
-  for (const owned of recoveryAdmissions(core)) {
+  for (const owned of listRecoveryExecutions(core)) {
     if (owned.proof.input.command !== 'restore') continue;
     if (!RequestIdSchema.safeParse(owned.admission_id).success) refuseRecovery('recovery-required');
     const container = `${resolve(core.dataRoot)}.workspace-recovery-${owned.admission_id}`;
@@ -608,75 +638,313 @@ export function validateRecoveryProof(id: string, candidate: string, proof: Reco
   return { ...proof, manifest };
 }
 
-/** Reads the closed original intent before any bundle, current mapping or effect revalidation. */
-export function readRecoveryAdmission(core: CoreDb, id: string): RecoveryAdmission | undefined {
+/** Reads one addressed stage; journal sequence and original admission revision are distinct. */
+function recoveryStage(core: CoreDb, id: string) {
   const row = core.sqlite
-    .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
-    .get(id) as
-    | (Omit<RecoveryAdmission, 'proof'> & { proof_json: string; schema_version: number })
-    | undefined;
+    .prepare(`SELECT execution_id, step_id, span_json FROM control_execution_steps
+    WHERE json_extract(control_json,'$.definitionVersion')='core-workspace-recovery/v1'
+      AND json_extract(invocation_json,'$.carriage.requestId')=?
+    ORDER BY json_extract(invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
+    .get(id) as { execution_id: string; step_id: string; span_json: string } | undefined;
   if (!row) return undefined;
-  let proof: RecoveryProof;
   try {
-    proof = validateRecoveryProof(id, row.candidate_ref, JSON.parse(row.proof_json));
+    const ref = {
+      execution: { owner: { kind: 'server' as const }, executionId: row.execution_id },
+      stepId: row.step_id,
+    };
+    const invocation = readExecutionJournalInvocation(core, ref);
+    const root = readExecutionJournalRoot(core, ref.execution);
+    const encoded = invocation.control.inputRefs[0]!;
+    const content = fileContentSchema.parse(JSON.parse(encoded));
+    const { carriage, control } = invocation;
+    const revision = Number(control.authorityRefs[1]);
+    const candidate = carriage.bindingRef;
+    if (!candidate) refuseRecovery('recovery-required');
+    const { originalProof, proof } = readRecoveryProofContent(
+      core.dataRoot,
+      id,
+      candidate,
+      content
+    );
+    const state =
+      root.phase === 'open'
+        ? 'prepared'
+        : root.terminalCause?.startsWith('abandoned:')
+          ? 'abandoned'
+          : 'finished';
+    if (
+      root.phase === 'closing' ||
+      root.workId !== proof.manifest.workspaceId ||
+      carriage.operation !== 'workspace.recovery' ||
+      carriage.requestId !== id ||
+      !carriage.sequence ||
+      !Number.isSafeInteger(revision) ||
+      revision < 1 ||
+      content.mediaType !== 'application/json' ||
+      control.fingerprint !==
+        commandInputHash({ id, revision, candidate, proof: content.reference.contentDigest }) ||
+      !isDeepStrictEqual(control.inputRefs, [encoded]) ||
+      !isDeepStrictEqual(control.authorityRefs, [id, String(revision)]) ||
+      !isDeepStrictEqual(control.outputRefs, invocation.state === 'intent' ? [] : [encoded]) ||
+      root.terminalCause !==
+        (state === 'abandoned' ? `abandoned:${proof.result.disposition}` : null) ||
+      (invocation.state !== 'completed' &&
+        !(invocation.state === 'intent' && control.kind === 'admit' && state === 'prepared'))
+    )
+      refuseRecovery('recovery-required');
+    const snapshot: RecoveryExecution = {
+      admission_id: id,
+      backup_id: proof.manifest.backupId,
+      workspace_id: proof.manifest.workspaceId,
+      purpose: proof.manifest.purpose,
+      state,
+      revision,
+      candidate_ref: candidate,
+      proof,
+    };
+    return {
+      snapshot,
+      originalProof,
+      ref,
+      root,
+      sequence: carriage.sequence,
+      span: decodeExecutionJournalSpan(JSON.parse(row.span_json)),
+    };
   } catch {
-    refuseRecovery('recovery-required');
+    return refuseRecovery('recovery-required');
   }
-  if (
-    row.schema_version !== 1 ||
-    !['prepared', 'finished', 'abandoned'].includes(row.state) ||
-    !Number.isSafeInteger(row.revision) ||
-    row.revision < 1 ||
-    proof.manifest.purpose !== row.purpose ||
-    proof.manifest.backupId !== row.backup_id ||
-    proof.manifest.workspaceId !== row.workspace_id
-  )
-    refuseRecovery('recovery-required');
-  return { ...row, proof };
 }
-/** Creates ownership before placement; the enclosing caller holds the root lock. */
-export function prepareRecoveryAdmission(
+
+/** Reads original authority before current bundle, mapping or effect checks. */
+export function readRecoveryExecution(core: CoreDb, id: string): RecoveryExecution | undefined {
+  return recoveryStage(core, id)?.snapshot;
+}
+
+/** Gives retention its original required-feature declarations before the domain reader narrows them. */
+export function readWorkspaceRecoveryProof(core: CoreDb, id: string): RecoveryProof | undefined {
+  return recoveryStage(core, id)?.originalProof;
+}
+
+/** Publishes immutable Core content before SQL; an uncommitted orphan grants no recovery authority. */
+/** One canonical Core content binding for both async preparation and native decisions. */
+function recoveryProofFile(
+  dataRoot: string,
+  proof: RecoveryProof,
+  admission?: Pick<WorkspaceBackupCreateInput['admission'], 'reserve'>
+) {
+  const bytes = Buffer.from(JSON.stringify(proof));
+  if (bytes.length > WORKSPACE_BACKUP_MAX_FILE_BYTES) refuseRecovery('invalid-bundle');
+  const scope = nativeProductScope(dataRoot, { kind: 'server' });
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  const path = join(scope.contentMount.root, 'sha256', digest);
+  const content = fileContentSchema.parse({
+    reference: {
+      knowledgeBaseId: null,
+      contentDigest: `sha256:${digest}`,
+      availability: 'available',
+      range: null,
+      locator: {
+        ownerScope: scope.owner,
+        mount: scope.contentMount.mount,
+        path: `sha256/${digest}`,
+      },
+    },
+    byteLength: bytes.length,
+    mediaType: 'application/json',
+  });
+  const reservation = (admission ?? new FileStorageAdmission(path, () => 1_000_000_000n)).reserve(
+    {
+      stagingBytes: 0n,
+      extractionBytes: 0n,
+      derivativeBytes: 0n,
+      publicationBytes: BigInt(bytes.length),
+    },
+    'control'
+  );
+  return { bytes, path, content, reservation };
+}
+
+/** Reads exact Core-owned proof bytes; parsing a descriptor alone grants no authority. */
+export function readRecoveryProofContent(
+  dataRoot: string,
+  id: string,
+  candidate: string,
+  content: StorageContent
+) {
+  try {
+    if (content.mediaType !== 'application/json') refuseRecovery('recovery-required');
+    const scope = nativeProductScope(dataRoot, { kind: 'server' });
+    const originalProof = JSON.parse(
+      Buffer.from(
+        readImmutableContentBytes(
+          scope.contentMount,
+          scope.owner,
+          content,
+          WORKSPACE_BACKUP_MAX_FILE_BYTES
+        )
+      ).toString('utf8')
+    ) as RecoveryProof;
+    return { originalProof, proof: validateRecoveryProof(id, candidate, originalProof) };
+  } catch (error) {
+    if (error instanceof WorkspaceRecoveryError) throw error;
+    return refuseRecovery('recovery-required');
+  }
+}
+
+/** Publishes proof before its journal reference inside the native/stopped Core decision. */
+function recoveryContent(core: CoreDb, proof: RecoveryProof): string {
+  const file = recoveryProofFile(core.dataRoot, proof);
+  try {
+    writeCanonicalFileAtomic(
+      file.path,
+      file.bytes,
+      file.bytes.length,
+      file.reservation,
+      0o600,
+      'create'
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+    syncCanonicalDirectory(dirname(file.path));
+  }
+  const scope = nativeProductScope(core.dataRoot, { kind: 'server' });
+  readImmutableContentBytes(
+    scope.contentMount,
+    scope.owner,
+    file.content,
+    WORKSPACE_BACKUP_MAX_FILE_BYTES
+  );
+  return JSON.stringify(file.content);
+}
+
+/** Advances only local recovery decisions. Ended originals stay immutable across later explicit reactivation. */
+function recordRecoveryState(core: CoreDb, snapshot: RecoveryExecution): void {
+  validateRecoveryProof(snapshot.admission_id, snapshot.candidate_ref, snapshot.proof);
+  core.sqlite.transaction(() => {
+    const prior = recoveryStage(core, snapshot.admission_id);
+    if (prior && isDeepStrictEqual(prior.snapshot, snapshot)) return;
+    if (
+      (!prior && snapshot.state !== 'prepared') ||
+      (prior?.root.phase === 'closed' && snapshot.state === 'prepared')
+    )
+      refuseRecovery('request-conflict');
+    const sequence = (prior?.sequence ?? 0) + 1;
+    const root = prior?.root.phase === 'open' ? prior.root : undefined;
+    const encoded = recoveryContent(core, snapshot.proof);
+    const intent = localCoreJournalIntent({
+      definitionVersion: CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
+      executionId:
+        root?.ref.executionId ?? `workspace-recovery:${snapshot.admission_id}:${sequence}`,
+      stepId: `stage:${sequence}`,
+      workId: snapshot.workspace_id,
+      fingerprint: commandInputHash({
+        id: snapshot.admission_id,
+        revision: snapshot.revision,
+        candidate: snapshot.candidate_ref,
+        proof: fileContentSchema.parse(JSON.parse(encoded)).reference.contentDigest,
+      }),
+      kind: prior ? 'inspect-cleanup' : 'admit',
+      actorId: 'workspace-recovery',
+      inputRefs: [encoded],
+      authorityRefs: [snapshot.admission_id, String(snapshot.revision)],
+      carriage: {
+        operation: 'workspace.recovery',
+        requestId: snapshot.admission_id,
+        sequence,
+        bindingRef: snapshot.candidate_ref,
+      },
+      timestamp: new Date().toISOString(),
+      ...(root ? { root } : {}),
+      ...(prior ? { inspected: { ref: prior.ref, span: prior.span } } : {}),
+    });
+    writeExecutionJournalIntent(core, intent);
+    if (!prior) return;
+    const settle = (
+      ref: ExecutionStepRef,
+      state: 'completed' | 'cancelled',
+      nextPhase: 'open' | 'closed',
+      span = intent.span
+    ) =>
+      settleExecutionJournalStep(core, {
+        ref,
+        expectedExecutionRevision: readExecutionJournalRoot(core, ref.execution).revision,
+        state,
+        outputRefs: [encoded],
+        span: { ...span, endTimeUnixNano: intent.span.startTimeUnixNano, status: { code: 'OK' } },
+        nextPhase,
+        terminalCause:
+          snapshot.state === 'abandoned' ? `abandoned:${snapshot.proof.result.disposition}` : null,
+        exclusionRefs: [],
+      });
+    settle(
+      { execution: intent.execution.ref, stepId: intent.stepId },
+      'completed',
+      root ? 'open' : 'closed'
+    );
+    if (root && snapshot.state !== 'prepared') {
+      const first = core.sqlite
+        .prepare('SELECT span_json FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+        .get(root.ref.executionId, 'stage:1') as { span_json: string };
+      settle(
+        { execution: root.ref, stepId: 'stage:1' },
+        snapshot.state === 'abandoned' ? 'cancelled' : 'completed',
+        'closed',
+        { ...decodeExecutionJournalSpan(JSON.parse(first.span_json)), endTimeUnixNano: null }
+      );
+    }
+  })();
+}
+
+/** Creates exact ownership before placement under the existing root lock/native transaction. */
+export function prepareRecoveryExecution(
   core: CoreDb,
   id: string,
   candidate: string,
   proof: RecoveryProof
 ): void {
-  validateRecoveryProof(id, candidate, proof);
-  const now = new Date().toISOString();
-  core.sqlite
-    .prepare(
-      `INSERT INTO workspace_recovery_admissions (admission_id, backup_id, workspace_id, purpose, state, revision, created_at, updated_at, candidate_ref, proof_json) VALUES (?,?,?,?,'prepared',1,?,?,?,?)`
-    )
-    .run(
-      id,
-      proof.manifest.backupId,
-      proof.manifest.workspaceId,
-      proof.manifest.purpose,
-      now,
-      now,
-      candidate,
-      JSON.stringify(proof)
-    );
+  if (readRecoveryExecution(core, id)) refuseRecovery('request-conflict');
+  recordRecoveryState(core, {
+    admission_id: id,
+    backup_id: proof.manifest.backupId,
+    workspace_id: proof.manifest.workspaceId,
+    purpose: proof.manifest.purpose,
+    state: 'prepared',
+    revision: 1,
+    candidate_ref: candidate,
+    proof,
+  });
 }
-/** The first terminal decision wins; this update can share registration's Core transaction. */
-export function endRecoveryAdmission(
+
+/** Retains the original first-terminal rule and its independent admission revision. */
+export function finishRecoveryExecution(
   core: CoreDb,
   id: string,
   state: 'finished' | 'abandoned',
   result?: WorkspaceRecoveryCliReport
 ): void {
-  const row = readRecoveryAdmission(core, id);
-  if (!row || (row.state !== 'prepared' && row.state !== state)) refuseRecovery('request-conflict');
-  if (result)
-    core.sqlite
-      .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-      .run(JSON.stringify({ ...row.proof, result }), id);
-  if (row.state !== state)
-    core.sqlite
-      .prepare(
-        "UPDATE workspace_recovery_admissions SET state=?, revision=revision+1, updated_at=? WHERE admission_id=? AND state='prepared'"
-      )
-      .run(state, new Date().toISOString(), id);
+  const owned = readRecoveryExecution(core, id);
+  if (!owned || (owned.state !== 'prepared' && owned.state !== state))
+    refuseRecovery('request-conflict');
+  recordRecoveryState(core, {
+    ...owned,
+    state,
+    revision: owned.revision + (owned.state === state ? 0 : 1),
+    proof: { ...owned.proof, ...(result ? { result } : {}) },
+  });
+}
+
+/** Candidate proof advancement keeps its original admission revision. */
+export function reviseRecoveryProof(
+  core: CoreDb,
+  owned: RecoveryExecution,
+  proof: RecoveryProof
+): void {
+  recordRecoveryState(core, { ...owned, proof });
+}
+
+/** Every explicit source revocation advances the original domain revision, including a retry. */
+export function revokeRecoveryExecution(core: CoreDb, owned: RecoveryExecution): void {
+  recordRecoveryState(core, { ...owned, state: 'abandoned', revision: owned.revision + 1 });
 }
 
 /** Constructs the common path-free report without introducing another retained result shape. */
@@ -696,63 +964,50 @@ export function recoveryReport(
   };
 }
 
-/** Source capture owns this temporary sibling of its generation, on the same admitted filesystem. */
-export function sourceRecoveryProofRoot(
+/** Async preparation uses the same immutable Core content as its journal, without a temporary-file codec. */
+export async function publishRecoveryProof(
   dataRoot: string,
-  workspaceId: string,
-  captureId: string
-): string {
-  if (!isEntityId('ws', workspaceId) || !isEntityId('wsbak', captureId))
-    refuseRecovery('recovery-required');
-  return join(resolve(dataRoot), 'server/backups/workspaces', workspaceId);
-}
-
-/** Reuses the native proof-file stage without cloning a potentially large retained proof into a message. */
-export async function withSourceRecoveryProofFile<T>(
-  dataRoot: string,
-  captureId: string,
   proof: RecoveryProof,
-  admission: Pick<WorkspaceBackupCreateInput['admission'], 'reserve'>,
-  submit: (file: ControlRecoveryTargetProofFile) => Promise<T> | T
-): Promise<T> {
-  const workspaceId = proof.manifest.workspaceId;
-  const candidate = join(resolve(dataRoot), 'server/backups/workspaces', workspaceId, captureId);
-  validateRecoveryProof(captureId, candidate, proof);
-  const root = sourceRecoveryProofRoot(dataRoot, workspaceId, captureId);
-  ensureCanonicalDirectory(root);
-  const bytes = Buffer.from(JSON.stringify(proof), 'utf8');
-  if (bytes.length > WORKSPACE_BACKUP_MAX_FILE_BYTES) refuseRecovery('invalid-bundle');
-  const destinationPath = join(root, `.proof-${randomUUID()}.json`);
-  const reservation = admission.reserve({
-    stagingBytes: BigInt(bytes.length),
-    extractionBytes: 0n,
-    derivativeBytes: 0n,
-    publicationBytes: 0n,
-  });
-  let result: { ok: true; value: T } | { ok: false; error: unknown };
+  admission: Pick<WorkspaceBackupCreateInput['admission'], 'reserve'>
+): Promise<StorageContent> {
+  const parsed = retainedRecoveryIntent.safeParse(proof.input);
+  if (!parsed.success) refuseRecovery('recovery-required');
+  const input = parsed.data;
+  const source = input.command === 'capture' || input.command === 'move-out';
+  const id = source ? proof.manifest.backupId : input.requestId;
+  const candidate = source
+    ? join(resolve(dataRoot), 'server/backups/workspaces', proof.manifest.workspaceId, id)
+    : join(
+        `${resolve(dataRoot)}.workspace-recovery-${id}`,
+        'workspaces',
+        proof.manifest.workspaceId
+      );
+  validateRecoveryProof(id, candidate, proof);
+  ensureCanonicalDirectory(source ? dirname(candidate) : dirname(dirname(candidate)));
+  const file = recoveryProofFile(dataRoot, proof, admission);
   try {
-    reservation.assertAvailable();
-    const file = await publishDurableFile({ destinationPath, bytes });
-    reservation.recordWritten(file.bytes);
-    result = {
-      ok: true,
-      value: await submit({
-        name: destinationPath.slice(root.length + 1),
-        byteLength: file.bytes,
-        digest: file.sha256,
-      }),
-    };
-  } catch (error) {
-    result = { ok: false, error };
-  }
-  try {
-    // A create-only publisher can link this private UUID before its directory-sync acknowledgement fails.
-    await removeDurableFile({ destinationPath });
-  } catch (error) {
-    if (result.ok) result = { ok: false, error };
+    ensureCanonicalDirectory(dirname(file.path));
+    file.reservation.assertAvailable();
+    try {
+      const written = await publishDurableFile({
+        destinationPath: file.path,
+        bytes: file.bytes,
+        mode: 0o600,
+      });
+      file.reservation.recordWritten(written.bytes);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      const scope = nativeProductScope(dataRoot, { kind: 'server' });
+      readImmutableContentBytes(
+        scope.contentMount,
+        scope.owner,
+        file.content,
+        WORKSPACE_BACKUP_MAX_FILE_BYTES
+      );
+      await syncCanonicalDirectoryAsync(dirname(file.path));
+    }
+    return file.content;
   } finally {
-    reservation.release();
+    file.reservation.release();
   }
-  if (!result.ok) throw result.error;
-  return result.value;
 }

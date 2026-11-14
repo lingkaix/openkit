@@ -9,7 +9,10 @@ import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
 import { abandonCapture, inspectCapture } from '../storage/workspace-capture-protection.js';
 
-import { readFinishedDeletedWorkspaceRecovery } from '../storage/workspace-recovery-admissions.js';
+import {
+  listRecoveryExecutions,
+  readFinishedDeletedWorkspaceRecovery,
+} from '../storage/workspace-recovery-journal.js';
 import { listAllWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
@@ -74,24 +77,13 @@ export function restoreWorkspaceRecoveryAdmission(
     if (entry.isDirectory() && entry.name !== '.staging' && !registered.has(entry.name))
       refuseScope(core.dataRoot, { scope: 'workspace', id: entry.name, check: 'recovery' });
   }
-  const rows = core.sqlite
-    .prepare(
-      'SELECT admission_id, workspace_id, state, revision, candidate_ref, proof_json FROM workspace_recovery_admissions'
-    )
-    .all() as {
-    admission_id: string;
-    workspace_id: string;
-    state: string;
-    revision: number;
-    candidate_ref: string;
-    proof_json: string;
-  }[];
+  const rows = listRecoveryExecutions(core);
   const unresolved = rows.filter(
     (row) =>
       row.state === 'prepared' ||
       (row.admission_id.startsWith('wsbak_') && row.state === 'finished') ||
       (row.state === 'abandoned' &&
-        ['moved-out', 'quarantined'].includes(JSON.parse(row.proof_json).result?.disposition))
+        ['moved-out', 'quarantined'].includes(row.proof.result.disposition))
   );
   for (const row of unresolved)
     refuseScope(core.dataRoot, { scope: 'workspace', id: row.workspace_id, check: 'recovery' });
