@@ -6,7 +6,7 @@ import {
   evaluateMcpClientAccess,
   type IntegrationPrincipal,
   type McpClientAccessInput,
-} from './mcp-client-access.js';
+} from '../policy/workspace-access.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const otherUserId = 'usr_00000000-0000-7000-8000-000000000002';
