@@ -141,18 +141,55 @@ describe('native completed Task steer receipts', () => {
       completedAt: new Date().toISOString(),
     });
     const before = f.store.getTurnById(f.turn.id);
+    const privateBefore = f.store.readThreadTimelineSnapshot(
+      f.workspace.id,
+      f.thread.id,
+      (snapshot) => snapshot.item(f.item.id)
+    );
+    expect(privateBefore).toBeDefined();
+    const beforeOwner = openAdmittedWorkspaceReadDb(f.root, f.workspace.id);
+    let originalRows: unknown[];
+    try {
+      originalRows = beforeOwner.sqlite
+        .prepare(`SELECT id,sequence,revision,content_json,
+        identity_json,read_metadata_json FROM control_product_entries
+        WHERE kind='item' AND turn_id=? ORDER BY sequence`)
+        .all(f.turn.id);
+    } finally {
+      beforeOwner.sqlite.close();
+    }
     await expect(
       getControlStoreWorkerClient().transition(f.database, f.transition)
     ).resolves.toMatchObject({ replayed: false });
     const after = f.store.getTurnById(f.turn.id);
-    expect({ ...after, items: before.items }).toEqual(before);
-    expect(after.items).toEqual(
-      before.items.map((item) =>
-        item.id === f.item.id ? { ...item, steerDisposition: f.disposition } : item
-      )
+    expect(after).toEqual(before);
+    const privateAfter = f.store.readThreadTimelineSnapshot(
+      f.workspace.id,
+      f.thread.id,
+      (snapshot) => snapshot.item(f.item.id)
     );
+    expect(privateAfter).toEqual({ ...privateBefore, steerDisposition: f.disposition });
     const owner = openAdmittedWorkspaceReadDb(f.root, f.workspace.id);
     try {
+      const revisions = owner.sqlite
+        .prepare(`SELECT id,sequence,revision,content_json,
+        identity_json,read_metadata_json FROM control_product_entries
+        WHERE kind='item' AND turn_id=? ORDER BY sequence`)
+        .all(f.turn.id) as {
+        id: string;
+        sequence: number;
+        revision: number;
+        read_metadata_json: string;
+      }[];
+      expect(revisions).toHaveLength(originalRows.length + 1);
+      expect(revisions.slice(0, -1)).toEqual(originalRows);
+      const appended = revisions.at(-1)!;
+      expect(appended).toMatchObject({
+        id: f.item.id,
+        revision: f.transition.entries[0]!.expectedRevision + 1,
+        sequence: f.transition.entries[0]!.sequence,
+      });
+      expect(JSON.parse(appended.read_metadata_json).steerDisposition).toEqual(f.disposition);
       expect(
         owner.sqlite
           .prepare('SELECT response_json FROM idempotency_requests WHERE request_key=?')
@@ -207,6 +244,11 @@ describe('native completed Task steer receipts', () => {
       getControlStoreWorkerClient().transition(f.database, changed)
     ).resolves.toMatchObject({ replayed: true, response: record!.response });
     expect(cold.getTurnById(f.turn.id)).toEqual(after);
+    expect(
+      cold.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+        snapshot.item(f.item.id)
+      )
+    ).toEqual(privateAfter);
   });
 
   it.each(['input', 'actor', 'turn', 'item', 'causation'])(
