@@ -60,6 +60,7 @@ import {
 import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime-config.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
+import { createSecurityCanaryMcpSupply } from '../security/canaries.js';
 import { type CoreDb, openWorkspaceReadDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
@@ -1283,6 +1284,8 @@ function resolveWorkerMcpServerSupply(
 ) {
   if (mcpServerIds.length === 0) return [];
   return mcpServerIds.map((mcpServerId) => {
+    const canary = createSecurityCanaryMcpSupply();
+    if (mcpServerId === canary.id) return canary;
     if (!catalog)
       throw new Error('Workspace MCP server catalog is required by the selected Agent.');
     const entry = resolveWorkspaceMcpServer({ catalog, serverId: mcpServerId });

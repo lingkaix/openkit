@@ -21,6 +21,7 @@ import {
   canonicalJsonText,
   deriveEntityId,
   isSealedTurnTerminal,
+  RequestIdSchema,
   readRetainedV1,
   responsibleUserIdForActor,
   workspaceIdForOwner,
@@ -28,6 +29,7 @@ import {
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import Database from 'better-sqlite3';
 import type { Hono } from 'hono';
+import { prepareServerAuditEvent } from './audit-events.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
@@ -157,6 +159,7 @@ import {
   WorkerRawOutputAuthorityError,
   WorkerRawOutputBudgetExceededError,
 } from './runtime/worker-raw-output.js';
+import { createSecurityCanaryMcpSupply, SECURITY_CANARY_TOOLS } from './security/canaries.js';
 import {
   type ControlCapabilityAdmissionFailure,
   ControlCapabilityCommandInputSchema,
@@ -175,6 +178,7 @@ import {
   type WorkspaceDb,
 } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
+import { SECURITY_CANARY_AUDIT_FACT } from './storage/standalone-audit-codecs.js';
 import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
@@ -600,6 +604,58 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
             try {
               requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
               requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+              // Recognition precedes ordinary Tool/schema/Policy refusal; the source is always inert.
+              if (serverId === createSecurityCanaryMcpSupply().id) {
+                if (
+                  selected.schemaPolicy !== 'pinned' ||
+                  selected.pinnedSchemaSnapshotId !== null
+                ) {
+                  throw unavailableServer();
+                }
+                if (request.params.name === SECURITY_CANARY_TOOLS[0]!.name) {
+                  const scope = environmentPackage.scope;
+                  const actor = {
+                    kind: 'agent' as const,
+                    id: environmentPackage.agent.agentId,
+                    responsibleUserId: responsibleUserIdForActor(scope.triggerActor),
+                  };
+                  try {
+                    // Selectors come only from the authenticated original AEP. Native owns
+                    // live lease/source/E4 checks, publication and repeat identity at FULLACK.
+                    await getControlStoreWorkerClient().standaloneAudit(input.coreDb!, {
+                      stage: 'security.canary',
+                      canaryLineage: {
+                        workspaceId: scope.workspaceId,
+                        threadId: scope.threadId,
+                        turnId: scope.turnId,
+                        agentSessionId: scope.agentSessionId,
+                        packageSnapshotId: environmentPackage.snapshotId,
+                        requestId: scope.requestId ?? null,
+                      },
+                      event: prepareServerAuditEvent({
+                        ...SECURITY_CANARY_AUDIT_FACT,
+                        coreDb: input.coreDb!,
+                        workspaceId: scope.workspaceId,
+                        threadId: scope.threadId,
+                        turnId: scope.turnId,
+                        agentSessionId: scope.agentSessionId,
+                        agentId: environmentPackage.agent.agentId,
+                        itemId: scope.itemId ?? null,
+                        requestId: RequestIdSchema.safeParse(scope.requestId).data ?? null,
+                        actor,
+                        subject: actor,
+                        category: 'capability',
+                        outcome: 'denied',
+                        severity: 'warning',
+                      }),
+                    });
+                  } catch {
+                    // A failed observation has no useful fallback or durable-trip claim.
+                    throw unavailableServer();
+                  }
+                }
+                throw mcpDeniedError();
+              }
               if (!selected.allowedTools.includes(request.params.name)) {
                 throw mcpDeniedError();
               }
@@ -3406,6 +3462,9 @@ function builtinWorkerMcpServer(serverId: string): {
     readonly name: string;
   }>;
 } | null {
+  if (serverId === createSecurityCanaryMcpSupply().id) {
+    return { digest: createSecurityCanaryMcpSupply().catalogDigest, tools: SECURITY_CANARY_TOOLS };
+  }
   if (serverId === OPENKIT_GENERATIVE_MCP_ID) {
     return { digest: OPENKIT_GENERATIVE_CATALOG_DIGEST, tools: OPENKIT_GENERATIVE_TOOLS };
   }

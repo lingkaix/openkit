@@ -45,6 +45,44 @@ describe('public network admission', () => {
     expect(() => assertPublicNetworkGrants(manifest(), facts())).not.toThrow();
   });
 
+  it('classifies selected release canary supply without an external MCP destination', () => {
+    const selected = { ...manifest(), mcp: [{ id: 'openkit-security' }] };
+    expect(() => assertPublicNetworkGrants(selected, facts())).not.toThrow();
+  });
+
+  it('still requires ordinary MCP destination metadata beside the reserved canary', () => {
+    const selected = {
+      ...manifest(),
+      mcp: [{ id: 'openkit-security' }, { id: 'ordinary-unresolved' }],
+    };
+    expect(() => assertPublicNetworkGrants(selected, facts())).toThrow(/metadata/i);
+  });
+
+  it('keeps excluded control and Provider hosts excluded with the canary selected', () => {
+    const selected = { ...manifest(), mcp: [{ id: 'openkit-security' }] };
+    expect(() =>
+      assertPublicNetworkGrants(selected, {
+        ...facts(),
+        controlHosts: ['SEARCH.EXAMPLE.COM.'],
+      })
+    ).toThrow(/excluded/i);
+    expect(() =>
+      assertPublicNetworkGrants(selected, {
+        ...facts(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'private-provider',
+            kind: 'direct',
+            displayName: 'Provider',
+            baseUrl: 'https://SEARCH.EXAMPLE.COM./v1',
+            models: [],
+            readiness: { status: 'disabled' },
+          },
+        ]),
+      })
+    ).toThrow(/excluded/i);
+  });
+
   it.each(['localhost.', '127.0.0.1.', '0x7f000001', '[::ffff:127.0.0.1]'])(
     'rejects private canonical public hosts: %s',
     (host) => {
