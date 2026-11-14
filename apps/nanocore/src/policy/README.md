@@ -2,7 +2,7 @@
 
 This directory owns NanoCore's product Policy projection, authored Policy admission, I16 mediation and pending-request admission.
 
-The `policy` interface domain (this directory plus the permission-decision and server-settings Storage schemas) is CLOSED for the migration and deep-module close-out. CorePolicy and the two deep-module cuts are complete; the storage-access ratchet enforces E103/I73 (F41 is a diagnostic). Future work may shrink these ceilings.
+The `policy` interface domain (this directory plus the permission-decision and server-settings Storage schemas) is CLOSED for the migration and deep-module close-out. CorePolicy and the two deep-module cuts are complete; the storage-access ratchet enforces E100/I73 (F41 is a diagnostic). Future work may shrink these ceilings.
 
 ## Boundaries
 
@@ -26,8 +26,6 @@ Boot self-check decisions use independent canonical `pd` UUIDv7 identities. Thei
 `workspace-access.ts` owns the pure synchronous `compilePolicyGraph` and its single `evaluatePolicyKernel` call into the existing Kernel. Primary User, Server and Workspace access and the current agent-declaration domain check use that compiler. Member and administrator associations are alternatives in one primary class; the current credential class is mandatory. Workspace ownership is identity, not a permission tier, and ordinary membership grants no export right. A supplied Policy subject cannot turn human membership into another principal's grant. Finite delegated maintenance and the other resource adapters keep their existing owners until their separate unification slices land.
 
 The optional `evaluateProductAccess.policy` port takes the caller's admitted document, exact Subject, explicit time and current-author/anchor readers. It projects active prohibitions over canonical resource containment. Exact `(workspaceId, threadId, turnId)` process selectors map to NGAC processes, never principals. Quarantine-anchored ordinary prohibitions retain their original Audit identity and ignore author/anchor loss; they have no expiry or uses. Ordinary restrictions still end with current author, anchor and expiry. This read projection adds no autonomous containment producer, admission grant or retained state.
-
-`agent-context-access.ts` supplies a pure read-context intersection through the existing Kernel. Current agent and initiating-User decisions, the narrower context envelope and canonical source/destination audiences are mandatory constraints. Only owner-direct, Workspace-members and exact established-trigger presets are supported; an unresolved audience or missing initiation refuses the read. Private source material cannot become Workspace-shared output. The native owners must bind upstream decisions and audience classifications to the same current read. This helper owns no retained context, identity, trigger admission, effect or outbound authorization; consumer wiring remains separate.
 
 ## Primary Admission
 
