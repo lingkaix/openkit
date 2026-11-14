@@ -67,7 +67,7 @@ import {
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */
 async function retainCompletedTaskFixture(
@@ -516,7 +516,7 @@ async function fixture() {
     subject,
     operation: 'tool.use',
     resource,
-    humanKernel: evaluateProductAccess({
+    humanKernel: evaluatePolicyKernel({
       facts: {
         userId: userId,
         activeUser: true,

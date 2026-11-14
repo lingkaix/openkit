@@ -1,7 +1,7 @@
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import * as policyKernel from '@openkit/policy-kernel';
 import { describe, expect, it, vi } from 'vitest';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'api.call': 'ar:core-api-call',
@@ -63,7 +63,7 @@ describe('Workspace current-fact Policy projection', () => {
           'workspace.export',
         ].includes(value)
     )) {
-      const decision = evaluateProductAccess({ facts, target, operation, mutating: false });
+      const decision = evaluatePolicyKernel({ facts, target, operation, mutating: false });
       expect(decision.effect, operation).toBe('allow');
       expect(decision.trace.user).toBe(`user:${facts.userId}`);
       expect(decision.trace.requiredAccessRights).toEqual([
@@ -83,15 +83,13 @@ describe('Workspace current-fact Policy projection', () => {
     'repo.push',
     'unknown.operation',
   ])('does not grant nonmember rights or unknown operation %s', (operation) => {
-    expect(evaluateProductAccess({ facts, target, operation, mutating: false }).effect).toBe(
-      'deny'
-    );
+    expect(evaluatePolicyKernel({ facts, target, operation, mutating: false }).effect).toBe('deny');
   });
 
   it('treats membership and current administrator as alternatives without an owner privilege tier', () => {
     for (const membership of ['owner', 'member', null] as const) {
       const currentTarget = { ...target, membership };
-      const ordinary = evaluateProductAccess({
+      const ordinary = evaluatePolicyKernel({
         facts,
         target: currentTarget,
         operation: 'workspace.export',
@@ -101,7 +99,7 @@ describe('Workspace current-fact Policy projection', () => {
       expect(ordinary.reasons).toContainEqual(
         expect.objectContaining({ code: 'missing-privilege' })
       );
-      const administrator = evaluateProductAccess({
+      const administrator = evaluatePolicyKernel({
         facts: { ...facts, administrator: true },
         target: currentTarget,
         operation: 'workspace.export',
@@ -123,7 +121,7 @@ describe('Workspace current-fact Policy projection', () => {
       { target: { ...target, workspaceId: '' } },
       { target: { ...target, membership: null } },
     ]) {
-      const decision = evaluateProductAccess({ ...request, ...change });
+      const decision = evaluatePolicyKernel({ ...request, ...change });
       expect(decision.effect).toBe('deny');
       expect(decision.reasons).toContainEqual(
         expect.objectContaining({ code: 'missing-privilege' })
@@ -145,12 +143,12 @@ describe('Workspace current-fact Policy projection', () => {
       target: { ...target, membership: null },
       operation: 'workspace.configure',
     };
-    expect(evaluateProductAccess({ ...request, mutating: false }).effect).toBe('allow');
-    const denied = evaluateProductAccess({ ...request, mutating: true });
+    expect(evaluatePolicyKernel({ ...request, mutating: false }).effect).toBe('allow');
+    const denied = evaluatePolicyKernel({ ...request, mutating: true });
     expect(denied.effect).toBe('deny');
     expect(denied.reasons).toContainEqual(expect.objectContaining({ code: 'missing-privilege' }));
     expect(
-      evaluateProductAccess({
+      evaluatePolicyKernel({
         ...request,
         mutating: false,
         facts: { ...current, credential: { ...current.credential, current: false } },
@@ -188,7 +186,7 @@ function registerServerAccessTests() {
         },
       ];
       for (const request of requests) {
-        const decision = evaluateProductAccess({ ...request, facts, mutating: false });
+        const decision = evaluatePolicyKernel({ ...request, facts, mutating: false });
         expect(decision.effect).toBe('allow');
         expect(decision.trace.user).toBe(`user:${facts.userId}`);
         expect(decision.trace.requiredAccessRights).toEqual([request.right]);
@@ -209,11 +207,11 @@ function registerServerAccessTests() {
           operation: input.operation,
           mutating: false,
         };
-        const allowed = evaluateProductAccess(request);
+        const allowed = evaluatePolicyKernel(request);
         expect(allowed.effect).toBe('allow');
         expect(allowed.trace.user).toBe(`user:${facts.userId}`);
         expect(allowed.trace.requiredAccessRights).toEqual([input.right]);
-        const denied = evaluateProductAccess({
+        const denied = evaluatePolicyKernel({
           ...request,
           facts: { ...facts, administrator: false },
         });
@@ -228,7 +226,7 @@ function registerServerAccessTests() {
             actualEvaluate({ ...policy, associations: [] }, access)
           );
         try {
-          const noGrant = evaluateProductAccess(request);
+          const noGrant = evaluatePolicyKernel(request);
           expect(noGrant.effect).toBe('deny');
           expect(noGrant.reasons).toContainEqual(
             expect.objectContaining({ code: 'missing-privilege' })
@@ -248,7 +246,7 @@ function registerServerAccessTests() {
         { kind: 'server' as const, family: 'knowledge' },
       ]) {
         const operation = target.family === 'mcp' ? 'knowledge.write' : 'api.call';
-        expect(evaluateProductAccess({ facts, target, operation, mutating: false }).effect).toBe(
+        expect(evaluatePolicyKernel({ facts, target, operation, mutating: false }).effect).toBe(
           'deny'
         );
       }
@@ -266,7 +264,7 @@ function registerServerAccessTests() {
             membership: null,
           },
         ]) {
-          expect(evaluateProductAccess({ facts, target, operation, mutating: false }).effect).toBe(
+          expect(evaluatePolicyKernel({ facts, target, operation, mutating: false }).effect).toBe(
             'deny'
           );
         }
@@ -280,9 +278,9 @@ function registerServerAccessTests() {
         mutating: false,
       };
       const current = { ...facts, administrator: false };
-      expect(evaluateProductAccess({ ...request, facts: current }).effect).toBe('allow');
+      expect(evaluatePolicyKernel({ ...request, facts: current }).effect).toBe('allow');
       expect(
-        evaluateProductAccess({
+        evaluatePolicyKernel({
           ...request,
           facts: { ...current, credential: { ...current.credential, kind: 'token' } },
         }).effect

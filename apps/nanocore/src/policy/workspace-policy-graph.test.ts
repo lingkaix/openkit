@@ -1,7 +1,7 @@
 import { allocateEntityId, PolicySubjectV1Schema } from '@openkit/protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { validatePolicyDocument } from './statements.js';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const authorId = 'usr_00000000-0000-7000-8000-000000000002';
@@ -73,9 +73,9 @@ function request(statement?: unknown) {
 
 describe('shared primary graph restriction composition', () => {
   it('keeps ordinary author, anchor, state and expiry termination separate from quarantine', () => {
-    expect(evaluateProductAccess(request()).effect).toBe('allow');
+    expect(evaluatePolicyKernel(request()).effect).toBe('allow');
     const current = request(prohibition);
-    expect(evaluateProductAccess(current).reasons).toContainEqual({
+    expect(evaluatePolicyKernel(current).reasons).toContainEqual({
       code: 'restriction',
       prohibitionId: prohibition.id,
     });
@@ -83,16 +83,16 @@ describe('shared primary graph restriction composition', () => {
       { ...current.policy, authorCurrent: () => false },
       { ...current.policy, anchorCurrent: () => false },
     ])
-      expect(evaluateProductAccess({ ...current, policy }).effect).toBe('allow');
+      expect(evaluatePolicyKernel({ ...current, policy }).effect).toBe('allow');
     expect(
-      evaluateProductAccess(
+      evaluatePolicyKernel(
         request({
           ...prohibition,
           lifetime: { ...prohibition.lifetime, notAfter: '2026-11-14T12:00:00Z' },
         })
       ).effect
     ).toBe('allow');
-    expect(evaluateProductAccess(request({ ...prohibition, state: 'inactive' })).effect).toBe(
+    expect(evaluatePolicyKernel(request({ ...prohibition, state: 'inactive' })).effect).toBe(
       'allow'
     );
   });
@@ -110,9 +110,9 @@ describe('shared primary graph restriction composition', () => {
     current.policy.anchorCurrent.mockImplementation(() => {
       throw new Error('The source run is closed.');
     });
-    expect(evaluateProductAccess(current).effect).toBe('deny');
+    expect(evaluatePolicyKernel(current).effect).toBe('deny');
     current.policy.now = Date.parse('2030-01-01T00:00:00Z');
-    expect(evaluateProductAccess(current).effect).toBe('deny');
+    expect(evaluatePolicyKernel(current).effect).toBe('deny');
     expect(current.policy.authorCurrent).not.toHaveBeenCalled();
     expect(current.policy.anchorCurrent).not.toHaveBeenCalled();
     for (const sibling of [
@@ -122,7 +122,7 @@ describe('shared primary graph restriction composition', () => {
       { ...process, turnId: allocateEntityId('tu') },
     ])
       expect(
-        evaluateProductAccess({
+        evaluatePolicyKernel({
           ...current,
           policy: { ...current.policy, subject: { ...subject, process: sibling } },
         }).effect
@@ -131,12 +131,12 @@ describe('shared primary graph restriction composition', () => {
 
   it('does not turn one human membership into another principal grant', () => {
     const current = request();
-    expect(evaluateProductAccess(current).effect).toBe('allow');
+    expect(evaluatePolicyKernel(current).effect).toBe('allow');
     for (const principal of [
       { kind: 'human' as const, id: authorId },
       { kind: 'agent' as const, id: 'fixture-agent' },
     ]) {
-      const decision = evaluateProductAccess({
+      const decision = evaluatePolicyKernel({
         ...current,
         policy: { ...current.policy, subject: { ...subject, principal } },
       });

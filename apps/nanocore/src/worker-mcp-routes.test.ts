@@ -6920,15 +6920,17 @@ describe('worker MCP routes', () => {
         if (issuance === 'vault-denied-call' || issuance === 'vault-denied-list') {
           // Fault seam: deny the current Vault right while leaving real Tool evaluation unchanged.
           // This tests enforcement of denial, not configured mixed-right Policy support.
-          const evaluate = workspaceAccess.evaluateProductAccess;
+          const evaluate = workspaceAccess.evaluatePolicyKernel;
           const currentPolicy = vi
-            .spyOn(workspaceAccess, 'evaluateProductAccess')
+            .spyOn(workspaceAccess, 'evaluatePolicyKernel')
             .mockImplementation((input) =>
-              evaluate({
-                ...input,
-                operation:
-                  input.operation === 'vault.use' ? 'sec2a-denied-vault-use' : input.operation,
-              })
+              'facts' in input
+                ? evaluate({
+                    ...input,
+                    operation:
+                      input.operation === 'vault.use' ? 'sec2a-denied-vault-use' : input.operation,
+                  })
+                : evaluate(input)
             );
           const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
           const upstreamBefore = upstream.observed.length;

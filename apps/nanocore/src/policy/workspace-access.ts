@@ -94,17 +94,14 @@ export interface WorkerGitReadMaintenanceFacts {
 /** Evaluates the shared projection once; native callers retain admission and fact ownership. */
 export function evaluatePolicyKernel(
   input:
-    | Parameters<typeof evaluateProductAccess>[0]
+    | ProductPolicyInput
     | {
         readonly subject: Pick<z.infer<typeof PolicySubjectV1Schema>, 'principal' | 'process'>;
         readonly operation: string;
         readonly resource: z.infer<typeof PolicyResourceV1Schema>;
         /** Already current agent declaration; this scope grants no initiating-human authority. */
         readonly domain: { readonly id: string; readonly scope: PolicyBindingV1['scope'] };
-        readonly policy?: Omit<
-          NonNullable<Parameters<typeof evaluateProductAccess>[0]['policy']>,
-          'subject'
-        >;
+        readonly policy?: Omit<NonNullable<ProductPolicyInput['policy']>, 'subject'>;
       }
     | {
         readonly subject: Pick<z.infer<typeof PolicySubjectV1Schema>, 'principal' | 'process'>;
@@ -114,10 +111,7 @@ export function evaluatePolicyKernel(
           readonly facts: WorkerGitReadMaintenanceFacts;
           readonly authorCurrent: (userId: string) => boolean;
         };
-        readonly policy?: Omit<
-          NonNullable<Parameters<typeof evaluateProductAccess>[0]['policy']>,
-          'subject'
-        >;
+        readonly policy?: Omit<NonNullable<ProductPolicyInput['policy']>, 'subject'>;
       }
 ): PolicyDecision {
   const { policy, request } = compilePolicyGraph(input);
@@ -584,8 +578,8 @@ export function compilePolicyGraph(
   };
 }
 
-/** Projects current native human facts through the shared compiler and the mandatory Kernel. */
-export function evaluateProductAccess(input: {
+/** Current native human facts for the shared compiler and mandatory Kernel. */
+export interface ProductPolicyInput {
   readonly facts: {
     readonly userId: string;
     readonly activeUser: boolean;
@@ -617,6 +611,4 @@ export function evaluateProductAccess(input: {
     readonly authorCurrent: (userId: string) => boolean;
     readonly anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
   };
-}): PolicyDecision {
-  return evaluatePolicyKernel(input);
 }

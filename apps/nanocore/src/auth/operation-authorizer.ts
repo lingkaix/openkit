@@ -11,7 +11,11 @@ import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js'
 import type { FsStore } from '../lib/store.js';
 import { getAppApiRouteDefinition } from '../openapi.js';
 import { TurnStartValidationError } from '../operation-error.js';
-import { evaluateProductAccess, type ProductAccessTarget } from '../policy/workspace-access.js';
+import {
+  evaluatePolicyKernel,
+  type ProductAccessTarget,
+  type ProductPolicyInput,
+} from '../policy/workspace-access.js';
 import {
   evaluateThreadAuthorization,
   parseWorkspacePolicy,
@@ -344,7 +348,7 @@ export function isCurrentServerPolicyAuthor(
 ): boolean {
   if (!Number.isFinite(now)) return false;
   return (
-    evaluateProductAccess({
+    evaluatePolicyKernel({
       facts: {
         userId: humanId,
         activeUser: isCanonicalUserActive(coreDb, humanId),
@@ -447,7 +451,7 @@ export function currentWorkspaceAuthority(
     const credentialCurrent = !requestActor || isUsablePresentedAccessToken(coreDb, requestActor);
     const credentialBound =
       !requestActor || tokenIncludesWorkspace(requestActor, workspaceId, undefined);
-    const decision = evaluateProductAccess({
+    const decision = evaluatePolicyKernel({
       facts: {
         userId: responsibleUserId,
         activeUser,
@@ -727,7 +731,7 @@ export function evaluateProductAuthorization(
       };
   let decision: PolicyDecision;
   try {
-    decision = evaluateProductAccess(input);
+    decision = evaluatePolicyKernel(input);
   } catch (error) {
     if (target.kind !== 'server') throw error;
     throw new HTTPException(403, { res: workspaceAccessDenied(), cause: error });
@@ -749,7 +753,7 @@ function readProductAuthorizationInput(
   operation: string,
   mutating = false,
   now = new Date()
-): Parameters<typeof evaluateProductAccess>[0] {
+): ProductPolicyInput {
   const administrator = isCurrentDeploymentAdministrator(coreDb, actor, now);
   const currentTarget: ProductAccessTarget =
     target.kind === 'workspace'
@@ -921,7 +925,7 @@ export function evaluateCoreConfirmedLoginQuarantine(
     grant.policyDecisionId === null
   )
     throw new ControlProductPreconditionError();
-  const kernel = evaluateProductAccess({
+  const kernel = evaluatePolicyKernel({
     facts: {
       userId: responsibleUserId,
       activeUser: isCanonicalUserActive(coreDb, responsibleUserId),
@@ -964,7 +968,7 @@ export function isCanonicalUserOperationAuthorized(
     new Date()
   );
   try {
-    return evaluateProductAccess(input).effect === 'allow';
+    return evaluatePolicyKernel(input).effect === 'allow';
   } catch {
     return false;
   }
@@ -1192,7 +1196,7 @@ export function authorizeWorkspace(
     new Date()
   );
   try {
-    const decision = evaluateProductAccess(input);
+    const decision = evaluatePolicyKernel(input);
     return decision.effect === 'allow'
       ? {
           workspaceId,

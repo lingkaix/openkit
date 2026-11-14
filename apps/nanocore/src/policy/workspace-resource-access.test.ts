@@ -1,7 +1,7 @@
 import type { PolicyDocumentV1 } from '@openkit/protocol';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 import {
   evaluateWorkspaceResourceAccess,
   type ResourcePolicyActor,
@@ -73,7 +73,7 @@ describe('named Workspace resource Kernel projection', () => {
       decide([boundary, permission], 'thread.read', { kind: 'user', userId: otherUserId }).effect
     ).toBe('deny');
     // Core Policy: a resource allocation cannot restore missing current membership.
-    const primary = evaluateProductAccess({
+    const primary = evaluatePolicyKernel({
       facts: {
         userId,
         activeUser: true,

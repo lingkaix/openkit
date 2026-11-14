@@ -94,10 +94,10 @@ async function fixture() {
 /** Removes only the concrete operation's required grants while keeping the real Kernel evaluator active. */
 function removeOperationGrants(operation: string, serverOnly = false) {
   const actualEvaluate = policyKernel.evaluateAccess;
-  const actualProduct = productAccess.evaluateProductAccess;
+  const actualProduct = productAccess.evaluatePolicyKernel;
   let serverTarget = false;
   if (serverOnly)
-    vi.spyOn(productAccess, 'evaluateProductAccess').mockImplementation((input) => {
+    vi.spyOn(productAccess, 'evaluatePolicyKernel').mockImplementation((input) => {
       const previous = serverTarget;
       serverTarget = input.target.kind === 'server';
       try {

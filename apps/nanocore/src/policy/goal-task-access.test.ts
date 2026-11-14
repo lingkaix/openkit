@@ -7,7 +7,7 @@ import {
   evaluateGoalTaskAdmission,
   type GoalTaskAccessInput,
 } from './goal-task-access.js';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 const workspaceId = testEntityId('ws', 'goal-task-kernel');
 const humanId = testEntityId('usr', 'goal-task-human');
@@ -55,7 +55,7 @@ function input(changes: Partial<GoalTaskAccessInput> = {}): GoalTaskAccessInput 
     resources: [resource],
     operation: 'tool.use',
     resource,
-    humanKernel: evaluateProductAccess({
+    humanKernel: evaluatePolicyKernel({
       facts: {
         userId: humanId,
         activeUser: true,
@@ -78,7 +78,7 @@ describe('Goal Task native Kernel projection', () => {
       planVersionId: 'plan',
       agentId: 'design-worker',
       resources: [resource],
-      humanKernel: evaluateProductAccess({
+      humanKernel: evaluatePolicyKernel({
         facts: {
           userId: humanId,
           activeUser: true,
@@ -99,7 +99,7 @@ describe('Goal Task native Kernel projection', () => {
       { planVersionId: 'obsolete-plan' },
       { resources: [{ ...resource, toolName: 'write' }] },
       {
-        humanKernel: evaluateProductAccess({
+        humanKernel: evaluatePolicyKernel({
           facts: {
             userId: humanId,
             activeUser: true,
@@ -179,7 +179,7 @@ describe('Goal Task native Kernel projection', () => {
       expect(evaluateGoalTaskAccess(input({ subject: invalid })).kernel.effect).toBe('deny');
   });
   it('never overrides a current mandatory human Kernel refusal', () => {
-    const humanKernel = evaluateProductAccess({
+    const humanKernel = evaluatePolicyKernel({
       facts: {
         userId: humanId,
         activeUser: true,

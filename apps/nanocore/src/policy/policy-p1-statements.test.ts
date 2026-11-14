@@ -7,7 +7,7 @@ import {
 } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { validatePolicyDocument } from './statements.js';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -196,13 +196,13 @@ describe('P1 quarantine lifetime through the public Policy statement owner', () 
         document: validatePolicyDocument({ schemaVersion: 1, statements: [] }),
       },
     };
-    expect(evaluateProductAccess(unrestricted).effect).toBe('allow');
-    expect(evaluateProductAccess(request).effect).toBe('deny');
+    expect(evaluatePolicyKernel(unrestricted).effect).toBe('allow');
+    expect(evaluatePolicyKernel(request).effect).toBe('deny');
     const currentAuthor = {
       ...request,
       policy: { ...request.policy, authorCurrent: () => true, anchorCurrent: () => true },
     };
-    expect(evaluateProductAccess(currentAuthor).effect).toBe('deny');
+    expect(evaluatePolicyKernel(currentAuthor).effect).toBe('deny');
     const sibling = {
       ...request,
       policy: {
@@ -210,7 +210,7 @@ describe('P1 quarantine lifetime through the public Policy statement owner', () 
         subject: { ...subject, process: { workspaceId, threadId, turnId: allocateEntityId('tu') } },
       },
     };
-    expect(evaluateProductAccess(sibling).effect).toBe('allow');
+    expect(evaluatePolicyKernel(sibling).effect).toBe('allow');
   });
   it('admits a durable quarantine prohibition anchored to the original sensor Audit identity', () => {
     const quarantine = {

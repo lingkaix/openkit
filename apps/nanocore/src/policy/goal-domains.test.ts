@@ -28,7 +28,7 @@ import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
-import { evaluateProductAccess } from './workspace-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 // Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
 vi.mock('node:worker_threads', async (load) => {
@@ -256,7 +256,7 @@ describe('jointly approved Goal-domain publication', () => {
       agentId: 'design-worker',
       responsibleHumanId: f.actor.userId,
       resources: [resource],
-      humanKernel: evaluateProductAccess({
+      humanKernel: evaluatePolicyKernel({
         facts: {
           userId: f.actor.userId,
           activeUser: true,
@@ -336,7 +336,7 @@ describe('jointly approved Goal-domain publication', () => {
           resources: [resource],
           operation: 'tool.use',
           resource,
-          humanKernel: evaluateProductAccess({
+          humanKernel: evaluatePolicyKernel({
             facts: {
               userId: f.actor.userId,
               activeUser: true,
