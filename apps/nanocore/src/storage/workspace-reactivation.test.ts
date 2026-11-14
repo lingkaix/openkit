@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
-import { FsStore } from '../lib/store.js';
+import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact, recoveryJournalFacts } from '../test-support/recovery-journal.js';
@@ -438,7 +438,11 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
       const core = databases.openCoreDb(f.dataRoot);
       try {
         const ownerUserId = ensureLocalUser(core);
-        recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: healthy.id, ownerUserId });
+        // createDemoStore also seeds the real personal Workspace; boot requires its registration.
+        const personalId = quickChatWorkspaceIdForUser(ownerUserId, f.dataRoot);
+        expect(store.getWorkspace(personalId).id).toBe(personalId);
+        for (const id of [personalId, healthy.id])
+          recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: id, ownerUserId });
         expect(
           core.sqlite
             .prepare('SELECT status FROM workspace_registry WHERE workspace_id=?')
@@ -526,7 +530,7 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
         await expect(store.createThread(workspaceId, 'Must stay refused')).rejects.toThrow();
         await expect(
           store.createThread(healthy.id, 'Healthy native publication')
-        ).resolves.toMatchObject({ workspaceId: healthy.id });
+        ).resolves.toMatchObject({ owner: { kind: 'workspace', workspaceId: healthy.id } });
         const additional = await store.createWorkspace('Core registry still writable');
         await publishWorkspaceOwnerMembership({
           coreDb: core,
