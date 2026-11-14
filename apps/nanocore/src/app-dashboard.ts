@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+import { setImmediate as yieldMain } from 'node:timers/promises';
 import {
   type ConversationNavigationResponse,
   ConversationNavigationResponseSchema,
@@ -560,6 +562,7 @@ export async function readConversationNavigation({
   let workspaceDb: WorkspaceDb | undefined;
   let userDb: UserDb | undefined;
   try {
+    let deadline = performance.now() + 8;
     store.getWorkspace(workspaceId);
     const position = decodeConversationNavigationCursor(cursor, workspaceId);
     if (coreDb) {
@@ -572,7 +575,7 @@ export async function readConversationNavigation({
     }
     const agents = runtimeConfigManager.current().agentManifests;
     workspaceDb = coreDb ? repositoryWorkspaceDb(workspaceId) : undefined;
-    const currentAdministratorEligible =
+    let currentAdministratorEligible =
       administratorEligible &&
       (coreDb === undefined || isCurrentDeploymentAdministrator(coreDb, actor));
     const authorized = (policyOperation: 'approval.respond' | 'turn.run' | 'review.apply') =>
@@ -581,114 +584,192 @@ export async function readConversationNavigation({
         mutating: true,
         policyOperation,
       });
-    const approvalAllowed = authorized('approval.respond');
-    const turnAllowed = authorized('turn.run');
-    const visibleThreads = store
-      .listThreads(workspaceId)
-      .filter((thread) =>
-        isThreadVisible(store, thread, actor?.userId, currentAdministratorEligible)
-      );
-    const rows: ConversationNavigationResponse['items'] = visibleThreads
-      .filter((thread) => thread.status === 'active')
-      .map((thread) => {
-        const facts = store.readThreadNavigationFacts(workspaceId, thread.id);
-        // The User cut covers metadata preflight through membership decode. The nested source cut is synchronous.
-        const proveUnread = (): number | null => {
-          const receiptBytes = userDb
-            ? readThreadReadReceiptByteSize(userDb, workspaceId, thread.id)
-            : 0;
-          if (receiptBytes > 65_536) return null;
-          const messages = store.readThreadNavigationMessages(
-            workspaceId,
-            thread.id,
-            65_536 - receiptBytes
-          );
-          if (messages === null) return null;
-          const readIds = new Set(
-            userDb ? readThreadReadReceipt(userDb, workspaceId, thread.id) : []
-          );
-          return receiptMessageItemIds(messages, actor.userId).filter((id) => !readIds.has(id))
-            .length;
-        };
-        const unreadCount = userDb ? userDb.sqlite.transaction(proveUnread)() : proveUnread();
-        const activeTurn = facts.activeTurn;
-        const latestTurn = facts.latestTurn;
-        const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
-        const activeGoal = goals.findLast((goal) => goal.disposition === null);
-        const latestGoal = activeGoal ?? goals.at(-1);
-        const hasGoalContext =
-          latestGoal && (activeGoal || latestGoal.updatedAt >= (latestTurn?.startedAt ?? ''));
-        const internalChat =
-          latestTurn?.agentId === QUICK_CHAT_AGENT_ID ||
-          latestTurn?.agentId === 'knowledge-manager';
-        const worker =
-          latestTurn?.agentSessionId || agents.some((agent) => agent.id === latestTurn?.agentId);
-        const activity = hasGoalContext
-          ? 'goal'
-          : internalChat
-            ? 'chat'
-            : worker
-              ? 'task'
-              : !latestTurn
-                ? 'chat'
-                : 'unknown';
-        const scope = workspaceDb
-          ? readGoalAttentionScope(workspaceDb, thread.id)
-          : { threadIds: [thread.id], more: false };
-        const attention = readScopedHumanAttention({
-          store,
-          coreDb,
-          workspaceDb,
-          workspaceId,
-          actor,
-          administratorEligible: Boolean(currentAdministratorEligible),
-          threadIds: scope.threadIds,
-          pendingLimit: 33,
-          navigationProof: {
-            remainingBytes: 65_536,
-            remainingItems: 64,
-            approvalAllowed,
-            turnAllowed,
-          },
-        });
-        if (
-          scope.more ||
-          attention.more ||
-          attention.pendingRequests.some((request) => request.state === 'inspect-only')
-        )
-          throw new Error(
-            'Navigation attention absence cannot be proved within its canonical bound.'
-          );
-        const needsYou = attention.items.some(
-          (row) =>
-            row.kind === 'artifact_review' ||
-            row.actions.some(
-              (action) =>
-                !action.disabled &&
-                (action.kind === 'grant_approval' || action.kind === 'answer_question')
-            )
-        );
-        const working = activeTurn !== null || activeGoal !== undefined;
-        const times = [facts.lastActivityAt, ...goals.map((goal) => goal.updatedAt)].filter(
-          (time): time is string => time !== null
-        );
-        return {
-          thread,
-          activity,
-          state: needsYou ? 'needs-you' : working ? 'working' : 'idle',
-          lastActivityAt: times.sort().at(-1) ?? thread.createdAt,
-          unreadCount,
-        };
+    let approvalAllowed = authorized('approval.respond');
+    let turnAllowed = authorized('turn.run');
+    // Every contribution has released its SQL cut before this boundary. Authority is fresh after each release.
+    const checkpoint = async () => {
+      if (performance.now() < deadline) return;
+      await yieldMain();
+      await recheckAdmission?.();
+      store.getWorkspace(workspaceId);
+      currentAdministratorEligible =
+        administratorEligible &&
+        (coreDb === undefined || isCurrentDeploymentAdministrator(coreDb, actor));
+      approvalAllowed = authorized('approval.respond');
+      turnAllowed = authorized('turn.run');
+      deadline = performance.now() + 8;
+    };
+    const steps = store.listThreadsSteps(workspaceId);
+    let threads: Thread[];
+    try {
+      for (;;) {
+        const step = steps.next();
+        await checkpoint();
+        if (step.done) {
+          threads = step.value;
+          break;
+        }
+      }
+    } finally {
+      steps.return([]);
+    }
+    type RowFacts = Omit<ConversationNavigationResponse['items'][number], 'unreadCount'>;
+    const rows: RowFacts[] = [];
+    for (const listed of threads) {
+      await checkpoint();
+      const thread = store.getThread(workspaceId, listed.id);
+      if (
+        thread.status !== 'active' ||
+        !isThreadVisible(store, thread, actor.userId, currentAdministratorEligible)
+      )
+        continue;
+      const facts = store.readThreadNavigationFacts(workspaceId, thread.id);
+      const activeTurn = facts.activeTurn;
+      const latestTurn = facts.latestTurn;
+      const goals = workspaceDb ? listGoalsForThread(workspaceDb, thread.id) : [];
+      const activeGoal = goals.findLast((goal) => goal.disposition === null);
+      const latestGoal = activeGoal ?? goals.at(-1);
+      const hasGoalContext =
+        latestGoal && (activeGoal || latestGoal.updatedAt >= (latestTurn?.startedAt ?? ''));
+      const internalChat =
+        latestTurn?.agentId === QUICK_CHAT_AGENT_ID || latestTurn?.agentId === 'knowledge-manager';
+      const worker =
+        latestTurn?.agentSessionId || agents.some((agent) => agent.id === latestTurn?.agentId);
+      const activity = hasGoalContext
+        ? 'goal'
+        : internalChat
+          ? 'chat'
+          : worker
+            ? 'task'
+            : !latestTurn
+              ? 'chat'
+              : 'unknown';
+      const scope = workspaceDb
+        ? readGoalAttentionScope(workspaceDb, thread.id)
+        : { threadIds: [thread.id], more: false };
+      const attention = readScopedHumanAttention({
+        store,
+        coreDb,
+        workspaceDb,
+        workspaceId,
+        actor,
+        administratorEligible: Boolean(currentAdministratorEligible),
+        threadIds: scope.threadIds,
+        pendingLimit: 33,
+        navigationProof: {
+          remainingBytes: 65_536,
+          remainingItems: 64,
+          approvalAllowed,
+          turnAllowed,
+        },
       });
-    const remaining = rows
-      .sort(compareConversationNavigationPositions)
-      .filter((row) => !position || compareConversationNavigationPositions(row, position) > 0);
-    const items = limit === undefined ? remaining : remaining.slice(0, limit);
+      if (
+        scope.more ||
+        attention.more ||
+        attention.pendingRequests.some((request) => request.state === 'inspect-only')
+      )
+        throw new Error(
+          'Navigation attention absence cannot be proved within its canonical bound.'
+        );
+      const needsYou = attention.items.some(
+        (row) =>
+          row.kind === 'artifact_review' ||
+          row.actions.some(
+            (action) =>
+              !action.disabled &&
+              (action.kind === 'grant_approval' || action.kind === 'answer_question')
+          )
+      );
+      const working = activeTurn !== null || activeGoal !== undefined;
+      const times = [facts.lastActivityAt, ...goals.map((goal) => goal.updatedAt)].filter(
+        (time): time is string => time !== null
+      );
+      rows.push({
+        thread,
+        activity,
+        state: needsYou ? 'needs-you' : working ? 'working' : 'idle',
+        lastActivityAt: times.sort().at(-1) ?? thread.createdAt,
+      });
+    }
+    // Fixed-size native sorts and released linear merges keep ranking off one history-sized callback.
+    let chunks: RowFacts[][] = [];
+    for (let start = 0; start < rows.length; start += 64) {
+      chunks.push(rows.slice(start, start + 64).sort(compareConversationNavigationPositions));
+      await checkpoint();
+    }
+    while (chunks.length > 1) {
+      const next: RowFacts[][] = [];
+      for (let part = 0; part < chunks.length; part += 2) {
+        const left = chunks[part]!;
+        const right = chunks[part + 1] ?? [];
+        const merged: RowFacts[] = [];
+        let a = 0;
+        let b = 0;
+        while (a < left.length || b < right.length) {
+          merged.push(
+            b === right.length ||
+              (a < left.length && compareConversationNavigationPositions(left[a]!, right[b]!) <= 0)
+              ? left[a++]!
+              : right[b++]!
+          );
+          await checkpoint();
+        }
+        next.push(merged);
+      }
+      chunks = next;
+    }
+    const items: ConversationNavigationResponse['items'] = [];
+    let more = false;
+    for (const row of chunks[0] ?? []) {
+      await checkpoint();
+      if (position && compareConversationNavigationPositions(row, position) <= 0) continue;
+      const thread = store.getThread(workspaceId, row.thread.id);
+      if (
+        thread.status !== 'active' ||
+        !isThreadVisible(store, thread, actor.userId, currentAdministratorEligible)
+      )
+        continue;
+      if (limit !== undefined && items.length === limit) {
+        more = true;
+        break;
+      }
+      // Preflight and decode share a synchronous User cut; source proof owns its nested Workspace cut.
+      const proveUnread = (): number | null => {
+        const receiptBytes = userDb
+          ? readThreadReadReceiptByteSize(userDb, workspaceId, thread.id)
+          : 0;
+        if (receiptBytes > 65_536) return null;
+        const messages = store.readThreadNavigationMessages(
+          workspaceId,
+          thread.id,
+          65_536 - receiptBytes
+        );
+        if (messages === null) return null;
+        const readIds = new Set(
+          userDb ? readThreadReadReceipt(userDb, workspaceId, thread.id) : []
+        );
+        return receiptMessageItemIds(messages, actor.userId).filter((id) => !readIds.has(id))
+          .length;
+      };
+      const unreadCount = userDb ? userDb.sqlite.transaction(proveUnread)() : proveUnread();
+      items.push({ ...row, thread, unreadCount });
+    }
+    await checkpoint();
+    // A last release must not publish an audience that became private or unavailable while proof ran.
+    for (const row of items) {
+      await checkpoint();
+      const current = store.getThread(workspaceId, row.thread.id);
+      if (
+        current.status !== 'active' ||
+        !isThreadVisible(store, current, actor.userId, currentAdministratorEligible)
+      )
+        throw new Error('Navigation audience changed during the released read.');
+    }
     const last = items.at(-1);
     return ConversationNavigationResponseSchema.parse({
       items,
       nextCursor:
-        last && items.length < remaining.length
+        last && more
           ? Buffer.from(
               JSON.stringify([
                 'conversation.navigation',
