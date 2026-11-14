@@ -662,7 +662,9 @@ describe('E13 native current resource availability', () => {
                 resource.kind === 'container' && resource.container.kind === 'context-preset'
             )
         )
-    ).toHaveLength(1);
+        .map(({ id }) => id)
+        .sort()
+    ).toEqual(['runtime-gateway-control', 'security-investigation']);
     await expect(f.graph().accounts[2]!.propose(document())).rejects.toThrow();
     const authenticated = await f
       .graph()

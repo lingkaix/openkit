@@ -65,6 +65,66 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
+/** Exact defaults required in a first human candidate; none can hide an omitted requested control. */
+function expectedReviewedDefaults(userId: string) {
+  const author = { kind: 'human', id: userId };
+  const authority = { kind: 'human', userId };
+  const lifetime = { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } };
+  return [
+    {
+      id: 'security-investigation',
+      kind: 'agent-principal',
+      state: 'active',
+      author,
+      authority,
+      authoredAt: expect.any(String),
+      lifetime,
+      agentId: 'security-investigation',
+      creator: author,
+      responsibleHumanId: userId,
+      responsibility: author,
+      scope: {
+        subjects: [{ kind: 'agent', id: 'security-investigation' }],
+        actions: [
+          'administration.configuration.read',
+          'administration.schema.read',
+          'administration.configuration.propose',
+          'worker-environment.list',
+          'worker-environment.status',
+          'nanohost.runtime-target',
+        ],
+        resources: [
+          {
+            kind: 'container',
+            container: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+          },
+        ],
+      },
+    },
+    ...['owner-direct', 'workspace-members', 'agent-initiated'].map((id) => ({
+      id: `context-preset.${id}`,
+      kind: 'permission',
+      state: 'active',
+      effect: 'allow',
+      grant: { kind: 'ordinary' },
+      author,
+      authority,
+      authoredAt: expect.any(String),
+      lifetime,
+      scope: {
+        subjects: [author],
+        actions: ['workspace.configure'],
+        resources: [
+          {
+            kind: 'container',
+            container: { owner: { kind: 'server' }, kind: 'context-preset', id },
+          },
+        ],
+      },
+    })),
+  ];
+}
+
 /** Real temporary configuration, private Artifact store and current durable token authority. */
 async function fixture(withWorkspaceSchemas = false) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-config-proposal-'));
@@ -455,6 +515,7 @@ describe('administration catalog configuration', () => {
           ],
         },
       }),
+      ...expectedReviewedDefaults(f.actor.userId),
     ]);
     // Schema validation is current-name validation, not a retained argument-schema pin.
     await f.observe([
@@ -677,11 +738,11 @@ describe('administration catalog configuration', () => {
     });
     expect(candidate.policyProposal).not.toHaveProperty('classification');
     expect(candidate.policyProposal).not.toHaveProperty('diff');
-    expect(
-      candidate.after.statements.every(
-        (statement: { state: string }) => statement.state === 'inactive'
-      )
-    ).toBe(true);
+    expect(candidate.after.statements).toEqual([
+      ...proposed.statements.map((statement) => ({ ...statement, authoredAt: expect.any(String) })),
+      ...expectedReviewedDefaults(f.actor.userId),
+    ]);
+    expect(candidate.policyProposal.proposed).toEqual(candidate.after);
     const confirmed = f.confirm(proposal);
     const result = await f.service.apply(confirmed);
     expect(result).toMatchObject({ persisted: true, reload: 'applied' });
