@@ -385,6 +385,7 @@ describe('database setup', () => {
         '0026_security_trigger.sql',
         '0027_security_thread_destinations.sql',
         '0028_access_token_issuer_ref.sql',
+        '0029_security_audit_detection.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -422,6 +423,7 @@ describe('database setup', () => {
         'core_0026_security_trigger',
         'core_0027_security_thread_destinations',
         'core_0028_access_token_issuer_ref',
+        'core_0029_security_audit_detection',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {

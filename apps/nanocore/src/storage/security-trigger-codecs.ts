@@ -1,5 +1,7 @@
 import {
   AccessTokenIdSchema,
+  ActorRefSchema,
+  AuditEventIdSchema,
   AuditEventSchema,
   ThreadIdSchema,
   TimestampSchema,
@@ -60,6 +62,85 @@ export const SecurityAlarmRowSchema = z
   .strict();
 export type SecurityAlarmRow = z.infer<typeof SecurityAlarmRowSchema>;
 
+export const SecurityAuditActionSchema = z.enum([
+  'auth.token.issue',
+  'auth.token.revoke',
+  'auth.token.rotate',
+  'auth.admin-recovery.issue',
+  'auth.bootstrap.consume',
+  'administration.configuration.apply',
+  'server.config.update',
+  'policy.write',
+  'user.disable',
+  'app.update.start',
+  'channel.pairing.bind',
+  'channel.pairing.unbind',
+  'auth.failure-threshold',
+  'auth.revoked-credential-presented',
+]);
+export type SecurityAuditAction = z.infer<typeof SecurityAuditActionSchema>;
+export const SecurityAuditMissingFieldSchema = z.enum([
+  'actor',
+  'target-user',
+  'successful-outcome',
+  'token-id',
+  'scope',
+  'owner',
+  'principal',
+  'expiry',
+  'changed-sections',
+  'changed-keys',
+  'full-diff-classification',
+  'target-digest',
+  'channel-kind',
+  'binding-revision',
+  'administrator-at-event',
+  'kind',
+  'key-kind',
+  'window',
+  'count',
+  'status',
+  'source',
+  'bootstrap-actor-semantics',
+]);
+export type SecurityAuditMissingField = z.infer<typeof SecurityAuditMissingFieldSchema>;
+export type SecurityAuditCursor = z.infer<typeof Cursor>;
+
+/** Original source facts and the native assessment, not reconstructed credential/config history. */
+export const SecurityAuditAssessmentSchema = z
+  .object({
+    auditEventId: AuditEventIdSchema,
+    createdAt: TimestampSchema,
+    enableGeneration: PositiveCounter,
+    action: SecurityAuditActionSchema,
+    actor: ActorRefSchema.nullable(),
+    targetUserId: UserIdSchema.nullable(),
+    status: z.enum(['detected', 'unsupported']),
+    rule: z.enum(['R1', 'R1d']).nullable(),
+    notify: z.enum(['immediate', 'daily']).nullable(),
+    missingFields: z
+      .array(SecurityAuditMissingFieldSchema)
+      .max(22)
+      .refine((fields) => new Set(fields).size === fields.length),
+    recipientCount: Counter,
+  })
+  .strict();
+export type SecurityAuditAssessment = z.infer<typeof SecurityAuditAssessmentSchema>;
+
+/** Initial event obligations only; no caller allocation or downstream delivery acknowledgement. */
+export const SecurityEventOutboxRowSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    recipientUserId: UserIdSchema,
+    key: z.tuple([z.literal('event'), AuditEventIdSchema]),
+    rule: z.enum(['R1', 'R1d']),
+    notify: z.enum(['immediate', 'daily']),
+    occurrence: z.object({ kind: z.literal('initial'), n: z.literal(1) }).strict(),
+    raised: z.boolean(),
+  })
+  .strict();
+export type SecurityEventOutboxRow = z.infer<typeof SecurityEventOutboxRowSchema>;
+
 /** Only the closed Server security family crosses the existing Core native connection. */
 export const ControlSecurityTriggerSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('current'), timestamp: TimestampSchema }).strict(),
@@ -74,6 +155,22 @@ export const ControlSecurityTriggerSchema = z.discriminatedUnion('action', [
     })
     .strict(),
   z.object({ action: z.literal('alarms') }).strict(),
+  z
+    .object({
+      action: z.literal('audit-detect'),
+      limit: z.number().int().min(1).max(128),
+      timestamp: TimestampSchema,
+    })
+    .strict(),
+  z.object({ action: z.literal('detection-progress') }).strict(),
+  z
+    .object({
+      action: z.literal('detections'),
+      after: Cursor.optional(),
+      limit: z.number().int().min(1).max(128),
+    })
+    .strict(),
+  z.object({ action: z.literal('event-outbox') }).strict(),
   z.object({ action: z.literal('alarm-read'), requestId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('destination-reserve'), requestId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('destination-read'), threadId: ThreadIdSchema }).strict(),
@@ -101,6 +198,31 @@ export const ControlSecurityTriggerResultSchema = z.discriminatedUnion('kind', [
     .object({ kind: z.literal('audit-unavailable'), snapshot: SecurityTriggerSnapshotSchema })
     .strict(),
   z.object({ kind: z.literal('alarms'), rows: z.array(SecurityAlarmRowSchema).max(128) }).strict(),
+  z
+    .object({
+      kind: z.literal('audit-detection'),
+      cursor: Cursor.nullable(),
+      scanned: Counter.max(128),
+      detected: Counter.max(128),
+      unsupported: Counter.max(128),
+    })
+    .strict(),
+  z
+    .object({ kind: z.literal('detection-progress'), cursor: Cursor.nullable(), assessed: Counter })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('detections'),
+      events: z.array(SecurityAuditAssessmentSchema).max(128),
+      next: Cursor.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('event-outbox'),
+      rows: z.array(SecurityEventOutboxRowSchema).max(128),
+    })
+    .strict(),
   z.object({ kind: z.literal('alarm'), row: SecurityAlarmRowSchema }).strict(),
   z
     .object({
