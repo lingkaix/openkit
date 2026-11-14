@@ -116,6 +116,8 @@ type ThreadGraphFacts = {
       readonly ancestors?: readonly string[];
     };
     readonly operation: string;
+    /** Current exact human Tool conditions selected by the native MCP owner; restrictions only. */
+    readonly toolProhibitions?: readonly string[];
   };
 };
 
@@ -419,6 +421,16 @@ export function compilePolicyGraph(
         }),
       ];
     }
+    policy.prohibitions = [
+      ...(policy.prohibitions ?? []),
+      ...(facts.toolProhibitions ?? []).map((id) => ({
+        id: `prohibition:mcp-tool:${id}`,
+        kind: facts.actor.kind === 'agent' ? ('process' as const) : ('user' as const),
+        subject: facts.actor.kind === 'agent' ? facts.actor.processId : user,
+        accessRights: [PRODUCT_OPERATION_ACCESS_RIGHTS['tool.use']],
+        range: { type: 'disjunctive' as const, include: [objects] },
+      })),
+    ];
     return {
       policy,
       request: {

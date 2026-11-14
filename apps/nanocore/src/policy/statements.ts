@@ -13,6 +13,7 @@ import {
   type PolicyBindingV1,
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
+  type PolicyPermissionV1Schema,
   type PolicyResourceV1Schema,
   type PolicyStageV1Schema,
   type PolicySubjectV1Schema,
@@ -838,4 +839,59 @@ export function readPolicyAgentPrincipal(input: {
     if (!next) throw new Error('Agent responsibility chain is unavailable.');
     current = next;
   }
+}
+
+/** Exact, current human-authored Tool conditions; supply and baseline authority remain separate. */
+export function selectHumanToolConditions(input: {
+  readonly document: PolicyDocumentV1;
+  readonly proposal: {
+    readonly workspaceId: string;
+    readonly serverId: string;
+    readonly toolName: string;
+    readonly subject: PolicyProposal['subject'];
+  };
+  readonly authorCurrent: (userId: string) => boolean;
+  readonly now?: number;
+}): z.infer<typeof PolicyPermissionV1Schema>[] {
+  const now = input.now ?? Date.now();
+  return input.document.statements.filter(
+    (statement): statement is z.infer<typeof PolicyPermissionV1Schema> => {
+      if (
+        statement.kind !== 'permission' ||
+        statement.state !== 'active' ||
+        statement.grant.kind !== 'ordinary' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.kind !== 'human' ||
+        !['prohibit', 'require_approval'].includes(statement.effect)
+      )
+        return false;
+      const anchor = statement.lifetime.anchor;
+      if (
+        anchor.owner.kind !== 'workspace' ||
+        anchor.owner.workspaceId !== input.proposal.workspaceId ||
+        anchor.kind !== 'workspace' ||
+        anchor.id !== input.proposal.workspaceId ||
+        (statement.lifetime.notAfter && Date.parse(statement.lifetime.notAfter) <= now)
+      )
+        return false;
+      if (
+        !statement.scope.subjects.some(
+          (subject) => policyDigest(subject) === policyDigest(input.proposal.subject.principal)
+        ) ||
+        !statement.scope.actions.includes('tool.use') ||
+        !statement.scope.resources.some(
+          (resource) =>
+            resource.kind === 'mcp-tool' &&
+            resource.workspaceId === input.proposal.workspaceId &&
+            resource.serverId === input.proposal.serverId &&
+            resource.toolName === input.proposal.toolName
+        )
+      )
+        return false;
+      // Lost author authority cannot silently turn a mandatory restriction into permission.
+      if (!input.authorCurrent(statement.author.id))
+        throw new Error('MCP Policy author no longer has current authority.');
+      return true;
+    }
+  );
 }

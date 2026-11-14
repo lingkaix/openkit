@@ -79,10 +79,6 @@ import {
   PolicyInterception,
 } from './policy/interception.js';
 import {
-  applyMcpToolProhibitions,
-  selectMcpToolPermissions,
-} from './policy/mcp-tool-permissions.js';
-import {
   type PolicyUseDecision,
   prepareControlPermissionDecision,
   readPolicyStatementUseCount as readPolicyStatementUseCountInDb,
@@ -93,6 +89,7 @@ import {
   policyDigest,
   policyProposalDigest,
   readPolicyAgentPrincipal,
+  selectHumanToolConditions,
   selectPolicyBindings,
 } from './policy/statements.js';
 import { evaluatePolicyKernel } from './policy/workspace-access.js';
@@ -748,7 +745,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                 });
                 // Exact Tool conditions are additional constraints, never the global process gate.
                 if (
-                  applyMcpToolProhibitions(authority.kernel, toolConditions).effect !== 'allow' ||
+                  authority.kernel.effect !== 'allow' ||
                   toolConditions.some((rule) => rule.effect === 'require_approval')
                 )
                   throw mcpDeniedError();
@@ -2596,7 +2593,7 @@ function currentWorkerMcpPermissions(
       toolName,
       workspaceDb: db,
     });
-    return selectMcpToolPermissions({
+    return selectHumanToolConditions({
       document,
       proposal: {
         workspaceId: environmentPackage.scope.workspaceId,
@@ -2620,6 +2617,10 @@ function currentMcpPolicyAuthority(
   let evaluated: { decision: PolicyDecision; facts: unknown } | null = null;
   const initiatingHumanId = responsibleUserIdForActor(input.environmentPackage.scope.triggerActor);
   if (!initiatingHumanId) throw mcpDeniedError();
+  const document = readAdmittedPolicyDocument(
+    input.input.coreDb!,
+    input.input.runtimeConfig().openKitConfig.policy?.mediation
+  );
   const authority = currentWorkerLineageWorkspaceAuthority(
     input.input.coreDb!,
     { ...input.environmentPackage.scope, packageSnapshotId: input.environmentPackage.snapshotId },
@@ -2631,10 +2632,7 @@ function currentMcpPolicyAuthority(
         evaluated = event;
       },
       policy: {
-        document: readAdmittedPolicyDocument(
-          input.input.coreDb!,
-          input.input.runtimeConfig().openKitConfig.policy?.mediation
-        ),
+        document,
         subject: {
           principal: { kind: 'human', id: initiatingHumanId },
           onBehalfOf: null,
@@ -2702,24 +2700,6 @@ function currentMcpPolicyAuthority(
     workspaceId: scope.workspaceId,
     policy: input.input.store.getWorkspaceResourceAccess(scope.workspaceId),
   });
-  const resourceKernel = evaluatePolicyKernel(
-    readThreadPolicyFacts({
-      workspaceId: scope.workspaceId,
-      thread,
-      ancestorThreadIds,
-      userId: responsibleHumanId,
-      administrator: false,
-      policy: resourcePolicy,
-      operation: 'tool.use',
-      actor: {
-        kind: 'agent',
-        userId: responsibleHumanId,
-        agentId: input.environmentPackage.agent.agentId,
-        processId: scope.agentSessionId,
-      },
-    })
-  );
-  const kernel = captured.decision.effect === 'deny' ? captured.decision : resourceKernel;
   const subject = {
     principal: context
       ? { kind: 'agent' as const, id: context.agentId }
@@ -2734,6 +2714,38 @@ function currentMcpPolicyAuthority(
     credentialKind: 'worker-package' as const,
     responsibleHumanId,
   };
+  const toolProhibitions = selectHumanToolConditions({
+    document,
+    proposal: {
+      workspaceId: scope.workspaceId,
+      serverId: input.serverId,
+      toolName: input.toolName,
+      subject,
+    },
+    authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.input.coreDb!, userId),
+  })
+    .filter((statement) => statement.effect === 'prohibit')
+    .map((statement) => statement.id);
+  const resourceKernel = evaluatePolicyKernel(
+    readThreadPolicyFacts({
+      workspaceId: scope.workspaceId,
+      thread,
+      ancestorThreadIds,
+      userId: responsibleHumanId,
+      administrator: false,
+      policy: resourcePolicy,
+      operation: 'tool.use',
+      toolProhibitions,
+      actor: {
+        kind: 'agent',
+        userId: responsibleHumanId,
+        agentId: input.environmentPackage.agent.agentId,
+        processId: scope.agentSessionId,
+      },
+    })
+  );
+  const kernel = captured.decision.effect === 'deny' ? captured.decision : resourceKernel;
+
   const taskPolicy = context
     ? input.input.goalTaskPolicy?.(input.workspaceDb, responsibleHumanId)
     : null;
@@ -2873,7 +2885,7 @@ function mcpInterceptionInput(
   const permissionAuthorCurrent = (userId: string) =>
     isCurrentServerPolicyAuthor(input.input.coreDb!, userId);
   const currentPermissions = () =>
-    selectMcpToolPermissions({
+    selectHumanToolConditions({
       document,
       proposal: {
         workspaceId: scope.workspaceId,
@@ -2983,8 +2995,7 @@ function mcpInterceptionInput(
     participantAuthorized,
     finalKernel: () => {
       const current = currentMcpPolicyAuthority(input);
-      const kernel = applyMcpToolProhibitions(current.kernel, currentPermissions());
-      return current.goalTask ? { ...current.goalTask, kernel } : kernel;
+      return current.goalTask ?? current.kernel;
     },
     stillCurrent: () =>
       workerMcpExposureAvailable(input.input) &&
