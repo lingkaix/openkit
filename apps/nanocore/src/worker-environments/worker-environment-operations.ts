@@ -248,7 +248,7 @@ export function createWorkerEnvironmentOperations(
           const response = purgeResponse(input.requestId, settled, outcome);
           if (dependencies.store.getDataRoot() !== null) {
             const { responseKind, ...originalReceipt } = receipt;
-            await dependencies.store.publishWorkspaceCommandReceipt({
+            await dependencies.store.publishCommandReceipt({
               ...originalReceipt,
               command: 'worker_environment.purge',
               scope: {

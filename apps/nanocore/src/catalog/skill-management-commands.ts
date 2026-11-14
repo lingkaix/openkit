@@ -203,7 +203,7 @@ export function createSkillManagementCommands(
               actorId: publicOperationActor(context).userId,
             };
             const id = options.responseId(result);
-            await dependencies.store!.publishWorkspaceCommandReceipt(
+            await dependencies.store!.publishCommandReceipt(
               operation === 'catalog.skill-import'
                 ? {
                     ...originalReceipt,

@@ -49,6 +49,8 @@ const faults = vi.hoisted(() => ({
     operation?: string;
     database?: string;
     workerIndex?: number;
+    receiptStage?: string;
+    receiptUserId?: string;
   }>,
   replies: [] as Array<{
     id?: number;
@@ -120,17 +122,30 @@ vi.mock('node:worker_threads', async (load) => {
         faults.workers.push(this);
       }
       override postMessage(...args: Parameters<NativeWorker['postMessage']>) {
-        faults.messages.push({ ...args[0], workerIndex: faults.workers.indexOf(this) });
         const posted = args[0] as {
           operation?: string;
           database?: string;
-          input?: { action?: string; command?: string };
+          transition?: { kind?: string };
+          content?: ArrayBuffer;
         };
+        // Observe the real frame before transfer detaches it; SQL COMMIT and the original receipt remain the fault oracle.
+        const admission =
+          posted.operation === 'transition' &&
+          posted.transition?.kind === 'command-receipt' &&
+          posted.content instanceof ArrayBuffer
+            ? JSON.parse(new TextDecoder().decode(posted.content))
+            : undefined;
+        faults.messages.push({
+          ...args[0],
+          workerIndex: faults.workers.indexOf(this),
+          receiptStage: admission?.stage,
+          receiptUserId: admission?.scope?.userId,
+        });
         if (
-          posted.operation === 'scoped-notebook-sql' &&
+          posted.operation === 'transition' &&
           posted.database === faults.maintenanceDatabase &&
-          posted.input?.action === 'user-receipt-maintenance' &&
-          posted.input.command === faults.maintenanceCommand
+          admission?.stage === 'maintenance' &&
+          typeof admission.scope?.userId === 'string'
         )
           Atomics.store(new Int32Array(faults.gate), 3, 1);
         return super.postMessage(...args);
@@ -1709,14 +1724,12 @@ it.each(['user', 'server'] as const)(
       response_kind: 'knowledge_source',
     });
     expect(outcome.ok).toBe(false);
-    const maintenance = faults.messages.findLast((message) => {
-      const input = (message as { input?: { action?: string; command?: string } }).input;
-      return (
+    const maintenance = faults.messages.findLast(
+      (message) =>
+        message.operation === 'transition' &&
         message.database === f.database &&
-        input?.action === `${kind === 'user' ? 'user' : 'server'}-receipt-maintenance` &&
-        input.command === 'knowledge.source.register'
-      );
-    });
+        message.receiptStage === 'maintenance'
+    );
     const nativePruneTriggerReached =
       maintenance !== undefined &&
       faults.replies.some(
@@ -1819,14 +1832,11 @@ it.each(['maintain', 'tell'] as const)(
     expect(run).not.toHaveBeenCalled();
     const maintenancePosts = () =>
       faults.messages.filter((message) => {
-        const posted = message as {
-          database?: string;
-          input?: { action?: string; command?: string };
-        };
         return (
-          posted.database === f.database &&
-          posted.input?.action === 'user-receipt-maintenance' &&
-          posted.input.command === command
+          message.operation === 'transition' &&
+          message.database === f.database &&
+          message.receiptStage === 'maintenance' &&
+          message.receiptUserId === f.userDb.userId
         );
       });
     expect(maintenancePosts()).toHaveLength(1);

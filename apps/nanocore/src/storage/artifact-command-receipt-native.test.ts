@@ -178,7 +178,7 @@ vi.mock('node:worker_threads', async (load) => {
         };
         if (
           faults.holdFailure &&
-          message.operation === 'workspace-command-receipt' &&
+          message.operation === 'transition' &&
           typeof message.id === 'number' &&
           message.content instanceof ArrayBuffer
         ) {

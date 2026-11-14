@@ -367,7 +367,7 @@ export function createArtifactOperationImplementations(
             );
             if (store.getDataRoot() !== null) {
               const { responseKind, ...originalReceipt } = receipt;
-              await store.publishWorkspaceCommandReceipt({
+              await store.publishCommandReceipt({
                 ...originalReceipt,
                 command: 'artifact.introduce',
                 scope: { workspaceId, threadId },

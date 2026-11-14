@@ -152,7 +152,7 @@ export async function importArtifactFile(input: {
         artifactCreated = true;
         if (store.getDataRoot() !== null) {
           const { responseKind, ...originalReceipt } = receipt;
-          await store.publishWorkspaceCommandReceipt({
+          await store.publishCommandReceipt({
             ...originalReceipt,
             command: 'artifact.import',
             scope: { actorId, workspaceId: metadata.workspaceId },
@@ -379,7 +379,7 @@ export async function commitArtifactVersionCommand(
         );
         if (store.getDataRoot() !== null) {
           const { responseKind, ...originalReceipt } = receipt;
-          await store.publishWorkspaceCommandReceipt({
+          await store.publishCommandReceipt({
             ...originalReceipt,
             command: input.command,
             scope: {

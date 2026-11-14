@@ -405,7 +405,7 @@ async function first(f: Fixture) {
   expect(f.createSpy).toHaveBeenCalledTimes(1);
   expect(f.membershipSpy).toHaveBeenCalledTimes(1);
   expect(acks('open', f.database).length).toBeGreaterThan(0);
-  expect(acks('workspace-command-receipt', f.database).length).toBeGreaterThan(0);
+  expect(acks('transition', f.database).length).toBeGreaterThan(0);
   const wasMeasuring = observed.measuring;
   observed.measuring = false;
   let receipt: ReturnType<typeof readOriginalReceipt>;
@@ -435,7 +435,7 @@ it('replays the exact public Workspace command from its cold existing User recei
     beforeHistory = history(f, original.body.id),
     retained = await cold(f);
   const opensBefore = posts('open', f.database).length,
-    receiptsBefore = posts('workspace-command-receipt', f.database).length;
+    receiptsBefore = posts('transition', f.database).length;
   measureUser(f.path, f.requestId);
   const response = await f.call();
   expect(response.status, await response.clone().text()).toBe(201);
@@ -445,7 +445,7 @@ it('replays the exact public Workspace command from its cold existing User recei
   expect(f.createSpy).toHaveBeenCalledTimes(1);
   expect(f.membershipSpy).toHaveBeenCalledTimes(1);
   expect(history(f, original.body.id)).toEqual(beforeHistory);
-  expect(posts('workspace-command-receipt', f.database)).toHaveLength(receiptsBefore);
+  expect(posts('transition', f.database)).toHaveLength(receiptsBefore);
   actualReaders(f.path, original.receipt);
   expect(source(f.path)).toEqual(retained);
   const later = posts('open', f.database).slice(opensBefore);
@@ -522,7 +522,7 @@ it('rechecks current admission after the real cold User OPEN wait before replayi
     original = await first(f),
     beforeHistory = history(f, original.body.id),
     retained = await cold(f);
-  const receiptsBefore = posts('workspace-command-receipt', f.database).length,
+  const receiptsBefore = posts('transition', f.database).length,
     lookupsBefore = f.lookups.filter(
       (row) => row.command === 'workspace.create' && row.requestId === f.requestId
     ).length;
@@ -585,7 +585,7 @@ it('rechecks current admission after the real cold User OPEN wait before replayi
   ).toHaveLength(lookupsBefore);
   expect(f.createSpy).toHaveBeenCalledTimes(1);
   expect(f.membershipSpy).toHaveBeenCalledTimes(1);
-  expect(posts('workspace-command-receipt', f.database)).toHaveLength(receiptsBefore);
+  expect(posts('transition', f.database)).toHaveLength(receiptsBefore);
   expect(history(f, original.body.id)).toEqual(beforeHistory);
   if (observed.readers.length) actualReaders(f.path, original.receipt);
   else expect(observed.closes).toHaveLength(0); // Admission refusal may precede all Main User reads.

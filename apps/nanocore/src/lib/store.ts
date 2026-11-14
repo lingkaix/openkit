@@ -5,14 +5,15 @@ import {
   receivedItemInfluences,
 } from '../security/context-influence.js';
 import {
+  type CommandReceipt,
+  ControlCommandReceiptAdmissionSchema,
+  isSeparateScopedNotebookReceipt,
+} from '../storage/control-store-admission-codecs.js';
+import {
   isRecordedItemFailure,
   prepareControlReadMetadata,
 } from '../storage/control-store-read-metadata.js';
-import {
-  ControlScopedNotebookSqlInputSchema,
-  isSeparateScopedNotebookReceipt,
-} from '../storage/scoped-notebook-sql-codecs.js';
-import type { WorkspaceCommandReceipt } from '../storage/workspace-command-receipt-codecs.js';
+import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
@@ -1488,10 +1489,10 @@ export class FsStore {
   }
 
   /** Acknowledges the original post-product Workspace command receipt and its separate expiry maintenance. */
-  public async publishWorkspaceCommandReceipt(receipt: WorkspaceCommandReceipt): Promise<void> {
+  public async publishCommandReceipt(receipt: CommandReceipt): Promise<void> {
     if (!this.dataRoot)
       throw new Error('Workspace command receipts require persistent scope ownership.');
-    await getControlStoreWorkerClient().recordWorkspaceCommandReceipt(this.dataRoot, receipt);
+    await getControlStoreWorkerClient().recordCommandReceipt(this.dataRoot, receipt);
   }
 
   /** Commits one completed steer receipt and Audit without changing live or terminal product content. */
@@ -3482,36 +3483,28 @@ export class FsStore {
         userId: db.userId,
         event: { ...stage.event, workspaceId: null },
       });
+    } else if (stage.kind === 'audit') {
+      await client.scopedNotebookSql(
+        database,
+        ControlScopedNotebookSqlInputSchema.parse({ action: 'server-audit', event: stage.event })
+      );
     } else {
-      const input =
-        stage.kind === 'audit'
-          ? { action: 'server-audit', event: stage.event }
-          : db.scope === 'user'
-            ? { action: 'user-receipt', userId: db.userId, receipt: stage.receipt }
-            : { action: 'server-receipt', receipt: stage.receipt };
-      await client.scopedNotebookSql(database, ControlScopedNotebookSqlInputSchema.parse(input));
-      if (
-        stage.kind === 'receipt' &&
-        isSeparateScopedNotebookReceipt(db.scope, stage.receipt.command)
-      ) {
-        // The original receipt has already committed; expiry maintenance is a separate FULL stage.
-        const maintenance =
-          db.scope === 'user'
-            ? {
-                action: 'user-receipt-maintenance',
-                userId: db.userId,
-                command: stage.receipt.command,
-                referenceTime: now(),
-              }
-            : {
-                action: 'server-receipt-maintenance',
-                command: stage.receipt.command,
-                referenceTime: now(),
-              };
-        await client.scopedNotebookSql(
-          database,
-          ControlScopedNotebookSqlInputSchema.parse(maintenance)
-        );
+      await client.transition(
+        database,
+        ControlCommandReceiptAdmissionSchema.parse({
+          kind: 'command-receipt',
+          stage: 'record',
+          receipt: stage.receipt,
+        })
+      );
+      if (isSeparateScopedNotebookReceipt(db.scope, stage.receipt.command)) {
+        // The original record ACK precedes this separately sampled FULL maintenance stage.
+        await client.transition(database, {
+          kind: 'command-receipt',
+          stage: 'maintenance',
+          scope: db.scope === 'user' ? { userId: db.userId } : { coreId: 'server' },
+          referenceTime: now(),
+        });
       }
     }
   }

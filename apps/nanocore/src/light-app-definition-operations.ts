@@ -235,7 +235,7 @@ export function createLightAppDefinitionOperationImplementations(
           if (store.getDataRoot() !== null) {
             const { responseKind, ...originalReceipt } = receipt;
             const receiptScope = { workspaceId: input.workspaceId, actorId: context.actorRef.id };
-            await store.publishWorkspaceCommandReceipt(
+            await store.publishCommandReceipt(
               operation === 'catalog.light-app-import'
                 ? {
                     ...originalReceipt,

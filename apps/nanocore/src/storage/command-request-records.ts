@@ -13,10 +13,6 @@ import type {
 import type { AppDb } from './app-db.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import {
-  type ControlCatalogCommandReceiptInput,
-  ControlCatalogCommandReceiptInputSchema,
-} from './catalog-command-receipt-codecs.js';
-import {
   type CommandRequestOwner,
   commandRequestOwner,
   commandRequestValues,
@@ -49,11 +45,6 @@ import {
 } from './db.js';
 import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
-import { isSeparateScopedNotebookReceipt } from './scoped-notebook-sql-codecs.js';
-import {
-  type ControlWorkspaceCommandReceiptInput,
-  ControlWorkspaceCommandReceiptInputSchema,
-} from './workspace-command-receipt-codecs.js';
 
 /** Raw SQLite row for one command idempotency request. */
 type CommandRequestRow = {
@@ -201,115 +192,6 @@ export function recordControlCommandRequestRecordInDb(
         : { kind: 'workspace', workspaceId: db.workspaceId },
     record.createdAt
   );
-}
-
-/** Commits only the original standalone scoped receipt; later maintenance cannot roll it back. */
-export function recordControlScopedNotebookReceiptInDb(
-  db: CoreDb | UserDb,
-  record: CommandRequestRecord
-): void {
-  assertControlProductWriter(db.sqlite);
-  assertCommandRequestDbOwner(db, record.scope);
-  if (!isSeparateScopedNotebookReceipt(db.scope, record.command))
-    throw new ControlProductPreconditionError();
-  writeCommandRequestRecordInDb(db, record);
-}
-
-/** Retains the original post-receipt maintenance commit and its current reference-time owner. */
-export function pruneControlScopedNotebookReceiptsInDb(
-  db: CoreDb | UserDb,
-  command: CommandRequestName,
-  referenceTime: string
-): void {
-  assertControlProductWriter(db.sqlite);
-  if (!isSeparateScopedNotebookReceipt(db.scope, command))
-    throw new ControlProductPreconditionError();
-  pruneControlAdmissionReceipts(
-    db.sqlite,
-    db.scope === 'user' ? { kind: 'user', userId: db.userId } : { kind: 'server' },
-    referenceTime
-  );
-}
-
-/** Applies only the two original Candidate receipt stages on the supplied physical writer. */
-export function applyCatalogCommandReceiptInDb(
-  db: WorkspaceDb,
-  value: ControlCatalogCommandReceiptInput
-): void {
-  assertControlProductWriter(db.sqlite);
-  const input = ControlCatalogCommandReceiptInputSchema.parse(value);
-  if (!db.sqlite.inTransaction || db.workspaceId !== input.workspaceId)
-    throw new ControlProductPreconditionError();
-  if (input.stage === 'maintenance') {
-    // This remains the separate FULL maintenance commit after the original record ACK.
-    pruneControlAdmissionReceipts(
-      db.sqlite,
-      { kind: 'workspace', workspaceId: db.workspaceId },
-      input.referenceTime
-    );
-    return;
-  }
-  const record = { ...input.receipt, scope: parseStoredCommandScope(input.receipt.scope) };
-  assertCommandRequestDbOwner(db, record.scope);
-  if (
-    record.key !== commandRequestKey(record.command, record.requestId, record.scope) ||
-    record.expiresAt !== commandRequestExpiresAt(record.createdAt) ||
-    (record.command === 'catalog.skill-candidate-submit'
-      ? record.scope.candidateId !== undefined
-      : record.scope.candidateId !== record.response.id)
-  )
-    throw new ControlProductPreconditionError();
-  writeCommandRequestRecordInDb(db, record);
-}
-
-/** Applies each closed command's original standalone receipt stages on its exact physical database. */
-export function applyWorkspaceCommandReceiptInDb(
-  db: CoreDb | UserDb | WorkspaceDb,
-  value: ControlWorkspaceCommandReceiptInput
-): void {
-  assertControlProductWriter(db.sqlite);
-  const input = ControlWorkspaceCommandReceiptInputSchema.parse(value);
-  if (
-    !db.sqlite.inTransaction ||
-    ('userId' in input
-      ? db.scope !== 'user' || db.userId !== input.userId
-      : 'coreId' in input
-        ? db.scope !== 'core'
-        : db.scope !== 'workspace' || db.workspaceId !== input.workspaceId)
-  )
-    throw new ControlProductPreconditionError();
-  if ('receipt' in input) {
-    const record = input.receipt;
-    assertCommandRequestDbOwner(db, record.scope);
-    if (
-      record.key !== commandRequestKey(record.command, record.requestId, record.scope) ||
-      record.expiresAt !== commandRequestExpiresAt(record.createdAt) ||
-      (record.command === 'workspace.update' &&
-        (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
-      (record.command === 'worker_environment.purge' &&
-        record.response.id !== record.scope.storageRef) ||
-      (record.command === 'workspace_sync.review.decide' &&
-        record.response.id !== record.scope.reviewId) ||
-      ((record.response.kind === 'skill_catalog' || record.response.kind === 'light_app_catalog') &&
-        (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
-      ((record.command === 'artifact.version-commit' ||
-        record.command === 'artifact.version-file-commit') &&
-        record.response.id !== record.scope.artifactId)
-    )
-      throw new ControlProductPreconditionError();
-    writeCommandRequestRecordInDb(db, record);
-  } else {
-    // This is the original later commit, using the clock sampled after the receipt ACK.
-    pruneControlAdmissionReceipts(
-      db.sqlite,
-      db.scope === 'user'
-        ? { kind: 'user', userId: db.userId }
-        : db.scope === 'core'
-          ? { kind: 'server' }
-          : { kind: 'workspace', workspaceId: db.workspaceId },
-      input.referenceTime
-    );
-  }
 }
 
 /** One row serializer on an actual scoped connection; command entry points retain authority, transaction and maintenance ownership. */
@@ -755,7 +637,10 @@ function openCommandRequestDb(dataRoot: string, owner: CommandRequestOwner): Com
  * @param scope Command request scope stored in or destined for that database.
  * @throws Error when the request scope selects a different durable owner.
  */
-function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequestScope): void {
+export function assertCommandRequestDbOwner(
+  db: CommandRequestDb,
+  scope: CommandRequestScope
+): void {
   const owner = commandRequestOwner(scope);
 
   if (db.scope === 'core' && owner.scope === 'core') {

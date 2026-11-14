@@ -151,15 +151,17 @@ import { applyControlAttentionAttemptClaim } from './attention-attempt-claim-nat
 import { applyControlAttentionAttemptCompletion } from './attention-attempt-completion-native.js';
 import { applyAutomationScannerInDb } from './automation-scanner-native.js';
 import {
-  applyCatalogCommandReceiptInDb,
-  applyWorkspaceCommandReceiptInDb,
-} from './command-request-records.js';
-import {
   ControlStoreBusyError,
   ControlStoreNoSpaceError,
   controlStoreFor,
 } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
+import {
+  type ControlAdmissionResult,
+  type ControlCommandReceiptAdmission,
+  ControlCommandReceiptAdmissionSchema,
+  type ControlKnowledgeAdmissionResult,
+} from './control-store-admission-codecs.js';
 import {
   applyControlCapabilityCommand,
   applyControlCoreCapabilityCommand,
@@ -172,7 +174,6 @@ import {
   tryControlCapabilityReuse,
 } from './control-store-capability.js';
 import { readControlScalarText } from './control-store-input.js';
-
 import {
   applyControlPendingTransition,
   prepareControlPendingArchive,
@@ -340,10 +341,6 @@ import {
   WORKSPACE_CAPTURE_MESSAGES,
 } from './workspace-capture-codecs.js';
 import { applyWorkspaceCaptureInDb, prepareWorkspaceCapture } from './workspace-capture-native.js';
-import {
-  type ControlWorkspaceCommandReceiptInput,
-  ControlWorkspaceCommandReceiptInputSchema,
-} from './workspace-command-receipt-codecs.js';
 import { applyControlWorkspaceDeletion } from './workspace-deletion-native.js';
 import { syncCanonicalTree } from './workspace-file-records.js';
 import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
@@ -437,8 +434,6 @@ type WriteCommand = Extract<
       | 'standalone-audit'
       | 'resolved-agent-setup'
       | 'scoped-notebook-sql'
-      | 'catalog-command-receipt'
-      | 'workspace-command-receipt'
       | 'admin-recovery'
       | 'better-auth'
       | 'vault'
@@ -486,7 +481,7 @@ type WriteRequest = WriteCommand & {
   readonly appInput?: ControlAppInput;
   readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
   readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
-  readonly preparedWorkspaceCommandReceipt?: ControlWorkspaceCommandReceiptInput;
+  readonly preparedCommandReceipt?: ControlCommandReceiptAdmission;
   readonly preparedStandaloneAudit?: ControlStandaloneAuditInput;
   readonly preparedThreadReadItemIds?: readonly string[];
   readonly preparedGenerativePresentation?: PreparedControlGenerativePresentation;
@@ -750,13 +745,7 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
     error.message === 'Unsupported retained record format.'
   )
     return { operation, code: 'unsupported_retained_format' };
-  if (operation === 'scoped-notebook-sql' && error instanceof IdempotencyKeyConflictError)
-    return {
-      operation,
-      code: 'idempotency_key_conflict',
-      message: 'The requestId was already used for different command input.',
-      status: 409,
-    };
+
   if (operation === 'recovery-source-reactivation' && error instanceof WorkspaceRecoveryError) {
     const parsed = ControlRecoverySourceReactivationRefusalSchema.safeParse({
       operation,
@@ -1499,7 +1488,8 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
     case 'transition':
     case 'products':
       if ('kind' in request.transition) {
-        lanes.add(request.transition.input.turnId);
+        if (request.transition.kind === 'knowledge-work')
+          lanes.add(request.transition.input.turnId);
         break;
       }
       add(request.transition);
@@ -2347,26 +2337,34 @@ function flush(owner: OwnedDatabase): void {
               result: request.preparedSchemaApplication.result,
             };
           } else if (request.operation === 'transition') {
-            if (!owner.productOwner) throw new ControlProductPreconditionError();
-            const result =
-              'kind' in request.transition
-                ? (() => {
-                    if (!owner.scopeDb) throw new ControlProductPreconditionError();
-                    return applyControlAdmission(owner.scopeDb, request.transition);
-                  })()
-                : applyControlAdmission(
-                    sqlite,
-                    owner.productOwner,
-                    request.transition,
-                    request.preparedEntries ?? [],
-                    request.preparedSteer
-                  );
-            if (!result.replayed && owner.scopeDb?.scope === 'workspace')
+            let result: ControlAdmissionResult | ControlKnowledgeAdmissionResult | null;
+            if ('kind' in request.transition && request.transition.kind === 'command-receipt') {
+              const input = request.preparedCommandReceipt;
+              if (!input) throw new ControlProductPreconditionError();
+              const scope = input.stage === 'record' ? input.receipt.scope : input.scope;
+              const db = 'userId' in scope ? nativeUserDb(owner, scope.userId) : owner.scopeDb;
+              if (!db) throw new ControlProductPreconditionError();
+              result = applyControlAdmission(db, input);
+            } else if ('kind' in request.transition) {
+              if (!owner.scopeDb || !owner.productOwner)
+                throw new ControlProductPreconditionError();
+              result = applyControlAdmission(owner.scopeDb, request.transition);
+            } else {
+              if (!owner.productOwner) throw new ControlProductPreconditionError();
+              result = applyControlAdmission(
+                sqlite,
+                owner.productOwner,
+                request.transition,
+                request.preparedEntries ?? [],
+                request.preparedSteer
+              );
+            }
+            if (result && !result.replayed && owner.scopeDb?.scope === 'workspace')
               for (const threadId of archivedThreads(request)) {
                 if (!request.preparedPending) throw new ControlProductPreconditionError();
                 assertControlPendingArchive(owner.scopeDb, threadId, request.preparedPending);
               }
-            if (!result.replayed && 'products' in request.transition)
+            if (result && !result.replayed && 'products' in request.transition)
               for (const command of request.transition.pending ?? []) {
                 if (owner.scopeDb?.scope !== 'workspace')
                   throw new ControlProductPreconditionError();
@@ -2823,37 +2821,9 @@ function flush(owner: OwnedDatabase): void {
               operation: 'resolved-agent-setup',
               result,
             };
-          } else if (request.operation === 'workspace-command-receipt') {
-            const input = request.preparedWorkspaceCommandReceipt;
-            if (!input) throw new ControlProductPreconditionError();
-            const db = 'userId' in input ? nativeUserDb(owner, input.userId) : owner.scopeDb;
-            if (!db) throw new ControlProductPreconditionError();
-            applyWorkspaceCommandReceiptInDb(db, input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'workspace-command-receipt',
-              result: null,
-            };
-          } else if (request.operation === 'catalog-command-receipt') {
-            if (owner.scopeDb?.scope !== 'workspace') throw new ControlProductPreconditionError();
-            applyCatalogCommandReceiptInDb(owner.scopeDb, request.input);
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'catalog-command-receipt',
-              result: null,
-            };
           } else if (request.operation === 'scoped-notebook-sql') {
-            const db =
-              request.input.action === 'user-receipt' ||
-              request.input.action === 'user-receipt-maintenance'
-                ? nativeUserDb(owner, request.input.userId)
-                : owner.scopeDb;
-            if (!db || db.scope === 'workspace') throw new ControlProductPreconditionError();
-            applyScopedNotebookSqlInDb(db, request.input);
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            applyScopedNotebookSqlInDb(owner.scopeDb, request.input);
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,
@@ -4417,8 +4387,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'standalone-audit' ||
       value.operation === 'resolved-agent-setup' ||
       value.operation === 'scoped-notebook-sql' ||
-      value.operation === 'catalog-command-receipt' ||
-      value.operation === 'workspace-command-receipt' ||
       value.operation === 'workspace-stage-review' ||
       value.operation === 'workspace-backend-handoff' ||
       value.operation === 'workspace-baseline' ||
@@ -4518,7 +4486,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let appInput: ControlAppInput | undefined;
           let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
           let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
-          let preparedWorkspaceCommandReceipt: ControlWorkspaceCommandReceiptInput | undefined;
+          let preparedCommandReceipt: ControlCommandReceiptAdmission | undefined;
           let preparedStandaloneAudit: ControlStandaloneAuditInput | undefined;
           let preparedThreadReadItemIds: readonly string[] | undefined;
           let preparedGenerativePresentation: PreparedControlGenerativePresentation | undefined;
@@ -4552,9 +4520,13 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 JSON.parse(readControlScalarText(value.input, value.content))
               );
             }
-            if (value.operation === 'workspace-command-receipt') {
-              preparedWorkspaceCommandReceipt = ControlWorkspaceCommandReceiptInputSchema.parse(
-                JSON.parse(readControlScalarText(value.input, value.content))
+            if (
+              value.operation === 'transition' &&
+              'kind' in value.transition &&
+              value.transition.kind === 'command-receipt'
+            ) {
+              preparedCommandReceipt = ControlCommandReceiptAdmissionSchema.parse(
+                JSON.parse(readControlScalarText(value.transition.input, value.content!))
               );
             }
             if (value.operation === 'resolved-agent-setup') {
@@ -4963,7 +4935,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
               appInput,
               preparedSchedulerAdmission,
               preparedAttentionEnqueue,
-              preparedWorkspaceCommandReceipt,
+              preparedCommandReceipt,
               preparedStandaloneAudit,
               preparedThreadReadItemIds,
               preparedEntries,

@@ -1698,7 +1698,7 @@ describe('FsStore persistence', () => {
     const userScope = { userId: 'usr_00000000-0000-7000-8000-000000000001' };
     const userInputHash = commandInputHash({ purpose: 'user-database-owner' });
     const userCreatedAt = new Date().toISOString();
-    await store.publishWorkspaceCommandReceipt({
+    await store.publishCommandReceipt({
       key: commandRequestKey('workspace.create', userRequestId, userScope),
       command: 'workspace.create',
       requestId: userRequestId,

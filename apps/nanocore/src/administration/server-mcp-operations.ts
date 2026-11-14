@@ -40,10 +40,10 @@ import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import type { SERVER_MCP_CORE_COMMAND_RECEIPTS } from '../storage/control-store-admission-codecs.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ControlStandaloneAuditInputSchema } from '../storage/standalone-audit-codecs.js';
 import { VAULT_SERVER_MCP_COMMANDS } from '../storage/vault-native-codecs.js';
-import type { SERVER_MCP_CORE_COMMAND_RECEIPTS } from '../storage/workspace-command-receipt-codecs.js';
 import {
   isCurrentServerMcpMaterial,
   isServerMcpGrant,
@@ -239,7 +239,7 @@ export function createServerMcpOperationImplementations(
             });
             if (store!.getDataRoot() !== null) {
               const { responseKind, ...facts } = receipt;
-              await store!.publishWorkspaceCommandReceipt(
+              await store!.publishCommandReceipt(
                 name === 'catalog.shared-mcp-set-disabled'
                   ? {
                       ...facts,

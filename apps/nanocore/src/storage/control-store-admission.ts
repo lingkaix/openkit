@@ -6,12 +6,16 @@ import { NotebookError } from '../knowledge/notebook.js';
 import type { CommandRequestResponse } from '../lib/store.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
+import { parseStoredCommandScope } from './command-request-codecs.js';
 import {
+  assertCommandRequestDbOwner,
+  commandRequestExpiresAt,
   commandRequestKey,
   getCommandRequestRecordFromDb,
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
   recordControlCommandRequestRecordInDb,
+  writeCommandRequestRecordInDb,
 } from './command-request-records.js';
 import {
   type ControlAdmission,
@@ -19,9 +23,14 @@ import {
   ControlAdmissionInputSchema,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
+  type ControlCommandReceiptAdmission,
+  ControlCommandReceiptAdmissionSchema,
   type ControlKnowledgeAdmissionInput,
   ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
+  isSeparateScopedNotebookReceipt,
+  SCOPED_NOTEBOOK_SERVER_RECEIPTS,
+  SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './control-store-admission-codecs.js';
 import { commandInputHash } from './control-store-input.js';
 import {
@@ -37,7 +46,7 @@ import {
   type PreparedControlEntry,
   type prepareControlTaskSteerReceipt,
 } from './control-store-products.js';
-import type { CoreDb, WorkspaceDb } from './db.js';
+import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
 
 /** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
 export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
@@ -102,23 +111,36 @@ export function applyControlAdmission(
   db: CoreDb | WorkspaceDb,
   work: Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
 ): ControlKnowledgeAdmissionResult;
-/** Uses the actual operation's physical connection and original savepoint; Knowledge work also needs its canonical root binding. */
 export function applyControlAdmission(
-  connection: Database.Database | CoreDb | WorkspaceDb,
-  ownerOrWork: ControlProductOwner | Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>,
+  db: CoreDb | WorkspaceDb | UserDb,
+  input: ControlCommandReceiptAdmission
+): null;
+/** Uses the actual operation's physical connection and original savepoint; scoped work also needs its canonical root binding. */
+export function applyControlAdmission(
+  connection: Database.Database | CoreDb | WorkspaceDb | UserDb,
+  ownerOrWork:
+    | ControlProductOwner
+    | Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
+    | ControlCommandReceiptAdmission,
   value?: ControlAdmission,
   entries: readonly PreparedControlEntry[] = [],
   preparedSteer?: Awaited<ReturnType<typeof prepareControlTaskSteerReceipt>>
-): ControlAdmissionResult | ControlKnowledgeAdmissionResult {
+): ControlAdmissionResult | ControlKnowledgeAdmissionResult | null {
   if ('sqlite' in connection) {
     assertControlProductWriter(connection.sqlite);
     const work = ControlAdmissionInputSchema.parse(ownerOrWork);
     if (!('kind' in work)) throw new ControlProductPreconditionError();
+    if (work.kind === 'command-receipt') {
+      admitCommandReceipt(connection, work);
+      return null;
+    }
+    if (connection.scope === 'user') throw new ControlProductPreconditionError();
     return admitKnowledgeWork(connection, work.input);
   }
   const sqlite = connection;
   assertControlProductWriter(sqlite);
-  if ('input' in ownerOrWork) throw new ControlProductPreconditionError();
+  if ('kind' in ownerOrWork && ownerOrWork.kind !== 'workspace' && ownerOrWork.kind !== 'server')
+    throw new ControlProductPreconditionError();
   const owner = ownerOrWork;
   const input = ControlAdmissionSchema.parse(value);
   const receipt = input.receipt;
@@ -308,6 +330,65 @@ export function applyControlAdmission(
     )
     .run(...Object.values(audit));
   return { replayed: false, response };
+}
+
+/** Preserves each original receipt's exact physical owner and its atomic or post-ACK maintenance boundary. */
+function admitCommandReceipt(
+  db: CoreDb | WorkspaceDb | UserDb,
+  input: ControlCommandReceiptAdmission
+): void {
+  if (!db.sqlite.inTransaction) throw new ControlProductPreconditionError();
+  const scope: Readonly<Record<string, string>> =
+    input.stage === 'record' ? parseStoredCommandScope(input.receipt.scope) : input.scope;
+  assertCommandRequestDbOwner(db, scope);
+  const owner =
+    db.scope === 'core'
+      ? { kind: 'server' as const }
+      : db.scope === 'user'
+        ? { kind: 'user' as const, userId: db.userId }
+        : { kind: 'workspace' as const, workspaceId: db.workspaceId };
+  if (input.stage === 'maintenance') {
+    pruneControlAdmissionReceipts(db.sqlite, owner, input.referenceTime);
+    return;
+  }
+  const record = { ...input.receipt, scope };
+  const notebook = record.command.startsWith('knowledge.');
+  if (
+    record.key !== commandRequestKey(record.command, record.requestId, record.scope) ||
+    (!notebook && record.expiresAt !== commandRequestExpiresAt(record.createdAt)) ||
+    (notebook &&
+      !(
+        db.scope === 'user'
+          ? SCOPED_NOTEBOOK_USER_RECEIPTS
+          : db.scope === 'core'
+            ? SCOPED_NOTEBOOK_SERVER_RECEIPTS
+            : []
+      ).some((name) => name === record.command)) ||
+    (record.command === 'workspace.update' &&
+      (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
+    (record.command === 'worker_environment.purge' &&
+      record.response.id !== record.scope.storageRef) ||
+    (record.command === 'workspace_sync.review.decide' &&
+      record.response.id !== record.scope.reviewId) ||
+    ((record.response.kind === 'skill_catalog' || record.response.kind === 'light_app_catalog') &&
+      (db.scope !== 'workspace' || record.response.id !== db.workspaceId)) ||
+    ((record.command === 'artifact.version-commit' ||
+      record.command === 'artifact.version-file-commit') &&
+      record.response.id !== record.scope.artifactId) ||
+    (record.command === 'catalog.skill-candidate-submit' &&
+      record.scope.candidateId !== undefined) ||
+    ((record.command === 'catalog.skill-candidate-decide' ||
+      record.command === 'catalog.skill-candidate-withdraw') &&
+      record.scope.candidateId !== record.response.id)
+  )
+    throw new ControlProductPreconditionError();
+  writeCommandRequestRecordInDb(db, record);
+  if (
+    notebook &&
+    db.scope !== 'workspace' &&
+    !isSeparateScopedNotebookReceipt(db.scope, record.command)
+  )
+    pruneControlAdmissionReceipts(db.sqlite, owner, record.createdAt);
 }
 
 type Turn = ReturnType<FsStore['getTurnById']>;

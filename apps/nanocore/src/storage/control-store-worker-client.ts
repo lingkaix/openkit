@@ -58,7 +58,7 @@ import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
 } from './automation-scanner-codecs.js';
-import type { ControlCatalogCommandReceiptInput } from './catalog-command-receipt-codecs.js';
+
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
 import type {
@@ -92,10 +92,7 @@ import type {
   ControlWorkspaceCapture,
   ControlWorkspaceCaptureResult,
 } from './workspace-capture-codecs.js';
-import {
-  ControlWorkspaceCommandReceiptInputSchema,
-  type WorkspaceCommandReceipt,
-} from './workspace-command-receipt-codecs.js';
+
 import { WorkspaceOwnerMembershipRemovedError } from './workspace-owner-records.js';
 import {
   type ControlRecoverySourceReactivationInput,
@@ -205,11 +202,14 @@ import {
 } from './artifacts/file-admission.js';
 import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
 import type {
+  CommandReceipt,
   ControlAdmission,
   ControlAdmissionInput,
   ControlAdmissionResult,
+  ControlCommandReceiptAdmission,
   ControlKnowledgeAdmissionResult,
 } from './control-store-admission-codecs.js';
+import { CommandReceiptSchema } from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
@@ -2171,6 +2171,7 @@ class ControlStoreWorkerClient {
    * Immutable entries must already be published through Storage; the worker verifies and synchronizes their actual bytes before SQL. This preparation API has no public caller binding. Receipt replay returns the original response, not a newly proposed resource identity.
    */
   async transition(database: string, transition: ControlAdmission): Promise<ControlAdmissionResult>;
+  async transition(database: string, transition: ControlCommandReceiptAdmission): Promise<null>;
   async transition(
     database: string,
     transition: Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
@@ -2178,14 +2179,36 @@ class ControlStoreWorkerClient {
   async transition(
     database: string,
     transition: ControlAdmissionInput
-  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult>;
+  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult | null>;
   async transition(
     database: string,
     transition: ControlAdmissionInput
-  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult> {
+  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult | null> {
     try {
-      const reply = await this.request({ operation: 'transition', database, transition });
-      return (reply as Extract<Success, { operation: 'transition' }>).result;
+      const json =
+        'kind' in transition && transition.kind === 'command-receipt'
+          ? JSON.stringify(transition)
+          : undefined;
+      const reply =
+        json === undefined
+          ? await this.request({
+              operation: 'transition',
+              database,
+              transition: transition as Exclude<ControlAdmissionInput, { kind: 'command-receipt' }>,
+            })
+          : await this.request(
+              {
+                operation: 'transition',
+                database,
+                transition: { kind: 'command-receipt', input: frameControlScalarText(json) },
+                content: new ArrayBuffer(0),
+              },
+              [json]
+            );
+      const result = (reply as Extract<Success, { operation: 'transition' }>).result;
+      if (json !== undefined && result !== null)
+        throw new ControlStoreWorkerError('invalid-request', 'unknown');
+      return result;
     } catch (error) {
       if (
         'kind' in transition &&
@@ -2194,7 +2217,10 @@ class ControlStoreWorkerClient {
       ) {
         if (error.domain.code === 'idempotency_key_conflict')
           throw new IdempotencyKeyConflictError();
-        if (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
+        if (
+          transition.kind === 'knowledge-work' &&
+          (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
+        )
           throw new NotebookError(error.domain.code);
       }
       throw error;
@@ -3669,194 +3695,67 @@ class ControlStoreWorkerClient {
     }
   }
 
-  /** Retains each closed public command's original receipt and separate maintenance FULL stages. */
-  async recordWorkspaceCommandReceipt(
-    dataRoot: string,
-    receipt: WorkspaceCommandReceipt
-  ): Promise<void> {
-    const input = ControlWorkspaceCommandReceiptInputSchema.parse(
-      receipt.command === 'workspace.create'
-        ? { action: 'create-receipt', userId: receipt.scope.userId, receipt }
-        : 'coreId' in receipt.scope
-          ? { action: 'server-mcp-receipt', coreId: 'server', receipt }
-          : {
-              action:
-                receipt.command === 'administration.configuration.apply'
-                  ? 'configuration-receipt'
-                  : receipt.command === 'workspace_sync.review.decide'
-                    ? 'sync-review-receipt'
-                    : receipt.command === 'catalog.shared-mcp-set-disabled'
-                      ? 'shared-mcp-receipt'
-                      : receipt.command === 'workspace.update'
-                        ? 'update-receipt'
-                        : receipt.command.startsWith('catalog.light-app-')
-                          ? 'light-app-receipt'
-                          : receipt.command.startsWith('catalog.skill-')
-                            ? 'skill-receipt'
-                            : receipt.command.startsWith('artifact.')
-                              ? 'artifact-receipt'
-                              : 'environment-receipt',
-              workspaceId: receipt.scope.workspaceId,
-              receipt,
-            }
-    );
+  /** Preserves exact original post-effect receipts and the separate post-ACK FULL maintenance commit. */
+  async recordCommandReceipt(owner: string | WorkspaceDb, value: CommandReceipt): Promise<void> {
+    const receipt = CommandReceiptSchema.parse(value);
+    if (
+      typeof owner !== 'string' &&
+      (!('workspaceId' in receipt.scope) || receipt.scope.workspaceId !== owner.workspaceId)
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const dataRoot = typeof owner === 'string' ? owner : owner.dataRoot;
     let database: string;
-    if (input.action === 'create-receipt') {
-      // First use originally created the User database here, after Workspace and membership effects.
-      ensureUserLayout(dataRoot, input.userId);
-      const path = userDbPath(dataRoot, input.userId);
+    if ('userId' in receipt.scope) {
+      const userId = receipt.scope.userId;
+      if (receipt.command === 'workspace.create') ensureUserLayout(dataRoot, userId);
+      const path = userDbPath(dataRoot, userId);
       database = `user:${path}`;
       const create =
-        this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false });
+        receipt.command === 'workspace.create' &&
+        (this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false }));
       await this.open({ database, path, create, initialize: 'user' });
-    } else if (input.action === 'server-mcp-receipt') {
-      const scope = nativeProductScope(dataRoot, { kind: 'server' });
-      database = `core:${scope.path}`;
+    } else {
+      const scope = nativeProductScope(
+        dataRoot,
+        'coreId' in receipt.scope
+          ? { kind: 'server' }
+          : { kind: 'workspace', workspaceId: receipt.scope.workspaceId }
+      );
+      const path = scope.path;
+      if (typeof owner !== 'string' && owner.sqlite.name !== path)
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      database = `${'coreId' in receipt.scope ? 'core' : 'workspace'}:${path}`;
       await this.open({
         database,
-        path: scope.path,
+        path,
         dataRoot,
         create: false,
-        initialize: 'core',
+        initialize: 'coreId' in receipt.scope ? 'core' : 'workspace',
         productOwner: scope.owner,
         contentMount: scope.contentMount,
       });
-    } else if (
-      input.action === 'configuration-receipt' ||
-      input.action === 'sync-review-receipt' ||
-      input.action === 'shared-mcp-receipt' ||
-      input.action === 'update-receipt' ||
-      input.action === 'environment-receipt' ||
-      input.action === 'skill-receipt' ||
-      input.action === 'artifact-receipt' ||
-      input.action === 'light-app-receipt'
-    ) {
-      const scope = nativeProductScope(dataRoot, {
-        kind: 'workspace',
-        workspaceId: input.workspaceId,
-      });
-      database = `workspace:${scope.path}`;
-      await this.open({
-        database,
-        path: scope.path,
-        dataRoot,
-        create: false,
-        initialize: 'workspace',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
-    } else throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    // Opaque Artifact identities can exceed the structured envelope after JSON escaping.
-    // Reuse the admitted scalar carrier; the native owner decodes the same closed input.
-    const recordJson = JSON.stringify(input);
-    const record = await this.request(
-      {
-        operation: 'workspace-command-receipt',
-        database,
-        input: frameControlScalarText(recordJson),
-        content: new ArrayBuffer(0),
-      },
-      [recordJson]
-    );
-    if (record.operation !== 'workspace-command-receipt' || record.result !== null)
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const referenceTime = new Date().toISOString();
-    const maintenanceInput = ControlWorkspaceCommandReceiptInputSchema.parse(
-      input.action === 'create-receipt'
-        ? { action: 'create-maintenance', userId: input.userId, referenceTime }
-        : input.action === 'server-mcp-receipt'
-          ? { action: 'server-mcp-maintenance', coreId: 'server', referenceTime }
-          : {
-              action:
-                input.action === 'configuration-receipt'
-                  ? 'configuration-maintenance'
-                  : input.action === 'sync-review-receipt'
-                    ? 'sync-review-maintenance'
-                    : input.action === 'shared-mcp-receipt'
-                      ? 'shared-mcp-maintenance'
-                      : input.action === 'update-receipt'
-                        ? 'update-maintenance'
-                        : input.action === 'light-app-receipt'
-                          ? 'light-app-maintenance'
-                          : input.action === 'skill-receipt'
-                            ? 'skill-maintenance'
-                            : input.action === 'artifact-receipt'
-                              ? 'artifact-maintenance'
-                              : 'environment-maintenance',
-              workspaceId: input.workspaceId,
-              referenceTime,
-            }
-    );
-    const maintenanceJson = JSON.stringify(maintenanceInput);
-    const maintenance = await this.request(
-      {
-        operation: 'workspace-command-receipt',
-        database,
-        input: frameControlScalarText(maintenanceJson),
-        content: new ArrayBuffer(0),
-      },
-      [maintenanceJson]
-    );
-    if (maintenance.operation !== 'workspace-command-receipt' || maintenance.result !== null)
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-  }
-
-  /** Preserves the three Candidate commands' separate record and later expiry-maintenance FULL acknowledgements. */
-  async recordCatalogCommandReceipt(
-    db: WorkspaceDb,
-    receipt: Extract<ControlCatalogCommandReceiptInput, { stage: 'record' }>['receipt']
-  ): Promise<void> {
-    const scope = nativeProductScope(db.dataRoot, {
-      kind: 'workspace',
-      workspaceId: db.workspaceId,
-    });
-    if (receipt.scope.workspaceId !== db.workspaceId || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `workspace:${scope.path}`;
-    await this.open({
-      database,
-      path: scope.path,
-      dataRoot: db.dataRoot,
-      create: false,
-      initialize: 'workspace',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    const record = await this.request({
-      operation: 'catalog-command-receipt',
-      database,
-      input: { stage: 'record', workspaceId: db.workspaceId, receipt },
-    });
-    if (record.operation !== 'catalog-command-receipt' || record.result !== null)
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    // Sample the original maintenance clock only after the record is durably acknowledged.
-    const maintenance = await this.request({
-      operation: 'catalog-command-receipt',
-      database,
-      input: {
-        stage: 'maintenance',
-        workspaceId: db.workspaceId,
-        referenceTime: new Date().toISOString(),
-      },
-    });
-    if (maintenance.operation !== 'catalog-command-receipt' || maintenance.result !== null)
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-  }
-
-  /** Posts one closed Notebook stage to its already opened physical owner; no callback crosses the wire. */
-  async scopedNotebookSql(database: string, input: ControlScopedNotebookSqlInput): Promise<void> {
-    try {
-      const reply = await this.request({ operation: 'scoped-notebook-sql', database, input });
-      if (reply.operation !== 'scoped-notebook-sql' || reply.result !== null)
-        throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.domain?.operation === 'scoped-notebook-sql'
-      )
-        throw new IdempotencyKeyConflictError();
-      throw error;
     }
+    await this.transition(database, { kind: 'command-receipt', stage: 'record', receipt });
+    // Sample the maintenance clock only after the original record's FULL ACK.
+    const scope =
+      'userId' in receipt.scope
+        ? { userId: receipt.scope.userId }
+        : 'coreId' in receipt.scope
+          ? { coreId: 'server' as const }
+          : { workspaceId: receipt.scope.workspaceId };
+    await this.transition(database, {
+      kind: 'command-receipt',
+      stage: 'maintenance',
+      scope,
+      referenceTime: new Date().toISOString(),
+    });
+  }
+
+  /** Publishes only the original Server Notebook Audit; command receipts use transition. */
+  async scopedNotebookSql(database: string, input: ControlScopedNotebookSqlInput): Promise<void> {
+    const reply = await this.request({ operation: 'scoped-notebook-sql', database, input });
+    if (reply.operation !== 'scoped-notebook-sql' || reply.result !== null)
+      throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
 
   /** Reuses the canonical User physical owner and covering FULL acknowledgement. */
@@ -5351,7 +5250,9 @@ class ControlStoreWorkerClient {
       command.operation === 'app-kernel' ||
       command.operation === 'schema-application' ||
       command.operation === 'attention-enqueue' ||
-      command.operation === 'workspace-command-receipt' ||
+      (command.operation === 'transition' &&
+        'kind' in command.transition &&
+        command.transition.kind === 'command-receipt') ||
       command.operation === 'standalone-audit' ||
       command.operation === 'thread-read-membership' ||
       command.operation === 'worker-control-final-status' ||
@@ -5360,34 +5261,39 @@ class ControlStoreWorkerClient {
       (command.operation === 'execution-attempt' && command.input.kind === 'create')
     ) {
       const size =
-        command.operation === 'execution-attempt'
-          ? {
-              byteLength: command.input.kind === 'create' ? command.input.byteLength : 0,
-              replyByteLength: 0,
-            }
-          : command.operation === 'material'
-            ? controlMaterialTransferSize(command.input)
-            : command.operation === 'scheduler-admission' ||
-                command.operation === 'generative-presentation' ||
-                command.operation === 'app-kernel' ||
-                command.operation === 'schema-application' ||
-                command.operation === 'attention-enqueue' ||
-                command.operation === 'workspace-command-receipt' ||
-                command.operation === 'standalone-audit' ||
-                command.operation === 'thread-read-membership' ||
-                command.operation === 'worker-control-final-status' ||
-                command.operation === 'worker-control-heartbeat' ||
-                command.operation === 'worker-control-record'
-              ? { byteLength: command.input.byteLength, replyByteLength: 0 }
-              : command.operation === 'observation'
-                ? {
-                    byteLength: controlWorkObservationTransferSize(command.input),
-                    replyByteLength: 0,
-                  }
-                : {
-                    byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
-                    replyByteLength: 0,
-                  };
+        command.operation === 'transition' &&
+        'kind' in command.transition &&
+        command.transition.kind === 'command-receipt'
+          ? { byteLength: command.transition.input.byteLength, replyByteLength: 0 }
+          : command.operation === 'execution-attempt'
+            ? {
+                byteLength: command.input.kind === 'create' ? command.input.byteLength : 0,
+                replyByteLength: 0,
+              }
+            : command.operation === 'material'
+              ? controlMaterialTransferSize(command.input)
+              : command.operation === 'scheduler-admission' ||
+                  command.operation === 'generative-presentation' ||
+                  command.operation === 'app-kernel' ||
+                  command.operation === 'schema-application' ||
+                  command.operation === 'attention-enqueue' ||
+                  command.operation === 'standalone-audit' ||
+                  command.operation === 'thread-read-membership' ||
+                  command.operation === 'worker-control-final-status' ||
+                  command.operation === 'worker-control-heartbeat' ||
+                  command.operation === 'worker-control-record'
+                ? { byteLength: command.input.byteLength, replyByteLength: 0 }
+                : command.operation === 'observation'
+                  ? {
+                      byteLength: controlWorkObservationTransferSize(command.input),
+                      replyByteLength: 0,
+                    }
+                  : command.operation === 'capability'
+                    ? {
+                        byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                        replyByteLength: 0,
+                      }
+                    : undefined;
       if (!size || size.byteLength === undefined)
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       materialBytes = size.byteLength + size.replyByteLength;
