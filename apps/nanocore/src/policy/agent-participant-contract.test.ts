@@ -10,7 +10,10 @@ import {
 } from '@earendil-works/pi-ai';
 import { allocateEntityId, PolicyWriteProposalV1Schema } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
-import { listWorkspaceUsageRecords } from '../capability/usage-ledger.js';
+import {
+  listWorkspaceCapabilityCalls,
+  listWorkspaceUsageRecords,
+} from '../capability/usage-ledger.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -78,6 +81,41 @@ describe('agent Policy participant public contract', () => {
       )
     ).toBe(true);
   });
+
+  // The ordinary agent gate needs an actual native process and Turn before model contact.
+  it.each(['missing process', 'unknown Turn', 'wrong Thread'] as const)(
+    'refuses an agent gate with %s before model contact or auxiliary usage',
+    async (scenario) => {
+      const fixture = await createFixture();
+      const { process, ...subject } = fixture.proposal.subject;
+      if (!process) throw new Error('The positive fixture must have an admitted process.');
+      const rejectedProcess =
+        scenario === 'missing process'
+          ? undefined
+          : scenario === 'unknown Turn'
+            ? { ...process, turnId: allocateEntityId('tu') }
+            : {
+                ...process,
+                threadId: (
+                  await fixture.store.createThread(fixture.workspace.id, 'Unrelated native Thread')
+                ).id,
+              };
+      await expect(
+        fixture.participant.invoke({
+          binding: fixture.binding,
+          proposal: {
+            ...fixture.proposal,
+            subject: { ...subject, ...(rejectedProcess ? { process: rejectedProcess } : {}) },
+          },
+          advice: [],
+          signal: new AbortController().signal,
+        })
+      ).rejects.toThrow();
+      expect(fixture.faux.state.callCount).toBe(0);
+      expect(listWorkspaceCapabilityCalls(fixture.workspaceDb, fixture.workspace.id)).toEqual([]);
+      expect(listWorkspaceUsageRecords(fixture.workspaceDb, fixture.workspace.id)).toEqual([]);
+    }
+  );
 
   it('refuses a malformed assessment and stops at the two-model-turn bound', async () => {
     const fixture = await createFixture();
@@ -351,7 +389,7 @@ async function createFixture() {
     authorizationAssessment: 'The declared agent domain covers this read.',
     rationale: 'The safe summary is sufficient.',
   };
-  return { assessment, binding, faux, participant, proposal, workspace, workspaceDb };
+  return { assessment, binding, faux, participant, proposal, store, workspace, workspaceDb };
 }
 
 /** Reads the model-visible function names admitted into the disclosed transcript. */
