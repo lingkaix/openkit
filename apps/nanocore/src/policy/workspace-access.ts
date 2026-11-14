@@ -895,32 +895,34 @@ export function compilePolicyGraph(
         }
       : 'resource' in input
         ? input.resource
-        : input.target.kind === 'workspace'
-          ? {
-              kind: 'container',
-              container: {
-                owner: { kind: 'workspace', workspaceId: input.target.workspaceId },
-                kind: 'workspace',
-                id: input.target.workspaceId,
-              },
-            }
-          : input.target.kind === 'user'
+        : input.policy?.resource !== undefined
+          ? input.policy.resource
+          : input.target.kind === 'workspace'
             ? {
                 kind: 'container',
                 container: {
-                  owner: { kind: 'user', userId: input.target.userId ?? input.facts.userId },
-                  kind: 'user',
-                  id: input.target.userId ?? input.facts.userId,
+                  owner: { kind: 'workspace', workspaceId: input.target.workspaceId },
+                  kind: 'workspace',
+                  id: input.target.workspaceId,
                 },
               }
-            : {
-                kind: 'container',
-                container: {
-                  owner: { kind: 'server' },
-                  kind: input.target.kind,
-                  id: input.target.kind === 'invitation' ? input.target.invitationId : 'server',
-                },
-              };
+            : input.target.kind === 'user'
+              ? {
+                  kind: 'container',
+                  container: {
+                    owner: { kind: 'user', userId: input.target.userId ?? input.facts.userId },
+                    kind: 'user',
+                    id: input.target.userId ?? input.facts.userId,
+                  },
+                }
+              : {
+                  kind: 'container',
+                  container: {
+                    owner: { kind: 'server' },
+                    kind: input.target.kind,
+                    id: input.target.kind === 'invitation' ? input.target.invitationId : 'server',
+                  },
+                };
   const selectedResource = resourceAttribute(resource);
   policy.assignments = [...policy.assignments, { child: target, parent: selectedResource }];
   const processId = process
@@ -1100,6 +1102,8 @@ export interface ProductPolicyInput {
   };
   /** Already admitted Policy and exact current subject, supplied by the native fact owner. */
   readonly policy?: {
+    /** Exact current effect resource, derived only by its native owner. */
+    readonly resource?: z.infer<typeof PolicyResourceV1Schema>;
     readonly document: PolicyDocumentV1;
     readonly subject: z.infer<typeof PolicySubjectV1Schema>;
     readonly now: number;

@@ -72,6 +72,46 @@ function request(statement?: unknown) {
 }
 
 describe('shared primary graph restriction composition', () => {
+  it('applies exact native Tool restrictions inside the original Workspace graph', () => {
+    const resource = {
+      kind: 'mcp-tool' as const,
+      workspaceId,
+      serverId: 'fixture',
+      toolName: 'read',
+    };
+    const current = request({
+      ...prohibition,
+      id: 'exact-tool-restriction',
+      scope: {
+        subjects: [subject.principal],
+        actions: ['tool.use'],
+        resources: [resource],
+      },
+      lifetime: { anchor: workspace },
+    });
+    expect(evaluatePolicyKernel(current).effect).toBe('allow');
+    const exact = { ...current, policy: { ...current.policy, resource } };
+    expect(evaluatePolicyKernel(exact).reasons).toContainEqual({
+      code: 'restriction',
+      prohibitionId: 'exact-tool-restriction',
+    });
+    const sibling = {
+      ...current,
+      policy: { ...current.policy, resource: { ...resource, toolName: 'other' } },
+    };
+    expect(evaluatePolicyKernel(sibling).effect).toBe('allow');
+    expect(
+      evaluatePolicyKernel({
+        ...sibling,
+        facts: { ...sibling.facts, credential: { ...sibling.facts.credential, current: false } },
+      }).effect
+    ).toBe('deny');
+    const inherited = request(prohibition);
+    expect(
+      evaluatePolicyKernel({ ...inherited, policy: { ...inherited.policy, resource } }).effect
+    ).toBe('deny');
+  });
+
   it('keeps ordinary author, anchor, state and expiry termination separate from quarantine', () => {
     expect(evaluatePolicyKernel(request()).effect).toBe('allow');
     const current = request(prohibition);
