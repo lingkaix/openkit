@@ -4243,3 +4243,198 @@ describe('private Login removal Core receipt boundary', () => {
     }
   });
 });
+
+// ORACLE-STORE S5: DX Physical Receipt Consumption; Core owns idle lifecycle work.
+// External Harness results are modeled; Core settlement, binding deletion and cold reads are real.
+describe('ORACLE S5 Harness consumption authority', () => {
+  it.each(['idle', 'active', 'open-history', 'closing-history', 'closed-history'] as const)(
+    'preserves exact idle-close authority across reopen (%s)',
+    async (state) => {
+      let db =
+        state === 'idle'
+          ? await openOpeningBindingDb('oracle-s5-idle-')
+          : await openActiveTurnDb('oracle-s5-history-');
+      const root = db.dataRoot;
+      try {
+        if (state !== 'idle') recordFinalStatus(db, 'failed', 'error');
+        if (state.endsWith('-history')) {
+          // Fault injection after real owner-produced history: clearing current pointers must
+          // never hide an unresolved prior attempt from the Core idle consumer.
+          db.sqlite
+            .prepare(`UPDATE agent_session_runtime_bindings
+            SET current_turn_id=NULL,current_attempt_id=NULL,lifecycle_state='open'`)
+            .run();
+          db.sqlite
+            .prepare('UPDATE scheduler_execution_attempts SET phase=?')
+            .run(state.split('-')[0]);
+        }
+        const expectedConsumed = state === 'idle' || state === 'closed-history';
+        await queueNanoHostHarnessOperation(db, {
+          harnessInstanceId: 'harness-1',
+          operation: 'session.close',
+          timestamp: now,
+          body: {
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          },
+        });
+        const command = await dispatchNanoHostHarnessOperation(db, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        });
+        if (!command) throw new Error('The real close owner did not dispatch.');
+        const result = {
+          schemaVersion: 2,
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          disposition: 'succeeded',
+          body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+        } as const;
+        const settlement = {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          result,
+          timestamp: now,
+        };
+        expect(await settleNanoHostHarnessOperation(db, settlement)).toBe('settled');
+        const removal = {
+          workspaceId: testEntityId('ws', 'workspace-1'),
+          threadId: testEntityId('th', 'thread-1'),
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+          harnessInstanceId: command.harnessInstanceId,
+          operationId: command.operationId,
+          sequence: command.sequence,
+          completedAt: now,
+        };
+        expect(readNanoHostThreadAgentSessionBinding(db, removal)).toBeNull();
+        db.sqlite.close();
+        db = openCoreDb(root);
+        expect(readConsumedNanoHostHarnessResult(db, result) !== null).toBe(expectedConsumed);
+        if (expectedConsumed) {
+          expect(requireNanoHostLoginRemoval(db, removal)).toBe(now);
+          expect(() =>
+            requireNanoHostLoginRemoval(db, { ...removal, sequence: command.sequence + 1 })
+          ).toThrow();
+          expect(() =>
+            requireNanoHostLoginRemoval(db, { ...removal, threadId: testEntityId('th', 'foreign') })
+          ).toThrow();
+        } else {
+          expect(() => requireNanoHostLoginRemoval(db, removal)).toThrow();
+        }
+        expect(await settleNanoHostHarnessOperation(db, settlement)).toBe('replayed');
+        expect(readConsumedNanoHostHarnessResult(db, result) !== null).toBe(expectedConsumed);
+      } finally {
+        if (db.sqlite.open) db.sqlite.close();
+      }
+    }
+  );
+
+  it('retains one Core journal acknowledgement for an idle close without a Turn', async () => {
+    const db = await openOpeningBindingDb('oracle-s5-idle-journal-');
+    try {
+      await queueNanoHostHarnessOperation(db, {
+        harnessInstanceId: 'harness-1',
+        operation: 'session.close',
+        timestamp: now,
+        body: {
+          agentSessionId: testEntityId('as', 'agent-session-1'),
+          agentSessionRuntimeBindingId: 'agent-session-binding-1',
+        },
+      });
+      const command = await dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      if (!command) throw new Error('The real idle close did not dispatch.');
+      const result = {
+        schemaVersion: 2,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        disposition: 'succeeded',
+        body: { state: 'closed', privateState: 'absent', childState: 'absent' },
+      } as const;
+      const settlement = {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result,
+        timestamp: now,
+      };
+      await settleNanoHostHarnessOperation(db, settlement);
+      expect(readConsumedNanoHostHarnessResult(db, result)).not.toBeNull();
+      const readAcknowledgements = () =>
+        db.sqlite
+          .prepare(
+            "SELECT state,control_json FROM control_execution_steps WHERE json_extract(control_json,'$.kind')='consume-receipt'"
+          )
+          .all();
+      const acknowledgement = readAcknowledgements();
+      // S5 moves durable consumption to the existing journal; no historical Turn supplies authority.
+      expect(acknowledgement).toHaveLength(1);
+      expect(acknowledgement).toEqual([expect.objectContaining({ state: 'completed' })]);
+      expect(await settleNanoHostHarnessOperation(db, settlement)).toBe('replayed');
+      expect(readAcknowledgements()).toEqual(acknowledgement);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+
+  it('keeps settled result bytes immutable when its Workspace acknowledgement commits', async () => {
+    const db = await openActiveTurnDb('oracle-s5-immutable-');
+    onTestFinished(() => rmSync(db.dataRoot, { recursive: true, force: true }));
+    try {
+      await queueNanoHostHarnessOperation(db, {
+        harnessInstanceId: 'harness-1',
+        operation: 'turn.interrupt',
+        body: { ...interruptBody(), purpose: 'interrupt' },
+        timestamp: now,
+      });
+      const command = await dispatchNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        now: () => now,
+      });
+      if (!command) throw new Error('The real interrupt owner did not dispatch.');
+      const result = {
+        schemaVersion: 2,
+        harnessInstanceId: command.harnessInstanceId,
+        operationId: command.operationId,
+        sequence: command.sequence,
+        disposition: 'succeeded',
+        body: { state: 'interrupted' },
+      } as const;
+      await settleNanoHostHarnessOperation(db, {
+        sandboxIntegrationBindingRef: 'integration-binding-1',
+        result,
+        timestamp: now,
+      });
+      const readOriginal = () =>
+        db.sqlite
+          .prepare(
+            'SELECT result_json,result_fingerprint FROM harness_instance_records WHERE harness_instance_id=?'
+          )
+          .get(command.harnessInstanceId);
+      const original = readOriginal();
+      expect(readConsumedNanoHostHarnessResult(db, result)).toBeNull();
+      // This existing double represents only the external Workspace ACK, not its transaction.
+      await acknowledgeTestExternalWorkspaceConsumer(db, {
+        harnessInstanceId: command.harnessInstanceId,
+        harnessBindingRef: 'harness-binding-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
+        turnId: testEntityId('tu', 'turn-1'),
+        timestamp: now,
+      });
+      expect(readConsumedNanoHostHarnessResult(db, result)).not.toBeNull();
+      expect(readOriginal()).toEqual(original);
+      await acknowledgeTestExternalWorkspaceConsumer(db, {
+        harnessInstanceId: command.harnessInstanceId,
+        harnessBindingRef: 'harness-binding-1',
+        workspaceId: testEntityId('ws', 'workspace-1'),
+        turnId: testEntityId('tu', 'turn-1'),
+        timestamp: now,
+      });
+      expect(readOriginal()).toEqual(original);
+    } finally {
+      db.sqlite.close();
+    }
+  });
+});
