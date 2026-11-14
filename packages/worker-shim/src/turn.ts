@@ -31,6 +31,7 @@ import {
   WorkerControlError,
   type WorkerControlFetch,
 } from './control-client.js';
+import { credentialHelperDeclarations } from './credential-helper-binding.js';
 import type { SandboxIntegrationClient } from './integration-client.js';
 import { LIFECYCLE_DEFAULTS, LifecycleDeadline } from './lifecycle-deadline.js';
 import { RuntimeCaptureStoppedError } from './runtime-capture.js';
@@ -69,6 +70,8 @@ export interface ResidentTurnOptions {
   readonly hostManagedLogin?: boolean;
   /** Exact session credential values excluded from diagnostics, output, and publication. */
   readonly credentialValues: readonly string[];
+  /** Session-owned confidentiality list; not a source for serving credentials. */
+  readonly registerCredentialValues?: (values: readonly string[]) => void;
   /** Harness environment, checked only for retired overrides. */
   readonly environment: WorkerShimEnvironment;
   /** Test seam replacing the Integration worker-control fetch. */
@@ -230,6 +233,12 @@ async function runResidentTurnImplementation(
     requestId: resolveRequestId(packageManifest.scope?.requestId),
   };
   const credentialValues = [...options.credentialValues, ...Object.values(options.tokens)];
+  const helperDeclarations = credentialHelperDeclarations(
+    packageManifest.credentials?.declarations
+  );
+  const sessionCollector = options.registerCredentialValues;
+  if (helperDeclarations.length > 0 && !sessionCollector)
+    throw new Error('Credential comparison owner is unavailable.');
 
   await mkdir(options.sessionDir, { recursive: true });
   await writeFile(join(options.sessionDir, 'events.jsonl'), '', {
@@ -335,7 +344,21 @@ async function runResidentTurnImplementation(
   try {
     progress.stage = 'integration_ready';
     await options.integration.ready;
-    options.integration.bindTurnRouteTokens(options.lineage.agentSessionId, options.tokens);
+    options.integration.bindTurnRouteTokens(
+      options.lineage.agentSessionId,
+      options.tokens,
+      sessionCollector
+        ? {
+            lineage,
+            declarations: helperDeclarations,
+            registerCredentialValues: (values) => {
+              sessionCollector(values);
+              for (const value of values)
+                if (value && !credentialValues.includes(value)) credentialValues.push(value);
+            },
+          }
+        : undefined
+    );
     const session = new WorkerControlClient({
       recordLifecycleFact: timeline.record,
       baseUrl: '/worker-control',
@@ -997,8 +1020,21 @@ function isNativeLoginPackage(manifest: WorkerShimPackageManifest): boolean {
       ? record.credentials.declarations
       : [];
   if (
+    declarations.some(
+      (value) =>
+        isRecord(value) &&
+        value.visibility === 'runtime-token' &&
+        value.consumer !== 'codex-login' &&
+        value.consumer !== 'credential-helper'
+    )
+  )
+    throw new Error('Unknown runtime credential consumer.');
+  if (
     manifest.llm?.mode !== 'harness' &&
-    !declarations.some((value) => isRecord(value) && value.visibility === 'runtime-token')
+    !declarations.some(
+      (value) =>
+        isRecord(value) && value.visibility === 'runtime-token' && value.consumer === 'codex-login'
+    )
   )
     return false;
   const parsed = AgentEnvironmentPackageSchema.parse(manifest);

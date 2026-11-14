@@ -275,6 +275,8 @@
     "packages/worker-shim/src/codex-runtime-provenance.ts\tfs:rm\tfd5d84b18983cb67da8b0b46c91d491a0560790cb6291313607b255f6e28fadf": 1,
     "packages/worker-shim/src/codex-runtime-provenance.ts\tfs:write\t5888b46f3a471d186d47220618c1f62b47f67a00fcd8597f19c4a7611298fe87": 1,
     "packages/worker-shim/src/codex-runtime-provenance.ts\tfs:writeFile\tedcf534d496b906fa8b5fd8b4d8a0069b73e746f2cee299a751b65b2ae7c21aa": 1,
+    "packages/worker-shim/src/credential-helper-agent.ts\tfs:chmod\tbd31ad02a61e34174cfc903e44b9f9d01df257b6bf3f9ea542c4d996ef9b7482": 1,
+    "packages/worker-shim/src/credential-helper-agent.ts\tfs:chmod\tc8b7980e97daf09c65a58f929e43e6621d01b5e98dc8d9cd256a1a77e5580f83": 1,
     "packages/worker-shim/src/harness.ts\tfs:mkdir\t337294e8ab63d5680d166a07acc57fc1c74c26a860a4fc498daa2073fbfc5e3b": 1,
     "packages/worker-shim/src/harness.ts\tfs:mkdir\t46f075dea34655f85b7c9405c2f6e8a2eb29243d86a8a8984641e56619ce8b92": 1,
     "packages/worker-shim/src/harness.ts\tfs:mkdir\t5fc9db631ab081caf3a07ebab5b348b2393e3c2504ac69aa887e78f4d7d99151": 1,

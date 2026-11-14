@@ -98,6 +98,7 @@ export function isProtectedNativeEnvironmentName(name: string, adapterId: string
     'TEMP',
     'TMP',
     'NODE_OPTIONS',
+    'SSH_AUTH_SOCK',
     'BUN_OPTIONS',
     'DYLD_INSERT_LIBRARIES',
     'DYLD_LIBRARY_PATH',

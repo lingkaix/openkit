@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import {
   createHash,
   generateKeyPairSync,
@@ -19,10 +19,19 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createServer as createNativePeerServer } from 'node:http';
+import {
+  type ServerHttp2Session as CredentialHttp2Session,
+  type ServerHttp2Stream as CredentialHttp2Stream,
+  createServer as createCredentialHttp2Server,
+} from 'node:http2';
+import { createServer as createNativeTlsPeerServer } from 'node:https';
+import { connect as connectCredentialSocket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
+import { fileURLToPath } from 'node:url';
 import { Worker as NativeWorker } from 'node:worker_threads';
 import {
   CapabilityUsageResponseSchema,
@@ -45,6 +54,7 @@ import {
   AgentEnvironmentCredentialDeclarationSchema,
   materializeWorkspaceRoots,
   validateAgentEnvironmentPackageForBackend,
+  WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import {
@@ -79,6 +89,8 @@ import {
   vi,
 } from 'vitest';
 import type { SandboxIntegrationClient } from '../../../../packages/worker-shim/src/integration-client.js';
+import { NativeRuntimeCapture } from '../../../../packages/worker-shim/src/runtime-capture.js';
+import { openEphemeralSandboxIntegration } from '../../../../packages/worker-shim/src/test-support/ephemeral-integration.js';
 import { runResidentTurn } from '../../../../packages/worker-shim/src/turn.js';
 import { createDefaultWorkerControlGateway } from '../app.js';
 import { getArtifactReview } from '../artifact-reviews.js';
@@ -197,6 +209,7 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
+import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -16299,21 +16312,73 @@ async function assertNativePreSubmissionFault(fault: NativePreSubmissionFault): 
 }
 
 /** Launches through the real Core owners and waits on the real durable completion stream; only the external worker is modeled. */
+type FinalReviewWorkerPreparation = (
+  coreDb: CoreDb,
+  store: FsStore,
+  turn: ReturnType<FsStore['getTurnById']>,
+  agentSessionId: string
+) => Promise<{
+  agentSetup: ReturnType<typeof createTestAgentSetup>;
+  vaultBackend?: ConstructorParameters<typeof WorkerGovernanceTurnExecutor>[0]['vaultBackend'];
+  policyInterception?: ConstructorParameters<
+    typeof WorkerGovernanceTurnExecutor
+  >[0]['policyInterception'];
+}>;
+
+type FinalReviewWorkerFixture = {
+  coreDb: CoreDb;
+  store: FsStore;
+  turn: ReturnType<FsStore['getTurnById']>;
+  agentSessionId: string;
+  attemptId: string;
+  lineage: {
+    agentSessionId: string;
+    packageSnapshotId: string;
+    requestId: string;
+    threadId: string;
+    turnId: string;
+    workspaceId: string;
+  };
+  gateway: ReturnType<typeof createDefaultWorkerControlGateway>;
+  backend: ReturnType<typeof interruptibleBackend>;
+  executor: WorkerGovernanceTurnExecutor;
+  token: string;
+  execution: Promise<unknown>;
+  settled: () => boolean;
+  dispose(): Promise<void>;
+};
+
+type NativeAdmissionFixture = Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
+
+type NativeFinalReviewWorkerFixture = Omit<
+  FinalReviewWorkerFixture,
+  'backend' | 'lineage' | 'executor'
+> & {
+  executor: NativeAdmissionFixture['executor'];
+  lineage: NonNullable<NativeAdmissionFixture['executor']['nativeLineage']>;
+  environmentPackage: Awaited<ReturnType<NativeAdmissionFixture['admitTurn']>>['pkg'];
+  launchContext: NonNullable<ReturnType<NativeAdmissionFixture['executionFor']>['launchContext']>;
+  workerLifecycleRuntime: NativeAdmissionFixture['runtime'];
+  runtimeConfigManager: ReturnType<typeof createRuntimeConfigManager>;
+  mutationAdmission: WorkspaceMutationAdmission;
+  gatewayConfig: ReturnType<typeof createTestGatewayConfig>;
+};
+
+function launchFinalReviewWorker(
+  suffix: string,
+  prepare: FinalReviewWorkerPreparation | undefined,
+  options: { realNative: true }
+): Promise<NativeFinalReviewWorkerFixture>;
+function launchFinalReviewWorker(
+  suffix: string,
+  prepare?: FinalReviewWorkerPreparation,
+  options?: { realNative?: false }
+): Promise<FinalReviewWorkerFixture>;
 async function launchFinalReviewWorker(
   suffix: string,
-  prepare?: (
-    coreDb: CoreDb,
-    store: FsStore,
-    turn: ReturnType<FsStore['getTurnById']>,
-    agentSessionId: string
-  ) => Promise<{
-    agentSetup: ReturnType<typeof createTestAgentSetup>;
-    vaultBackend?: ConstructorParameters<typeof WorkerGovernanceTurnExecutor>[0]['vaultBackend'];
-    policyInterception?: ConstructorParameters<
-      typeof WorkerGovernanceTurnExecutor
-    >[0]['policyInterception'];
-  }>
-) {
+  prepare?: FinalReviewWorkerPreparation,
+  options: { realNative?: boolean } = {}
+): Promise<FinalReviewWorkerFixture | NativeFinalReviewWorkerFixture> {
   const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-final-review-')));
   applyMigrations(coreDb);
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
@@ -16322,16 +16387,61 @@ async function launchFinalReviewWorker(
     ownerUserId: LOCAL_USER_ID,
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
-  const turn = await createAssignedTurn(
-    store,
-    'ws_00000000-0000-7000-8000-000000000001',
-    'th_00000000-0000-7000-8000-000000000001',
-    'Exercise worker closeout'
-  );
+  const requestId = '00000000-0000-4000-8000-000000000290';
+  let turn: ReturnType<FsStore['getTurnById']>;
+  let nativeEntry: ReturnType<typeof createSchedulerAdmissionEntry> | undefined;
+  if (options.realNative) {
+    const turnId = testEntityId('tu', randomUUID());
+    nativeEntry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      triggerActor: { kind: 'user', id: LOCAL_USER_ID },
+      queueEntryId: `queue_${turnId}`,
+      requestId,
+      requestedAgentId: 'agent_codex_host',
+      threadId: 'th_00000000-0000-7000-8000-000000000001',
+      turnId,
+      turnInput: 'Exercise worker closeout',
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      now: () => new Date().toISOString(),
+    });
+    if (!nativeEntry.requestId)
+      throw new Error('Canonical native admission omitted its original request id.');
+    turn = await store.createTurn(
+      nativeEntry.workspaceId,
+      nativeEntry.threadId,
+      nativeEntry.turnInput,
+      nativeEntry.triggerActor,
+      undefined,
+      {
+        turnId: nativeEntry.turnId,
+        status: 'pending',
+        agentId: nativeEntry.requestedAgentId,
+        executorKind: 'worker',
+        commandReceipt: turnStartFixtureReceipt(
+          nativeEntry.requestId,
+          {
+            workspaceId: nativeEntry.workspaceId,
+            threadId: nativeEntry.threadId,
+            actorId: LOCAL_USER_ID,
+          },
+          commandInputHash({
+            queueEntryId: nativeEntry.queueEntryId,
+            turnInput: nativeEntry.turnInput,
+          })
+        ),
+      }
+    );
+  } else {
+    turn = await createAssignedTurn(
+      store,
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      'Exercise worker closeout'
+    );
+  }
   const agentSessionId = testEntityId('as', `as_review_${suffix}`);
   const attemptId = testEntityId('attempt', `lease_${turn.id}`);
   const sandboxBindingRef = `lease-binding:${turn.id}`;
-  const requestId = '00000000-0000-4000-8000-000000000290';
   const lineage = {
     agentSessionId,
     packageSnapshotId: `aepsnap_${turn.id}_${agentSessionId}`,
@@ -16341,6 +16451,134 @@ async function launchFinalReviewWorker(
     workspaceId: workspaceIdForOwner(turn.owner),
   };
   const prepared = prepare ? await prepare(coreDb, store, turn, agentSessionId) : undefined;
+  if (options.realNative) {
+    if (!prepared || !turn.triggerActor)
+      throw new Error('Real native setup requires its actual admitted agent setup and actor.');
+    const mutationAdmission = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(mutationAdmission);
+    const gatewayConfig = createTestGatewayConfig();
+    const configuration = loadRuntimeConfig(coreDb.dataRoot);
+    const workspaceId = workspaceIdForOwner(turn.owner);
+    const runtimeConfigManager = createRuntimeConfigManager({
+      dataRoot: coreDb.dataRoot,
+      captureCoverage: store,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        ...configuration,
+        dataRoot: coreDb.dataRoot,
+        openKitConfig: loadOpenKitConfig(coreDb.dataRoot),
+        agentManifests: [prepared.agentSetup.manifest],
+        workspaceConfigs: [
+          ...configuration.workspaceConfigs.filter((entry) => entry.workspaceId !== workspaceId),
+          {
+            workspaceId,
+            path: join(coreDb.dataRoot, 'workspaces', workspaceId, 'workspace.yaml'),
+            config: WorkspaceConfigSchema.parse({
+              schemaVersion: 1,
+              workspace: {
+                name: 'Synthetic native helper admission',
+                agents: [
+                  {
+                    agentId: prepared.agentSetup.manifest.id,
+                    credentialBindings: (
+                      prepared.agentSetup.manifest.sandbox?.credentialDeclarations ?? []
+                    ).flatMap((declaration) =>
+                      declaration.requirementId
+                        ? [
+                            {
+                              requirementId: declaration.requirementId,
+                              vaultGrantId: declaration.vaultGrantId,
+                            },
+                          ]
+                        : []
+                    ),
+                  },
+                ],
+              },
+            }),
+          },
+        ],
+        gatewayConfig,
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Synthetic native helper discovery only',
+            kind: 'local',
+            baseUrl: 'http://127.0.0.1:0/v1',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      }),
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      workspaceMutationAdmission: mutationAdmission,
+      ...(prepared.vaultBackend ? { vaultBackend: prepared.vaultBackend } : {}),
+      ...(prepared.policyInterception ? { policyInterception: prepared.policyInterception } : {}),
+      readRuntimeConfig: () => runtimeConfigManager.current(),
+    });
+    const entry = nativeEntry;
+    if (!entry) throw new Error('Real native setup omitted its canonical pending admission.');
+    const admitted = await native
+      .admitTurn(entry, {
+        attemptId,
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      })
+      .catch(async (error: unknown) => {
+        await native.restore();
+        coreDb.sqlite.close();
+        throw error;
+      });
+    const actualLineage = native.executor.nativeLineage;
+    const actualLaunch = native.executionFor(turn.id);
+    const actualToken = actualLaunch.workerControlToken;
+    const launchContext = actualLaunch.launchContext;
+    if (
+      !actualLineage ||
+      !actualToken ||
+      !launchContext ||
+      actualLineage.agentSessionId !== agentSessionId ||
+      actualLineage.packageSnapshotId !== admitted.pkg.snapshotId
+    ) {
+      await admitted.cleanup();
+      await native.restore();
+      throw new Error('Actual native admission omitted its current package or control credential.');
+    }
+    let settled = false;
+    const execution = admitted.execution.then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      }
+    );
+    return {
+      coreDb,
+      store,
+      turn,
+      agentSessionId,
+      attemptId: admitted.attempt.attemptId,
+      lineage: actualLineage,
+      gateway: native.workerControlGateway,
+      executor: native.executor,
+      token: actualToken,
+      environmentPackage: admitted.pkg,
+      launchContext,
+      workerLifecycleRuntime: native.runtime,
+      runtimeConfigManager,
+      mutationAdmission,
+      gatewayConfig,
+      execution,
+      settled: () => settled,
+      async dispose() {
+        await admitted.cleanup();
+        await native.restore();
+        coreDb.sqlite.close();
+      },
+    };
+  }
   const gateway = createDefaultWorkerControlGateway(coreDb);
   const backend = interruptibleBackend();
   const materialize = backend.materialize.bind(backend);
@@ -21043,7 +21281,9 @@ describe('Login publication under the original Goal Task decision', () => {
 
 /** Admit the intended fixture gate through the real human Policy/configuration owner before use. */
 async function activateCoreHelperPolicyBinding(
-  fixture: Awaited<ReturnType<typeof launchFinalReviewWorker>>,
+  fixture: Pick<FinalReviewWorkerFixture, 'coreDb' | 'store'> & {
+    lineage: Pick<WorkerLineage, 'workspaceId'>;
+  },
   manager: ReturnType<typeof createRuntimeConfigManager>,
   participant: Pick<DeterministicPolicyParticipant, 'id' | 'version'>
 ): Promise<void> {
@@ -21226,16 +21466,35 @@ async function coreHelperCredentialData(
   coreDb: CoreDb,
   turn: ReturnType<FsStore['getTurnById']>,
   agentSessionId: string,
-  input: { material: string; helper?: unknown; ssh?: boolean; expiresAt?: string | null }
+  input: {
+    material: string;
+    helper?: unknown;
+    ssh?: boolean;
+    expiresAt?: string | null;
+    requiredCapabilities?: AgentEnvironmentPackage['backend']['requiredCapabilities'];
+    declarationId?: string;
+    sharedVault?: ReturnType<typeof createVaultUnlockState>;
+  }
 ) {
   const workspaceId = workspaceIdForOwner(turn.owner);
-  const referenceId = testEntityId('vault', 'core-helper-reference');
-  const grantId = testEntityId('grant', 'core-helper-grant');
-  const vault = createVaultUnlockState({
-    backendKind: 'encrypted-file',
-    storeDir: join(coreDb.dataRoot, 'vault'),
-  });
-  vault.unlock({ masterKey: Buffer.alloc(32, 73) });
+  const declarationId = input.declarationId ?? 'core-helper';
+  const referenceId = testEntityId(
+    'vault',
+    input.declarationId === undefined
+      ? 'core-helper-reference'
+      : `core-helper-reference:${declarationId}`
+  );
+  const grantId = testEntityId(
+    'grant',
+    input.declarationId === undefined ? 'core-helper-grant' : `core-helper-grant:${declarationId}`
+  );
+  const vault =
+    input.sharedVault ??
+    createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(coreDb.dataRoot, 'vault'),
+    });
+  if (!input.sharedVault) vault.unlock({ masterKey: Buffer.alloc(32, 73) });
   vault.backend().store({
     referenceId,
     material: input.material,
@@ -21261,14 +21520,19 @@ async function coreHelperCredentialData(
     expiresAt: input.expiresAt ?? null,
   });
   const declaration = AgentEnvironmentCredentialDeclarationSchema.parse({
-    id: 'core-helper',
-    requirementId: 'core-helper',
+    id: declarationId,
+    requirementId: declarationId,
     vaultGrantId: grantId,
     visibility,
     consumer: input.ssh ? 'ssh-agent' : 'credential-helper',
     ...(input.ssh ? {} : { helper: input.helper }),
   });
-  const agentSetup = createTestAgentSetup({ credentialDeclarations: [declaration] });
+  const agentSetup = createTestAgentSetup({
+    credentialDeclarations: [declaration],
+    ...(input.requiredCapabilities === undefined
+      ? {}
+      : { requiredCapabilities: input.requiredCapabilities }),
+  });
   admitTestNativeEnvironment(coreDb, agentSetup.manifest);
   return { vault, referenceId, grantId, agentSetup };
 }
@@ -21396,6 +21660,1126 @@ const coreHelperProcessCases = [
 ] as const;
 
 describe('Core credential helpers through the actual App and durable fake-backend session', () => {
+  it('serves native Git through Integration and the production Core route with live exclusion and fresh authority', async () => {
+    const password = `synthetic-native-git-${randomUUID()}`;
+    const credential = { username: 'synthetic-user', password };
+    const command = {
+      protocol: 'git',
+      operation: 'get',
+      attributes: { protocol: 'https', host: 'opaque-target' },
+    };
+    let data!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    let allow = true;
+    let policyCalls = 0;
+    const policy = new PolicyInterception({
+      id: 'core-helper-native-policy',
+      version: `sha256:${'b'.repeat(64)}`,
+      invoke: async () => {
+        policyCalls += 1;
+        return { decision: allow ? 'allow' : 'deny' };
+      },
+    });
+    const fixture = await launchFinalReviewWorker(
+      'native-git-ingress',
+      async (coreDb, _store, turn, agentSessionId) => {
+        data = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+          material: JSON.stringify(credential),
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+          helper: { protocol: 'git', scheme: 'https', host: 'opaque-target', path: 'scope' },
+        });
+        return {
+          agentSetup: data.agentSetup,
+          vaultBackend: () => data.vault.backend(),
+          policyInterception: () => policy,
+        };
+      },
+      { realNative: true }
+    );
+    const workspaceDb = createTestWorkspaceDb(fixture.coreDb.dataRoot, fixture.lineage.workspaceId);
+    const gatewayConfig = fixture.gatewayConfig;
+    const runtimeConfigManager = fixture.runtimeConfigManager;
+    // No test-mounted credential handler: this is the product App's actual route.
+    const app = createApp({
+      coreDb: fixture.coreDb,
+      dataRoot: fixture.coreDb.dataRoot,
+      store: fixture.store,
+      workspaceMutationAdmission: fixture.mutationAdmission,
+      runtimeConfigManager,
+      turnExecutor: fixture.executor,
+      workerLifecycleRuntime: fixture.workerLifecycleRuntime,
+      workerControlGateway: fixture.gateway,
+      vaultUnlockState: data.vault,
+      policyInterception: policy,
+      gatewayConfig,
+    });
+    const bridge = createCredentialHttp2Server();
+    let bridgeSession: CredentialHttp2Session | undefined;
+    let held: CredentialHttp2Stream | undefined;
+    let hold = false;
+    let bridgeFailures = 0;
+    const wire: Array<{ control: boolean; exactBody: boolean }> = [];
+    bridge.on('session', (session) => {
+      bridgeSession = session;
+    });
+    bridge.on('stream', (stream: CredentialHttp2Stream, headers) => {
+      stream.on('error', () => undefined);
+      const chunks: Buffer[] = [];
+      stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+      stream.on('end', () => {
+        void (async () => {
+          if (headers[':path'] !== '/worker-control/credential-helper') {
+            stream.respond({ ':status': 404 });
+            stream.end();
+            return;
+          }
+          const body = Buffer.concat(chunks);
+          wire.push({
+            control: headers.authorization === `Bearer ${fixture.token}`,
+            exactBody:
+              canonicalJsonText(JSON.parse(body.toString())) ===
+              canonicalJsonText({
+                lineage: fixture.lineage,
+                declarationId: 'core-helper',
+                request: {
+                  ...command,
+                  attributes: { protocol: 'https', host: 'opaque-target', path: 'scope' },
+                },
+              }),
+          });
+          const forwarded = new Headers();
+          for (const [name, value] of Object.entries(headers))
+            if (!name.startsWith(':') && typeof value === 'string') forwarded.set(name, value);
+          const response = await app.request('/api/worker-control/credential-helper', {
+            method: 'POST',
+            headers: forwarded,
+            body: body.toString('utf8'),
+          });
+          const reply = Buffer.from(await response.arrayBuffer());
+          const cacheControl = response.headers.get('cache-control');
+          stream.respond({
+            ':status': response.status,
+            'content-type': response.headers.get('content-type') ?? 'application/json',
+            ...(cacheControl === null ? {} : { 'cache-control': cacheControl }),
+          });
+          if (hold && response.ok) {
+            held = stream;
+            stream.write(reply.subarray(0, 8));
+          } else stream.end(reply);
+        })().catch(() => {
+          bridgeFailures += 1;
+          if (!stream.destroyed) {
+            if (!stream.headersSent) stream.respond({ ':status': 503 });
+            stream.end();
+          }
+        });
+      });
+    });
+    let integration: SandboxIntegrationClient | undefined;
+    let socket: ReturnType<typeof connectCredentialSocket> | undefined;
+    const abort = new AbortController();
+    const liveValues: string[] = [];
+    let registeredBeforeBody = true;
+    let receivedBytes = 0;
+    const nativeWork: Array<Promise<{ status: number; body: string; cut: boolean }>> = [];
+    const resolve = vi.spyOn(data.vault.backend(), 'resolve');
+    try {
+      await activateCoreHelperPolicyBinding(fixture, runtimeConfigManager, {
+        id: 'core-helper-native-policy',
+        version: `sha256:${'b'.repeat(64)}`,
+      });
+      const opened = await openEphemeralSandboxIntegration();
+      integration = opened.integration;
+      socket = connectCredentialSocket(
+        Number(opened.integrationTarget.port),
+        opened.integrationTarget.hostname
+      );
+      socket.on('error', () => undefined);
+      bridge.emit('connection', socket);
+      await integration.ready;
+      const capabilityCredential = 'C'.repeat(43);
+      integration.registerSessionLoopback(fixture.agentSessionId, {
+        capabilityCredential,
+        inferenceCredential: 'I'.repeat(43),
+      });
+      const pkg = fixture.environmentPackage;
+      if (!pkg) throw new Error('The existing fixture did not publish its admitted package.');
+      expect(pkg.credentials.declarations.length).toBe(1);
+      const tokens = {
+        controlToken: fixture.token,
+        capabilityToken: 'unused-native-capability',
+        inferenceToken: 'unused-native-inference',
+      };
+      const binding = {
+        lineage: fixture.lineage,
+        declarations: pkg.credentials.declarations,
+        registerCredentialValues: (values: readonly string[]) => {
+          for (const value of values)
+            if (value && !liveValues.includes(value)) liveValues.push(value);
+        },
+      };
+      // Direct future API: OLD transpiles the extra argument and ignores it, then returns real 404.
+      integration.bindTurnRouteTokens(fixture.agentSessionId, tokens, binding);
+      let publishedBytes = 0;
+      let excluded = false;
+      const capture = new NativeRuntimeCapture({
+        packageSnapshotId: fixture.lineage.packageSnapshotId,
+        captureCoverage: { scope: 'task', value: 'on' },
+        nativeLogMaxBytes: 65_536,
+        authoredVersion: pkg.agent.runtimeVersion,
+        credentialValues: liveValues,
+        emit: async (record, body) => {
+          publishedBytes += body?.byteLength ?? 0;
+          excluded ||=
+            record.content.state === 'unavailable' &&
+            record.content.reason === 'credential-excluded';
+        },
+      });
+      const helperUrl = new URL('/worker-control/credential-helper', opened.nativeTarget).href;
+      const native = (body: unknown) => {
+        const work = (async () => {
+          let status = 0;
+          const chunks: Buffer[] = [];
+          try {
+            const response = await fetch(helperUrl, {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${capabilityCredential}`,
+                'content-type': 'application/json',
+              },
+              body: JSON.stringify(body),
+              signal: abort.signal,
+            });
+            status = response.status;
+            const reader = response.body?.getReader();
+            if (reader)
+              for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                if (status === 200 && !liveValues.includes(password)) registeredBeforeBody = false;
+                receivedBytes += value.byteLength;
+                chunks.push(Buffer.from(value));
+              }
+            return { status, body: Buffer.concat(chunks).toString(), cut: false };
+          } catch {
+            return { status, body: Buffer.concat(chunks).toString(), cut: true };
+          }
+        })();
+        nativeWork.push(work);
+        return work;
+      };
+      const before = new Set(listVaultUseRecords(workspaceDb).map((use) => use.useId));
+      const first = await native(command);
+      // This is the deciding OLD assertion, before any NEW-only CLI is touched.
+      expect(first.status).toBe(200);
+      expect(first.cut).toBe(false);
+      let exactCredential = false;
+      try {
+        exactCredential =
+          canonicalJsonText(JSON.parse(first.body).credential) === canonicalJsonText(credential);
+      } catch {
+        /* Never print malformed private response bytes. */
+      }
+      expect(exactCredential).toBe(true);
+      expect(registeredBeforeBody).toBe(true);
+      expect(liveValues.includes(password)).toBe(true);
+      expect(wire.length).toBe(1);
+      expect(wire[0]?.control && wire[0]?.exactBody).toBe(true);
+      const added = listVaultUseRecords(workspaceDb).filter((use) => !before.has(use.useId));
+      expect(added.length).toBe(1);
+      const use = added[0];
+      expect(
+        use?.grantId === data.grantId &&
+          use?.vaultReferenceId === data.referenceId &&
+          use?.agentSessionId === fixture.agentSessionId &&
+          use?.outcome === 'succeeded' &&
+          use?.materialVersion === 1
+      ).toBe(true);
+      expect(
+        listWorkspaceAuditEvents(workspaceDb, fixture.lineage.workspaceId, fixture.coreDb).some(
+          (audit) => audit.id === use?.auditEventId
+        )
+      ).toBe(true);
+      const root = join(fixture.coreDb.dataRoot, 'native-client');
+      mkdirSync(join(root, 'home'), { recursive: true });
+      mkdirSync(join(root, 'config'), { recursive: true });
+      writeFileSync(join(root, 'gitconfig'), '');
+      const cli = fileURLToPath(
+        new URL('../../../../packages/worker-shim/dist/credential-helper-cli.js', import.meta.url)
+      );
+      const git = () =>
+        new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
+          const child = execFile(
+            'git',
+            [
+              '-c',
+              'credential.helper=',
+              '-c',
+              `credential.helper=!${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} git`,
+              '-c',
+              'credential.useHttpPath=true',
+              'credential',
+              'fill',
+            ],
+            {
+              cwd: root,
+              encoding: 'utf8',
+              timeout: 10_000,
+              maxBuffer: 65_536,
+              env: {
+                PATH: process.env.PATH ?? '',
+                HOME: join(root, 'home'),
+                XDG_CONFIG_HOME: join(root, 'config'),
+                GIT_CONFIG_NOSYSTEM: '1',
+                GIT_CONFIG_GLOBAL: join(root, 'gitconfig'),
+                GIT_TERMINAL_PROMPT: '0',
+                GIT_ASKPASS: '/bin/false',
+                OPENKIT_CREDENTIAL_HELPER_URL: helperUrl,
+                OPENKIT_CREDENTIAL_HELPER_TOKEN: capabilityCredential,
+              },
+            },
+            (error, stdout, stderr) => done({ code: error ? 1 : 0, stdout, stderr })
+          );
+          child.stdin?.on('error', () => undefined);
+          child.stdin?.end('protocol=https\nhost=opaque-target\npath=scope\n\n');
+        });
+      const accepted = await git();
+      expect(accepted.code).toBe(0);
+      expect(accepted.stdout.includes(`password=${password}\n`)).toBe(true);
+      expect(accepted.stderr.includes(password)).toBe(false);
+      expect(resolve.mock.calls.length).toBe(2);
+      await capture.write('native-git-output', Buffer.from(accepted.stdout), {
+        harness: 'codex',
+        format: 'application/octet-stream',
+        runtimeOriginRef: null,
+        logSource: 'stdout-log',
+      });
+      capture.end('native-git-output');
+      await capture.finish();
+      expect(publishedBytes).toBe(0);
+      expect(excluded).toBe(true);
+      const checked = policyCalls;
+      allow = false;
+      const denied = await git();
+      expect(denied.code).toBe(1);
+      expect(denied.stdout.includes(password) || denied.stderr.includes(password)).toBe(false);
+      expect(policyCalls > checked).toBe(true);
+      expect(resolve.mock.calls.length).toBe(2);
+      allow = true;
+      const beforeForged = wire.length;
+      const forged = await native({ ...command, declarationId: 'caller-selected-authority' });
+      expect(forged.cut || forged.status >= 400).toBe(true);
+      expect(forged.body.includes(password)).toBe(false);
+      expect(wire.length).toBe(beforeForged);
+      hold = true;
+      receivedBytes = 0;
+      const inflight = native(command);
+      await vi.waitFor(() => expect(held !== undefined).toBe(true), { timeout: 10_000 });
+      expect(receivedBytes).toBe(0);
+      expect(await integration.drainTurn(fixture.agentSessionId, 50)).toBe(1);
+      const cut = await inflight;
+      expect(cut.cut || cut.status >= 400).toBe(true);
+      expect(cut.body.includes(password)).toBe(false);
+      hold = false;
+      integration.clearTurnRouteTokens(fixture.agentSessionId);
+      integration.bindTurnRouteTokens(fixture.agentSessionId, tokens);
+      const beforeUnbound = wire.length;
+      const unbound = await native(command);
+      expect(unbound.cut || unbound.status >= 400).toBe(true);
+      expect(unbound.body.includes(password)).toBe(false);
+      expect(wire.length).toBe(beforeUnbound);
+      integration.clearTurnRouteTokens(fixture.agentSessionId);
+      integration.bindTurnRouteTokens(fixture.agentSessionId, tokens, {
+        ...binding,
+        registerCredentialValues: () => {
+          throw new Error('Synthetic unavailable collector.');
+        },
+      });
+      const unavailable = await native(command);
+      expect(unavailable.cut || unavailable.status >= 400).toBe(true);
+      expect(unavailable.body.includes(password)).toBe(false);
+      integration.clearTurnRouteTokens(fixture.agentSessionId);
+      integration.bindTurnRouteTokens(fixture.agentSessionId, tokens, binding);
+      const resolutions = resolve.mock.calls.length;
+      await revokeVaultGrant(fixture.coreDb, { grantId: data.grantId });
+      const revoked = await native(command);
+      expect(revoked.cut || revoked.status >= 400).toBe(true);
+      expect(revoked.body.includes(password)).toBe(false);
+      expect(resolve.mock.calls.length).toBe(resolutions);
+      const beforeClose = wire.length;
+      integration.destroySessionLoopback(fixture.agentSessionId);
+      const closed = await native(command);
+      expect(closed.status).toBe(401);
+      expect(wire.length).toBe(beforeClose);
+      expect(bridgeFailures).toBe(0);
+      const evidence = JSON.stringify({
+        uses: listVaultUseRecords(workspaceDb),
+        audits: listWorkspaceAuditEvents(workspaceDb, fixture.lineage.workspaceId, fixture.coreDb),
+        wire,
+        package: fixture.environmentPackage,
+      });
+      expect(evidence.includes(password)).toBe(false);
+    } finally {
+      abort.abort();
+      held?.close();
+      await integration?.close();
+      await Promise.all(nativeWork);
+      socket?.destroy();
+      bridgeSession?.destroy();
+      await new Promise<void>((done) => bridge.close(() => done()));
+      resolve.mockRestore();
+      workspaceDb.sqlite.close();
+      await fixture.dispose();
+      data.vault.lock();
+    }
+  }, 120_000);
+
+  it('consumes all six real native credential clients through the current Core binding', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'openkit-native-six-'));
+    for (const name of ['home', 'config', 'docker'])
+      mkdirSync(join(root, name), { mode: 0o700, recursive: true });
+    const cli = fileURLToPath(
+      new URL('../../../../packages/worker-shim/dist/credential-helper-cli.js', import.meta.url)
+    );
+    const baseEnv = {
+      PATH: process.env.PATH ?? '',
+      HOME: join(root, 'home'),
+      XDG_CONFIG_HOME: join(root, 'config'),
+    };
+    const run = (file: string, args: string[], env: NodeJS.ProcessEnv = baseEnv, input?: string) =>
+      new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
+        const child = execFile(
+          file,
+          args,
+          { cwd: root, env, encoding: 'utf8', timeout: 15_000, maxBuffer: 65_536 },
+          (error, stdout, stderr) =>
+            done({
+              code: error ? (typeof error.code === 'number' ? error.code : -1) : 0,
+              stdout,
+              stderr,
+            })
+        );
+        child.stdin?.on('error', () => undefined);
+        child.stdin?.end(input);
+      });
+    const gitPassword = `synthetic-git-${randomUUID()}`;
+    const dockerSecret = `synthetic-docker-${randomUUID()}`;
+    const awsSecret = `synthetic-aws-${randomUUID()}`;
+    const awsSession = `synthetic-session-${randomUUID()}`;
+    const kubeToken = `synthetic-kube-${randomUUID()}`;
+    const googleAudience =
+      '//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fixture/providers/fixture';
+    const googleTokenType = 'urn:ietf:params:oauth:token-type:id_token';
+    const expiry = Date.parse('2099-01-01T00:00:00.000Z') / 1000;
+    const googleToken = [
+      Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url'),
+      Buffer.from(
+        JSON.stringify({ aud: googleAudience, sub: 'synthetic-subject', exp: expiry })
+      ).toString('base64url'),
+      Buffer.alloc(32, 6).toString('base64url'),
+    ].join('.');
+    const pair = generateKeyPairSync('ed25519');
+    const sshMaterial = pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    const jwk = pair.publicKey.export({ format: 'jwk' });
+    if (typeof jwk.x !== 'string') throw new Error('The synthetic public key was unavailable.');
+    const keyBlob = Buffer.concat([
+      coreHelperSshString('ssh-ed25519'),
+      coreHelperSshString(Buffer.from(jwk.x, 'base64url')),
+    ]).toString('base64');
+    const privateValues = [
+      gitPassword,
+      dockerSecret,
+      awsSecret,
+      awsSession,
+      kubeToken,
+      googleToken,
+      sshMaterial,
+    ];
+    let registryAuthenticated = false;
+    let registryRequests = 0;
+    let registryChallenges = 0;
+    let registryClientErrors = 0;
+    let registryManifestRequests = 0;
+    let registryConfigRequests = 0;
+    let registryDigestManifestRequests = 0;
+    let registryOtherRequests = 0;
+    let kubeAuthenticated = false;
+    const configBody = JSON.stringify({
+      architecture: 'amd64',
+      os: 'linux',
+      config: {},
+      rootfs: { type: 'layers', diff_ids: [] },
+      history: [],
+    });
+    const configDigest = `sha256:${createHash('sha256').update(configBody).digest('hex')}`;
+    const manifestBody = JSON.stringify({
+      schemaVersion: 2,
+      mediaType: 'application/vnd.docker.distribution.manifest.v2+json',
+      config: {
+        mediaType: 'application/vnd.docker.container.image.v1+json',
+        size: Buffer.byteLength(configBody),
+        digest: configDigest,
+      },
+      layers: [],
+    });
+    const registry = createNativePeerServer((request, response) => {
+      registryRequests += 1;
+      if (
+        request.headers.authorization !==
+        `Basic ${Buffer.from(`synthetic-user:${dockerSecret}`).toString('base64')}`
+      ) {
+        registryChallenges += 1;
+        response.writeHead(401, {
+          'www-authenticate': 'Basic realm="fixture"',
+          'docker-distribution-api-version': 'registry/2.0',
+        });
+        response.end();
+        return;
+      }
+      registryAuthenticated = true;
+      const path = request.url?.split('?')[0];
+      if (path?.startsWith('/v2/fixture/image/manifests/sha256:'))
+        registryDigestManifestRequests += 1;
+      if (path === '/v2/' || path === '/v2') {
+        response.writeHead(200, { 'docker-distribution-api-version': 'registry/2.0' });
+        response.end('{}');
+        return;
+      }
+      if (path === '/v2/fixture/image/manifests/latest') {
+        registryManifestRequests += 1;
+        response.writeHead(200, {
+          'content-type': 'application/vnd.docker.distribution.manifest.v2+json',
+          'docker-content-digest': `sha256:${createHash('sha256').update(manifestBody).digest('hex')}`,
+        });
+        response.end(manifestBody);
+        return;
+      }
+      if (path === `/v2/fixture/image/blobs/${configDigest}`) {
+        registryConfigRequests += 1;
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(configBody);
+        return;
+      }
+      registryOtherRequests += 1;
+      response.writeHead(404);
+      response.end();
+    });
+    registry.on('clientError', (_error, socket) => {
+      registryClientErrors += 1;
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    });
+    let kube: ReturnType<typeof createNativeTlsPeerServer> | undefined;
+    let fixture: NativeFinalReviewWorkerFixture | undefined;
+    let workspaceDb: ReturnType<typeof createTestWorkspaceDb> | undefined;
+    let integration: SandboxIntegrationClient | undefined;
+    let bridgeSession: CredentialHttp2Session | undefined;
+    let socket: ReturnType<typeof connectCredentialSocket> | undefined;
+    let vault: ReturnType<typeof createVaultUnlockState> | undefined;
+    let materialResolve: MockInstance | undefined;
+    const bridge = createCredentialHttp2Server();
+    const wire: Array<{ protocol: string; operation: string; control: boolean }> = [];
+    let bridgeFailures = 0;
+    let allow = true;
+    let policyCalls = 0;
+    const policy = new PolicyInterception({
+      id: 'core-helper-six-policy',
+      version: `sha256:${'c'.repeat(64)}`,
+      invoke: async () => {
+        policyCalls += 1;
+        return { decision: allow ? 'allow' : 'deny' };
+      },
+    });
+    let gitData!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    let dockerData!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    let awsData!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    let kubeData!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    let googleData!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    let sshData!: Awaited<ReturnType<typeof coreHelperCredentialData>>;
+    try {
+      // Outside peers only: no real registry, cluster, STS or provider is contacted.
+      await new Promise<void>((done) => registry.listen(0, '127.0.0.1', done));
+      const registryAddress = registry.address();
+      if (!registryAddress || typeof registryAddress === 'string')
+        throw new Error('Synthetic registry did not bind.');
+      const registryAuthority = `127.0.0.1:${registryAddress.port}`;
+      const cert = await run('openssl', [
+        'req',
+        '-x509',
+        '-newkey',
+        'rsa:2048',
+        '-nodes',
+        '-keyout',
+        join(root, 'tls-key.pem'),
+        '-out',
+        join(root, 'tls-cert.pem'),
+        '-days',
+        '1',
+        '-subj',
+        '/CN=localhost',
+        '-addext',
+        'subjectAltName=IP:127.0.0.1',
+      ]);
+      expect(cert.code).toBe(0);
+      kube = createNativeTlsPeerServer(
+        {
+          key: readFileSync(join(root, 'tls-key.pem')),
+          cert: readFileSync(join(root, 'tls-cert.pem')),
+        },
+        (request, response) => {
+          if (request.headers.authorization !== `Bearer ${kubeToken}`) {
+            response.writeHead(401);
+            response.end();
+            return;
+          }
+          kubeAuthenticated = true;
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ major: '1', minor: '35', gitVersion: 'v1.35.3' }));
+        }
+      );
+      await new Promise<void>((done) => kube?.listen(0, '127.0.0.1', done));
+      const kubeAddress = kube.address();
+      if (!kubeAddress || typeof kubeAddress === 'string')
+        throw new Error('Synthetic cluster did not bind.');
+      const clusterUrl = `https://127.0.0.1:${kubeAddress.port}`;
+      fixture = await launchFinalReviewWorker(
+        'native-six',
+        async (coreDb, _store, turn, agentSessionId) => {
+          gitData = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            declarationId: 'native_git',
+            material: JSON.stringify({ username: 'synthetic-user', password: gitPassword }),
+            helper: { protocol: 'git', scheme: 'https', host: 'opaque-target', path: 'scope' },
+          });
+          vault = gitData.vault;
+          dockerData = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            declarationId: 'native_docker',
+            sharedVault: vault,
+            material: JSON.stringify({ Username: 'synthetic-user', Secret: dockerSecret }),
+            helper: { protocol: 'docker', serverUrl: registryAuthority },
+          });
+          awsData = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            declarationId: 'native_aws',
+            sharedVault: vault,
+            material: JSON.stringify({
+              Version: 1,
+              AccessKeyId: 'SYNTHETIC_ACCESS',
+              SecretAccessKey: awsSecret,
+              SessionToken: awsSession,
+            }),
+            helper: { protocol: 'aws' },
+          });
+          kubeData = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            declarationId: 'native_kubernetes',
+            sharedVault: vault,
+            material: JSON.stringify({
+              apiVersion: 'client.authentication.k8s.io/v1',
+              kind: 'ExecCredential',
+              status: {
+                token: kubeToken,
+                expirationTimestamp: new Date(expiry * 1000).toISOString(),
+              },
+            }),
+            helper: { protocol: 'kubernetes', apiVersion: 'client.authentication.k8s.io/v1' },
+          });
+          googleData = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            declarationId: 'native_google',
+            sharedVault: vault,
+            material: JSON.stringify({
+              version: 1,
+              success: true,
+              token_type: googleTokenType,
+              id_token: googleToken,
+              expiration_time: expiry,
+            }),
+            helper: {
+              protocol: 'google',
+              audience: googleAudience,
+              subjectTokenType: googleTokenType,
+            },
+          });
+          sshData = await coreHelperCredentialData(coreDb, turn, agentSessionId, {
+            declarationId: 'native_ssh',
+            sharedVault: vault,
+            material: sshMaterial,
+            ssh: true,
+          });
+          const agentSetup = createTestAgentSetup({
+            requiredCapabilities: ['trusted-worker-inference-relay'],
+            credentialDeclarations: [
+              ...(gitData.agentSetup.manifest.sandbox?.credentialDeclarations ?? []),
+              ...(dockerData.agentSetup.manifest.sandbox?.credentialDeclarations ?? []),
+              ...(awsData.agentSetup.manifest.sandbox?.credentialDeclarations ?? []),
+              ...(kubeData.agentSetup.manifest.sandbox?.credentialDeclarations ?? []),
+              ...(googleData.agentSetup.manifest.sandbox?.credentialDeclarations ?? []),
+              ...(sshData.agentSetup.manifest.sandbox?.credentialDeclarations ?? []),
+            ],
+          });
+          admitTestNativeEnvironment(coreDb, agentSetup.manifest);
+          return {
+            agentSetup,
+            vaultBackend: () => gitData.vault.backend(),
+            policyInterception: () => policy,
+          };
+        },
+        { realNative: true }
+      );
+      const current = fixture;
+      materialResolve = vi.spyOn(gitData.vault.backend(), 'resolve');
+      workspaceDb = createTestWorkspaceDb(current.coreDb.dataRoot, current.lineage.workspaceId);
+      const gatewayConfig = current.gatewayConfig;
+      const runtimeConfigManager = current.runtimeConfigManager;
+      const app = createApp({
+        coreDb: current.coreDb,
+        dataRoot: current.coreDb.dataRoot,
+        store: current.store,
+        workspaceMutationAdmission: current.mutationAdmission,
+        runtimeConfigManager,
+        turnExecutor: current.executor,
+        workerLifecycleRuntime: current.workerLifecycleRuntime,
+        workerControlGateway: current.gateway,
+        vaultUnlockState: gitData.vault,
+        policyInterception: policy,
+        gatewayConfig,
+      });
+      await activateCoreHelperPolicyBinding(current, runtimeConfigManager, {
+        id: 'core-helper-six-policy',
+        version: `sha256:${'c'.repeat(64)}`,
+      });
+      bridge.on('session', (session) => {
+        bridgeSession = session;
+      });
+      bridge.on('stream', (stream: CredentialHttp2Stream, headers) => {
+        stream.on('error', () => undefined);
+        const chunks: Buffer[] = [];
+        stream.on('data', (chunk: Buffer) => chunks.push(chunk));
+        stream.on('end', () => {
+          void (async () => {
+            if (headers[':path'] !== '/worker-control/credential-helper') {
+              stream.respond({ ':status': 404 });
+              stream.end();
+              return;
+            }
+            const body = Buffer.concat(chunks).toString('utf8');
+            const parsed = JSON.parse(body);
+            wire.push({
+              protocol: parsed.request.protocol,
+              operation: parsed.request.operation,
+              control: headers.authorization === `Bearer ${current.token}`,
+            });
+            const forwarded = new Headers();
+            for (const [name, value] of Object.entries(headers))
+              if (!name.startsWith(':') && typeof value === 'string') forwarded.set(name, value);
+            const response = await app.request('/api/worker-control/credential-helper', {
+              method: 'POST',
+              headers: forwarded,
+              body,
+            });
+            const cacheControl = response.headers.get('cache-control');
+            stream.respond({
+              ':status': response.status,
+              'content-type': response.headers.get('content-type') ?? 'application/json',
+              ...(cacheControl === null ? {} : { 'cache-control': cacheControl }),
+            });
+            stream.end(Buffer.from(await response.arrayBuffer()));
+          })().catch(() => {
+            bridgeFailures += 1;
+            if (!stream.destroyed) {
+              if (!stream.headersSent) stream.respond({ ':status': 503 });
+              stream.end();
+            }
+          });
+        });
+      });
+      const opened = await openEphemeralSandboxIntegration();
+      integration = opened.integration;
+      socket = connectCredentialSocket(
+        Number(opened.integrationTarget.port),
+        opened.integrationTarget.hostname
+      );
+      socket.on('error', () => undefined);
+      bridge.emit('connection', socket);
+      await integration.ready;
+      const capabilityCredential = 'D'.repeat(43);
+      integration.registerSessionLoopback(current.agentSessionId, {
+        capabilityCredential,
+        inferenceCredential: 'J'.repeat(43),
+      });
+      const pkg = current.environmentPackage;
+      if (!pkg) throw new Error('The existing fixture did not publish its admitted package.');
+      expect(pkg.credentials.declarations.length).toBe(6);
+      const live: string[] = [];
+      const binding = {
+        lineage: current.lineage,
+        declarations: pkg.credentials.declarations,
+        registerCredentialValues: (values: readonly string[]) => {
+          for (const value of values) if (value && !live.includes(value)) live.push(value);
+        },
+      };
+      const tokens = {
+        controlToken: current.token,
+        capabilityToken: 'unused-six-capability',
+        inferenceToken: 'unused-six-inference',
+      };
+      integration.bindTurnRouteTokens(current.agentSessionId, tokens, binding);
+      const env = {
+        ...baseEnv,
+        OPENKIT_CREDENTIAL_HELPER_URL: new URL(
+          '/worker-control/credential-helper',
+          opened.nativeTarget
+        ).href,
+        OPENKIT_CREDENTIAL_HELPER_TOKEN: capabilityCredential,
+      };
+      // Each named command is the real native consumer, never a replacement parser or SDK.
+      writeFileSync(join(root, 'gitconfig'), '');
+      const git = await run(
+        'git',
+        [
+          '-c',
+          'credential.helper=',
+          '-c',
+          `credential.helper=!${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} git`,
+          '-c',
+          'credential.useHttpPath=true',
+          'credential',
+          'fill',
+        ],
+        {
+          ...env,
+          GIT_CONFIG_NOSYSTEM: '1',
+          GIT_CONFIG_GLOBAL: join(root, 'gitconfig'),
+          GIT_TERMINAL_PROMPT: '0',
+          GIT_ASKPASS: '/bin/false',
+        },
+        'protocol=https\nhost=opaque-target\npath=scope\n\n'
+      );
+      expect(git.code).toBe(0);
+      expect(git.stdout.includes(`password=${gitPassword}\n`)).toBe(true);
+      writeFileSync(
+        join(root, 'docker', 'config.json'),
+        JSON.stringify({ credHelpers: { [registryAuthority]: 'openkit' } })
+      );
+      const docker = await run(
+        'docker',
+        [
+          '--config',
+          join(root, 'docker'),
+          'manifest',
+          'inspect',
+          '--insecure',
+          `${registryAuthority}/fixture/image:latest`,
+        ],
+        { ...env, DOCKER_CONFIG: join(root, 'docker') }
+      );
+      expect(
+        docker.code,
+        JSON.stringify({
+          dockerHelperRequests: wire.filter((entry) => entry.protocol === 'docker').length,
+          dockerHelperGetRequests: wire.filter(
+            (entry) => entry.protocol === 'docker' && entry.operation === 'get'
+          ).length,
+          dockerAuthenticatedControlRequests: wire.filter(
+            (entry) => entry.protocol === 'docker' && entry.control
+          ).length,
+          dockerComparisonRegistered: live.includes(dockerSecret),
+          registryRequests,
+          registryChallenges,
+          registryClientErrors,
+          registryAuthenticated,
+          registryManifestRequests,
+          registryConfigRequests,
+          registryDigestManifestRequests,
+          registryOtherRequests,
+          stderrBytes: Buffer.byteLength(docker.stderr),
+          stderrCredentialRetrieval: docker.stderr
+            .toLowerCase()
+            .includes('error getting credentials'),
+          stderrHelperMissing: docker.stderr.toLowerCase().includes('executable file not found'),
+          stderrUnexpectedEof: docker.stderr.toLowerCase().includes('eof'),
+          stderrTls: /tls:|x509:/i.test(docker.stderr),
+          stderrHttpToHttps: docker.stderr
+            .toLowerCase()
+            .includes('server gave http response to https client'),
+          stderrConnectionRefused: docker.stderr.toLowerCase().includes('connection refused'),
+          stderrAuth: /unauthorized|authentication required|denied/i.test(docker.stderr),
+          stderrManifest: /manifest unknown|no such manifest|manifest invalid/i.test(docker.stderr),
+        })
+      ).toBe(0);
+      expect(registryAuthenticated).toBe(true);
+      writeFileSync(
+        join(root, 'aws-config'),
+        `[profile fixture]\nregion = us-east-1\ncredential_process = ${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} aws\n`
+      );
+      writeFileSync(join(root, 'aws-credentials'), '');
+      const awsEnv = {
+        ...env,
+        AWS_CONFIG_FILE: join(root, 'aws-config'),
+        AWS_SHARED_CREDENTIALS_FILE: join(root, 'aws-credentials'),
+        AWS_EC2_METADATA_DISABLED: 'true',
+        AWS_CLI_AUTO_PROMPT: 'off',
+        AWS_PAGER: '',
+      };
+      const awsArgs = [
+        'configure',
+        'export-credentials',
+        '--profile',
+        'fixture',
+        '--format',
+        'process',
+      ];
+      const aws = await run('aws', awsArgs, awsEnv);
+      expect(aws.code).toBe(0);
+      let awsMatched = false;
+      try {
+        const value = JSON.parse(aws.stdout);
+        awsMatched =
+          value.Version === 1 &&
+          value.AccessKeyId === 'SYNTHETIC_ACCESS' &&
+          value.SecretAccessKey === awsSecret &&
+          value.SessionToken === awsSession;
+      } catch {
+        /* Private output is never diagnostic text. */
+      }
+      expect(awsMatched).toBe(true);
+      writeFileSync(
+        join(root, 'kubeconfig'),
+        JSON.stringify({
+          apiVersion: 'v1',
+          kind: 'Config',
+          clusters: [
+            { name: 'fixture', cluster: { server: clusterUrl, 'insecure-skip-tls-verify': true } },
+          ],
+          users: [
+            {
+              name: 'fixture',
+              user: {
+                exec: {
+                  apiVersion: 'client.authentication.k8s.io/v1',
+                  command: process.execPath,
+                  args: [cli, 'kubernetes'],
+                  interactiveMode: 'Never',
+                },
+              },
+            },
+          ],
+          contexts: [{ name: 'fixture', context: { cluster: 'fixture', user: 'fixture' } }],
+          'current-context': 'fixture',
+        })
+      );
+      const kubectl = await run(
+        'kubectl',
+        [
+          '--kubeconfig',
+          join(root, 'kubeconfig'),
+          '--context',
+          'fixture',
+          '--request-timeout=10s',
+          'get',
+          '--raw',
+          '/version',
+        ],
+        { ...env, KUBECONFIG: join(root, 'kubeconfig') }
+      );
+      expect(kubectl.code).toBe(0);
+      expect(kubeAuthenticated).toBe(true);
+      const googleModule = new URL(
+        '../../../../node_modules/.pnpm/google-auth-library@10.9.1/node_modules/google-auth-library/build/src/index.js',
+        import.meta.url
+      ).href;
+      const googleOptions = {
+        type: 'external_account',
+        audience: googleAudience,
+        subject_token_type: googleTokenType,
+        token_url: 'https://sts.googleapis.com/v1/token',
+        credential_source: {
+          executable: {
+            command: `${JSON.stringify(process.execPath)} ${JSON.stringify(cli)} google`,
+            timeout_millis: 5000,
+          },
+        },
+      };
+      const googleScript = `const {PluggableAuthClient}=await import(${JSON.stringify(googleModule)}); try { const client=new PluggableAuthClient(${JSON.stringify(googleOptions)}); process.stdout.write(await client.retrieveSubjectToken()); } catch { process.exitCode=1; }`;
+      const google = await run(process.execPath, ['--input-type=module', '--eval', googleScript], {
+        ...env,
+        GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES: '1',
+      });
+      expect(google.code).toBe(0);
+      expect(google.stdout === googleToken).toBe(true);
+      const agentSocket = await integration.openCredentialAgentSocket(current.agentSessionId);
+      writeFileSync(join(root, 'ssh-public'), `ssh-ed25519 ${keyBlob} synthetic\n`);
+      const sshEnv = { ...baseEnv, SSH_AUTH_SOCK: agentSocket };
+      const identities = await run('ssh-add', ['-L'], sshEnv);
+      expect(identities.code).toBe(0);
+      expect(identities.stdout.includes(`ssh-ed25519 ${keyBlob}`)).toBe(true);
+      expect(
+        identities.stdout.includes(sshMaterial) || identities.stderr.includes(sshMaterial)
+      ).toBe(false);
+      const beforeSign = listVaultUseRecords(workspaceDb).filter(
+        (use) => use.grantId === sshData.grantId
+      ).length;
+      const sign = await run('ssh-add', ['-T', join(root, 'ssh-public')], sshEnv);
+      expect(sign.code).toBe(0);
+      expect(sign.stdout.includes(sshMaterial) || sign.stderr.includes(sshMaterial)).toBe(false);
+      expect(
+        listVaultUseRecords(workspaceDb).filter((use) => use.grantId === sshData.grantId).length >
+          beforeSign
+      ).toBe(true);
+      expect(wire.some((hit) => hit.protocol === 'ssh-agent' && hit.operation === 'sign')).toBe(
+        true
+      );
+      expect(
+        ['git', 'docker', 'aws', 'kubernetes', 'google', 'ssh-agent'].every((protocol) =>
+          wire.some((hit) => hit.protocol === protocol)
+        )
+      ).toBe(true);
+      expect(wire.every((hit) => hit.control)).toBe(true);
+      expect(
+        [gitPassword, dockerSecret, awsSecret, awsSession, kubeToken, googleToken].every((value) =>
+          live.includes(value)
+        )
+      ).toBe(true);
+      expect(live.includes(sshMaterial)).toBe(false);
+      const uses = listVaultUseRecords(workspaceDb);
+      const audits = listWorkspaceAuditEvents(
+        workspaceDb,
+        current.lineage.workspaceId,
+        current.coreDb
+      );
+      for (const data of [gitData, dockerData, awsData, kubeData, googleData, sshData]) {
+        expect(
+          uses.some(
+            (use) =>
+              use.grantId === data.grantId &&
+              use.vaultReferenceId === data.referenceId &&
+              use.agentSessionId === current.agentSessionId &&
+              use.materialVersion === 1 &&
+              use.outcome === 'succeeded' &&
+              audits.some((audit) => audit.id === use.auditEventId)
+          )
+        ).toBe(true);
+      }
+      // Local helper operations cannot contact Core or persist a credential cache.
+      const snapshot = (directory: string): string =>
+        canonicalJsonText(
+          readdirSync(directory, { withFileTypes: true })
+            .map((entry) => {
+              const path = join(directory, entry.name);
+              return {
+                name: entry.name,
+                value: entry.isDirectory()
+                  ? snapshot(path)
+                  : entry.isFile()
+                    ? createHash('sha256').update(readFileSync(path)).digest('hex')
+                    : 'non-file',
+              };
+            })
+            .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0))
+        );
+      const diskBefore = snapshot(root);
+      const wireBeforeLocal = wire.length;
+      const gitStore = await run(
+        process.execPath,
+        [cli, 'git', 'store'],
+        env,
+        `protocol=https\nhost=opaque-target\npath=scope\nusername=synthetic-user\npassword=${gitPassword}\n\n`
+      );
+      const gitErase = await run(
+        process.execPath,
+        [cli, 'git', 'erase'],
+        env,
+        'protocol=https\nhost=opaque-target\npath=scope\n\n'
+      );
+      const dockerErase = await run(
+        'docker-credential-openkit',
+        ['erase'],
+        env,
+        `${registryAuthority}\n`
+      );
+      expect(gitStore.code).toBe(0);
+      expect(gitErase.code).toBe(0);
+      expect(dockerErase.code).toBe(0);
+      expect(gitStore.stdout.length + gitErase.stdout.length + dockerErase.stdout.length).toBe(0);
+      // Keep stdin open: store must refuse without waiting for credential input or EOF.
+      const dockerStore = await new Promise<{ code: number; timedOut: boolean }>((done) => {
+        const child = execFile(
+          'docker-credential-openkit',
+          ['store'],
+          { cwd: root, env, timeout: 5000, maxBuffer: 65_536 },
+          (error) =>
+            done({
+              code: error ? (typeof error.code === 'number' ? error.code : -1) : 0,
+              timedOut: Boolean(error?.killed),
+            })
+        );
+        child.stdin?.on('error', () => undefined);
+        child.stdin?.write('{');
+      });
+      expect(dockerStore.code).toBe(1);
+      expect(dockerStore.timedOut).toBe(false);
+      const outputFile = join(root, 'forbidden-google-cache');
+      const cachedGoogle = await run(process.execPath, [cli, 'google'], {
+        ...env,
+        GOOGLE_EXTERNAL_ACCOUNT_ALLOW_EXECUTABLES: '1',
+        GOOGLE_EXTERNAL_ACCOUNT_AUDIENCE: googleAudience,
+        GOOGLE_EXTERNAL_ACCOUNT_TOKEN_TYPE: googleTokenType,
+        GOOGLE_EXTERNAL_ACCOUNT_OUTPUT_FILE: outputFile,
+      });
+      expect(cachedGoogle.code).toBeGreaterThan(0);
+      expect(existsSync(outputFile)).toBe(false);
+      expect(wire.length).toBe(wireBeforeLocal);
+      expect(snapshot(root) === diskBefore).toBe(true);
+      const beforeDenied = materialResolve.mock.calls.length;
+      const checked = policyCalls;
+      allow = false;
+      const deniedAws = await run('aws', awsArgs, awsEnv);
+      expect(deniedAws.code).toBeGreaterThan(0);
+      expect(deniedAws.stdout.includes(awsSecret) || deniedAws.stderr.includes(awsSecret)).toBe(
+        false
+      );
+      const deniedSign = await run('ssh-add', ['-T', join(root, 'ssh-public')], sshEnv);
+      expect(deniedSign.code).toBeGreaterThan(0);
+      expect(policyCalls > checked).toBe(true);
+      expect(materialResolve.mock.calls.length).toBe(beforeDenied);
+      allow = true;
+      await revokeVaultGrant(current.coreDb, { grantId: sshData.grantId });
+      const revokedSign = await run('ssh-add', ['-T', join(root, 'ssh-public')], sshEnv);
+      expect(revokedSign.code).toBeGreaterThan(0);
+      expect(materialResolve.mock.calls.length).toBe(beforeDenied);
+      const beforeBarrier = wire.length;
+      expect(await integration.drainTurn(current.agentSessionId, 50)).toBe(0);
+      const barred = await run('ssh-add', ['-T', join(root, 'ssh-public')], sshEnv);
+      expect(barred.code).toBeGreaterThan(0);
+      expect(wire.length).toBe(beforeBarrier);
+      integration.destroySessionLoopback(current.agentSessionId);
+      const closed = await run('ssh-add', ['-L'], sshEnv);
+      expect(closed.code).toBeGreaterThan(0);
+      expect(wire.length).toBe(beforeBarrier);
+      expect(bridgeFailures).toBe(0);
+      const evidence = JSON.stringify({
+        uses: listVaultUseRecords(workspaceDb),
+        audits: listWorkspaceAuditEvents(workspaceDb, current.lineage.workspaceId, current.coreDb),
+        wire,
+        package: current.environmentPackage,
+        worker: current.launchContext,
+      });
+      expect(
+        privateValues.some(
+          (value) =>
+            evidence.includes(value) || evidence.includes(JSON.stringify(value).slice(1, -1))
+        )
+      ).toBe(false);
+    } finally {
+      await integration?.close();
+      socket?.destroy();
+      bridgeSession?.destroy();
+      await new Promise<void>((done) => bridge.close(() => done()));
+      await new Promise<void>((done) => registry.close(() => done()));
+      if (kube) await new Promise<void>((done) => kube?.close(() => done()));
+      materialResolve?.mockRestore();
+      workspaceDb?.sqlite.close();
+      await fixture?.dispose();
+      vault?.lock();
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 120_000);
+
   it.each(coreHelperProcessCases)(
     '$protocol reauthorizes exact declaration, target, session and grant on every use',
     async (scenario) => {

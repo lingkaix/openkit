@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "bin": {
-    "openkit-worker-shim": "./dist/bin/openkit-worker-shim.js"
+    "openkit-worker-shim": "./dist/bin/openkit-worker-shim.js",
+    "git-credential-openkit": "./dist/credential-helper-cli.js",
+    "docker-credential-openkit": "./dist/credential-helper-cli.js",
+    "openkit-aws-credential-process": "./dist/credential-helper-cli.js",
+    "openkit-kubernetes-exec": "./dist/credential-helper-cli.js",
+    "openkit-google-executable": "./dist/credential-helper-cli.js"
   },
   "exports": {
     ".": {
@@ -13,7 +18,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && chmod +x dist/credential-helper-cli.js",
     "test": "vitest run --reporter=tap-flat",
     "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -25,6 +30,7 @@
     "@openkit/codex-app-server-schema": "workspace:*",
     "@openkit/config-schema": "workspace:*",
     "@openkit/protocol": "workspace:*",
+    "@openkit/storage": "workspace:*",
     "@openkit/worker-protocol": "workspace:*"
   },
   "devDependencies": {

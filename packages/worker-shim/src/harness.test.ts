@@ -16,7 +16,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
+import {
+  type AgentEnvironmentCredentialDeclaration,
+  AgentEnvironmentPackageSchema,
+} from '@openkit/config-schema';
 import { allocateEntityId, isRecord } from '@openkit/protocol';
 
 import {
@@ -33,8 +36,12 @@ import type {
 } from './adapter-registry.js';
 import { WorkerControlClient, type WorkerControlFetch } from './control-client.js';
 import { runWorkerHarness, WorkerHarness } from './harness.js';
-import type { SandboxIntegrationClient } from './integration-client.js';
+import type {
+  CredentialHelperTurnBinding,
+  SandboxIntegrationClient,
+} from './integration-client.js';
 import { NativeStartupAdmission } from './native-startup.js';
+import { NativeRuntimeCapture } from './runtime-capture.js';
 import { WorkerTranscriptWriter } from './transcript.js';
 import { initializeSessionWorkspace, runResidentTurn } from './turn.js';
 import { TURN_TIMELINE_LABELS, TurnTimeline } from './turn-timeline.js';
@@ -332,6 +339,8 @@ function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: 
     lineage: { turnId: string };
   }> = [];
   const boundTokens: unknown[] = [];
+  const helperBindings: Array<CredentialHelperTurnBinding | undefined> = [];
+  const agentSocketSessions: string[] = [];
   const client = {
     ready: Promise.resolve(),
     registerSessionLoopback(
@@ -348,8 +357,17 @@ function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: 
       loopbacks.delete(agentSessionId);
       calls.push(`destroy:${agentSessionId}`);
     },
-    bindTurnRouteTokens(agentSessionId: string, tokens: unknown) {
+    async openCredentialAgentSocket(agentSessionId: string): Promise<string> {
+      agentSocketSessions.push(agentSessionId);
+      return join(tmpdir(), `openkit-component-agent-${agentSessionId}.sock`);
+    },
+    bindTurnRouteTokens(
+      agentSessionId: string,
+      tokens: unknown,
+      helperBinding?: CredentialHelperTurnBinding
+    ) {
       boundTokens.push(tokens);
+      helperBindings.push(helperBinding);
       calls.push(`bind:${agentSessionId}`);
     },
     clearTurnRouteTokens(agentSessionId: string) {
@@ -381,7 +399,15 @@ function fakeIntegration(options: { readyAppendStatus?: number; registerFails?: 
       };
     },
   } as unknown as SandboxIntegrationClient;
-  return { boundTokens, calls, client, finalStatuses, loopbacks };
+  return {
+    agentSocketSessions,
+    boundTokens,
+    calls,
+    client,
+    finalStatuses,
+    helperBindings,
+    loopbacks,
+  };
 }
 
 const fixtureRoots = new Set<string>();
@@ -474,7 +500,10 @@ function harnessFixture(
     turnId: string,
     extra: {
       allowedModels?: readonly string[];
+      credentialDeclarations?: readonly AgentEnvironmentCredentialDeclaration[];
+      captureCoverage?: { scope: 'server'; value: 'on' | 'off' };
       runtimeEnvNames?: readonly string[];
+      nativeLogMaxBytes?: number;
       mcpIds?: readonly string[];
       threadId?: string;
     } = {}
@@ -504,10 +533,13 @@ function harnessFixture(
           mode: 'sandbox-integration',
         },
         credentials: {
-          declarations: (extra.runtimeEnvNames ?? []).map((name) => ({
-            targetEnvVarName: name,
-            visibility: 'runtime-env',
-          })),
+          declarations: [
+            ...(extra.runtimeEnvNames ?? []).map((name) => ({
+              targetEnvVarName: name,
+              visibility: 'runtime-env',
+            })),
+            ...(extra.credentialDeclarations ?? []),
+          ],
         },
         extensions: {
           openkit: {
@@ -549,7 +581,12 @@ function harnessFixture(
             providerInstanceId: 'provider-a',
           })),
         },
-        observability: { captureCoverage: { scope: 'server', value: 'off' } },
+        observability: {
+          captureCoverage: extra.captureCoverage ?? { scope: 'server', value: 'off' },
+          ...(extra.nativeLogMaxBytes === undefined
+            ? {}
+            : { evidence: { nativeLogMaxBytes: extra.nativeLogMaxBytes } }),
+        },
         runtime: { command: { argv: ['openkit-worker-shim'], workingDirectory: sandboxRoot } },
         scope: {
           agentSessionId,
@@ -600,7 +637,10 @@ function harnessFixture(
     turnId: string,
     extra: {
       allowedModels?: readonly string[];
+      credentialDeclarations?: readonly AgentEnvironmentCredentialDeclaration[];
+      captureCoverage?: { scope: 'server'; value: 'on' | 'off' };
       leaseId?: string;
+      nativeLogMaxBytes?: number;
       runtimeEnvNames?: readonly string[];
     } = {}
   ) => {
@@ -710,6 +750,135 @@ describe('concurrent Thread Turns', () => {
 });
 
 describe('Thread-local Turn admission and capture', () => {
+  it('hydrates helper comparisons into a later Turn and detaches the closed session collector', async () => {
+    const f = harnessFixture();
+    const session = fixtureId('as', 'helper-comparison-lifetime');
+    const freshSession = fixtureId('as', 'helper-comparison-fresh');
+    const firstTurn = fixtureId('tu', 'helper-comparison-first');
+    const laterTurn = fixtureId('tu', 'helper-comparison-later');
+    const freshTurn = fixtureId('tu', 'helper-comparison-fresh-turn');
+    const comparison = 'opaque helper comparison value';
+    const afterClose = 'opaque closed collector value';
+    const declaration: AgentEnvironmentCredentialDeclaration = {
+      id: 'helper-comparison',
+      requirementId: 'helper-comparison',
+      vaultGrantId: allocateEntityId('grant'),
+      visibility: 'runtime-token',
+      consumer: 'credential-helper',
+      helper: { protocol: 'git', scheme: 'https', host: 'fixture.invalid', path: 'repository' },
+    };
+    try {
+      expect((await f.open(session)).disposition).toBe('succeeded');
+      f.fake.script.push({ kind: 'hold' });
+      expect(
+        (await f.start(session, firstTurn, { credentialDeclarations: [declaration] })).disposition
+      ).toBe('succeeded');
+      const binding = f.integration.helperBindings[0];
+      // OLD must reach this behavioral frontier, not a missing native executable or socket.
+      expect(typeof binding?.registerCredentialValues).toBe('function');
+      if (!binding) throw new Error('Harness omitted the live helper binding.');
+      expect(
+        binding.lineage.agentSessionId === session && binding.lineage.turnId === firstTurn
+      ).toBe(true);
+      expect(
+        binding.declarations.some(
+          (entry) => entry.id === declaration.id && entry.vaultGrantId === declaration.vaultGrantId
+        )
+      ).toBe(true);
+      const firstCapture = f.fake.residents[0]!.turns[0]!.runtimeCapture;
+      expect(firstCapture !== undefined).toBe(true);
+      if (!firstCapture) throw new Error('Harness omitted the current Turn capture context.');
+      // Only the actual Harness-provided callback supplies this late comparison.
+      binding.registerCredentialValues([comparison]);
+      expect(firstCapture.credentialValues?.includes(comparison) ?? false).toBe(true);
+      f.fake.residents[0]!.finish('benign first completion');
+      await f.settle(session);
+      expect(
+        f.integration.finalStatuses.find((entry) => entry.lineage.turnId === firstTurn)?.body.status
+      ).toBe('completed');
+
+      f.fake.script.push({ kind: 'hold' });
+      expect(
+        (
+          await f.start(session, laterTurn, {
+            captureCoverage: { scope: 'server', value: 'on' },
+            nativeLogMaxBytes: 65_536,
+          })
+        ).disposition
+      ).toBe('succeeded');
+      const laterCapture = f.fake.residents[0]!.turns[1]!.runtimeCapture;
+      expect(laterCapture !== undefined).toBe(true);
+      if (!laterCapture) throw new Error('Harness omitted the later Turn capture context.');
+      expect(laterCapture.nativeLogMaxBytes).toBe(65_536);
+      expect(laterCapture.captureCoverage).toEqual({ scope: 'server', value: 'on' });
+      // There is deliberately no helper registration in this later Turn.
+      expect(laterCapture.credentialValues?.includes(comparison) ?? false).toBe(true);
+      let publishedBytes = 0;
+      let credentialExcluded = false;
+      const capture = new NativeRuntimeCapture({
+        ...laterCapture,
+        emit: async (record, body) => {
+          publishedBytes += body?.byteLength ?? 0;
+          credentialExcluded ||=
+            record.content.state === 'unavailable' &&
+            record.content.reason === 'credential-excluded';
+          await laterCapture.emit(record, body);
+        },
+      });
+      await capture.write('helper-comparison-native', Buffer.from(comparison), {
+        harness: 'codex',
+        format: 'application/octet-stream',
+        runtimeOriginRef: null,
+        logSource: 'stdout-log',
+      });
+      capture.end('helper-comparison-native');
+      await capture.finish();
+      expect(publishedBytes).toBe(0);
+      expect(credentialExcluded).toBe(true);
+      f.fake.residents[0]!.finish(comparison);
+      await f.settle(session);
+      const final = f.integration.finalStatuses.find((entry) => entry.lineage.turnId === laterTurn);
+      expect(final?.body.status).toBe('failed');
+      expect(JSON.stringify(final).includes(comparison)).toBe(false);
+      expect(
+        readFileSync(join(f.capturePath(laterTurn), 'events.jsonl'), 'utf8').includes(comparison)
+      ).toBe(false);
+      expect(f.integration.agentSocketSessions.filter((id) => id === session).length).toBe(1);
+      expect((await f.send('session.close', f.selector(session))).disposition).toBe('succeeded');
+      expect(f.fake.residents[0]!.closed).toBe(true);
+      expect(f.integration.loopbacks.has(session)).toBe(false);
+      expect(f.integration.calls.includes(`destroy:${session}`)).toBe(true);
+
+      expect((await f.open(freshSession)).disposition).toBe('succeeded');
+      f.fake.script.push({ kind: 'hold' });
+      expect((await f.start(freshSession, freshTurn)).disposition).toBe('succeeded');
+      const freshCapture = f.fake.residents[1]!.turns[0]!.runtimeCapture;
+      expect(freshCapture !== undefined).toBe(true);
+      if (!freshCapture) throw new Error('Harness omitted the fresh session capture context.');
+      expect(Array.isArray(freshCapture.credentialValues)).toBe(true);
+      expect(freshCapture.credentialValues?.includes(comparison) ?? false).toBe(false);
+      // A retained observer reference is not authority to serve or mutate the fresh session.
+      // A closed callback may refuse or discard, but must not register into the new live owner.
+      try {
+        binding.registerCredentialValues([afterClose]);
+      } catch {
+        // Private exception text must never enter the assertion output.
+      }
+      expect(freshCapture.credentialValues?.includes(afterClose) ?? false).toBe(false);
+      expect(f.integration.loopbacks.has(session)).toBe(false);
+      expect(f.integration.agentSocketSessions.filter((id) => id === freshSession).length).toBe(1);
+      f.fake.residents[1]!.finish('benign fresh completion');
+      await f.settle(freshSession);
+      expect(
+        f.integration.finalStatuses.find((entry) => entry.lineage.turnId === freshTurn)?.body.status
+      ).toBe('completed');
+    } finally {
+      if (f.integration.loopbacks.has(session)) await f.send('session.close', f.selector(session));
+      if (f.integration.loopbacks.has(freshSession))
+        await f.send('session.close', f.selector(freshSession));
+    }
+  }, 30_000);
+
   it('does not consume a capacity declaration from an unsupported first open', async () => {
     const f = harnessFixture();
     expect(

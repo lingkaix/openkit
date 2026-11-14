@@ -27,28 +27,33 @@ RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} f
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages/protocol/package.json packages/protocol/package.json
+COPY packages/storage/package.json packages/storage/package.json
 COPY packages/worker-protocol/package.json packages/worker-protocol/package.json
 COPY packages/config-schema/package.json packages/config-schema/package.json
 COPY packages/worker-shim/package.json packages/worker-shim/package.json
 COPY packages/codex-app-server-schema/package.json packages/codex-app-server-schema/package.json
 COPY packages/pi-runtime-host/package.json packages/pi-runtime-host/package.json
-COPY patches/pi-coding-agent-1.4.0-openkit-native-state.patch patches/pi-coding-agent-1.4.0-openkit-native-state.patch
+COPY patches/ patches/
 
 RUN pnpm install --frozen-lockfile
 
 COPY packages/protocol packages/protocol
+COPY packages/storage packages/storage
 COPY packages/worker-protocol packages/worker-protocol
 COPY packages/config-schema packages/config-schema
 COPY packages/worker-shim packages/worker-shim
 COPY packages/codex-app-server-schema packages/codex-app-server-schema
 COPY packages/pi-runtime-host packages/pi-runtime-host
 
+# Legacy deploy prunes Core-only patched dependencies; absent patches are allowed only after strict install/build.
 RUN pnpm --filter @openkit/protocol build \
+  && pnpm --filter @openkit/storage build \
   && pnpm --filter @openkit/worker-protocol build \
   && pnpm --filter @openkit/config-schema build \
   && pnpm --filter @openkit/worker-shim build \
   && pnpm --filter @openkit/pi-runtime-host build \
   && rm package.json \
+  && printf '\nallowUnusedPatches: true\n' >> pnpm-workspace.yaml \
   && pnpm --filter @openkit/worker-shim deploy --prod --legacy /deploy/worker-shim \
   && pnpm --filter @openkit/pi-runtime-host deploy --prod --legacy /deploy/pi-runtime-host
 
@@ -161,6 +166,11 @@ RUN uv python install "${PYTHON_VERSION}" \
 COPY --chmod=0755 --from=worker-shim-builder /deploy/worker-shim/ /usr/local/lib/openkit/worker-shim/
 COPY --chmod=0755 containers/workers/openkit-file-effect /usr/local/bin/openkit-file-effect
 COPY --chmod=0755 containers/workers/openkit-worker-shim /usr/local/bin/openkit-worker-shim
+
+RUN test -x /usr/local/lib/openkit/worker-shim/dist/credential-helper-cli.js \
+  && for helper in git-credential-openkit docker-credential-openkit openkit-aws-credential-process openkit-kubernetes-exec openkit-google-executable; do \
+    ln -s /usr/local/lib/openkit/worker-shim/dist/credential-helper-cli.js "/usr/local/bin/${helper}"; \
+  done
 COPY --chmod=0755 containers/workers/smoke-common.sh /usr/local/bin/openkit-worker-common-smoke
 COPY --chmod=0755 containers/workers/openkit-worker-common-base-smoke.sh /usr/local/bin/openkit-worker-common-base-smoke
 COPY --chmod=0644 containers/workers/python-tools.txt /usr/local/lib/openkit/python-tools.txt

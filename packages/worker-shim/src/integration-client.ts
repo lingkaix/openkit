@@ -16,8 +16,25 @@ import { createServer, type Server as NetServer, type Socket } from 'node:net';
 
 import { constants as zlibConstants, zstdDecompress } from 'node:zlib';
 
+import {
+  type AgentEnvironmentCredentialDeclaration,
+  AgentEnvironmentCredentialDeclarationSchema,
+} from '@openkit/config-schema';
+import {
+  type WorkerCredentialHelperCommand,
+  type WorkerCredentialHelperReply,
+  WorkerCredentialHelperReplySchema,
+  type WorkerLineage,
+  WorkerLineageSchema,
+} from '@openkit/worker-protocol';
 import type { WorkerInferenceRuntimeHintMapping } from './adapter-registry.js';
 import type { WorkerControlFetch } from './control-client.js';
+import { type CredentialAgentSocket, openCredentialAgent } from './credential-helper-agent.js';
+import {
+  credentialHelperReplyValues,
+  selectCredentialHelper,
+} from './credential-helper-binding.js';
+import { CREDENTIAL_HELPER_NATIVE_PATH } from './credential-helper-client.js';
 
 const INTEGRATION_READY_TIMEOUT_MS = 10_000;
 const CONNECTION_RECEIVE_WINDOW_BYTES = 5 * 1024 * 1024;
@@ -72,6 +89,13 @@ const HARNESS_CONTROL_PATHS = new Set([
   '/worker-control/harness/result',
 ]);
 
+/** Immutable authority selectors and the existing session's confidentiality-only comparison owner. */
+export interface CredentialHelperTurnBinding {
+  readonly lineage: WorkerLineage;
+  readonly declarations: readonly AgentEnvironmentCredentialDeclaration[];
+  readonly registerCredentialValues: (values: readonly string[]) => void;
+}
+
 /** The three upstream route tokens of the Turn bound to one AgentSession. */
 interface BoundTurnRoutes {
   readonly capabilityToken: string;
@@ -79,6 +103,7 @@ interface BoundTurnRoutes {
   /** Set at the Turn barrier; new loopback requests are refused from then on. */
   draining: boolean;
   readonly inferenceToken: string;
+  readonly helper?: CredentialHelperTurnBinding;
 }
 
 /** One AgentSession's session loopback credentials and its current Turn binding. */
@@ -90,6 +115,7 @@ interface LoopbackSession {
   /** In-flight native requests attributed to the bound Turn. */
   readonly inflight: Set<AbortController>;
   turn: BoundTurnRoutes | null;
+  agent?: Promise<CredentialAgentSocket>;
 }
 
 /** One streaming response returned by the route-bound Integration client. */
@@ -229,6 +255,7 @@ export class SandboxIntegrationClient {
       return;
     }
     this.loopbackSessions.delete(agentSessionId);
+    void session.agent?.then((agent) => agent.close()).catch(() => undefined);
     for (const request of session.inflight) {
       request.abort();
     }
@@ -248,7 +275,8 @@ export class SandboxIntegrationClient {
       readonly capabilityToken: string;
       readonly controlToken: string;
       readonly inferenceToken: string;
-    }
+    },
+    helper?: CredentialHelperTurnBinding
   ): void {
     const session = this.loopbackSessions.get(agentSessionId);
     if (!session) {
@@ -266,7 +294,142 @@ export class SandboxIntegrationClient {
     ) {
       throw new Error('Sandbox Integration requires distinct non-empty Turn route tokens.');
     }
-    session.turn = { capabilityToken, controlToken, draining: false, inferenceToken };
+    const binding = helper
+      ? {
+          lineage: WorkerLineageSchema.parse(helper.lineage),
+          declarations: helper.declarations.map((declaration) =>
+            AgentEnvironmentCredentialDeclarationSchema.parse(declaration)
+          ),
+          registerCredentialValues: helper.registerCredentialValues,
+        }
+      : undefined;
+    if (
+      binding &&
+      (binding.lineage.agentSessionId !== agentSessionId ||
+        typeof binding.registerCredentialValues !== 'function')
+    )
+      throw new Error('Credential unavailable.');
+    session.turn = {
+      capabilityToken,
+      controlToken,
+      draining: false,
+      inferenceToken,
+      ...(binding ? { helper: binding } : {}),
+    };
+  }
+
+  /** Opens only this AgentSession's socket; every request still requires a current Turn. */
+  public async openCredentialAgentSocket(agentSessionId: string): Promise<string> {
+    const session = this.loopbackSessions.get(agentSessionId);
+    if (!session) throw new Error('Credential unavailable.');
+    const call = async (command: WorkerCredentialHelperCommand) => {
+      const turn = session.turn;
+      if (!turn?.helper || turn.draining || this.loopbackSessions.get(agentSessionId) !== session)
+        throw new Error('Credential unavailable.');
+      const abort = new AbortController();
+      const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(30_000)]);
+      session.inflight.add(abort);
+      try {
+        const declarations = turn.helper.declarations.filter(
+          (declaration) => declaration.visibility === 'external-handle'
+        );
+        const identities: { keyBlob: Buffer; comment: string }[] = [];
+        const matches: AgentEnvironmentCredentialDeclaration[] = [];
+        for (const declaration of declarations) {
+          const selected = selectCredentialHelper([declaration], {
+            protocol: 'ssh-agent',
+            operation: 'identities',
+          });
+          const reply = await this.exchangeCredentialHelper(session, turn, selected, signal);
+          if (!('identities' in reply)) throw new Error('Credential unavailable.');
+          for (const identity of reply.identities) {
+            identities.push({
+              keyBlob: Buffer.from(identity.keyBlob, 'base64'),
+              comment: identity.comment,
+            });
+            if (command.operation === 'sign' && identity.keyBlob === command.keyBlob)
+              matches.push(declaration);
+          }
+        }
+        if (command.operation === 'identities') return identities;
+        if (
+          command.protocol !== 'ssh-agent' ||
+          command.operation !== 'sign' ||
+          matches.length !== 1
+        )
+          throw new Error('Credential unavailable.');
+        const selected = selectCredentialHelper(matches, command);
+        const signed = await this.exchangeCredentialHelper(session, turn, selected, signal);
+        if (!('signature' in signed)) throw new Error('Credential unavailable.');
+        return Buffer.from(signed.signature, 'base64');
+      } finally {
+        session.inflight.delete(abort);
+      }
+    };
+    session.agent ??= openCredentialAgent({
+      identities: () => call({ protocol: 'ssh-agent', operation: 'identities' }),
+      sign: (request) => {
+        if (request.flags !== 0 && request.flags !== 2 && request.flags !== 4)
+          throw new Error('Credential unavailable.');
+        return call({
+          protocol: 'ssh-agent',
+          operation: 'sign',
+          keyBlob: request.keyBlob.toString('base64'),
+          data: request.data.toString('base64'),
+          flags: request.flags,
+        });
+      },
+    });
+    const agent = await session.agent;
+    if (this.loopbackSessions.get(agentSessionId) !== session) {
+      await agent.close();
+      throw new Error('Credential unavailable.');
+    }
+    return agent.path;
+  }
+
+  /** Collect and validate before either the child or native codec receives any bytes. */
+  private async exchangeCredentialHelper(
+    session: LoopbackSession,
+    turn: BoundTurnRoutes,
+    selected: { declarationId: string; request: WorkerCredentialHelperCommand },
+    signal: AbortSignal
+  ): Promise<WorkerCredentialHelperReply> {
+    const current = () => {
+      signal.throwIfAborted();
+      if (!turn.helper || session.turn !== turn || turn.draining)
+        throw new Error('Credential unavailable.');
+      return turn.helper;
+    };
+    const helper = current();
+    const upstream = await this.request(CREDENTIAL_HELPER_NATIVE_PATH, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${turn.controlToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ lineage: helper.lineage, ...selected }),
+      signal,
+    });
+    const cacheControl = upstream.headers['cache-control'];
+    const contentType = upstream.headers['content-type'];
+    if (
+      !upstream.ok ||
+      typeof cacheControl !== 'string' ||
+      !cacheControl.split(',').some((value) => value.trim() === 'no-store') ||
+      typeof contentType !== 'string' ||
+      !contentType.startsWith('application/json')
+    ) {
+      upstream.body.close(http2Constants.NGHTTP2_CANCEL);
+      throw new Error('Credential unavailable.');
+    }
+    const response = await collectBoundedResponse(
+      upstream,
+      WORKER_CONTROL_MAX_BYTES,
+      'Credential helper'
+    );
+    const reply = WorkerCredentialHelperReplySchema.parse(JSON.parse(await response.text()));
+    const values = await credentialHelperReplyValues(selected.request, reply);
+    await current().registerCredentialValues(values);
+    current();
+    return reply;
   }
 
   /**
@@ -418,6 +581,8 @@ export class SandboxIntegrationClient {
     request: IncomingMessage,
     response: ServerResponse
   ): Promise<void> {
+    const path = request.url ?? '';
+    if (path === CREDENTIAL_HELPER_NATIVE_PATH) response.setHeader('cache-control', 'no-store');
     if (!this.readyState) {
       rejectNativeRequest(request, response, 503);
       return;
@@ -426,11 +591,10 @@ export class SandboxIntegrationClient {
       rejectNativeRequest(request, response, 405);
       return;
     }
-    const path = request.url ?? '';
     let family: RouteFamily;
     try {
       family = routeFamily(path);
-      if (family === 'worker-control') {
+      if (family === 'worker-control' && path !== CREDENTIAL_HELPER_NATIVE_PATH) {
         rejectNativeRequest(request, response, 404);
         return;
       }
@@ -453,7 +617,12 @@ export class SandboxIntegrationClient {
       rejectNativeRequest(request, response, 403);
       return;
     }
-    const maxBytes = family === 'inference' ? INFERENCE_MAX_BYTES : CAPABILITY_MAX_BYTES;
+    const maxBytes =
+      family === 'inference'
+        ? INFERENCE_MAX_BYTES
+        : family === 'worker-control'
+          ? WORKER_CONTROL_MAX_BYTES
+          : CAPABILITY_MAX_BYTES;
     const declaredLength = Number(request.headers['content-length'] ?? 0);
     if (!Number.isSafeInteger(declaredLength) || declaredLength < 0 || declaredLength > maxBytes) {
       rejectNativeRequest(request, response, 413);
@@ -480,6 +649,20 @@ export class SandboxIntegrationClient {
     response.once('close', cancelIfIncomplete);
     try {
       let body = await collectNativeRequest(request, maxBytes);
+      if (family === 'worker-control') {
+        if (!turn.helper) throw new Error('Credential unavailable.');
+        const selected = selectCredentialHelper(
+          turn.helper.declarations,
+          JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body))
+        );
+        const reply = await this.exchangeCredentialHelper(session, turn, selected, abort.signal);
+        response.writeHead(200, {
+          'cache-control': 'no-store',
+          'content-type': 'application/json',
+        });
+        response.end(JSON.stringify(reply));
+        return;
+      }
       if (family === 'inference') {
         try {
           body = await normalizeNativeInference(body, headers, session.inferenceRuntimeHintMapping);
@@ -567,6 +750,11 @@ export class SandboxIntegrationClient {
       request.abort();
     }
     this.nativeRequests.clear();
+    const agents = [...this.loopbackSessions.values()].flatMap((session) =>
+      session.agent ? [session.agent] : []
+    );
+    for (const id of this.loopbackSessions.keys()) this.destroySessionLoopback(id);
+    await Promise.allSettled(agents.map(async (agent) => (await agent).close()));
     this.session?.destroy();
     this.acceptedSocket?.destroy();
   }

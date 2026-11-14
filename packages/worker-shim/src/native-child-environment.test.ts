@@ -47,11 +47,14 @@ vi.mock('./adapters/opencode-plugin.js', async (importOriginal) => {
   };
 });
 
-/** Only session loopback registration is needed before native work; no provider or network is used. */
+/** Component Integration ports only; the opaque agent address creates no socket or network peer. */
 function integration(): SandboxIntegrationClient {
   const bindings = new Set<string>();
   return {
     ready: Promise.resolve(),
+    async openCredentialAgentSocket(id: string): Promise<string> {
+      return join(tmpdir(), `openkit-component-agent-${id}.sock`);
+    },
     registerSessionLoopback: (id: string) => {
       if (bindings.has(id)) throw new Error('Duplicate binding');
       bindings.add(id);

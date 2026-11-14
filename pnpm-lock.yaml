@@ -572,6 +572,9 @@ importers:
       '@openkit/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@openkit/storage':
+        specifier: workspace:*
+        version: link:../storage
       '@openkit/worker-protocol':
         specifier: workspace:*
         version: link:../worker-protocol

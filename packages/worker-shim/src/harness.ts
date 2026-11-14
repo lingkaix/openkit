@@ -35,6 +35,7 @@ import {
   type WorkerResidentTurn,
 } from './adapter-registry.js';
 import { isRetryableHttpStatus } from './control-client.js';
+import { credentialHelperDeclarations } from './credential-helper-binding.js';
 import {
   openSandboxIntegration,
   SANDBOX_NATIVE_CAPABILITY_BASE_URL,
@@ -113,7 +114,7 @@ interface HarnessSession {
   readonly hostManagedLogin: boolean;
   cleanupState: 'clean' | 'pending' | 'unknown';
   closing: boolean;
-  readonly credentialValues: readonly string[];
+  readonly credentialValues: string[];
   /**
    * Whether the binding may take another Turn: its handle was ready at open, whether resumed or
    * created by the runtime, or one of its Turns completed. A binding whose handle was pending at
@@ -389,18 +390,42 @@ export class WorkerHarness {
         this.mapSandboxPath(inputPaths.packagePath),
         body
       );
+      const credentialAgentPath = await this.integration.openCredentialAgentSocket(
+        body.agentSessionId
+      );
+      const initialPackage: unknown = JSON.parse(
+        await readFile(this.mapSandboxPath(inputPaths.packagePath), 'utf8')
+      );
+      const helperBootstrap =
+        credentialHelperDeclarations(
+          isRecord(initialPackage) && isRecord(initialPackage.credentials)
+            ? initialPackage.credentials.declarations
+            : undefined
+        ).length > 0;
       // The adapter contract owns the no-live-effect guarantee. A resident that still exists when
       // close fails keeps the Thread reserved and drains this Harness.
       resident = await adapter
         .openSession({
           agentSessionId: body.agentSessionId,
           controlRoot,
-          environment: residentEnvironment(
-            this.environment,
-            runtimeEnvironment,
-            nativeEnvironment,
-            body.adapterId
-          ),
+          environment: {
+            ...residentEnvironment(
+              this.environment,
+              runtimeEnvironment,
+              nativeEnvironment,
+              body.adapterId
+            ),
+            ...(helperBootstrap
+              ? {
+                  OPENKIT_CREDENTIAL_HELPER_URL: new URL(
+                    '/worker-control/credential-helper',
+                    SANDBOX_NATIVE_CAPABILITY_BASE_URL
+                  ).href,
+                  OPENKIT_CREDENTIAL_HELPER_TOKEN: body.capabilityLoopbackCredential,
+                }
+              : {}),
+            SSH_AUTH_SOCK: credentialAgentPath,
+          },
           loopback: {
             capabilityBaseUrl: SANDBOX_NATIVE_CAPABILITY_BASE_URL,
             capabilityCredential: body.capabilityLoopbackCredential,
@@ -597,6 +622,28 @@ export class WorkerHarness {
       return runResidentTurn({
         adapterId: this.adapterId as string,
         credentialValues: session.credentialValues,
+        registerCredentialValues: (values) => {
+          if (
+            session.closing ||
+            session.failed ||
+            this.sessions.get(session.bindingId) !== session ||
+            session.activeTurn?.turnId !== body.turnId ||
+            session.activeTurn.barrierReached
+          )
+            throw harnessError('stale');
+          const complete = [...new Set([...session.credentialValues, ...values])];
+          // Same 128-value native comparison ceiling, plus the two existing session loopbacks.
+          if (
+            complete.length > 130 ||
+            complete.some(
+              (value) => typeof value !== 'string' || Buffer.byteLength(value) > 65_536
+            ) ||
+            complete.reduce((bytes, value) => bytes + Buffer.byteLength(value), 0) >
+              128 * 65_536 + 86
+          )
+            throw harnessError('dependency_failed');
+          session.credentialValues.splice(0, session.credentialValues.length, ...complete);
+        },
         hostManagedLogin: session.hostManagedLogin,
         environment: this.environment,
         integration: this.integration,
@@ -779,6 +826,7 @@ export class WorkerHarness {
       throw harnessError('cleanup_required');
     }
     this.integration.destroySessionLoopback(session.agentSessionId);
+    session.credentialValues.length = 0;
     await rm(this.mapSandboxPath(workerSessionInputPaths(session.agentSessionId).root), {
       force: true,
       recursive: true,
