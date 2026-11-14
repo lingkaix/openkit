@@ -28,7 +28,7 @@ export {
   type QueueNanoHostHarnessOperationInput,
   readConsumedNanoHostHarnessResult,
   readNanoHostHarnessCloseReceiver,
-  readNanoHostIdleCloseConsumerReceipt,
+  readNanoHostIdleCloseAuthority,
   readNanoHostMeasuredHarnessIdentity,
   readNanoHostThreadAgentSessionBinding,
   type SettleNanoHostHarnessOperationInput,

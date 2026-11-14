@@ -5,6 +5,7 @@ import { commandInputHash } from '../storage/control-store-input.js';
 import { CoreJournalRefusal } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
+  CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
@@ -12,14 +13,161 @@ import {
   writeExecutionJournalIntent,
 } from './execution-journal.js';
 import type { ExecutionJournalIntent, ExecutionStepRef } from './execution-step-journal.js';
+
+/** Exact immutable receiver result tuple; the consumer remains a journal authority reference. */
+interface HarnessConsumptionKey {
+  readonly harnessBindingRef: string;
+  readonly operationId: string;
+  readonly sequence: number;
+  readonly resultFingerprint: string;
+}
+
+/** Reads validated Core progress without changing the original receiver result. */
+export function readCoreHarnessConsumption(db: CoreDb, key: HarnessConsumptionKey): string | null {
+  const executionId = `harness-consume:${commandInputHash(key)}`;
+  if (!db.sqlite.prepare('SELECT 1 FROM control_executions WHERE id = ?').get(executionId))
+    return null;
+  const execution = { owner: { kind: 'server' as const }, executionId };
+  const root = readExecutionJournalRoot(db, execution);
+  const step = readExecutionJournalInvocation(db, { execution, stepId: 'consume' });
+  const consumer = step.control.authorityRefs[0];
+  if (
+    !consumer ||
+    root.definitionVersion !== CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
+    root.workId !== key.operationId ||
+    root.phase !== 'closed' ||
+    root.openSteps.length !== 0 ||
+    root.fingerprint !== commandInputHash({ ...key, consumer }) ||
+    step.state !== 'completed' ||
+    step.control.kind !== 'consume-receipt' ||
+    step.control.fingerprint !== root.fingerprint ||
+    !isDeepStrictEqual(step.control.authorityRefs, [consumer]) ||
+    !isDeepStrictEqual(step.control.inputRefs, [key.resultFingerprint]) ||
+    !isDeepStrictEqual(step.control.outputRefs, [key.resultFingerprint]) ||
+    !isDeepStrictEqual(step.carriage, {
+      operation: 'harness.consume',
+      requestId: key.operationId,
+      sequence: key.sequence,
+      bindingRef: key.harnessBindingRef,
+    })
+  )
+    throw new Error('NanoHost Harness retained consumer acknowledgement conflicts.');
+  return consumer;
+}
+
+/** Commits local consumption inside the native Harness transaction, after its exact authority checks. */
+export function recordCoreHarnessConsumption(
+  db: CoreDb,
+  key: HarnessConsumptionKey,
+  consumer: string,
+  timestamp: string
+): void {
+  const previous = readCoreHarnessConsumption(db, key);
+  if (previous !== null) {
+    if (previous !== consumer)
+      throw new Error('NanoHost Harness consumer acknowledgement replay conflicts.');
+    return;
+  }
+  const fingerprint = commandInputHash({ ...key, consumer });
+  const execution = {
+    owner: { kind: 'server' as const },
+    executionId: `harness-consume:${commandInputHash(key)}`,
+  };
+  const time = BigInt(Date.parse(timestamp)) * 1_000_000n;
+  const digest = createHash('sha256').update(execution.executionId).digest('hex');
+  const span: ExecutionJournalIntent['span'] = {
+    traceId: digest.slice(0, 32),
+    spanId: digest.slice(32, 48),
+    flags: 0,
+    name: 'nanohost.harness-consumption',
+    kind: 'INTERNAL',
+    startTimeUnixNano: time,
+    endTimeUnixNano: null,
+    status: { code: 'UNSET' },
+    attributes: [],
+    droppedAttributesCount: 0,
+    events: [],
+    droppedEventsCount: 0,
+    links: [],
+    droppedLinksCount: 0,
+    instrumentationScope: {
+      name: 'openkit.nanocore.runtime',
+      attributes: [],
+      droppedAttributesCount: 0,
+    },
+    resource: { attributes: [], droppedAttributesCount: 0 },
+  };
+  const intent: ExecutionJournalIntent = {
+    execution: {
+      ref: execution,
+      definitionVersion: CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+      workId: key.operationId,
+      fingerprint,
+      exclusionRefs: [],
+      span,
+    },
+    stepId: 'consume',
+    parentStepId: null,
+    parent: null,
+    inspectedStep: null,
+    control: {
+      definitionVersion: CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+      kind: 'consume-receipt',
+      target: null,
+      workId: key.operationId,
+      operationId: key.operationId,
+      attemptId: null,
+      invocationId: execution.executionId,
+      actor: { kind: 'system', id: key.harnessBindingRef, responsibleUserId: null },
+      inputRefs: [key.resultFingerprint],
+      outputRefs: [],
+      fingerprint,
+      permittingDecisionRef: null,
+      authorityRefs: [consumer],
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    carriage: {
+      operation: 'harness.consume',
+      requestId: key.operationId,
+      sequence: key.sequence,
+      bindingRef: key.harnessBindingRef,
+    },
+    span: {
+      ...span,
+      spanId: digest.slice(48, 64),
+      parentSpanId: span.spanId,
+      name: 'harness.consume-receipt',
+    },
+  };
+  writeExecutionJournalIntent(db, intent);
+  settleExecutionJournalStep(db, {
+    ref: { execution, stepId: intent.stepId },
+    expectedExecutionRevision: readExecutionJournalRoot(db, execution).revision,
+    state: 'completed',
+    outputRefs: [key.resultFingerprint],
+    span: { ...intent.span, endTimeUnixNano: time, status: { code: 'OK' } },
+    nextPhase: 'closed',
+    terminalCause: null,
+    exclusionRefs: [],
+  });
+}
+
 /** Settles the existing complete idle outcome plus linked consumption tuple on the deciding Core connection. */
 export function settleCoreIdleJournal(
   db: CoreDb,
   intent: ExecutionJournalIntent,
   state: 'completed' | 'failed' | 'unknown',
   resultFingerprint: string | undefined,
-  processWitness: string
+  processWitness: string,
+  candidateDigest?: string
 ): void {
+  const resultRefs =
+    resultFingerprint === undefined
+      ? []
+      : [resultFingerprint, ...(candidateDigest === undefined ? [] : [candidateDigest])];
   const ref = { execution: intent.execution.ref, stepId: intent.stepId };
   const original = readExecutionJournalInvocation(db, ref);
   if (
@@ -54,11 +202,7 @@ export function settleCoreIdleJournal(
   if (original.state !== 'intent') {
     if (
       !lateResult &&
-      (original.state !== state ||
-        !isDeepStrictEqual(
-          original.control.outputRefs,
-          resultFingerprint === undefined ? [] : [resultFingerprint]
-        ))
+      (original.state !== state || !isDeepStrictEqual(original.control.outputRefs, resultRefs))
     )
       throw new CoreJournalRefusal('Core idle cleanup result replay conflicts.');
     if (resultFingerprint === undefined) return;
@@ -125,7 +269,7 @@ export function settleCoreIdleJournal(
         ref,
         expectedExecutionRevision: root.revision,
         state,
-        outputRefs: resultFingerprint === undefined ? [] : [resultFingerprint],
+        outputRefs: resultRefs,
         span: { ...intent.span, endTimeUnixNano: endedAt, status },
         nextPhase: 'closing',
         terminalCause: state === 'completed' ? null : `idle-${state}`,

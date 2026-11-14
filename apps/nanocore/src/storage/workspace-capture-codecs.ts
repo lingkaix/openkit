@@ -51,25 +51,28 @@ export const ControlWorkspaceCaptureSchema = z
 /** One closed internal Workspace publication, not a new retained or public shape. */
 export type ControlWorkspaceCapture = z.infer<typeof ControlWorkspaceCaptureSchema>;
 
-/** Exact original receipt metadata; verified original bytes remain in their existing source lifetime. */
-export const WorkspaceCaptureReceiptMetadataSchema = z
-  .object({
-    identity: WorkspaceCollectionIdentitySchema,
-    result: StoredCollectionResultSchema,
-    candidate: z
-      .object({
-        byteLength: z.number().int().positive(),
-        sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
-      })
-      .strict()
-      .nullable(),
-    isLink: z.boolean(),
-    credentialCheck: z.literal('passed'),
-  })
-  .strict();
-/** Original receipt or reconciliation result, sent only after the covering FULL commit. */
+/** Original outcome or reconciliation result, sent only after the covering FULL commit. */
 export const ControlWorkspaceCaptureResultSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('receipt'), receipt: WorkspaceCaptureReceiptMetadataSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('receipt'),
+      receipt: z
+        .object({
+          identity: WorkspaceCollectionIdentitySchema,
+          result: StoredCollectionResultSchema,
+          candidate: z
+            .object({
+              byteLength: z.number().int().positive(),
+              sha256: z.string().regex(/^sha256:[0-9a-f]{64}$/),
+            })
+            .strict()
+            .nullable(),
+          isLink: z.boolean(),
+          credentialCheck: z.literal('passed'),
+        })
+        .strict(),
+    })
+    .strict(),
   z.object({ kind: z.literal('recovery'), record: WorkspaceReconciliationRecordSchema }).strict(),
 ]);
 /** Closed result of the original Workspace stage. */

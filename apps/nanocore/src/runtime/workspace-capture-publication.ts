@@ -14,7 +14,7 @@ import {
   type RawWorkspaceCapture,
   RawWorkspaceCaptureV1Schema,
   type WorkspaceCollectionIdentity,
-  type WorkspaceCollectionReceipt,
+  type WorkspaceCollectionOutcome,
 } from './workspace-snapshot-chain.js';
 
 /** Opens the existing actual Workspace physical owner before submitting one exact stage. */
@@ -56,7 +56,7 @@ export async function publishWorkspaceCapture(
   candidate: Buffer | null,
   preserved?: RawWorkspaceCapture,
   idleAnchor?: WorkspaceCaptureAnchor
-): Promise<WorkspaceCollectionReceipt> {
+): Promise<WorkspaceCollectionOutcome> {
   if (
     (candidate !== null && !preserved) ||
     (preserved &&

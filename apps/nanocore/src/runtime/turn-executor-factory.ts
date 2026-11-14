@@ -171,7 +171,7 @@ import {
   queueNanoHostHarnessOperation,
   readConsumedNanoHostHarnessResult,
   readNanoHostHarnessCloseReceiver,
-  readNanoHostIdleCloseConsumerReceipt,
+  readNanoHostIdleCloseAuthority,
   readNanoHostThreadAgentSessionBinding,
   removeNanoHostSandboxRuntimeByBinding,
   restoreNanoHostSandboxAdmissionIfSafe,
@@ -390,7 +390,9 @@ export interface ConfiguredWorkerLifecycleRuntime {
     context: HarnessLoginContext
   ) => WorkerGovernanceNativeResume | null;
   /** Returns the last privately acknowledged receipt for this exact current consumer. */
-  readonly readCompletedHarnessLoginReceipt: (context: HarnessLoginContext) => HarnessLoginReceipt;
+  readonly readCompletedHarnessLoginSupply: (
+    context: HarnessLoginContext
+  ) => Readonly<Pick<InitialHarnessLoginAccess, 'receiptId' | 'materialGeneration'>>;
   /** Acknowledges external completion, then joins the original governed receipt and any affinity effect. */
   readonly completeHarnessLogin: (
     context: HarnessLoginContext,
@@ -631,8 +633,7 @@ function createNanoHostWorkerLifecycleRuntime(
     executionReconciler,
     acquireHarnessLogin: (...args) => backend.acquireHarnessLogin(...args),
     readHarnessLoginNativeResume: (context) => backend.readHarnessLoginNativeResume(context),
-    readCompletedHarnessLoginReceipt: (context) =>
-      backend.readCompletedHarnessLoginReceipt(context),
+    readCompletedHarnessLoginSupply: (context) => backend.readCompletedHarnessLoginSupply(context),
     completeHarnessLogin: (...args) => backend.completeHarnessLogin(...args),
     advanceIdleCleanup: (selection) => backend.advanceIdleCleanup(selection),
     captureArtifact: (input) => backend.captureArtifact(input),
@@ -710,9 +711,6 @@ function createNanoHostWorkerLifecycleRuntime(
 type InitialHarnessLoginAccess = Awaited<
   ReturnType<ConfiguredWorkerLifecycleRuntime['acquireHarnessLogin']>
 >;
-type HarnessLoginReceipt = Readonly<
-  Pick<InitialHarnessLoginAccess, 'receiptId' | 'materialGeneration'>
->;
 type InitialHarnessLoginEffect = Parameters<
   Parameters<ConfiguredWorkerLifecycleRuntime['acquireHarnessLogin']>[4]
 >[0];
@@ -738,7 +736,9 @@ interface InitialHarnessLoginExchange {
   settlement: Promise<void> | null;
   delivery: Promise<void> | null;
   completion: Promise<void> | null;
-  receipt: HarnessLoginReceipt | null;
+  completedSupply: Readonly<
+    Pick<InitialHarnessLoginAccess, 'receiptId' | 'materialGeneration'>
+  > | null;
   effect: InitialHarnessLoginEffect | null;
   verifySupply:
     | ((
@@ -844,7 +844,10 @@ interface PendingNanoHostHarnessOperation {
   /** Existing public receipt producer; no prompt or extra durable state is retained here. */
   steer?: { readonly target: TaskSteerTarget; readonly control: TaskSteerControl };
   /** Positive Core idle binding owner; it does not authorize active or closing Turn cleanup. */
-  coreIdleClose?: { readonly consumerReceipt: string; prepared?: PreparedNanoHostHarnessOperation };
+  coreIdleClose?: {
+    readonly authority: NonNullable<ReturnType<typeof readNanoHostIdleCloseAuthority>>;
+    prepared?: PreparedNanoHostHarnessOperation;
+  };
   /** Original native descriptors and raw carriage stay with this existing live waiter. */
   journal?: {
     readonly store: FsStore;
@@ -1159,7 +1162,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       )
         throw new Error('NanoHost idle close command conflicts with its exact Core producer.');
       pending.operationId = command.operationId;
-      const currentReceipt = readNanoHostIdleCloseConsumerReceipt(this.coreDb, {
+      const currentReceipt = readNanoHostIdleCloseAuthority(this.coreDb, {
         harnessInstanceId: command.harnessInstanceId,
         harnessBindingRef: session.harnessBindingRef,
         agentSessionId: session.environmentPackage.scope.agentSessionId,
@@ -1177,7 +1180,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         );
       if (
         !dispatched ||
-        currentReceipt !== pending.coreIdleClose.consumerReceipt ||
+        !isDeepStrictEqual(currentReceipt, pending.coreIdleClose.authority) ||
         session.pendingHarnessOperation !== pending ||
         this.sessions.get(session.environmentPackage.snapshotId) !== session ||
         Date.now() < pending.admittedUnixMs ||
@@ -1639,7 +1642,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       await acknowledgeNanoHostHarnessResult(this.coreDb, {
         result,
         harnessBindingRef: session.harnessBindingRef,
-        consumerReceipt: pending.coreIdleClose.consumerReceipt,
+        consumerReceipt: JSON.stringify(pending.coreIdleClose.authority),
         timestamp: new Date().toISOString(),
       });
     } else {
@@ -5211,13 +5214,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   }
 
   /** Reads only this session's last positively completed supply, never a Worker-selected receipt. */
-  public readCompletedHarnessLoginReceipt(context: HarnessLoginContext): HarnessLoginReceipt {
+  public readCompletedHarnessLoginSupply(
+    context: HarnessLoginContext
+  ): Readonly<Pick<InitialHarnessLoginAccess, 'receiptId' | 'materialGeneration'>> {
     const session = this.requireHarnessLoginSession(context);
     const exchange = session.refreshHarnessLogin ?? session.initialHarnessLogin;
-    if (!exchange?.completed || !exchange.receipt || !isDeepStrictEqual(exchange.context, context))
+    if (
+      !exchange?.completed ||
+      !exchange.completedSupply ||
+      !isDeepStrictEqual(exchange.context, context)
+    )
       throw new Error('Native Login previous completion is unavailable.');
     this.assertHarnessLoginCurrent(session, exchange);
-    return { ...exchange.receipt };
+    return { ...exchange.completedSupply };
   }
 
   /** Starts one governed supply without resolving or joining the genuine pending turn.start. */
@@ -5235,7 +5244,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     if (
       refresh
         ? !previous?.completed ||
-          previous.receipt?.receiptId !== refresh.previousReceiptId ||
+          previous.completedSupply?.receiptId !== refresh.previousReceiptId ||
           refresh.previousReceiptId === refresh.receiptId
         : !!previous || session.turnStarted || pending?.operation !== 'turn.start'
     )
@@ -5278,7 +5287,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       settlement: null,
       delivery: null,
       completion: null,
-      receipt: null,
+      completedSupply: null,
       effect: null,
       verifySupply: null,
       supplied: false,
@@ -5493,7 +5502,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             receiptId: access.receiptId,
             materialGeneration: access.materialGeneration,
           };
-          exchange.receipt = proof;
+          exchange.completedSupply = proof;
           exchange.effect = {
             ...proof,
             accountId: access.accountId,
@@ -5531,14 +5540,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   ) => {
     const session = this.requireSession(context.packageSnapshotId);
     const exchange =
-      session.refreshHarnessLogin?.receipt?.receiptId === receiptId
+      session.refreshHarnessLogin?.completedSupply?.receiptId === receiptId
         ? session.refreshHarnessLogin
         : session.initialHarnessLogin;
     if (
       !exchange ||
       !isDeepStrictEqual(exchange.context, context) ||
-      exchange.receipt?.receiptId !== receiptId ||
-      exchange.receipt.materialGeneration !== materialGeneration
+      exchange.completedSupply?.receiptId !== receiptId ||
+      exchange.completedSupply.materialGeneration !== materialGeneration
     )
       throw new Error('Native Login completion does not match its original supply.');
     const abort = () => {
@@ -7833,13 +7842,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
   private async settleIdleCleanupJournal(
     intent: ExecutionJournalIntent,
     state: 'completed' | 'failed' | 'unknown',
-    resultFingerprint?: string
+    resultFingerprint?: string,
+    candidateDigest?: string
   ): Promise<void> {
     await publishCoreJournal(this.coreDb, {
       kind: 'idle-settle',
       intentJson: encodeExecutionJournalValue(intent),
       state,
       ...(resultFingerprint === undefined ? {} : { resultFingerprint }),
+      ...(candidateDigest === undefined ? {} : { candidateDigest }),
       processWitness: executionJournalProcessWitness(),
     });
     this.idleCleanup.onCommit();
@@ -8066,13 +8077,21 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const consumeResult = async (value: Readonly<Record<string, unknown>>) => {
       const { resourceSummary: _diagnostic, stagingPath: _temporary, ...core } = value;
       const actual = commandInputHash(core);
+      // The transport has admitted the candidate bytes and digest before this local outcome ACK.
+      let candidateDigest: string | undefined;
+      if (operation === 'workspace.collect' && value.outcome === 'candidate') {
+        if (typeof value.sha256 !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(value.sha256))
+          throw new Error('Workspace collection candidate digest is invalid.');
+        candidateDigest = value.sha256;
+      }
+      const outputRefs = [actual, ...(candidateDigest === undefined ? [] : [candidateDigest])];
       if (fingerprint !== undefined && fingerprint !== actual)
         throw new Error('NanoHost fixed-effect result replay conflicts with its original receipt.');
       fingerprint = actual;
       consumption ??= (async () => {
         const outcome = value.failureCode === 'effect_failed' ? 'failed' : 'completed';
         if (!workspaceScope) {
-          await this.settleIdleCleanupJournal(journal, outcome, actual);
+          await this.settleIdleCleanupJournal(journal, outcome, actual, candidateDigest);
           return;
         }
         consumeIntent ??= this.harnessConsumptionIntent(journal, actual);
@@ -8085,14 +8104,14 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             workspaceScope,
             journal,
             outcome,
-            [actual],
+            outputRefs,
             consume
           );
         } else if (prior.state === 'unknown' && prior.control.outputRefs.length === 0) {
           await store.writeWorkspaceExecutionJournalIntent(workspaceScope.workspaceId, consume);
         } else if (
           prior.state !== outcome ||
-          !isDeepStrictEqual(prior.control.outputRefs, [actual])
+          !isDeepStrictEqual(prior.control.outputRefs, outputRefs)
         ) {
           throw new Error('NanoHost fixed-effect native outcome conflicts.');
         }
@@ -9107,10 +9126,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         agentSessionId: session.environmentPackage.scope.agentSessionId,
         agentSessionRuntimeBindingId: session.agentSessionRuntimeBindingId,
       };
-      const consumerReceipt = readNanoHostIdleCloseConsumerReceipt(this.coreDb, identity);
+      const consumerReceipt = readNanoHostIdleCloseAuthority(this.coreDb, identity);
       if (consumerReceipt === null)
         throw new Error('NanoHost durable idle close has no positive idle Core binding authority.');
-      pending.coreIdleClose = { consumerReceipt };
+      pending.coreIdleClose = { authority: consumerReceipt };
       session.pendingHarnessOperation = pending;
       if (closeOwner) closeOwner.pending = pending;
       try {
@@ -9129,7 +9148,10 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
             Date.now() < admittedUnixMs ||
             Date.now() >= deadlineUnixMs ||
             performance.now() >= pending.deadlineMonotonicMs ||
-            readNanoHostIdleCloseConsumerReceipt(this.coreDb, identity) !== consumerReceipt
+            !isDeepStrictEqual(
+              readNanoHostIdleCloseAuthority(this.coreDb, identity),
+              consumerReceipt
+            )
           )
             throw new Error(
               'NanoHost idle Core binding or cleanup allowance changed before queue.'

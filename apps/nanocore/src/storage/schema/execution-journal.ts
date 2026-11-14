@@ -83,7 +83,17 @@ export const controlExecutionSteps = sqliteTable(
       table.executionId,
       table.ordinal
     ),
-    // Core-only additive migration: pending residents address originals without scanning history.
+    // Core-only receiver progress: one acknowledgement per exact binding and operation tuple.
+    uniqueIndex('control_execution_steps_harness_consumption_idx')
+      .on(
+        sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`,
+        sql`json_extract(${table.invocationJson}, '$.carriage.requestId')`,
+        sql`json_extract(${table.invocationJson}, '$.carriage.sequence')`
+      )
+      .where(
+        sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-harness-consume/v1'`
+      ),
+    // Core-only: pending residents address originals without scanning history.
     index('control_execution_steps_idle_resident_idx')
       .on(sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`)
       .where(sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-idle-cleanup/v1'

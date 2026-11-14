@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -134,7 +135,25 @@ describe('durable snapshot chain', () => {
     db.sqlite.close();
     db = openWorkspaceDb(root, identity.workspaceId);
     try {
+      // ORACLE S5 F28: SOURCE-RETENTION binds the outcome to the actual candidate,
+      // independently of the receipt/outcome type name and its storage representation.
+      expect(readWorkspaceCollection(db, capture)).toMatchObject({
+        identity: capture,
+        candidate: bytes,
+        isLink: true,
+        credentialCheck: 'passed',
+        result: {
+          outcome: 'candidate',
+          byteLength: bytes.byteLength,
+          sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        },
+      });
+      const retainedCursor = readWorkspaceSnapshotCursor(db, capture);
+      expect(() =>
+        acceptWorkspaceCapture(db, capture, result, Buffer.from('different candidate'))
+      ).toThrow();
       expect(readWorkspaceCollection(db, capture)).toEqual(receipt);
+      expect(readWorkspaceSnapshotCursor(db, capture)).toEqual(retainedCursor);
       expect(() => acceptWorkspaceCapture(db, capture, result, bytes)).not.toThrow();
       expect(acceptWorkspaceCapture(db, capture, result, bytes)).toEqual(receipt);
       expect(readWorkspaceSnapshotCursor(db, capture)).toEqual({

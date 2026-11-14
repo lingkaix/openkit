@@ -27,6 +27,8 @@ export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
 
 /** COORD 23:5x idle physical cleanup; each keyed operation has its own existing Core root. */
 export const CORE_IDLE_CLEANUP_EXECUTION_DEFINITION = 'core-idle-cleanup/v1';
+/** Local Core acknowledgement of an immutable Harness result, never native dispatch authority. */
+export const CORE_HARNESS_CONSUME_EXECUTION_DEFINITION = 'core-harness-consume/v1';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
@@ -261,6 +263,7 @@ const stepRefSchema = z.object({ execution: refSchema, stepId: text });
 const definition = z.enum([
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
+  CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -538,7 +541,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
   const admitted =
     db.scope === 'core'
       ? value === CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
-        value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION
+        value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
+        value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -595,6 +599,11 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
     !['inspect-cleanup', 'collect', 'release', 'consume-receipt'].includes(control.kind)
   )
     throw new Error('Core idle cleanup step has no admitted producer.');
+  if (
+    root.definitionVersion === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION &&
+    control.kind !== 'consume-receipt'
+  )
+    throw new Error('Core Harness consumption has no admitted producer.');
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
@@ -764,6 +773,11 @@ export function writeExecutionJournalIntent(
   if (db.scope === 'workspace' && !workspaceStepKinds.has(control.kind)) {
     throw new Error('Workspace execution step has no admitted producer.');
   }
+  if (
+    admission.definitionVersion === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION &&
+    control.kind !== 'consume-receipt'
+  )
+    throw new Error('Core Harness consumption has no admitted producer.');
   text.parse(admission.workId);
   text.parse(admission.fingerprint);
   text.parse(input.stepId);

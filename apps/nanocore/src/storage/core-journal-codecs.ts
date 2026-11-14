@@ -73,6 +73,10 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
       intentJson: text,
       state: z.enum(['completed', 'failed', 'unknown']),
       resultFingerprint: text.optional(),
+      candidateDigest: z
+        .string()
+        .regex(/^sha256:[0-9a-f]{64}$/)
+        .optional(),
       processWitness: text,
     })
     .strict(),
