@@ -586,6 +586,325 @@ impl NanoHostOpenShellClient {
         Ok(())
     }
 
+    /// Realizes one admitted static Provider and verifies policy plus a fresh Worker-process placeholder.
+    /// Raw material and probe output remain private to this call and are never logged.
+    pub(crate) async fn activate_static_provider(
+        &self,
+        sandbox: &SandboxRef,
+        prior: &[crate::openshell_provider_delivery::StaticProviderBinding],
+        binding: &crate::openshell_provider_delivery::StaticProviderBinding,
+        material: String,
+    ) -> Result<serde_json::Value, crate::openshell_provider::ProviderRefusal> {
+        use crate::openshell_provider::{
+            ProviderProjection, ProviderRefusal, profile_digest, project_instance,
+        };
+        use crate::openshell_provider_delivery::{expected_static_policy, static_protection_proof};
+        use crate::openshell_provider_policy::verify_effective_policy;
+        use crate::openshell_provider_refresh::{ProviderFacilities, require_facilities};
+        use openshell_sdk::raw::proto::{
+            AttachSandboxProviderRequest, GetGatewayConfigRequest, GetSandboxConfigRequest,
+            ListSandboxProvidersRequest, PolicySource, setting_value,
+        };
+        let unproved = ProviderRefusal::NativeUnproved;
+        let client = self.connected().map_err(|_| unproved)?;
+        let mut config = client
+            .raw_grpc()
+            .get_gateway_config(GetGatewayConfigRequest {})
+            .await
+            .map_err(|_| unproved)?
+            .into_inner();
+        let mut before = client
+            .raw_grpc()
+            .get_sandbox_config(GetSandboxConfigRequest {
+                sandbox_id: sandbox.id.clone(),
+            })
+            .await
+            .map_err(|_| unproved)?
+            .into_inner();
+        // A registered-but-unset facility can be initialized once for this private Gateway.
+        // Never override explicit false/unknown settings, an existing projection, or foreign attachment.
+        let gateway_unset = config
+            .settings
+            .get("providers_v2_enabled")
+            .is_some_and(|value| value.value.is_none());
+        let sandbox_unset = before
+            .settings
+            .get("providers_v2_enabled")
+            .is_some_and(|value| {
+                value
+                    .value
+                    .as_ref()
+                    .is_none_or(|value| value.value.is_none())
+            });
+        if gateway_unset && sandbox_unset && prior.is_empty() {
+            if before.policy_source != PolicySource::Sandbox as i32
+                || before.global_policy_version != 0
+                || !before.supervisor_middleware_services.is_empty()
+                || !["", "fail_closed"].contains(&before.policy_validation_failure_mode.as_str())
+            {
+                return Err(ProviderRefusal::PolicyUnproved);
+            }
+            verify_effective_policy(
+                &binding.base_policy,
+                before
+                    .policy
+                    .as_ref()
+                    .ok_or(ProviderRefusal::PolicyUnproved)?,
+            )?;
+            let attached = client
+                .raw_grpc()
+                .list_sandbox_providers(ListSandboxProvidersRequest {
+                    sandbox_name: sandbox.name.clone(),
+                    workspace: "default".into(),
+                })
+                .await
+                .map_err(|_| unproved)?
+                .into_inner();
+            if !attached.providers.is_empty() {
+                return Err(ProviderRefusal::PolicyUnproved);
+            }
+            client
+                .raw_grpc()
+                .update_config(openshell_sdk::raw::proto::UpdateConfigRequest {
+                    global: true,
+                    setting_key: "providers_v2_enabled".into(),
+                    setting_value: Some(openshell_sdk::raw::proto::SettingValue {
+                        value: Some(setting_value::Value::BoolValue(true)),
+                    }),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|_| unproved)?;
+            config = client
+                .raw_grpc()
+                .get_gateway_config(GetGatewayConfigRequest {})
+                .await
+                .map_err(|_| unproved)?
+                .into_inner();
+            before = client
+                .raw_grpc()
+                .get_sandbox_config(GetSandboxConfigRequest {
+                    sandbox_id: sandbox.id.clone(),
+                })
+                .await
+                .map_err(|_| unproved)?
+                .into_inner();
+        }
+        let providers_v2 = matches!(
+            config
+                .settings
+                .get("providers_v2_enabled")
+                .and_then(|value| value.value.as_ref()),
+            Some(setting_value::Value::BoolValue(true))
+        );
+        let effective_v2 = matches!(
+            before
+                .settings
+                .get("providers_v2_enabled")
+                .and_then(|value| value.value.as_ref())
+                .and_then(|value| value.value.as_ref()),
+            Some(setting_value::Value::BoolValue(true))
+        );
+        require_facilities(
+            &ProviderFacilities {
+                providers_v2: Some(providers_v2 && effective_v2),
+                effective_policy: Some(before.policy.is_some()),
+                ..Default::default()
+            },
+            false,
+        )?;
+        if before.policy_source != PolicySource::Sandbox as i32
+            || before.global_policy_version != 0
+            || !before.supervisor_middleware_services.is_empty()
+            || !["", "fail_closed"].contains(&before.policy_validation_failure_mode.as_str())
+        {
+            return Err(ProviderRefusal::PolicyUnproved);
+        }
+        verify_effective_policy(
+            &expected_static_policy(&binding.base_policy, prior)?,
+            before
+                .policy
+                .as_ref()
+                .ok_or(ProviderRefusal::PolicyUnproved)?,
+        )?;
+        let existing = prior
+            .iter()
+            .find(|value| value.provider_name == binding.provider_name);
+        if let Some(existing) = existing {
+            // A fresh request can re-prove the same immutable material, but cannot update a live generation.
+            if [
+                "grantId",
+                "vaultReferenceId",
+                "materialVersion",
+                "credentialKey",
+                "profileId",
+            ]
+            .iter()
+            .any(|key| existing.metadata[*key] != binding.metadata[*key])
+                || profile_digest(&existing.profile)? != profile_digest(&binding.profile)?
+            {
+                return Err(ProviderRefusal::InvalidProjection);
+            }
+        } else {
+            dormant_provider_import(client, &binding.deployment, binding.profile.clone()).await?;
+            let projection = ProviderProjection {
+                profile: binding.profile.clone(),
+            };
+            let key = binding.metadata["credentialKey"]
+                .as_str()
+                .ok_or(ProviderRefusal::InvalidProjection)?;
+            let provider = project_instance(
+                &binding.deployment,
+                &binding.workspace,
+                &binding.grant,
+                &projection,
+                key,
+                material.clone(),
+                binding.expires_at_ms,
+            )?;
+            dormant_provider_create(client, &binding.deployment, provider).await?;
+            client
+                .raw_grpc()
+                .attach_sandbox_provider(AttachSandboxProviderRequest {
+                    sandbox_name: sandbox.name.clone(),
+                    provider_name: binding.provider_name.clone(),
+                    expected_resource_version: 0,
+                    workspace: "default".into(),
+                })
+                .await
+                .map_err(|_| unproved)?;
+        }
+        let mut admitted: Vec<_> = prior
+            .iter()
+            .filter(|value| value.provider_name != binding.provider_name)
+            .cloned()
+            .collect();
+        admitted.push(binding.clone());
+        let listed = client
+            .raw_grpc()
+            .list_sandbox_providers(ListSandboxProvidersRequest {
+                sandbox_name: sandbox.name.clone(),
+                workspace: "default".into(),
+            })
+            .await
+            .map_err(|_| unproved)?
+            .into_inner();
+        let mut observed_names = Vec::new();
+        for provider in &listed.providers {
+            let name = provider
+                .metadata
+                .as_ref()
+                .map(|value| value.name.as_str())
+                .ok_or(unproved)?;
+            let expected = admitted
+                .iter()
+                .find(|value| value.provider_name == name)
+                .ok_or(ProviderRefusal::PolicyUnproved)?;
+            if provider.r#type != expected.profile.id {
+                return Err(ProviderRefusal::PolicyUnproved);
+            }
+            observed_names.push(name.to_string());
+        }
+        let mut expected_names: Vec<_> = admitted
+            .iter()
+            .map(|value| value.provider_name.clone())
+            .collect();
+        observed_names.sort();
+        expected_names.sort();
+        if observed_names != expected_names {
+            return Err(ProviderRefusal::PolicyUnproved);
+        }
+        let after = client
+            .raw_grpc()
+            .get_sandbox_config(GetSandboxConfigRequest {
+                sandbox_id: sandbox.id.clone(),
+            })
+            .await
+            .map_err(|_| unproved)?
+            .into_inner();
+        if after.policy_source != PolicySource::Sandbox as i32
+            || after.global_policy_version != 0
+            || !after.supervisor_middleware_services.is_empty()
+            || !["", "fail_closed"].contains(&after.policy_validation_failure_mode.as_str())
+        {
+            return Err(ProviderRefusal::PolicyUnproved);
+        }
+        let digest = verify_effective_policy(
+            &expected_static_policy(&binding.base_policy, &admitted)?,
+            after
+                .policy
+                .as_ref()
+                .ok_or(ProviderRefusal::PolicyUnproved)?,
+        )?;
+        // The environment RPC is a secret Supervisor input, not Worker-state proof. Probe a fixed read-only Worker command instead.
+        let key = binding.metadata["credentialKey"]
+            .as_str()
+            .ok_or(ProviderRefusal::InvalidProjection)?;
+        let mut output = Vec::new();
+        let completion = self
+            .exec_sandbox_interactive(
+                &sandbox.id,
+                &["/usr/bin/printenv".into(), key.into()],
+                &mut io::empty(),
+                0,
+                &mut output,
+                512,
+            )
+            .await
+            .map_err(|_| unproved)?;
+        let placeholder = std::str::from_utf8(&output)
+            .map_err(|_| unproved)?
+            .strip_suffix('\n')
+            .ok_or(unproved)?;
+        let (revision, env_key) = placeholder
+            .strip_prefix("openshell:resolve:env:v")
+            .and_then(|value| value.split_once('_'))
+            .ok_or(unproved)?;
+        if completion.exit_status != 0
+            || placeholder == material
+            || after.provider_env_revision == 0
+            || revision.parse::<u64>().ok() != Some(after.provider_env_revision)
+            || env_key != key
+        {
+            return Err(ProviderRefusal::EvidenceUnproved);
+        }
+        static_protection_proof(binding, &digest)
+    }
+
+    /// Removes only known private projections after exact Sandbox absence, never while a Worker can use them.
+    pub(crate) async fn remove_static_providers(
+        &self,
+        bindings: &[crate::openshell_provider_delivery::StaticProviderBinding],
+    ) -> Result<(), EpochFault> {
+        let client = self.connected()?;
+        for binding in bindings {
+            match client
+                .raw_grpc()
+                .delete_provider(openshell_sdk::raw::proto::DeleteProviderRequest {
+                    name: binding.provider_name.clone(),
+                    workspace: "default".into(),
+                })
+                .await
+            {
+                Ok(_) => {}
+                Err(error) if error.code() == tonic::Code::NotFound => {}
+                Err(_) => return Err(EpochFault::DeleteOutcomeUncertain),
+            }
+            match client
+                .raw_grpc()
+                .get_provider(openshell_sdk::raw::proto::GetProviderRequest {
+                    name: binding.provider_name.clone(),
+                    workspace: "default".into(),
+                })
+                .await
+            {
+                Err(error) if error.code() == tonic::Code::NotFound => {}
+                _ => return Err(EpochFault::DeleteOutcomeUncertain),
+            }
+        }
+        Ok(())
+    }
+
     /// Creates one sandbox and rejects a returned identity mismatch.
     ///
     /// # Errors

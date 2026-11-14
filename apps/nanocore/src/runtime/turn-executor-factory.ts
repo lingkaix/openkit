@@ -186,6 +186,15 @@ import {
   type NanoHostEffectOperation,
   type NanoHostSessionDispatch,
 } from './nanohost-session-dispatch.js';
+import {
+  readConfiguredWorkerProviderAccessShape,
+  requireWorkerProviderBindings,
+  requireWorkerProviderProtection,
+  type WorkerProviderAccessShapeReader,
+  type WorkerProviderCredentialBinding,
+  WorkerProviderEffectIntentSchema,
+  type WorkerProviderProtectionProof,
+} from './provider-credential-binding.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import { taskSteerRefusal } from './task-steer-receipt.js';
 import type {
@@ -333,6 +342,8 @@ export interface CreateConfiguredTurnExecutorOptions {
   env?: TurnExecutorFactoryEnv | undefined;
   /** Worker control gateway shared with NanoCore worker-control routes. */
   workerControlGateway?: WorkerControlGateway | undefined;
+  /** Current configuration-owned static Provider projection; never a native profile lookup. */
+  readProviderAccessShape?: WorkerProviderAccessShapeReader | undefined;
   /** Optional vault backend used for grant-derived provider attachments. */
   vaultBackend?: (() => VaultBackend) | undefined;
   /** Optional process-local store shared with the public App API. */
@@ -483,7 +494,8 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.fileAdmission,
     options.policyInterception,
     options.goalTaskPolicy,
-    options.releaseIdentity
+    options.releaseIdentity,
+    options.readProviderAccessShape
   );
 }
 
@@ -511,8 +523,13 @@ function createNanoHostWorkerLifecycleRuntime(
   fileAdmission?: FileStorageAdmission | undefined,
   policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined,
   goalTaskPolicy?: import('../operation-composition.js').OperationInvocationDependencies['goalTaskPolicy'],
-  releaseIdentity?: ReleaseBuildIdentity
+  releaseIdentity?: ReleaseBuildIdentity,
+  readProviderAccessShape?: WorkerProviderAccessShapeReader
 ): ConfiguredWorkerLifecycleRuntime {
+  const configuredProviderReader: WorkerProviderAccessShapeReader =
+    readProviderAccessShape ??
+    ((profileId) =>
+      readConfiguredWorkerProviderAccessShape(readRuntimeConfig?.().gatewayConfig, profileId));
   let executionReconciler: ExecutionReconciler;
   const backend = new NanoHostWorkerGovernanceBackend(
     coreDb,
@@ -537,7 +554,8 @@ function createNanoHostWorkerLifecycleRuntime(
     readRuntimeConfig,
     sharedStore,
     fileAdmission,
-    releaseIdentity
+    releaseIdentity,
+    configuredProviderReader
   );
   executionReconciler = new ExecutionReconciler({
     coreDb,
@@ -735,6 +753,9 @@ interface InitialHarnessLoginExchange {
 
 /** One materialized Turn awaiting operations on the shared private Harness. */
 interface NanoHostBackendTurnSession {
+  /** Reference-only Provider supply and actual live native proof; never restored as permission. */
+  providerBindings: WorkerProviderCredentialBinding[];
+  providerProtections: WorkerProviderProtectionProof[];
   /** Actual private delivery attestations; absent after restart until independently proved. */
   credentialReceipts: ExecutionCredentialReceipt[];
   /** Verified Turn input bytes awaiting exact session admission; never restored or replayed. */
@@ -931,6 +952,8 @@ interface NanoHostSharedHarness {
 /** One compatible physical Sandbox and its single retained Integration bridge. */
 interface NanoHostSharedSandbox {
   bridgeOpen: boolean;
+  /** Comparison-only exposed generations. Never merged into a Worker environment or returned as supply. */
+  providerComparisonValues: Record<string, string> | null;
   /** Live-instance deletion proof shared with sibling closeout; never restored or set on uncertainty. */
   writerCleanupProved: boolean;
   readonly imageDigest: string;
@@ -1082,7 +1105,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     private readonly readRuntimeConfig?: () => PublicNetworkConfiguration,
     private readonly sharedStore?: FsStore,
     private readonly fileAdmission?: FileStorageAdmission,
-    private readonly releaseIdentity?: ReleaseBuildIdentity
+    private readonly releaseIdentity?: ReleaseBuildIdentity,
+    private readonly readProviderAccessShape?: WorkerProviderAccessShapeReader
   ) {}
 
   /** Reads the authored aggregate bound; invalid current configuration fails closed. */
@@ -2025,6 +2049,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const sandbox: NanoHostSharedSandbox = {
       bridgeOpen: true,
+      providerComparisonValues: null,
       writerCleanupProved: false,
       imageDigest: row.imageDigest,
       originPhysicalEpoch: row.originPhysicalEpoch,
@@ -2135,6 +2160,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
     const sandbox = this.sharedSandboxes.get(sandboxCompatibilityKey) ?? {
       bridgeOpen: true,
+      providerComparisonValues: null,
       writerCleanupProved: false,
       imageDigest: row.imageDigest,
       originPhysicalEpoch: row.originPhysicalEpoch,
@@ -2220,6 +2246,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       environmentPackage,
       evidence: [],
       credentialReceipts: [],
+      providerBindings: [],
+      providerProtections: [],
       harnessBindingRef: sharedHarness.harnessBindingRef,
       harnessInstanceId: sharedHarness.harnessInstanceId,
       identity,
@@ -2250,6 +2278,9 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         'container',
         'filesystem-policy',
         'network-policy',
+        'provider-attachments',
+        'credential-placeholder',
+        'gateway-header-injection',
         'process-policy',
         'transcript-sink',
         'worker-control',
@@ -2289,6 +2320,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
         (declaration) =>
           declaration.visibility !== 'runtime-env' &&
           declaration.visibility !== 'runtime-file' &&
+          declaration.visibility !== 'sandbox-provider' &&
           !(
             ((declaration.visibility === 'runtime-token' &&
               declaration.consumer === 'credential-helper') ||
@@ -2316,7 +2348,13 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       diagnostics.push({
         code: 'backend_missing_required_capability',
         path: '$.credentials.declarations',
-        message: 'NanoHost credential declaration is not admitted.',
+        message: environmentPackage.credentials.declarations.some(
+          (value) =>
+            (value.visibility === 'runtime-token' && value.consumer === 'credential-helper') ||
+            (value.visibility === 'external-handle' && value.consumer === 'ssh-agent')
+        )
+          ? 'NanoHost credential declaration is not admitted.'
+          : 'NanoHost requires a supported credential declaration and verified placement proof.',
       });
     return diagnostics;
   }
@@ -4277,9 +4315,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const adapterId = nanoHostAdapterId(environmentPackage);
     const adapterVersion = environmentPackage.agent.runtimeVersion;
     const agentSessionCompatibilityKey = nanoHostAgentSessionCompatibilityKey(environmentPackage);
-    if ((context.providerCredentials?.length ?? 0) > 0) {
-      throw new Error('NanoHost Provider credential materialization is not supported.');
+    let providerBindings: WorkerProviderCredentialBinding[];
+    try {
+      providerBindings = requireWorkerProviderBindings(
+        environmentPackage,
+        context.providerCredentials ?? [],
+        this.readProviderAccessShape
+      );
+    } catch (cause) {
+      // Raw Provider values remain forbidden; only the governed reference-only path is enabled.
+      throw new Error('NanoHost Provider credential materialization is not supported.', { cause });
     }
+    for (const binding of providerBindings)
+      this.assertProviderBindingAuthority(environmentPackage, binding);
     const runtimeCredentialValues = nanoHostRuntimeEnvironment(context.runtimeEnvCredentials ?? []);
     const runtimeCredentialBindings = nanoHostRuntimeCredentialBindings(
       context.runtimeFileCredentials ?? [],
@@ -4623,6 +4671,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       const sandboxIdentity = sandboxCompatibilityKey.slice(0, 24);
       sharedSandbox = {
         bridgeOpen: false,
+        providerComparisonValues: {},
         writerCleanupProved: false,
         imageDigest,
         originPhysicalEpoch,
@@ -4673,6 +4722,8 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
       environmentPackage,
       evidence,
       credentialReceipts: [],
+      providerBindings,
+      providerProtections: [],
       agentSessionCompatibilityKey,
       agentSessionRuntimeBindingId,
       harnessBindingRef: sharedHarness.harnessBindingRef,
@@ -4865,6 +4916,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     workspaceDb: WorkspaceDb
   ): Promise<void> {
     const session = this.requireSession(materialization.packageSnapshotId);
+    this.assertProviderProtection(session);
     const storage = getWorkerStorageBindingForSandbox(this.coreDb, {
       sandboxBindingRef: session.sharedHarness.sandbox.sandboxBindingRef,
     });
@@ -5563,6 +5615,158 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     }
   };
 
+  /** Current Core facts stay conjunctive with placement proof and configuration identity. */
+  private assertProviderBindingAuthority(
+    environmentPackage: AgentEnvironmentPackage,
+    binding: WorkerProviderCredentialBinding
+  ) {
+    const declaration = environmentPackage.credentials.declarations.find(
+      (value) => value.id === binding.declarationId
+    );
+    if (!declaration || declaration.visibility !== 'sandbox-provider')
+      throw new Error('Provider declaration is unavailable.');
+    const current = assertCurrentWorkerCredentialAuthority(
+      this.coreDb,
+      environmentPackage,
+      () => new Date().toISOString(),
+      declaration
+    );
+    const plan = getVaultInjectionPlan(this.coreDb, binding.planId);
+    if (
+      current.reference.referenceId !== binding.vaultReferenceId ||
+      current.reference.currentVersion !== binding.materialVersion ||
+      !plan ||
+      plan.status !== 'active' ||
+      plan.grantId !== binding.grantId ||
+      plan.packageSnapshotId !== environmentPackage.snapshotId ||
+      plan.injectionVisibility !== 'backend-provider' ||
+      plan.targetEnvVarName !== binding.credentialKey ||
+      (this.readProviderAccessShape &&
+        !isDeepStrictEqual(this.readProviderAccessShape(binding.profileId), binding.accessShape)) ||
+      !currentWorkerLineageWorkspaceAuthority(
+        this.coreDb,
+        { ...environmentPackage.scope, packageSnapshotId: environmentPackage.snapshotId },
+        'network.egress',
+        true
+      )
+    ) {
+      throw new Error(
+        'Provider supply has no current exact grant, generation and network authority.'
+      );
+    }
+    return current;
+  }
+
+  /** Both preparation and submit independently refuse missing or stale Provider completion. */
+  private assertProviderProtection(session: NanoHostBackendTurnSession): void {
+    requireWorkerProviderBindings(
+      session.environmentPackage,
+      session.providerBindings,
+      this.readProviderAccessShape
+    );
+    for (const binding of session.providerBindings) {
+      this.assertProviderBindingAuthority(session.environmentPackage, binding);
+      const proofs = session.providerProtections.filter(
+        (proof) => proof.planId === binding.planId && proof.receiptId === binding.receiptId
+      );
+      if (proofs.length !== 1) throw new Error('Provider protection is incomplete.');
+      requireWorkerProviderProtection(binding, proofs[0]);
+      const receipt = getVaultInjectionReceipt(this.coreDb, binding.receiptId);
+      if (
+        !receipt ||
+        receipt.revocationStatus !== 'active' ||
+        receipt.planId !== binding.planId ||
+        receipt.grantId !== binding.grantId ||
+        receipt.agentSessionId !== session.environmentPackage.scope.agentSessionId
+      )
+        throw new Error('Provider canonical receipt is incomplete.');
+    }
+  }
+
+  /** Returns a copy of original preparation, not permission to resolve or deliver material. */
+  public readProviderCredentialBinding(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string
+  ): WorkerProviderCredentialBinding | undefined {
+    const binding = this.sessions
+      .get(packageSnapshotId)
+      ?.providerBindings.find((value) => value.planId === planId && value.receiptId === receiptId);
+    return binding ? structuredClone(binding) : undefined;
+  }
+
+  /** Releases material only within its governed effect, before the first Worker bridge starts. */
+  public async deliverProviderCredentialBinding(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string,
+    credentialValue: string,
+    materialVersion: number,
+    recheckAuthority: () => Promise<void>
+  ): Promise<WorkerProviderProtectionProof> {
+    const session = this.requireSession(packageSnapshotId);
+    const binding = session.providerBindings.find(
+      (value) => value.planId === planId && value.receiptId === receiptId
+    );
+    if (!binding || binding.materialVersion !== materialVersion)
+      throw new Error('Admitted Provider supply is unavailable.');
+    if (
+      session.providerProtections.some(
+        (proof) => proof.planId === planId && proof.receiptId === receiptId
+      )
+    )
+      throw new Error('Inspect the original Provider receipt; delivery will not replay.');
+    await recheckAuthority();
+    const current = this.assertProviderBindingAuthority(session.environmentPackage, binding);
+    const body = Buffer.from(credentialValue, 'utf8');
+    if (body.length === 0 || body.length > 1024 * 1024)
+      throw new Error('Provider content bound is invalid.');
+    const comparison = session.sharedHarness.sandbox.providerComparisonValues;
+    if (comparison === null)
+      throw new Error('Original Provider comparison evidence is unavailable.');
+    // This map is comparison-only. It never enters session.open or the Worker environment.
+    comparison[receiptId] = credentialValue;
+    const providerBinding = WorkerProviderEffectIntentSchema.parse({
+      ...binding,
+      deploymentId: session.identity.deploymentId,
+      workspaceId: session.environmentPackage.scope.workspaceId,
+      policyIntent: {
+        additionalFilesystemGrants: openShellFilesystemGrantsFromPackagePolicy(
+          session.environmentPackage
+        ),
+        additionalNetworkEndpoints: openShellNetworkEndpointsFromPackagePolicy(
+          session.environmentPackage
+        ),
+      },
+      ...(current.grant.expiresAt ? { expiresAtMs: Date.parse(current.grant.expiresAt) } : {}),
+    });
+    const imported = await this.effect(
+      session.identity,
+      session.attemptId,
+      'reference.import',
+      {
+        entryKind: 'file',
+        executable: false,
+        slot: 'runtime-credential',
+        relativePath: credentialBindingAddress(binding.declarationId, planId, receiptId),
+        sandboxId: session.sharedHarness.sandbox.sandboxId,
+        body,
+        byteLength: body.length,
+        sha256: `sha256:${sha256Hex(body)}`,
+        providerBinding,
+      },
+      undefined,
+      undefined,
+      undefined,
+      recheckAuthority
+    );
+    await recheckAuthority();
+    this.assertProviderBindingAuthority(session.environmentPackage, binding);
+    const proof = requireWorkerProviderProtection(binding, imported.providerProtection);
+    session.providerProtections.push(proof);
+    return proof;
+  }
+
   /** The existing supply owner realizes the exact admitted file under its Vault operation. */
   public async deliverCredentialBinding(
     packageSnapshotId: string,
@@ -5848,10 +6052,15 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const receipt = getVaultInjectionReceipt(this.coreDb, input.receiptId);
     if (
       (session && session.attemptId !== input.attemptId) ||
-      declaration?.visibility !== 'runtime-file' ||
+      !declaration ||
+      (declaration.visibility !== 'runtime-file' &&
+        declaration.visibility !== 'sandbox-provider') ||
       !plan ||
       plan.grantId !== declaration.vaultGrantId ||
-      plan.targetPath !== declaration.targetPath ||
+      (declaration.visibility === 'runtime-file'
+        ? plan.targetPath !== declaration.targetPath
+        : plan.injectionVisibility !== 'backend-provider' ||
+          plan.targetEnvVarName !== declaration.provider.credentialKey) ||
       receipt?.planId !== plan.planId ||
       receipt.agentSessionId !== attempt.agentSessionId
     )
@@ -5885,6 +6094,7 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     )
       throw new Error('Native submit has no current exact attempt authority.');
     const session = this.requireSession(input.inputRef!);
+    this.assertProviderProtection(session);
     const credentialReceipts = requireExecutionCredentialReceipts(
       input.credentialBindings ?? [],
       session.credentialReceipts
@@ -7127,7 +7337,19 @@ class NanoHostWorkerGovernanceBackend implements WorkerGovernanceBackend {
     const values =
       session.runtimeCredentialValues ??
       (await this.restoreCollectionRuntimeCredentials(session, workspaceDb));
+    const providerValues = session.sharedHarness.sandbox.providerComparisonValues;
+    if (
+      session.environmentPackage.credentials.declarations.some(
+        (declaration) => declaration.visibility === 'sandbox-provider'
+      ) &&
+      providerValues === null
+    )
+      throw new WorkspaceCollectionError({
+        outcome: 'recovery_required',
+        cause: 'check_values_unavailable',
+      });
     return {
+      // Provider checks remain inside the native owner that received their private raw frame.
       runtimeEnv: Object.values(values),
       loopbackDigests: [digests?.inference, digests?.capability],
     };

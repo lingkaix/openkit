@@ -1322,6 +1322,7 @@ pub struct EpochCoordinator {
     image_backend: DockerImageBackend,
     persistent_volumes: PersistentVolumeStore,
     credential_carrier: Option<crate::credential_carrier::CredentialCarrier>,
+    static_provider_bindings: Vec<crate::openshell_provider_delivery::StaticProviderBinding>,
     physical_epoch: String,
     /// Ended local startup observation; never a readiness or delivery witness.
     startup_context: opentelemetry::trace::SpanContext,
@@ -2287,6 +2288,7 @@ impl EpochCoordinator {
             image_backend,
             persistent_volumes,
             credential_carrier: None,
+            static_provider_bindings: Vec::new(),
             physical_epoch,
             startup_context,
             run_root: plan.run_root().to_path_buf(),
@@ -2393,6 +2395,7 @@ impl EpochCoordinator {
                 image_backend: DockerImageBackend::new(root.join("missing-docker")),
                 persistent_volumes,
                 credential_carrier: None,
+                static_provider_bindings: Vec::new(),
                 physical_epoch: "a".repeat(64),
                 startup_context: opentelemetry::trace::SpanContext::empty_context(),
                 run_root: root.join("epoch"),
@@ -2444,6 +2447,29 @@ impl EpochCoordinator {
             return Err("collection sandbox unproved");
         }
         self.persistent_volumes.resolve_collection(command)
+    }
+
+    /// Borrows only this live Sandbox's raw-frame Provider deny-list for native capture.
+    /// Missing evidence refuses collection; these values never enter a command projection.
+    pub(crate) fn provider_capture_check_values(
+        &self,
+        command: &crate::workspace_collect::CollectCommand,
+    ) -> Result<Vec<String>, &'static str> {
+        if self
+            .current_sandbox_name()
+            .map_err(|_| "Provider check epoch unproved")?
+            != command.sandbox_id.as_str()
+        {
+            return Err("Provider check Sandbox unproved");
+        }
+        let mut values = Vec::new();
+        for binding in &self.static_provider_bindings {
+            if binding.comparison_values.is_empty() {
+                return Err("Provider check material unavailable");
+            }
+            values.extend(binding.comparison_values.iter().cloned());
+        }
+        Ok(values)
     }
 
     /// Inspects one exact verified local image without acquisition.
@@ -2503,6 +2529,21 @@ impl EpochCoordinator {
 
     /// Removal follows exact native absence. A failure enters the existing Epoch fence.
     fn remove_credentials_after_absence(&mut self) -> Result<(), EpochFault> {
+        if !self.static_provider_bindings.is_empty() {
+            let result = tokio::task::block_in_place(|| {
+                self.runtime.block_on(async {
+                    tokio::time::timeout(
+                        Duration::from_secs(90),
+                        self.client
+                            .remove_static_providers(&self.static_provider_bindings),
+                    )
+                    .await
+                    .map_err(|_| EpochFault::DeleteOutcomeUncertain)?
+                })
+            });
+            self.settle(result)?;
+            self.static_provider_bindings.clear();
+        }
         if let Some(carrier) = &mut self.credential_carrier {
             let result = carrier
                 .remove_after_absence()
@@ -3045,6 +3086,99 @@ impl EpochCoordinator {
             REFERENCE_IMPORT_CLEANUP_PROVED_FAILURE
         } else {
             "reference.import failed or unknown"
+        }
+    }
+
+    /// Consumes sealed private material without creating any Worker-readable file.
+    pub(crate) fn import_static_provider(
+        &mut self,
+        request_id: &str,
+        relative_path: &Path,
+        entry: &crate::sandbox_bridge::ImportEntry,
+        metadata: &serde_json::Value,
+    ) -> Result<serde_json::Value, &'static str> {
+        use crate::openshell_provider::ProviderRefusal;
+        let sandbox = self
+            .current_sandbox
+            .clone()
+            .ok_or("reference.import Provider Sandbox unavailable")?;
+        let mut binding = crate::openshell_provider_delivery::prepare_static_binding(metadata)
+            .map_err(|_| "reference.import Provider intent invalid")?;
+        if metadata.get("expectedReceiptId").is_some() {
+            return Err("reference.import Provider replacement unavailable");
+        }
+        let file = match entry {
+            crate::sandbox_bridge::ImportEntry::File {
+                executable: false,
+                file,
+            } if file.length() > 0 && file.length() <= 1024 * 1024 => file,
+            _ => return Err("reference.import Provider carriage invalid"),
+        };
+        let request = FileEffectRequest {
+            artifact_submission: false,
+            request_id: request_id.into(),
+            sandbox_id: sandbox.name.clone(),
+            slot: "runtime-credential".into(),
+            relative_path: relative_path.to_path_buf(),
+            sha256: file.digest().into(),
+            byte_length: file.length(),
+            kind: FileEffectKind::ImportReference { executable: false },
+            presence: FileEffectPresence::Required,
+        };
+        request
+            .validate()
+            .map_err(|_| "reference.import Provider address invalid")?;
+        let mut source = read_import_staging(file, &request)
+            .map_err(|_| "reference.import Provider sealed body invalid")?;
+        let mut bytes = vec![0_u8; file.length() as usize];
+        std::io::Read::read_exact(&mut source, &mut bytes)
+            .map_err(|_| "reference.import Provider body incomplete")?;
+        let material = String::from_utf8(bytes)
+            .map_err(|_| "reference.import Provider material encoding invalid")?;
+        let prior = self.static_provider_bindings.clone();
+        if let Some(existing) = prior
+            .iter()
+            .find(|value| value.provider_name == binding.provider_name)
+        {
+            binding
+                .comparison_values
+                .clone_from(&existing.comparison_values);
+        }
+        if !binding.comparison_values.contains(&material) {
+            if binding.comparison_values.len() >= 8 {
+                return Err("reference.import Provider comparison bound exceeded");
+            }
+            binding.comparison_values.push(material.clone());
+        }
+        // Retain private comparison evidence before any potentially unknown native exposure.
+        // The same Sandbox owner clears it only after absence and private Provider removal.
+        if let Some(existing) = self
+            .static_provider_bindings
+            .iter_mut()
+            .find(|value| value.provider_name == binding.provider_name)
+        {
+            *existing = binding.clone();
+        } else {
+            self.static_provider_bindings.push(binding.clone());
+        }
+        let result = tokio::task::block_in_place(|| {
+            self.runtime.block_on(async {
+                tokio::time::timeout(
+                    Duration::from_secs(90),
+                    self.client
+                        .activate_static_provider(&sandbox, &prior, &binding, material),
+                )
+                .await
+                .unwrap_or(Err(ProviderRefusal::NativeUnproved))
+            })
+        });
+        match result {
+            Ok(proof) => Ok(
+                serde_json::json!({"byteLength": file.length(), "reference": format!("sandbox://{}/runtime-credential/{}", sandbox.name, relative_path.display()), "providerProtection": proof}),
+            ),
+            // An unfinished stock write cannot be converted to definite failure by a racing delete.
+            Err(ProviderRefusal::NativeUnproved) => Err("reference.import failed or unknown"),
+            Err(_) => Err(self.cleanup_failed_reference_import(&sandbox.name)),
         }
     }
 
@@ -7574,6 +7708,94 @@ mod tests {
             "bridge.open must remain the sole worker bootstrap owner"
         );
     }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn provider_capture_missing_raw_evidence_and_unproved_epoch_refuse_before_scan() {
+        // Negative owner proof: a declared binding without any Raw import is not evidence.
+        // This does not synthesize a successful Provider delivery or SDK absence receipt.
+        let root = std::env::temp_dir().join(format!(
+            "openkit-provider-capture-missing-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let (mut coordinator, _) = super::EpochCoordinator::collection_fixture(&root);
+        let raw = serde_json::json!({
+            "requestId": "ab".repeat(32), "mode": "baseline", "storageRef": "storage-one",
+            "scopeDigest": format!("sha256:{}", "b".repeat(64)), "attachmentGeneration": 1,
+            "sandboxId": "sandbox-one", "workSlot": "slotA", "collectionId": "baseline",
+            "acceptedBase": null, "previousHead": null,
+            "checkValues": {"runtimeEnv": [], "loopbackDigests": ["c".repeat(64), "d".repeat(64)]}
+        });
+        let command =
+            crate::workspace_collect::validate_collect_command(&serde_json::to_vec(&raw).unwrap())
+                .unwrap();
+        assert!(coordinator.resolve_collection(&command).is_ok());
+        assert_eq!(
+            coordinator.provider_capture_check_values(&command),
+            Ok(Vec::new())
+        );
+        let binding = crate::openshell_provider_delivery::prepare_static_binding(&serde_json::json!({
+            "declarationId":"provider", "grantId":"grant", "planId":"plan", "receiptId":"receipt", "vaultReferenceId":"reference", "materialVersion":1,
+            "providerInstanceId":"logical-provider", "providerType":"generic", "credentialKey":"GITHUB_TOKEN", "profileId":"github_mcp",
+            "deploymentId":"deployment", "workspaceId":"workspace",
+            "accessShape":{"id":"github_mcp","credentialKey":"GITHUB_TOKEN","endpoints":[{"name":"github_api","host":"api.github.com","port":443,"binaries":["/usr/bin/curl"]}]},
+            "policyIntent":{"additionalFilesystemGrants":[],"additionalNetworkEndpoints":[]}
+        })).unwrap();
+        assert!(binding.comparison_values.is_empty());
+        coordinator.static_provider_bindings.push(binding);
+        assert_eq!(
+            coordinator.provider_capture_check_values(&command),
+            Err("Provider check material unavailable")
+        );
+        let delivery =
+            crate::workspace_collect::execute_collect(&coordinator, &command.request_id, &raw);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&delivery.body()).unwrap(),
+            serde_json::json!({"requestId": command.request_id, "outcome": "effect_failed"})
+        );
+        assert!(!coordinator.collection_scan_root.exists());
+
+        // Unit invocation of the cleanup step, NOT a claim of physical Sandbox absence.
+        // The real disconnected SDK owner must fail; no receipt, flag or success is supplied.
+        let invalidation_root = root.join("invalidation");
+        coordinator.fixture_invalidation_reports(&invalidation_root);
+        let original_metadata = coordinator.static_provider_bindings[0].metadata.clone();
+        assert_eq!(
+            coordinator.remove_credentials_after_absence(),
+            Err(super::EpochFault::MemberExited(None))
+        );
+        assert!(invalidation_root.join("fence-started").exists());
+        assert_eq!(coordinator.static_provider_bindings.len(), 1);
+        assert_eq!(
+            coordinator.static_provider_bindings[0].metadata,
+            original_metadata
+        );
+        assert!(
+            coordinator.static_provider_bindings[0]
+                .comparison_values
+                .is_empty()
+        );
+        let late =
+            crate::workspace_collect::execute_collect(&coordinator, &command.request_id, &raw);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&late.body()).unwrap(),
+            serde_json::json!({"requestId": command.request_id, "outcome": "effect_failed"})
+        );
+        assert!(!coordinator.collection_scan_root.exists());
+        coordinator.collection_test_sandbox = Some("other-epoch-sandbox".into());
+        assert_eq!(
+            coordinator.provider_capture_check_values(&command),
+            Err("Provider check Sandbox unproved")
+        );
+        coordinator.collection_test_sandbox = None;
+        assert_eq!(
+            coordinator.provider_capture_check_values(&command),
+            Err("Provider check epoch unproved")
+        );
+        assert!(!coordinator.collection_scan_root.exists());
+        drop(coordinator);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[tokio::test]
     async fn h1_r3_current_epoch_is_required_before_storage_resolution() {
         let root = std::env::temp_dir().join(format!("openkit-h1-epoch-{}", std::process::id()));

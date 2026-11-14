@@ -18,9 +18,10 @@ mod live_inspection;
 mod nanocore_session;
 mod openshell_client;
 mod openshell_policy;
-// Dormant #604 Slice 4: no production dispatch or SDK effects reach these adapters.
+// Static #604 Slice 4 is activated; delegated refresh remains dormant.
 #[allow(dead_code)]
 mod openshell_provider;
+mod openshell_provider_delivery;
 #[allow(dead_code)]
 mod openshell_provider_evidence;
 #[allow(dead_code)]
@@ -743,27 +744,38 @@ fn execute_effect_command(
                 .file_data
                 .as_ref()
                 .ok_or("reference.import raw body missing")?;
-            let carriage = coordinator.import_reference(
-                &command.request_id,
-                &file_data.slot,
-                &file_data.relative_path,
-                &file_data.entry,
-            )?;
-            let result: Result<serde_json::Value, &'static str> = Ok(serde_json::json!({
-                "byteLength": carriage.byte_length(),
-                "reference": carriage.complete()?,
-            }));
-            result.map(|mut result| {
-                if matches!(
-                    file_data.slot.as_str(),
-                    "runtime-credential" | "runtime-credential-replace"
-                ) {
-                    result["credentialProtection"] = serde_json::json!({
+            if let Some(metadata) = command.input.get("providerBinding") {
+                Ok(ExecutedEffectResult::Json(
+                    coordinator.import_static_provider(
+                        &command.request_id,
+                        &file_data.relative_path,
+                        &file_data.entry,
+                        metadata,
+                    )?,
+                ))
+            } else {
+                let carriage = coordinator.import_reference(
+                    &command.request_id,
+                    &file_data.slot,
+                    &file_data.relative_path,
+                    &file_data.entry,
+                )?;
+                let result: Result<serde_json::Value, &'static str> = Ok(serde_json::json!({
+                    "byteLength": carriage.byte_length(),
+                    "reference": carriage.complete()?,
+                }));
+                result.map(|mut result| {
+                    if matches!(
+                        file_data.slot.as_str(),
+                        "runtime-credential" | "runtime-credential-replace"
+                    ) {
+                        result["credentialProtection"] = serde_json::json!({
                         "ephemeral":true,"outsideRetainedStorage":true,
                         "excludedFromCapture":true,"excludedFromExport":true});
-                }
-                ExecutedEffectResult::Json(result)
-            })
+                    }
+                    ExecutedEffectResult::Json(result)
+                })
+            }
         }
         RuntimeEffectKind::InspectImage => Ok(ExecutedEffectResult::Json(
             coordinator.inspect_image(string("imageDigest")?)?,

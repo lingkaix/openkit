@@ -108,6 +108,8 @@ pub struct CollectCommand {
     pub runtime_env: Vec<String>,
     /// SHA-256 digests of the two loopback credentials. Memory only.
     pub loopback_digests: [String; 2],
+    /// Native-only raw-frame Provider evidence. Never included by `input()` or any wire schema.
+    native_provider_values: Vec<String>,
 }
 
 impl CollectCommand {
@@ -445,6 +447,7 @@ fn validate_collect_value(value: &serde_json::Value) -> Result<CollectCommand, &
         previous_head,
         runtime_env: values,
         loopback_digests,
+        native_provider_values: Vec::new(),
     })
 }
 
@@ -458,12 +461,16 @@ pub fn execute_collect(
     input: &serde_json::Value,
 ) -> WorkspaceCollectDelivery {
     let started = Instant::now();
-    let command = match validate_collect_value(input) {
+    let mut command = match validate_collect_value(input) {
         Ok(command) if command.request_id == request_id => command,
         _ => return effect_failed(request_id),
     };
     let resolved = match coordinator.resolve_collection(&command) {
         Ok(resolved) => resolved,
+        Err(_) => return effect_failed(request_id),
+    };
+    command.native_provider_values = match coordinator.provider_capture_check_values(&command) {
+        Ok(values) => values,
         Err(_) => return effect_failed(request_id),
     };
     let git_bin = match pinned_git() {
@@ -901,6 +908,7 @@ impl WorkspaceCollector {
             Err(fault) => return self.fail_delivery(command, fault),
         };
         let mut checker = SecretChecker::new(&command.runtime_env, &command.loopback_digests);
+        checker.include_private(&command.native_provider_values);
         let mut ids = BTreeSet::new();
         ids.extend(first.blobs.values().cloned());
         ids.extend(second.blobs.values().cloned());
@@ -1415,6 +1423,7 @@ impl WorkspaceCollector {
             return Ok(false);
         }
         let mut checker = SecretChecker::new(&command.runtime_env, &command.loopback_digests);
+        checker.include_private(&command.native_provider_values);
         for oid in ids {
             if self.blob_hits(&oid, &mut checker)? {
                 return Ok(true);
@@ -3015,6 +3024,14 @@ impl SecretChecker {
         }
     }
 
+    /// Extends the same native substring checker without serializing private Provider evidence.
+    fn include_private(&mut self, values: &[String]) {
+        for value in values.iter().filter(|value| !value.is_empty()) {
+            self.overlap = self.overlap.max(value.len().saturating_sub(1));
+            self.needles.push(value.as_bytes().to_vec());
+        }
+    }
+
     fn begin_blob(&mut self) {
         self.tail.clear();
         self.run.clear();
@@ -3892,6 +3909,7 @@ mod tests {
             previous_head: previous.clone(),
             runtime_env: Vec::new(),
             loopback_digests: dummy_digests(),
+            native_provider_values: Vec::new(),
         }
     }
 
@@ -5784,6 +5802,81 @@ mod tests {
         ));
         assert_eq!(COLLECT_CANDIDATE_MAX_BYTES, 256 * 1024 * 1024);
     }
+    #[test]
+    fn provider_private_carriage_is_not_wire_input_and_refuses_baseline_and_capture() {
+        // Collector component proof only: actual Raw-import owner integration is separate.
+        let material = "native-provider-private-collector-canary!";
+        for baseline in [true, false] {
+            let fixture = Fixture::new();
+            write_file(&fixture.worktree().join("output"), b"clean base", 0o600);
+            let mut collector = fixture.open();
+            let mut command = if baseline {
+                let mut raw = valid_command();
+                raw["mode"] = json!("baseline");
+                raw["acceptedBase"] = serde_json::Value::Null;
+                raw["previousHead"] = serde_json::Value::Null;
+                raw["checkValues"]["runtimeEnv"] = json!([]);
+                validate_collect_command(&serde_json::to_vec(&raw).unwrap()).unwrap()
+            } else {
+                let base = collector.retain_worktree_as_base();
+                command_for(&base, &base)
+            };
+            command.native_provider_values = vec![material.into()];
+            assert!(command.runtime_env.is_empty());
+            let projected = command.input();
+            let wire = serde_json::to_vec(&projected).unwrap();
+            assert!(
+                !wire
+                    .windows(material.len())
+                    .any(|part| part == material.as_bytes())
+            );
+            assert_eq!(projected["checkValues"]["runtimeEnv"], json!([]));
+            assert!(projected.get("native_provider_values").is_none());
+            assert!(projected.get("nativeProviderValues").is_none());
+            let decoded = validate_collect_command(&wire).unwrap();
+            assert!(decoded.native_provider_values.is_empty());
+            assert!(decoded.runtime_env.is_empty());
+
+            write_file(
+                &fixture.worktree().join("output"),
+                format!("prefix:{material}:suffix").as_bytes(),
+                0o600,
+            );
+            let delivery = collector.collect(&command);
+            assert_outcome(
+                &delivery,
+                &format!(
+                    r#"{{"requestId":"{}","outcome":"credential_hit"}}"#,
+                    command.request_id
+                ),
+            );
+            assert!(
+                !delivery
+                    .body()
+                    .windows(material.len())
+                    .any(|part| part == material.as_bytes())
+            );
+            if !baseline {
+                collector.verify_pair(&command.accepted_base).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn provider_private_literal_checker_matches_across_chunks_without_runtime_env_or_digest() {
+        let material = format!("private-native-{}-END!", "z".repeat(8192));
+        let mut checker = SecretChecker::new(&[], &dummy_digests());
+        checker.include_private(std::slice::from_ref(&material));
+        checker.begin_blob();
+        checker.push(b"ordinary prefix:");
+        assert!(!checker.hit);
+        let split = material.len() - 3;
+        checker.push(&material.as_bytes()[..split]);
+        assert!(!checker.hit);
+        checker.push(&material.as_bytes()[split..]);
+        assert!(checker.hit);
+    }
+
     #[test]
     fn h1_r3_unchanged_manifest_current_path_secret() {
         let fixture = Fixture::new();

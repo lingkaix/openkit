@@ -561,12 +561,19 @@ export function createVaultOperationImplementations(
         !plan?.packageSnapshotId ||
         (plan.injectionVisibility !== 'runtime-file' &&
           plan.injectionVisibility !== 'runtime-token' &&
-          plan.injectionVisibility !== 'external-handle')
+          plan.injectionVisibility !== 'external-handle' &&
+          plan.injectionVisibility !== 'backend-provider')
       )
         throw new OperationError(
           'credential_binding_not_found',
           'Credential binding not found.',
           404
+        );
+      if (plan.injectionVisibility === 'backend-provider' && action === 'replace')
+        throw new OperationError(
+          'credential_binding_unavailable',
+          'Static Provider replacement requires a new placement and explicit request.',
+          409
         );
       const original = requireAgentEnvironmentPackageSnapshot(
         db,
@@ -2020,6 +2027,8 @@ export function createVaultOperationImplementations(
           'revocationStatus' in result &&
           result.planId === input.planId &&
           (getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility === 'runtime-token' ||
+            getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility ===
+              'backend-provider' ||
             (context.kind === 'worker' &&
               dependencies.credentialHelperUse?.command.protocol === 'ssh-agent' &&
               getVaultInjectionPlan(coreDb!, input.planId)?.injectionVisibility ===

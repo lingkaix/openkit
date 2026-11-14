@@ -422,15 +422,54 @@ fn provider_refresh_audit_completeness_never_assumes_missing_upstream_observatio
 }
 
 #[test]
-fn provider_production_admission_guards_remain_dormant() {
-    // This bounded source guard proves these two retained refusals only.
+fn provider_admission_keeps_raw_refusal_and_uses_private_reference_carriage() {
+    // Source wiring only; factory behavior and private-codec tests prove their own boundaries.
     let main = include_str!("main.rs");
     assert!(main.contains("providers: Vec::new(),"));
     let core = include_str!("../../nanocore/src/runtime/turn-executor-factory.ts");
-    let refusal = core
-        .find("if ((context.providerCredentials?.length ?? 0) > 0) {")
+    let materialize = core.split_once("  public async materialize(").unwrap().1;
+    let gate = materialize
+        .split_once("    let providerBindings: WorkerProviderCredentialBinding[];")
+        .unwrap()
+        .1
+        .split_once("    const runtimeCredentialValues =")
+        .unwrap()
+        .0;
+    let (admission, catch) = gate.split_once("    } catch (cause) {").unwrap();
+    assert!(admission.contains("providerBindings = requireWorkerProviderBindings(\n        environmentPackage,\n        context.providerCredentials ?? [],\n        this.readProviderAccessShape\n      );"));
+    let (refusal, admitted) = catch.split_once("\n    }").unwrap();
+    let refusal: Vec<_> = refusal
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("//"))
+        .collect();
+    assert_eq!(
+        refusal,
+        [
+            "throw new Error('NanoHost Provider credential materialization is not supported.', { cause });"
+        ]
+    );
+    assert!(admitted.contains("for (const binding of providerBindings)\n      this.assertProviderBindingAuthority(environmentPackage, binding);"));
+
+    let delivery = core
+        .split_once("  public async deliverProviderCredentialBinding(")
+        .unwrap()
+        .1
+        .split_once("  public async deliverCredentialBinding(")
+        .unwrap()
+        .0;
+    let (metadata, carriage) = delivery
+        .split_once("    const imported = await this.effect(")
         .unwrap();
-    assert!(core[refusal..].starts_with("if ((context.providerCredentials?.length ?? 0) > 0) {\n      throw new Error('NanoHost Provider credential materialization is not supported.');\n    }"));
+    assert!(metadata.contains("const providerBinding = WorkerProviderEffectIntentSchema.parse({"));
+    assert!(carriage.contains("'reference.import',\n      {\n        entryKind: 'file',\n        executable: false,\n        slot: 'runtime-credential',"));
+    assert!(carriage.contains(
+        "relativePath: credentialBindingAddress(binding.declarationId, planId, receiptId),"
+    ));
+    assert!(carriage.contains("body,\n        byteLength: body.length,\n        sha256: `sha256:${sha256Hex(body)}`,\n        providerBinding,"));
+    assert!(carriage.contains(
+        "const proof = requireWorkerProviderProtection(binding, imported.providerProtection);"
+    ));
 }
 
 /// One fixture-owned H2 peer for the real pinned SDK transport, without Core or Gateway authority.

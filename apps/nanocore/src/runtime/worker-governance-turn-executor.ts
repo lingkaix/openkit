@@ -134,7 +134,6 @@ import {
   assertCurrentWorkerCredentialAuthority,
   type PreparedWorkerContextPackage,
   type ResolveAgentEnvironmentBackendInput,
-  type ResolvedAgentEnvironmentProviderCredential,
   type ResolvedAgentEnvironmentRuntimeEnvCredential,
   type ResolvedAgentEnvironmentRuntimeFileCredential,
   resolveAgentEnvironmentPackage,
@@ -182,6 +181,13 @@ import {
   listThreadPendingRequests,
   pendingRequestSystemActor,
 } from './pending-requests.js';
+import {
+  readConfiguredWorkerProviderAccessShape,
+  requireWorkerProviderBindings,
+  requireWorkerProviderProtection,
+  WorkerProviderCredentialBindingSchema,
+  workerProviderBackendSummary,
+} from './provider-credential-binding.js';
 import type { PublicNetworkConfiguration } from './public-network-grants.js';
 import type {
   AgentSessionReadModel,
@@ -2104,7 +2110,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     const plan = getVaultInjectionPlan(coreDb, input.planId);
     if (
       !plan?.packageSnapshotId ||
-      (plan.injectionVisibility !== 'runtime-file' && plan.injectionVisibility !== 'runtime-token')
+      (plan.injectionVisibility !== 'runtime-file' &&
+        plan.injectionVisibility !== 'runtime-token' &&
+        plan.injectionVisibility !== 'backend-provider')
     )
       throw new OperationError(
         'credential_binding_not_found',
@@ -2136,13 +2144,19 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           ((value.visibility === 'runtime-file' &&
             plan.injectionVisibility === 'runtime-file' &&
             value.targetPath === plan.targetPath) ||
-            (value.visibility === 'runtime-token' && plan.injectionVisibility === 'runtime-token'))
+            (value.visibility === 'runtime-token' &&
+              plan.injectionVisibility === 'runtime-token') ||
+            (value.visibility === 'sandbox-provider' &&
+              plan.injectionVisibility === 'backend-provider' &&
+              value.provider.credentialKey === plan.targetEnvVarName))
       );
       const declaration = matchingDeclarations[0];
       if (
         !declaration ||
-        (declaration.visibility !== 'runtime-file' && declaration.visibility !== 'runtime-token') ||
-        (declaration.visibility === 'runtime-token' && matchingDeclarations.length !== 1)
+        (declaration.visibility !== 'runtime-file' &&
+          declaration.visibility !== 'runtime-token' &&
+          declaration.visibility !== 'sandbox-provider') ||
+        (declaration.visibility !== 'runtime-file' && matchingDeclarations.length !== 1)
       )
         throw new OperationError(
           'credential_binding_not_found',
@@ -2237,6 +2251,128 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           receipt.agentSessionId === original.scope.agentSessionId &&
           receipt.revocationStatus === 'active'
       );
+      if (declaration.visibility === 'sandbox-provider') {
+        if (input.action === 'replace')
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Static Provider replacement requires a new explicit placement request.',
+            409
+          );
+        if (input.action === 'deliver') {
+          if (
+            !input.receiptId ||
+            original.snapshotId !== consumer.snapshotId ||
+            !this.backend.deliverProviderCredentialBinding ||
+            !this.backend.readProviderCredentialBinding
+          )
+            throw new OperationError(
+              'credential_binding_unavailable',
+              'Admitted Provider delivery is unavailable.',
+              409
+            );
+          const binding = WorkerProviderCredentialBindingSchema.parse(
+            this.backend.readProviderCredentialBinding(
+              consumer.snapshotId,
+              plan.planId,
+              input.receiptId
+            )
+          );
+          const { grant, reference } = current();
+          if (
+            binding.declarationId !== declaration.id ||
+            binding.grantId !== grant.grantId ||
+            binding.planId !== plan.planId ||
+            binding.receiptId !== input.receiptId ||
+            binding.vaultReferenceId !== reference.referenceId ||
+            binding.materialVersion !== reference.currentVersion ||
+            binding.materialVersion !== input.materialVersion ||
+            binding.providerInstanceId !== declaration.provider.instanceId ||
+            binding.providerType !== declaration.provider.type ||
+            binding.profileId !== declaration.provider.profileId ||
+            binding.credentialKey !== declaration.provider.credentialKey
+          )
+            throw new OperationError(
+              'credential_binding_changed',
+              'Provider preparation or material generation changed.',
+              409
+            );
+          await recheckAuthority();
+          const material = await resolveMaterial(grant, reference, input.receiptId);
+          await recheckAuthority();
+          if (current().reference.currentVersion !== binding.materialVersion)
+            throw new Error('Provider generation changed before delivery.');
+          effectAttempt = attempt;
+          effectPackage = consumer;
+          const proof = await this.backend.deliverProviderCredentialBinding(
+            consumer.snapshotId,
+            plan.planId,
+            input.receiptId,
+            material,
+            binding.materialVersion,
+            () => recheckAuthority()
+          );
+          await recheckAuthority();
+          if (current().reference.currentVersion !== binding.materialVersion)
+            throw new Error('Provider generation changed during delivery.');
+          const verified = requireWorkerProviderProtection(binding, proof);
+          return await getControlStoreWorkerClient().vault(
+            coreDb,
+            'receipt-create',
+            {
+              receiptId: binding.receiptId,
+              planId: binding.planId,
+              grantId: binding.grantId,
+              agentSessionId: consumer.scope.agentSessionId,
+              backendSummary: workerProviderBackendSummary(verified),
+              injectedAt: this.currentTime(),
+              expiresAt: grant.expiresAt,
+              revocationStatus: 'active',
+              workerAuthority: {
+                consumer: {
+                  snapshotId: consumer.snapshotId,
+                  scope: consumer.scope,
+                  agent: { agentId: consumer.agent.agentId },
+                },
+                declarations: [declaration],
+                materialVersion: binding.materialVersion,
+              },
+            },
+            recheckAuthority
+          );
+        }
+        if (active.length !== 1 || active[0]!.receiptId !== input.expectedReceiptId)
+          throw new OperationError(
+            'credential_binding_changed',
+            'Provider binding changed; inspect its original receipt.',
+            409
+          );
+        await recheckAuthority();
+        await getControlStoreWorkerClient().vault(
+          coreDb,
+          'binding-revoke-withdraw',
+          {
+            receiptId: active[0]!.receiptId,
+            planId: plan.planId,
+            agentSessionId: original.scope.agentSessionId,
+            plan,
+            coreAuthority: input.coreAuthority,
+          },
+          recheckAuthority
+        );
+        await this.revokeCredentialBindings(store, [original.scope.agentSessionId]);
+        await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-receipts-complete', {
+          planId: plan.planId,
+        });
+        await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-plan-complete', {
+          planId: plan.planId,
+        });
+        return {
+          planId: plan.planId,
+          receiptId: active[0]!.receiptId,
+          state: 'removed',
+          fenceRef: null,
+        };
+      }
       if (declaration.visibility === 'runtime-token') {
         // New-AEP composition is not replacement activation. Until the Login replace arm
         // owns predecessor correlation, a changed completed binding cannot use deliver.
@@ -2908,9 +3044,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           : attempt;
       attempts.push({ attempt, closing, execution: this.activeTurnExecutions.get(attempt.turnId) });
     }
-    // File removal is a placement-neutral obligation, including an idle resident's closed creator.
+    // Credential removal is a placement-neutral obligation, including an idle resident's closed creator.
     // The existing Vault receipt and scheduler attempt supply its exact identity; neither authorizes work.
-    const fileRevocations = new Map<
+    const bindingRevocations = new Map<
       string,
       {
         declarationId: string;
@@ -2926,7 +3062,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       )
         continue;
       const plan = getVaultInjectionPlan(coreDb, receipt.planId);
-      if (plan?.injectionVisibility !== 'runtime-file' || !plan.packageSnapshotId) continue;
+      if (
+        !plan?.packageSnapshotId ||
+        (plan.injectionVisibility !== 'runtime-file' &&
+          plan.injectionVisibility !== 'backend-provider')
+      )
+        continue;
       const session = store.getAgentSession(receipt.agentSessionId);
       const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, session.workspaceId);
       try {
@@ -2937,20 +3078,27 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         ).snapshot;
         const declaration = original.credentials.declarations.find(
           (value) =>
-            value.visibility === 'runtime-file' &&
             value.vaultGrantId === plan.grantId &&
-            value.targetPath === plan.targetPath
+            ((value.visibility === 'runtime-file' &&
+              plan.injectionVisibility === 'runtime-file' &&
+              value.targetPath === plan.targetPath) ||
+              (value.visibility === 'sandbox-provider' &&
+                plan.injectionVisibility === 'backend-provider' &&
+                value.provider.credentialKey === plan.targetEnvVarName))
         );
-        const { replacesReceiptId: _previous, ...proof } = JSON.parse(receipt.backendSummary);
-        const realized = WorkerCredentialReceiptSchema.parse(proof);
-        if (
-          !declaration ||
-          realized.declarationId !== declaration.id ||
-          realized.planId !== plan.planId ||
-          realized.receiptId !== receipt.receiptId ||
-          original.scope.agentSessionId !== receipt.agentSessionId
-        )
+        if (!declaration || original.scope.agentSessionId !== receipt.agentSessionId)
           throw new Error('Credential revocation has contradictory receipt lineage.');
+        if (declaration.visibility === 'runtime-file') {
+          const { replacesReceiptId: _previous, ...proof } = JSON.parse(receipt.backendSummary);
+          const realized = WorkerCredentialReceiptSchema.parse(proof);
+          if (
+            realized.declarationId !== declaration.id ||
+            realized.planId !== plan.planId ||
+            realized.receiptId !== receipt.receiptId
+          )
+            throw new Error('Credential revocation has contradictory receipt lineage.');
+        }
+        // Provider summaries are descriptive. Exact canonical scope identifies cleanup, not renewed use.
         const live = attempts.find(
           ({ attempt }) => attempt.agentSessionId === receipt.agentSessionId
         );
@@ -2965,7 +3113,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             )
             .at(-1);
         if (!creator) throw new Error('Credential revocation has no exact placement lineage.');
-        fileRevocations.set(plan.planId, {
+        bindingRevocations.set(plan.planId, {
           declarationId: declaration.id,
           receiptId: receipt.receiptId,
           attemptId: creator.attemptId,
@@ -3002,7 +3150,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     await Promise.all(attempts.map(({ execution }) => execution?.catch(() => undefined)));
     const stopFailure = stopped.find((result) => result.status === 'rejected');
     if (stopFailure?.status === 'rejected') throw stopFailure.reason;
-    for (const [planId, binding] of fileRevocations) {
+    for (const [planId, binding] of bindingRevocations) {
       if (!this.executionBackend.revokeCredentialBinding)
         throw new Error('Placement credential revocation is unavailable.');
       const result = await this.executionBackend.revokeCredentialBinding({
@@ -3240,7 +3388,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           packageDiagnostics.map((diagnostic) => diagnostic.message).join(' ')
         );
       }
-      const providerCredentials: ResolvedAgentEnvironmentProviderCredential[] = [];
+      const providerCredentials: unknown[] = [];
       const runtimeEnvCredentials: ResolvedAgentEnvironmentRuntimeEnvCredential[] = [];
       const runtimeFileCredentials: ResolvedAgentEnvironmentRuntimeFileCredential[] = [];
       const credentialReceipts: CreateVaultInjectionReceiptInput[] = [];
@@ -3692,8 +3840,11 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         this.currentTime()
       );
       if (!workspaceDb) throw new Error('Worker launch requires its admitted Workspace owner.');
-      await this.backend.prepareLaunch(materialization, workspaceDb);
-      if (!existingAgentSession && runtimeFileCredentials.length > 0) {
+      const deliveryPackage = environmentPackage;
+      const deliverPreparedBindings = async (
+        credentials: readonly { planId: string; receiptId: string; materialVersion: number }[]
+      ) => {
+        if (existingAgentSession || credentials.length === 0) return;
         const dependencies = {
           coreDb: this.coreDb!,
           store,
@@ -3713,13 +3864,13 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           createVaultOperationImplementations(dependencies),
           dependencies
         );
-        for (const credential of runtimeFileCredentials) {
+        for (const credential of credentials) {
           const operationRequestId = randomUUID();
           await invoke(
             'vault.binding-deliver',
             {
-              workspaceId: environmentPackage.scope.workspaceId,
-              bindingThreadId: environmentPackage.scope.threadId,
+              workspaceId: deliveryPackage.scope.workspaceId,
+              bindingThreadId: deliveryPackage.scope.threadId,
               planId: credential.planId,
               receiptId: credential.receiptId,
               materialVersion: credential.materialVersion,
@@ -3727,20 +3878,30 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             },
             {
               kind: 'worker',
-              actor: environmentPackage.scope.triggerActor,
+              actor: deliveryPackage.scope.triggerActor,
               lineage: {
-                ...environmentPackage.scope,
-                packageSnapshotId: environmentPackage.snapshotId,
+                ...deliveryPackage.scope,
+                packageSnapshotId: deliveryPackage.snapshotId,
               },
               requestId: operationRequestId,
               bindings: {
-                workspaceId: environmentPackage.scope.workspaceId,
+                workspaceId: deliveryPackage.scope.workspaceId,
                 requestId: operationRequestId,
               },
             }
           );
         }
-      }
+      };
+      await deliverPreparedBindings(
+        requireWorkerProviderBindings(environmentPackage, providerCredentials, (profileId) =>
+          readConfiguredWorkerProviderAccessShape(
+            this.readRuntimeConfig?.().gatewayConfig,
+            profileId
+          )
+        )
+      );
+      await this.backend.prepareLaunch(materialization, workspaceDb);
+      await deliverPreparedBindings(runtimeFileCredentials);
       assertCurrentWorkerCredentialAuthority(this.coreDb!, environmentPackage, () =>
         this.currentTime()
       );

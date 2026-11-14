@@ -2382,6 +2382,12 @@ describe('createConfiguredTurnExecutor', () => {
       attemptId?: string;
       agentSetup?: ReturnType<typeof createTestAgentSetup>;
       capacity?: number;
+      /** Seeds the canonical local identity before package and Workspace ownership are authored. */
+      localIdentity?: boolean;
+      /** Explicit authored data consumed by the actual Runtime configuration reader. */
+      providerAccessShapes?: NonNullable<
+        ReturnType<typeof loadRuntimeConfig>['gatewayConfig']['providerAccessShapes']
+      >;
       gitBaseline?: { commit: string; tree: string };
       nativeValues?: Record<string, string>;
       inspection?: 'unavailable' | 'stale';
@@ -2398,6 +2404,8 @@ describe('createConfiguredTurnExecutor', () => {
         coreDb: ReturnType<typeof createFactoryCoreDb>;
         environmentPackage: AgentEnvironmentPackage;
         backend: WorkerGovernanceBackend;
+        runtime: ReturnType<typeof createConfiguredWorkerLifecycleRuntime>;
+        materialization: Awaited<ReturnType<WorkerGovernanceBackend['materialize']>>;
       }) => Promise<void>;
       configurePackage?: (
         environmentPackage: AgentEnvironmentPackage,
@@ -2408,6 +2416,8 @@ describe('createConfiguredTurnExecutor', () => {
       /** Admits original observation output while this fixture's submitted Turn is still live. */
       /** Live fault cases leave subsequent closeout to the recovery subject. */
       finishAfterLiveCheck?: boolean;
+      /** Explicitly joins public whole-Sandbox cleanup instead of retaining a warm resident. */
+      wholeSandboxCleanup?: boolean;
       beforeFinalStatus?: (input: {
         backend: WorkerGovernanceBackend;
         turnExecutor: ReturnType<typeof createConfiguredWorkerLifecycleRuntime>['turnExecutor'];
@@ -2423,6 +2433,7 @@ describe('createConfiguredTurnExecutor', () => {
     } = {}
   ) {
     const coreDb = createFactoryCoreDb();
+    const localUserId = options.localIdentity ? ensureLocalUser(coreDb) : undefined;
     const effects: NanoHostSessionEffectRequest[] = options.effects ?? [];
     const sessionDispatch = createFactoryNanoHostDispatch(effects, {
       onCollection: options.onCollection,
@@ -2468,6 +2479,18 @@ describe('createConfiguredTurnExecutor', () => {
         'a'.repeat(64),
         '2026-09-06T00:00:00.000Z'
       );
+    const providerConfiguration =
+      options.providerAccessShapes === undefined
+        ? undefined
+        : () =>
+            createInMemoryRuntimeConfigSnapshot({
+              ...loadRuntimeConfig(coreDb.dataRoot),
+              dataRoot: coreDb.dataRoot,
+              gatewayConfig: {
+                ...loadRuntimeConfig(coreDb.dataRoot).gatewayConfig,
+                providerAccessShapes: options.providerAccessShapes,
+              },
+            });
     const runtime = createConfiguredWorkerLifecycleRuntime({
       releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       coreDb,
@@ -2483,6 +2506,7 @@ describe('createConfiguredTurnExecutor', () => {
                 workspaceConfigs: loadRuntimeConfig(coreDb.dataRoot).workspaceConfigs,
               }),
           }),
+      ...(providerConfiguration === undefined ? {} : { readRuntimeConfig: providerConfiguration }),
       ...(options.workspaceMutationAdmission
         ? { workspaceMutationAdmission: options.workspaceMutationAdmission }
         : {}),
@@ -2506,7 +2530,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
     ).backend;
     const environmentPackage = await completeNanoHostPackage({
-      agentSetup: options.agentSetup,
+      ...(options.agentSetup === undefined ? {} : { agentSetup: options.agentSetup }),
       ...(nativeValues
         ? {
             runtime: {
@@ -2547,6 +2571,7 @@ describe('createConfiguredTurnExecutor', () => {
         threadId,
         turnId: options.scope?.turnId ?? testEntityId('tu', `turn_${label}`),
         workspaceId,
+        ...(localUserId ? { triggerActor: { kind: 'user', id: localUserId } } : {}),
       },
       snapshotId: `snapshot_${label}`,
     });
@@ -2641,7 +2666,13 @@ describe('createConfiguredTurnExecutor', () => {
       await runtime.acceptNanoHostHarnessResult(result);
       return command;
     };
-    await options.beforeSubmit?.({ coreDb, environmentPackage, backend });
+    await options.beforeSubmit?.({
+      coreDb,
+      environmentPackage,
+      backend,
+      runtime,
+      materialization,
+    });
     const launch = submitTestNanoHostTurn(
       coreDb,
       backend,
@@ -2714,7 +2745,14 @@ describe('createConfiguredTurnExecutor', () => {
     await inspection;
     expect(recordedDigests).toEqual([readyDigest]);
     const capturedSession = backend.sessions.get(environmentPackage.snapshotId);
-    await backend.cleanupSession(backend.planSession(environmentPackage));
+    if (options.wholeSandboxCleanup) {
+      await backend.cleanupSession(backend.planSession(environmentPackage), {
+        failedCloseout: false,
+        wholeSandbox: true,
+      });
+    } else {
+      await backend.cleanupSession(backend.planSession(environmentPackage));
+    }
 
     await closeFactoryAttempt(
       coreDb,
@@ -2729,7 +2767,7 @@ describe('createConfiguredTurnExecutor', () => {
            FROM agent_session_runtime_bindings`
         )
         .all()
-    ).toEqual([{ agentSessionId, digest: readyDigest }]);
+    ).toEqual(options.wholeSandboxCleanup ? [] : [{ agentSessionId, digest: readyDigest }]);
     return {
       runtime,
       backend,
@@ -2741,6 +2779,756 @@ describe('createConfiguredTurnExecutor', () => {
       effects,
     };
   }
+
+  // Static cut B: completed native protection is evidence, never grant or Policy authority.
+  it.each(['exact', 'wrong-policy', 'unknown-protection'] as const)(
+    'starts a static Provider only after governed exact protection (%s)',
+    async (fault) => {
+      const grantId = testEntityId('grant', randomUUID());
+      const referenceId = testEntityId('vault', randomUUID());
+      const effects: NanoHostSessionEffectRequest[] = [];
+      const mutation = new WorkspaceMutationAdmission();
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      const material = randomUUID() + randomUUID();
+      const shape = {
+        id: 'static-http-bearer-fixture',
+        credentialKey: 'EXAMPLE_TOKEN',
+        endpoints: [
+          { name: 'static_api', host: 'api.example.test', port: 443, binaries: ['/usr/bin/curl'] },
+        ],
+      };
+      let vault: ReturnType<typeof createVaultUnlockState> | undefined;
+      let core: ReturnType<typeof createFactoryCoreDb> | undefined;
+      let ownerStage = 'factory-setup';
+      const planId = `plan_static_${randomUUID()}`;
+      const receiptId = `receipt_static_${randomUUID()}`;
+      const pending: unknown[] = [];
+      let protectionObserved = false;
+      let cleanupBackend: (() => Promise<void>) | undefined;
+      let blockedSubmitObserved = false;
+      let startCommands = 0;
+      let restoreStartObservation: (() => void) | undefined;
+      onTestFinished(() => {
+        release.resolve();
+        restoreStartObservation?.();
+        vault?.lock();
+      });
+      const work = admitIdleSupplyResident(`static_provider_${fault}`, {
+        effects,
+        localIdentity: true,
+        wholeSandboxCleanup: fault === 'exact',
+        workspaceMutationAdmission: mutation,
+        providerAccessShapes: [shape],
+        vaultBackend: () => vault!.backend(),
+        onImport: async (request) => {
+          const binding = request.input.providerBinding as Record<string, unknown> | undefined;
+          if (!binding) return { state: 'imported' };
+          protectionObserved = true;
+          expect(JSON.stringify(request).includes(material)).toBe(false);
+          expect(binding).toMatchObject({
+            declarationId: 'static_provider',
+            grantId,
+            vaultReferenceId: referenceId,
+            materialVersion: 1,
+            accessShape: shape,
+          });
+          expect(binding.planId).toBe((pending[0] as Record<string, unknown>).planId);
+          expect(binding.receiptId).toBe((pending[0] as Record<string, unknown>).receiptId);
+          expect(startCommands).toBe(0);
+          expect(effects.some((effect) => effect.kind === 'bridge.open')).toBe(false);
+          expect(listVaultInjectionReceipts(core!)).toEqual([]);
+          entered.resolve();
+          await release.promise;
+          if (fault === 'unknown-protection') return { state: 'imported' };
+          // The external peer reports protection; Core must correlate and validate it.
+          const policyDigest = createHash('sha256')
+            .update('admitted-static-provider-effective-policy')
+            .digest('hex');
+          return {
+            state: 'imported',
+            providerProtection: {
+              declarationId: binding.declarationId,
+              grantId,
+              planId: binding.planId,
+              receiptId: binding.receiptId,
+              vaultReferenceId: referenceId,
+              materialVersion: 1,
+              mappingVersion: 1,
+              profileDigest: createHash('sha256').update(JSON.stringify(shape)).digest('hex'),
+              expectedPolicyDigest: policyDigest,
+              observedPolicyDigest: fault === 'wrong-policy' ? '0'.repeat(64) : policyDigest,
+              placeholderOnly: true,
+              exposure: 'sandbox-provider',
+            },
+          };
+        },
+        configurePackage: async (pkg, db) => {
+          core = db;
+          const store = new FsStore({ dataRoot: db.dataRoot });
+          store.setWorkspaceMutationAdmission(mutation);
+          vault = createVaultUnlockState({
+            backendKind: 'encrypted-file',
+            storeDir: join(db.dataRoot, 'vault'),
+          });
+          vault.unlock({
+            masterKey: Buffer.from(
+              randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+              'hex'
+            ),
+          });
+          vault.backend().store({ referenceId, material, metadata: { ownerScope: 'server' } });
+          ownerStage = 'reference-create';
+          await createVaultReference(db, {
+            referenceId,
+            ownerScope: 'server',
+            displayName: 'Synthetic static Provider',
+            secretKind: 'opaque',
+            backendKind: 'encrypted-file',
+            backendLocator: `encrypted-file://server/vault/${referenceId}`,
+          });
+          ownerStage = 'grant-create';
+          await createVaultGrant(db, {
+            grantId,
+            vaultReferenceId: referenceId,
+            ownerScope: 'server',
+            lifetime: 'agent-session',
+            targetAgentSessionId: pkg.scope.agentSessionId,
+            allowedInjectionPaths: ['backend-provider'],
+          });
+          ownerStage = 'session-create';
+          await store.createAgentSession({
+            id: pkg.scope.agentSessionId,
+            agentId: pkg.agent.agentId,
+            workspaceId: pkg.scope.workspaceId,
+            threadId: pkg.scope.threadId,
+            environmentPackageSnapshotId: pkg.snapshotId,
+            status: 'busy',
+            message: null,
+            createdAt: pkg.createdAt,
+            updatedAt: pkg.createdAt,
+          });
+          ownerStage = 'turn-create';
+          const turn = await store.createTurn(
+            pkg.scope.workspaceId,
+            pkg.scope.threadId,
+            'Use static Provider',
+            pkg.scope.triggerActor,
+            null,
+            {
+              turnId: pkg.scope.turnId,
+              executorKind: 'worker',
+              agentId: pkg.agent.agentId,
+              agentSessionId: pkg.scope.agentSessionId,
+              captureCoverage: { scope: 'server', value: 'on' },
+            }
+          );
+          ownerStage = 'turn-update';
+          await store.updateTurn(turn.id, { status: 'running' });
+          // This backend fixture authors an AEP input, not a retained grant or completion.
+          const { aepVaultGrantScope } = await import('./worker-credential-authority.js');
+          pkg.credentials.declarations = [
+            {
+              id: 'static_provider',
+              vaultGrantId: grantId,
+              visibility: 'sandbox-provider',
+              provider: {
+                instanceId: 'static-provider-fixture',
+                type: 'generic',
+                credentialKey: shape.credentialKey,
+                profileId: shape.id,
+              },
+            },
+          ];
+          pkg.vault.grants = [
+            {
+              id: grantId,
+              scope: aepVaultGrantScope(getVaultGrant(db, grantId)!),
+              vaultRefId: referenceId,
+            },
+          ];
+          pkg.vault.references = [
+            { id: referenceId, kind: 'secret-ref', secretRef: `vault://${referenceId}` },
+          ];
+          ownerStage = 'lineage-and-anchor';
+        },
+        materializationContext: async ({ coreDb, environmentPackage: pkg }) => {
+          const { createVaultInjectionPlan } = await import('../vault-injection-plans.js');
+          ownerStage = 'plan-create';
+          await createVaultInjectionPlan(coreDb, {
+            planId,
+            grantId,
+            packageSnapshotId: pkg.snapshotId,
+            injectionVisibility: 'backend-provider',
+            targetEnvVarName: shape.credentialKey,
+            expirationBehavior: 'fail-closed',
+            revocationBehavior:
+              'terminate affected Sandbox; invalidate Epoch if deletion is unproved',
+            redactionRule: 'reference-only',
+            backendCapabilityRequirement: 'sandbox-provider:generic',
+          });
+          pending.push({
+            declarationId: 'static_provider',
+            grantId,
+            planId,
+            receiptId,
+            vaultReferenceId: referenceId,
+            materialVersion: 1,
+            providerInstanceId: 'static-provider-fixture',
+            providerType: 'generic',
+            credentialKey: shape.credentialKey,
+            profileId: shape.id,
+            accessShape: shape,
+          });
+          ownerStage = 'materialize';
+          return { providerCredentials: pending } as unknown as Parameters<
+            WorkerGovernanceBackend['materialize']
+          >[1];
+        },
+        beforeSubmit: async ({
+          coreDb,
+          environmentPackage: pkg,
+          backend,
+          runtime,
+          materialization,
+        }) => {
+          ownerStage = 'governed-delivery';
+          cleanupBackend = () => backend.cleanupSession(backend.planSession(pkg));
+          const accept = runtime.acceptNanoHostHarnessCommand.bind(runtime);
+          const observation = vi
+            .spyOn(runtime, 'acceptNanoHostHarnessCommand')
+            .mockImplementation(async (command) => {
+              const result = await accept(command);
+              if (command.operation === 'turn.start') startCommands += 1;
+              return result;
+            });
+          restoreStartObservation = () => observation.mockRestore();
+          const supply = pending[0] as Record<string, unknown>;
+          expect(supply).toMatchObject({
+            declarationId: 'static_provider',
+            grantId,
+            vaultReferenceId: referenceId,
+            materialVersion: 1,
+          });
+          expect(Object.hasOwn(supply, 'credentialValue')).toBe(false);
+          const store = new FsStore({ dataRoot: coreDb.dataRoot });
+          const localUserId =
+            pkg.scope.triggerActor.kind === 'user'
+              ? pkg.scope.triggerActor.id
+              : (pkg.scope.triggerActor.responsibleUserId ?? undefined);
+          const app = createAppWithWorkspaceAuthority({
+            coreDb,
+            store,
+            dataRoot: coreDb.dataRoot,
+            turnExecutor: runtime.turnExecutor,
+            ...(localUserId === undefined ? {} : { localUserId }),
+            ...(vault === undefined ? {} : { vaultUnlockState: vault }),
+            gatewayConfig: {
+              ...loadRuntimeConfig(coreDb.dataRoot).gatewayConfig,
+              providerAccessShapes: [shape],
+            },
+            policyInterception: new PolicyInterception(),
+            workspaceMutationAdmission: mutation,
+          });
+          const requestId = randomUUID();
+          const delivery = Promise.resolve(
+            app.request(
+              ...operationRequest(
+                'vault.binding-deliver',
+                {},
+                {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    workspaceId: pkg.scope.workspaceId,
+                    bindingThreadId: pkg.scope.threadId,
+                    planId: supply.planId,
+                    receiptId: supply.receiptId,
+                    materialVersion: 1,
+                    requestId,
+                  }),
+                }
+              )
+            )
+          );
+          await Promise.race([
+            entered.promise,
+            delivery.then((response) => {
+              console.error('Static Provider pre-import response status:', response.status);
+              throw new Error('Provider delivery settled before the actual private import.');
+            }),
+          ]);
+          expect(startCommands).toBe(0);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          release.resolve();
+          const response = await delivery;
+          if (fault !== 'exact') {
+            expect(response.ok).toBe(false);
+            expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+            // Actually invoke the public backend submission boundary; a caller's wait alone is no barrier.
+            await expect(
+              submitTestNanoHostTurn(coreDb, backend, materialization)
+            ).rejects.toThrow();
+            blockedSubmitObserved = true;
+            expect(startCommands).toBe(0);
+            expect(effects.some((effect) => effect.kind === 'bridge.open')).toBe(false);
+            throw new Error('Static Provider protection control completed without start.');
+          }
+          expect(response.status).toBe(200);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([
+            expect.objectContaining({
+              receiptId: supply.receiptId,
+              planId: supply.planId,
+              grantId,
+              revocationStatus: 'active',
+            }),
+          ]);
+          expect(getVaultGrant(coreDb, grantId)?.status).toBe('active');
+          expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(1);
+          const db = openWorkspaceDb(coreDb.dataRoot, pkg.scope.workspaceId);
+          try {
+            expect(
+              listExportableWorkspacePermissionDecisions(db, pkg.scope.workspaceId).some(
+                (decision) =>
+                  decision.result === 'allow' &&
+                  decision.enforcementPoint === 'vault.binding-deliver@decide' &&
+                  decision.mediation?.role === 'final' &&
+                  (decision.contextSummary as { requestId?: string })?.requestId === requestId
+              )
+            ).toBe(true);
+          } finally {
+            db.sqlite.close();
+          }
+        },
+      }).catch((error: unknown) => {
+        // Emit only a fixed stage and the native client's closed code; never payloads or messages.
+        if (error instanceof ControlStoreWorkerError)
+          throw new Error(`Static Provider owner stage=${ownerStage}; code=${error.code}.`);
+        throw error;
+      });
+      void work.catch(() => {});
+      try {
+        if (fault === 'exact') {
+          // OLD deciding failure: the existing unsupported Provider materialization refusal.
+          const result = await work;
+          expect(protectionObserved).toBe(true);
+          expect(startCommands).toBe(1);
+          expect(JSON.stringify(effects).includes(material)).toBe(false);
+          expect(result.effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(true);
+          result.coreDb.sqlite.close();
+        } else {
+          await expect(work).rejects.toThrow(
+            'Static Provider protection control completed without start.'
+          );
+          expect(protectionObserved && blockedSubmitObserved).toBe(true);
+        }
+      } finally {
+        release.resolve();
+        await work.catch(() => {});
+        try {
+          if (core?.sqlite.open && fault !== 'exact') await cleanupBackend?.();
+        } finally {
+          await shutdownControlStoreWorkerClient();
+          if (core?.sqlite.open) core.sqlite.close();
+        }
+      }
+    },
+    60_000
+  );
+
+  // Static cut B: revoke through the live executor owner, not a backend-only resident.
+  it('withdraws a live Provider grant and joins whole-Sandbox removal before revocation succeeds', async ({
+    signal,
+  }) => {
+    const coreDb = createFactoryCoreDb();
+    const ownerUserId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    const workspaceId = DEMO_WORKSPACE_ID;
+    const mutation = new WorkspaceMutationAdmission();
+    store.setWorkspaceMutationAdmission(mutation);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+    const vault = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(coreDb.dataRoot, 'vault'),
+    });
+    vault.unlock({
+      masterKey: Buffer.from(
+        randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+        'hex'
+      ),
+    });
+    const referenceId = testEntityId('vault', randomUUID());
+    const grantId = testEntityId('grant', randomUUID());
+    const material = randomUUID() + randomUUID();
+    const turnEntered = Promise.withResolvers<harnessRecords.NanoHostHarnessCommand>();
+    const turnRelease = Promise.withResolvers<void>();
+    const deleteEntered = Promise.withResolvers<void>();
+    const deleteRelease = Promise.withResolvers<void>();
+    let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+    let admission: Promise<unknown> | undefined;
+    let execution: Promise<void> | undefined;
+    let claim: Promise<unknown> | undefined;
+    let revoke: Promise<Response> | undefined;
+    let claimSettled = false;
+    let revokeSettled = false;
+    let closing = false;
+    let ownedCompletion: (() => void) | undefined;
+    let restoreAccept: (() => void) | undefined;
+    let restoreScheduler: (() => void) | undefined;
+    let restoreEffect: (() => void) | undefined;
+    const unblock = () => {
+      closing = true;
+      turnRelease.resolve();
+      deleteRelease.resolve();
+      ownedCompletion?.();
+    };
+    signal.addEventListener('abort', unblock, { once: true });
+    try {
+      vault
+        .backend()
+        .store({ referenceId, material, metadata: { ownerScope: 'workspace', workspaceId } });
+      await createVaultReference(coreDb, {
+        referenceId,
+        ownerScope: 'workspace',
+        workspaceId,
+        displayName: 'Synthetic live Provider',
+        secretKind: 'opaque',
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://workspace/vault/${referenceId}`,
+      });
+      await createVaultGrant(coreDb, {
+        grantId,
+        vaultReferenceId: referenceId,
+        ownerScope: 'workspace',
+        workspaceId,
+        lifetime: 'workspace',
+        allowedInjectionPaths: ['backend-provider'],
+      });
+      const base = loadRuntimeConfig(coreDb.dataRoot);
+      // Match the existing native carrier fixture's authored Gateway/relay context exactly.
+      const gatewayConfig = createTestGatewayConfig();
+      const logicalModelId = gatewayConfig.defaultLogicalModelId;
+      if (
+        !logicalModelId ||
+        !gatewayConfig.logicalModels.some((model) => model.id === logicalModelId)
+      )
+        throw new Error('Live Provider fixture requires its existing configured default model.');
+      const setup = createTestAgentSetup({
+        logicalModelId,
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const authored = AuthoredAgentConfigSchema.parse({
+        ...setup.manifest,
+        sandbox: {
+          ...setup.manifest.sandbox,
+          credentialDeclarations: [
+            {
+              id: 'live_provider',
+              requirementId: 'live_provider',
+              purpose: 'Use the granted static HTTP Provider.',
+              required: true,
+              visibility: 'sandbox-provider',
+              provider: {
+                instanceId: 'live-provider-fixture',
+                type: 'generic',
+                credentialKey: 'GITHUB_TOKEN',
+                profileId: 'github_mcp',
+              },
+            },
+          ],
+        },
+      });
+      expect(base.workspaceConfigs.some((source) => source.workspaceId === workspaceId)).toBe(true);
+      const configuration = createInMemoryRuntimeConfigSnapshot({
+        ...base,
+        dataRoot: coreDb.dataRoot,
+        gatewayConfig: {
+          ...gatewayConfig,
+          providerAccessShapes: [
+            {
+              id: 'github_mcp',
+              credentialKey: 'GITHUB_TOKEN',
+              endpoints: [
+                {
+                  name: 'github_api',
+                  host: 'api.github.com',
+                  port: 443,
+                  binaries: ['/usr/bin/curl'],
+                },
+              ],
+            },
+          ],
+        },
+        agentManifests: [authored],
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Static Provider relay metadata only',
+            kind: 'local',
+            baseUrl: 'http://127.0.0.1:0/v1',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: base.workspaceConfigs.map((source) =>
+          source.workspaceId !== workspaceId
+            ? source
+            : {
+                ...source,
+                config: WorkspaceConfigSchema.parse({
+                  ...source.config,
+                  workspace: {
+                    ...source.config.workspace,
+                    agents: [
+                      {
+                        agentId: authored.id,
+                        credentialBindings: [
+                          { requirementId: 'live_provider', vaultGrantId: grantId },
+                        ],
+                      },
+                    ],
+                  },
+                }),
+              }
+        ),
+      });
+      const interception = new PolicyInterception();
+      native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => configuration,
+        vaultBackend: () => vault.backend(),
+        policyInterception: () => interception,
+        workspaceMutationAdmission: mutation,
+      });
+      const f = native;
+      const app = createAppWithWorkspaceAuthority({
+        ...configuration,
+        coreDb,
+        store,
+        dataRoot: coreDb.dataRoot,
+        localUserId: ownerUserId,
+        turnExecutor: f.executor,
+        workerControlGateway: f.workerControlGateway,
+        vaultUnlockState: vault,
+        policyInterception: interception,
+        workspaceMutationAdmission: mutation,
+      });
+      // Double only the existing external placement effect; retain its original invocation and receiver.
+      const effectOwner = f.sessionDispatch.effect;
+      if (vi.isMockFunction(effectOwner))
+        throw new Error('Unexpected mutable native effect alias.');
+      const invokeEffect = effectOwner.bind(f.sessionDispatch);
+      f.sessionDispatch.effect = async (
+        ...args:
+          | [request: NanoHostSessionEffectRequest]
+          | [physicalConnection: object, request: NanoHostSessionEffectRequest]
+      ) => {
+        const request = args.length === 1 ? args[0] : args[1];
+        if (request.kind === 'sandbox.delete') {
+          deleteEntered.resolve();
+          await deleteRelease.promise;
+        }
+        const result =
+          args.length === 1 ? await invokeEffect(args[0]) : await invokeEffect(args[0], args[1]);
+        const binding =
+          request.kind === 'reference.import'
+            ? (request.input.providerBinding as Record<string, unknown> | undefined)
+            : undefined;
+        if (!binding) return result;
+        expect(binding).toMatchObject({
+          declarationId: 'live_provider',
+          grantId,
+          vaultReferenceId: referenceId,
+          materialVersion: 1,
+        });
+        expect(binding.accessShape).toBeDefined();
+        expect(JSON.stringify(request).includes(material)).toBe(false);
+        const policy = createHash('sha256')
+          .update('admitted-live-provider-effective-policy')
+          .digest('hex');
+        return {
+          ...(result as Record<string, unknown>),
+          providerProtection: {
+            declarationId: binding.declarationId,
+            grantId,
+            planId: binding.planId,
+            receiptId: binding.receiptId,
+            vaultReferenceId: referenceId,
+            materialVersion: 1,
+            mappingVersion: 1,
+            profileDigest: createHash('sha256')
+              .update(JSON.stringify(binding.accessShape))
+              .digest('hex'),
+            expectedPolicyDigest: policy,
+            observedPolicyDigest: policy,
+            placeholderOnly: true,
+            exposure: 'sandbox-provider',
+          },
+        };
+      };
+      restoreEffect = () => {
+        f.sessionDispatch.effect = effectOwner;
+      };
+      const originalScheduler = schedulerOwners.runSchedulerDispatchLoop;
+      if (vi.isMockFunction(originalScheduler))
+        throw new Error('Unexpected mutable Scheduler alias.');
+      const schedulerObservation = vi
+        .spyOn(schedulerOwners, 'runSchedulerDispatchLoop')
+        .mockImplementation((input) => {
+          const original = originalScheduler(input);
+          if (input.coreDb === coreDb) {
+            const claims = [...schedulerOwners.getSchedulerPreparationClaims(coreDb).values()];
+            expect(claims).toHaveLength(1);
+            claim = claims[0];
+            void claim!.then(
+              () => {
+                claimSettled = true;
+              },
+              () => {
+                claimSettled = true;
+              }
+            );
+          }
+          return original;
+        });
+      restoreScheduler = () => schedulerObservation.mockRestore();
+      const startOwner = f.executor.startTurn;
+      if (!vi.isMockFunction(startOwner)) throw new Error('Native start observation is absent.');
+      const startImplementation: typeof f.executor.startTurn | undefined =
+        startOwner.getMockImplementation();
+      if (!startImplementation) throw new Error('Native start implementation is absent.');
+      startOwner.mockImplementation((...args: Parameters<typeof f.executor.startTurn>) => {
+        const original = startImplementation.apply(f.executor, args);
+        execution = original;
+        void original.catch(() => {});
+        return original;
+      });
+      const acceptOwner = f.runtime.acceptNanoHostHarnessCommand.bind(f.runtime);
+      const acceptObservation = vi
+        .spyOn(f.runtime, 'acceptNanoHostHarnessCommand')
+        .mockImplementation(async (...args) => {
+          const wire = await acceptOwner(...args);
+          if (wire?.operation === 'turn.start') {
+            // Cache completion only after the actual owned wire exists; never create a future gate in cleanup.
+            const completion = f.executionFor(String(wire.body.turnId)).completion;
+            ownedCompletion = () => completion.resolve();
+            turnEntered.resolve(wire);
+            if (closing) ownedCompletion();
+            await turnRelease.promise;
+          }
+          return wire;
+        });
+      restoreAccept = () => acceptObservation.mockRestore();
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: `queue:${randomUUID()}`,
+        requestId: randomUUID(),
+        requestedAgentId: authored.id,
+        workspaceId,
+        threadId: DEMO_THREAD_ID,
+        turnId: testEntityId('tu', randomUUID()),
+        turnInput: 'Use the live static Provider.',
+        triggerActor: { kind: 'user', id: ownerUserId },
+      });
+      await publishFactoryAdmission(store, entry);
+      const agentSessionId = testEntityId('as', randomUUID());
+      admission = f.admitTurn(entry, {
+        attemptId: testEntityId('attempt', randomUUID()),
+        agentSessionId,
+        candidateAgentSessionId: agentSessionId,
+      });
+      void admission.catch(() => {});
+      const wire = await Promise.race([
+        turnEntered.promise,
+        admission.then(() => {
+          throw new Error('Admission completed without the held actual start wire.');
+        }),
+      ]);
+      expect(wire.body.turnId).toBe(entry.turnId);
+      expect(execution).toBeDefined();
+      expect(claim).toBeDefined();
+      const receipt = listVaultInjectionReceipts(coreDb).find((item) => item.grantId === grantId);
+      expect(receipt).toMatchObject({ revocationStatus: 'active' });
+      expect(
+        listVaultInjectionPlans(coreDb).find((plan) => plan.planId === receipt!.planId)
+      ).toMatchObject({
+        packageSnapshotId: wire.body.packageSnapshotId,
+        grantId,
+        injectionVisibility: 'backend-provider',
+      });
+      revoke = Promise.resolve(
+        app.request(
+          ...operationRequest(
+            'vault.grant-revoke',
+            {
+              workspaceId,
+              grantId,
+            },
+            { method: 'POST', headers: { 'content-type': 'application/json' } }
+          )
+        )
+      );
+      void revoke.then(
+        () => {
+          revokeSettled = true;
+        },
+        () => {
+          revokeSettled = true;
+        }
+      );
+      await vi.waitFor(() => expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked'));
+      const withdrawnReceipt = listVaultInjectionReceipts(coreDb).find(
+        (item) => item.receiptId === receipt!.receiptId
+      );
+      expect(withdrawnReceipt).toBeDefined();
+      expect(withdrawnReceipt!.revocationStatus).not.toBe('active');
+      // Let the original start delivery proceed so the live owner can interrupt and close that same execution.
+      turnRelease.resolve();
+      await Promise.race([
+        deleteEntered.promise,
+        revoke.then(() => {
+          throw new Error('Revocation returned without actual whole-Sandbox removal.');
+        }),
+      ]);
+      expect(revokeSettled).toBe(false);
+      expect(claimSettled).toBe(false);
+      expect(
+        listVaultInjectionReceipts(coreDb)
+          .filter((item) => item.grantId === grantId)
+          .every((item) => item.revocationStatus !== 'active')
+      ).toBe(true);
+      deleteRelease.resolve();
+      expect((await revoke).status).toBe(200);
+      // Stop may lawfully refuse the held startup ACK. Join original work, not a reconstructed success.
+      await Promise.allSettled([admission, execution!, claim!]);
+      expect(claimSettled).toBe(true);
+      expect(f.effects.some((request) => request.kind === 'sandbox.delete')).toBe(true);
+      expect(getVaultGrant(coreDb, grantId)?.status).toBe('revoked');
+      expect(
+        listVaultInjectionReceipts(coreDb).find((item) => item.receiptId === receipt!.receiptId)
+      ).toBeDefined();
+      expect(
+        listVaultInjectionReceipts(coreDb)
+          .filter((item) => item.grantId === grantId)
+          .every((item) => item.revocationStatus !== 'active')
+      ).toBe(true);
+      expect(JSON.stringify(f.effects).includes(material)).toBe(false);
+    } finally {
+      unblock();
+      await Promise.allSettled(
+        [admission, execution, claim, revoke].filter(
+          (value): value is Promise<unknown> => value !== undefined
+        )
+      );
+      restoreAccept?.();
+      restoreScheduler?.();
+      restoreEffect?.();
+      await native?.restore();
+      await shutdownControlStoreWorkerClient();
+      vault.lock();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+      signal.removeEventListener('abort', unblock);
+    }
+  }, 60_000);
 
   // F6/F7: real Native backend supply/capture and real Artifact publication; only Host effects are doubled.
   it.each(['ordinary', 'replacement', 'unknown-restart'] as const)(

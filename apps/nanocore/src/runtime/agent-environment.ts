@@ -79,6 +79,12 @@ import { createOpenkitGenerativeMcpSupply } from './openkit-generative-supply.js
 import { createOpenkitWorkMcpSupply } from './openkit-work-supply.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import {
+  readConfiguredWorkerProviderAccessShape,
+  type WorkerProviderAccessShapeReader,
+  type WorkerProviderCredentialBinding,
+  WorkerProviderCredentialBindingSchema,
+} from './provider-credential-binding.js';
+import {
   assertCurrentPublicNetworkGrants,
   canonicalPublicNetworkHost,
   type PublicNetworkConfiguration,
@@ -103,19 +109,8 @@ export interface ResolveOpenShellAgentEnvironmentBackendInput {
  */
 export type ResolveAgentEnvironmentBackendInput = ResolveOpenShellAgentEnvironmentBackendInput;
 
-/** Provider credential material resolved for backend-private materialization only. */
-export interface ResolvedAgentEnvironmentProviderCredential {
-  /** Optional credential expiry timestamp. */
-  readonly credentialExpiresAt?: string;
-  /** OpenShell credential key. */
-  readonly credentialKey: string;
-  /** Secret credential value. */
-  readonly credentialValue: string;
-  /** Provider instance id declared in the AEP. */
-  readonly providerInstanceId: string;
-  /** OpenShell provider profile/type id. */
-  readonly providerType: string;
-}
+/** Reference-only Provider preparation; material remains inside the governed binding operation. */
+export type ResolvedAgentEnvironmentProviderCredential = WorkerProviderCredentialBinding;
 
 /** Reference-only file supply prepared for the governed private delivery operation. */
 export interface ResolvedAgentEnvironmentRuntimeFileCredential {
@@ -613,6 +608,8 @@ function resolveOpenShellAgentEnvironmentPackage(
     triggerActor,
     workspaceId: workspaceIdForOwner(input.turn.owner),
     credentialResolution,
+    readProviderAccessShape: (profileId) =>
+      readConfiguredWorkerProviderAccessShape(input.readRuntimeConfig?.().gatewayConfig, profileId),
     ...(input.providerCredentialSink
       ? { providerCredentialSink: input.providerCredentialSink }
       : {}),
@@ -1328,6 +1325,8 @@ interface ResolveWorkerCredentialDeclarationsInput {
   readonly authorityNow: () => string;
   /** Agent Environment Package snapshot id receiving the declarations. */
   readonly packageSnapshotId: string;
+  /** Current source-configured static intent; missing data never permits preparation. */
+  readonly readProviderAccessShape: WorkerProviderAccessShapeReader;
   /** Exact product Thread and Turn admitted for this credential declaration. */
   readonly threadId: string;
   readonly turnId: string;
@@ -1384,6 +1383,15 @@ function resolveWorkerCredentialDeclarations(
     const grant = requireDeclarationGrant(coreDb, declaration);
     const reference = requireDeclarationReference(coreDb, grant);
     assertCredentialGrantMatchesDeclaration(input, declaration, grant, reference);
+    if (declaration.visibility === 'sandbox-provider') {
+      const shape = input.readProviderAccessShape(declaration.provider.profileId);
+      if (!shape || shape.credentialKey !== declaration.provider.credentialKey)
+        throw new TurnStartValidationError(
+          'credential_declaration_invalid',
+          'Provider access shape is unavailable.',
+          400
+        );
+    }
     if (input.credentialResolution === 'materialize') {
       assertCredentialSinkAvailable(input, declaration);
     }
@@ -1493,7 +1501,8 @@ function resolveWorkerCredentialDeclarations(
       recheck();
       if (
         declaration.visibility === 'runtime-token' ||
-        declaration.visibility === 'external-handle'
+        declaration.visibility === 'external-handle' ||
+        declaration.visibility === 'sandbox-provider'
       ) {
         // Preparation publishes only a plan and the original redacted requirement. Native
         // delivery, fresh Use/Audit and its receipt belong to authenticated active-Turn calls.
@@ -1659,7 +1668,7 @@ function declarationInjectionTarget(
     return {
       backendCapabilityRequirement: `sandbox-provider:${declaration.provider.type}`,
       backendSummary: `sandbox-provider:${declaration.provider.type}`,
-      revocationBehavior: 'detach-provider-attachment',
+      revocationBehavior: 'revoke-binding-or-fence-placement',
       targetEnvVarName: declaration.provider.credentialKey,
       visibility: 'backend-provider',
     };
@@ -1728,16 +1737,28 @@ function appendCredentialDeclarationArtifacts(
       kind: 'secret-ref' as const,
       secretRef: `vault://${reference.referenceId}`,
     });
-    if (input.material === null) {
-      return;
-    }
-    input.input.providerCredentialSink?.({
-      ...(grant.expiresAt ? { credentialExpiresAt: grant.expiresAt } : {}),
-      credentialKey: declaration.provider.credentialKey,
-      credentialValue: input.material,
-      providerInstanceId: declaration.provider.instanceId,
-      providerType: declaration.provider.type,
-    });
+    const accessShape = input.input.readProviderAccessShape(declaration.provider.profileId);
+    if (!accessShape || accessShape.credentialKey !== declaration.provider.credentialKey)
+      throw new TurnStartValidationError(
+        'credential_declaration_invalid',
+        'Provider access shape is unavailable.',
+        400
+      );
+    input.input.providerCredentialSink?.(
+      WorkerProviderCredentialBindingSchema.parse({
+        declarationId: declaration.id,
+        grantId: grant.grantId,
+        planId: input.planId,
+        receiptId: input.receiptId,
+        vaultReferenceId: reference.referenceId,
+        materialVersion: reference.currentVersion,
+        providerInstanceId: declaration.provider.instanceId,
+        providerType: declaration.provider.type,
+        credentialKey: declaration.provider.credentialKey,
+        profileId: declaration.provider.profileId,
+        accessShape,
+      })
+    );
     return;
   }
 

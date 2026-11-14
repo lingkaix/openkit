@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { AgentEnvironmentPackage } from '@openkit/config-schema';
+import type { AgentEnvironmentPackage, GatewayConfig } from '@openkit/config-schema';
 import { isEntityId } from '@openkit/protocol';
 import { z } from 'zod';
 import { WorkerSandboxPolicyIntentSchema } from './worker-governance-backend.js';
@@ -41,6 +41,17 @@ export const WorkerProviderAccessShapeSchema = z
 
 /** Configuration data crosses the backend port as intent, not as a native profile. */
 export type WorkerProviderAccessShape = z.infer<typeof WorkerProviderAccessShapeSchema>;
+
+/** Reads only explicit current configuration data; absent/ambiguous/invalid intent refuses. */
+export function readConfiguredWorkerProviderAccessShape(
+  configuration: Pick<GatewayConfig, 'providerAccessShapes'> | undefined,
+  profileId: string
+): WorkerProviderAccessShape | undefined {
+  const selected = configuration?.providerAccessShapes?.filter((shape) => shape.id === profileId);
+  if (!selected || selected.length !== 1) return undefined;
+  const parsed = WorkerProviderAccessShapeSchema.safeParse(selected[0]);
+  return parsed.success ? parsed.data : undefined;
+}
 
 /** Reference-only preparation; actual material is resolved by the governed binding operation. */
 export const WorkerProviderCredentialBindingSchema = z

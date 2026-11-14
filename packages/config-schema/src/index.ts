@@ -10,6 +10,7 @@ export * from './model-catalog.js';
 export * from './policy.js';
 export * from './product-policy.js';
 export * from './provider.js';
+export * from './provider-access-shapes.js';
 export * from './provider-subscription.js';
 export * from './resource-catalog.js';
 export * from './schema-evolution.js';

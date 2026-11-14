@@ -586,6 +586,112 @@ describe('authoritative NanoHost session dispatch', () => {
         const { requestId: _requestId, ...expected } = result;
         await expect(pending).resolves.toEqual(expected);
       }
+
+      // Independent Node producer oracle, on the existing H2 import connection and authority.
+      // This closed carriage projection is not a Vault grant, Policy decision or native SDK effect.
+      const providerBinding = {
+        declarationId: 'provider_wire',
+        grantId: testEntityId('grant', 'provider-wire-grant'),
+        planId: 'plan_provider_wire',
+        receiptId: 'receipt_provider_wire',
+        vaultReferenceId: testEntityId('vault', 'provider-wire-reference'),
+        materialVersion: 1,
+        providerInstanceId: 'logical-provider-wire',
+        providerType: 'generic',
+        credentialKey: 'API_TOKEN',
+        profileId: 'provider_wire_fixture',
+        accessShape: {
+          id: 'provider_wire_fixture',
+          credentialKey: 'API_TOKEN',
+          endpoints: [
+            { name: 'wire_api', host: 'api.example.test', port: 443, binaries: ['/usr/bin/curl'] },
+          ],
+        },
+        deploymentId: target.deploymentId,
+        workspaceId: testEntityId('ws', 'provider-wire-workspace'),
+        policyIntent: { additionalFilesystemGrants: [], additionalNetworkEndpoints: [] },
+      };
+      const providerMaterial = Buffer.from([
+        0x70, 0x72, 0x69, 0x76, 0x61, 0x74, 0x65, 0, 0xff, 0x7f,
+      ]);
+      const providerDigest = `sha256:${createHash('sha256').update(providerMaterial).digest('hex')}`;
+      const providerInput = {
+        sandboxId: common.sandboxId,
+        slot: 'runtime-credential',
+        relativePath: 'provider_wire/plan_provider_wire/receipt_provider_wire',
+        entryKind: 'file',
+        executable: false,
+        body: providerMaterial,
+        byteLength: providerMaterial.length,
+        sha256: providerDigest,
+        providerBinding,
+      };
+      // credentialValue is an unowned raw-value/authority member, even beside an otherwise exact tuple.
+      await expect(
+        dispatch.effect({
+          kind: 'reference.import',
+          requestId: 'c'.repeat(64),
+          input: {
+            ...providerInput,
+            providerBinding: { ...providerBinding, credentialValue: 'forbidden-metadata-value' },
+          },
+        })
+      ).rejects.toThrow();
+      expect(await dispatch.poll(physical!, 'reference.import')).toBeNull();
+
+      const providerRequestId = 'd'.repeat(64);
+      const providerPending = dispatch.effect({
+        kind: 'reference.import',
+        requestId: providerRequestId,
+        input: providerInput,
+      });
+      void providerPending.catch(() => undefined);
+      const providerCarried = await post(path, {});
+      expect(providerCarried.headers[':status']).toBe(200);
+      expect(providerCarried.headers['content-type']).toBe('application/octet-stream');
+      expect(providerCarried.headers['x-openkit-request-id']).toBe(providerRequestId);
+      expect(providerCarried.headers['x-openkit-slot']).toBe('runtime-credential');
+      expect(providerCarried.headers['x-openkit-entry-kind']).toBe('file');
+      expect(providerCarried.headers['x-openkit-executable']).toBe('false');
+      expect(providerCarried.headers['x-openkit-relative-path']).toBe(providerInput.relativePath);
+      const providerPrefixBytes = Number(
+        providerCarried.headers['x-openkit-provider-binding-bytes']
+      );
+      expect(
+        Number.isSafeInteger(providerPrefixBytes) &&
+          providerPrefixBytes > 0 &&
+          providerPrefixBytes <= 1024 * 1024
+      ).toBe(true);
+      expect(providerCarried.headers['x-openkit-provider-binding-bytes']).toBe(
+        String(providerPrefixBytes)
+      );
+      expect(providerCarried.headers['content-length']).toBe(
+        String(providerPrefixBytes + providerMaterial.length)
+      );
+      expect(providerCarried.body.length).toBe(providerPrefixBytes + providerMaterial.length);
+      const providerPrefix = providerCarried.body.subarray(0, providerPrefixBytes);
+      expect(JSON.parse(providerPrefix.toString('utf8'))).toEqual(providerBinding);
+      expect(providerPrefix.includes(providerMaterial)).toBe(false);
+      const providerRaw = providerCarried.body.subarray(providerPrefixBytes);
+      expect(providerRaw.equals(providerMaterial)).toBe(true);
+      expect(providerCarried.headers['x-openkit-byte-length']).toBe(
+        String(providerMaterial.length)
+      );
+      expect(providerCarried.headers['x-openkit-sha256']).toBe(providerDigest);
+      expect(`sha256:${createHash('sha256').update(providerRaw).digest('hex')}`).toBe(
+        providerDigest
+      );
+      // Settle the original transport operation through the same existing result route; no SDK is invoked.
+      const providerResult = {
+        requestId: providerRequestId,
+        byteLength: providerMaterial.length,
+        reference: `sandbox://${providerInput.sandboxId}/${providerInput.slot}/${providerInput.relativePath}`,
+      };
+      expect((await post(`${path}/result`, providerResult)).headers[':status']).toBe(204);
+      await expect(providerPending).resolves.toEqual({
+        byteLength: providerResult.byteLength,
+        reference: providerResult.reference,
+      });
     } finally {
       client?.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));

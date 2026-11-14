@@ -289,6 +289,10 @@ import {
   readPendingRequest,
   renderPendingOutcomeItems,
 } from './pending-requests.js';
+import {
+  WorkerProviderCredentialBindingSchema,
+  type WorkerProviderProtectionProof,
+} from './provider-credential-binding.js';
 import { listWorkspaceRuntimeEvidence } from './runtime-evidence.js';
 import { runSchedulerDispatchLoop } from './scheduler-dispatch-loop.js';
 import { runSchedulerRecoveryMaintenance } from './scheduler-restart-recovery.js';
@@ -12595,6 +12599,25 @@ describe('WorkerGovernanceTurnExecutor', () => {
       ownerUserId: LOCAL_USER_ID,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
+    const providerAccessShape = {
+      id: 'github_mcp',
+      credentialKey: 'GITHUB_TOKEN',
+      endpoints: [
+        { name: 'github_api', host: 'api.github.com', port: 443, binaries: ['/usr/bin/curl'] },
+      ],
+    };
+    const baseConfiguration = loadRuntimeConfig(coreDb.dataRoot);
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      ...baseConfiguration,
+      dataRoot: coreDb.dataRoot,
+      gatewayConfig: {
+        ...baseConfiguration.gatewayConfig,
+        providerAccessShapes: [providerAccessShape],
+      },
+    });
+    const admission = new WorkspaceMutationAdmission();
+    const interception = new PolicyInterception();
+    store.setWorkspaceMutationAdmission(admission);
     const backend = new FakeWorkerGovernanceBackend();
     // Each Turn has its own backend session record even when it reuses the AgentSession binding.
     const planSession = backend.planSession.bind(backend);
@@ -12607,6 +12630,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
+      workspaceMutationAdmission: admission,
+      policyInterception: () => interception,
+      readRuntimeConfig: () => configuration,
       now: () => timestamp,
       vaultBackend: () => vaultUnlockState.backend(),
     });
@@ -12653,6 +12679,24 @@ describe('WorkerGovernanceTurnExecutor', () => {
     try {
       await run(1);
       expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
+      expect(backend.lastContext?.providerCredentials).toEqual([
+        expect.objectContaining({
+          declarationId: 'github_mcp_read',
+          grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+          vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
+          materialVersion: 1,
+          accessShape: providerAccessShape,
+        }),
+      ]);
+      expect(
+        (backend.lastContext?.providerCredentials ?? []).every(
+          (value) =>
+            typeof value === 'object' &&
+            value !== null &&
+            !Object.hasOwn(value, 'credentialValue') &&
+            !Object.hasOwn(value, 'synthetic')
+        )
+      ).toBe(true);
       coreDb.sqlite
         .prepare(
           "UPDATE scheduler_execution_attempts SET phase = 'closed' WHERE agent_session_id = ?"
@@ -12663,155 +12707,221 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await run(2);
       expect(store.getAgentSession(agentSessionId).status).toBe('idle');
       expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
+      expect(backend.providerCredentialCheckValues).toEqual(['ghp_governance_token']);
     } finally {
       coreDb.sqlite.close();
     }
   });
 
-  it('passes vault backend dependencies into worker package resolution', async () => {
-    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-vault-grants-'));
-    const coreDb = openCoreDb(dataRoot);
-    const vaultUnlockState = createVaultUnlockState({
-      backendKind: 'encrypted-file',
-      storeDir: join(dataRoot, 'server', 'vault'),
-    });
-    const timestamp = '2026-07-05T00:00:00.000Z';
+  it.each([true, false])(
+    'passes vault backend dependencies into worker package resolution (Workspace admission %s)',
+    async (admitted) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-governance-vault-grants-'));
+      const coreDb = openCoreDb(dataRoot);
+      const vaultUnlockState = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(dataRoot, 'server', 'vault'),
+      });
+      const timestamp = '2026-07-05T00:00:00.000Z';
 
-    applyMigrations(coreDb);
-    vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 8) });
-    vaultUnlockState.backend().store({
-      material: 'ghp_governance_token',
-      metadata: { ownerScope: 'server' },
-      referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-    });
-    await createVaultReference(coreDb, {
-      backendKind: 'encrypted-file',
-      backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
-      displayName: 'GitHub read token',
-      ownerScope: 'server',
-      referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-      secretKind: 'github-token',
-      now: () => timestamp,
-    });
-    await createVaultGrant(coreDb, {
-      allowedInjectionPaths: ['backend-provider'],
-      expiresAt: '2099-07-05T01:00:00.000Z',
-      grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-      lifetime: 'turn',
-      ownerScope: 'server',
-      policyDecisionId: 'pd_00000000-0000-74a7-97bd-a31e71c87579',
-      targetAgentSessionId: testEntityId('as', 'as_governance_vault_1'),
-      vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
-      now: () => timestamp,
-    });
+      applyMigrations(coreDb);
+      vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 8) });
+      vaultUnlockState.backend().store({
+        material: 'ghp_governance_token',
+        metadata: { ownerScope: 'server' },
+        referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
+      });
+      await createVaultReference(coreDb, {
+        backendKind: 'encrypted-file',
+        backendLocator: 'encrypted-file://server/vault/vault_00000000-0000-7d14-9747-33948cb59d1e',
+        displayName: 'GitHub read token',
+        ownerScope: 'server',
+        referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
+        secretKind: 'github-token',
+        now: () => timestamp,
+      });
+      await createVaultGrant(coreDb, {
+        allowedInjectionPaths: ['backend-provider'],
+        expiresAt: '2099-07-05T01:00:00.000Z',
+        grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+        lifetime: 'turn',
+        ownerScope: 'server',
+        policyDecisionId: 'pd_00000000-0000-74a7-97bd-a31e71c87579',
+        targetAgentSessionId: testEntityId('as', 'as_governance_vault_1'),
+        vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
+        now: () => timestamp,
+      });
 
-    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
-    recordWorkspaceOwnerMembership({
-      coreDb,
-      ownerUserId: LOCAL_USER_ID,
-      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    });
-    const turn = await createAssignedTurn(
-      store,
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001',
-      'Run GitHub MCP in OpenShell'
-    );
-    const backend = new FakeWorkerGovernanceBackend();
-    const executor = new WorkerGovernanceTurnExecutor({
-      fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
-      backend,
-      coreDb,
-      createAgentSessionId: () => testEntityId('as', 'as_governance_vault_1'),
-      environmentBackend: {
-        kind: 'openshell',
-      },
-      now: () => timestamp,
-      vaultBackend: () => vaultUnlockState.backend(),
-    });
-
-    try {
-      await startWithExecutorAttempt(
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      recordWorkspaceOwnerMembership({
         coreDb,
-        executor,
+        ownerUserId: LOCAL_USER_ID,
+        workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+      });
+      const turn = await createAssignedTurn(
         store,
-        turn,
-        testEntityId('as', 'as_governance_vault_1'),
-        timestamp,
-        'Run GitHub MCP in OpenShell',
-        {
-          agentSetup: createTestAgentSetup({
-            credentialDeclarations: [
-              {
-                id: 'github_mcp_read',
-                provider: {
-                  credentialKey: 'GITHUB_TOKEN',
-                  instanceId: 'provider_github_read',
-                  profileId: 'github_mcp',
-                  type: 'github_mcp',
-                },
-                vaultGrantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-                visibility: 'sandbox-provider',
-              },
-            ],
-            mcpIds: ['github'],
-          }),
-          requestId: '00000000-0000-4000-8000-000000000215',
-          triggerActor: turn.triggerActor,
-          workspaceMcpServerCatalog: {
-            schemaVersion: 1,
-            servers: [
-              {
-                allowedTools: ['*'],
-                credentialBindings: [],
-                enabled: true,
-                id: 'github',
-                pinnedSchemaSnapshotId: null,
-                schemaPolicy: 'tracking',
-                timeoutMs: 60_000,
-                transport: {
-                  args: ['fixtures/github.mjs'],
-                  command: 'node',
-                  environment: {},
-                  kind: 'stdio',
-                },
-              },
-            ],
-          },
-          workspaceRoots: [],
-        }
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001',
+        'Run GitHub MCP in OpenShell'
       );
+      const providerAccessShape = {
+        id: 'github_mcp',
+        credentialKey: 'GITHUB_TOKEN',
+        endpoints: [
+          { name: 'github_api', host: 'api.github.com', port: 443, binaries: ['/usr/bin/curl'] },
+        ],
+      };
+      const baseConfiguration = loadRuntimeConfig(coreDb.dataRoot);
+      const configuration = createInMemoryRuntimeConfigSnapshot({
+        ...baseConfiguration,
+        dataRoot: coreDb.dataRoot,
+        gatewayConfig: {
+          ...baseConfiguration.gatewayConfig,
+          providerAccessShapes: [providerAccessShape],
+        },
+      });
+      const admission = new WorkspaceMutationAdmission();
+      const interception = new PolicyInterception();
+      if (admitted) store.setWorkspaceMutationAdmission(admission);
+      const backend = new FakeWorkerGovernanceBackend();
+      const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
+      const supply = vi.spyOn(backend, 'deliverProviderCredentialBinding');
+      const submit = vi.spyOn(backend, 'submit');
+      const executor = new WorkerGovernanceTurnExecutor({
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        backend,
+        coreDb,
+        ...(admitted ? { workspaceMutationAdmission: admission } : {}),
+        policyInterception: () => interception,
+        createAgentSessionId: () => testEntityId('as', 'as_governance_vault_1'),
+        readRuntimeConfig: () => configuration,
+        environmentBackend: {
+          kind: 'openshell',
+        },
+        now: () => timestamp,
+        vaultBackend: () => vaultUnlockState.backend(),
+      });
 
-      expect(backend.lastPackage?.vault.grants).toEqual([
-        expect.objectContaining({
-          expiresAt: '2099-07-05T01:00:00.000Z',
-          id: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-        }),
-      ]);
-      expect(listVaultInjectionPlans(coreDb)).toEqual([
-        expect.objectContaining({
-          grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-          packageSnapshotId: backend.lastPackage?.snapshotId,
-        }),
-      ]);
-      expect(listVaultInjectionReceipts(coreDb)).toEqual([
-        expect.objectContaining({
-          agentSessionId: testEntityId('as', 'as_governance_vault_1'),
-          grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-        }),
-      ]);
-      expect(listVaultUseRecords(coreDb)).toEqual([
-        expect.objectContaining({
-          grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
-          outcome: 'succeeded',
-          resolvingPath: 'grant',
-        }),
-      ]);
-      expect(JSON.stringify(backend.lastPackage)).not.toContain('ghp_governance_token');
-    } finally {
-      coreDb.sqlite.close();
+      try {
+        const run = startWithExecutorAttempt(
+          coreDb,
+          executor,
+          store,
+          turn,
+          testEntityId('as', 'as_governance_vault_1'),
+          timestamp,
+          'Run GitHub MCP in OpenShell',
+          {
+            agentSetup: createTestAgentSetup({
+              credentialDeclarations: [
+                {
+                  id: 'github_mcp_read',
+                  provider: {
+                    credentialKey: 'GITHUB_TOKEN',
+                    instanceId: 'provider_github_read',
+                    profileId: 'github_mcp',
+                    type: 'github_mcp',
+                  },
+                  vaultGrantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+                  visibility: 'sandbox-provider',
+                },
+              ],
+              mcpIds: ['github'],
+            }),
+            requestId: '00000000-0000-4000-8000-000000000215',
+            triggerActor: turn.triggerActor,
+            workspaceMcpServerCatalog: {
+              schemaVersion: 1,
+              servers: [
+                {
+                  allowedTools: ['*'],
+                  credentialBindings: [],
+                  enabled: true,
+                  id: 'github',
+                  pinnedSchemaSnapshotId: null,
+                  schemaPolicy: 'tracking',
+                  timeoutMs: 60_000,
+                  transport: {
+                    args: ['fixtures/github.mjs'],
+                    command: 'node',
+                    environment: {},
+                    kind: 'stdio',
+                  },
+                },
+              ],
+            },
+            workspaceRoots: [],
+          }
+        );
+
+        if (!admitted) {
+          await expect(run).rejects.toMatchObject({
+            code: 'workspace_access_denied',
+            message: 'Workspace access denied.',
+            status: 403,
+          });
+          expect(resolve).not.toHaveBeenCalled();
+          expect(supply).not.toHaveBeenCalled();
+          expect(submit).not.toHaveBeenCalled();
+          expect(listVaultUseRecords(coreDb)).toEqual([]);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(backend.providerCredentialCheckValues).toEqual([]);
+          return;
+        }
+        await run;
+        expect(backend.lastPackage?.vault.grants).toEqual([
+          expect.objectContaining({
+            expiresAt: '2099-07-05T01:00:00.000Z',
+            id: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+          }),
+        ]);
+        expect(listVaultInjectionPlans(coreDb)).toEqual([
+          expect.objectContaining({
+            grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+            packageSnapshotId: backend.lastPackage?.snapshotId,
+          }),
+        ]);
+        expect(listVaultInjectionReceipts(coreDb)).toEqual([
+          expect.objectContaining({
+            agentSessionId: testEntityId('as', 'as_governance_vault_1'),
+            grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+          }),
+        ]);
+        expect(listVaultUseRecords(coreDb)).toEqual([
+          expect.objectContaining({
+            grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+            outcome: 'succeeded',
+            resolvingPath: 'grant',
+          }),
+        ]);
+        expect(JSON.stringify(backend.lastPackage)).not.toContain('ghp_governance_token');
+        expect(backend.lastContext?.providerCredentials).toEqual([
+          expect.objectContaining({
+            declarationId: 'github_mcp_read',
+            grantId: 'grant_00000000-0000-7d98-b1e4-8d2f442e5137',
+            vaultReferenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
+            materialVersion: 1,
+            accessShape: providerAccessShape,
+          }),
+        ]);
+        expect(
+          (backend.lastContext?.providerCredentials ?? []).every(
+            (value) =>
+              typeof value === 'object' &&
+              value !== null &&
+              !Object.hasOwn(value, 'credentialValue') &&
+              !Object.hasOwn(value, 'synthetic')
+          )
+        ).toBe(true);
+        expect(backend.providerCredentialCheckValues).toEqual(['ghp_governance_token']);
+      } finally {
+        resolve.mockRestore();
+        supply.mockRestore();
+        submit.mockRestore();
+        coreDb.sqlite.close();
+      }
     }
-  });
+  );
 
   it.each(['fixture-runtime-file', 'nanohost-runtime-file', 'nanohost-provider'] as const)(
     'admits backend credential support before resolving material: %s',
@@ -12976,7 +13086,16 @@ describe('WorkerGovernanceTurnExecutor', () => {
         );
 
         if (production) {
-          await expect(run).rejects.toBeInstanceOf(DeterministicAgentPreparationError);
+          if (mode === 'nanohost-provider') {
+            await expect(run).rejects.toBeInstanceOf(TurnStartValidationError);
+            await expect(run).rejects.toMatchObject({
+              code: 'credential_declaration_invalid',
+              message: 'Provider access shape is unavailable.',
+              status: 400,
+            });
+          } else {
+            await expect(run).rejects.toBeInstanceOf(DeterministicAgentPreparationError);
+          }
           // Declaration Shared Resolution Rules and Vault injection: known support precedes release.
           expect(resolve).not.toHaveBeenCalled();
           expect(listVaultInjectionPlans(coreDb)).toEqual([]);
@@ -13540,6 +13659,8 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
   public lastPackage: AgentEnvironmentPackage | null = null;
   /** Private comparison evidence acquired only after admitted file delivery. */
   public readonly fileCredentialCheckValues: string[] = [];
+  /** Private comparison evidence acquired only through governed Provider delivery. */
+  public readonly providerCredentialCheckValues: string[] = [];
   /** Optional canonical event transcript factory used by reconciliation tests. */
   public eventsJsonlFactory:
     | ((environmentPackage: AgentEnvironmentPackage) => string | Promise<string>)
@@ -13656,6 +13777,50 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     };
   }
 
+  /** Reads only the exact references actually prepared for this fake placement. */
+  public readProviderCredentialBinding(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string
+  ) {
+    if (this.lastPackage?.snapshotId !== packageSnapshotId) return undefined;
+    return (this.lastContext?.providerCredentials ?? [])
+      .map((value) => WorkerProviderCredentialBindingSchema.parse(value))
+      .find((value) => value.planId === planId && value.receiptId === receiptId);
+  }
+
+  /** Models only the external protected sink; the real Vault operation owns permission and receipt. */
+  public async deliverProviderCredentialBinding(
+    packageSnapshotId: string,
+    planId: string,
+    receiptId: string,
+    credentialValue: string,
+    materialVersion: number,
+    recheckAuthority: () => Promise<void>
+  ): Promise<WorkerProviderProtectionProof> {
+    await recheckAuthority();
+    const binding = this.readProviderCredentialBinding(packageSnapshotId, planId, receiptId);
+    if (!binding || binding.materialVersion !== materialVersion)
+      throw new Error('Original admitted Provider supply is unavailable.');
+    this.calls.push('deliverProviderCredentialBinding');
+    this.providerCredentialCheckValues.push(credentialValue);
+    const digest = createHash('sha256').update(JSON.stringify(binding.accessShape)).digest('hex');
+    return {
+      declarationId: binding.declarationId,
+      grantId: binding.grantId,
+      planId,
+      receiptId,
+      vaultReferenceId: binding.vaultReferenceId,
+      materialVersion,
+      mappingVersion: 1,
+      profileDigest: digest,
+      expectedPolicyDigest: digest,
+      observedPolicyDigest: digest,
+      placeholderOnly: true,
+      exposure: 'sandbox-provider',
+    };
+  }
+
   /** Realizes reference-only file supply after the same admitted authority readback. */
   public async deliverCredentialBinding(
     packageSnapshotId: string,
@@ -13738,7 +13903,7 @@ class FakeWorkerGovernanceBackend implements WorkerGovernanceBackend {
     return {
       credentialCheckValues: {
         sensitiveValues: [
-          ...(this.lastContext?.providerCredentials ?? []).map((item) => item.credentialValue),
+          ...this.providerCredentialCheckValues,
           ...(this.lastContext?.runtimeEnvCredentials ?? []).map((item) => item.credentialValue),
           ...this.fileCredentialCheckValues,
           ...(this.lastContext?.sandboxBindingRef ? [this.lastContext.sandboxBindingRef] : []),

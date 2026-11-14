@@ -2488,6 +2488,7 @@ async fn poll_reference_import(
     if !is_lowercase_hex(&request_id, 64) {
         return Err(terminal("reference.import requestId invalid"));
     }
+    let mut provider_binding = None;
     let admitted = async {
         let headers = response.headers();
         if required_header(headers, "content-type").map_err(terminal)? != FILE_CONTENT_TYPE {
@@ -2508,6 +2509,25 @@ async fn poll_reference_import(
             .ok()
             .filter(|length| length.to_string() == content_length_text)
             .ok_or_else(|| terminal("reference.import content length invalid"))?;
+        let provider_metadata_length = match headers.get("x-openkit-provider-binding-bytes") {
+            None => 0,
+            Some(value) => {
+                let value = value
+                    .to_str()
+                    .map_err(|_| terminal("reference.import Provider metadata length invalid"))?;
+                let length = value
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|length| {
+                        *length > 0 && *length <= 1024 * 1024 && length.to_string() == value
+                    })
+                    .ok_or_else(|| terminal("reference.import Provider metadata length invalid"))?;
+                if slot != "runtime-credential" || entry_kind != "file" {
+                    return Err(terminal("reference.import Provider carriage invalid"));
+                }
+                length
+            }
+        };
         let entry = match entry_kind {
             "directory" => {
                 if slot != "worker-supply"
@@ -2564,9 +2584,13 @@ async fn poll_reference_import(
                                 }
                     })
                     .ok_or_else(|| terminal("reference.import byte length invalid"))?;
-                if content_length != byte_length {
+                if content_length != byte_length + provider_metadata_length as u64
+                    || (provider_metadata_length > 0
+                        && (executable || byte_length == 0 || byte_length > 1024 * 1024))
+                {
                     return Err(terminal("reference.import length mismatch"));
                 }
+                let mut provider_metadata = Vec::with_capacity(provider_metadata_length);
                 let mut response_body = response.into_body();
                 let mut stage = if matches!(
                     slot.as_str(),
@@ -2580,10 +2604,20 @@ async fn poll_reference_import(
                 let mut observed = 0_u64;
                 while let Some(chunk) = response_body.data().await {
                     let chunk = chunk.map_err(|_| reconnect("reference.import response failed"))?;
-                    if observed + chunk.len() as u64 > byte_length {
+                    let metadata_bytes =
+                        (provider_metadata_length - provider_metadata.len()).min(chunk.len());
+                    if metadata_bytes > 0 {
+                        provider_metadata.extend_from_slice(&chunk[..metadata_bytes]);
+                        response_body
+                            .flow_control()
+                            .release_capacity(metadata_bytes)
+                            .map_err(|_| terminal("reference.import flow control failed"))?;
+                    }
+                    let material = &chunk[metadata_bytes..];
+                    if observed + material.len() as u64 > byte_length {
                         return Err(terminal("reference.import body exceeded declared length"));
                     }
-                    for consumed in chunk.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
+                    for consumed in material.chunks(FILE_DATA_APPLICATION_CHUNK_BYTES) {
                         std::io::Write::write_all(&mut stage, consumed)
                             .map_err(|_| terminal("reference.import staging failed"))?;
                         observed += consumed.len() as u64;
@@ -2592,6 +2626,16 @@ async fn poll_reference_import(
                             .release_capacity(consumed.len())
                             .map_err(|_| terminal("reference.import flow control failed"))?;
                     }
+                }
+                if provider_metadata.len() != provider_metadata_length {
+                    return Err(terminal("reference.import Provider metadata truncated"));
+                }
+                if provider_metadata_length > 0 {
+                    let metadata: serde_json::Value = serde_json::from_slice(&provider_metadata)
+                        .map_err(|_| terminal("reference.import Provider metadata invalid"))?;
+                    crate::openshell_provider_delivery::prepare_static_binding(&metadata)
+                        .map_err(|_| terminal("reference.import Provider intent invalid"))?;
+                    provider_binding = Some(metadata);
                 }
                 let file = stage
                     .complete(Some((byte_length, &sha256)))
@@ -2619,7 +2663,10 @@ async fn poll_reference_import(
     Ok(Some(PolledEffectCommand {
         kind: RuntimeEffectKind::ImportReference,
         request_id,
-        input: serde_json::json!({}),
+        input: provider_binding.map_or_else(
+            || serde_json::json!({}),
+            |binding| serde_json::json!({"providerBinding": binding}),
+        ),
         trace_context,
         file_data,
         admission_failure,
@@ -3308,6 +3355,139 @@ mod tests {
         NANOHOST_CONTROL_IN_FLIGHT_BYTES, OUTER_MAX_CONCURRENT_STREAMS,
         PER_STREAM_RECEIVE_WINDOW_BYTES, WORKER_CONTROL_IN_FLIGHT_BYTES,
     };
+
+    /// Provider metadata framing must not become credential bytes or implicit native authority.
+    #[tokio::test]
+    async fn provider_import_prefix_preserves_sealed_material_and_rejects_unknown_authority() {
+        use sha2::{Digest, Sha256};
+        use std::os::fd::AsRawFd;
+
+        for unknown_authority in [false, true] {
+            let mut binding = serde_json::json!({
+                "declarationId": "provider", "grantId": "grant", "planId": "plan",
+                "receiptId": "receipt", "vaultReferenceId": "reference", "materialVersion": 1,
+                "providerInstanceId": "logical-provider", "providerType": "generic",
+                "credentialKey": "GITHUB_TOKEN", "profileId": "github_mcp",
+                "deploymentId": "deployment", "workspaceId": "workspace",
+                "accessShape": {
+                    "id": "github_mcp", "credentialKey": "GITHUB_TOKEN",
+                    "endpoints": [{
+                        "name": "github_api", "host": "api.github.com", "port": 443,
+                        "binaries": ["/usr/bin/curl"]
+                    }]
+                },
+                "policyIntent": {"additionalFilesystemGrants": [], "additionalNetworkEndpoints": []}
+            });
+            if unknown_authority {
+                binding["futureAuthority"] = serde_json::json!(true);
+            }
+            let prefix = serde_json::to_vec(&binding).unwrap();
+            let material = b"synthetic-provider-bearer\0with-binary-tail\xff";
+            let digest = format!("sha256:{:x}", Sha256::digest(material));
+            let metadata_length = prefix.len();
+            let body_length = prefix.len() + material.len();
+            // First split inside JSON; the next DATA frame crosses from JSON into credential bytes.
+            let split = prefix.len() / 2;
+            let first = prefix[..split].to_vec();
+            let mut crossing = prefix[split..].to_vec();
+            crossing.extend_from_slice(&material[..3]);
+            let tail = material[3..].to_vec();
+            let (client_io, server_io) = tokio::io::duplex(65536);
+            let (mut sender, connection) = h2::client::handshake(client_io).await.unwrap();
+            let driver = tokio::spawn(async move {
+                let _ = connection.await;
+            });
+            let server = tokio::spawn(async move {
+                let mut connection = h2::server::handshake(server_io).await.unwrap();
+                let (request, mut respond) = connection.accept().await.unwrap().unwrap();
+                assert_eq!(
+                    request.uri().path(),
+                    "/api/nanohost/transport/effects/reference.import"
+                );
+                let headers = Response::builder()
+                    .status(200)
+                    .header("content-type", FILE_CONTENT_TYPE)
+                    .header("content-length", body_length.to_string())
+                    .header(REQUEST_ID_HEADER, "a".repeat(64))
+                    .header(SLOT_HEADER, "runtime-credential")
+                    .header(RELATIVE_PATH_HEADER, "provider/plan/receipt")
+                    .header(ENTRY_KIND_HEADER, "file")
+                    .header(EXECUTABLE_HEADER, "false")
+                    .header(SHA256_HEADER, digest)
+                    .header(BYTE_LENGTH_HEADER, material.len().to_string())
+                    .header(
+                        "x-openkit-provider-binding-bytes",
+                        metadata_length.to_string(),
+                    );
+                let mut response = respond
+                    .send_response(headers.body(()).unwrap(), false)
+                    .unwrap();
+                response.send_data(Bytes::from(first), false).unwrap();
+                response.send_data(Bytes::from(crossing), false).unwrap();
+                response.send_data(Bytes::from(tail), true).unwrap();
+                let _ = connection.accept().await;
+            });
+            let parsed = poll_reference_import(
+                "http://core:80",
+                &mut sender,
+                "/api/nanohost/transport/effects/reference.import",
+                std::env::temp_dir().as_path(),
+            )
+            .await;
+            driver.abort();
+            server.abort();
+            let _ = driver.await;
+            let _ = server.await;
+            let command = parsed
+                .expect("correlated import response")
+                .expect("one import command");
+            assert_eq!(command.request_id, "a".repeat(64));
+            if unknown_authority {
+                // A correlated refusal is not an admitted SDK command or sealed material capability.
+                assert!(command.admission_failure.is_some());
+                assert!(command.file_data.is_none());
+                assert!(command.input.get("providerBinding").is_none());
+                continue;
+            }
+            assert!(command.admission_failure.is_none());
+            assert_eq!(
+                command.input,
+                serde_json::json!({"providerBinding": binding})
+            );
+            let raw = command.file_data.expect("admitted private credential body");
+            assert_eq!(raw.slot, "runtime-credential");
+            assert_eq!(
+                raw.relative_path.as_path(),
+                std::path::Path::new("provider/plan/receipt")
+            );
+            match raw.entry {
+                crate::sandbox_bridge::ImportEntry::File { executable, file } => {
+                    assert!(!executable);
+                    assert_eq!(file.length(), material.len() as u64);
+                    let mut reader = file.reader().unwrap();
+                    let seals = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GET_SEALS) };
+                    assert!(
+                        seals >= 0,
+                        "private credential body must be sealable memory"
+                    );
+                    let required = libc::F_SEAL_WRITE
+                        | libc::F_SEAL_GROW
+                        | libc::F_SEAL_SHRINK
+                        | libc::F_SEAL_SEAL;
+                    assert_eq!(seals & required, required);
+                    let mut observed = Vec::new();
+                    std::io::Read::read_to_end(&mut reader, &mut observed).unwrap();
+                    assert!(
+                        observed.as_slice() == material,
+                        "sealed body differs from raw material"
+                    );
+                }
+                crate::sandbox_bridge::ImportEntry::Directory => {
+                    panic!("Provider material became a directory")
+                }
+            }
+        }
+    }
 
     /// Parses Core dispatcher output before intervening with an unowned authority field.
     #[tokio::test]

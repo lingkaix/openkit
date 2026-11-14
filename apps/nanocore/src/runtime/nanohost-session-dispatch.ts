@@ -70,6 +70,7 @@ import {
   requireStoredNanoHostPhysicalEpoch,
   upsertNanoHostRuntimeTarget,
 } from './nanohost-runtime-target.js';
+import { WorkerProviderEffectIntentSchema } from './provider-credential-binding.js';
 import { listWorkerBackendSessions } from './worker-backend-session-records.js';
 import {
   type NanoHostFileImportSource,
@@ -2604,11 +2605,25 @@ export function registerNanoHostSessionEffectRoutes(
         for (const [name, value] of Object.entries(telemetryHeaders)) context.header(name, value);
         if (operation === 'reference.import' && command) {
           const file = requireReferenceImportCommand(command, readRequestId(command));
+          const providerMetadata = file.providerBinding
+            ? Buffer.from(JSON.stringify(file.providerBinding), 'utf8')
+            : undefined;
+          if (providerMetadata && providerMetadata.byteLength > 1024 * 1024)
+            throw effectTransportError(
+              400,
+              'NanoHost Provider metadata exceeded its control-body bound.'
+            );
           return createStreamedFileDataResponse(
             file,
             {
               ...telemetryHeaders,
-              'content-length': file.entryKind === 'file' ? String(file.byteLength) : '0',
+              'content-length':
+                file.entryKind === 'file'
+                  ? String(file.byteLength + (providerMetadata?.byteLength ?? 0))
+                  : '0',
+              ...(providerMetadata
+                ? { 'x-openkit-provider-binding-bytes': String(providerMetadata.byteLength) }
+                : {}),
               'content-type': FILE_DATA_CONTENT_TYPE,
               'x-openkit-entry-kind': file.entryKind,
               [FILE_DATA_HEADERS.relativePath]: encodeRelativePath(file.relativePath),
@@ -2624,7 +2639,8 @@ export function registerNanoHostSessionEffectRoutes(
             },
             () => {
               fileDataTransferActive = false;
-            }
+            },
+            providerMetadata
           );
         }
         if (reservedFileData) {
@@ -3080,11 +3096,17 @@ function createChunkedFileDataResponse(
 function createStreamedFileDataResponse(
   file: ReturnType<typeof requireReferenceImportCommand>,
   headers: Readonly<Record<string, string>>,
-  release: () => void
+  release: () => void,
+  providerMetadata?: Buffer
 ): Response {
   if (file.entryKind === 'directory')
     return createChunkedFileDataResponse(Buffer.alloc(0), headers, release);
-  if (file.body) return createChunkedFileDataResponse(file.body, headers, release);
+  if (file.body)
+    return createChunkedFileDataResponse(
+      providerMetadata ? Buffer.concat([providerMetadata, file.body]) : file.body,
+      headers,
+      release
+    );
   const controller = new AbortController();
   let iterator: AsyncIterator<Uint8Array> | undefined;
   const hash = createHash('sha256');
@@ -3145,6 +3167,7 @@ function requireReferenceImportCommand(
   value: Readonly<Record<string, unknown>>,
   requestId: string
 ): Readonly<{
+  providerBinding?: z.infer<typeof WorkerProviderEffectIntentSchema>;
   relativePath: string;
   requestId: string;
   sandboxId: string;
@@ -3175,6 +3198,7 @@ function requireReferenceImportCommand(
           'executable',
           'leaseId',
           'packageSnapshotId',
+          'providerBinding',
           'relativePath',
           'requestId',
           'sandboxId',
@@ -3191,6 +3215,25 @@ function requireReferenceImportCommand(
   const relativePath = readRelativePath(value.relativePath);
   const sandboxId = readBoundedIdentity(value.sandboxId, 'sandbox');
   const slot = readSlot(value.slot);
+  const providerBinding =
+    value.providerBinding === undefined
+      ? undefined
+      : WorkerProviderEffectIntentSchema.parse(value.providerBinding);
+  if (
+    providerBinding &&
+    (slot !== 'runtime-credential' ||
+      value.entryKind !== 'file' ||
+      value.executable !== false ||
+      !Buffer.isBuffer(value.body) ||
+      value.source !== undefined ||
+      typeof value.byteLength !== 'number' ||
+      value.byteLength < 1 ||
+      value.byteLength > 1024 * 1024)
+  )
+    throw effectTransportError(
+      400,
+      'NanoHost Provider import must use bounded private credential carriage.'
+    );
   if (value.entryKind === 'directory') {
     if (
       slot !== 'worker-supply' ||
@@ -3234,6 +3277,7 @@ function requireReferenceImportCommand(
       entryKind: 'file',
       executable: value.executable,
       source: source as NanoHostFileImportSource,
+      ...(providerBinding ? { providerBinding } : {}),
       byteLength,
       relativePath,
       requestId,
@@ -3250,6 +3294,7 @@ function requireReferenceImportCommand(
     throw effectTransportError(409, 'NanoHost import bytes do not match their identity.');
   return {
     body,
+    ...(providerBinding ? { providerBinding } : {}),
     byteLength,
     entryKind: 'file',
     executable: value.executable,
@@ -3898,7 +3943,13 @@ function readNanoHostEffectResult(
     case 'bridge.open':
       return resultFields(result, ['requestId', 'accepted', 'integrationReady', 'state']);
     case 'reference.import':
-      return resultFields(result, ['requestId', 'byteLength', 'reference', 'credentialProtection']);
+      return resultFields(result, [
+        'requestId',
+        'byteLength',
+        'reference',
+        'credentialProtection',
+        'providerProtection',
+      ]);
     case 'file.export':
       return resultFields(result, ['requestId', 'state', 'reasonCode']);
     case 'storage.purge':

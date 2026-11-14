@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { StaticProviderAccessShapeSchema } from './provider-access-shapes.js';
 import { AuthoredConfigRequiredFeaturesSchema } from './schema-evolution.js';
 
 /** One private Provider route member behind a worker-visible logical model. */
@@ -63,6 +64,8 @@ export const GatewayConfigSchema = z
     /** Logical model that names fresh thread titles. Absent means no title call. */
     titleLogicalModelId: z.string().min(1).optional(),
     logicalModels: z.array(GatewayLogicalModelSchema).default([]),
+    /** Explicit static Provider intent; absence never authorizes a credential attachment. */
+    providerAccessShapes: z.array(StaticProviderAccessShapeSchema).optional(),
     /** Ordered speech route. It is not a logical chat model. */
     transcription: z.preprocess(normalizeTranscription, GatewayTranscriptionSchema.optional()),
     requiredFeatures: AuthoredConfigRequiredFeaturesSchema.default([]),
@@ -71,6 +74,8 @@ export const GatewayConfigSchema = z
   .strip()
   .superRefine((value, ctx) => {
     addDuplicateIdIssues(value.logicalModels, ctx, ['logicalModels']);
+    if (value.providerAccessShapes)
+      addDuplicateIdIssues(value.providerAccessShapes, ctx, ['providerAccessShapes']);
     if (
       value.defaultLogicalModelId &&
       !value.logicalModels.some((model) => model.id === value.defaultLogicalModelId)
