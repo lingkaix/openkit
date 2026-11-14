@@ -1080,12 +1080,7 @@ describe('P7 Task lineage and physical access through production consumers', () 
       expect(blocked).toBe(true);
       expect(mcp.gateway.callTool).not.toHaveBeenCalled();
       expect(mcp.decisions().at(-1)?.result).toBe('deny');
-      expect(
-        mcp
-          .decisions()
-          .at(-1)
-          ?.mediation?.kernel?.reasons.some((reason) => reason.code === 'prohibited')
-      ).toBe(true);
+      expect(mcp.decisions().at(-1)?.mediation?.kernel?.reasonCode).toBe('prohibited');
     }
   });
 
