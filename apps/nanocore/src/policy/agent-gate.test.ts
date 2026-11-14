@@ -20,13 +20,17 @@ import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { preparePolicyConfiguration, readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
-import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   policyStatementUsedByDecision,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
-import { type PolicyProposal, policyDigest, preparePolicyDocument } from './statements.js';
+import {
+  type PolicyProposal,
+  policyDigest,
+  preparePolicyDocument,
+  selectHumanToolConditions,
+} from './statements.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -362,7 +366,7 @@ describe('P3 Security Review result through the public interception boundary', (
       const input = fixture(agentDocument(userId, 'security-review'));
       const binding = admittedBinding(input.document);
       const document = humanRequired ? withHumanMcpApproval(input) : input.document;
-      const permissions = selectMcpToolPermissions({
+      const permissions = selectHumanToolConditions({
         document,
         proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
         authorCurrent: input.authorCurrent,
@@ -677,7 +681,7 @@ describe('agent gate at native I16', () => {
       const binding = admittedBinding(input.document);
       const calls: string[] = [];
       const document = humanRequired ? withHumanMcpApproval(input) : input.document;
-      const permissions = selectMcpToolPermissions({
+      const permissions = selectHumanToolConditions({
         document,
         proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
         authorCurrent: input.authorCurrent,

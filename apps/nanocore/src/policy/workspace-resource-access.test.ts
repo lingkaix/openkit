@@ -46,7 +46,11 @@ const decide = (
   audience: Partial<
     Pick<
       Extract<Parameters<typeof evaluatePolicyKernel>[0], { readonly thread: unknown }>['thread'],
-      'administrator' | 'visibility' | 'privateOwnerUserId' | 'personalWorkspaceId'
+      | 'administrator'
+      | 'visibility'
+      | 'privateOwnerUserId'
+      | 'personalWorkspaceId'
+      | 'toolProhibitions'
     >
   > = {}
 ) =>
@@ -64,6 +68,24 @@ const decide = (
   });
 
 describe('named Workspace resource Kernel projection', () => {
+  it('keeps exact Tool prohibitions on the real human or mapped Agent graph without granting rights', () => {
+    const agent = {
+      kind: 'agent' as const,
+      userId,
+      agentId: 'fixture-agent',
+      processId: 'native-session',
+    };
+    for (const current of [actor, agent]) {
+      expect(decide([], 'tool.use', current).effect).toBe('allow');
+      const restriction = { toolProhibitions: ['current-tool-condition'] };
+      expect(decide([], 'tool.use', current, restriction).reasons).toContainEqual({
+        code: 'restriction',
+        prohibitionId: 'prohibition:mcp-tool:current-tool-condition',
+      });
+      expect(decide([], 'thread.read', current, restriction).effect).toBe('allow');
+    }
+  });
+
   it('requires the additional resource association independently of primary admission', () => {
     expect(decide([]).effect).toBe('allow');
     expect(decide([boundary, permission]).effect).toBe('allow');

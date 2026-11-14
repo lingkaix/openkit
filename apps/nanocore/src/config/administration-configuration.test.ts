@@ -20,16 +20,14 @@ import {
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { isCurrentServerPolicyAuthor } from '../auth/operation-authorizer.js';
+import { readThreadPolicyAncestors, readThreadPolicyFacts } from '../auth/thread-visibility.js';
 import { createMcpConfig, updateMcpBinding } from '../catalog/resource-catalog.js';
 import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
-import {
-  applyMcpToolProhibitions,
-  selectMcpToolPermissions,
-} from '../policy/mcp-tool-permissions.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
-import { policyDigest } from '../policy/statements.js';
+import { policyDigest, selectHumanToolConditions } from '../policy/statements.js';
+import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
 import {
   getControlStoreWorkerClient,
@@ -573,7 +571,7 @@ describe('administration catalog configuration', () => {
       );
       await f.observe([{ name: 'future-tool', inputSchema: { type: 'object' } }]);
       const select = (toolName: string) =>
-        selectMcpToolPermissions({
+        selectHumanToolConditions({
           document,
           proposal: {
             workspaceId: f.workspaceId,
@@ -594,20 +592,22 @@ describe('administration catalog configuration', () => {
       expect(select('future-tool-typo')).toEqual([]);
       if (effect === 'prohibit')
         expect(
-          applyMcpToolProhibitions(
-            {
-              effect: 'allow',
-              reasons: [],
-              trace: {
-                requiredAccessRights: ['use'],
-                userClosure: [],
-                targetClosure: [],
-                policyClasses: [],
-                matchedAssociations: [],
-                matchedProhibitions: [],
-              },
-            },
-            select('future-tool')
+          evaluatePolicyKernel(
+            readThreadPolicyFacts({
+              workspaceId: f.workspaceId,
+              thread: f.store.getThread(f.workspaceId, f.home.threadId),
+              ancestorThreadIds: readThreadPolicyAncestors(
+                f.store,
+                f.store.getThread(f.workspaceId, f.home.threadId)
+              ),
+              userId: f.actor.userId,
+              administrator: false,
+              policy: f.store.getWorkspaceResourceAccess(f.workspaceId),
+              operation: 'tool.use',
+              toolProhibitions: select('future-tool')
+                .filter((statement) => statement.effect === 'prohibit')
+                .map((statement) => statement.id),
+            })
           ).effect
         ).toBe('deny');
       expect(readFileSync(serverPath, 'utf8')).toBe(admittedBytes);

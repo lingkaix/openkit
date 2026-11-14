@@ -15,14 +15,13 @@ import { applyScopedMigrations } from '../storage/migrate.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { PolicyInterception } from './interception.js';
-import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   policyStatementUsedByDecision,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './retained-records-v1.js';
-import { type PolicyProposal, policyDigest } from './statements.js';
+import { type PolicyProposal, policyDigest, selectHumanToolConditions } from './statements.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -476,7 +475,7 @@ describe('bounded native Policy pipeline', () => {
     const input = {
       ...base,
       document,
-      permissions: selectMcpToolPermissions({
+      permissions: selectHumanToolConditions({
         document,
         proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
         authorCurrent: base.authorCurrent,
