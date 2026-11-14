@@ -346,6 +346,8 @@ async function fixture(
     receipts: store.listCommandRequests(),
   });
   return {
+    coreDb,
+    actor,
     app,
     store,
     workspaceId,
@@ -584,4 +586,124 @@ describe('Administration admitted Turn lifetime', () => {
     expect(await replay.json()).toEqual(body);
     expect(f.createResponses).toHaveBeenCalledOnce();
   });
+});
+
+// FUTURE-only: do not collect until the real N3 security/threads module is landed.
+// Append to existing administration-lifetime.test.ts after exposing existing coreDb and actor.
+// No caller generation, guessed destination id, selector callback or ready-row fixture.
+describe('E7 actual Administration entry classification', () => {
+  it.each(['registered', 'lookalike'] as const)(
+    'uses genuine destination classification for a %s private Thread',
+    async (kind) => {
+      const { SecurityTriggerStore } = await import('../security/trigger.js');
+      const { prepareSecurityThread, selectSecurityThread } = await import(
+        '../security/threads.js'
+      );
+      const f = await fixture();
+      const trigger = new SecurityTriggerStore(f.coreDb);
+      await trigger.enable(f.actor);
+      await trigger.stop(f.actor);
+      const alarm = (await trigger.readAlarms()).find(
+        (row) => row.recipientUserId === f.actor.userId
+      );
+      expect(
+        alarm,
+        'The original N1 stop must produce a real pending recipient alarm.'
+      ).toBeDefined();
+      if (!alarm) throw new Error('Required original pending security alarm is unavailable.');
+      const destination = await prepareSecurityThread({
+        coreDb: f.coreDb,
+        store: f.store,
+        requestId: alarm.requestId,
+      });
+      expect(destination.recipientUserId).toBe(f.actor.userId);
+      expect(destination.workspaceId).toBe(f.workspaceId);
+      const registered = f.store.getThread(destination.workspaceId, destination.threadId);
+      let threadId = destination.threadId;
+      if (kind === 'lookalike') {
+        const ordinary = await f.store.createThread(
+          f.workspaceId,
+          registered.name,
+          undefined,
+          'administration',
+          { visibility: 'private', privateOwnerUserId: f.actor.userId }
+        );
+        threadId = ordinary.id;
+        expect(
+          await selectSecurityThread({
+            coreDb: f.coreDb,
+            store: f.store,
+            workspaceId: f.workspaceId,
+            threadId,
+          })
+        ).toBeNull();
+      } else {
+        expect(
+          await selectSecurityThread({
+            coreDb: f.coreDb,
+            store: f.store,
+            workspaceId: f.workspaceId,
+            threadId,
+          })
+        ).toMatchObject(destination);
+      }
+      const requestId = randomUUID();
+      const [path, init] = operationRequest(
+        'administration.conversation-submit',
+        {},
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId, threadId, input: f.request.input }),
+        }
+      );
+      const pending = f.app.request(path, init);
+      try {
+        await admittedInference(f.entered.promise, pending);
+        f.release.resolve(f.toolResponse);
+        const response = await pending;
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as SubmitAdministrationConversationResponse;
+        expect(body.outcome).toBe('answered');
+        const turn = f.store.getTurn(f.workspaceId, threadId, body.turn.id);
+        expect(turn).toMatchObject({
+          agentId: kind === 'registered' ? 'security-investigation' : 'assistant',
+          triggerActor: { kind: 'user', id: f.actor.userId },
+          status: 'completed',
+        });
+        // The actual provider request must retain all nine Tools in both entry modes.
+        const supplied = f.createResponses.mock.calls[0]![1].tools!;
+        expect(supplied.map((tool) => ('name' in tool ? tool.name : null)).sort()).toEqual(
+          [
+            'administration_configuration_read',
+            'administration_schema_read',
+            'administration_configuration_propose',
+            'administration_configuration_dispatch',
+            'worker-environment_list',
+            'worker-environment_status',
+            'worker-environment_prepare',
+            'worker-environment_recover',
+            'nanohost_runtime-target',
+          ].sort()
+        );
+        const candidates = f.store
+          .listArtifacts(f.workspaceId)
+          .filter(
+            (artifact) =>
+              artifact.origin.kind === 'turn-output' && artifact.origin.turnId === turn.id
+          );
+        expect(candidates).toHaveLength(1);
+        expect(candidates[0]!.origin).toMatchObject({
+          kind: 'turn-output',
+          threadId,
+          turnId: turn.id,
+          requestId,
+        });
+        expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
+      } finally {
+        f.release.resolve(answer());
+        await pending.catch(() => undefined);
+      }
+    }
+  );
 });

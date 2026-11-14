@@ -218,6 +218,7 @@ export async function prepareInternalAgentContext(
       'quick-chat',
       'assistant',
       'administration',
+      'security-investigation',
       'knowledge-manager',
       'goal-coordinator',
       'goal-orchestrator',

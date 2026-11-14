@@ -50,6 +50,7 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import type { TurnCommandRuntimeContext } from '../runtime/types.js';
+import { selectSecurityThread } from '../security/threads.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   type AdministrationEnvironmentTools,
@@ -57,6 +58,7 @@ import {
 } from './administration-tools.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
+import { SECURITY_INVESTIGATION_AGENT_ID } from './security-investigation-authority.js';
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
@@ -226,6 +228,31 @@ export function createAdministrationOperationImplementations(input: Administrati
           );
         }
 
+        // Only the native binding joined to its actual private owner selects this principal.
+        // An unavailable or reserved binding must never fall back to ordinary Administration.
+        const securityThread = await selectSecurityThread({
+          coreDb: input.coreDb,
+          store,
+          workspaceId,
+          threadId,
+        }).catch((cause: unknown) => {
+          throw new OperationError(
+            'recovery_required',
+            'Administration Thread classification is unavailable.',
+            409,
+            { cause }
+          );
+        });
+        if (securityThread && securityThread.recipientUserId !== actor.userId)
+          throw new OperationError(
+            'not_granted',
+            'Administration Thread is unavailable to this principal.',
+            403
+          );
+        const administrationAgentId = securityThread
+          ? SECURITY_INVESTIGATION_AGENT_ID
+          : ADMINISTRATION_AGENT_ID;
+
         const result = await runIdempotentCommand({
           command: 'conversation.submit',
           execute: async (commandReceipt) => {
@@ -254,7 +281,7 @@ export function createAdministrationOperationImplementations(input: Administrati
                 null,
                 {
                   turnId,
-                  agentId: ADMINISTRATION_AGENT_ID,
+                  agentId: administrationAgentId,
                 }
               );
               const createdAt = turn.startedAt ?? new Date().toISOString();
@@ -461,8 +488,14 @@ export function createAdministrationOperationImplementations(input: Administrati
                     promptCacheScope: { sessionId: `administration:${thread.id}`, workspaceId },
                     usageEndpoint: 'responses',
                     callContext: {
-                      authorityActor: triggerActor,
-                      agentId: ADMINISTRATION_AGENT_ID,
+                      authorityActor: securityThread
+                        ? {
+                            kind: 'agent',
+                            id: administrationAgentId,
+                            responsibleUserId: actor.userId,
+                          }
+                        : triggerActor,
+                      agentId: administrationAgentId,
                       workspaceId,
                       family: 'llm',
                       operation: 'administration',
@@ -471,7 +504,9 @@ export function createAdministrationOperationImplementations(input: Administrati
                       requestId: null,
                       serviceRef: 'llm-gateway',
                       redactionClass: 'metadata-only',
-                      summary: 'Private administration Assistant LLM call.',
+                      summary: securityThread
+                        ? 'Private security investigation LLM call.'
+                        : 'Private administration Assistant LLM call.',
                     },
                   });
                   const model = {
