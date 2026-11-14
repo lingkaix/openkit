@@ -101,12 +101,17 @@ describe('Task steer command receipt and Item boundaries', () => {
       });
       await control.complete({ disposition: 'accepted', reason: null });
       expect(
+        f.store.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+          snapshot.item(target.inputItemId)
+        )
+      ).toMatchObject({ id: target.inputItemId, steerDisposition: { disposition: 'accepted' } });
+      expect(
         f.store.getCommandRequest('task.steer', f.input.requestId, {
           actorId: actor.id,
           workspaceId: f.workspace.id,
           threadId: f.thread.id,
-        })?.response.steerMetadata?.disposition
-      ).toBe('accepted');
+        })?.response
+      ).toEqual({ kind: 'turn', id: f.turn.id });
     });
     const result = await steerTask(f.dependencies, f.input, f.context);
     expect(result).toEqual({
@@ -258,12 +263,17 @@ describe('Task steer command receipt and Item boundaries', () => {
       actor,
     });
     expect(
+      f.store.readThreadTimelineSnapshot(f.workspace.id, f.thread.id, (snapshot) =>
+        snapshot.item(taskSteerInputItemId(f.input, actor.id))
+      )
+    ).toMatchObject({ steerDisposition: { disposition: 'refused' } });
+    expect(
       f.store.getCommandRequest('task.steer', f.input.requestId, {
         actorId: actor.id,
         workspaceId: f.workspace.id,
         threadId: f.thread.id,
-      })?.response.steerMetadata?.disposition
-    ).toBe('refused');
+      })?.response
+    ).toEqual({ kind: 'turn', id: f.turn.id });
   });
 
   it('retains exact input after lost Item append acknowledgement and fences recreated-owner retries', async () => {

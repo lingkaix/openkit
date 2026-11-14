@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { allocateEntityId, ItemSchema } from '@openkit/protocol';
+import { dirname, join } from 'node:path';
+import { allocateEntityId, ItemSchema, writeRetainedV1 } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
@@ -12,7 +12,9 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './control-store-worker-client.js';
-import { nativeProductScope } from './workspace-file-records.js';
+import { openAdmittedWorkspaceReadDb } from './db.js';
+import { prepareRetainedProductJson } from './immutable-content.js';
+import { nativeProductScope, readNativeProductEntries } from './workspace-file-records.js';
 
 const roots: string[] = [];
 const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
@@ -50,6 +52,17 @@ async function fixture() {
     turnId: turn.id,
     input: item.text,
   });
+  const native = nativeProductScope(root, { kind: 'workspace', workspaceId: workspace.id });
+  const disposition = {
+    inputHash,
+    disposition: 'accepted' as const,
+    reason: null,
+    operationId: 'a'.repeat(64),
+    executionId: 'existing-execution',
+  };
+  const updatedItem = { ...item, steerDisposition: disposition };
+  const originalEntries = readNativeProductEntries(native, turn.id, 'item');
+  const previous = originalEntries.filter((row) => row.id === item.id).at(-1)!;
   const transition = {
     receipt: {
       key: commandRequestKey('task.steer', requestId, scope),
@@ -60,21 +73,25 @@ async function fixture() {
       response: {
         kind: 'turn',
         id: turn.id,
-        steerMetadata: {
-          turnId: turn.id,
-          inputItemId: item.id,
-          inputHash,
-          disposition: 'accepted',
-          reason: null,
-          operationId: 'a'.repeat(64),
-          executionId: 'existing-execution',
-        },
       },
       createdAt,
       expiresAt: commandRequestExpiresAt(createdAt),
     },
     products: [],
-    entries: [],
+    entries: [
+      {
+        kind: 'item',
+        turnId: turn.id,
+        sequence: originalEntries.length + 1,
+        expectedRevision: previous.revision,
+        ...(await prepareRetainedProductJson(
+          native.contentMount,
+          native.owner,
+          join(dirname(dirname(native.path)), 'runtime', 'staging'),
+          writeRetainedV1(updatedItem)
+        )),
+      },
+    ],
     audit: {
       id: allocateEntityId('aud'),
       workspaceId: workspace.id,
@@ -101,7 +118,6 @@ async function fixture() {
       occurredAt: createdAt,
     },
   } as unknown as ControlAdmission;
-  const native = nativeProductScope(root, { kind: 'workspace', workspaceId: workspace.id });
   return {
     root,
     store,
@@ -109,6 +125,8 @@ async function fixture() {
     thread,
     turn,
     item,
+    disposition,
+    updatedItem,
     transition,
     native,
     database: `workspace:${native.path}`,
@@ -116,7 +134,7 @@ async function fixture() {
 }
 
 describe('native completed Task steer receipts', () => {
-  it('commits the original receipt after terminal without changing the Turn or Item, and replays after restart', async () => {
+  it('commits disposition on the original Item after terminal without changing its Turn head, and replays after restart', async () => {
     const f = await fixture();
     await f.store.updateTurn(f.turn.id, {
       status: 'completed',
@@ -126,7 +144,24 @@ describe('native completed Task steer receipts', () => {
     await expect(
       getControlStoreWorkerClient().transition(f.database, f.transition)
     ).resolves.toMatchObject({ replayed: false });
-    expect(f.store.getTurnById(f.turn.id)).toEqual(before);
+    const after = f.store.getTurnById(f.turn.id);
+    expect({ ...after, items: before.items }).toEqual(before);
+    expect(after.items).toEqual(
+      before.items.map((item) =>
+        item.id === f.item.id ? { ...item, steerDisposition: f.disposition } : item
+      )
+    );
+    const owner = openAdmittedWorkspaceReadDb(f.root, f.workspace.id);
+    try {
+      expect(
+        owner.sqlite
+          .prepare('SELECT response_json FROM idempotency_requests WHERE request_key=?')
+          .pluck()
+          .get(f.transition.receipt.key)
+      ).toBeNull();
+    } finally {
+      owner.sqlite.close();
+    }
     const record = f.store.getCommandRequest(
       'task.steer',
       f.transition.receipt.requestId,
@@ -153,11 +188,25 @@ describe('native completed Task steer receipts', () => {
       contentMount: f.native.contentMount,
     });
     const changed = structuredClone(f.transition);
-    changed.receipt.response.steerMetadata!.disposition = 'unknown';
+    const currentEntries = readNativeProductEntries(f.native, f.turn.id, 'item');
+    changed.entries[0] = {
+      ...changed.entries[0]!,
+      sequence: currentEntries.length + 1,
+      expectedRevision: currentEntries.filter((row) => row.id === f.item.id).at(-1)!.revision,
+      ...(await prepareRetainedProductJson(
+        f.native.contentMount,
+        f.native.owner,
+        join(dirname(dirname(f.native.path)), 'runtime', 'staging'),
+        writeRetainedV1({
+          ...f.updatedItem,
+          steerDisposition: { ...f.disposition, disposition: 'unknown' },
+        })
+      )),
+    };
     await expect(
       getControlStoreWorkerClient().transition(f.database, changed)
     ).resolves.toMatchObject({ replayed: true, response: record!.response });
-    expect(cold.getTurnById(f.turn.id)).toEqual(before);
+    expect(cold.getTurnById(f.turn.id)).toEqual(after);
   });
 
   it.each(['input', 'actor', 'turn', 'item', 'causation'])(
@@ -172,7 +221,15 @@ describe('native completed Task steer receipts', () => {
       }
       if (fault === 'turn') bad.receipt.response.id = allocateEntityId('tu');
       if (fault === 'item')
-        bad.receipt.response.steerMetadata!.inputItemId = allocateEntityId('it');
+        bad.entries[0] = {
+          ...bad.entries[0]!,
+          ...(await prepareRetainedProductJson(
+            f.native.contentMount,
+            f.native.owner,
+            join(dirname(dirname(f.native.path)), 'runtime', 'staging'),
+            writeRetainedV1({ ...f.updatedItem, id: allocateEntityId('it') })
+          )),
+        };
       if (fault === 'causation') {
         bad.receipt.requestId = randomUUID();
         bad.receipt.key = commandRequestKey('task.steer', bad.receipt.requestId, bad.receipt.scope);
