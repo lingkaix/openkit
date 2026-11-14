@@ -685,33 +685,25 @@ it('preserves exact receipt TTL and native-only maintenance without making expir
     name: 'Existing native partition',
     visibility: 'workspace' as const,
   };
-  const nativeThread = await createThread(
-    threadInput,
-    { store: f.store, inflightCommands: new WeakMap() },
-    f.userId
-  );
+  await createThread(threadInput, { store: f.store, inflightCommands: new WeakMap() }, f.userId);
   const nativeOther = f.records().find((row) => row.requestId === threadInput.requestId);
   expect(nativeOther).toBeDefined();
   const nativeShared = f.records().find((row) => row.requestId === legacyInput.requestId);
   expect(nativeShared).toBeDefined();
 
-  // Goal removal preserves historical command receipts (20261002-goal, Retained Data Removal).
-  // Stop the writer to install exact predecessor goal.start receipt bytes only.
-  // No live Goal admission, Goal recreation or replay is claimed.
-  await shutdownControlStoreWorkerClient();
-  const mainScope = { actorId: f.userId, workspaceId: f.workspaceId, threadId: nativeThread.id };
-  const mainRequestId = randomUUID();
-  recordCommandRequestRecordInDb(f.db, {
-    key: commandRequestKey('goal.start', mainRequestId, mainScope),
-    command: 'goal.start',
-    requestId: mainRequestId,
-    scope: mainScope,
-    inputHash: commandInputHash({ objective: 'Historical retained Goal one' }),
-    response: { kind: 'goal', id: 'goal_retained-main-one' },
-    createdAt: past.toISOString(),
-    expiresAt: new Date(past.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-  });
-  expect(f.records().find((row) => row.requestId === mainRequestId)).toBeDefined();
+  // Admit a second real native peer at the same historical clock.
+  const nativePeerInput = {
+    ...threadInput,
+    requestId: randomUUID(),
+    name: 'Expired native receipt peer',
+  };
+  await createThread(
+    nativePeerInput,
+    { store: f.store, inflightCommands: new WeakMap() },
+    f.userId
+  );
+  const nativePeer = f.records().find((row) => row.requestId === nativePeerInput.requestId);
+  expect(nativePeer).toBeDefined();
   vi.useRealTimers();
   expect(record.expiresAt < new Date().toISOString()).toBe(true);
   const before = f.records();
@@ -719,12 +711,17 @@ it('preserves exact receipt TTL and native-only maintenance without making expir
   expect(getCommandRequestRecordFromDb(f.db, record.key, lastEligible)).toEqual(record);
   expect(getCommandRequestRecordFromDb(f.db, record.key, record.expiresAt)).toBeNull();
   expect(f.records()).toEqual(before);
-  // Main observation performs no expiry writes; the actual native owner prunes later.
-  expect(f.store.getCommandRequest('goal.start', randomUUID(), mainScope)).toBeNull();
+  // Receipt observation performs no expiry writes; the actual native owner prunes later.
+  expect(
+    f.store.getCommandRequest('thread.create', randomUUID(), {
+      actorId: f.userId,
+      workspaceId: f.workspaceId,
+    })
+  ).toBeNull();
   expect(f.records()).toEqual(before);
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toEqual(nativeShared);
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toEqual(nativeOther);
-  expect(f.record(), 'Main expiry maintenance deleted the moved Catalog receipt.').toEqual(record);
+  expect(f.record(), 'Receipt observation deleted the Catalog receipt.').toEqual(record);
 
   // Preserve the second genuine shared-MCP effect, now in the native partition.
   vi.useFakeTimers({ toFake: ['Date'] });
@@ -741,25 +738,20 @@ it('preserves exact receipt TTL and native-only maintenance without making expir
     .records()
     .find((row) => row.requestId === anotherLegacyInput.requestId);
   expect(nativeSharedOther).toBeDefined();
-  await shutdownControlStoreWorkerClient();
-  const otherMainScope = {
-    actorId: f.userId,
-    workspaceId: f.workspaceId,
-    threadId: nativeThread.id,
+  const anotherNativePeerInput = {
+    ...threadInput,
+    requestId: randomUUID(),
+    name: 'Another expired native receipt peer',
   };
-  const otherMainRequestId = randomUUID();
-  recordCommandRequestRecordInDb(f.db, {
-    key: commandRequestKey('goal.start', otherMainRequestId, otherMainScope),
-    command: 'goal.start',
-    requestId: otherMainRequestId,
-    scope: otherMainScope,
-    inputHash: commandInputHash({ objective: 'Historical retained Goal two' }),
-    response: { kind: 'goal', id: 'goal_retained-main-two' },
-    createdAt: past.toISOString(),
-    expiresAt: new Date(past.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-  });
-  const mainOther = f.records().find((row) => row.requestId === otherMainRequestId);
-  expect(mainOther).toBeDefined();
+  await createThread(
+    anotherNativePeerInput,
+    { store: f.store, inflightCommands: new WeakMap() },
+    f.userId
+  );
+  const anotherNativePeer = f
+    .records()
+    .find((row) => row.requestId === anotherNativePeerInput.requestId);
+  expect(anotherNativePeer).toBeDefined();
   vi.useRealTimers();
   const currentThreadInput = {
     ...threadInput,
@@ -778,7 +770,10 @@ it('preserves exact receipt TTL and native-only maintenance without making expir
   ).toBeUndefined();
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toBeUndefined();
   expect(f.records().find((row) => row.requestId === anotherLegacyInput.requestId)).toBeUndefined();
-  expect(f.records().find((row) => row.requestId === otherMainRequestId)).toBeUndefined();
+  expect(f.records().find((row) => row.requestId === nativePeerInput.requestId)).toBeUndefined();
+  expect(
+    f.records().find((row) => row.requestId === anotherNativePeerInput.requestId)
+  ).toBeUndefined();
   const retained = { bytes: f.bytes(), events: f.events(), records: f.records() };
   const replay = await f.call();
   expect(replay.status).toBe(409);
