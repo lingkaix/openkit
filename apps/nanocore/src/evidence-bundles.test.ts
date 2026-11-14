@@ -53,7 +53,7 @@ describe('evidence bundles', () => {
     const path = join(namespace, digest);
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       mkdirSync(namespace, { recursive: true });
       writeFileSync(path, bytes);
       const record = restrictedBundle(workspaceDb.workspaceId, 'sha256');
@@ -90,7 +90,7 @@ describe('evidence bundles', () => {
       const ordinaryPath = join(backend, 'evb_first', 'raw', 'content');
 
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         recordWorkspaceEvidenceBundle(
           workspaceDb,
           restrictedBundle(workspaceDb.workspaceId, 'evb_first')
@@ -157,7 +157,7 @@ describe('evidence bundles', () => {
     };
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       recordWorkspaceEvidenceBundle(
         workspaceDb,
         restrictedBundle(workspaceDb.workspaceId, 'evb_expired')
@@ -205,7 +205,7 @@ describe('evidence bundles', () => {
     };
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       const first = recordWorkspaceEvidenceBundle(workspaceDb, record);
       expect(
@@ -266,7 +266,7 @@ describe('evidence bundles', () => {
     };
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       recordWorkspaceEvidenceBundle(workspaceDb, record);
       workspaceDb.sqlite
@@ -305,7 +305,7 @@ describe('evidence bundles', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_runtime_provenance_raw',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -371,7 +371,7 @@ describe('evidence bundles', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       recordWorkspaceEvidenceBundle(workspaceDb, {
         id: 'evb_old_ephemeral',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -486,7 +486,7 @@ describe('evidence bundles', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       expect(() =>
         compactWorkspaceEvidenceBundles({
           workspaceDb,
@@ -515,7 +515,7 @@ describe('evidence bundles', () => {
     );
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       mkdirSync(join(rawRoot, 'raw'), { recursive: true });
       mkdirSync(join(indexPath, '..'), { recursive: true });
       writeFileSync(join(rawRoot, 'raw-streams.json'), '{"schemaVersion":1}\n');

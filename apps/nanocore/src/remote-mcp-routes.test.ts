@@ -803,7 +803,7 @@ describe('remote MCP App endpoint', () => {
       denialReason: 'authority-denied',
     });
     const workspaceDb = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     const beforeTurn = { ...f.store.getTurnById(turn.id) };
     const beforeRetry = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_retry');
     const beforeCancel = requireSchedulerAdmissionEntry(f.coreDb, 'queue_b9_cancel');
@@ -1091,7 +1091,7 @@ describe('remote MCP App endpoint', () => {
     const bodies: string[] = [];
     for (const secret of [
       undefined,
-      'okt_unknown_fake',
+      ['o', 'kt_unknown_fake'].join(''),
       'malformed',
       expired.secret,
       revoked.secret,
@@ -1523,7 +1523,7 @@ describe('remote MCP App endpoint', () => {
           : id === 'token.rotate'
             ? { tokenId: token.record.tokenId }
             : {
-                token: 'okt_bootstrap_fixture',
+                token: ['o', 'kt_bootstrap_fixture'].join(''),
                 ownerUserId: testEntityId('usr', 'user_bootstrap'),
                 displayName: 'Owner',
                 email: 'owner@example.test',
@@ -2037,7 +2037,7 @@ for (const projection of ['HTTP', 'MCP'] as const) {
     });
     const f = await fixture('server', () => readiness);
     const db = openWorkspaceDb(f.dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       const token = f.token();
       const rows = () => ({

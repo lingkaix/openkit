@@ -95,7 +95,7 @@ async function fixture() {
       // This zero-input session has no Workspace materialization or handle to hand off.
       const workspaceDb = openWorkspaceDb(dataRoot, entry.workspaceId);
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         const pkg = await recordTestAgentEnvironmentPackage(workspaceDb, {
           coreDb,
           suffix,

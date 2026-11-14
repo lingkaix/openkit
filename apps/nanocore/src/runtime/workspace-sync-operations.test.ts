@@ -298,7 +298,7 @@ async function fixture(
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
   });
   const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const item = workspaceSyncReviewRouteItem();
   recordTestWorkspaceReviewMaterialization(db, item);
   recordWorkspaceSyncReview(db, { item });

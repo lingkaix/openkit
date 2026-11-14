@@ -419,7 +419,7 @@ describe('exact Artifact file import and download', () => {
       }
       await store.updateTurn(turn.id, { status: 'completed', completedAt: recordedAt });
       const db = openWorkspaceDb(dataRoot, workspace.id);
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         createArtifactReview(db, {
           artifactId,
@@ -513,7 +513,7 @@ describe('exact Artifact file import and download', () => {
       original = corpus.originals[0]!;
     // URLSearchParams normalizes lone surrogates; use the canonical command for this retained-title fixture.
     const workspaceDb = openWorkspaceDb(state.dataRoot, state.workspace.id);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     cleanups.push(() => workspaceDb.sqlite.close());
     const accepted = await importArtifactFile({
       store: state.store,

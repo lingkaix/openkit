@@ -144,7 +144,7 @@ describe('scheduler admission routes', () => {
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
         const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
 
         if (failAudit) {
           workspaceDb.sqlite.exec(
@@ -363,7 +363,7 @@ describe('scheduler admission routes', () => {
       requestStore: () => store,
       repositoryWorkspaceDb: () => {
         const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         return workspaceDb;
       },
     });

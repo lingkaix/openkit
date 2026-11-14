@@ -267,7 +267,7 @@ describe('Server Knowledge through the existing retrieval source', () => {
   it('selects an ordinary generated delegated Workspace publication only with its actual publishing commit', async () => {
     const f = await fixture();
     const workspaceDb = openWorkspaceDb(f.dataRoot, f.workspace.id);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     onTestFinished(() => workspaceDb.sqlite.close());
     const workspaceRoot = join(f.dataRoot, 'workspaces', f.workspace.id);
     const knowledgeBaseId = readDefaultKnowledgeBaseId({

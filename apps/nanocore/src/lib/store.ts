@@ -265,7 +265,6 @@ import {
   prepareRetainedProductJson,
   publishImmutableProductJson,
 } from '../storage/immutable-content.js';
-import { applyScopedMigrations } from '../storage/migrate.js';
 import { StoredServerEventPayloadV1Schema } from '../storage/retained-server-work-v1.js';
 import {
   projectTurnEventRequestId,
@@ -1692,7 +1691,7 @@ export class FsStore {
           workspaceId,
           workspaceRoot: stagingRoot,
         });
-        applyScopedMigrations(initialWorkspaceDb, undefined, 'pre-knowledge');
+        // Initial Notebook facts are prepared before the complete baseline transaction.
         initialSchemaText =
           initialNotebookSchemaText ??
           createDefaultScopeKnowledgeSchemaText(new Date().toISOString());

@@ -66,7 +66,6 @@ import {
   retainedProposal,
   serializeKnowledgeProposalRecord,
 } from './knowledge-proposal-codecs.js';
-import { listAppliedNativeMigrationIds } from './migrate.js';
 
 export { syncCanonicalDirectoryAsync } from '@openkit/storage';
 export {
@@ -2366,33 +2365,13 @@ export function loadWorkspace(workspaceRoot: string, workspaceId: string): Works
   const threadIds = new Set(threads.map((thread) => thread.id));
   const turnsById = new Map(turns.map((turn) => [turn.id, turn]));
   const artifacts = readWorkspaceArtifacts(workspaceRoot, workspaceId, threadIds, turnsById);
-  const knowledgeReader = getWorkspaceProductReadHandle(
-    join(workspaceRoot, 'db', 'workspace.sqlite'),
-    { kind: 'workspace', workspaceId }
+  // Published scopes select their current SQL authority. Missing heads never authorize a file fallback.
+  const selection = readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, workspaceId);
+  const knowledge = readWorkspaceKnowledgePages(workspaceRoot, selection);
+  const { knowledgeProposals, knowledgeProposalReviews } = readWorkspaceKnowledgeProposalInventory(
+    workspaceRoot,
+    workspaceId
   );
-  const activated = listAppliedNativeMigrationIds(knowledgeReader.sqlite, 'workspace').includes(
-    'workspace_0019_knowledge_authority'
-  );
-  const selection = activated
-    ? readAdmittedWorkspaceKnowledgeSelection(workspaceRoot, workspaceId)
-    : undefined;
-  // The file-authority boot barrier validates predecessors before the one-way transfer. An activated root never falls back.
-  const knowledge = selection
-    ? readWorkspaceKnowledgePages(workspaceRoot, selection)
-    : Object.entries(
-        new KnowledgeNotebook({
-          repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-        }).readRevision(
-          new KnowledgeNotebook({
-            repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-          }).publishedRevision()
-        ).files
-      )
-        .filter(([path]) => !['index.md', 'log.md'].includes(path.split('/').at(-1)!))
-        .map(([path, content]) => parseOwnedKnowledgePage(path, path.slice(0, -3), content));
-  const { knowledgeProposals, knowledgeProposalReviews } = activated
-    ? readWorkspaceKnowledgeProposalInventory(workspaceRoot, workspaceId)
-    : readPreKnowledgeWorkspaceProposalInventory(workspaceRoot, workspaceId);
   const knowledgeSources = loadKnowledgeSources(
     workspaceRoot,
     workspaceId,
@@ -2678,35 +2657,6 @@ export function readWorkspaceKnowledgePages(
     .map(([path, content]) => parseOwnedKnowledgePage(path, path.slice(0, -3), content));
 }
 
-/**
- * Reads the complete canonical Proposal and Review inventory without Store caches or writes.
- *
- * The existing loaders verify exact retained candidates, immutable bytes and ordered Review
- * lineage. This read grants no audience access and is not an atomic snapshot across families;
- * callers must admit disclosure and revalidate their own publication preconditions.
- *
- * @param workspaceRoot Published Workspace root selected by its owning lifecycle.
- * @param workspaceId Owning Workspace id.
- * @returns Canonical records in stable file-name and retained decision order.
- */
-export function readPreKnowledgeWorkspaceProposalInventory(
-  workspaceRoot: string,
-  workspaceId: string
-): {
-  knowledgeProposals: KnowledgeProposalRecord[];
-  knowledgeProposalReviews: KnowledgeProposalReviewRecord[];
-} {
-  const knowledgeProposals = loadKnowledgeProposals(workspaceRoot, workspaceId);
-  return {
-    knowledgeProposals,
-    knowledgeProposalReviews: loadKnowledgeProposalReviews(
-      workspaceRoot,
-      workspaceId,
-      new Map(knowledgeProposals.map((proposal) => [proposal.id, proposal]))
-    ),
-  };
-}
-
 /** Selects exact SQL Knowledge authority on the borrowed Workspace connection or retained read handle. */
 export function readAdmittedWorkspaceKnowledgeSelection(
   workspaceRoot: string,
@@ -2857,30 +2807,6 @@ function* readWorkspaceKnowledgeProposalInventoryWithOwners(
   }
 }
 
-/**
- * Loads knowledge proposal Markdown records.
- *
- * @param workspaceRoot Published workspace root.
- * @param workspaceId Owning workspace id.
- * @returns Knowledge proposals in file-name order.
- */
-function loadKnowledgeProposals(
-  workspaceRoot: string,
-  workspaceId: string
-): KnowledgeProposalRecord[] {
-  const root = join(workspaceRoot, 'knowledge', 'proposals');
-  return listFileNames(root)
-    .filter((name) => name.endsWith('.md'))
-    .map((fileName) =>
-      parseWorkspaceKnowledgeProposalDocument(
-        workspaceRoot,
-        workspaceId,
-        fileName.slice(0, -3),
-        readCanonicalTextFile(join(root, fileName))
-      )
-    );
-}
-
 /** Verifies the exact original Proposal document and its immutable Git candidate through the one parser. */
 export function parseWorkspaceKnowledgeProposalDocument(
   workspaceRoot: string,
@@ -2998,44 +2924,6 @@ export function parseWorkspaceKnowledgeProposalDocument(
     value: { bytes: content, core: structuredClone(proposal) },
   });
   return proposal;
-}
-
-/**
- * Loads knowledge proposal review JSON records.
- *
- * @param workspaceRoot Published workspace root.
- * @param workspaceId Owning workspace id.
- * @param proposalsById Known proposals by id.
- * @returns Proposal reviews in file-name order.
- */
-function loadKnowledgeProposalReviews(
-  workspaceRoot: string,
-  workspaceId: string,
-  proposalsById: ReadonlyMap<string, KnowledgeProposalRecord>
-): KnowledgeProposalReviewRecord[] {
-  const root = join(workspaceRoot, 'knowledge', 'reviews');
-
-  return listFileNames(root)
-    .filter((name) => name.endsWith('.json'))
-    .flatMap((fileName) => {
-      const reviewFile = KnowledgeProposalReviewFileSchema.parse(readJson(join(root, fileName)));
-      const proposal = proposalsById.get(reviewFile.proposalId);
-
-      if (
-        fileName !== `${reviewFile.proposalId}.json` ||
-        reviewFile.ownerScope.workspaceId !== workspaceId ||
-        !proposal
-      ) {
-        throw new Error(`Knowledge proposal review ${fileName} has invalid lineage.`);
-      }
-
-      for (const review of reviewFile.decisions) {
-        if (!knowledgeProposalReviewMatches(proposal, review)) {
-          throw new Error(`Knowledge proposal review ${review.reviewId} has invalid lineage.`);
-        }
-      }
-      return reviewFile.decisions;
-    });
 }
 
 /** Checks the same immutable Proposal tuple for canonical inventory and imported history. */

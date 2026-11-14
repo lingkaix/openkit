@@ -301,7 +301,7 @@ describe('Core Policy native publication', () => {
         rmSync(root, { recursive: true, force: true });
       });
       applyMigrations(db);
-      applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspace);
       db.sqlite.pragma('query_only = ON');
       workspace.sqlite.pragma('query_only = ON');
       // Capture the closed value from the unchanged public owner, including real boot Kernel facts.

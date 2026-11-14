@@ -31,7 +31,7 @@ async function fixture() {
   const workspaceId = allocateEntityId('ws');
   const db = openWorkspaceDb(root, workspaceId);
   handles.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const captureId = randomUUID();
   const siblingId = randomUUID();
   const selected = protectCapture(db, workspaceId, captureId);

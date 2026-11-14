@@ -378,7 +378,7 @@ function applyMigrations(coreDb: CoreDb): void {
  */
 function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
 
@@ -1011,7 +1011,7 @@ async function createWorkspaceChangeIngressFixture(name: string, strategy: 'git'
   const beforeDigest = `sha256:${'1'.repeat(64)}`;
   const afterDigest = `sha256:${'2'.repeat(64)}`;
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
 
   const storeDataRoot = mkdtempSync(join(tmpdir(), `openkit-ingress-${name}-store-`));
   const store = await createDemoStore({ dataRoot: storeDataRoot });
@@ -4104,7 +4104,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
       const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
-      applyScopedMigrations(publicationDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(publicationDb);
       publicationDb.sqlite.close();
       const mutationAdmission = new WorkspaceMutationAdmission();
       const authority = vi
@@ -7307,7 +7307,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       'Persist workspace review records'
     );
     const setupDb = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(setupDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(setupDb);
     setupDb.sqlite.close();
     const backend = new FakeWorkerGovernanceBackend();
     const collectWorkspaceChanges = vi
@@ -7401,7 +7401,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       }
 
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       try {
         expect.soft(startError).toBeNull();
         expect.soft(listWorkspaceInputSnapshots(workspaceDb, workspace.id)).toHaveLength(1);

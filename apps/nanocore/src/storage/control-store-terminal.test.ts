@@ -128,7 +128,7 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
   });
   if (db.scope === 'core') applyMigrations(db);
   else {
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     // Raw terminal-owner fixture: install current product DDL without activating Knowledge.
     // It never serves an application Workspace or claims the full migration ledger.
     for (const tag of ['0020_thread_turn_reads', '0021_timeline_windows', '0022_thread_dashboard'])

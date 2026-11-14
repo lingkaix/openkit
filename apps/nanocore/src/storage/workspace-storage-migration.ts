@@ -29,15 +29,7 @@ import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { recoverRunningCapabilityCalls } from '../capability/usage-ledger.js';
 import { parseJsoncObject } from '../config/jsonc.js';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
-import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import { listExportableAgentEnvironmentPackageSnapshots } from '../runtime/aep-snapshot-ledger.js';
-import {
-  type PreparedKnowledgeAuthorityTransfer,
-  prepareControlKnowledgeAuthorityTransfer,
-  prepareWorkspaceKnowledgeProposal,
-  prepareWorkspaceKnowledgeSelection,
-} from './control-store-knowledge.js';
 import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   assertBackupMatchesPredecessor,
@@ -67,17 +59,11 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import { rebuildExistingWorkspaceDerivedIndexes } from './index-rebuild.js';
-import {
-  applyMigrations,
-  applyScopedMigrations,
-  listAppliedNativeMigrationIds,
-} from './migrate.js';
+import { applyMigrations, applyScopedMigrations } from './migrate.js';
 import * as schema from './schema/index.js';
 import {
   loadWorkspaceFileRecords,
   readCanonicalTextFile,
-  readPreKnowledgeWorkspaceProposalInventory,
-  syncCanonicalTreeAsync,
   WorkspaceSystemRecordSchema,
 } from './workspace-file-records.js';
 
@@ -422,31 +408,8 @@ export async function migrateWorkspaceStorage(
 
       try {
         migrateStagedWorkspaceMetadata(stagedWorkspaceRoot, source.workspaceId);
-        if (
-          listAppliedNativeMigrationIds(workspaceDb.sqlite, 'workspace').includes(
-            'workspace_0019_knowledge_authority'
-          )
-        ) {
-          applyScopedMigrations(workspaceDb);
-        } else {
-          applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-          const config = WorkspaceConfigSchema.parse(
-            parseJsoncObject(
-              readCanonicalTextFile(join(stagedWorkspaceRoot, 'config', 'workspace.jsonc'))
-            )
-          );
-          const knowledgeBaseId = config.workspace.defaultKnowledgeBaseId;
-          if (!knowledgeBaseId) throw new Error('Workspace Knowledge binding is missing.');
-          const carry = await prepareExistingWorkspaceKnowledgeAuthority({
-            db: workspaceDb,
-            workspaceRoot: stagedWorkspaceRoot,
-            knowledgeBaseId,
-            notebook: new KnowledgeNotebook({
-              repositoryPath: join(stagedWorkspaceRoot, 'knowledge', 'notebook.git'),
-            }),
-          });
-          applyScopedMigrations(workspaceDb, carry);
-        }
+        // Only the current baseline is supported; this physical move does not convert old formats.
+        applyScopedMigrations(workspaceDb);
         // Verify successor authority before publication can remove the predecessor paths.
         const reader = openControlStoreProductReadHandle(
           join(stagedWorkspaceRoot, 'db', 'workspace.sqlite'),
@@ -1368,25 +1331,7 @@ async function migrateWorkspaceDatabase(
   }
 
   try {
-    const activated = listAppliedNativeMigrationIds(workspaceDb.sqlite, 'workspace').includes(
-      'workspace_0019_knowledge_authority'
-    );
-    if (!activated) {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-      const transfer = await prepareExistingWorkspaceKnowledgeAuthority({
-        db: workspaceDb,
-        workspaceRoot,
-        knowledgeBaseId: readDefaultKnowledgeBaseId({
-          dataRoot,
-          scope: { kind: 'workspace', workspaceId },
-        }),
-        notebook: new KnowledgeNotebook({
-          repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-        }),
-      });
-      applyScopedMigrations(workspaceDb, transfer);
-    } else applyScopedMigrations(workspaceDb);
+    applyScopedMigrations(workspaceDb);
     recoverRunningCapabilityCalls({ workspaceDb });
   } finally {
     closeMigratedScopeDatabase(workspaceDb, uncertainty);
@@ -1428,47 +1373,4 @@ function closeMigratedScopeDatabase(
       uncertainty.scoped = true;
     }
   }
-}
-
-/** Carries original file authority only under the existing pre-serving Workspace exclusion. */
-async function prepareExistingWorkspaceKnowledgeAuthority(input: {
-  readonly db: WorkspaceDb;
-  readonly workspaceRoot: string;
-  readonly knowledgeBaseId: string;
-  readonly notebook: KnowledgeNotebook;
-}): Promise<PreparedKnowledgeAuthorityTransfer> {
-  const notebookCommit = input.notebook.publishedRevision();
-  const schemaText = readCanonicalTextFile(
-    join(input.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml')
-  );
-  const inventory = readPreKnowledgeWorkspaceProposalInventory(
-    input.workspaceRoot,
-    input.db.workspaceId
-  );
-  await syncCanonicalTreeAsync(join(input.workspaceRoot, 'knowledge', 'notebook.git'));
-  const head = await prepareWorkspaceKnowledgeSelection({ ...input, notebookCommit, schemaText });
-  const proposals = [];
-  for (const original of inventory.knowledgeProposals) {
-    const proposal = await prepareWorkspaceKnowledgeProposal({ ...input, proposal: original });
-    const hasReviews = inventory.knowledgeProposalReviews.some(
-      (review) => review.proposalId === original.id
-    );
-    const reviews: unknown = hasReviews
-      ? JSON.parse(
-          readCanonicalTextFile(
-            join(input.workspaceRoot, 'knowledge', 'reviews', `${original.id}.json`)
-          )
-        ).decisions
-      : [];
-    if (!Array.isArray(reviews))
-      throw new TypeError('Knowledge carry has invalid original Reviews.');
-    proposals.push({ proposal, reviews });
-  }
-  if (
-    input.notebook.publishedRevision() !== notebookCommit ||
-    readCanonicalTextFile(join(input.workspaceRoot, 'knowledge', 'schema', 'scope-schema.yaml')) !==
-      schemaText
-  )
-    throw new TypeError('Knowledge predecessor changed during authority transfer.');
-  return prepareControlKnowledgeAuthorityTransfer({ db: input.db, heads: [head], proposals });
 }

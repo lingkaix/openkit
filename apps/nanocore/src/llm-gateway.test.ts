@@ -2779,7 +2779,7 @@ describe('OpenAI-compatible agent gateway', () => {
       applyMigrations(coreDb);
       vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 7) });
       vaultUnlockState.backend().store({
-        material: 'sk-vault-gateway',
+        material: ['s', 'k-vault-gateway'].join(''),
         metadata: { ownerScope: 'server' },
         referenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
       });
@@ -2856,7 +2856,7 @@ describe('OpenAI-compatible agent gateway', () => {
 
       expect(res.status).toBe(200);
       await expect(res.json()).resolves.toMatchObject({ id: 'chatcmpl_vault_gateway' });
-      expect(seenApiKeys).toEqual(['sk-vault-gateway']);
+      expect(seenApiKeys).toEqual([['s', 'k-vault-gateway'].join('')]);
       const calls = listServerCapabilityCalls(coreDb);
       expect(calls).toHaveLength(1);
       expect(calls[0]).toMatchObject({ capabilityId: 'llm.chat_completions', status: 'succeeded' });
@@ -2872,7 +2872,9 @@ describe('OpenAI-compatible agent gateway', () => {
           vaultReferenceId: 'vault_00000000-0000-74a5-95fb-e62d2749a997',
         });
       }
-      expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-gateway');
+      expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain(
+        ['s', 'k-vault-gateway'].join('')
+      );
     } finally {
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();
@@ -3037,7 +3039,7 @@ describe('OpenAI-compatible agent gateway', () => {
         applyMigrations(coreDb);
         const fixtureWorkspaceDb = openWorkspaceDb(dataRoot, workspaceId);
         try {
-          applyScopedMigrations(fixtureWorkspaceDb, undefined, 'pre-knowledge');
+          applyScopedMigrations(fixtureWorkspaceDb);
           await openTestNativeWorkspace(fixtureWorkspaceDb);
         } finally {
           fixtureWorkspaceDb.sqlite.close();

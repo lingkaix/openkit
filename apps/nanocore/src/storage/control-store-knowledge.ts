@@ -240,7 +240,7 @@ async function verifyKnowledgeProposalFacts(input: {
   };
 }
 
-/** Prepared one-way carry on the exact pre-serving Workspace connection; not a live publication grant. */
+/** Prepared initial Knowledge authority on the exact private fresh Workspace connection; not a live publication grant. */
 export interface PreparedKnowledgeAuthorityTransfer {
   readonly workspaceDb: WorkspaceDb;
   readonly initialAudits: readonly AuditEvent[];
@@ -254,16 +254,15 @@ export interface PreparedKnowledgeAuthorityTransfer {
 }
 
 /**
- * Captures verified predecessor selections for the native activation transaction.
+ * Captures initial Notebook selections for the complete fresh baseline transaction.
  *
- * The boot/staging owner must exclude serving, validate the complete old inventory
- * and synchronize referenced Git and Storage bytes before calling this function.
- * Original command receipts and Audit already belong to this database and remain
- * unchanged. This does not infer ownership, recover split outcomes or seed a
- * missing admitted head. The final live switch alone installs the activation tag.
+ * The private staging owner excludes serving and synchronizes referenced Git and
+ * Storage bytes before this call. The original initial Audits share the head and
+ * baseline ledger commit. This does not infer ownership, recover split outcomes
+ * or seed missing authority in an existing published Workspace.
  *
- * @param input Actual Workspace connection, exact prepared heads and original ordered Reviews.
- * @returns Bound row facts for the specific migration's fixed SQL, transaction and ledger.
+ * @param input Actual fresh Workspace connection and exact prepared authority.
+ * @returns Bound row facts for the original baseline SQL transaction and ledger.
  */
 export function prepareControlKnowledgeAuthorityTransfer(input: {
   readonly db: WorkspaceDb;

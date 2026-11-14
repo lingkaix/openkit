@@ -1003,7 +1003,7 @@ it.each([
     } else {
       const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         workspaceDb.sqlite
           .prepare(
             `INSERT INTO workspace_apply_plans (

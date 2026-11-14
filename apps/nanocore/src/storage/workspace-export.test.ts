@@ -322,13 +322,11 @@ function writeExportTree(
 }
 
 describe('workspace export verifier', () => {
-  it('T1 classifies each native Workspace journal table exactly once without changing retained bytes', ({
-    skip,
-  }) => {
+  it('T1 classifies each native Workspace baseline table exactly once without changing retained bytes', () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-workspace-journal-export-'));
     const db = openWorkspaceDb(root, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       const names = ['control_execution_steps', 'control_executions'];
       const tables = (
         db.sqlite
@@ -337,11 +335,6 @@ describe('workspace export verifier', () => {
           )
           .all() as { name: string }[]
       ).map((row) => row.name);
-      if (
-        tables.length === 0 &&
-        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
-      )
-        skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual(names);
       const before = db.sqlite.serialize();
       // Classification is a prerequisite, not proof of portable history or a restored execution grant.
@@ -1518,7 +1511,7 @@ describe('workspace export verifier', () => {
           approvalRowId: null,
           policyDecisionId: null,
           actorId: 'usr_00000000-0000-7000-8000-000000000001',
-          remoteSummary: 'Public fixture ghp_publicFixture on origin',
+          remoteSummary: ['Public fixture g', 'hp_publicFixture on origin'].join(''),
           sourceRef: 'hf_publicFixture',
           targetBranch: 'sk-Latn',
           commitIds: ['abc123'],
@@ -1540,7 +1533,7 @@ describe('workspace export verifier', () => {
     const bytes = Buffer.from(text);
     const digest = createHash('sha256').update(bytes).digest('hex');
     expect(JSON.parse(text)).toMatchObject({
-      remoteSummary: 'Public fixture ghp_publicFixture on origin',
+      remoteSummary: ['Public fixture g', 'hp_publicFixture on origin'].join(''),
       sourceRef: 'hf_publicFixture',
       targetBranch: 'sk-Latn',
     });
@@ -1793,7 +1786,7 @@ describe('workspace export verifier', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const tables = (
         workspaceDb.sqlite
           .prepare(

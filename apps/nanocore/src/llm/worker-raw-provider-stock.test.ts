@@ -47,7 +47,7 @@ async function fixture() {
   };
   const db = openWorkspaceDb(root, scope.workspaceId);
   databases.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const coreDb = createTestCoreDb(root);
   let authorityActor: ActorRef;
   try {

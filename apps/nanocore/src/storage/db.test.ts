@@ -1,6 +1,5 @@
 // openkit-test-platform: posix
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -17,9 +16,6 @@ import { basename, dirname, join } from 'node:path';
 import { sql } from 'drizzle-orm';
 import { describe, expect, it } from 'vitest';
 import { startCapabilityCall } from '../capability/usage-ledger.js';
-import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook } from '../knowledge/notebook.js';
-import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
-import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -71,49 +67,6 @@ function initializeUnmigratedScopedDb(scopedDb: UserDb | WorkspaceDb): void {
   expect(sqlite.prepare('PRAGMA quick_check').pluck().get()).toBe('ok');
   expect(listTables(sqlite)).toEqual([]);
   expect(listMigrationIds(sqlite, scope)).toEqual([]);
-}
-
-/** Creates the retained Knowledge predecessor that full Workspace boot migration admits. */
-function initializeWorkspaceKnowledgePredecessor(dataRoot: string, workspaceId: string): void {
-  const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
-  const configRoot = join(workspaceRoot, 'config');
-  const knowledgeBaseId = testEntityId('kb', `scoped-database:${workspaceId}`);
-  mkdirSync(configRoot, { recursive: true });
-  writeFileSync(
-    join(configRoot, 'workspace.jsonc'),
-    `${JSON.stringify({
-      schemaVersion: 1,
-      workspace: {
-        name: workspaceId,
-        defaultAgentId: null,
-        defaultKnowledgeBaseId: knowledgeBaseId,
-        knowledgeMounts: [
-          {
-            name: 'managed',
-            backend: 'local',
-            root: 'raw',
-            default: true,
-            knowledgeBaseId,
-          },
-        ],
-      },
-    })}\n`
-  );
-  const schemaRoot = join(workspaceRoot, 'knowledge', 'schema');
-  mkdirSync(schemaRoot, { recursive: true });
-  writeFileSync(join(schemaRoot, 'scope-schema.yaml'), DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT);
-  new KnowledgeNotebook({
-    repositoryPath: join(workspaceRoot, 'knowledge', 'notebook.git'),
-  }).initialize({
-    files: { 'index.md': DEFAULT_NOTEBOOK_INDEX },
-    metadata: {
-      summary: 'Scoped database fixture',
-      producer: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },
-      authority: { kind: 'direct', instructionReference: 'test-fixture:scoped-database' },
-      changeRequest: { requestId: randomUUID(), inputDigest: `sha256:${'0'.repeat(64)}` },
-      sourceReferences: [],
-    },
-  });
 }
 
 describe('scoped storage databases', () => {
@@ -172,7 +125,7 @@ describe('scoped storage databases', () => {
     const writer = openWorkspaceDb(root, workspaceId);
     let reader: WorkspaceDb | undefined;
     try {
-      applyScopedMigrations(writer, undefined, 'pre-knowledge');
+      applyScopedMigrations(writer);
       reader = openWorkspaceReadDb(root, workspaceId);
       expect(reader).toMatchObject({ scope: 'workspace', dataRoot: root, workspaceId });
       expect(reader.sqlite.readonly).toBe(true);
@@ -191,7 +144,7 @@ describe('scoped storage databases', () => {
     const original = openWorkspaceDb(root, workspaceId);
     const sqlite = original.sqlite;
     try {
-      applyScopedMigrations(original, undefined, 'pre-knowledge');
+      applyScopedMigrations(original);
       sqlite.exec('CREATE TEMP TABLE binding_marker (value TEXT NOT NULL)');
       const before = sqlite.serialize();
       const bound = bindWorkspaceSqlite(sqlite, root, workspaceId);
@@ -246,22 +199,15 @@ describe('scoped storage databases', () => {
     }
   });
 
-  it('T1 reopens the native Workspace journal under FULL without changing its closed column contract', ({
-    skip,
-  }) => {
+  it('T1 reopens the native Workspace baseline under FULL without changing its closed column contract', () => {
     const root = createDataRoot();
     const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
     let db = openWorkspaceDb(root, workspaceId);
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       const tables = listTables(db.sqlite).filter((name) =>
         ['control_execution_steps', 'control_executions'].includes(name)
       );
-      if (
-        tables.length === 0 &&
-        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
-      )
-        skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual(['control_execution_steps', 'control_executions']);
       const before = db.sqlite.serialize();
       db.sqlite.close();
@@ -324,12 +270,7 @@ describe('scoped storage databases', () => {
     },
     {
       name: 'openBootVerifiedWorkspaceDb',
-      activatesKnowledge: true,
       create: (dataRoot: string) => {
-        initializeWorkspaceKnowledgePredecessor(
-          dataRoot,
-          'ws_00000000-0000-73c3-900f-8d310e4ba201'
-        );
         return openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
       },
       open: async (dataRoot: string) => {
@@ -355,8 +296,6 @@ describe('scoped storage databases', () => {
       expect(sqlite.inTransaction).toBe(false);
       expect(sqlite.pragma('synchronous', { simple: true }), 'fresh connection FULL').toBe(2);
       if (created.scope === 'core') applyMigrations(created);
-      else if (created.scope === 'workspace')
-        applyScopedMigrations(created, undefined, 'pre-knowledge');
       else applyScopedMigrations(created);
       expect(sqlite.inTransaction).toBe(false);
       expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
@@ -376,22 +315,7 @@ describe('scoped storage databases', () => {
       const reopenedMigrations = sqlite
         .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
         .all();
-      if ('activatesKnowledge' in factory) {
-        expect(reopenedMigrations).toHaveLength(retainedMigrations.length + 10);
-        expect(reopenedMigrations.slice(0, retainedMigrations.length)).toEqual(retainedMigrations);
-        expect(listMigrationIds(sqlite, 'workspace').slice(retainedMigrations.length)).toEqual([
-          'workspace_0019_knowledge_authority',
-          'workspace_0020_thread_turn_reads',
-          'workspace_0021_timeline_windows',
-          'workspace_0022_thread_dashboard',
-          'workspace_0023_task_steer',
-          'workspace_0024_thread_failure_counts',
-          'workspace_0025_timeline_plan_history',
-          'workspace_0026_conversation_navigation',
-          'workspace_0027_mcp_definition_hold',
-          'workspace_0028_security_automation_requester',
-        ]);
-      } else expect(reopenedMigrations).toEqual(retainedMigrations);
+      expect(reopenedMigrations).toEqual(retainedMigrations);
       expect(sqlite.pragma('journal_mode', { simple: true })).toBe('wal');
       expect(sqlite.pragma('synchronous', { simple: true }), 'reopened connection FULL').toBe(2);
     } finally {
@@ -446,8 +370,8 @@ describe('scoped storage databases', () => {
     );
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
+      applyScopedMigrations(workspaceDb);
 
       const tables = listTables(workspaceDb.sqlite);
 
@@ -522,25 +446,7 @@ describe('scoped storage databases', () => {
         'workspace_snapshot_cursors',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
-        'workspace_0000_setup',
-        'workspace_0001_assistant_handoff',
-        'workspace_0002_notebook_admission',
-        'workspace_0003_exact_review_feedback',
-        'workspace_0004_policy_audit_v1',
-        'workspace_0005_retained_record_formats',
-        'workspace_0006_audit_authentication',
-        'workspace_0007_evaluation_candidates',
-        'workspace_0008_evaluation_judgements',
-        'workspace_0009_review_selection_judgements',
-        'workspace_0010_product_control',
-        'workspace_0011_workspace_capture_protection',
-        'workspace_0012_execution_journal',
-        'workspace_0013_work_observations',
-        'workspace_0014_usage_provider_model',
-        'workspace_0015_capability_call_turn_lookup',
-        'workspace_0016_capture_origin',
-        'workspace_0017_knowledge_heads',
-        'workspace_0018_knowledge_proposals',
+        'workspace_0000_baseline',
       ]);
     } finally {
       workspaceDb.sqlite.close();
@@ -673,13 +579,12 @@ describe('scoped storage databases', () => {
         applyMigrations(coreDb);
         const ownerUserId = ensureLocalUser(coreDb);
         const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         workspaceDb.sqlite.close();
         recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
         const sibling = openWorkspaceDb(dataRoot, siblingId);
         initializeUnmigratedScopedDb(sibling);
         sibling.sqlite.close();
-        initializeWorkspaceKnowledgePredecessor(dataRoot, siblingId);
         recordWorkspaceOwnerMembership({ coreDb, workspaceId: siblingId, ownerUserId });
         const registrations = coreDb.sqlite
           .prepare('SELECT * FROM workspace_registry ORDER BY workspace_id')
@@ -730,7 +635,6 @@ describe('scoped storage databases', () => {
     const created = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     initializeUnmigratedScopedDb(created);
     created.sqlite.close();
-    initializeWorkspaceKnowledgePredecessor(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     const stagingRoot = join(dataRoot, 'workspaces', '.staging');
     const stagedChild = join(stagingRoot, 'ws_00000000-0000-7a13-853c-5d52c0c5884f');
     const sentinel = Buffer.from([0, 1, 127, 255]);
@@ -754,35 +658,7 @@ describe('scoped storage databases', () => {
     const migratedUserDb = openUserDb(dataRoot, '.staging');
     try {
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
-        'workspace_0000_setup',
-        'workspace_0001_assistant_handoff',
-        'workspace_0002_notebook_admission',
-        'workspace_0003_exact_review_feedback',
-        'workspace_0004_policy_audit_v1',
-        'workspace_0005_retained_record_formats',
-        'workspace_0006_audit_authentication',
-        'workspace_0007_evaluation_candidates',
-        'workspace_0008_evaluation_judgements',
-        'workspace_0009_review_selection_judgements',
-        'workspace_0010_product_control',
-        'workspace_0011_workspace_capture_protection',
-        'workspace_0012_execution_journal',
-        'workspace_0013_work_observations',
-        'workspace_0014_usage_provider_model',
-        'workspace_0015_capability_call_turn_lookup',
-        'workspace_0016_capture_origin',
-        'workspace_0017_knowledge_heads',
-        'workspace_0018_knowledge_proposals',
-        'workspace_0019_knowledge_authority',
-        'workspace_0020_thread_turn_reads',
-        'workspace_0021_timeline_windows',
-        'workspace_0022_thread_dashboard',
-        'workspace_0023_task_steer',
-        'workspace_0024_thread_failure_counts',
-        'workspace_0025_timeline_plan_history',
-        'workspace_0026_conversation_navigation',
-        'workspace_0027_mcp_definition_hold',
-        'workspace_0028_security_automation_requester',
+        'workspace_0000_baseline',
       ]);
       expect(listMigrationIds(migratedUserDb.sqlite, 'user')).toEqual([
         'user_0000_setup',
@@ -804,7 +680,7 @@ describe('scoped storage databases', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       expect(
         workspaceDb.sqlite
@@ -974,7 +850,7 @@ describe('scoped storage databases', () => {
       'ws_00000000-0000-73c3-900f-8d310e4ba201'
     );
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       expect(tableColumns(workspaceDb.sqlite, 'pending_user_turn_records')).toEqual([]);
       expect(tableColumns(workspaceDb.sqlite, 'steering_terminal_outcomes')).toEqual([]);
       expect(tableColumns(workspaceDb.sqlite, 'goals')).toEqual([
@@ -1039,7 +915,6 @@ describe('scoped storage databases', () => {
         const workspace = openWorkspaceDb(dataRoot, workspaceId);
         initializeUnmigratedScopedDb(workspace);
         workspace.sqlite.close();
-        initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
         await expect(verify(dataRoot)).resolves.toBeUndefined();
         expect(() =>
           openUserDb(dataRoot, 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b').sqlite.close()
@@ -1108,7 +983,6 @@ process.kill(process.pid, 'SIGKILL');`,
     const initialWorkspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
     initializeUnmigratedScopedDb(initialWorkspaceDb);
     initialWorkspaceDb.sqlite.close();
-    initializeWorkspaceKnowledgePredecessor(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     await verifyAndMigrateExistingScopedDatabases(dataRoot);
 
@@ -1126,35 +1000,7 @@ process.kill(process.pid, 'SIGKILL');`,
         'user_0006_permission_decisions',
       ]);
       expect(listMigrationIds(workspaceDb.sqlite, 'workspace')).toEqual([
-        'workspace_0000_setup',
-        'workspace_0001_assistant_handoff',
-        'workspace_0002_notebook_admission',
-        'workspace_0003_exact_review_feedback',
-        'workspace_0004_policy_audit_v1',
-        'workspace_0005_retained_record_formats',
-        'workspace_0006_audit_authentication',
-        'workspace_0007_evaluation_candidates',
-        'workspace_0008_evaluation_judgements',
-        'workspace_0009_review_selection_judgements',
-        'workspace_0010_product_control',
-        'workspace_0011_workspace_capture_protection',
-        'workspace_0012_execution_journal',
-        'workspace_0013_work_observations',
-        'workspace_0014_usage_provider_model',
-        'workspace_0015_capability_call_turn_lookup',
-        'workspace_0016_capture_origin',
-        'workspace_0017_knowledge_heads',
-        'workspace_0018_knowledge_proposals',
-        'workspace_0019_knowledge_authority',
-        'workspace_0020_thread_turn_reads',
-        'workspace_0021_timeline_windows',
-        'workspace_0022_thread_dashboard',
-        'workspace_0023_task_steer',
-        'workspace_0024_thread_failure_counts',
-        'workspace_0025_timeline_plan_history',
-        'workspace_0026_conversation_navigation',
-        'workspace_0027_mcp_definition_hold',
-        'workspace_0028_security_automation_requester',
+        'workspace_0000_baseline',
       ]);
     } finally {
       userDb.sqlite.close();
@@ -1167,8 +1013,7 @@ process.kill(process.pid, 'SIGKILL');`,
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
-      initializeWorkspaceKnowledgePredecessor(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7e68-8ab1-8dcac1be1b5b' },

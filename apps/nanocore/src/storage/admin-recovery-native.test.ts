@@ -191,7 +191,7 @@ describe('stopped-server recovery native commit boundary', () => {
       if (shape === 'workspace') {
         const workspace = createTestWorkspaceDb(f.root, workspaceId);
         try {
-          applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+          applyScopedMigrations(workspace);
         } finally {
           workspace.sqlite.close();
         }

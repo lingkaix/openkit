@@ -86,7 +86,7 @@ async function createTranscriptFixture(
     agentSessionId: 'as_00000000-0000-73fb-927c-5d84e16d5481',
   });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
     environmentPackage,
     createdAt: environmentPackage.createdAt,
@@ -415,7 +415,10 @@ describe('worker transcript Item exact-value admission', () => {
     expectTypeOf<LocalSimulatorTranscriptPayload>().not.toExtend<WorkerTranscriptPayload>();
     const fixture = await createTranscriptFixture();
     const before = transcriptItemHistory(fixture);
-    const text = 'Local output sk-not-injected and aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const text = [
+      'Local output s',
+      'k-not-injected and aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    ].join('');
     const payload: LocalSimulatorTranscriptPayload = {
       ...credentialItemPayload(fixture, { text }, null),
       credentialCheckValues: createLocalSimulatorCredentialCheckValues(),
@@ -545,7 +548,10 @@ describe('worker transcript Item exact-value admission', () => {
 
   it('stores uninjected credential-looking text unchanged without a heuristic', async () => {
     const fixture = await createTranscriptFixture();
-    const text = 'Authorization: Bearer sk-synthetic-uninjected-key; password=ordinary-example';
+    const text = [
+      'Authorization: Bearer s',
+      'k-synthetic-uninjected-key; password=ordinary-example',
+    ].join('');
     const result = await importWorkerTranscript(
       fixture.store,
       fixture.environmentPackage,

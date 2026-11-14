@@ -154,7 +154,7 @@ async function createRestorableWorkerControlFixture(
   );
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const predecessorDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(predecessorDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(predecessorDb);
   predecessorDb.sqlite.close();
   initializeWorkspaceKnowledgePredecessor(dataRoot, workspaceId);
   await verifyAndMigrateExistingScopedDatabases(dataRoot);

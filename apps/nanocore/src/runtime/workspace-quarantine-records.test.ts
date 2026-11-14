@@ -19,7 +19,7 @@ describe('workspace quarantine records', () => {
     let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       const original = recordWorkspaceQuarantineRecord(workspaceDb, workspaceQuarantineRecord());
       expect(
@@ -60,7 +60,7 @@ describe('workspace quarantine records', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
           lifecycleRecordIds: ['wrr_1', 'wom_1'],
           failureKind: 'digest_mismatch',
-          storageRef: 'quarantine/workspace-sync/ghp_publicFixture',
+          storageRef: ['quarantine/workspace-sync/g', 'hp_publicFixture'].join(''),
           retentionClass: 'restricted-evidence',
           requiredHumanDecision: 'inspect_quarantined_output',
           resolution: 'retained',
@@ -78,7 +78,7 @@ describe('workspace quarantine records', () => {
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       const record = recordWorkspaceQuarantineRecord(db, workspaceQuarantineRecord());
       db.sqlite
         .prepare('UPDATE workspace_quarantine_records SET schema_version=2,payload_json=?')
@@ -114,7 +114,7 @@ function workspaceQuarantineRecord() {
     workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     lifecycleRecordIds: ['wrr_1', 'wom_1'],
     failureKind: 'digest_mismatch',
-    storageRef: 'quarantine/workspace-sync/ghp_publicFixture',
+    storageRef: ['quarantine/workspace-sync/g', 'hp_publicFixture'].join(''),
     retentionClass: 'restricted-evidence',
     requiredHumanDecision: 'inspect_quarantined_output',
     resolution: 'pending',

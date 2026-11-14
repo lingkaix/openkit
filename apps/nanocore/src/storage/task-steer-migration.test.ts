@@ -1,17 +1,12 @@
-import { readFileSync } from 'node:fs';
 import Database from 'better-sqlite3';
 import { expect, it } from 'vitest';
+import { applyNativeScopeMigrations } from './migrate.js';
 
-it('extends the existing journal kind CHECK while preserving original bytes, links and settlement guards', () => {
+it('admits current steer steps while preserving links and settlement guards', () => {
   const db = new Database(':memory:');
   try {
     db.pragma('foreign_keys = ON');
-    db.exec(
-      readFileSync(
-        new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url),
-        'utf8'
-      )
-    );
+    applyNativeScopeMigrations(db, 'workspace');
     const span = {
       traceId: 'a'.repeat(32),
       spanId: 'b'.repeat(16),
@@ -84,16 +79,8 @@ it('extends the existing journal kind CHECK while preserving original bytes, lin
     insert.run(...row('parent', 1, 'materialize', null));
     for (const [index, state] of ['completed', 'failed', 'unknown', 'cancelled'].entries())
       insert.run(...row(state, index + 2, 'inspect-session', 'parent', state));
-    expect(() => insert.run(...row('steer', 6, 'deliver-steer', 'parent'))).toThrow(/CHECK/);
     const before = db.prepare('SELECT * FROM control_execution_steps ORDER BY ordinal').all();
-    db.transaction(() =>
-      db.exec(
-        readFileSync(
-          new URL('../../drizzle/workspace/0023_task_steer.sql', import.meta.url),
-          'utf8'
-        )
-      )
-    )();
+    applyNativeScopeMigrations(db, 'workspace');
     expect(db.prepare('SELECT * FROM control_execution_steps ORDER BY ordinal').all()).toEqual(
       before
     );

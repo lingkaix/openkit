@@ -53,7 +53,7 @@ async function fixture() {
     initialization: { requestId: randomUUID(), instructionReference: 'test:User Memory' },
   });
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   const answer = {
     threadId: timeline.id,
     turnId: turn.id,

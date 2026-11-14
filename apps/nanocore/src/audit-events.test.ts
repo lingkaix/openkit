@@ -34,7 +34,7 @@ describe('workspace audit events', () => {
     const source = openWorkspaceDb(dataRoot, sourceId);
     try {
       applyMigrations(coreDb);
-      applyScopedMigrations(source, undefined, 'pre-knowledge');
+      applyScopedMigrations(source);
       const authentication = {
         credentialKind: 'token' as const,
         credentialId: testEntityId('tok', 'audit-presented'),
@@ -103,7 +103,7 @@ describe('workspace audit events', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       applyMigrations(coreDb);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const local = recordWorkspaceAuditEvent({
         workspaceDb,
         workspaceId,
@@ -156,7 +156,7 @@ describe('workspace audit events', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
       applyMigrations(coreDb);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const schedules = new AutomationStore(
         coreDb,
         new WorkspaceMutationAdmission(),
@@ -217,7 +217,7 @@ describe('workspace audit events', () => {
       'ws_00000000-0000-7000-8000-000000000001'
     );
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const event = recordWorkspaceAuditEvent({
         workspaceDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -350,7 +350,7 @@ describe('workspace audit events', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       const event = recordWorkspaceAuditEvent({
         action: 'worker.capability.finish',
@@ -444,7 +444,7 @@ describe('workspace audit events', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       expect(() =>
         recordWorkspaceAuditEvent({

@@ -656,7 +656,7 @@ async function nativeReceiver(captureValue: 'on' | 'off' = 'on', bound: number |
   });
   await store.updateTurn(turn.id, { agentSessionId });
   const db = openWorkspaceDb(root, pkg.scope.workspaceId);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   await recordAgentEnvironmentPackageSnapshot(db, {
     environmentPackage: pkg,
     createdAt: pkg.createdAt,

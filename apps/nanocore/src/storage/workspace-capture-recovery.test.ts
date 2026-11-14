@@ -63,7 +63,7 @@ function fixture(competing = false) {
     recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: id, ownerUserId: userId });
     const db = openWorkspaceDb(dataRoot, id);
     handles.push(db);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     return db;
   };
   const db = open(workspaceId);

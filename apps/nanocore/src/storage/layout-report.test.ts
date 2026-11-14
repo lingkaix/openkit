@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -27,59 +27,29 @@ function createDataRoot(): string {
 }
 
 describe('storage layout report', () => {
-  it('T1 reports Workspace0012 only for its native owner and leaves Core0014 intact', async ({
-    skip,
-  }) => {
+  it('T1 reports each current baseline only for its native owner without changing bytes', async () => {
     const root = createDataRoot();
     const core = openCoreDb(root);
     const workspaceId = 'ws_00000000-0000-73c3-900f-8d310e4ba201';
     const workspace = openWorkspaceDb(root, workspaceId);
     try {
       applyMigrations(core);
-      applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspace);
       const tables = workspace.sqlite
         .prepare(
           "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('control_executions', 'control_execution_steps') ORDER BY name"
         )
         .all();
-      if (
-        tables.length === 0 &&
-        !existsSync(new URL('../../drizzle/workspace/0012_execution_journal.sql', import.meta.url))
-      )
-        skip('schema-pending: Workspace0012 execution journal');
       expect(tables).toEqual([{ name: 'control_execution_steps' }, { name: 'control_executions' }]);
       const before = workspace.sqlite.serialize();
       const report = await createStorageLayoutReport(root);
       expect(report.workspaces).toHaveLength(1);
       expect(report.workspaces[0]?.workspaceId).toBe(workspaceId);
-      expect(report.workspaces[0]?.workspaceDb.appliedMigrations.slice(-8)).toEqual([
-        'workspace_0011_workspace_capture_protection',
-        'workspace_0012_execution_journal',
-        'workspace_0013_work_observations',
-        'workspace_0014_usage_provider_model',
-        'workspace_0015_capability_call_turn_lookup',
-        'workspace_0016_capture_origin',
-        'workspace_0017_knowledge_heads',
-        'workspace_0018_knowledge_proposals',
+      expect(report.workspaces[0]?.workspaceDb.appliedMigrations).toEqual([
+        'workspace_0000_baseline',
       ]);
-      expect(report.serverDb.appliedMigrations.slice(-15)).toEqual([
-        'core_0014_execution_journal',
-        'core_0015_work_observations',
-        'core_0016_workspace_recovery_admissions',
-        'core_0017_personal_workspace_binding',
-        'core_0018_usage_provider_model',
-        'core_0019_idle_cleanup_resident_lookup',
-        'core_0020_scheduler_lineage_lookup',
-        'core_0021_harness_login_metadata',
-        'core_0022_thread_turn_reads',
-        'core_0023_timeline_windows',
-        'core_0024_thread_dashboard',
-        'core_0025_harness_login_observations',
-        'core_0026_security_trigger',
-        'core_0027_security_thread_destinations',
-        'core_0028_access_token_issuer_ref',
-      ]);
-      expect(report.serverDb.appliedMigrations).not.toContain('workspace_0012_execution_journal');
+      expect(report.serverDb.appliedMigrations).toEqual(['core_0000_baseline']);
+      expect(report.serverDb.appliedMigrations).not.toContain('workspace_0000_baseline');
       expect(workspace.sqlite.serialize().equals(before)).toBe(true);
     } finally {
       workspace.sqlite.close();
@@ -96,43 +66,12 @@ describe('storage layout report', () => {
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(userDb);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       const report = await createStorageLayoutReport(dataRoot);
 
       expect(report.serverDb.exists).toBe(true);
-      expect(report.serverDb.appliedMigrations).toEqual([
-        'core_0000_setup',
-        'core_0001_concurrent_turn_capacity',
-        'core_0002_durable_recurring_schedules',
-        'core_0003_notebook_admission',
-        'core_0004_equal_workspace_members',
-
-        'core_0005_channel_notifications',
-        'core_0006_external_trigger_admissions',
-        'core_0007_discord_capture_origin',
-        'core_0008_server_capability_usage',
-        'core_0009_policy_audit_v1',
-        'core_0010_retained_record_formats',
-        'core_0011_audit_authentication',
-        'core_0012_quarantined_workspace_retirement',
-        'core_0013_control_store',
-        'core_0014_execution_journal',
-        'core_0015_work_observations',
-        'core_0016_workspace_recovery_admissions',
-        'core_0017_personal_workspace_binding',
-        'core_0018_usage_provider_model',
-        'core_0019_idle_cleanup_resident_lookup',
-        'core_0020_scheduler_lineage_lookup',
-        'core_0021_harness_login_metadata',
-        'core_0022_thread_turn_reads',
-        'core_0023_timeline_windows',
-        'core_0024_thread_dashboard',
-        'core_0025_harness_login_observations',
-        'core_0026_security_trigger',
-        'core_0027_security_thread_destinations',
-        'core_0028_access_token_issuer_ref',
-      ]);
+      expect(report.serverDb.appliedMigrations).toEqual(['core_0000_baseline']);
       expect(report.users).toEqual(
         expect.arrayContaining([
           {
@@ -158,27 +97,7 @@ describe('storage layout report', () => {
           workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
           workspaceDb: expect.objectContaining({
             exists: true,
-            appliedMigrations: [
-              'workspace_0000_setup',
-              'workspace_0001_assistant_handoff',
-              'workspace_0002_notebook_admission',
-              'workspace_0003_exact_review_feedback',
-              'workspace_0004_policy_audit_v1',
-              'workspace_0005_retained_record_formats',
-              'workspace_0006_audit_authentication',
-              'workspace_0007_evaluation_candidates',
-              'workspace_0008_evaluation_judgements',
-              'workspace_0009_review_selection_judgements',
-              'workspace_0010_product_control',
-              'workspace_0011_workspace_capture_protection',
-              'workspace_0012_execution_journal',
-              'workspace_0013_work_observations',
-              'workspace_0014_usage_provider_model',
-              'workspace_0015_capability_call_turn_lookup',
-              'workspace_0016_capture_origin',
-              'workspace_0017_knowledge_heads',
-              'workspace_0018_knowledge_proposals',
-            ],
+            appliedMigrations: ['workspace_0000_baseline'],
           }),
           indexesDir: expect.objectContaining({ exists: true, entryCount: 0 }),
         },

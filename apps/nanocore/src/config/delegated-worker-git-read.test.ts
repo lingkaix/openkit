@@ -213,7 +213,7 @@ async function fixture(repositoryCount = 1, distinctIssuer = false) {
   });
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   cleanup.push(() => workspaceDb.sqlite.close());
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   const setup = createTestAgentSetup({
     agentId: agentId,
     logicalModelId: 'reasoning',

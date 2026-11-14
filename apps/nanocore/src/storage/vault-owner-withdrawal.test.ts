@@ -90,7 +90,7 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
     let db = workspaceDbs.get(id);
     if (!db) {
       db = openWorkspaceDb(root, id);
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       workspaceDbs.set(id, db);
     }
     return db;

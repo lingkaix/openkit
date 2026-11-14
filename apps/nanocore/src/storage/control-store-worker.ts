@@ -4048,13 +4048,7 @@ async function openDatabase(request: OpenRequest): Promise<void> {
         if (request.create) applyAppMigrations(sqlite);
       }
       if (request.initialize !== undefined) {
-        applyNativeScopeMigrations(
-          sqlite,
-          request.initialize,
-          undefined,
-          undefined,
-          request.initialize === 'workspace' ? 'pre-knowledge' : 'full'
-        );
+        applyNativeScopeMigrations(sqlite, request.initialize);
         assertSavepointSafeSchema(sqlite);
       }
       if (contentMount) {

@@ -538,7 +538,7 @@ describe('artifact file command contract', () => {
     const state = await contractFixture();
     const otherWorkspaceId = allocateEntityId('ws');
     const otherDb = openWorkspaceDb(state.dataRoot, otherWorkspaceId);
-    applyScopedMigrations(otherDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(otherDb);
     databases.push(otherDb);
 
     const importSource = observableSource(state.original);

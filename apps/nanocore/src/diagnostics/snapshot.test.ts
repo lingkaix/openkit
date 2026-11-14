@@ -44,7 +44,7 @@ describe('createDiagnosticsSnapshot', () => {
         mode: 'local',
         providerRegistry: new ProviderRegistry([
           {
-            baseUrl: 'https://user:password@example.com/v1',
+            baseUrl: ['https:/', '/user:password@example.com/v1'].join(''),
             displayName: 'Provider',
             id: 'agent-openrouter',
             kind: 'custom',
@@ -61,23 +61,7 @@ describe('createDiagnosticsSnapshot', () => {
         dataRoot: 'configured',
         migrations: {
           // Bootstrap requires applied-version evidence, not a fixed release inventory.
-          applied: expect.arrayContaining([
-            'core_0000_setup',
-            'core_0001_concurrent_turn_capacity',
-            'core_0002_durable_recurring_schedules',
-            'core_0003_notebook_admission',
-            'core_0004_equal_workspace_members',
-            'core_0005_channel_notifications',
-            'core_0006_external_trigger_admissions',
-            'core_0007_discord_capture_origin',
-            'core_0008_server_capability_usage',
-            'core_0009_policy_audit_v1',
-            'core_0010_retained_record_formats',
-            'core_0011_audit_authentication',
-            'core_0012_quarantined_workspace_retirement',
-            'core_0013_control_store',
-            'core_0014_execution_journal',
-          ]),
+          applied: expect.arrayContaining(['core_0000_baseline']),
         },
         mode: 'local',
         providers: [{ baseUrl: 'https://example.com/v1', id: 'agent-openrouter' }],

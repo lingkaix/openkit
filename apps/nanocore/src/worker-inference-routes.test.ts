@@ -574,7 +574,7 @@ async function createWorkerInferenceRouteFixture(
     });
     const workspaceDb = openWorkspaceDb(appCoreDb.dataRoot, workspaceIdForOwner(turn.owner));
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage,
         createdAt: environmentPackage.createdAt,
@@ -758,7 +758,7 @@ function readWorkerInferenceCapabilityCalls(
   );
 
   try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     return workspaceDb.sqlite
       .prepare(
         `SELECT status, error_code AS errorCode, provider_ref AS providerRef, summary,
@@ -1628,7 +1628,7 @@ describe('worker inference routes', () => {
       fixture.environmentPackage.scope.workspaceId
     );
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       expect(
         workspaceDb.sqlite
           .prepare(
@@ -1810,7 +1810,7 @@ describe('worker inference routes', () => {
     );
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_worker_inference_finish_audit
         BEFORE INSERT ON audit_events
@@ -1855,7 +1855,7 @@ describe('worker inference routes', () => {
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         const calls = workspaceDb.sqlite
           .prepare(
             `SELECT request_id AS requestId, workspace_id AS workspaceId,
@@ -1917,7 +1917,7 @@ describe('worker inference routes', () => {
       fixture.environmentPackage.scope.workspaceId
     );
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       expect(
         workspaceDb.sqlite.prepare('SELECT COUNT(*) AS count FROM capability_calls').get()
       ).toEqual({ count: 0 });
@@ -3275,7 +3275,7 @@ describe('slice 3c Worker native effort and immutable package', () => {
       expect(received).toEqual([expected ?? 'none']);
       expect(f.environmentPackage).toEqual(admittedPackage);
       const db = openWorkspaceDb(f.coreDb!.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         const entries = listWorkspaceCapabilityCalls(
           db,

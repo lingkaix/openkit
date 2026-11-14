@@ -36,7 +36,7 @@ function fixture() {
   const workspaceId = allocateEntityId('ws');
   const db = openWorkspaceDb(root, workspaceId);
   databases.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const coreDb = createTestCoreDb(root);
   try {
     const userId = ensureLocalUser(coreDb);

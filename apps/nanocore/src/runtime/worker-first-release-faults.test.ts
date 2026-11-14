@@ -1411,7 +1411,7 @@ describe('first-release worker faults (real Core crossings)', () => {
       f.coreDb.dataRoot,
       'ws_00000000-0000-7000-8000-000000000001'
     );
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     try {
       const opened = await f.dispatch('session.open');
       await f.result(opened, {

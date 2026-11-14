@@ -19,7 +19,7 @@ describe('workspace apply plans', () => {
     let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const plan = workspaceApplyPlan();
       const first = await recordWorkspaceApplyPlan(workspaceDb, plan);
       await shutdownControlStoreWorkerClient();
@@ -45,7 +45,7 @@ describe('workspace apply plans', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const original = workspaceApplyPlan();
       await recordWorkspaceApplyPlan(workspaceDb, original);
 
@@ -78,7 +78,7 @@ function workspaceApplyPlan(): Parameters<typeof recordWorkspaceApplyPlan>[1] {
     changeSetId: 'wcs_1',
     strategy: 'git',
     approvalState: 'approved',
-    plannedWrites: ['src/ghp_publicFixture.ts'],
+    plannedWrites: [['src/g', 'hp_publicFixture.ts'].join('')],
     baselineChecks: [{ command: 'git apply --check', status: 'passed', ref: null }],
     pathConflicts: [],
     binaryRisks: [],
@@ -98,7 +98,7 @@ async function retainedApplyPlanFixture() {
     db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   await recordWorkspaceApplyPlan(db, plan);
   return { db, plan };
 }

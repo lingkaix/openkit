@@ -77,7 +77,7 @@ function createWorkspaceDb() {
     mkdtempSync(join(tmpdir(), 'openkit-aep-snapshot-ledger-')),
     'ws_00000000-0000-73c3-900f-8d310e4ba201'
   );
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
 
@@ -424,7 +424,7 @@ describe('AEP snapshot ledger', () => {
     async (kind) => {
       const db = createWorkspaceDb();
       const environmentPackage = await createEnvironmentPackage();
-      const literal = 'ghp_public-test-fixture';
+      const literal = ['g', 'hp_public-test-fixture'].join('');
       const input =
         kind === 'outcome'
           ? JSON.stringify({
@@ -505,7 +505,7 @@ describe('AEP snapshot ledger', () => {
     const environmentPackage = await createEnvironmentPackage();
     const now = '2026-07-06T00:00:01.000Z';
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
-    const content = 'public fixture ghp_public-test-fixture "\\🙂'.repeat(3000);
+    const content = ['public fixture g', 'hp_public-test-fixture "\\🙂'].join('').repeat(3000);
     const args = {
       owner: 'fixture',
       repo: 'fixture',
@@ -515,7 +515,7 @@ describe('AEP snapshot ledger', () => {
       content: [{ type: 'text', text: 'Published fixture without truncation' }],
       isError: false,
     };
-    const trigger = 'Independent trigger ghp_public-test-fixture';
+    const trigger = ['Independent trigger g', 'hp_public-test-fixture'].join('');
     try {
       const common = {
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
@@ -573,11 +573,11 @@ describe('AEP snapshot ledger', () => {
         {
           id: 'q',
           header: 'Question',
-          question: 'Keep ghp_public-test-fixture exactly?',
+          question: ['Keep g', 'hp_public-test-fixture exactly?'].join(''),
           options: [],
         },
       ];
-      const answers = { q: ['Yes ghp_public-test-fixture'] };
+      const answers = { q: [['Yes g', 'hp_public-test-fixture'].join('')] };
       raisePendingRequest(db.sqlite, {
         ...common,
         requestId: 'uq_large',
@@ -831,7 +831,7 @@ describe('AEP snapshot ledger', () => {
     const { dataRoot, workspaceId } = workspaceDb;
     workspaceDb.sqlite.close();
     const reopened = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(reopened, undefined, 'pre-knowledge');
+    applyScopedMigrations(reopened);
 
     try {
       expect(

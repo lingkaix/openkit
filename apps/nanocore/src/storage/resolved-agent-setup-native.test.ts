@@ -59,7 +59,7 @@ function fixture() {
   roots.push(root);
   const workspaceDb = openWorkspaceDb(root, workspaceId);
   databases.push(workspaceDb);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   workspaceDb.sqlite.pragma('query_only = ON');
   return { root, workspaceDb };
 }

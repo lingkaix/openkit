@@ -406,9 +406,6 @@ const STORAGE_TEST_GRANDFATHERED_PATHS = new Set([
   'apps/web/e2e/_lib/servers.spec.ts',
   'apps/web/e2e/generative-native.spec.ts',
   'packages/worker-shim/src/adapters/opencode.test.ts',
-  'tests/upgrade-from-previous-corpus.test.mjs',
-  'tests/upgrade-from-previous-sql-corpus.test.mjs',
-  'tests/upgrade-from-previous.test.mjs',
 ]);
 const STORAGE_OWNER_TEST_ROOTS = ['apps/nanocore/src/storage/', 'packages/storage/'];
 const SQL_STATEMENT =

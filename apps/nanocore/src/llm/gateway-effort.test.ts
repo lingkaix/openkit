@@ -338,7 +338,7 @@ async function fixture(
     });
   const entries = () => {
     const db = openWorkspaceDb(dataRoot, workspace.id);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       return listWorkspaceCapabilityCalls(db, workspace.id).flatMap(
         (call) => call.extensions?.['openkit.gateway/routeLineage']?.entries ?? []

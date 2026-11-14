@@ -1,27 +1,11 @@
-import {
-  chmodSync,
-  copyFileSync,
-  cpSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
-import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
-import {
-  prepareControlKnowledgeAuthorityTransfer,
-  readControlKnowledgeHead,
-} from './control-store-knowledge.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 import { readImmutableContentBytes } from './immutable-content-read.js';
@@ -46,14 +30,13 @@ type Entry = {
 
 // Owner: Conversation Timeline, Run Entries and Loading And Performance: Workspace-scoped statistics.
 // Failure read metadata is a verified projection; original Item authority is unchanged.
-it('carries Workspace failure metadata from verified inline and file-backed revisions, or rolls back the complete migration', async () => {
+it('reads current Workspace failure metadata from original inline and file-backed revisions', async () => {
   const kind = 'workspace' as const;
   const sourceRoot = mkdtempSync(join(tmpdir(), 'failure-source-'));
-  const targetRoot = mkdtempSync(join(tmpdir(), 'failure-predecessor-'));
-  roots.push(sourceRoot, targetRoot);
+  roots.push(sourceRoot);
   const store = await createDemoStore({ dataRoot: sourceRoot });
   const actor = { kind: 'user' as const, id: FIXTURE_LOCAL_USER_ID };
-  const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Failure migration');
+  const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Fresh failure metadata');
   const turn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Original failures', actor);
   const createItem = store.createItem.bind(store);
   const updateItem = store.updateItem.bind(store);
@@ -104,158 +87,27 @@ it('carries Workspace failure metadata from verified inline and file-backed revi
   });
   await shutdownControlStoreWorkerClient();
   const sourceScope = nativeProductScope(sourceRoot, turn.owner);
-  const sourceDb = new Database(sourceScope.path, { readonly: true });
-  const ownerRoot = join(sourceRoot, 'workspaces', DEMO_WORKSPACE_ID);
-  const targetOwnerRoot = join(targetRoot, 'workspaces', DEMO_WORKSPACE_ID);
-  cpSync(ownerRoot, targetOwnerRoot, { recursive: true });
-  for (const suffix of ['', '-wal', '-shm'])
-    rmSync(join(targetOwnerRoot, 'db', `workspace.sqlite${suffix}`), { force: true });
-  const target = openWorkspaceDb(targetRoot, DEMO_WORKSPACE_ID);
-  let sourceWorkspace: ReturnType<typeof openWorkspaceDb> | undefined;
+  const target = openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
   try {
-    const migrationRoot = new URL(`../../drizzle/${kind}/`, import.meta.url);
-    const journal = JSON.parse(
-      readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8')
-    ) as { entries: { tag: string }[] };
-    const tag = '0024_thread_failure_counts';
-    const migrationIndex = journal.entries.findIndex((entry) => entry.tag === tag);
-    expect(
-      migrationIndex,
-      `The released ${kind} failure-count migration must exist`
-    ).toBeGreaterThan(0);
-    const entries = journal.entries.slice(0, migrationIndex);
-    const predecessor = join(targetRoot, 'predecessor-journal');
-    mkdirSync(join(predecessor, 'meta'), { recursive: true });
-    for (const entry of entries)
-      copyFileSync(
-        new URL(`${entry.tag}.sql`, migrationRoot),
-        join(predecessor, `${entry.tag}.sql`)
-      );
-    writeFileSync(join(predecessor, 'meta/_journal.json'), JSON.stringify({ ...journal, entries }));
-    sourceWorkspace = openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
-    const kb = readDefaultKnowledgeBaseId({
-      dataRoot: sourceRoot,
-      scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-    });
-    const transfer = prepareControlKnowledgeAuthorityTransfer({
-      db: target,
-      heads: [readControlKnowledgeHead(sourceWorkspace, kb)!],
-      proposals: [],
-    });
-    applyNativeScopeMigrations(target.sqlite, kind, predecessor, transfer);
-    const tables = [
-      'control_workspaces',
-      'control_threads',
-      'control_agent_sessions',
-      'control_turns',
-      'control_product_entries',
-    ];
-    const stableColumns = new Map<string, string[]>();
-    target.sqlite.transaction(() => {
-      for (const table of tables) {
-        const names = (
-          target.sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
-        ).map((column) => column.name);
-        stableColumns.set(
-          table,
-          names.filter(
-            (name) => table !== 'control_product_entries' || name !== 'read_metadata_json'
-          )
-        );
-        const fields = names.map((name) => `"${name}"`).join(',');
-        const insert = target.sqlite.prepare(
-          `INSERT INTO ${table}(${fields}) VALUES(${names.map(() => '?').join(',')})`
-        );
-        // The predecessor already owns current-revision triggers. Replay publication order with
-        // an unselected incoming row; each trigger selects it after clearing its prior revision.
-        const sourceFields = names
-          .map((name) =>
-            table === 'control_product_entries' && name === 'is_current' ? '0' : `"${name}"`
-          )
-          .join(',');
-        for (const row of sourceDb
-          .prepare(`SELECT ${sourceFields} FROM ${table} ORDER BY rowid`)
-          .raw()
-          .all() as unknown[][])
-          insert.run(...row);
-      }
-      // Emulate the accepted predecessor projection only; canonical bodies and identities stay owner-created.
-      target.sqlite
-        .prepare(
-          "UPDATE control_product_entries SET read_metadata_json=json_remove(read_metadata_json,'$.failed') WHERE kind='item'"
-        )
-        .run();
-    })();
-    const stableRows = () =>
-      Object.fromEntries(
-        tables.map((table) => [
-          table,
-          target.sqlite
-            .prepare(`SELECT ${stableColumns.get(table)!.join(',')} FROM ${table} ORDER BY rowid`)
-            .all(),
-        ])
-      );
-    const originals = stableRows();
+    expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toEqual(['workspace_0000_baseline']);
     const itemRows = () =>
       target.sqlite
         .prepare(
           "SELECT id,revision,content_json,identity_json,read_metadata_json FROM control_product_entries WHERE kind='item' ORDER BY id,revision"
         )
         .all() as Entry[];
-    const oldMetadata = itemRows();
-    expect(oldMetadata).toHaveLength(4);
-    for (const row of oldMetadata)
-      expect(JSON.parse(row.read_metadata_json).failed).toBeUndefined();
-    const inline = oldMetadata.find((row) => row.id === recovered.id && row.revision === 1)!;
-    const file = oldMetadata.find((row) => row.id === large.id)!;
+    const currentMetadata = itemRows();
+    expect(currentMetadata).toHaveLength(4);
+    const inline = currentMetadata.find((row) => row.id === recovered.id && row.revision === 1)!;
+    const file = currentMetadata.find((row) => row.id === large.id)!;
     expect(JSON.parse(inline.content_json).reference.representation).toBe('inline');
     const fileContent = JSON.parse(file.content_json);
     expect(fileContent.reference.representation).not.toBe('inline');
     const originalFileBytes = Buffer.from(
       readImmutableContentBytes(sourceScope.contentMount, turn.owner, fileContent, 2_000_000)
     );
-    const targetScope = nativeProductScope(targetRoot, turn.owner);
+    const targetScope = nativeProductScope(sourceRoot, turn.owner);
     const filePath = join(targetScope.contentMount.root, fileContent.reference.locator.path);
-    const migrationState = () => ({
-      rows: target.sqlite.prepare('SELECT * FROM control_product_entries ORDER BY rowid').all(),
-      ledger: listAppliedNativeMigrationIds(target.sqlite, kind),
-      schema: target.sqlite
-        .prepare('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name')
-        .all(),
-    });
-    const corrupt = JSON.parse(inline.content_json);
-    corrupt.reference.contentDigest = `sha256:${'0'.repeat(64)}`;
-    target.sqlite
-      .prepare(
-        "UPDATE control_product_entries SET content_json=? WHERE kind='item' AND id=? AND revision=1"
-      )
-      .run(JSON.stringify(corrupt), recovered.id);
-    const refusedInline = migrationState();
-    expect(() => applyNativeScopeMigrations(target.sqlite, kind)).toThrow();
-    expect(migrationState()).toEqual(refusedInline);
-    expect(listAppliedNativeMigrationIds(target.sqlite, kind)).not.toContain(`${kind}_${tag}`);
-    target.sqlite
-      .prepare(
-        "UPDATE control_product_entries SET content_json=? WHERE kind='item' AND id=? AND revision=1"
-      )
-      .run(inline.content_json, recovered.id);
-    const damaged = Buffer.from(originalFileBytes);
-    damaged[0] = damaged[0]! ^ 1;
-    // Fault injection changes only this disposable copied body, then restores its immutable mode.
-    const originalMode = statSync(filePath).mode & 0o777;
-    chmodSync(filePath, 0o600);
-    writeFileSync(filePath, damaged);
-    chmodSync(filePath, originalMode);
-    const refusedFile = migrationState();
-    expect(() => applyNativeScopeMigrations(target.sqlite, kind)).toThrow();
-    expect(migrationState()).toEqual(refusedFile);
-    expect(listAppliedNativeMigrationIds(target.sqlite, kind)).not.toContain(`${kind}_${tag}`);
-    chmodSync(filePath, 0o600);
-    writeFileSync(filePath, originalFileBytes);
-    chmodSync(filePath, originalMode);
-    applyNativeScopeMigrations(target.sqlite, kind);
-    expect(listAppliedNativeMigrationIds(target.sqlite, kind)).toContain(`${kind}_${tag}`);
-    expect(stableRows()).toEqual(originals);
     const expected = new Map([
       [`${recovered.id}:1`, true],
       [`${recovered.id}:2`, false],
@@ -265,13 +117,6 @@ it('carries Workspace failure metadata from verified inline and file-backed revi
     for (const row of itemRows()) {
       const metadata = JSON.parse(row.read_metadata_json);
       expect(metadata.failed).toBe(expected.get(`${row.id}:${row.revision}`));
-      const { failed: _failed, ...retainedMetadata } = metadata;
-      expect(retainedMetadata).toEqual(
-        JSON.parse(
-          oldMetadata.find((old) => old.id === row.id && old.revision === row.revision)!
-            .read_metadata_json
-        )
-      );
     }
     expect(
       target.sqlite
@@ -296,8 +141,6 @@ it('carries Workspace failure metadata from verified inline and file-backed revi
     applyNativeScopeMigrations(target.sqlite, kind);
     expect(target.sqlite.serialize()).toEqual(beforeReapply);
   } finally {
-    sourceWorkspace?.sqlite.close();
     target.sqlite.close();
-    sourceDb.close();
   }
 }, 120_000);

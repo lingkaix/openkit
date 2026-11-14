@@ -350,7 +350,7 @@ describe('worker MCP routes', () => {
       });
       recordMcpWorkerLineage(coreDb, environmentPackage);
       const db = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       await recordAgentEnvironmentPackageSnapshot(db, {
         environmentPackage,
         createdAt: '2026-11-01T00:00:00.000Z',
@@ -614,7 +614,7 @@ describe('worker MCP routes', () => {
       });
       recordMcpWorkerLineage(coreDb, environmentPackage, token.tokenId);
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const tools = [
         {
           name: 'echo',
@@ -1813,7 +1813,7 @@ describe('worker MCP routes', () => {
       // Owner refusals cross the selected HTTP relay and retain their established JSON-RPC envelope.
       const refusalDb = openWorkspaceDb(dataRoot, workspaceIdForOwner(turn.owner));
       try {
-        applyScopedMigrations(refusalDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(refusalDb);
         const errorsBefore = rpcErrors.length;
         const itemsBefore = store.listThreadItems(workspaceIdForOwner(turn.owner), turn.threadId);
         const turnBefore = store.getTurnById(turn.id);
@@ -5447,7 +5447,7 @@ describe('worker MCP routes', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
     });
     const snapshotDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(snapshotDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(snapshotDb);
     try {
       await recordAgentEnvironmentPackageSnapshot(snapshotDb, {
         createdAt: '2026-09-03T00:00:00.000Z',
@@ -6015,7 +6015,7 @@ describe('worker MCP routes', () => {
       expect(store.getTurnById(turn.id).status).toBe('running');
 
       const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       try {
         expect(
           workspaceDb.sqlite
@@ -6925,7 +6925,7 @@ describe('worker MCP routes', () => {
           return;
         }
         const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         try {
           expect(workspaceDb.sqlite.prepare('SELECT outcome FROM vault_use_records').all()).toEqual(
             [{ outcome: 'succeeded' }]
@@ -7859,7 +7859,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   });
   recordMcpWorkerLineage(coreDb, environmentPackage);
   const db = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   await recordAgentEnvironmentPackageSnapshot(db, {
     environmentPackage,
     createdAt: '2026-10-24T00:00:00.000Z',
@@ -8947,7 +8947,7 @@ describe('MCP native admission and original closeout', () => {
       const database = `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`;
       const siblingId = testEntityId('ws', 'mcp-pressure');
       const sibling = openWorkspaceDb(f.dataRoot, siblingId);
-      applyScopedMigrations(sibling, undefined, 'pre-knowledge');
+      applyScopedMigrations(sibling);
       await openTestNativeWorkspace(sibling);
       const siblingDatabase = `workspace:${join(f.dataRoot, 'workspaces', siblingId, 'db', 'workspace.sqlite')}`;
       const materialCall = await startCapabilityCall({

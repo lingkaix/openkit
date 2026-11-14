@@ -1422,7 +1422,7 @@ it.each([
       store,
       repositoryWorkspaceDb: (id: string) => {
         const db = openWorkspaceDb(f.db.dataRoot, id);
-        applyScopedMigrations(db, undefined, 'pre-knowledge');
+        applyScopedMigrations(db);
         return db;
       },
       workspaceMutationAdmission: new WorkspaceMutationAdmission(),

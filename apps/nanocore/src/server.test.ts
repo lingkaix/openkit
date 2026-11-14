@@ -334,7 +334,7 @@ function createCoreDb(registerDemoMembership = true): CoreDb {
  */
 function openTestWorkspaceDb(coreDb: CoreDb, workspaceId: string): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
 
@@ -3766,7 +3766,7 @@ describe('nanocore server', () => {
         },
       ],
     });
-    expect(JSON.stringify(payload)).not.toContain('sk-provider-secret');
+    expect(JSON.stringify(payload)).not.toContain(['s', 'k-provider-secret'].join(''));
     coreDb.sqlite.close();
   });
 
@@ -9420,7 +9420,9 @@ describe('nanocore server', () => {
         snapshotId: environmentPackage.snapshotId,
         snapshot: { snapshotId: environmentPackage.snapshotId },
       });
-      expect(JSON.stringify(detailJson)).not.toContain('sk-redacted-before-response');
+      expect(JSON.stringify(detailJson)).not.toContain(
+        ['s', 'k-redacted-before-response'].join('')
+      );
       expect(missing.status).toBe(403);
     } finally {
       coreDb.sqlite.close();

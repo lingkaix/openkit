@@ -66,7 +66,7 @@ it('accepts the original Core final under a Workspace write lock without claimin
   const competingWriter = openWorkspaceDb(dataRoot, workspaceId);
   try {
     applyMigrations(coreDb);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     const userId = ensureLocalUser(coreDb);
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {

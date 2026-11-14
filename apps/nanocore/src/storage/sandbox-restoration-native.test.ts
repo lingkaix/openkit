@@ -118,7 +118,7 @@ async function fixture(capture = false, drain = true, idle = false) {
   });
   const workspace = openWorkspaceDb(root, workspaceId);
   handles.push(workspace);
-  applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspace);
   if (capture) {
     const layout = {
       family: null,
@@ -268,7 +268,7 @@ it('publishes only both admission fields through native Core and preserves them 
   // A corrupt unrelated Workspace must not participate in this Sandbox's deciding read set.
   const sibling = testEntityId('ws', 'restore-unanchored-sibling');
   const siblingDb = openWorkspaceDb(f.root, sibling);
-  applyScopedMigrations(siblingDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(siblingDb);
   siblingDb.sqlite.close();
   const siblingPath = workspaceDbPath(f.root, sibling);
   const damaged = Buffer.from('unreadable unanchored Workspace');

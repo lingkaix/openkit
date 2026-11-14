@@ -79,7 +79,7 @@ it.each(['person', 'coordinator'] as const)(
       agentId ? { executorKind: 'coordinator', agentId } : { executorKind: 'person' }
     );
     const db = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       const requestId = '00000000-0000-4000-8000-000000000473';
       const repeatId = '00000000-0000-4000-8000-000000000474';
@@ -168,7 +168,7 @@ it('permits denial of a person command intent whose exact detail is unavailable'
     id: actor.userId,
   });
   const db = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   try {
     const requestId = '00000000-0000-4000-8000-000000000938';
     const title = 'Confirm exact effect';
@@ -368,7 +368,7 @@ describe('pending requests', () => {
       { agentId: 'agent_demo' }
     );
     let db = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     const args = { nested: { z: 'last', a: 'first' }, 10: 'ten', 2: 'two' };
     // Captured pre-switch canonical JSON uses ECMAScript enumeration for integer-looking keys.
     const historical = '{"2":"two","10":"ten","nested":{"a":"first","z":"last"}}';
@@ -468,7 +468,7 @@ describe('pending requests', () => {
     } satisfies RaisePendingRequestInput;
     let retainedRow: unknown;
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       expect(raisePendingRequest(db.sqlite, input).created).toBe(true);
       expect(
         db.sqlite.prepare('SELECT schema_version AS schemaVersion FROM pending_requests').get()
@@ -520,7 +520,7 @@ describe('pending requests', () => {
     const requestId = 'uq_unknown_version';
     const deliveryTurnId = testEntityId('tu', 'pending_unknown_delivery');
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       raisePendingRequest(db.sqlite, {
         requestId,
         workspaceId,
@@ -595,7 +595,7 @@ describe('pending requests', () => {
         { agentId: 'agent_demo' }
       );
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         const input = approvalRaise(turn.id, 'ap_missing_disclosure', 'large'.repeat(120000));
         await store.createItem({
@@ -675,7 +675,7 @@ describe('pending requests', () => {
   it('freezes only sixteen complete outcomes and retains large multibyte values across restart', async () => {
     const { coreDb, dataRoot, store } = await openPendingApp();
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     const question = '多字节🙂"\\'.repeat(20000);
     const answer = 'large answer "\\🙂'.repeat(600000);
     const trigger = 'original trigger 多🙂"\\';
@@ -762,7 +762,7 @@ describe('pending requests', () => {
   it('projects only complete canonical detail within the inclusive UTF-8 boundary', async () => {
     const { store, coreDb, dataRoot } = await openPendingApp();
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
@@ -882,7 +882,7 @@ describe('pending requests', () => {
       null
     );
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     // Stopped retained-record fixture; this does not claim native admission or execution.
     await shutdownControlStoreWorkerClient();
     const record = raisePendingRequest(
@@ -933,7 +933,7 @@ describe('pending requests', () => {
       }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       await store.createItem({
         id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
@@ -1059,7 +1059,7 @@ describe('pending requests', () => {
       { agentId: 'agent_demo' }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       const input = approvalRaise(raising.id, 'ap_publication_matrix', 'matrix');
       await store.createItem({
@@ -1173,7 +1173,7 @@ describe('pending requests', () => {
         { agentId: 'agent_demo' }
       );
       const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         const input = approvalRaise(turn.id, 'ap_binding', 'binding');
         await store.createItem({
@@ -1233,7 +1233,7 @@ describe('pending requests', () => {
       { agentId: 'agent_demo' }
     );
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_unreadable', 'unreadable');
       await store.createItem({
@@ -1292,7 +1292,7 @@ describe('pending requests', () => {
         null
       );
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       // Stopped retained-record fixture; this does not claim native admission or execution.
       await shutdownControlStoreWorkerClient();
       const record = raisePendingRequest(
@@ -1379,7 +1379,7 @@ describe('pending requests', () => {
       }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       await store.createItem({
         id: 'it_00000000-0000-7135-b73e-1a5d0ba8b860',
@@ -1500,7 +1500,7 @@ describe('pending requests', () => {
       }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       for (const id of ['good', 'bad']) {
         await store.createItem({
@@ -1585,7 +1585,7 @@ describe('pending requests', () => {
         }
       );
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       const now = new Date().toISOString();
       const createTurn = store.createTurn.bind(store);
       const clock = vi.spyOn(store, 'createTurn').mockImplementation(async (...args) => {
@@ -1897,7 +1897,7 @@ describe('pending requests', () => {
         { agentId: 'agent_demo' }
       );
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         const input = approvalRaise(turn.id, 'ap_delivery_failure', 'failure');
         await store.createItem({
@@ -2027,7 +2027,7 @@ describe('pending requests', () => {
         { agentId: 'agent_demo' }
       );
       const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         const input = approvalRaise(turn.id, 'ap_boot_queue', 'boot');
         await store.createItem({
@@ -2142,7 +2142,7 @@ describe('pending requests', () => {
       { agentId: 'agent_demo' }
     );
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       const input = approvalRaise(turn.id, 'ap_agent_barrier', 'barrier');
       await store.createItem({
@@ -2193,7 +2193,7 @@ describe('pending requests', () => {
       }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       // Stopped retained-record fixture; this does not claim native admission or execution.
       await shutdownControlStoreWorkerClient();
@@ -2279,7 +2279,7 @@ describe('pending requests', () => {
         completedAt: NOW,
       });
       const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       try {
         const raised = approvalRaise(turn.id, 'ap_supply', 'digest-supply');
         if (serverId === 'openkit-repository') {
@@ -2495,7 +2495,7 @@ describe('pending requests', () => {
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     const question = {
       id: 'path',
       header: 'Path',
@@ -2681,7 +2681,7 @@ describe('pending requests', () => {
       }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       // Stopped retained-record fixture; this does not claim native admission or execution.
       await shutdownControlStoreWorkerClient();
@@ -2717,7 +2717,7 @@ describe('pending requests', () => {
       { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' }
     );
     const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       await store.createItem({
         id: testEntityId('it', 'it_ap_archive'),
@@ -2827,7 +2827,7 @@ describe('pending requests', () => {
       }
     );
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     try {
       await store.createItem({
         id: testEntityId('it', 'it_ap_good'),

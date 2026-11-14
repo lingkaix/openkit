@@ -26,7 +26,7 @@ export async function captureWorkspaceSourceFixture(input: {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const workspaceDb = openWorkspaceDb(dataRoot, source.workspaceId);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   const workspaceRoot = join(dataRoot, 'workspaces', source.workspaceId);
   const selection = readWorkspaceNotebookSelection({
     workspaceDb,

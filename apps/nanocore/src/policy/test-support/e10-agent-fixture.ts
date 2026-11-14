@@ -139,7 +139,7 @@ export function fixture(policy: PolicyDocumentV1) {
     workspaceDb.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   const proposal: PolicyProposal = {
     operation: 'mcp.call-tool',
     workspaceId,

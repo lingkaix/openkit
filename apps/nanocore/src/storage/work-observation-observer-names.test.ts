@@ -55,7 +55,7 @@ afterEach(async () => {
 function workspaceDb(dataRoot: string, workspaceId: string) {
   const db = openWorkspaceDb(dataRoot, workspaceId);
   databases.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   return db;
 }
 

@@ -69,7 +69,7 @@ async function scenario(db: CoreDb, phase: Phase) {
     const readiness = {
       bootId,
       layoutVersion: 1,
-      migrationIds: ['core_0000_setup'],
+      migrationIds: ['core_0000_baseline'],
       storageRecoveryEvents: [],
       indexRebuildEvents: [],
     };

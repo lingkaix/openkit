@@ -109,7 +109,7 @@ async function seedMcpBootItem(input: {
   const store = await createDemoStore({ dataRoot });
   const turn = await seedTurn(store, 'completed');
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   const ledgerNow = new Date(COMPLETED_AT);
   try {
     const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
@@ -361,7 +361,7 @@ describe('post-terminal write admission', () => {
     const store = await createDemoStore({ dataRoot });
     const turn = await seedTurn(store, 'completed');
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     try {
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix: 'mcp_admission',
@@ -407,7 +407,7 @@ describe('post-terminal write admission', () => {
     const conflictStore = await createDemoStore({ dataRoot: conflictRoot });
     const conflictTurn = await seedTurn(conflictStore, 'completed');
     const conflictDb = openWorkspaceDb(conflictRoot, 'ws_00000000-0000-7000-8000-000000000001');
-    applyScopedMigrations(conflictDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(conflictDb);
     try {
       const call = await startCapabilityCall({
         agentId: 'agent_codex',

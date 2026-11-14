@@ -66,7 +66,7 @@ function retainedRows(handle = db) {
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'dx5-capture-'));
   db = openWorkspace();
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
 });
 
 afterEach(() => {
@@ -112,7 +112,7 @@ describe('DX5 Workspace capture-record lifecycle', () => {
     const captureId = randomUUID();
     const siblingId = randomUUID();
     const other = openWorkspace(otherWorkspaceId);
-    applyScopedMigrations(other, undefined, 'pre-knowledge');
+    applyScopedMigrations(other);
     const created = protectCapture(db, workspaceId, captureId);
     expect(created).toEqual({
       captureId,

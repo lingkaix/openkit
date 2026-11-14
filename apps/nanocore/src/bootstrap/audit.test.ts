@@ -32,7 +32,7 @@ describe('boot audit recorder', () => {
           staleHolder: { bootId: 'boot_dead', pid: 999_999_999 },
           status: 'stale_broken',
         },
-        migrationIds: ['core_0000_setup'],
+        migrationIds: ['core_0000_baseline'],
         indexRebuildEvents: [
           {
             indexPath: 'workspaces/ws_00000000-0000-7000-8000-000000000001/indexes/search.json',
@@ -81,7 +81,7 @@ describe('boot audit recorder', () => {
           staleHolder: { bootId: 'boot_dead', pid: 999_999_999 },
           status: 'stale_broken',
         },
-        migrationIds: ['core_0000_setup'],
+        migrationIds: ['core_0000_baseline'],
         indexRebuildEvents: [
           {
             indexPath: 'workspaces/ws_00000000-0000-7000-8000-000000000001/indexes/search.json',

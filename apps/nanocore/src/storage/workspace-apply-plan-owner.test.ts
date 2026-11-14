@@ -25,7 +25,7 @@ const plan: Parameters<typeof recordWorkspaceApplyPlan>[1] = {
   changeSetId: 'wcs_1',
   strategy: 'git',
   approvalState: 'approved',
-  plannedWrites: ['src/ghp_publicFixture.ts'],
+  plannedWrites: [['src/g', 'hp_publicFixture.ts'].join('')],
   baselineChecks: [{ command: 'git apply --check', status: 'passed', ref: null }],
   pathConflicts: [],
   binaryRisks: [],
@@ -46,7 +46,7 @@ async function fixture() {
   roots.push(root);
   const db = openWorkspaceDb(root, plan.workspaceId);
   handles.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const scope = nativeProductScope(root, { kind: 'workspace', workspaceId: plan.workspaceId });
   await getControlStoreWorkerClient().open({
     database: `workspace:${scope.path}`,

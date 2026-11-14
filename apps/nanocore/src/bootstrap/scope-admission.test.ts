@@ -1,5 +1,5 @@
 // openkit-test-platform: posix
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -149,7 +149,7 @@ describe('scope-owned admission', () => {
       const dataRoot = root();
       for (const id of [badId, goodId]) {
         const db = openWorkspaceDb(dataRoot, id);
-        applyScopedMigrations(db, undefined, 'pre-knowledge');
+        applyScopedMigrations(db);
         db.sqlite.close();
       }
       initializeWorkspaceKnowledgePredecessor(dataRoot, goodId);
@@ -275,42 +275,23 @@ describe('scope-owned admission', () => {
     }
   });
 
-  it('refuses an earlier database without native product authority before domain migration', async () => {
+  it('refuses a current database missing native Workspace authority before domain migration', async () => {
     const dataRoot = root();
     const initial = createTestStore({ dataRoot });
-    const workspace = await initial.createWorkspace('Earlier native schema');
+    const workspace = await initial.createWorkspace('Missing native authority');
     const sibling = await initial.createWorkspace('Current native authority');
     await shutdownControlStoreWorkerClient();
     const current = openWorkspaceDb(dataRoot, workspace.id);
-    const ledgerDdl = current.sqlite
-      .prepare("SELECT sql FROM sqlite_master WHERE name = '__drizzle_migrations'")
-      .pluck()
-      .get() as string;
-    current.sqlite.close();
-    rmSync(workspaceDbPath(dataRoot, workspace.id));
-    const earlier = openWorkspaceDb(dataRoot, workspace.id);
-    const sql = readFileSync(
-      new URL('../../drizzle/workspace/0000_setup.sql', import.meta.url),
-      'utf8'
-    );
-    const journal = JSON.parse(
-      readFileSync(new URL('../../drizzle/workspace/meta/_journal.json', import.meta.url), 'utf8')
-    ) as { entries: Array<{ when: number }> };
     try {
-      earlier.sqlite.exec(sql);
-      earlier.sqlite.exec(ledgerDdl);
-      earlier.sqlite
-        .prepare('INSERT INTO __drizzle_migrations (hash, created_at) VALUES (?, ?)')
-        .run(createHash('sha256').update(sql).digest('hex'), journal.entries[0]!.when);
-      expect(earlier.sqlite.prepare('PRAGMA table_info(pending_requests)').all()).not.toEqual(
-        expect.arrayContaining([expect.objectContaining({ name: 'schema_version' })])
-      );
+      // Damage only this private current fixture after its original writer has closed.
+      current.sqlite.pragma('foreign_keys = OFF');
+      current.sqlite.exec('DROP TABLE control_workspaces');
+      expect(current.sqlite.prepare('PRAGMA table_info(control_workspaces)').all()).toEqual([]);
     } finally {
-      earlier.sqlite.close();
+      current.sqlite.close();
     }
     const before = readFileSync(workspaceDbPath(dataRoot, workspace.id));
-    // Workspace 0000 predates native products. Its former file history is no longer an authority.
-    // Boot cannot synthesize product records from later DDL or a readable configuration projection.
+    // A supported baseline ledger and readable configuration cannot replace missing product authority.
     await verifyAndMigrateExistingScopedDatabases(dataRoot, () =>
       FsStore.validateFileAuthority(dataRoot)
     );
@@ -415,7 +396,7 @@ describe('scope-owned admission', () => {
     applyScopedMigrations(user);
     user.sqlite.close();
     const good = openWorkspaceDb(dataRoot, goodId);
-    applyScopedMigrations(good, undefined, 'pre-knowledge');
+    applyScopedMigrations(good);
     good.sqlite.close();
     initializeWorkspaceKnowledgePredecessor(dataRoot, goodId);
     const path = userDbPath(dataRoot, userId);

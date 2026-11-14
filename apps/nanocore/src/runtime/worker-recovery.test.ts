@@ -112,7 +112,7 @@ beforeAll(async () => {
     workspaceId: recoveryWorkspaceId,
   });
   const workspaceDb = openWorkspaceDb(dataRoot, recoveryWorkspaceId);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   await recordTestNativeRuntimeTarget(coreDb);
   admitTestNativeEnvironment(
     coreDb,
@@ -159,7 +159,7 @@ async function createCheckpointCloseoutFixture(
       workspaceId,
     });
     workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     await recordTestNativeRuntimeTarget(coreDb);
     admitTestNativeEnvironment(
       coreDb,

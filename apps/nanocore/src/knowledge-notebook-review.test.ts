@@ -35,7 +35,7 @@ async function fixture() {
       ownerUserId: LOCAL_USER_ID,
     });
     const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     const f = {
       dataRoot,
       coreDb,

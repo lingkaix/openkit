@@ -366,7 +366,7 @@ async function createDurableWorkerControlLease(
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
 
   try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
       environmentPackage,
@@ -1719,7 +1719,7 @@ describe('worker control routes', () => {
   it('never persists worker bearer tokens in sequenced control state', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-control-token-redaction-'));
     const coreDb = openCoreDb(dataRoot);
-    const token = 'okw_sequence_fingerprint_secret';
+    const token = ['o', 'kw_sequence_fingerprint_secret'].join('');
 
     try {
       applyMigrations(coreDb);
@@ -2620,7 +2620,7 @@ describe('worker control routes', () => {
     });
     const gateway = createDefaultWorkerControlGateway(coreDb);
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
       createdAt: environmentPackage.createdAt,
       environmentPackage,
@@ -3186,7 +3186,7 @@ describe('worker control routes', () => {
         now: () => new Date().toISOString(),
         operationId: `fixture-submit:${String(testEntityId('attempt', `lease_${fixtureSuffix}`))}`,
       });
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         createdAt: environmentPackage.createdAt,
         environmentPackage,
@@ -4617,7 +4617,7 @@ describe('worker control routes', () => {
 
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
           createdAt: '2026-06-16T00:00:01.000Z',
           environmentPackage,

@@ -269,7 +269,7 @@ async function fixture(
   const runtimeConfig = () => manager.current();
   const repositoryWorkspaceDb = (id: string) => {
     const db = openWorkspaceDb(dataRoot, id);
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     return db;
   };
   const unexpectedWorker = () => {

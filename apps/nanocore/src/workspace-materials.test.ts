@@ -57,7 +57,7 @@ describe('Workspace Material authority', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7a9e-899a-fcc8ac1a4a55');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       const firstCreatedAt = '2026-07-18T00:00:00.000Z';
       const secondCreatedAt = firstCreatedAt;
@@ -510,7 +510,7 @@ describe('Workspace Material authority', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71c4-b2f4-f9c81445576b');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const content = '# Exact queued revision\n';
       const material = createWorkspaceMaterial(workspaceDb, {
         acceptedAt: '2026-07-18T01:00:00.000Z',
@@ -781,7 +781,7 @@ it('anchors an original range in UTF-16 without splitting a surrogate or substit
     if (db.sqlite.open) db.sqlite.close();
     rmSync(root, { recursive: true, force: true });
   });
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
   const acceptedAt = '2026-10-17T12:00:00.000Z';
   const { materialId } = createWorkspaceMaterial(db, {

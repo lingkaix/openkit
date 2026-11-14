@@ -35,7 +35,7 @@ function fixture() {
   const itemId = allocateEntityId('it');
   let db = openWorkspaceDb(root, workspaceId);
   databases.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const coreDb = createTestCoreDb(root);
   let actor: { kind: 'user'; id: string };
   try {

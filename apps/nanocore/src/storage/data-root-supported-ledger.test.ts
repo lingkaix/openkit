@@ -234,7 +234,7 @@ it.each(['core', 'user', 'workspace', 'app', 'app-snapshot'] as const)(
   }
 );
 
-it('G2 restores supported older User and sparse Workspace/App-snapshot journals unchanged, then normal upgrade and rollback owners remain usable', async () => {
+it('G2 restores supported User and sparse App-snapshot journals while preserving the current Workspace baseline', async () => {
   const f = await fixture();
   const prefix = join(f.parent, 'original-user-journal');
   const original = new URL('../../drizzle/user/', import.meta.url);
@@ -256,11 +256,9 @@ it('G2 restores supported older User and sparse Workspace/App-snapshot journals 
   }
   const workspace = new Database(f.paths.workspace, { fileMustExist: true });
   try {
-    expect(
-      workspace
-        .prepare('DELETE FROM __drizzle_migrations WHERE created_at=?')
-        .run(journal('workspace')[1]!.when).changes
-    ).toBe(1);
+    expect(listAppliedNativeMigrationIds(workspace, 'workspace')).toEqual([
+      'workspace_0000_baseline',
+    ]);
   } finally {
     workspace.close();
   }
@@ -445,23 +443,22 @@ it('G2 refuses unsupported Core history committed only in backup WAL while its b
   expect(failure).toMatchObject({ code: 'migration_unsupported_core' });
 });
 
-it('G2 admits the actual pre-reset Core 0005 SQL hash unchanged through public open, backup and restore', async () => {
+it('G2 treats the current Core baseline SQL hash as informational through public open, backup and restore', async () => {
   const f = await fixture();
-  // SHA-256 of 1a2c0739e^:apps/nanocore/drizzle/core/0005_channel_notifications.sql.
-  // Applied SQL hashes are informational; only the exact supported scope timestamps admit history.
-  const old0005Hash = 'a3fa5c6983ec449f04ba59c9876822c8e6fa2f6eafe4e91afbdac07cbb76b132';
-  const entry = journal('core').find((row) => row.tag === '0005_channel_notifications')!;
+  // A mismatched informational hash must not alter admission of a supported baseline timestamp.
+  const informationalHash = 'independent-current-baseline-ledger-fixture';
+  const entry = journal('core').find((row) => row.tag === '0000_baseline')!;
   const sqlite = new Database(f.paths.core, { fileMustExist: true });
   let retainedLedger: unknown[];
   try {
     const current = sqlite
       .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at=?')
       .get(entry.when) as { hash: string };
-    expect(current.hash).not.toBe(old0005Hash);
+    expect(current.hash).not.toBe(informationalHash);
     expect(
       sqlite
         .prepare('UPDATE __drizzle_migrations SET hash=? WHERE created_at=?')
-        .run(old0005Hash, entry.when).changes
+        .run(informationalHash, entry.when).changes
     ).toBe(1);
     retainedLedger = sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
   } finally {
@@ -476,7 +473,7 @@ it('G2 admits the actual pre-reset Core 0005 SQL hash unchanged through public o
       opened.sqlite
         .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at=?')
         .get(entry.when)
-    ).toEqual({ hash: old0005Hash });
+    ).toEqual({ hash: informationalHash });
   } finally {
     opened.sqlite.close();
   }
@@ -499,7 +496,7 @@ it('G2 admits the actual pre-reset Core 0005 SQL hash unchanged through public o
       restored.sqlite
         .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at=?')
         .get(entry.when)
-    ).toEqual({ hash: old0005Hash });
+    ).toEqual({ hash: informationalHash });
   } finally {
     restored.sqlite.close();
   }

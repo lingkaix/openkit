@@ -2649,7 +2649,7 @@ describe('slice 1d portable call fields', () => {
       source.workspaceId
     );
     try {
-      applyScopedMigrations(sourceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(sourceDb);
       importWorkspaceCapabilityUsageLedger({
         workspaceDb: sourceDb,
         capabilityCalls: input.capabilityCalls as never,

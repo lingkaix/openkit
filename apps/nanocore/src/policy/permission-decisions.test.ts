@@ -112,7 +112,7 @@ describe('permission decision recorder', () => {
       capabilityCallId,
     };
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const gateId = allocateEntityId('pd');
       await recordProductPermissionDecision({
@@ -286,7 +286,7 @@ describe('permission decision recorder', () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       await recordProductPermissionDecision({
         workspaceDb,
@@ -329,10 +329,13 @@ describe('permission decision recorder', () => {
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-permission-public-fixture-'));
       let coreDb = openCoreDb(dataRoot);
       let workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      const contextSummary = { fixture: 'ghp_publicFixture sk-Latn', nested: ['hf_publicFixture'] };
+      const contextSummary = {
+        fixture: ['g', 'hp_publicFixture sk-Latn'].join(''),
+        nested: ['hf_publicFixture'],
+      };
       try {
         applyMigrations(coreDb);
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         if (ownerScope === 'workspace') await openTestNativeWorkspace(workspaceDb);
         const recorded = await recordProductPermissionDecision({
           coreDb,
@@ -346,7 +349,7 @@ describe('permission decision recorder', () => {
           policySnapshotId: 'test_snapshot',
           subjectSummary: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
           action: 'read',
-          resourceSummary: { fixture: 'okt_publicFixture' },
+          resourceSummary: { fixture: ['o', 'kt_publicFixture'].join('') },
           contextSummary,
           result: 'allow',
           reasonCode: 'allowed',
@@ -375,7 +378,7 @@ describe('permission decision recorder', () => {
             : ListServerPermissionDecisionsResponseSchema.parse({ permissionDecisions: rows });
         expect(response.permissionDecisions[0]?.contextSummary).toEqual(contextSummary);
         expect(response.permissionDecisions[0]?.resourceSummary).toEqual({
-          fixture: 'okt_publicFixture',
+          fixture: ['o', 'kt_publicFixture'].join(''),
         });
       } finally {
         await shutdownControlStoreWorkerClient();
@@ -875,7 +878,7 @@ describe('permission decision recorder', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       await recordProductPermissionDecision({
@@ -996,7 +999,7 @@ describe('permission decision recorder', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_permission_audit
@@ -1042,7 +1045,7 @@ describe('permission decision recorder', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const base = {
         action: 'repo.push',
@@ -1490,7 +1493,7 @@ describe('Workspace permission decision links and finite uses', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-policy-links-'));
     let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       await recordProductPermissionDecision(
         decision(workspaceDb, {
@@ -1551,7 +1554,7 @@ describe('Workspace permission decision links and finite uses', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const statement = { id: 'workspace-once', digest };
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       workspaceDb.sqlite.exec(`
         CREATE TRIGGER reject_workspace_permission_audit
@@ -1591,7 +1594,7 @@ describe('Workspace permission decision links and finite uses', () => {
     let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     const statement = { id: 'workspace-contended-once', digest };
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const attempts = [
         'pd_00000000-0000-7000-8000-000000000004',

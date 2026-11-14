@@ -72,7 +72,7 @@ async function fixture() {
   applyMigrations(coreDb);
   const db = openWorkspaceDb(root, workspaceId);
   handles.push(db);
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const environmentPackage = await recordTestAgentEnvironmentPackage(db, {
     coreDb,
     suffix: 'backend_handoff_owner',

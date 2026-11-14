@@ -267,7 +267,7 @@ describe('workspace review application', () => {
       const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
       const store = new FsStore({ dataRoot });
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       try {
         const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
           artifactId: 'ar_00000000-0000-761d-a0e1-b821a3910378',
@@ -444,7 +444,7 @@ describe('workspace review application', () => {
       const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
       const store = new FsStore({ dataRoot });
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       try {
         const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
           artifactId: testEntityId('ar', `ar_filesystem_lineage_${suffix}`),
@@ -587,7 +587,7 @@ describe('workspace review application', () => {
     const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
     const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
 
     try {
       const item: Parameters<typeof recordWorkspaceSyncReview>[1]['item'] = {
@@ -697,7 +697,7 @@ describe('workspace review application', () => {
     const coreDb = openAuthorizedCoreDb(dataRoot, item.review.workspaceId);
     const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, item.review.workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
 
     try {
       recordTestWorkspaceReviewMaterialization(workspaceDb, item);
@@ -738,7 +738,7 @@ describe('workspace review application', () => {
         const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
         const store = new FsStore({ dataRoot });
         let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         const decidedAt = '2026-07-11T00:12:00.000Z';
         const requestId = '00000000-0000-7000-8000-000000000171';
         const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
@@ -955,7 +955,7 @@ describe('workspace review application', () => {
         const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
         const store = new FsStore({ dataRoot });
         let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         const scope = nativeProductScope(dataRoot, { kind: 'workspace', workspaceId });
         const nativeOpen = {
           database: `workspace:${scope.path}`,
@@ -1418,7 +1418,7 @@ describe('workspace review application', () => {
     const coreDb = openAuthorizedCoreDb(dataRoot, workspaceId);
     const store = new FsStore({ dataRoot });
     const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
 
     try {
       recordTestWorkspaceReviewMaterialization(workspaceDb, fallbackReview);

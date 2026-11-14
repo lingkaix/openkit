@@ -111,13 +111,7 @@ async function fixture(scope: StorageMigrationScope): Promise<Fixture> {
     expect(
       db.sqlite.prepare("SELECT name FROM sqlite_schema WHERE name='__drizzle_migrations'").get()
     ).toBeUndefined();
-    applyNativeScopeMigrations(
-      db.sqlite,
-      scope,
-      undefined,
-      undefined,
-      scope === 'workspace' ? 'pre-knowledge' : 'full'
-    );
+    applyNativeScopeMigrations(db.sqlite, scope);
   } finally {
     db.sqlite.close();
   }
@@ -238,7 +232,12 @@ afterEach(async () => {
 });
 
 describe.each(scopes)('G1 %s supported ledger', (scope) => {
-  it.each(['earlier', 'interior', 'future'] as const)(
+  // A single baseline has no interior interval; User and App retain their sparse journals.
+  const positions =
+    scope === 'core' || scope === 'workspace'
+      ? (['earlier', 'future'] as const)
+      : (['earlier', 'interior', 'future'] as const);
+  it.each(positions)(
     'refuses an unknown %s timestamp in raw apply before changing database authority',
     async (position) => {
       const f = await fixture(scope);
@@ -246,17 +245,7 @@ describe.each(scopes)('G1 %s supported ledger', (scope) => {
       const before = retained(f);
       const sqlite = new Database(f.path, { fileMustExist: true });
       try {
-        expectUnsupported(
-          () =>
-            applyNativeScopeMigrations(
-              sqlite,
-              scope,
-              undefined,
-              undefined,
-              scope === 'workspace' ? 'pre-knowledge' : 'full'
-            ),
-          scope
-        );
+        expectUnsupported(() => applyNativeScopeMigrations(sqlite, scope), scope);
       } finally {
         sqlite.close();
       }
@@ -294,31 +283,27 @@ describe.each(scopes)('G1 %s supported ledger', (scope) => {
     expect(retained(f)).toEqual(before);
   });
 
-  it('admits fresh owner initialization and a known sparse history without filling holes or rewriting rows', async () => {
+  it('admits current owner initialization without rewriting supported rows or filling User/App holes', async () => {
     const f = await fixture(scope);
-    const sqlite = new Database(f.path, { fileMustExist: true });
-    try {
-      const earlier = sqlite
-        .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at LIMIT 1')
-        .get() as { created_at: number };
-      expect(
-        sqlite
-          .prepare('DELETE FROM __drizzle_migrations WHERE created_at=?')
-          .run(earlier.created_at).changes
-      ).toBe(1);
-    } finally {
-      sqlite.close();
+    if (scope === 'user' || scope === 'app') {
+      const sqlite = new Database(f.path, { fileMustExist: true });
+      try {
+        const earlier = sqlite
+          .prepare('SELECT created_at FROM __drizzle_migrations ORDER BY created_at LIMIT 1')
+          .get() as { created_at: number };
+        expect(
+          sqlite
+            .prepare('DELETE FROM __drizzle_migrations WHERE created_at=?')
+            .run(earlier.created_at).changes
+        ).toBe(1);
+      } finally {
+        sqlite.close();
+      }
     }
     const before = retained(f);
     const apply = new Database(f.path, { fileMustExist: true });
     try {
-      applyNativeScopeMigrations(
-        apply,
-        scope,
-        undefined,
-        undefined,
-        scope === 'workspace' ? 'pre-knowledge' : 'full'
-      );
+      applyNativeScopeMigrations(apply, scope);
       if (scope === 'user') expect(hasPendingUserMigrations(apply)).toBe(false);
       if (scope === 'app') hasPendingAppMigrations(apply);
     } finally {
@@ -439,30 +424,6 @@ it('G1 public App format upgrade refuses unknown history before its existing rec
   await shutdownControlStoreWorkerClient();
   expectRefusalInventoryUnchanged(before, inventoryRegularFiles(root), 'data.sqlite');
 });
-it('G1 keeps the existing Workspace Knowledge activation-history refusal independently of general sparse admission', async () => {
-  const root = mkdtempSync(join(tmpdir(), 'openkit-ledger-knowledge-'));
-  roots.push(root);
-  await createDemoStore({ dataRoot: root });
-  await shutdownControlStoreWorkerClient();
-  closeWorkspaceProductReadHandles(root);
-  const path = workspaceDbPath(root, DEMO_WORKSPACE_ID);
-  const sqlite = new Database(path, { fileMustExist: true });
-  try {
-    const activation = journal('workspace').find(
-      (entry) => entry.tag === '0019_knowledge_authority'
-    )!;
-    expect(
-      sqlite.prepare('DELETE FROM __drizzle_migrations WHERE created_at=?').run(activation.when)
-        .changes
-    ).toBe(1);
-    expect(() =>
-      applyNativeScopeMigrations(sqlite, 'workspace', undefined, undefined, 'pre-knowledge')
-    ).toThrowError(expect.objectContaining({ code: 'migration_failed' }));
-  } finally {
-    sqlite.close();
-  }
-});
-
 it.each(scopes)(
   'G1 preserves the existing %s missing-storage refusal without creating a replacement',
   async (scope) => {

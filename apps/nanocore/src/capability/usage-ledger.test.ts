@@ -68,7 +68,7 @@ describe('capability usage ledger', () => {
       const dataRoot = mkdtempSync(join(tmpdir(), 'mcp-failure-audit-'));
       const db = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
       try {
-        applyScopedMigrations(db, undefined, 'pre-knowledge');
+        applyScopedMigrations(db);
         const actor = createWorkspaceLedgerActor(db);
         await openTestNativeWorkspace(db);
         const call = await startCapabilityCall({
@@ -113,7 +113,7 @@ describe('capability usage ledger', () => {
       const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
       let nativeAdmission: ReturnType<typeof vi.spyOn> | undefined;
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         const actor = createWorkspaceLedgerActor(workspaceDb);
         if (path === 'native') {
           await openTestNativeWorkspace(workspaceDb);
@@ -181,7 +181,7 @@ describe('capability usage ledger', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-call-format-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const input = {
         authorityActor: createWorkspaceLedgerActor(workspaceDb),
@@ -223,7 +223,7 @@ describe('capability usage ledger', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-usage-format-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         authorityActor: createWorkspaceLedgerActor(workspaceDb),
@@ -263,7 +263,7 @@ describe('capability usage ledger', () => {
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     let workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         workspaceDb,
@@ -324,7 +324,7 @@ describe('capability usage ledger', () => {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();
       workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       expect(listWorkspaceUsageRecords(workspaceDb, workspaceId)).toEqual(before);
       expect(await recordUsage({ workspaceDb, call, records: [physicalA] })).toEqual(first);
@@ -341,7 +341,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const call = await startCapabilityCall({
@@ -453,7 +453,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const auditLineage = { commandRequestId: '00000000-0000-4000-8000-000000000401' };
       const calls = [];
@@ -568,7 +568,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
@@ -610,7 +610,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
@@ -660,7 +660,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         authorityActor: { kind: 'user', id: testEntityId('usr', 'user_ledger') },
@@ -695,7 +695,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const producers = [
@@ -840,7 +840,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       await expect(
@@ -871,7 +871,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const first = await startCapabilityCall({
@@ -917,7 +917,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const first = await startCapabilityCall({
@@ -954,7 +954,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const original = {
@@ -1025,7 +1025,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const call = await startCapabilityCall({
@@ -1081,7 +1081,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const call = await startCapabilityCall({
@@ -1121,7 +1121,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const rejected = await startCapabilityCall({
         authorityActor: { kind: 'user', id: 'usr_00000000-0000-7df3-b5b9-11c153cab432' },
@@ -1190,7 +1190,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
 
       const call = await startCapabilityCall({
@@ -1235,7 +1235,7 @@ describe('capability usage ledger', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const current = await startCapabilityCall({
         agentId: 'agent_codex',
@@ -1403,9 +1403,9 @@ describe('retained call digest round-trip', () => {
     const source = openWorkspaceDb(dataRoot, 'ws_00000000-0000-71b1-9af2-985861a05396');
     const target = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7b16-81e5-c0b623c0c636');
     try {
-      applyScopedMigrations(source, undefined, 'pre-knowledge');
+      applyScopedMigrations(source);
       await openTestNativeWorkspace(source);
-      applyScopedMigrations(target, undefined, 'pre-knowledge');
+      applyScopedMigrations(target);
       for (const callId of [
         'cap_00000000-0000-7409-878a-46cfc62378f7',
         'cap_00000000-0000-7ff2-b713-d35db1d00ca0',
@@ -1518,7 +1518,7 @@ describe('Gateway lineage recovery', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-lineage-recovery-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7849-b543-b73e540db459');
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         workspaceDb,
@@ -1576,7 +1576,7 @@ describe('slice 1d round 2 canonical extension rewrite', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'canonical-extensions-'));
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7993-ac5a-37822c1bf7ab');
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const call = await startCapabilityCall({
         workspaceDb,
@@ -1638,9 +1638,9 @@ it.each(['server', 'foreign-workspace'] as const)(
     const source = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
     const target = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
     try {
-      applyScopedMigrations(source, undefined, 'pre-knowledge');
+      applyScopedMigrations(source);
       await openTestNativeWorkspace(source);
-      applyScopedMigrations(target, undefined, 'pre-knowledge');
+      applyScopedMigrations(target);
       await startCapabilityCall({
         workspaceDb: source,
         workspaceId: source.workspaceId,
@@ -1699,7 +1699,7 @@ it('preserves delivered Knowledge answers alongside existing extensions, refuses
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-finish-delivery-replay-'));
   const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
   try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     await openTestNativeWorkspace(workspaceDb);
     const actor = createWorkspaceLedgerActor(workspaceDb);
     const call = await startCapabilityCall({
@@ -1826,7 +1826,7 @@ it.each(['recordUsage', 'finishMcpToolCall'] as const)(
     let emitSpy: ReturnType<typeof vi.spyOn> | undefined;
     let postSpy: ReturnType<typeof vi.spyOn> | undefined;
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       await openTestNativeWorkspace(workspaceDb);
       const actor = createWorkspaceLedgerActor(workspaceDb);
       const call = await startCapabilityCall({

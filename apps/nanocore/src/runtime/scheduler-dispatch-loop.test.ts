@@ -3754,7 +3754,7 @@ describe('scheduler dispatch loop', () => {
     execFileSync('git', ['commit', '-m', 'initial'], { cwd: repositoryPath, stdio: 'ignore' });
     const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
     } finally {
       workspaceDb.sqlite.close();
     }
@@ -3891,7 +3891,7 @@ describe('scheduler dispatch loop', () => {
       );
 
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         expect(result.startedTurns[0]?.handle.agentSetupRecordId).toBe(
           `ras_${testEntityId('tu', 'turn_setup_ledger')}`
         );

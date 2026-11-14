@@ -28,7 +28,7 @@ it.each(['later-measurement', 'terminal-audit'] as const)(
     const dataRoot = mkdtempSync(join(tmpdir(), 'workspace-measurement-owner-'));
     const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       const coreDb = createTestCoreDb(dataRoot);
       let actor: { kind: 'user'; id: string };
       try {

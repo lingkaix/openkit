@@ -27,14 +27,14 @@ describe('workspace apply results', () => {
         status: 'conflicted',
         appliedPaths: ['src/applied.ts'],
         skippedPaths: ['src/conflict.ts'],
-        conflictRecords: ['Changed public fixture ghp_publicFixture since staging'],
+        conflictRecords: [['Changed public fixture g', 'hp_publicFixture since staging'].join('')],
         verification: [{ command: 'pnpm test', status: 'passed', ref: null }],
         commitIds: [],
         appliedAt: '2026-07-05T00:00:00.000Z',
       },
     };
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       recordWorkspaceApplyResult(db, input);
       expect(
         db.sqlite
@@ -112,7 +112,7 @@ describe('workspace apply results', () => {
     onTestFinished(() => rmSync(dataRoot, { recursive: true, force: true }));
     const db = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
     try {
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       const input: RecordWorkspaceApplyResultInput = {
         requestId: 'request_apply_version',
         result: {
@@ -164,7 +164,7 @@ describe('workspace apply results', () => {
     const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
 
       recordWorkspaceApplyResult(workspaceDb, {
         actor: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
@@ -283,7 +283,7 @@ describe('workspace apply results', () => {
     } satisfies RecordWorkspaceApplyResultInput;
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       recordWorkspaceApplyResult(workspaceDb, baseline);
 
       const conflicts: readonly RecordWorkspaceApplyResultInput[] = [

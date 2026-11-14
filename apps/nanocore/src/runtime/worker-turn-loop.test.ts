@@ -86,7 +86,7 @@ async function createCoreDb(): Promise<CoreDb> {
  */
 function createWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
 

@@ -1,25 +1,11 @@
-import {
-  copyFileSync,
-  cpSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
-import Database from 'better-sqlite3';
 import { afterEach, expect, it } from 'vitest';
-import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
-import {
-  prepareControlKnowledgeAuthorityTransfer,
-  readControlKnowledgeHead,
-} from './control-store-knowledge.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -50,14 +36,13 @@ type RetainedEntry = {
 };
 
 // Owner: Conversation Timeline Run Entries and Loading And Performance; the accepted Workspace-only W3 index.
-// The original migration fixture may model predecessor DDL, but all product records and immutable bytes come from real publishers.
-it('upgrades genuine Workspace plan and output revisions without changing their authority, and admits the new native prefix', async () => {
+// All product records and immutable bytes come from the real current publishers.
+it('reads genuine current Workspace plan history through its covering index and native baseline owner', async () => {
   const sourceRoot = mkdtempSync(join(tmpdir(), 'plan-history-source-'));
-  const targetRoot = mkdtempSync(join(tmpdir(), 'plan-history-predecessor-'));
-  roots.push(sourceRoot, targetRoot);
+  roots.push(sourceRoot);
   const store = await createDemoStore({ dataRoot: sourceRoot });
   const actor = { kind: 'user', id: FIXTURE_LOCAL_USER_ID } as const;
-  const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retained plan history upgrade');
+  const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Fresh plan history');
   const turn = await store.createTurn(
     DEMO_WORKSPACE_ID,
     thread.id,
@@ -115,43 +100,8 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
   });
   await shutdownControlStoreWorkerClient();
   const sourceScope = nativeProductScope(sourceRoot, turn.owner);
-  const sourceDb = new Database(sourceScope.path, { readonly: true });
-  const targetOwnerRoot = join(targetRoot, 'workspaces', DEMO_WORKSPACE_ID);
-  cpSync(join(sourceRoot, 'workspaces', DEMO_WORKSPACE_ID), targetOwnerRoot, { recursive: true });
-  for (const suffix of ['', '-wal', '-shm'])
-    rmSync(join(targetOwnerRoot, 'db', `workspace.sqlite${suffix}`), { force: true });
-  const target = openWorkspaceDb(targetRoot, DEMO_WORKSPACE_ID);
-  let sourceWorkspace: ReturnType<typeof openWorkspaceDb> | undefined;
+  const target = openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
   try {
-    const migrationRoot = new URL('../../drizzle/workspace/', import.meta.url);
-    const journal = JSON.parse(
-      readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8')
-    ) as {
-      entries: { tag: string; when: number }[];
-    };
-    const tag = '0025_timeline_plan_history';
-    const index = journal.entries.findIndex((entry) => entry.tag === tag);
-    expect(index, 'The released Workspace plan-history migration must exist').toBeGreaterThan(0);
-    const predecessor = join(targetRoot, 'predecessor-journal');
-    mkdirSync(join(predecessor, 'meta'), { recursive: true });
-    const entries = journal.entries.slice(0, index);
-    for (const entry of entries)
-      copyFileSync(
-        new URL(`${entry.tag}.sql`, migrationRoot),
-        join(predecessor, `${entry.tag}.sql`)
-      );
-    writeFileSync(join(predecessor, 'meta/_journal.json'), JSON.stringify({ ...journal, entries }));
-    sourceWorkspace = openWorkspaceDb(sourceRoot, DEMO_WORKSPACE_ID);
-    const knowledgeBaseId = readDefaultKnowledgeBaseId({
-      dataRoot: sourceRoot,
-      scope: { kind: 'workspace', workspaceId: DEMO_WORKSPACE_ID },
-    });
-    const transfer = prepareControlKnowledgeAuthorityTransfer({
-      db: target,
-      heads: [readControlKnowledgeHead(sourceWorkspace, knowledgeBaseId)!],
-      proposals: [],
-    });
-    applyNativeScopeMigrations(target.sqlite, 'workspace', predecessor, transfer);
     const tables = [
       'control_workspaces',
       'control_threads',
@@ -159,29 +109,6 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
       'control_turns',
       'control_product_entries',
     ];
-    // Copy original owner-created rows in their original publication order, exactly as the existing migration fixture does.
-    target.sqlite.transaction(() => {
-      for (const table of tables) {
-        const names = (
-          target.sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]
-        ).map((column) => column.name);
-        const fields = names.map((name) => `"${name}"`).join(',');
-        const insert = target.sqlite.prepare(
-          `INSERT INTO ${table}(${fields}) VALUES(${names.map(() => '?').join(',')})`
-        );
-        const sourceFields = names
-          .map((name) =>
-            table === 'control_product_entries' && name === 'is_current' ? '0' : `"${name}"`
-          )
-          .join(',');
-        // Existing current-revision triggers select each incoming revision; never fabricate a second current revision.
-        for (const row of sourceDb
-          .prepare(`SELECT ${sourceFields} FROM ${table} ORDER BY rowid`)
-          .raw()
-          .all() as unknown[][])
-          insert.run(...row);
-      }
-    })();
     const stableRows = () =>
       Object.fromEntries(
         tables.map((table) => [
@@ -190,10 +117,6 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
         ])
       );
     const before = stableRows();
-    for (const table of tables)
-      expect(before[table]).toEqual(
-        sourceDb.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()
-      );
     const retained = target.sqlite
       .prepare(
         "SELECT id,revision,sequence,content_json,identity_json FROM control_product_entries WHERE kind='item' ORDER BY sequence"
@@ -230,23 +153,14 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
       target.sqlite
         .prepare("SELECT name,sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL")
         .all() as { name: string; sql: string }[];
-    const oldIndexes = new Set(schemaIndexes().map((row) => row.name));
-    expect(listAppliedNativeMigrationIds(target.sqlite, 'workspace')).not.toContain(
-      `workspace_${tag}`
-    );
     assertSupportedNativeLedger(target.sqlite, 'workspace');
-    const oldLedger = target.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
-
-    // Expected upgrade boundary: the existing predecessor is supported but lacks this exact history access path.
+    expect(listAppliedNativeMigrationIds(target.sqlite, 'workspace')).toEqual([
+      'workspace_0000_baseline',
+    ]);
     applyNativeScopeMigrations(target.sqlite, 'workspace');
-    expect(listAppliedNativeMigrationIds(target.sqlite, 'workspace')).toContain(`workspace_${tag}`);
-    const ledger = target.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
-    expect(ledger.slice(0, oldLedger.length)).toEqual(oldLedger);
-    expect(ledger).toHaveLength(journal.entries.length);
     expect(stableRows()).toEqual(before);
-    const added = schemaIndexes().filter((row) => !oldIndexes.has(row.name));
-    const history = added.filter((row) =>
-      row.sql.replace(/[\s"`]/g, '').includes("json_extract(identity_json,'$.type')")
+    const history = schemaIndexes().filter(
+      (row) => row.name === 'control_items_turn_history_type_idx'
     );
     expect(history).toHaveLength(1);
     const accessPath = history[0]!;
@@ -268,7 +182,7 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
     }[];
     expect(explanation.some((row) => row.detail.includes(accessPath.name))).toBe(true);
     expect(explanation.some((row) => /TEMP B-TREE/i.test(row.detail))).toBe(false);
-    const targetScope = nativeProductScope(targetRoot, turn.owner);
+    const targetScope = nativeProductScope(sourceRoot, turn.owner);
     for (const [i, row] of fileRows.entries()) {
       expect(
         Buffer.from(
@@ -281,23 +195,24 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
         )
       ).toEqual(fileBytes[i]);
     }
-    const upgraded = withNativeThreadTimelineSnapshot(targetScope, thread.id, (snapshot) =>
+    const current = withNativeThreadTimelineSnapshot(targetScope, thread.id, (snapshot) =>
       snapshot.planRevisions(turn.id)
     );
-    expect(upgraded.map((row) => ({ sequence: row.sequence, revision: row.revision }))).toEqual(
+    expect(current.map((row) => ({ sequence: row.sequence, revision: row.revision }))).toEqual(
       plans.map((row) => ({ sequence: row.sequence, revision: row.revision }))
     );
-    expect(upgraded.map((row) => row.item)).toEqual(expectedPlans);
+    expect(current.map((row) => row.item)).toEqual(expectedPlans);
     expect(readNativeThreadItem(targetScope, thread.id, originalOutput.id)).toEqual(currentOutput);
     const beforeRepeat = target.sqlite.serialize();
     applyNativeScopeMigrations(target.sqlite, 'workspace');
     expect(target.sqlite.serialize()).toEqual(beforeRepeat);
 
-    // The real runtime opening owns readiness and native-prefix acceptance, not a test-maintained prefix list.
+    // Close the explicit stopped-scope handle before the original native owner reopens it.
+    target.sqlite.close();
     await getControlStoreWorkerClient().open({
       database: `workspace:${targetScope.path}`,
       path: targetScope.path,
-      dataRoot: targetRoot,
+      dataRoot: sourceRoot,
       create: false,
       initialize: 'workspace',
       productOwner: turn.owner,
@@ -310,8 +225,6 @@ it('upgrades genuine Workspace plan and output revisions without changing their 
     ).toEqual(expectedPlans);
   } finally {
     await shutdownControlStoreWorkerClient();
-    sourceWorkspace?.sqlite.close();
-    target.sqlite.close();
-    sourceDb.close();
+    if (target.sqlite.open) target.sqlite.close();
   }
 }, 120_000);

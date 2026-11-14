@@ -683,7 +683,7 @@ async function anchorNanoHostMaterialization(
   }
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
   try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     if (AgentEnvironmentPackageSchema.safeParse(environmentPackage).success)
       await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
         environmentPackage,
@@ -916,7 +916,7 @@ function seedAcceptedRetainedSlot(
 ): void {
   const db = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
   try {
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     const identity = {
       workspaceId: environmentPackage.scope.workspaceId,
       storageRef: storage.storageRef,
@@ -11943,7 +11943,7 @@ describe('createConfiguredTurnExecutor', () => {
       if (fixtureRepositoryPath) {
         const db = openWorkspaceDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
         try {
-          applyScopedMigrations(db, undefined, 'pre-knowledge');
+          applyScopedMigrations(db);
         } finally {
           db.sqlite.close();
         }

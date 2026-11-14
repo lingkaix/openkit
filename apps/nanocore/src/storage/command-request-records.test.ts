@@ -514,7 +514,7 @@ function retainedReceiptFixture() {
     await shutdownControlStoreWorkerClient();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  applyScopedMigrations(db, undefined, 'pre-knowledge');
+  applyScopedMigrations(db);
   const record = {
     key: 'receipt-format',
     command: 'task.start' as const,

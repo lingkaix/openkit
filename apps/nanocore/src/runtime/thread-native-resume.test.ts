@@ -200,7 +200,7 @@ it.each([
       if (oldPackage) {
         const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
         try {
-          applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+          applyScopedMigrations(workspaceDb);
           await recordAgentEnvironmentPackageSnapshot(workspaceDb, {
             environmentPackage: oldPackage,
             createdAt: timestamp,

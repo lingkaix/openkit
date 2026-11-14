@@ -186,7 +186,7 @@ describe('Workspace Material app API', () => {
       }
 
       const inspectionDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(inspectionDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(inspectionDb);
       try {
         expect(
           inspectionDb.sqlite
@@ -325,7 +325,7 @@ describe('Workspace Material app API', () => {
       });
 
       const bindReceiptDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(bindReceiptDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(bindReceiptDb);
       try {
         expect(
           bindReceiptDb.sqlite
@@ -546,7 +546,7 @@ describe('Workspace Material app API', () => {
       });
 
       const receiptDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(receiptDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(receiptDb);
       try {
         const changeReceiptTarget = receiptDb.sqlite.prepare(`UPDATE idempotency_requests
           SET response_id = ? WHERE command_name = 'material.save' AND request_id = ?`);
@@ -650,7 +650,7 @@ describe('Workspace Material app API', () => {
       await expect(corruptProjection.json()).resolves.toMatchObject({ code: 'recovery_required' });
 
       const ownerDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-      applyScopedMigrations(ownerDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(ownerDb);
       try {
         expect(
           ownerDb.sqlite

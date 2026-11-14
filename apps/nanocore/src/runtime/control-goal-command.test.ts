@@ -66,7 +66,7 @@ async function fixture() {
       const migrations = await import(${JSON.stringify(migrationsUrl)});
       const products = await import(${JSON.stringify(productsUrl)});
       let db = storage.openWorkspaceDb(workerData.root, workerData.workspaceId);
-      migrations.applyScopedMigrations(db, undefined, 'pre-knowledge');
+      migrations.applyScopedMigrations(db);
       // Raw deciding-body fixture only; no application or Knowledge activation claim.
       for (const sql of workerData.productMigrations) db.sqlite.exec(sql);
       const owner = { kind: 'workspace', workspaceId: workerData.workspaceId };

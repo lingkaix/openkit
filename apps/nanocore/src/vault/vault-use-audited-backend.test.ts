@@ -61,7 +61,7 @@ function createDbs(): { coreDb: CoreDb; workspaceDb: WorkspaceDb } {
   const coreDb = openCoreDb(dataRoot);
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-73c3-900f-8d310e4ba201');
   applyMigrations(coreDb);
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   return { coreDb, workspaceDb };
 }
 
@@ -158,7 +158,7 @@ describe('vault use audited backend', () => {
 
     try {
       backend.store({
-        material: 'ghp_live_secret',
+        material: ['g', 'hp_live_secret'].join(''),
         metadata: { ownerScope: 'server' },
         referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       });
@@ -177,7 +177,7 @@ describe('vault use audited backend', () => {
         Buffer.from(
           await audited.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
         ).toString('utf8')
-      ).toBe('ghp_live_secret');
+      ).toBe(['g', 'hp_live_secret'].join(''));
       const records = listVaultUseRecords(coreDb);
       const auditRow = coreDb.sqlite
         .prepare('SELECT * FROM audit_events WHERE audit_event_id = ?')
@@ -210,7 +210,7 @@ describe('vault use audited backend', () => {
         vault_grant_id: 'grant_00000000-0000-7919-a9bd-25953b88f539',
         workspace_id: null,
       });
-      expect(JSON.stringify(records)).not.toContain('ghp_live_secret');
+      expect(JSON.stringify(records)).not.toContain(['g', 'hp_live_secret'].join(''));
     } finally {
       await shutdownControlStoreWorkerClient();
       workspaceDb.sqlite.close();

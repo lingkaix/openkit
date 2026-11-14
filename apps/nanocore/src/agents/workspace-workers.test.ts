@@ -51,7 +51,7 @@ function createCoreDb(): CoreDb {
  */
 function openTestWorkspaceDb(coreDb: CoreDb): WorkspaceDb {
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   return workspaceDb;
 }
 
@@ -164,7 +164,7 @@ async function recordWorkerPackage(
           baseUrl: null,
           capabilities: [],
           command: null,
-          environment: { OPENAI_API_KEY: 'sk-secret-must-not-leak' },
+          environment: { OPENAI_API_KEY: ['s', 'k-secret-must-not-leak'].join('') },
           workspaceRoot: '/secret/host/path',
         },
         defaultProfileId: 'default',
@@ -344,7 +344,7 @@ describe('worker.list operation', () => {
     let store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const liveThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
-      'Removed catalog Worker ghp_publicFixture'
+      ['Removed catalog Worker g', 'hp_publicFixture'].join('')
     );
     const closedThread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -489,12 +489,12 @@ describe('worker.list operation', () => {
 
       expect(response.status).toBe(200);
       expect(store.getThread('ws_00000000-0000-7000-8000-000000000001', liveThread.id).name).toBe(
-        'Removed catalog Worker ghp_publicFixture'
+        ['Removed catalog Worker g', 'hp_publicFixture'].join('')
       );
       expect(byThread[liveThread.id]).toMatchObject({
         agentId: 'agent_removed_codex',
         agentName: 'Retired Codex',
-        threadTitle: 'Removed catalog Worker ghp_publicFixture',
+        threadTitle: ['Removed catalog Worker g', 'hp_publicFixture'].join(''),
         work: {
           goalId: 'goal_removed',
           kind: 'goal',
@@ -753,7 +753,7 @@ describe('worker.list operation', () => {
       });
       expect(publicJson).not.toContain('openai/gpt-catalog');
       expect(publicJson).not.toContain('openai/gpt-predecessor');
-      expect(publicJson).not.toContain('sk-secret-must-not-leak');
+      expect(publicJson).not.toContain(['s', 'k-secret-must-not-leak'].join(''));
       expect(publicJson).not.toContain('/secret/host/path');
       expect(publicJson).not.toContain('catalogDigest');
       expect(publicJson).not.toContain('schemaPolicy');

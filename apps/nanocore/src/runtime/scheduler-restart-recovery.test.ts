@@ -281,7 +281,7 @@ async function createFailedStartFixture(
     threadId
   );
   const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-  applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+  applyScopedMigrations(workspaceDb);
   if (outcome) {
     const raising = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
@@ -509,7 +509,7 @@ async function createFailedStartFixture(
     workerDelivery,
     openWorkspace: (workspaceId: string) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
-      applyScopedMigrations(db, undefined, 'pre-knowledge');
+      applyScopedMigrations(db);
       return db;
     },
   };
@@ -2853,7 +2853,7 @@ async function recordBackendSession(
   }
   const workspaceDb = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   try {
-    applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+    applyScopedMigrations(workspaceDb);
     if (
       !listExportableAgentEnvironmentPackageSnapshots(
         workspaceDb,
@@ -3873,7 +3873,7 @@ describe('scheduler restart recovery', () => {
       const queryOnlyReaders: ReturnType<typeof dbOwner.openAdmittedWorkspaceReadDb>[] = [];
       let opening: { mockRestore: () => void } | undefined;
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         dispatchLease(coreDb, suffix);
         const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
           suffix,
@@ -4053,7 +4053,7 @@ describe('scheduler restart recovery', () => {
       );
 
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         dispatchLease(coreDb, suffix);
         const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
           suffix,
@@ -4149,7 +4149,7 @@ describe('scheduler restart recovery', () => {
     let timestamp = '2026-07-05T00:01:00.000Z';
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
@@ -4228,7 +4228,7 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
@@ -4310,7 +4310,7 @@ describe('scheduler restart recovery', () => {
     const suffix = 'restart_mismatched_workspace_handle';
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix);
       const environmentPackage = await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
@@ -4435,7 +4435,7 @@ describe('scheduler restart recovery', () => {
       | null = null;
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix);
       acceptNanoHostAttemptHeartbeat(coreDb, {
         heartbeatTimeoutMs: 900_000,
@@ -4735,7 +4735,7 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix);
       await recordTestAgentEnvironmentPackage(workspaceDb, { suffix, workspaceInputIds: [] });
       await recordBackendSession(coreDb, suffix, 'launching');
@@ -5141,7 +5141,7 @@ describe('scheduler restart recovery', () => {
     } as const;
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix, triggerActor);
       await recordTestAgentEnvironmentPackage(workspaceDb, {
         suffix,
@@ -5174,7 +5174,7 @@ describe('scheduler restart recovery', () => {
     let cleanupCalls = 0;
 
     try {
-      applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+      applyScopedMigrations(workspaceDb);
       dispatchLease(coreDb, suffix, {
         kind: 'automation',
         id: 'auto_00000000-0000-77b8-960a-a219c6ca839d',
@@ -6050,7 +6050,7 @@ describe('minimal scheduler reconnect contract', () => {
       );
       let environmentPackage: AgentEnvironmentPackage;
       try {
-        applyScopedMigrations(workspaceDb, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspaceDb);
         environmentPackage = requireAgentEnvironmentPackageSnapshot(
           workspaceDb,
           'ws_00000000-0000-7000-8000-000000000001',
@@ -7425,7 +7425,7 @@ async function createFinalReviewRecoveryFixture(
     if (boundary === 'failed-preparation') {
       const workspace = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
       try {
-        applyScopedMigrations(workspace, undefined, 'pre-knowledge');
+        applyScopedMigrations(workspace);
         const contextRoot = mkdtempSync(join(tmpdir(), 'openkit-recovery-context-'));
         const context = '# Original bounded Task Context\n';
         writeFileSync(join(contextRoot, 'context.md'), context);
@@ -7468,7 +7468,7 @@ async function createFinalReviewRecoveryFixture(
   await admitFixtureJournal(coreDb, store, suffix);
   const db = openWorkspaceDb(coreDb.dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
   try {
-    applyScopedMigrations(db, undefined, 'pre-knowledge');
+    applyScopedMigrations(db);
     const pkg = requireAgentEnvironmentPackageSnapshot(
       db,
       'ws_00000000-0000-7000-8000-000000000001',
