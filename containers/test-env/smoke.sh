@@ -19,6 +19,14 @@ print_required_version "pnpm" pnpm --version
 print_required_version "zizmor" zizmor --version
 print_required_version "osv-scanner" osv-scanner --version
 print_required_version "git" git --version
+print_required_version "docker" docker --version
+print_required_version "aws" aws --version
+print_required_version "kubectl" kubectl version --client --output=json
+print_required_version "ssh" ssh -V
+print_required_version "openssl" openssl version
+for command in ssh-add ssh-agent; do
+  command -v "$command" >/dev/null || { echo "Missing native client: $command" >&2; exit 1; }
+done
 print_required_version "jq" jq --version
 print_required_version "python3" python3 --version
 print_required_version "rustc" rustc --version

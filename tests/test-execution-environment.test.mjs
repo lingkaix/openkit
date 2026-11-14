@@ -37,6 +37,8 @@ const additionalImageBuildInputs = [
   'containers/test-env/browser-tools/package-lock.json',
   'scripts/install-security-tools.mjs',
   'scripts/security-tools.json',
+  'scripts/download-native-client-tools.mjs',
+  'scripts/native-client-tools.json',
   'scripts/retrieval-dictionary.py',
   'packages/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
   'packages/retrieval-kernel/vendor/IPADIC-COPYING',
@@ -456,6 +458,19 @@ test('test image smoke requires Playwright headless-shell and rejects Xvfb', () 
         { mode: 0o755 }
       );
     }
+    const nativeVersionStubs = {
+      aws: '#!/bin/sh\n[ "$*" = "--version" ] || exit 97\necho "aws-cli/2.40.0 fixture"\n',
+      docker:
+        '#!/bin/sh\n[ "$*" = "--version" ] || exit 97\necho "Docker version 29.7.2, build fixture"\n',
+      kubectl:
+        '#!/bin/sh\ncase "$*" in "version --client --output=json"|"version --client=true --output=json") echo \'{"clientVersion":{"gitVersion":"v1.37.2"}}\';; *) exit 97;; esac\n',
+      ssh: '#!/bin/sh\n[ "$*" = "-V" ] || exit 97\necho "OpenSSH_9.2p1 Debian-2+deb12u9" >&2\n',
+      'ssh-add': '#!/bin/sh\nexit 97\n',
+      'ssh-agent': '#!/bin/sh\nexit 97\n',
+      openssl: '#!/bin/sh\n[ "$*" = "version" ] || exit 97\necho "OpenSSL fixture"\n',
+    };
+    for (const [command, content] of Object.entries(nativeVersionStubs))
+      writeFileSync(join(fakeBin, command), content, { mode: 0o755 });
     for (const command of ['bash', 'find', 'basename']) {
       const executable = command === 'bash' ? '/bin/bash' : `/usr/bin/${command}`;
       writeFileSync(join(fakeBin, command), `#!/bin/sh\nexec ${executable} "$@"\n`, {
@@ -479,6 +494,15 @@ test('test image smoke requires Playwright headless-shell and rejects Xvfb', () 
       encoding: 'utf8',
       env: browserEnv,
     });
+    for (const command of ['aws', 'docker', 'kubectl', 'ssh', 'ssh-add', 'ssh-agent']) {
+      rmSync(join(fakeBin, command));
+      const missingClient = spawnSync('bash', [testImageSmoke], {
+        encoding: 'utf8',
+        env: browserEnv,
+      });
+      assert.notEqual(missingClient.status, 0, `smoke silently accepted missing ${command}`);
+      writeFileSync(join(fakeBin, command), nativeVersionStubs[command], { mode: 0o755 });
+    }
     const forbiddenXvfb = spawnSync('bash', [testImageSmoke], {
       encoding: 'utf8',
       env: { ...browserEnv, PATH: `${forbiddenBin}:${fakeBin}` },
@@ -565,6 +589,53 @@ exit 97
   }
 });
 
+test('native client supply is verified as one download phase before local archive execution', () => {
+  const dockerfile = testImageDockerfile.replace(/\\\r?\n/gu, ' ');
+  for (const input of [
+    'scripts/download-native-client-tools.mjs',
+    'scripts/native-client-tools.json',
+  ]) {
+    assert.ok(
+      dockerfile.split('\n').some((line) => line.startsWith('COPY ') && line.includes(input)),
+      `${input} is not copied into the image`
+    );
+  }
+  const phase = dockerfile
+    .split('\n')
+    .find((line) => line.startsWith('RUN ') && line.includes('download-native-client-tools.mjs'));
+  assert.ok(
+    phase,
+    'one successful bounded download phase must gate later archive/package consumption'
+  );
+  const downloadAt = phase.indexOf('download-native-client-tools.mjs');
+  for (const marker of ['docker-cli.deb', 'openssh-client.deb', 'unzip', 'aws/install'])
+    assert.ok(
+      phase.indexOf(marker) > downloadAt,
+      `${marker} precedes or escapes the verified download phase`
+    );
+  const gateAt = phase.indexOf('&&', downloadAt);
+  assert.ok(gateAt > downloadAt, 'download completion must gate all supplier consumption');
+  assert.doesNotMatch(phase.slice(downloadAt, gateAt), /[;|]/u);
+  assert.doesNotMatch(phase.slice(downloadAt), /\|\s*(?:bash|sh)\b/u);
+  assert.doesNotMatch(
+    phase,
+    /python3\s+-m\s+zipfile/u,
+    'AWS bundle executable modes must survive extraction'
+  );
+  assert.match(phase, /--no-install-recommends/u);
+  assert.match(
+    phase,
+    /dpkg-query/u,
+    'compare actual installed Debian package versions, including epochs'
+  );
+  const smoke = read('containers/test-env/smoke.sh');
+  for (const command of ['aws --version', 'docker --version', 'ssh -V'])
+    assert.ok(smoke.includes(command));
+  assert.match(smoke, /kubectl\s+version\s+--client(?:=true)?\s+--output=json/u);
+  for (const command of ['ssh-add', 'ssh-agent']) assert.ok(smoke.includes(command));
+  assert.doesNotMatch(smoke, /ssh-add\s+-V/u);
+});
+
 test('test image content tag changes with every manifest-selected build input', () => {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'openkit-test-image-tag-'));
   const tagScript = join(fixtureRoot, 'scripts/docker/test-image-tag.mjs');
@@ -604,6 +675,33 @@ test('test image content tag changes with every manifest-selected build input', 
       encoding: 'utf8',
     });
     assert.equal(before.status, 0, before.stderr);
+    const fullBefore = spawnSync(process.execPath, [tagScript, '--digest'], {
+      cwd: fixtureRoot,
+      encoding: 'utf8',
+    });
+    assert.equal(fullBefore.status, 0, fullBefore.stderr);
+    for (const input of [
+      'scripts/download-native-client-tools.mjs',
+      'scripts/native-client-tools.json',
+    ]) {
+      const fixtureInput = join(fixtureRoot, input);
+      const originalBytes = readFileSync(fixtureInput);
+      try {
+        writeFileSync(fixtureInput, Buffer.concat([originalBytes, Buffer.from('\n')]));
+        const changed = spawnSync(process.execPath, [tagScript, '--digest'], {
+          cwd: fixtureRoot,
+          encoding: 'utf8',
+        });
+        assert.equal(changed.status, 0, changed.stderr);
+        assert.notEqual(
+          changed.stdout.trim(),
+          fullBefore.stdout.trim(),
+          `${input} is absent from image identity`
+        );
+      } finally {
+        writeFileSync(fixtureInput, originalBytes);
+      }
+    }
     writeFileSync(
       fixtureWebManifest,
       `${JSON.stringify({

@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
 
@@ -18,6 +18,15 @@ export default async function setup() {
   );
   const root = join(tmpdir(), 'nanocore-worker');
   mkdirSync(root);
+  // The real Docker client and direct read-only helper commands share the canonical alias.
+  // Keep it in the existing invocation-private TMPDIR, never in the host's tool directories.
+  const helperBin = join(root, 'bin');
+  mkdirSync(helperBin);
+  symlinkSync(
+    join(appRoot, '../../packages/worker-shim/dist/credential-helper-cli.js'),
+    join(helperBin, 'docker-credential-openkit')
+  );
+  process.env.PATH = `${helperBin}${delimiter}${process.env.PATH ?? ''}`;
   // Preserve compiled-runtime dependency and asset resolution without copying retained test data.
   for (const name of ['node_modules', 'drizzle', 'data-templates']) {
     symlinkSync(join(appRoot, name), join(root, name), 'dir');
