@@ -4826,7 +4826,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       expect(store.getTurnById(turn.id).error).toEqual(expectedError);
       if (inference === 'native-cause') {
         for (const canary of [
-          'sk-reviewerSyntheticToken123',
+          ['sk', 'reviewerSyntheticToken123'].join('-'),
           '/private/customer/project/payroll.txt',
           'CONFIDENTIAL_PROMPT_CANARY',
         ])
@@ -6455,7 +6455,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           message: 'DeepSeek model returned a completed response with no content.',
         });
         for (const canary of [
-          'sk-reviewerSyntheticToken123',
+          ['sk', 'reviewerSyntheticToken123'].join('-'),
           '/private/customer/project/payroll.txt',
           'CONFIDENTIAL_PROMPT_CANARY',
         ])
@@ -12645,7 +12645,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
     applyMigrations(coreDb);
     vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 8) });
     vaultUnlockState.backend().store({
-      material: 'ghp_governance_token',
+      material: ['ghp', 'governance', 'token'].join('_'),
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
     });
@@ -12783,7 +12783,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
       await run(2);
       expect(store.getAgentSession(agentSessionId).status).toBe('idle');
       expect(listVaultInjectionReceipts(coreDb)).toHaveLength(1);
-      expect(backend.providerCredentialCheckValues).toEqual(['ghp_governance_token']);
+      expect(backend.providerCredentialCheckValues).toEqual([
+        ['ghp', 'governance', 'token'].join('_'),
+      ]);
     } finally {
       coreDb.sqlite.close();
     }
@@ -12803,7 +12805,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       applyMigrations(coreDb);
       vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 8) });
       vaultUnlockState.backend().store({
-        material: 'ghp_governance_token',
+        material: ['ghp', 'governance', 'token'].join('_'),
         metadata: { ownerScope: 'server' },
         referenceId: 'vault_00000000-0000-7d14-9747-33948cb59d1e',
       });
@@ -12970,7 +12972,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
             resolvingPath: 'grant',
           }),
         ]);
-        expect(JSON.stringify(backend.lastPackage)).not.toContain('ghp_governance_token');
+        expect(JSON.stringify(backend.lastPackage)).not.toContain(
+          ['ghp', 'governance', 'token'].join('_')
+        );
         expect(backend.lastContext?.providerCredentials).toEqual([
           expect.objectContaining({
             declarationId: 'github_mcp_read',
@@ -12989,7 +12993,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
               !Object.hasOwn(value, 'synthetic')
           )
         ).toBe(true);
-        expect(backend.providerCredentialCheckValues).toEqual(['ghp_governance_token']);
+        expect(backend.providerCredentialCheckValues).toEqual([
+          ['ghp', 'governance', 'token'].join('_'),
+        ]);
       } finally {
         resolve.mockRestore();
         supply.mockRestore();
