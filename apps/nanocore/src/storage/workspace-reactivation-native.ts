@@ -12,13 +12,14 @@ import {
   type ControlRecoverySourceReactivationInput,
   ControlRecoverySourceReactivationInputSchema,
 } from './workspace-reactivation-codecs.js';
-import {
-  endRecoveryAdmission,
-  type RecoveryAdmission,
-  readRecoveryAdmission,
-  refuseRecovery,
-} from './workspace-recovery-admissions.js';
 import type { WorkspaceRecoveryCliReport } from './workspace-recovery-cli.js';
+import {
+  finishRecoveryExecution,
+  type RecoveryExecution,
+  readRecoveryExecution,
+  refuseRecovery,
+  revokeRecoveryExecution,
+} from './workspace-recovery-journal.js';
 
 /** Reads the exact source lifecycle through the existing short, query-only owner; no SQL crosses an await. */
 export function readWorkspaceReactivationSource(dataRoot: string, workspaceId: string) {
@@ -40,8 +41,8 @@ export function readWorkspaceReactivationSource(dataRoot: string, workspaceId: s
 }
 
 /** Revalidates the complete original retained selection inside the owning effect. */
-function selected(core: CoreDb, input: ControlRecoverySourceReactivationInput): RecoveryAdmission {
-  const owned = readRecoveryAdmission(core, input.backupId);
+function selected(core: CoreDb, input: ControlRecoverySourceReactivationInput): RecoveryExecution {
+  const owned = readRecoveryExecution(core, input.backupId);
   if (
     !owned ||
     owned.workspace_id !== input.workspaceId ||
@@ -109,11 +110,7 @@ export function applyControlRecoverySourceReactivation(
     assertMovedOut(current, input);
     // A fresh explicit retry still revokes and increments, even when the earlier revocation committed.
     // This original finished->abandoned update must not use the first-terminal end helper.
-    db.sqlite
-      .prepare(
-        "UPDATE workspace_recovery_admissions SET state='abandoned', revision=revision+1, updated_at=? WHERE admission_id=?"
-      )
-      .run(new Date().toISOString(), input.backupId);
+    revokeRecoveryExecution(db, owned);
     return;
   }
   if (
@@ -129,5 +126,5 @@ export function applyControlRecoverySourceReactivation(
     currentRevision: current.revision,
     nextAction: 'none',
   };
-  endRecoveryAdmission(db, input.backupId, 'abandoned', report);
+  finishRecoveryExecution(db, input.backupId, 'abandoned', report);
 }

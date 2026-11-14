@@ -36,26 +36,26 @@ import {
 import { nativeProductScope, readNativeProduct } from './workspace-file-records.js';
 import type { ControlRecoverySourceReactivationInput } from './workspace-reactivation-codecs.js';
 import { readWorkspaceReactivationSource } from './workspace-reactivation-native.js';
-import {
-  bindWorkspaceCaptureNativeOwner,
-  captureRecoveryOrigin,
-  endRecoveryAdmission,
-  openRecoveryDatabase,
-  prepareRecoveryAdmission,
-  type RecoveryAdmission,
-  type RecoveryProof,
-  readRecoveryAdmission,
-  recoveryReport,
-  refuseRecovery,
-  withRecoveryRoot,
-  withSourceRecoveryProofFile,
-} from './workspace-recovery-admissions.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
   WorkspaceRecoverySelection,
 } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  bindWorkspaceCaptureNativeOwner,
+  captureRecoveryOrigin,
+  finishRecoveryExecution,
+  openRecoveryDatabase,
+  prepareRecoveryExecution,
+  publishRecoveryProof,
+  type RecoveryExecution,
+  type RecoveryProof,
+  readRecoveryExecution,
+  recoveryReport,
+  refuseRecovery,
+  withRecoveryRoot,
+} from './workspace-recovery-journal.js';
 import type { ControlRecoverySourcePreparationInput } from './workspace-recovery-target-codecs.js';
 
 /** Exact process-crash boundaries; internal dependencies only, never operator input. */
@@ -111,10 +111,10 @@ function source(dataRoot: string, workspaceId: string) {
 export function selectRecoveryAdmission(
   core: CoreDb,
   input: WorkspaceRecoverySelectedInput
-): RecoveryAdmission {
+): RecoveryExecution {
   const id =
     input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
-  const row = readRecoveryAdmission(core, id);
+  const row = readRecoveryExecution(core, id);
   if (!row || row.workspace_id !== input.workspaceId) refuseRecovery('recovery-required');
   return row;
 }
@@ -124,7 +124,7 @@ export async function moveOutWorkspace(
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
   return withRecoveryRoot(input.dataRoot, async (core) => {
-    let owned = readRecoveryAdmission(core, input.backupId);
+    let owned = readRecoveryExecution(core, input.backupId);
     const manifest = owned?.proof.manifest ?? readWorkspaceBackupManifest(input.bundleRoot);
     if (
       (!owned && (!input.expectedRelease || existsSync(join(input.bundleRoot, 'seal.json')))) ||
@@ -177,13 +177,13 @@ export async function moveOutWorkspace(
             input.workspaceId,
             input.backupId
           );
-          prepareRecoveryAdmission(core, input.backupId, resolve(input.bundleRoot), {
+          prepareRecoveryExecution(core, input.backupId, resolve(input.bundleRoot), {
             input: { command: 'move-out', ...input },
             manifest,
             capture: staged.report,
             result: recoveryReport('capture', 'prepared', staged.report),
           });
-          owned = readRecoveryAdmission(core, input.backupId)!;
+          owned = readRecoveryExecution(core, input.backupId)!;
         }
       } finally {
         rmSync(temporary, { recursive: true, force: true });
@@ -231,7 +231,7 @@ export async function moveOutWorkspace(
         completeCapture(scoped, input.workspaceId, input.backupId);
       core.sqlite
         .transaction(() => {
-          endRecoveryAdmission(core, input.backupId, 'finished', report);
+          finishRecoveryExecution(core, input.backupId, 'finished', report);
         })
         .immediate();
       return report;
@@ -306,7 +306,7 @@ export async function inspectWorkspaceRecovery(
   return withRecoveryRoot(input.dataRoot, async (core) => {
     const id =
       input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
-    if (!readRecoveryAdmission(core, id)) return incompleteCapture(input, 'inspect');
+    if (!readRecoveryExecution(core, id)) return incompleteCapture(input, 'inspect');
     if (input.selection.kind !== 'capture') return inspectWorkspaceRecoveryAtCore(core, input);
     const current = source(input.dataRoot, input.workspaceId);
     try {
@@ -348,7 +348,7 @@ export async function reactivateWorkspace(
   if (!input.acknowledgeTargetFenced || !input.acknowledgeCopiesRetired)
     refuseRecovery('invalid-arguments');
   return withRecoveryRoot(input.dataRoot, async (core) => {
-    const owned = readRecoveryAdmission(core, input.backupId);
+    const owned = readRecoveryExecution(core, input.backupId);
     if (!owned || owned.workspace_id !== input.workspaceId) refuseRecovery('recovery-required');
     const current = readWorkspaceReactivationSource(input.dataRoot, input.workspaceId);
     const replay =
@@ -368,7 +368,7 @@ export async function reactivateWorkspace(
     const proofHash = commandInputHash(owned.proof);
     let expectedCoreRevision = owned.revision;
     const selected = () => {
-      const latest = readRecoveryAdmission(core, input.backupId);
+      const latest = readRecoveryExecution(core, input.backupId);
       if (
         !latest ||
         latest.workspace_id !== input.workspaceId ||
@@ -425,7 +425,7 @@ export async function reactivateWorkspace(
       }
       selected();
       await client.recoverySourceReactivation(database, stage('report'));
-      const finished = readRecoveryAdmission(core, input.backupId);
+      const finished = readRecoveryExecution(core, input.backupId);
       if (!finished || finished.state !== 'abandoned' || finished.revision !== expectedCoreRevision)
         refuseRecovery('recovery-required');
       result = { ok: true, report: finished.proof.result };
@@ -468,13 +468,13 @@ export async function abandonWorkspaceMove(
   return withRecoveryRoot(input.dataRoot, async (core) => {
     const id =
       input.selection.kind === 'capture' ? input.selection.backupId : input.selection.requestId;
-    if (!readRecoveryAdmission(core, id)) return incompleteCapture(input, 'abandon');
+    if (!readRecoveryExecution(core, id)) return incompleteCapture(input, 'abandon');
     const owned = selectRecoveryAdmission(core, input);
     if (owned.state === 'finished') refuseRecovery('request-conflict');
     const current = source(input.dataRoot, input.workspaceId);
     try {
       if (current.record.movedOut) refuseRecovery('workspace-moved-out');
-      endRecoveryAdmission(core, owned.admission_id, 'abandoned');
+      finishRecoveryExecution(core, owned.admission_id, 'abandoned');
       abandonCapture(
         bindWorkspaceSqlite(current.db, input.dataRoot, input.workspaceId),
         input.workspaceId,
@@ -528,7 +528,7 @@ export function readWorkspaceCaptureRecoveryAtCore(
       revision: row.revision,
       movedOut,
       capture,
-      owned: readRecoveryAdmission(core, input.selection.backupId),
+      owned: readRecoveryExecution(core, input.selection.backupId),
     };
   } finally {
     db.sqlite.close();
@@ -558,7 +558,7 @@ function sourceCaptureOwner(
     policy.mutationAdmission,
     freeze
   );
-  let proof = readRecoveryAdmission(policy.coreDb, captureId);
+  let proof = readRecoveryExecution(policy.coreDb, captureId);
   const current = () => {
     policy.currentAuthority();
     if (
@@ -616,20 +616,15 @@ function sourceCaptureOwner(
               proofHash: commandInputHash(proof.proof),
             }
           : refuseRecovery('recovery-required');
-    await withSourceRecoveryProofFile(
+    const file = await publishRecoveryProof(
       policy.dataRoot,
-      captureId,
       stageProof,
-      policy.verification.admission,
-      async (file) => {
-        current();
-        await client.recoveryTargetPreparation(database, { ...selection, file }, freeze, () => {
-          current();
-        });
-        // Refresh only after the covering ACK; unknown outcomes retain the original proof projection.
-        proof = readRecoveryAdmission(policy.coreDb, captureId);
-      }
+      policy.verification.admission
     );
+    current();
+    await client.recoveryTargetPreparation(database, { ...selection, file }, freeze, current);
+    // Refresh only after the covering ACK; unknown outcomes retain the original proof projection.
+    proof = readRecoveryExecution(policy.coreDb, captureId);
     current();
   };
   return {

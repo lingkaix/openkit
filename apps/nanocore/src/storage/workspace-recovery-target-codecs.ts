@@ -1,6 +1,7 @@
 import { WorkspaceBackupIdSchema, WorkspaceSnapshotReportSchema } from '@openkit/app-api-schemas';
 import { RequestIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { fileContentSchema } from './control-store-product-records.js';
 import { ControlCoreSharingActorSchema } from './workspace-sharing-codecs.js';
 
 /** Original target selection; the native owner rereads its complete retained admission proof. */
@@ -30,14 +31,6 @@ export const ControlRecoveryTargetRegistrationInputSchema = z.strictObject({
 export type ControlRecoveryTargetRegistrationInput = z.infer<
   typeof ControlRecoveryTargetRegistrationInputSchema
 >;
-/** Exact immutable bytes inside the original restore operation's derived staging scope. */
-export const ControlRecoveryTargetProofFileSchema = z.strictObject({
-  name: z
-    .string()
-    .regex(/^\.proof-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/),
-  byteLength: z.number().int().nonnegative().safe(),
-  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
-});
 const targetAuthority = {
   admissionId: ControlRecoveryTargetRegistrationInputSchema.shape.admissionId,
   workspaceId: ControlRecoveryTargetRegistrationInputSchema.shape.workspaceId,
@@ -58,14 +51,14 @@ const sourceSelection = {
   ...sourceAuthority,
   expectedRevision: targetSelection.expectedRevision,
   proofHash: targetSelection.proofHash,
-  file: ControlRecoveryTargetProofFileSchema,
+  file: fileContentSchema,
 };
 /** Original Core effects remain separate around candidate preparation and durable retirement. */
 export const ControlRecoveryTargetPreparationInputSchema = z.discriminatedUnion('kind', [
   z.strictObject({
     ...sourceAuthority,
     kind: z.literal('source-prepare'),
-    file: ControlRecoveryTargetProofFileSchema,
+    file: fileContentSchema,
   }),
   z.strictObject({ ...sourceSelection, kind: z.literal('source-finish') }),
   z.strictObject({ ...sourceSelection, kind: z.literal('source-abandon-preseal') }),
@@ -73,18 +66,18 @@ export const ControlRecoveryTargetPreparationInputSchema = z.discriminatedUnion(
   z.strictObject({
     ...targetAuthority,
     kind: z.literal('prepare'),
-    file: ControlRecoveryTargetProofFileSchema,
+    file: fileContentSchema,
   }),
   z.strictObject({
     ...targetSelection,
     kind: z.literal('proof'),
-    file: ControlRecoveryTargetProofFileSchema,
+    file: fileContentSchema,
   }),
   z.strictObject({ ...targetSelection, kind: z.literal('abandon') }),
   z.strictObject({
     ...targetSelection,
     kind: z.literal('abandon-result'),
-    file: ControlRecoveryTargetProofFileSchema,
+    file: fileContentSchema,
   }),
 ]);
 /** Closed lifecycle input; the file selection never grants a caller-selected root. */
@@ -96,8 +89,6 @@ export type ControlRecoverySourcePreparationInput = Extract<
   ControlRecoveryTargetPreparationInput,
   { authority: { mode: 'source' } }
 >;
-/** One original request-private proof file. */
-export type ControlRecoveryTargetProofFile = z.infer<typeof ControlRecoveryTargetProofFileSchema>;
 // Descriptive retained additions survive the native handoff; closed core values still refuse.
 const capture = WorkspaceSnapshotReportSchema.shape.capture.unwrap();
 const coverage = capture.shape.coverage;

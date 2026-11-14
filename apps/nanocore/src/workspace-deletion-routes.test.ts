@@ -52,9 +52,9 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './storage/workspace-backup-bundle.js';
 import {
-  readRecoveryAdmission,
+  readRecoveryExecution,
   resumeWorkspaceRecoveryOwner,
-} from './storage/workspace-recovery-admissions.js';
+} from './storage/workspace-recovery-journal.js';
 import { finishWorkspaceRecoveryAtCore } from './storage/workspace-restore.js';
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
@@ -2964,7 +2964,7 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
     expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(true);
     expect(existsSync((prepared.admission as { candidate_ref: string }).candidate_ref)).toBe(false);
     const placedBytes = stagedDeletionBytes(join(f.dataRoot, 'workspaces', f.workspace.id));
-    const owned = readRecoveryAdmission(f.coreDb, recoveryRequestId)!;
+    const owned = readRecoveryExecution(f.coreDb, recoveryRequestId)!;
     // The original public admission already fenced this empty fixture's runtime.
     // Rejoin its exact owner for the SQL tuple; physical digest/integrity checks
     // still run in the real selected producer, without another public census.

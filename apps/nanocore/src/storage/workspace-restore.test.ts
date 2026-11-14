@@ -86,17 +86,17 @@ import { protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
 import {
-  bindWorkspaceRecoveryNativeOwner,
-  openRecoveryDatabase,
-  readRecoveryAdmission,
-  resumeWorkspaceRecoveryOwner,
-  workspaceRecoveryPredecessorRoot,
-} from './workspace-recovery-admissions.js';
-import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  bindWorkspaceRecoveryNativeOwner,
+  openRecoveryDatabase,
+  readRecoveryExecution,
+  resumeWorkspaceRecoveryOwner,
+  workspaceRecoveryPredecessorRoot,
+} from './workspace-recovery-journal.js';
 import {
   abandonWorkspaceRecoveryAtCore,
   activateWorkspaceRecoveryAtCore,
@@ -805,7 +805,7 @@ async function readmissionFixture(
   const gate = new WorkspaceMutationAdmission();
   restoreWorkspaceRecoveryAdmission(core, gate);
   f.store.setWorkspaceMutationAdmission(gate);
-  const prepared = readRecoveryAdmission(core, f.requestId)!;
+  const prepared = readRecoveryExecution(core, f.requestId)!;
   expect(prepared.state).toBe('prepared');
   const freeze = resumeWorkspaceRecoveryOwner(core, prepared, gate, () => []);
   if (freeze.status !== 'frozen') throw new Error('Expected the boot-restored recovery freeze.');
@@ -870,7 +870,7 @@ describe('D0-2 same-deployment restore', () => {
       selection: { kind: 'admission' as const, requestId: f.requestId },
     };
     const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
-    const before = readRecoveryAdmission(core, f.requestId)!;
+    const before = readRecoveryExecution(core, f.requestId)!;
     const tuple = () =>
       Object.fromEntries(
         [
@@ -907,7 +907,7 @@ describe('D0-2 same-deployment restore', () => {
       expect(registrationInterception.replied).toBe(false);
       expect(Atomics.load(gate, 3)).toBe(2);
       const committed = tuple();
-      const finished = readRecoveryAdmission(core, f.requestId)!;
+      const finished = readRecoveryExecution(core, f.requestId)!;
       expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
       expect(finished.proof.result).toMatchObject({ disposition: 'restored', workspaceId });
       expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
@@ -1114,7 +1114,7 @@ describe('D0-2 same-deployment restore', () => {
         expect(tuple()).toEqual(expected);
         expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-        expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+        expect(readRecoveryExecution(core, f.requestId)?.state).toBe('prepared');
       } finally {
         release();
         await command;
@@ -1130,7 +1130,7 @@ describe('D0-2 same-deployment restore', () => {
     'selected registration preserves retained report compatibility for %s before committing its result',
     async (shape) => {
       const f = await readmissionFixture(false, 'after-target-rename');
-      const retained = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const retained = readRecoveryExecution(f.owner.core, f.requestId)!;
       expect(retained.state).toBe('prepared');
       expect(retained.proof.candidateDigest).toBeTypeOf('string');
       const rawProof = f.owner.core.sqlite
@@ -1177,7 +1177,7 @@ describe('D0-2 same-deployment restore', () => {
           rawProof
         );
       expect(changed.changes).toBe(1);
-      const installed = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const installed = readRecoveryExecution(f.owner.core, f.requestId)!;
       expect(installed.state).toBe(retained.state);
       expect(installed.revision).toBe(retained.revision);
       expect(installed.candidate_ref).toBe(retained.candidate_ref);
@@ -1244,7 +1244,7 @@ describe('D0-2 same-deployment restore', () => {
           publication.mockRestore();
         }
       });
-      const before = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const before = readRecoveryExecution(f.owner.core, f.requestId)!;
       const tuple = () =>
         Object.fromEntries(
           [
@@ -1272,7 +1272,7 @@ describe('D0-2 same-deployment restore', () => {
           Error
         );
         expect(tuple()).toEqual(original);
-        expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(before);
+        expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(before);
       } else {
         const result = await finishWorkspaceRecoveryAtCore(f.owner, selected);
         const expected = {
@@ -1282,7 +1282,7 @@ describe('D0-2 same-deployment restore', () => {
           nextAction: 'none',
         };
         expect(result).toEqual({ ...expected, command: 'finish', selection: selected.selection });
-        const finished = readRecoveryAdmission(f.owner.core, f.requestId)!;
+        const finished = readRecoveryExecution(f.owner.core, f.requestId)!;
         expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
         expect(finished.proof).toEqual({ ...before.proof, result: expected });
         const committed = tuple();
@@ -1374,7 +1374,7 @@ describe('D0-2 same-deployment restore', () => {
         ].map((table) => [table, rows(corePath, table)])
       );
     const before = tuple();
-    const prepared = readRecoveryAdmission(core, f.requestId)!;
+    const prepared = readRecoveryExecution(core, f.requestId)!;
     const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
     const sibling = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id));
     core.sqlite.exec(`CREATE TRIGGER restore_terminal_failure
@@ -1387,7 +1387,7 @@ describe('D0-2 same-deployment restore', () => {
     };
     await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).rejects.toBeInstanceOf(Error);
     expect(tuple()).toEqual(before);
-    expect(readRecoveryAdmission(core, f.requestId)).toEqual(prepared);
+    expect(readRecoveryExecution(core, f.requestId)).toEqual(prepared);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id))).toEqual(sibling);
     expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
@@ -1430,7 +1430,7 @@ describe('D0-2 same-deployment restore', () => {
     );
     expect(committed.workspace_registry).toEqual(before.workspace_registry);
     expect(committed.workspace_members).toEqual(before.workspace_members);
-    const finished = readRecoveryAdmission(core, f.requestId)!;
+    const finished = readRecoveryExecution(core, f.requestId)!;
     expect(finished).toMatchObject({ state: 'finished', revision: prepared.revision + 1 });
     expect(finished.proof.result).toMatchObject({ disposition: 'restored', workspaceId });
     await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).resolves.toEqual(result);
@@ -1441,7 +1441,7 @@ describe('D0-2 same-deployment restore', () => {
   it('finishes the exact placed restore through the native Core owner with query-only Main', async () => {
     const f = await readmissionFixture(false, 'after-target-rename');
     const core = f.owner.core;
-    const before = readRecoveryAdmission(core, f.requestId)!;
+    const before = readRecoveryExecution(core, f.requestId)!;
     const corePath = coreDbPath(f.dataRoot);
     const registry = rows(corePath, 'workspace_registry');
     const members = rows(corePath, 'workspace_members');
@@ -1469,7 +1469,7 @@ describe('D0-2 same-deployment restore', () => {
       selection,
       nextAction: 'none',
     });
-    const finished = readRecoveryAdmission(core, f.requestId)!;
+    const finished = readRecoveryExecution(core, f.requestId)!;
     expect(finished).toMatchObject({
       admission_id: before.admission_id,
       workspace_id: workspaceId,
@@ -1495,7 +1495,7 @@ describe('D0-2 same-deployment restore', () => {
     await expect(
       finishWorkspaceRecoveryAtCore(f.owner, { dataRoot: f.dataRoot, workspaceId, selection })
     ).resolves.toEqual(result);
-    expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+    expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
   }, 120_000);
 
   it('selected abandon closes an unsealed native candidate before terminal authority or byte retirement', async () => {
@@ -1527,14 +1527,14 @@ describe('D0-2 same-deployment restore', () => {
     const actualClose = client.close.bind(client);
     const closing = vi.spyOn(client, 'close').mockImplementation(async (...args) => {
       if (args[0] !== candidateDatabase) return actualClose(...args);
-      const owned = readRecoveryAdmission(core, f.requestId)!;
+      const owned = readRecoveryExecution(core, f.requestId)!;
       // Scoped Freeze requires actual writer exclusion before the first terminal Core effect.
       expect(owned.state).toBe('prepared');
       expect(existsSync(owned.candidate_ref)).toBe(true);
       if (refuseClose) throw closeFailure;
       await actualClose(...args);
       closed = true;
-      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+      expect(readRecoveryExecution(core, f.requestId)?.state).toBe('prepared');
       expect(existsSync(owned.candidate_ref)).toBe(true);
     });
     try {
@@ -1550,7 +1550,7 @@ describe('D0-2 same-deployment restore', () => {
         })
       ).rejects.toBe(closeFailure);
       await expect(cleanup.mock.results[0]!.value).rejects.toBe(preparationFailure);
-      const prepared = readRecoveryAdmission(core, f.requestId)!;
+      const prepared = readRecoveryExecution(core, f.requestId)!;
       expect(prepared.state).toBe('prepared');
       expect(prepared.proof.candidateDigest).toBeUndefined();
       expect(candidateDatabase).toBe(
@@ -1564,7 +1564,7 @@ describe('D0-2 same-deployment restore', () => {
         selection: { kind: 'admission' as const, requestId: f.requestId },
       };
       await expect(abandonWorkspaceRecoveryAtCore(owner, selected)).rejects.toThrow();
-      expect(readRecoveryAdmission(core, f.requestId)).toEqual(prepared);
+      expect(readRecoveryExecution(core, f.requestId)).toEqual(prepared);
       expect(inventoryRegularFiles(prepared.candidate_ref)).toEqual(candidateBefore);
       expect(closed).toBe(false);
       expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
@@ -1573,7 +1573,7 @@ describe('D0-2 same-deployment restore', () => {
         disposition: 'abandoned',
       });
       expect(closed).toBe(true);
-      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('abandoned');
+      expect(readRecoveryExecution(core, f.requestId)?.state).toBe('abandoned');
       expect(existsSync(prepared.candidate_ref)).toBe(false);
       // Native close can checkpoint SQLite; retained non-database content must stay exact.
       expect(
@@ -1591,7 +1591,7 @@ describe('D0-2 same-deployment restore', () => {
     'readmission: selected abandon validates and reopens the preserved predecessor after %s',
     async (interruption) => {
       const f = await readmissionFixture(false, interruption);
-      const prepared = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const prepared = readRecoveryExecution(f.owner.core, f.requestId)!;
       const candidate = existsSync(prepared.candidate_ref)
         ? prepared.candidate_ref
         : join(f.dataRoot, 'workspaces', workspaceId);
@@ -1604,7 +1604,7 @@ describe('D0-2 same-deployment restore', () => {
       };
       const result = await abandonWorkspaceRecoveryAtCore(f.owner, selected);
       expect(result).toMatchObject({ disposition: 'abandoned', nextAction: 'none' });
-      const abandoned = readRecoveryAdmission(f.owner.core, f.requestId);
+      const abandoned = readRecoveryExecution(f.owner.core, f.requestId);
       expect(abandoned?.state).toBe('abandoned');
       // Target Admission requires retirement to preserve owned bytes, including retained holds.
       expect(inventoryRegularFiles(join(dirname(prepared.candidate_ref), 'abandoned'))).toEqual(
@@ -1631,7 +1631,7 @@ describe('D0-2 same-deployment restore', () => {
         })
       ).toEqual(result);
       expect(checkedAuthority).toBe(true);
-      expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(abandoned);
+      expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(abandoned);
       expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
       // Same-Deployment Restore step 5 requires canonical authority, not the retired candidate.
       expect(f.store.getThread(workspaceId, f.staleThread.id)).toMatchObject({
@@ -1695,7 +1695,7 @@ describe('D0-2 same-deployment restore', () => {
     const f = await readmissionFixture();
     const result = await admitWorkspaceBackupAtCore(f.owner, f.input);
     expect(result).toMatchObject({ disposition: 'restored', workspaceId });
-    const finished = readRecoveryAdmission(f.owner.core, f.requestId);
+    const finished = readRecoveryExecution(f.owner.core, f.requestId);
     expect(finished?.state).toBe('finished');
     expect(() => f.store.getWorkspace(workspaceId)).toThrow();
     await expect(f.store.createThread(workspaceId, 'Still closed')).rejects.toBeInstanceOf(Error);
@@ -1723,7 +1723,7 @@ describe('D0-2 same-deployment restore', () => {
     });
     expect(activated).toEqual(result);
     expect(checkedAuthority).toBe(true);
-    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(finished);
+    expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(finished);
     expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
     // Same-Deployment Restore step 5 requires the restored authority, never the predecessor cache.
@@ -1764,13 +1764,13 @@ describe('D0-2 same-deployment restore', () => {
     );
     assertClosed();
     // A previous result cannot settle the later recovery which owns the resumed boot closure.
-    expect(readRecoveryAdmission(f.owner.core, f.priorRequestId!)?.state).toBe('finished');
+    expect(readRecoveryExecution(f.owner.core, f.priorRequestId!)?.state).toBe('finished');
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: f.priorRequestId! })
     ).toThrow(WorkspaceRecoveryError);
     assertClosed();
     const result = await admitWorkspaceBackupAtCore(f.owner, f.input);
-    const finished = readRecoveryAdmission(f.owner.core, f.requestId);
+    const finished = readRecoveryExecution(f.owner.core, f.requestId);
     expect(result.disposition).toBe('restored');
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, {
@@ -1839,7 +1839,7 @@ describe('D0-2 same-deployment restore', () => {
     f.freeze.release();
     expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
     assertClosed();
-    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(finished);
+    expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(finished);
   }, 120_000);
 
   it('prepares an admitted frozen target under the existing root lock without publishing it', async () => {
@@ -1859,7 +1859,7 @@ describe('D0-2 same-deployment restore', () => {
           f.dataRoot,
           () => 128n * 1024n * 1024n,
           () => {
-            if (readRecoveryAdmission(core, f.requestId)?.state === 'prepared')
+            if (readRecoveryExecution(core, f.requestId)?.state === 'prepared')
               preparedCapacityChecks++;
             return 512n * 1024n * 1024n;
           }
@@ -1883,7 +1883,7 @@ describe('D0-2 same-deployment restore', () => {
         admitWorkspaceBackupAtCore(owner, { ...input, dataRoot: wrongRoot })
       ).rejects.toBeInstanceOf(WorkspaceRecoveryError);
       expect(existsSync(wrongRoot)).toBe(false);
-      expect(readRecoveryAdmission(core, f.requestId)).toBeUndefined();
+      expect(readRecoveryExecution(core, f.requestId)).toBeUndefined();
       let reachedPlacement = false;
       let capacityChecksBeforePlacement = 0;
       let ordinary: Promise<unknown> | undefined;
@@ -1904,7 +1904,7 @@ describe('D0-2 same-deployment restore', () => {
       expect(capacityChecksBeforePlacement).toBeGreaterThan(0);
       expect(await ordinary).toMatchObject({ code: 'workspace_frozen' });
       expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
-      const owned = readRecoveryAdmission(core, f.requestId)!;
+      const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned).toMatchObject({ state: 'prepared', workspace_id: workspaceId });
       expect(owned.proof.manifest).toEqual(f.manifest);
       expect(owned.proof.result.disposition).toBe('quarantined');
@@ -1949,7 +1949,7 @@ describe('D0-2 same-deployment restore', () => {
     expect(reachedPlacement).toBe(true);
     const core = openCoreDb(f.dataRoot);
     try {
-      const owned = readRecoveryAdmission(core, f.requestId)!;
+      const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned.state).toBe('prepared');
       const gate = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(core, gate);
@@ -2016,7 +2016,7 @@ describe('D0-2 same-deployment restore', () => {
         check: 'retired',
       });
       expect(gate.enter(workspaceId)).toBeNull();
-      expect(readRecoveryAdmission(core, f.requestId)).toEqual(owned);
+      expect(readRecoveryExecution(core, f.requestId)).toEqual(owned);
     } finally {
       core.sqlite.close();
     }
@@ -2048,7 +2048,7 @@ describe('D0-2 same-deployment restore', () => {
     ).rejects.toMatchObject({ code: 'recovery-required' });
     expect(reachedPlacement).toBe(true);
     const core = openCoreDb(f.dataRoot);
-    const owned = readRecoveryAdmission(core, f.requestId)!;
+    const owned = readRecoveryExecution(core, f.requestId)!;
     expect(owned.state).toBe('prepared');
     const gate = new WorkspaceMutationAdmission();
     const otherGate = new WorkspaceMutationAdmission();
@@ -2151,7 +2151,7 @@ describe('D0-2 same-deployment restore', () => {
       expect(rows(candidateScope.path, 'control_workspaces')).toEqual(candidateBefore);
       expect(rows(canonicalScope.path, 'control_workspaces')).toEqual(canonicalBefore);
       expect(rows(canonicalScope.path, 'control_threads')).toEqual(threadsBefore);
-      expect(readRecoveryAdmission(core, f.requestId)).toEqual(owned);
+      expect(readRecoveryExecution(core, f.requestId)).toEqual(owned);
     } finally {
       frozen.release();
       other.release();
@@ -2849,7 +2849,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
       currentAuthority();
       const report = await admitWorkspaceBackupAtCore(owner, f.input);
       expect(report).toMatchObject({ disposition: 'restored', workspaceId });
-      const finished = readRecoveryAdmission(core, f.requestId);
+      const finished = readRecoveryExecution(core, f.requestId);
       expect(finished?.state).toBe('finished');
       const failures = scopeAdmissionFailures(f.dataRoot);
       const sibling = f.store.getWorkspace(f.sibling.id);
@@ -2909,7 +2909,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
         expect(() => f.store.getWorkspace(workspaceId)).toThrow();
         expect(f.runtimeConfigManager.current()).toBe(previous);
-        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
         expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
         expect(f.store.getWorkspace(f.sibling.id)).toEqual(sibling);
 
@@ -2919,7 +2919,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
         releaseInspect();
         const result = await outcome;
         expect(settled).toBe(true);
-        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
         expect(f.store.getWorkspace(f.sibling.id)).toEqual(sibling);
         if (fault === 'current-owner') {
           expect(result.status).toBe('fulfilled');
@@ -3310,7 +3310,7 @@ describe('Q05 live selected recovery inspection policy', () => {
       // Restart only its physical native hosts, as the existing lost-reply case does.
       await shutdownControlStoreWorkerClient();
       const core = f.owner.core;
-      const before = readRecoveryAdmission(core, f.requestId)!;
+      const before = readRecoveryExecution(core, f.requestId)!;
       const canonical = workspaceDbPath(f.dataRoot, workspaceId);
       const placed = interruption === 'after-target-rename';
       const selectedRoot = existsSync(before.candidate_ref)
@@ -3410,7 +3410,7 @@ describe('Q05 live selected recovery inspection policy', () => {
           selection,
           nextAction: 'none',
         });
-        const finished = readRecoveryAdmission(core, f.requestId)!;
+        const finished = readRecoveryExecution(core, f.requestId)!;
         expect(finished).toMatchObject({
           admission_id: before.admission_id,
           workspace_id: workspaceId,
@@ -3501,7 +3501,7 @@ describe('Q05 live selected recovery inspection policy', () => {
             expectedRelease: f.manifest.release,
           })
         ).resolves.toEqual(result);
-        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
         expect(recoveryInspectionObservation.posts).toHaveLength(1);
       } finally {
         main.stop();

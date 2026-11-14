@@ -942,20 +942,6 @@ CREATE TABLE `workspace_members` (
   )
 );
 --> statement-breakpoint
-CREATE TABLE `workspace_recovery_admissions` (
-  `schema_version` integer NOT NULL DEFAULT 1 CHECK (`schema_version` = 1),
-  `admission_id` text PRIMARY KEY NOT NULL,
-  `backup_id` text NOT NULL,
-  `workspace_id` text NOT NULL,
-  `purpose` text NOT NULL CHECK (`purpose` IN ('backup', 'move')),
-  `state` text NOT NULL CHECK (`state` IN ('prepared', 'finished', 'abandoned')),
-  `revision` integer NOT NULL DEFAULT 1 CHECK (`revision` > 0),
-  `created_at` text NOT NULL,
-  `updated_at` text NOT NULL,
-  `candidate_ref` text NOT NULL,
-  `proof_json` text NOT NULL CHECK (json_valid(`proof_json`))
-);
---> statement-breakpoint
 CREATE TABLE "workspace_registry" (
   `workspace_id` text PRIMARY KEY NOT NULL,
   `owner_user_id` text NOT NULL,
@@ -1004,6 +990,13 @@ CREATE INDEX `command_log_external_queue_idx` ON `idempotency_requests` (respons
   WHERE command_name = 'scheduler.external-trigger.admit';
 --> statement-breakpoint
 CREATE INDEX `command_receipts_pending_target_idx` ON `idempotency_requests` (coalesce(json_extract(scope_json,'$.approvalRequestId'),json_extract(scope_json,'$.userInputRequestId'),json_extract(scope_json,'$.pendingRequestId')));
+--> statement-breakpoint
+CREATE INDEX `control_executions_recovery_scope_idx` ON `control_executions` (`work_id`, `phase`)
+WHERE `definition_version` = 'core-workspace-recovery/v1';
+--> statement-breakpoint
+CREATE UNIQUE INDEX `control_execution_steps_recovery_stage_idx`
+ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.requestId'), json_extract(`invocation_json`, '$.carriage.sequence'))
+WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-workspace-recovery/v1';
 --> statement-breakpoint
 CREATE UNIQUE INDEX `control_execution_steps_harness_consumption_idx`
 ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'), json_extract(`invocation_json`, '$.carriage.requestId'), json_extract(`invocation_json`, '$.carriage.sequence'))

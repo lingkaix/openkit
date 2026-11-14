@@ -52,11 +52,11 @@ import { parseWorkspaceBackupSeal } from './workspace-backup-bundle.js';
 import { inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import { abandonWorkspaceCaptureAtCore, finishWorkspaceCaptureAtCore } from './workspace-move.js';
-import {
-  readRecoveryAdmission,
-  resumeWorkspaceCaptureOwner,
-} from './workspace-recovery-admissions.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  readRecoveryExecution,
+  resumeWorkspaceCaptureOwner,
+} from './workspace-recovery-journal.js';
 
 const roots: string[] = [];
 const handles: (CoreDb | WorkspaceDb)[] = [];
@@ -147,7 +147,7 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
         movedOut?: { backupId: string; manifestDigest: string };
       },
       pin: inspectCapture(db, workspaceId, backupId),
-      core: readRecoveryAdmission(coreDb, backupId),
+      core: readRecoveryExecution(coreDb, backupId),
       audit: listWorkspaceAuditEvents(db, workspaceId).filter(
         (event) => event.action === 'workspace.move-out'
       ),
@@ -257,7 +257,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(finished.core);
+      expect(readRecoveryExecution(reopened, f.backupId)).toEqual(finished.core);
     } finally {
       f.freeze.release();
     }
@@ -300,7 +300,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(finished.core);
+      expect(readRecoveryExecution(reopened, f.backupId)).toEqual(finished.core);
     } finally {
       f.freeze.release();
     }
@@ -643,7 +643,7 @@ describe('exact live source capture finalization', () => {
         f.owned.coreDb.sqlite.close();
         const reopened = openCoreDb(f.dataRoot);
         handles.push(reopened);
-        expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(retained.core);
+        expect(readRecoveryExecution(reopened, f.backupId)).toEqual(retained.core);
         expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
         if (stage !== 'source-abandon-final') {
           const coldAdmission = new WorkspaceMutationAdmission();
@@ -691,7 +691,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toBeUndefined();
+      expect(readRecoveryExecution(reopened, f.backupId)).toBeUndefined();
       const coldAdmission = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(f.workspaceId)).toBeNull();
@@ -752,7 +752,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(before.core);
+      expect(readRecoveryExecution(reopened, f.backupId)).toEqual(before.core);
       const coldAdmission = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(f.workspaceId)).toBeNull();
@@ -854,7 +854,7 @@ describe('exact live source capture finalization', () => {
         f.owned.coreDb.sqlite.close();
         const reopened = openCoreDb(f.dataRoot);
         handles.push(reopened);
-        expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(failed.core);
+        expect(readRecoveryExecution(reopened, f.backupId)).toEqual(failed.core);
       } finally {
         if (f.owned.coreDb.sqlite.open)
           f.owned.coreDb.sqlite.exec('DROP TRIGGER IF EXISTS refuse_source_report');

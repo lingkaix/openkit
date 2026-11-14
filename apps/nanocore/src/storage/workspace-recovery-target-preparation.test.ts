@@ -1,6 +1,7 @@
 // openkit-test-platform: posix
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -8,6 +9,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -25,6 +27,7 @@ import {
 } from '../auth/access-token-store.js';
 import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
+import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -44,9 +47,11 @@ import { nativeProductScope } from './workspace-file-records.js';
 import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
-  endRecoveryAdmission,
-  readRecoveryAdmission,
-} from './workspace-recovery-admissions.js';
+  finishRecoveryExecution,
+  readRecoveryExecution,
+  resumeWorkspaceRecoveryOwner,
+  unresolvedRecoveryExecutions,
+} from './workspace-recovery-journal.js';
 import {
   abandonWorkspaceRecoveryAtCore,
   admitWorkspaceBackupAtCore,
@@ -198,7 +203,7 @@ function selection(f: Awaited<ReturnType<typeof fixture>>) {
 /** Compares closed physical states through the original current native recovery binding. */
 async function closeCanonicalAtBoundary(
   f: Awaited<ReturnType<typeof fixture>>,
-  owned: NonNullable<ReturnType<typeof readRecoveryAdmission>>,
+  owned: NonNullable<ReturnType<typeof readRecoveryExecution>>,
   currentAuthority = f.owner.currentAuthority
 ) {
   currentAuthority();
@@ -228,7 +233,7 @@ async function partialPreparation(f: Awaited<ReturnType<typeof fixture>>) {
   } finally {
     cleanup.mockRestore();
   }
-  const owned = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+  const owned = readRecoveryExecution(f.owner.core, f.input.requestId)!;
   expect(owned).toMatchObject({ state: 'prepared', revision: 1 });
   expect(owned.proof.candidateDigest).toBeUndefined();
   // Candidate safety used a readonly canonical source. Its WAL/SHM lifetime is
@@ -324,7 +329,7 @@ describe('Target admission original preparation boundaries', () => {
     // Preserve an unexpected producer exception and its actual owner stack.
     if (failure !== stopped) throw failure ?? new Error('Preparation returned before observation.');
     expect(placementReached).toBe(true);
-    const admission = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+    const admission = readRecoveryExecution(f.owner.core, f.input.requestId)!;
     expect(admission).toMatchObject({ state: 'prepared', revision: 1 });
     expect(admission.proof.input).toEqual(f.input);
     expect(admission.proof.manifest).toEqual(f.capture.manifest);
@@ -377,7 +382,7 @@ describe('Target admission original preparation boundaries', () => {
         closeFailure
       );
       expect(stages).not.toHaveBeenCalled();
-      expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
+      expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(owned);
       expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
       expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(true);
     } finally {
@@ -413,7 +418,7 @@ describe('Target admission original preparation boundaries', () => {
             // synchronously held after its actual proof COMMIT.
             await closeCanonicalAtBoundary(
               f,
-              readRecoveryAdmission(f.owner.core, f.input.requestId)!
+              readRecoveryExecution(f.owner.core, f.input.requestId)!
             );
             expect(
               inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))
@@ -448,7 +453,7 @@ describe('Target admission original preparation boundaries', () => {
         expect(Atomics.load(gate, 3)).toBe(2);
         expect(settled).toBe(false);
         expect(interception.replied).toBe(false);
-        const committed = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+        const committed = readRecoveryExecution(f.owner.core, f.input.requestId)!;
         expect(committed).toMatchObject({ state: 'prepared', revision: 1 });
         if (kind === 'prepare') expect(committed.proof.candidateDigest).toBeUndefined();
         else
@@ -462,7 +467,7 @@ describe('Target admission original preparation boundaries', () => {
         expect(await command).toHaveProperty('error');
         expect(nativeFailure).toMatchObject({ code: 'unavailable', commit: 'unknown' });
         expect(interception.replied).toBe(false);
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(committed);
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(committed);
         expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
           canonical
         );
@@ -479,7 +484,7 @@ describe('Target admission original preparation boundaries', () => {
           await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toMatchObject({
             code: 'recovery-required',
           });
-          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(committed);
+          expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(committed);
           await expect(
             abandonWorkspaceRecoveryAtCore(f.owner, selection(f))
           ).resolves.toMatchObject({
@@ -491,14 +496,14 @@ describe('Target admission original preparation boundaries', () => {
               disposition: 'restored',
             }
           );
-          const terminal = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+          const terminal = readRecoveryExecution(f.owner.core, f.input.requestId)!;
           const registry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
           await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject(
             {
               disposition: 'restored',
             }
           );
-          expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(terminal);
+          expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(terminal);
           expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
         }
       } finally {
@@ -532,7 +537,7 @@ describe('Target admission original preparation boundaries', () => {
       (failure: unknown) => failure
     );
     if (error !== stopped) throw error ?? new Error('Restricted preparation returned early.');
-    const owned = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+    const owned = readRecoveryExecution(f.owner.core, f.input.requestId)!;
     expect(owned).toMatchObject({ state: 'prepared', revision: 1 });
     expect(owned.proof.input).toEqual({ ...f.input, acknowledgeLostSafety: true });
     const restricted = owned.proof.result.restrictedRecovery;
@@ -562,7 +567,7 @@ describe('Target admission original preparation boundaries', () => {
     const calls = vi.spyOn(client, 'recoveryTargetPreparation');
     await expect(admitWorkspaceBackupAtCore(f.owner, f.input)).rejects.toBeInstanceOf(Error);
     expect(calls.mock.calls.filter(([, input]) => input.kind === 'prepare')).toHaveLength(1);
-    expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toBeUndefined();
+    expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toBeUndefined();
     expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
       source
@@ -584,17 +589,17 @@ describe('Target admission original preparation boundaries', () => {
     f.owner.core.sqlite.pragma('query_only = ON');
     const client = getControlStoreWorkerClient(f.owner.native.gate);
     const actual = client.recoveryTargetPreparation.bind(client);
-    let beforeProof: ReturnType<typeof readRecoveryAdmission>;
+    let beforeProof: ReturnType<typeof readRecoveryExecution>;
     const calls = vi
       .spyOn(client, 'recoveryTargetPreparation')
       .mockImplementation(async (...args) => {
         if (args[1].kind === 'proof')
-          beforeProof = readRecoveryAdmission(f.owner.core, f.input.requestId);
+          beforeProof = readRecoveryExecution(f.owner.core, f.input.requestId);
         return actual(...args);
       });
     await expect(admitWorkspaceBackupAtCore(f.owner, f.input)).rejects.toBeInstanceOf(Error);
     expect(calls.mock.calls.filter(([, input]) => input.kind === 'proof')).toHaveLength(1);
-    const owned = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+    const owned = readRecoveryExecution(f.owner.core, f.input.requestId)!;
     expect(beforeProof).toBeDefined();
     expect(owned).toEqual(beforeProof);
     expect(owned).toMatchObject({ state: 'prepared', revision: 1 });
@@ -612,11 +617,11 @@ describe('Target admission original preparation boundaries', () => {
     await expect(finishWorkspaceRecoveryAtCore(f.owner, selection(f))).rejects.toMatchObject({
       code: 'recovery-required',
     });
-    expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
+    expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(owned);
     await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
       disposition: 'abandoned',
     });
-    expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
+    expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toMatchObject({
       state: 'abandoned',
       revision: 2,
       proof: { result: { disposition: 'abandoned' } },
@@ -645,18 +650,18 @@ describe('Target admission original preparation boundaries', () => {
         .mockImplementation(async (...args) => {
           if (args[1].kind === 'abandon') {
             expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
-            expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
+            expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(owned);
           } else if (args[1].kind === 'abandon-result') {
             expect(existsSync(owned.candidate_ref)).toBe(false);
             expect(inventoryRegularFiles(join(dirname(owned.candidate_ref), 'abandoned'))).toEqual(
               candidate
             );
-            expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
+            expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toMatchObject({
               state: 'abandoned',
               revision: 2,
               proof: { result: { disposition: 'quarantined' } },
             });
-            expect(readRecoveryAdmission(f.owner.core, f.input.requestId)?.proof).toEqual(
+            expect(readRecoveryExecution(f.owner.core, f.input.requestId)?.proof).toEqual(
               owned.proof
             );
             expect(physical.completedDirectorySyncs).toEqual(
@@ -670,15 +675,15 @@ describe('Target admission original preparation boundaries', () => {
       );
       expect(publication.mock.calls.some(([, input]) => input.kind === kind)).toBe(true);
       if (kind === 'abandon') {
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(owned);
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(owned);
         expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
       } else {
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toMatchObject({
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toMatchObject({
           state: 'abandoned',
           revision: 2,
           proof: { result: { disposition: 'quarantined' } },
         });
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)?.proof).toEqual(owned.proof);
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)?.proof).toEqual(owned.proof);
         expect(existsSync(owned.candidate_ref)).toBe(false);
       }
       expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
@@ -694,7 +699,7 @@ describe('Target admission original preparation boundaries', () => {
       await expect(abandonWorkspaceRecoveryAtCore(f.owner, selection(f))).resolves.toMatchObject({
         disposition: 'abandoned',
       });
-      const terminal = readRecoveryAdmission(f.owner.core, f.input.requestId)!;
+      const terminal = readRecoveryExecution(f.owner.core, f.input.requestId)!;
       expect(terminal).toMatchObject({
         state: 'abandoned',
         revision: 2,
@@ -764,7 +769,7 @@ describe('Target admission original preparation boundaries', () => {
             if (kind === 'proof') {
               await closeCanonicalAtBoundary(
                 f,
-                readRecoveryAdmission(f.owner.core, f.input.requestId)!,
+                readRecoveryExecution(f.owner.core, f.input.requestId)!,
                 owner.currentAuthority
               );
               expect(
@@ -803,7 +808,7 @@ describe('Target admission original preparation boundaries', () => {
         expect(held).toBe(true);
         expect(settled).toBe(false);
         expect(selectedPosts()).toEqual([]);
-        const before = readRecoveryAdmission(f.owner.core, f.input.requestId);
+        const before = readRecoveryExecution(f.owner.core, f.input.requestId);
         if (kind === 'proof') {
           expect(before).toBeDefined();
           expect(
@@ -820,17 +825,17 @@ describe('Target admission original preparation boundaries', () => {
           else if (fault === 'freeze-released') owner.native.freeze.release();
           else {
             // Adversarial current fact through the existing Core terminal leaf, not a full physical abandon.
-            endRecoveryAdmission(writer, f.input.requestId, 'abandoned');
+            finishRecoveryExecution(writer, f.input.requestId, 'abandoned');
           }
         } finally {
           writer.sqlite.close();
         }
-        const expected = readRecoveryAdmission(f.owner.core, f.input.requestId);
+        const expected = readRecoveryExecution(f.owner.core, f.input.requestId);
         release();
         release = () => {};
         expect(await command).toHaveProperty('error');
         expect(selectedPosts()).toHaveLength(fault === 'freeze-released' ? 0 : 1);
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toEqual(expected);
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(expected);
         if (fault !== 'retained-row-abandoned') expect(expected).toEqual(before);
         expect(rows(scope.path, 'workspace_registry')).toEqual(registry);
         expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
@@ -897,7 +902,7 @@ describe('Target admission original preparation boundaries', () => {
               message.input?.kind === 'prepare'
           )
         ).toHaveLength(1);
-        expect(readRecoveryAdmission(f.owner.core, f.input.requestId)).toBeUndefined();
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toBeUndefined();
         expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
           source
         );
@@ -992,5 +997,184 @@ describe('Target admission original preparation boundaries', () => {
       publication.mockRestore();
       post.mockRestore();
     }
+  }, 120_000);
+});
+
+// ORACLE-STORE S6: exact recovery authority survives representation changes. Setup enters
+// the original native prepare/proof owners; no admission or proof is assembled by this oracle.
+describe('ORACLE S6 exact recovery authority', () => {
+  it.each(['request', 'revision', 'workspace', 'purpose', 'backup', 'candidate', 'proof'] as const)(
+    'refuses a changed %s before boot recovery can reacquire its exclusion',
+    async (field) => {
+      const f = await fixture();
+      const stop = new Error('Oracle stops only after the genuine complete proof commits.');
+      await expect(
+        admitWorkspaceBackupAtCore(f.owner, f.input, {
+          atBoundary(point) {
+            if (point === 'before-target-rename') throw stop;
+          },
+        })
+      ).rejects.toBe(stop);
+      const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
+      expect(original).toMatchObject({ state: 'prepared', revision: 1, purpose: 'backup' });
+      const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
+      const privateCandidate = inventoryRegularFiles(original.candidate_ref);
+      const bootGate = new WorkspaceMutationAdmission();
+      restoreWorkspaceRecoveryAdmission(f.owner.core, bootGate);
+      expect(bootGate.isClosed(f.input.workspaceId)).toBe(true);
+      expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
+      const changed = structuredClone(original);
+      if (field === 'request') Object.assign(changed, { admission_id: randomUUID() });
+      if (field === 'revision') Object.assign(changed, { revision: original.revision + 1 });
+      if (field === 'workspace') Object.assign(changed, { workspace_id: allocateEntityId('ws') });
+      if (field === 'purpose') Object.assign(changed, { purpose: 'move' });
+      if (field === 'backup') Object.assign(changed, { backup_id: allocateEntityId('wsbak') });
+      if (field === 'candidate')
+        Object.assign(changed, { candidate_ref: `${original.candidate_ref}-other` });
+      if (field === 'proof')
+        Object.assign(changed, { proof: { ...original.proof, candidateDigest: '0'.repeat(64) } });
+      const blockers = vi.fn(() => []);
+      expect(() =>
+        resumeWorkspaceRecoveryOwner(f.owner.core, changed, bootGate, blockers)
+      ).toThrow();
+      expect(blockers).not.toHaveBeenCalled();
+      expect(bootGate.isClosed(f.input.workspaceId)).toBe(true);
+      expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(original);
+      expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
+      // A positive control on the SAME boot state proves rejection was exactness, not an
+      // incapable fixture, missing scope failure, or a gate that can never resume.
+      const resumed = resumeWorkspaceRecoveryOwner(f.owner.core, original, bootGate, blockers);
+      expect(resumed.status).toBe('frozen');
+      expect(blockers).toHaveBeenCalledOnce();
+      if (resumed.status === 'frozen') resumed.release();
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
+        canonical
+      );
+      expect(inventoryRegularFiles(original.candidate_ref)).toEqual(privateCandidate);
+    },
+    120_000
+  );
+
+  it.each(['canonical', 'candidate'] as const)(
+    'refuses a replacement %s inode at the same path without ending recovery',
+    async (selected) => {
+      const f = await fixture();
+      const stop = new Error('Oracle observes real prepared recovery before placement.');
+      await expect(
+        admitWorkspaceBackupAtCore(f.owner, f.input, {
+          atBoundary(point) {
+            if (point === 'before-target-rename') throw stop;
+          },
+        })
+      ).rejects.toBe(stop);
+      const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
+      const bindings = bindWorkspaceRecoveryNativeOwner(
+        f.owner.core,
+        original,
+        f.owner.native.gate,
+        f.owner.native.freeze
+      );
+      const binding = bindings[selected];
+      if (!binding) throw new Error('The real selected physical binding is missing.');
+      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      await client.open(binding.binding.command, binding);
+      await client.close(binding.binding.command.database, binding);
+      const path = binding.binding.path;
+      const displaced = `${path}.oracle-original`;
+      const bytes = readFileSync(path);
+      const before = statSync(path);
+      renameSync(path, displaced);
+      copyFileSync(displaced, path);
+      try {
+        const after = statSync(path);
+        expect(before.dev !== after.dev || before.ino !== after.ino).toBe(true);
+        await expect(client.open(binding.binding.command, binding)).rejects.toBeInstanceOf(Error);
+        expect(readFileSync(path).equals(bytes)).toBe(true);
+        expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(original);
+        expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(
+          true
+        );
+        expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
+      } finally {
+        rmSync(path);
+        renameSync(displaced, path);
+      }
+    },
+    120_000
+  );
+  it('ORACLE S6 retains exact boot origin and refuses an unresolved blocker census', async () => {
+    const f = await fixture();
+    const stop = new Error('Observe the original prepared proof before placement.');
+    await expect(
+      admitWorkspaceBackupAtCore(f.owner, f.input, {
+        atBoundary(point) {
+          if (point === 'before-target-rename') throw stop;
+        },
+      })
+    ).rejects.toBe(stop);
+    const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
+    const gate = new WorkspaceMutationAdmission();
+    restoreWorkspaceRecoveryAdmission(f.owner.core, gate);
+    const origin = {
+      admissionId: original.admission_id,
+      revision: original.revision,
+      candidateRef: original.candidate_ref,
+    };
+    const inspect = vi.fn(() => []);
+    for (const changed of [
+      { ...origin, admissionId: randomUUID() },
+      { ...origin, revision: origin.revision + 1 },
+      { ...origin, candidateRef: `${origin.candidateRef}-other` },
+    ])
+      expect(gate.tryResumeRecovery(f.input.workspaceId, changed, inspect)).toEqual({
+        status: 'busy',
+      });
+    expect(inspect).not.toHaveBeenCalled();
+    const unavailable = {
+      kind: 'unavailable' as const,
+      reason: 'unavailable' as const,
+      actions: [],
+    };
+    expect(resumeWorkspaceRecoveryOwner(f.owner.core, original, gate, () => [unavailable])).toEqual(
+      { status: 'blocked', blockers: [unavailable] }
+    );
+    expect(gate.isClosed(f.input.workspaceId)).toBe(true);
+    expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
+    const exact = resumeWorkspaceRecoveryOwner(f.owner.core, original, gate, inspect);
+    expect(exact.status).toBe('frozen');
+    expect(inspect).toHaveBeenCalledOnce();
+    if (exact.status === 'frozen') exact.release();
+  }, 120_000);
+
+  it('ORACLE S6 commits original prepared recovery in the existing Core execution journal', async () => {
+    const f = await fixture();
+    const stop = new Error('Observe the original complete proof before placement.');
+    await expect(
+      admitWorkspaceBackupAtCore(f.owner, f.input, {
+        atBoundary(point) {
+          if (point === 'before-target-rename') throw stop;
+        },
+      })
+    ).rejects.toBe(stop);
+    const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
+    expect(original.proof.input).toEqual(f.input);
+    expect(original.state).toBe('prepared');
+    const roots = f.owner.core.sqlite
+      .prepare(
+        "SELECT id,phase,work_id FROM control_executions WHERE definition_version='core-workspace-recovery/v1'"
+      )
+      .all();
+    // S6 changes the durable owner, not the externally projected recovery revision.
+    // Do not equate the journal's per-step revision with the admission's revision.
+    expect(roots).toEqual([
+      expect.objectContaining({ phase: 'open', work_id: f.input.workspaceId }),
+    ]);
+    const root = roots[0] as { id: string };
+    expect(
+      f.owner.core.sqlite
+        .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=?')
+        .all(root.id).length
+    ).toBeGreaterThan(0);
+    expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(original);
   }, 120_000);
 });

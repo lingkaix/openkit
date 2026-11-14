@@ -28,6 +28,9 @@ export const controlExecutions = sqliteTable(
     spanJson: text('span_json').notNull(),
   },
   (table) => [
+    index('control_executions_recovery_scope_idx')
+      .on(table.workId, table.phase)
+      .where(sql`${table.definitionVersion} = 'core-workspace-recovery/v1'`),
     check('control_executions_version_check', sql`${table.schemaVersion} = 1`),
     check('control_executions_phase_check', sql`${table.phase} IN ('open', 'closing', 'closed')`),
     check(
@@ -83,6 +86,15 @@ export const controlExecutionSteps = sqliteTable(
       table.executionId,
       table.ordinal
     ),
+    // Core-only recovery stages retain a separate journal sequence from the original admission revision.
+    uniqueIndex('control_execution_steps_recovery_stage_idx')
+      .on(
+        sql`json_extract(${table.invocationJson}, '$.carriage.requestId')`,
+        sql`json_extract(${table.invocationJson}, '$.carriage.sequence')`
+      )
+      .where(
+        sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-workspace-recovery/v1'`
+      ),
     // Core-only receiver progress: one acknowledgement per exact binding and operation tuple.
     uniqueIndex('control_execution_steps_harness_consumption_idx')
       .on(

@@ -28,7 +28,7 @@ import {
   moveOutWorkspace,
   reactivateWorkspace,
 } from './workspace-move.js';
-import * as admissions from './workspace-recovery-admissions.js';
+import * as admissions from './workspace-recovery-journal.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const roots: string[] = [];

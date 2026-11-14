@@ -12,13 +12,13 @@ import { shutdownControlStoreWorkerClient } from './control-store-worker-client.
 import { type CoreDb, openCoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
-import {
-  prepareRecoveryAdmission,
-  type RecoveryProof,
-  readRecoveryAdmission,
-} from './workspace-recovery-admissions.js';
 import { runWorkspaceRecoveryCli } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  prepareRecoveryExecution,
+  type RecoveryProof,
+  readRecoveryExecution,
+} from './workspace-recovery-journal.js';
 
 let root: string;
 let core: CoreDb;
@@ -106,7 +106,7 @@ beforeAll(async () => {
   );
   expect(result.disposition).toBe('imported');
   core = openCoreDb(target);
-  const admitted = readRecoveryAdmission(core, requestId)!;
+  const admitted = readRecoveryExecution(core, requestId)!;
   original = structuredClone(admitted.proof);
   candidate = admitted.candidate_ref;
 }, 120_000);
@@ -169,15 +169,15 @@ describe('retained recovery admission intent', () => {
         }),
         requestId
       );
-    expect(readRecoveryAdmission(core, requestId)?.proof.input).toEqual(original.input);
-    expect(readRecoveryAdmission(core, requestId)?.proof.capture.manifestDigest).toBe(
+    expect(readRecoveryExecution(core, requestId)?.proof.input).toEqual(original.input);
+    expect(readRecoveryExecution(core, requestId)?.proof.capture.manifestDigest).toBe(
       original.capture.manifestDigest
     );
   });
 
   it.each(corruptions)('refuses retained %s before restart recovery', (_name, changed) => {
     retain({ ...original.input, ...changed });
-    refuses(() => readRecoveryAdmission(core, requestId));
+    refuses(() => readRecoveryExecution(core, requestId));
   });
 
   it('refuses two explicit sources that share the resolved target owner', () => {
@@ -190,7 +190,7 @@ describe('retained recovery admission intent', () => {
         { sourceAccountId: allocateEntityId('usr'), targetAccountId: input.targetOwnerId },
       ],
     });
-    refuses(() => readRecoveryAdmission(core, requestId));
+    refuses(() => readRecoveryExecution(core, requestId));
   });
 
   it('refuses a retained capture identity that contradicts the original manifest', () => {
@@ -203,7 +203,7 @@ describe('retained recovery admission intent', () => {
         }),
         requestId
       );
-    refuses(() => readRecoveryAdmission(core, requestId));
+    refuses(() => readRecoveryExecution(core, requestId));
   });
 
   it('refuses malformed intent before the existing writer persists ownership', () => {
@@ -216,7 +216,7 @@ describe('retained recovery admission intent', () => {
         ...original,
         input: { ...original.input, command: 'resume-with-grants' },
       } as unknown as RecoveryProof;
-      refuses(() => prepareRecoveryAdmission(core, requestId, candidate, proof));
+      refuses(() => prepareRecoveryExecution(core, requestId, candidate, proof));
       expect(
         core.sqlite
           .prepare('SELECT 1 FROM workspace_recovery_admissions WHERE admission_id=?')

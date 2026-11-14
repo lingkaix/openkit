@@ -81,20 +81,6 @@ import {
   type WorkspaceRecoveryDependencies,
   type WorkspaceRecoverySelectedInput,
 } from './workspace-move.js';
-import {
-  bindWorkspaceRecoveryNativeOwner,
-  openRecoveryDatabase,
-  type RecoveryAdmission,
-  type RecoveryProof,
-  readRecoveryAdmission,
-  readWorkspaceRecoveryReadmission,
-  recoveryReport,
-  refuseRecovery,
-  resumeWorkspaceCaptureOwner,
-  resumeWorkspaceRecoveryOwner,
-  withRecoveryRoot,
-  workspaceRecoveryPredecessorRoot,
-} from './workspace-recovery-admissions.js';
 import type {
   WorkspaceRecoveryCliArgs,
   WorkspaceRecoveryCliReport,
@@ -103,6 +89,22 @@ import {
   WorkspaceRecoveryError,
   type WorkspaceRecoveryErrorCode,
 } from './workspace-recovery-error.js';
+import {
+  bindWorkspaceRecoveryNativeOwner,
+  listRecoveryExecutions,
+  openRecoveryDatabase,
+  publishRecoveryProof,
+  type RecoveryExecution,
+  type RecoveryProof,
+  readRecoveryExecution,
+  readWorkspaceRecoveryReadmission,
+  recoveryReport,
+  refuseRecovery,
+  resumeWorkspaceCaptureOwner,
+  resumeWorkspaceRecoveryOwner,
+  withRecoveryRoot,
+  workspaceRecoveryPredecessorRoot,
+} from './workspace-recovery-journal.js';
 import type {
   ControlRecoveryTargetPreparationInput,
   ControlRecoveryTargetRegistrationInput,
@@ -179,7 +181,7 @@ function requestIdentity(input: TargetArgs) {
 /** Publishes a proved candidate before one Core registration/result transaction; failure retains ownership. */
 async function finishTarget(
   owner: TargetCoreOwner,
-  owned: RecoveryAdmission,
+  owned: RecoveryExecution,
   deps: WorkspaceRecoveryDependencies,
   expectedRelease?: WorkspaceBackupManifest['release']
 ): Promise<WorkspaceRecoveryCliReport> {
@@ -259,7 +261,7 @@ async function finishTarget(
 /** Checks the exact retained target on private bytes without acquiring a published Main writer. */
 async function inspectSelectedTarget(
   owner: TargetCoreOwner,
-  owned: RecoveryAdmission,
+  owned: RecoveryExecution,
   candidate: string,
   inventory: ReturnType<typeof inventoryRegularFiles>
 ): Promise<void> {
@@ -430,52 +432,13 @@ async function publishTargetProofStage(
   proof: RecoveryProof
 ): Promise<void> {
   assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
-  const root = `${resolve(owner.core.dataRoot)}.workspace-recovery-${input.admissionId}`;
-  ensureCanonicalDirectory(root);
-  const bytes = Buffer.from(JSON.stringify(proof), 'utf8');
-  if (bytes.length > WORKSPACE_BACKUP_MAX_FILE_BYTES)
-    throw new WorkspaceBackupBundleError('invalid-bundle');
-  const name = `.proof-${randomUUID()}.json`;
-  const destinationPath = join(root, name);
   const admission =
     owner.fileAdmission ?? new FileStorageAdmission(owner.core.dataRoot, () => 1_000_000_000n);
-  const reservation = admission.forPath(root).reserve({
-    stagingBytes: BigInt(bytes.length),
-    extractionBytes: 0n,
-    derivativeBytes: 0n,
-    publicationBytes: 0n,
-  });
-  let published = false;
-  let result: { ok: true } | { ok: false; error: unknown };
-  try {
-    assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
-    reservation.assertAvailable();
-    const file = await publishDurableFile({ destinationPath, bytes });
-    published = true;
-    reservation.recordWritten(file.bytes);
-    assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
-    await withTargetCore(owner, input.workspaceId, (client, database) =>
-      client.recoveryTargetPreparation(
-        database,
-        {
-          ...input,
-          file: { name, byteLength: file.bytes, digest: file.sha256 },
-        },
-        owner.native?.freeze
-      )
-    );
-    result = { ok: true };
-  } catch (error) {
-    result = { ok: false, error };
-  }
-  try {
-    if (published) await removeDurableFile({ destinationPath });
-  } catch (error) {
-    if (result.ok) result = { ok: false, error };
-  } finally {
-    reservation.release();
-  }
-  if (!result.ok) throw result.error;
+  const file = await publishRecoveryProof(owner.core.dataRoot, proof, admission);
+  assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
+  await withTargetCore(owner, input.workspaceId, (client, database) =>
+    client.recoveryTargetPreparation(database, { ...input, file }, owner.native?.freeze)
+  );
   assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
 }
 
@@ -597,8 +560,8 @@ export function activateWorkspaceRecoveryAtCore(
 function originalTargetRequest(
   core: CoreDb,
   input: WorkspaceTargetRecoveryInput
-): RecoveryAdmission | undefined {
-  const previous = readRecoveryAdmission(core, input.requestId);
+): RecoveryExecution | undefined {
+  const previous = readRecoveryExecution(core, input.requestId);
   if (previous) {
     if (
       input.snapshotSource?.source.kind === 'local-snapshot' &&
@@ -664,11 +627,11 @@ async function admitTarget(
   assertTargetRecoveryOwner(owner, input.dataRoot, workspaceId);
   const final = join(input.dataRoot, 'workspaces', workspaceId);
   if (
-    core.sqlite
-      .prepare(
-        "SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=? AND (state='prepared' OR (state='abandoned' AND json_extract(proof_json,'$.result.disposition')!='abandoned'))"
-      )
-      .get(workspaceId)
+    listRecoveryExecutions(core, workspaceId).some(
+      (row) =>
+        row.state === 'prepared' ||
+        (row.state === 'abandoned' && row.proof.result.disposition !== 'abandoned')
+    )
   )
     refuseRecovery('recovery-required');
   const registered = core.sqlite
@@ -689,11 +652,9 @@ async function admitTarget(
   } else if (
     registered ||
     existsSync(final) ||
-    core.sqlite
-      .prepare(
-        "SELECT 1 FROM workspace_recovery_admissions WHERE workspace_id=? AND NOT (state='abandoned' AND json_extract(proof_json,'$.result.disposition')='abandoned')"
-      )
-      .get(workspaceId)
+    listRecoveryExecutions(core, workspaceId).some(
+      (row) => row.state !== 'abandoned' || row.proof.result.disposition !== 'abandoned'
+    )
   )
     refuseRecovery('identity-collision');
   // Fresh invalid maps are input refusals, not corrupt retained ownership.
@@ -739,7 +700,7 @@ async function admitTarget(
       result,
     }
   );
-  const owned = readRecoveryAdmission(core, input.requestId)!;
+  const owned = readRecoveryExecution(core, input.requestId)!;
   const map = mapping(core, input, owned.proof.manifest, owned.proof.capture.manifestDigest);
   const previousProofHash = commandInputHash(owned.proof);
   const digest = await bindTargetCandidate(core, owned, map, owner);
@@ -836,7 +797,7 @@ async function abandonSelectedTarget(
       await client.close(binding.binding.command.database, binding);
       assertTargetRecoveryOwner(owner, core.dataRoot, input.workspaceId);
     }
-    if (!isDeepStrictEqual(readRecoveryAdmission(core, owned.admission_id), owned))
+    if (!isDeepStrictEqual(readRecoveryExecution(core, owned.admission_id), owned))
       refuseRecovery('recovery-required');
   }
   await withTargetCore(owner, input.workspaceId, (client, database) =>
@@ -852,7 +813,7 @@ async function abandonSelectedTarget(
     )
   );
   assertTargetRecoveryOwner(owner, core.dataRoot, input.workspaceId);
-  const closed = readRecoveryAdmission(core, owned.admission_id)!;
+  const closed = readRecoveryExecution(core, owned.admission_id)!;
   const final = join(input.dataRoot, 'workspaces', input.workspaceId);
   const retired = join(dirname(owned.candidate_ref), 'abandoned');
   const candidate =
@@ -894,7 +855,7 @@ async function abandonSelectedTarget(
 /** Applies current safety and target bindings only to privately owned, already verified bytes. */
 async function bindTargetCandidate(
   core: CoreDb,
-  owned: RecoveryAdmission,
+  owned: RecoveryExecution,
   map: ReturnType<typeof mapping>,
   admitted: TargetRecoveryOwner
 ): Promise<string> {
@@ -1356,7 +1317,7 @@ export function createWorkspaceRestoreOperationImplementations(
         const facts = readWorkspaceCaptureRecoveryAtCore(owned.coreDb, selected);
         const state = facts.capture;
         const current = facts;
-        const retained = readRecoveryAdmission(owned.coreDb, input.selection.backupId);
+        const retained = readRecoveryExecution(owned.coreDb, input.selection.backupId);
         if (retained)
           return WorkspaceSnapshotReportSchema.parse(
             inspectWorkspaceRecoveryAtCore(owned.coreDb, selected, {
@@ -1553,7 +1514,7 @@ export function createWorkspaceRestoreOperationImplementations(
           });
           return WorkspaceSnapshotReportSchema.parse(report);
         } catch (error) {
-          const current = readRecoveryAdmission(owned.coreDb, input.requestId);
+          const current = readRecoveryExecution(owned.coreDb, input.requestId);
           if (
             current &&
             current.workspace_id === input.workspaceId &&
