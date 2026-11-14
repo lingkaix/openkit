@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +8,13 @@ import { build } from 'esbuild';
 /** Compile the real native Worker once per invocation, before any test starts its clock. */
 export default async function setup() {
   const appRoot = fileURLToPath(new URL('.', import.meta.url));
+  // Real native credential clients execute the repo-built CLI, not the Core bundle.
+  // Use its normal producer (and dependency graph) before any fixture starts its clock.
+  execFileSync(
+    'pnpm',
+    ['exec', 'turbo', 'run', 'build', '--filter=@openkit/worker-shim', '--output-logs=errors-only'],
+    { cwd: join(appRoot, '../..'), stdio: 'inherit' }
+  );
   const root = join(tmpdir(), 'nanocore-worker');
   mkdirSync(root);
   // Preserve compiled-runtime dependency and asset resolution without copying retained test data.
