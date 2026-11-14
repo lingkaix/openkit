@@ -335,13 +335,15 @@ CREATE TABLE notification_attention (
   id TEXT PRIMARY KEY NOT NULL,
   workspace_id TEXT NOT NULL,
   thread_id TEXT NOT NULL,
-  source_kind TEXT NOT NULL CHECK (source_kind IN ('approval-request', 'user-input-request')),
+  source_kind TEXT NOT NULL CHECK (source_kind IN ('approval-request', 'user-input-request', 'security-notice')),
   request_id TEXT NOT NULL,
   recipient_user_id TEXT NOT NULL,
   channel TEXT,
   created_at TEXT NOT NULL,
   UNIQUE (workspace_id, thread_id, source_kind, request_id, recipient_user_id)
 );
+--> statement-breakpoint
+CREATE UNIQUE INDEX notification_security_notice ON notification_attention(request_id) WHERE source_kind = 'security-notice';
 --> statement-breakpoint
 CREATE TABLE notification_delivery_attempts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -572,7 +574,9 @@ CREATE TABLE `security_trigger_outbox` (
   `occurrence_kind` text NOT NULL CHECK (`occurrence_kind` IN ('initial','reopen','reminder','renotice','conflict')),
   `occurrence_n` integer NOT NULL CHECK (`occurrence_n` BETWEEN 1 AND 9007199254740991),
   `raised` integer DEFAULT 0 NOT NULL CHECK (`raised` IN (0,1)),
-  `created_at` text NOT NULL
+  `attention_id` text REFERENCES notification_attention(id),
+  `created_at` text NOT NULL,
+  CHECK ((`raised` = 0 AND `attention_id` IS NULL) OR (`raised` = 1 AND `attention_id` IS NOT NULL))
 );
 --> statement-breakpoint
 CREATE TABLE `security_trigger_state` (

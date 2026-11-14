@@ -17,7 +17,7 @@ export const NotificationDeliverySchema = z.object({
     workspaceId: WorkspaceIdSchema,
     threadId: ThreadIdSchema,
     requestId: z.union([ApprovalRequestIdSchema, UserInputRequestIdSchema]),
-    kind: z.enum(['approval-request', 'user-input-request']),
+    kind: z.enum(['approval-request', 'user-input-request', 'security-notice']),
   }),
   recipientUserId: UserIdSchema,
   channel: z.enum(['discord', 'email']).nullable(),

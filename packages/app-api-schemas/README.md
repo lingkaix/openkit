@@ -1,5 +1,7 @@
 # @openkit/app-api-schemas
 
+Notification read schemas recognize the durable `security-notice` source reference. This structural tag grants no send or answer authority; current recipient, source, audience and channel admission remain with NanoCore.
+
 `vault.binding-deliver` returns the existing realized-protection receipt for a file binding or the existing `WorkspaceVaultInjectionReceipt` for completed access-only delivery. Both results contain metadata only. Token delivery does not claim file protection, and this response projection supplies no native readiness, credential authority or Thread activation proof.
 
 `thread.item-body` reads one complete original Item by a strict Workspace/Thread/Turn/Item selector. NanoCore checks the addressed Thread and the Item source independently. The body response is an explicit complete-body read and does not use the timeline preview budget.

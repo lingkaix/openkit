@@ -18,6 +18,12 @@ import {
 import { getLocalUserId } from '../auth/identity.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import {
+  type AttentionDelivery,
+  AttentionNotifications,
+  enqueueAttentionInDb,
+} from '../notifications/attention.js';
+import { AttentionError } from '../notifications/attention-error.js';
+import {
   type SecurityItemKey,
   securityRequestId,
   securityThreadId,
@@ -31,6 +37,7 @@ import {
 import {
   type ControlSecurityTrigger,
   type ControlSecurityTriggerResult,
+  type SecurityAlarmNotice,
   type SecurityAlarmRow,
   SecurityAlarmRowSchema,
   type SecurityAuditAction,
@@ -291,7 +298,7 @@ function snapshot(db: CoreDb, view: View, now: Date): SecurityTriggerSnapshot {
 
 const outboxColumns = `schema_version AS schemaVersion,request_id AS requestId,
   alarm_id AS alarmId,key_json AS keyJson,recipient_user_id AS recipientUserId,
-  occurrence_kind AS occurrenceKind,occurrence_n AS occurrenceN,raised`;
+  occurrence_kind AS occurrenceKind,occurrence_n AS occurrenceN,raised,attention_id AS attentionId`;
 function readAlarmRow(
   db: CoreDb,
   raw: unknown,
@@ -330,6 +337,7 @@ function readAlarmRow(
       }) !== value.requestId
     )
       recovery();
+    noticeAttention(db, value, row.attentionId);
     return value;
   });
 }
@@ -348,6 +356,103 @@ function readAlarmRequest(db: CoreDb, requestId: string): SecurityAlarmRow {
     .get(requestId);
   if (!raw) recovery();
   return readAlarmRow(db, raw);
+}
+
+/** Checks the original Attention owner and exact one-to-one notice progress without adopting a row. */
+function noticeAttention(
+  db: CoreDb,
+  source: Pick<SecurityAlarmRow, 'requestId' | 'recipientUserId' | 'raised'>,
+  attentionId: unknown
+): AttentionDelivery | null {
+  const count = db.sqlite
+    .prepare(`SELECT COUNT(*) AS total FROM notification_attention
+    WHERE source_kind='security-notice' AND request_id=?`)
+    .get(source.requestId) as { total: number };
+  if (!source.raised) {
+    if (attentionId !== null || count.total !== 0) recovery();
+    return null;
+  }
+  if (typeof attentionId !== 'string' || count.total !== 1) recovery();
+  let attention: AttentionDelivery | null;
+  try {
+    attention = new AttentionNotifications(db.sqlite).get(attentionId);
+  } catch (error) {
+    if (error instanceof AttentionError) recovery();
+    throw error;
+  }
+  if (
+    !attention ||
+    attention.source.kind !== 'security-notice' ||
+    attention.source.requestId !== source.requestId ||
+    attention.recipientUserId !== source.recipientUserId
+  )
+    recovery();
+  return attention;
+}
+
+/** Stored Core progress joins its original ready destination; it is not Workspace publication proof. */
+function readAlarmNotice(db: CoreDb, requestId: string): SecurityAlarmNotice | null {
+  readState(db);
+  const source = readAlarmRequest(db, requestId);
+  const row = db.sqlite
+    .prepare('SELECT attention_id AS attentionId FROM security_trigger_outbox WHERE request_id=?')
+    .get(requestId) as { attentionId: unknown };
+  const attention = noticeAttention(db, source, row.attentionId);
+  if (!attention) return null;
+  const destination = readDestination(db, attention.source.threadId);
+  if (
+    !destination ||
+    destination.status !== 'ready' ||
+    destination.workspaceId !== attention.source.workspaceId ||
+    destination.recipientUserId !== source.recipientUserId
+  )
+    recovery();
+  return { ...source, raised: true, generation: destination.generation, attention };
+}
+
+/** The real publication composer calls this only after its complete original Workspace ACK/join. */
+function markAlarmAndEnqueue(
+  db: CoreDb,
+  requestId: string,
+  threadId: string,
+  now: Date
+): ControlSecurityTriggerResult {
+  readState(db);
+  const source = readAlarmRequest(db, requestId);
+  const destination = readDestination(db, threadId);
+  if (
+    !destination ||
+    destination.status !== 'ready' ||
+    destination.recipientUserId !== source.recipientUserId ||
+    assertDestinationRecipient(db, source.recipientUserId, now) !== destination.workspaceId
+  )
+    recovery();
+  if (source.raised) {
+    const notice = readAlarmNotice(db, requestId);
+    if (!notice || notice.attention.source.threadId !== threadId) recovery();
+    return { kind: 'alarm-notice', notice };
+  }
+  const attention = enqueueAttentionInDb(
+    db.sqlite,
+    {
+      source: {
+        kind: 'security-notice',
+        workspaceId: destination.workspaceId,
+        threadId,
+        requestId,
+      },
+      recipientUserId: source.recipientUserId,
+    },
+    () => now.toISOString()
+  );
+  const changed = db.sqlite
+    .prepare(`UPDATE security_trigger_outbox SET raised=1,attention_id=?
+    WHERE request_id=? AND raised=0 AND attention_id IS NULL`)
+    .run(attention.id, requestId);
+  if (changed.changes !== 1) throw new ControlProductPreconditionError();
+  const notice = readAlarmNotice(db, requestId);
+  if (!notice) recovery();
+  return { kind: 'alarm-notice', notice };
 }
 
 const ProgressRecord = z
@@ -613,6 +718,7 @@ function readEventOutbox(db: CoreDb): SecurityEventOutboxRow[] {
         }) !== value.requestId
       )
         recovery();
+      noticeAttention(db, value, row.attentionId);
       return value;
     })
   );
@@ -770,7 +876,7 @@ function reserveDestination(
   now: Date
 ): ControlSecurityTriggerResult {
   const source = readAlarmRequest(db, requestId);
-  if (source.raised) throw new SecurityTriggerRefusal('forbidden');
+  const notice = source.raised ? readAlarmNotice(db, requestId) : null;
   const workspaceId = assertDestinationRecipient(db, source.recipientUserId, now);
   const raw = db.sqlite
     .prepare(`SELECT ${destinationColumns} FROM security_thread_destinations
@@ -778,9 +884,17 @@ function reserveDestination(
     .get(source.recipientUserId);
   if (raw) {
     const destination = readDestinationRow(db, raw);
-    if (destination.workspaceId !== workspaceId) recovery();
+    if (
+      destination.workspaceId !== workspaceId ||
+      (source.raised &&
+        (!notice ||
+          destination.status !== 'ready' ||
+          notice.attention.source.threadId !== destination.threadId))
+    )
+      recovery();
     return { kind: 'destination', destination, fresh: false };
   }
+  if (source.raised) recovery();
   // This subcut allocates only the initial generation. Archive rollover belongs to the later Raise.
   const generation = 1;
   const threadId = securityThreadId(source.recipientUserId, generation);
@@ -845,6 +959,10 @@ export function applySecurityTriggerInDb(
   if (input.action === 'alarms') return { kind: 'alarms', rows: readAlarmRows(db) };
   if (input.action === 'alarm-read')
     return { kind: 'alarm', row: readAlarmRequest(db, input.requestId) };
+  if (input.action === 'alarm-notice-read')
+    return { kind: 'alarm-notice', notice: readAlarmNotice(db, input.requestId) };
+  if (input.action === 'alarm-mark-enqueue')
+    return markAlarmAndEnqueue(db, input.requestId, input.threadId, now);
   if (input.action === 'destination-read')
     return { kind: 'destination-read', destination: readDestination(db, input.threadId) };
   if (input.action === 'destination-reserve') return reserveDestination(db, input.requestId, now);

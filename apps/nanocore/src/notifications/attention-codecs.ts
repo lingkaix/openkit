@@ -27,7 +27,7 @@ const SourceSchema = z
   .object({
     workspaceId: z.string().refine(isWorkspaceId),
     threadId: z.string().refine(isThreadId),
-    kind: z.enum(['approval-request', 'user-input-request']),
+    kind: z.enum(['approval-request', 'user-input-request', 'security-notice']),
     requestId: z.union([ApprovalRequestIdSchema, UserInputRequestIdSchema]),
   })
   .strict();
@@ -114,9 +114,13 @@ export const AttentionReconciliationResultSchema = z.discriminatedUnion('status'
 export type AttentionReconciliation = z.infer<typeof AttentionReconciliationSchema>;
 export type AttentionReconciliationResult = z.infer<typeof AttentionReconciliationResultSchema>;
 
-/** Original complete source/recipient enqueue input, with no request-identity size limit. */
+/** Generic Pending Request enqueue; native security notices enter only with their outbox commit. */
 export const AttentionEnqueueSchema = z
-  .object({ source: SourceSchema, recipientUserId: z.string().refine(isUserId) })
+  .object({
+    // Security notices enter only through their original native outbox transaction.
+    source: SourceSchema.extend({ kind: z.enum(['approval-request', 'user-input-request']) }),
+    recipientUserId: z.string().refine(isUserId),
+  })
   .strict();
 
 /** Prepared clock is consumed at the original INSERT argument inside whole-operation rollback. */

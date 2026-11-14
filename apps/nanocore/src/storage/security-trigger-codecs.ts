@@ -9,6 +9,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { AttentionDeliverySchema } from '../notifications/attention-codecs.js';
 import { SecurityThreadDestinationSchema } from './security-thread-destination-codecs.js';
 
 const Counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -61,6 +62,14 @@ export const SecurityAlarmRowSchema = z
   })
   .strict();
 export type SecurityAlarmRow = z.infer<typeof SecurityAlarmRowSchema>;
+
+/** Stored notice progress; current admission and original publication remain separate owners. */
+export const SecurityAlarmNoticeSchema = SecurityAlarmRowSchema.extend({
+  raised: z.literal(true),
+  generation: PositiveCounter,
+  attention: AttentionDeliverySchema,
+}).strict();
+export type SecurityAlarmNotice = z.infer<typeof SecurityAlarmNoticeSchema>;
 
 export const SecurityAuditActionSchema = z.enum([
   'auth.token.issue',
@@ -172,6 +181,14 @@ export const ControlSecurityTriggerSchema = z.discriminatedUnion('action', [
     .strict(),
   z.object({ action: z.literal('event-outbox') }).strict(),
   z.object({ action: z.literal('alarm-read'), requestId: z.string().uuid() }).strict(),
+  z.object({ action: z.literal('alarm-notice-read'), requestId: z.string().uuid() }).strict(),
+  z
+    .object({
+      action: z.literal('alarm-mark-enqueue'),
+      requestId: z.string().uuid(),
+      threadId: ThreadIdSchema,
+    })
+    .strict(),
   z.object({ action: z.literal('destination-reserve'), requestId: z.string().uuid() }).strict(),
   z.object({ action: z.literal('destination-read'), threadId: ThreadIdSchema }).strict(),
   z
@@ -224,6 +241,9 @@ export const ControlSecurityTriggerResultSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('alarm'), row: SecurityAlarmRowSchema }).strict(),
+  z
+    .object({ kind: z.literal('alarm-notice'), notice: SecurityAlarmNoticeSchema.nullable() })
+    .strict(),
   z
     .object({
       kind: z.literal('destination'),

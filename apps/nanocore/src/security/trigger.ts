@@ -3,6 +3,7 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb } from '../storage/db.js';
 import {
   type ControlSecurityTrigger,
+  type SecurityAlarmNotice,
   type SecurityAlarmRow,
   type SecurityAuditAssessment,
   type SecurityAuditCursor,
@@ -12,6 +13,7 @@ import {
 } from '../storage/security-trigger-codecs.js';
 
 export type {
+  SecurityAlarmNotice,
   SecurityAlarmRow,
   SecurityAuditAssessment,
   SecurityAuditCursor,
@@ -108,6 +110,13 @@ export class SecurityTriggerStore {
     const result = await this.apply({ action: 'event-outbox' });
     if (result.kind !== 'event-outbox') throw new TypeError('Unexpected event outbox result.');
     return result.rows;
+  }
+
+  /** Reads stored native notice progress, not current send or publication authority. */
+  async readAlarmNotice(requestId: string): Promise<SecurityAlarmNotice | null> {
+    const result = await this.apply({ action: 'alarm-notice-read', requestId });
+    if (result.kind !== 'alarm-notice') throw new TypeError('Unexpected alarm notice result.');
+    return result.notice;
   }
 
   async readAlarms(): Promise<SecurityAlarmRow[]> {

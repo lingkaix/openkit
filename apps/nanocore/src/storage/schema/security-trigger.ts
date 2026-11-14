@@ -70,7 +70,7 @@ export const securityTriggerAuditAssessments = sqliteTable(
   ]
 );
 
-/** Original E4 notice identity inputs; publication and acknowledgement remain downstream. */
+/** Original E4 recipient notice and its atomic original Attention publication link. */
 export const securityTriggerOutbox = sqliteTable(
   'security_trigger_outbox',
   {
@@ -87,6 +87,7 @@ export const securityTriggerOutbox = sqliteTable(
     }).notNull(),
     occurrenceN: integer('occurrence_n').notNull(),
     raised: integer('raised', { mode: 'boolean' }).notNull().default(false),
+    attentionId: text('attention_id'),
     createdAt: text('created_at').notNull(),
   },
   (t) => [

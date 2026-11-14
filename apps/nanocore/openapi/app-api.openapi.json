@@ -20691,7 +20691,8 @@
                       "type": "string",
                       "enum": [
                         "approval-request",
-                        "user-input-request"
+                        "user-input-request",
+                        "security-notice"
                       ]
                     }
                   },
@@ -20898,7 +20899,8 @@
                 "type": "string",
                 "enum": [
                   "approval-request",
-                  "user-input-request"
+                  "user-input-request",
+                  "security-notice"
                 ]
               }
             },
@@ -183540,5 +183542,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:8e1633093dde54a50f1ef7a1f954ceeccb0461817222c519cce6ac6c9b54418c"
+  "x-openkit-source-digest": "sha256:6535a15220099266487e1d9f8d3a08c6630bb2657c9bd8e22811439df2b565e7"
 }

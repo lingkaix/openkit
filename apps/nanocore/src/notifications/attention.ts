@@ -186,7 +186,7 @@ export function reconcileIncompleteAttentionAttemptsInDb(
 /** Original INSERT-on-conflict and complete retained projection remain one transaction. */
 export function enqueueAttentionInDb(
   sqlite: Database.Database,
-  input: z.infer<typeof AttentionEnqueueSchema>,
+  input: { source: AttentionSource; recipientUserId: string },
   now: () => string
 ): AttentionDelivery {
   const { source, recipientUserId } = input;

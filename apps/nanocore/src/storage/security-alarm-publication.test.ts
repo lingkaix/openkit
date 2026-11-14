@@ -344,7 +344,7 @@ async function server() {
 }
 
 describe('N3 genuine initial alarm publication and trusted original reader', () => {
-  it('publishes real R1 files/version/ref/automation Request and Turn; reads, reopens and replays exact authority without raising or rollover', async () => {
+  it('publishes real R1 files/version/ref/automation Request and Turn; reads, reopens and replays exact authority with durable notice marking and no rollover', async () => {
     const { f, actor, alarm } = await localAlarm();
     const alarms = await f.trigger.readAlarms();
     const destination = await prepareSecurityThread({
@@ -404,7 +404,10 @@ describe('N3 genuine initial alarm publication and trusted original reader', () 
       f.store.listThreads(value.workspaceId).map((thread) => thread.id),
       threads.map((thread) => thread.id)
     );
-    assert.deepEqual(await f.trigger.readAlarms(), alarms);
+    assert.deepEqual(
+      await f.trigger.readAlarms(),
+      alarms.filter((row) => row.requestId !== alarm.requestId)
+    );
     assert.equal((await f.trigger.current()).state, 'stopping');
   });
 
@@ -428,7 +431,10 @@ describe('N3 genuine initial alarm publication and trusted original reader', () 
       status: 'published',
       publication: value,
     });
-    assert.deepEqual(await f.trigger.readAlarms(), alarms);
+    assert.deepEqual(
+      await f.trigger.readAlarms(),
+      alarms.filter((row) => row.requestId !== alarm.requestId)
+    );
     assert.equal((await f.trigger.current()).delegationCurrent, false);
   });
 

@@ -68,7 +68,10 @@ export async function readSecurityAlarmPublication(
     reference: snapshot.item(ids.reportItemId) ?? null,
     question: snapshot.item(ids.requestItemId) ?? null,
   }));
-  if (!artifact && !turn && !cut.request && !cut.reference && !cut.question) return null;
+  if (!artifact && !turn && !cut.request && !cut.reference && !cut.question) {
+    if (source.raised) unavailable();
+    return null;
+  }
   if (!artifact || !turn || !cut.request || !cut.reference || !cut.question) unavailable();
   const { request, reference, question } = cut;
   if (
@@ -183,7 +186,7 @@ export async function readSecurityAlarmPublication(
   };
 }
 
-/** Publishes only an actual owed initial R1/R8, with native current-recipient and original-owner admission. */
+/** Publishes and queues an actual initial R1/R8 through original owners and their separate FULL ACKs. */
 export async function publishSecurityAlarm(
   input: Owners & { requestId: string }
 ): Promise<{ status: 'published'; publication: SecurityAlarmPublication } | { status: 'busy' }> {
@@ -194,18 +197,29 @@ export async function publishSecurityAlarm(
     workspaceId: destination.workspaceId,
     threadId: destination.threadId,
   };
-  const prior = await readSecurityAlarmPublication(address);
-  if (prior) return { status: 'published', publication: prior };
-  const source = await original(input);
-  const result = await input.store.publishSecurityAlarmTurn({
+  let publication = await readSecurityAlarmPublication(address);
+  if (!publication) {
+    const source = await original(input);
+    if (source.raised) unavailable();
+    const result = await input.store.publishSecurityAlarmTurn({
+      requestId: input.requestId,
+      workspaceId: destination.workspaceId,
+      threadId: destination.threadId,
+      recipientUserId: source.recipientUserId,
+      rule: source.rule,
+    });
+    if (result === 'busy') return { status: 'busy' };
+    publication = await readSecurityAlarmPublication(address);
+    if (!publication) unavailable();
+  }
+  // Actual Workspace settlement and the complete original tuple precede this Core-only commit.
+  // A refused or unknown mark does not compensate an already acknowledged publication.
+  const marked = await getControlStoreWorkerClient().securityTrigger(input.coreDb, {
+    action: 'alarm-mark-enqueue',
     requestId: input.requestId,
-    workspaceId: destination.workspaceId,
-    threadId: destination.threadId,
-    recipientUserId: source.recipientUserId,
-    rule: source.rule,
+    threadId: publication.threadId,
   });
-  if (result === 'busy') return { status: 'busy' };
-  const publication = await readSecurityAlarmPublication(address);
-  if (!publication) unavailable();
+  if (marked.kind !== 'alarm-notice' || !marked.notice)
+    throw new TypeError('Unexpected alarm mark/enqueue result.');
   return { status: 'published', publication };
 }
