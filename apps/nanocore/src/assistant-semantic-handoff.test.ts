@@ -63,6 +63,7 @@ import { applyMigrations } from './storage/migrate.js';
 import { allocateRetrievalTraceId, readTurnRetrievalTraces } from './storage/retrieval-traces.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
 import {
   createDemoWorkspaceForUser,
   seedRetainedPersonalWorkspace,
@@ -71,7 +72,6 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
-import { confirmContextDefaultsForApp } from './test-support/mode-entry-fixture.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';

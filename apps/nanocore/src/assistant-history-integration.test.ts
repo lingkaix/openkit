@@ -21,6 +21,7 @@ import { shutdownControlStoreWorkerClient } from './storage/control-store-worker
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
+import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
 import {
   createDemoWorkspaceForUser,
   seedRetainedPersonalWorkspace,
@@ -29,7 +30,6 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
-import { confirmContextDefaultsForApp } from './test-support/mode-entry-fixture.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';

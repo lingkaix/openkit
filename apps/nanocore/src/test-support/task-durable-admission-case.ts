@@ -38,7 +38,6 @@ import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
-  confirmContextDefaults,
   confirmTaskRequest,
   observeExecutionAttempts,
   taskProposalProvider,
@@ -46,6 +45,7 @@ import {
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { confirmContextDefaults } from './context-defaults.js';
 
 /** Installs one deliberate checkpoint fault only after native writes drain, then resumes before replay. */
 export async function mutateQuiescentCheckpoint(mutate: () => { changes: number }): Promise<void> {
