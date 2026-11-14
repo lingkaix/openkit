@@ -38,6 +38,11 @@ import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import { type NotebookPublicationAdmission, publishNotebook } from './notebook-publication.js';
 import {
+  type NotebookReferenceClosure,
+  type NotebookReferencePage,
+  validateNotebookReferenceClosure,
+} from './notebook-validation.js';
+import {
   attributedNotebookPageBytes,
   parseKnowledgePageSourceReference,
   parseOkfDocument,
@@ -110,16 +115,19 @@ export function readUserMemoryNotebookAdmission(
   const scopeSchema = parseScopeKnowledgeSchema(scopeSchemaText);
   if (!scopeSchema.ok) throw new NotebookError('recovery_required');
   const registeredSources = new Map<string, string | null>();
-  const resolvedReferences = new Map<string, ReadonlySet<string>>();
-  const visiting = new Set<string>();
-  const checkPage = (path: string): void => {
+  const checked: NotebookReferenceClosure = new Map();
+  const active = new Set<string>();
+  const inspectPage = function* ({
+    path,
+    content,
+  }: NotebookReferencePage): Generator<
+    void | NotebookReferencePage,
+    ReadonlySet<string> | null,
+    void
+  > {
     const pageId = path.slice(0, -3);
-    if (resolvedReferences.has(pageId)) return;
-    if (visiting.has(path)) throw new NotebookError('invalid_request');
     // A failed forget cleanup must not disclose retained bytes or fence unrelated edits.
-    if (suppressedPageIds.includes(pageId)) return;
-    visiting.add(path);
-    const content = files[path];
+    if (suppressedPageIds.includes(pageId)) return null;
     if (content === undefined) throw new NotebookError('invalid_request');
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('recovery_required');
@@ -136,9 +144,7 @@ export function readUserMemoryNotebookAdmission(
         (refs === null && Object.hasOwn(parsed.document.frontmatter, 'source_refs'))
       )
         throw new NotebookError('invalid_request');
-      visiting.delete(path);
-      resolvedReferences.set(pageId, new Set());
-      return;
+      return new Set<string>();
     }
     if (
       !['public', 'normal', 'internal', 'confidential'].includes(
@@ -162,7 +168,7 @@ export function readUserMemoryNotebookAdmission(
               `sha256:${createHash('sha256').update(target).digest('hex')}`)
         )
           throw new NotebookError('invalid_request');
-        checkPage(targetPath);
+        yield { path: targetPath, content: target, tree: 'candidate' };
         resolved.add(reference);
         continue;
       }
@@ -177,11 +183,21 @@ export function readUserMemoryNotebookAdmission(
         throw new NotebookError('invalid_request');
       resolved.add(reference);
     }
-    visiting.delete(path);
-    resolvedReferences.set(pageId, resolved);
+    return resolved;
   };
-  for (const path of Object.keys(files)) checkPage(path);
+  for (const path of Object.keys(files)) {
+    const validation = validateNotebookReferenceClosure(
+      { path, content: files[path]!, tree: 'candidate' },
+      inspectPage,
+      checked,
+      active
+    );
+    for (;;) if (validation.next().done) break;
+  }
   admitMemoryContext(context);
+  const resolvedReferences = new Map(
+    [...checked.values()].map(({ page, references }) => [page.path.slice(0, -3), references])
+  );
   return {
     pageScopeId,
     scopeSchemaText,

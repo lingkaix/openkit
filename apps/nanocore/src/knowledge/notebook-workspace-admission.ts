@@ -20,6 +20,11 @@ import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
 import {
+  type NotebookReferenceClosure,
+  type NotebookReferencePage,
+  validateNotebookReferenceClosure,
+} from './notebook-validation.js';
+import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from './notebook-workspace-selection.js';
@@ -165,8 +170,7 @@ function* readWorkspaceNotebookAdmissionWithOwners(
   );
   const base = input.notebook.inspectRevision(input.request.baseRevision);
   const changes = new Map(input.request.changes.map(({ path, content }) => [path, content]));
-  const resolvedReferences = new Map<string, ReadonlySet<string>>();
-  const visited = new Set<string>();
+  const checked: NotebookReferenceClosure = new Map();
   const active = new Set<string>();
 
   const permitThreadDisclosure = (threadId: string): void => {
@@ -181,16 +185,17 @@ function* readWorkspaceNotebookAdmissionWithOwners(
       403
     );
   };
-  const checkPage = function* (
-    path: string,
-    content: string,
-    baseOnly = false
-  ): Generator<void, void, void> {
+  const inspectPage = function* ({
+    path,
+    content,
+    tree,
+  }: NotebookReferencePage): Generator<
+    void | NotebookReferencePage,
+    ReadonlySet<string> | null,
+    void
+  > {
     // A removed page uses its original dependency graph; candidate edits use the resulting tree.
-    const key = `${baseOnly ? 'base' : 'candidate'}:${path}`;
-    if (visited.has(key)) return;
-    if (active.has(key)) throw new NotebookError('invalid_request');
-    active.add(key);
+    const baseOnly = tree === 'base';
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('invalid_request');
     const references = stringListFrontmatterField(parsed.document, 'source_refs');
@@ -246,7 +251,7 @@ function* readWorkspaceNotebookAdmissionWithOwners(
             'Notebook source disclosure denied.',
             403
           );
-        yield* checkPage(sourcePath, sourceContent, baseOnly);
+        yield { path: sourcePath, content: sourceContent, tree };
         resolved.add(reference);
       } else if (reference.startsWith('turn:')) {
         const turn = yield* input.store.getTurnByIdSteps(reference.slice('turn:'.length));
@@ -257,9 +262,7 @@ function* readWorkspaceNotebookAdmissionWithOwners(
         throw new NotebookError('invalid_request');
       }
     }
-    active.delete(key);
-    visited.add(key);
-    resolvedReferences.set(path.slice(0, -3), resolved);
+    return resolved;
   };
   // A summary edit admits the Source itself, even when its supporting source_refs list is empty.
   for (const { path, content } of input.request.changes) {
@@ -284,10 +287,25 @@ function* readWorkspaceNotebookAdmissionWithOwners(
     yield;
     if (content !== null || !base.entries[path]) continue;
     const previous = input.notebook.readRevision(base.revision, [path]).files[path];
-    if (previous !== undefined) yield* checkPage(path, previous, true);
+    if (previous !== undefined)
+      yield* validateNotebookReferenceClosure(
+        { path, content: previous, tree: 'base' },
+        inspectPage,
+        checked,
+        active
+      );
   }
   for (const { path, content } of input.request.changes)
-    if (content !== null) yield* checkPage(path, content);
+    if (content !== null)
+      yield* validateNotebookReferenceClosure(
+        { path, content, tree: 'candidate' },
+        inspectPage,
+        checked,
+        active
+      );
+  const resolvedReferences = new Map(
+    [...checked.values()].map(({ page, references }) => [page.path.slice(0, -3), references])
+  );
   return {
     pageScopeId,
     scopeSchemaText,

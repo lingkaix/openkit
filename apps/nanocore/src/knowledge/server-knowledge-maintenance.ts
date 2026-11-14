@@ -36,6 +36,11 @@ import { notebookAuthoringGuidance } from './notebook-authoring-guidance.js';
 import { boundedNotebookDiff } from './notebook-history.js';
 import { type NotebookPublicationAdmission, publishNotebook } from './notebook-publication.js';
 import {
+  type NotebookReferenceClosure,
+  type NotebookReferencePage,
+  validateNotebookReferenceClosure,
+} from './notebook-validation.js';
+import {
   attributedNotebookPageBytes,
   parseKnowledgePageSourceReference,
   parseOkfDocument,
@@ -132,16 +137,18 @@ export function serverNotebookAdmission(
       source.contentDigest,
     ])
   );
-  const resolvedReferences = new Map<string, ReadonlySet<string>>();
-  const visiting = new Set<string>();
-  const checked = new Set<string>();
-  const checkPage = (path: string, selected = files): void => {
-    const pageId = path.slice(0, -3);
-    const key = `${selected === files ? 'selected' : 'current'}:${pageId}`;
-    if (checked.has(key)) return;
-    if (visiting.has(key)) throw new NotebookError('invalid_request');
-    visiting.add(key);
-    const content = selected[path];
+  const checked: NotebookReferenceClosure = new Map();
+  const active = new Set<string>();
+  const inspectPage = function* ({
+    path,
+    content,
+    tree,
+  }: NotebookReferencePage): Generator<
+    void | NotebookReferencePage,
+    ReadonlySet<string> | null,
+    void
+  > {
+    const selected = tree === 'candidate' ? files : currentFiles;
     if (content === undefined) throw new NotebookError('invalid_request');
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('recovery_required');
@@ -181,7 +188,11 @@ export function serverNotebookAdmission(
             )
           )
             throw new NotebookError('invalid_request');
-          checkPage(targetPath, targetTree);
+          yield {
+            path: targetPath,
+            content: target,
+            tree: targetTree === files ? 'candidate' : 'current',
+          };
         }
       } else {
         const selected = resolveRegisteredKnowledgeSourceReference(ref, registeredSources);
@@ -197,11 +208,22 @@ export function serverNotebookAdmission(
       }
       resolved.add(ref);
     }
-    visiting.delete(key);
-    checked.add(key);
-    if (selected === files) resolvedReferences.set(pageId, resolved);
+    return resolved;
   };
-  for (const path of Object.keys(files)) checkPage(path);
+  for (const path of Object.keys(files)) {
+    const validation = validateNotebookReferenceClosure(
+      { path, content: files[path]!, tree: 'candidate' },
+      inspectPage,
+      checked,
+      active
+    );
+    for (;;) if (validation.next().done) break;
+  }
+  const resolvedReferences = new Map(
+    [...checked.values()]
+      .filter(({ page }) => page.tree === 'candidate')
+      .map(({ page, references }) => [page.path.slice(0, -3), references])
+  );
   return {
     pageScopeId,
     scopeSchemaText,

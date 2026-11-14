@@ -23,6 +23,51 @@ const markdown = new MarkdownIt({ html: false, linkify: false });
 markdown.normalizeLink = (target) => target;
 const MAX_DIAGNOSTICS = 100;
 
+/** Exact immutable bytes and tree selected by an existing native Notebook owner. */
+export interface NotebookReferencePage {
+  readonly path: string;
+  readonly content: string;
+  readonly tree: 'base' | 'candidate' | 'current';
+}
+
+/** Operation-local reference facts only; never a reusable disclosure or publication grant. */
+export type NotebookReferenceClosure = Map<
+  string,
+  { readonly page: NotebookReferencePage; readonly references: ReadonlySet<string> }
+>;
+
+/** One depth-first closure; native inspectors retain every scope/source check and its order. */
+export function* validateNotebookReferenceClosure(
+  page: NotebookReferencePage,
+  inspect: (
+    page: NotebookReferencePage
+  ) => Generator<void | NotebookReferencePage, ReadonlySet<string> | null, void>,
+  checked: NotebookReferenceClosure,
+  active: Set<string>
+): Generator<void, void, void> {
+  const key = `${page.tree}:${page.path}`;
+  if (checked.has(key)) return;
+  if (active.has(key)) throw new NotebookError('invalid_request');
+  active.add(key);
+  const inspection = inspect(page);
+  try {
+    for (;;) {
+      const step = inspection.next();
+      if (step.done) {
+        active.delete(key);
+        if (step.value !== null) checked.set(key, { page, references: step.value });
+        return;
+      }
+      // A yielded node is an exact dependency, not a permission or an acknowledgement.
+      if (step.value) yield* validateNotebookReferenceClosure(step.value, inspect, checked, active);
+      else yield;
+    }
+  } finally {
+    // Preserve delegated-generator cleanup on cancellation or a dependency refusal.
+    inspection.return(null);
+  }
+}
+
 /** Bounded structural diagnostics; current source disclosure and publication authority remain separate checks. */
 export interface NotebookValidationResult {
   readonly changedPaths: readonly string[];

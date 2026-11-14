@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { NotebookRevision } from './notebook.js';
-import { validateNotebookCandidate } from './notebook-validation.js';
+import {
+  validateNotebookCandidate,
+  validateNotebookReferenceClosure,
+} from './notebook-validation.js';
 import {
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA,
   DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
@@ -10,6 +13,29 @@ import {
   validateKnowledgePageCandidate,
   validateScopeKnowledgeSchema,
 } from './okf.js';
+
+it('closes the native inspection iterator when closure preparation is cancelled', () => {
+  // Iterator lifecycle only; the scoped publication owners keep their real authority tests.
+  let released = false;
+  const inspection = function* (): Generator<void, ReadonlySet<string>, void> {
+    try {
+      yield;
+      return new Set<string>();
+    } finally {
+      released = true;
+    }
+  };
+  const validation = validateNotebookReferenceClosure(
+    { path: 'page.md', content: 'exact retained bytes', tree: 'candidate' },
+    inspection,
+    new Map(),
+    new Set()
+  );
+  validation.next();
+  expect(released).toBe(false);
+  validation.return(undefined);
+  expect(released).toBe(true);
+});
 
 const ownerScope = {
   kind: 'workspace',
