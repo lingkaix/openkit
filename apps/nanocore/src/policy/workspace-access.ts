@@ -96,6 +96,17 @@ export function evaluatePolicyKernel(
   input:
     | ProductPolicyInput
     | {
+        readonly operation: string;
+        /** Current native scope classifications; neither flag grants an effect. */
+        readonly goal: {
+          readonly user: string;
+          readonly process?: string;
+          readonly inGoalEnvelope: boolean;
+          readonly selectedByTask: boolean;
+          readonly humanKernel: PolicyDecision;
+        };
+      }
+    | {
         readonly subject: Pick<z.infer<typeof PolicySubjectV1Schema>, 'principal' | 'process'>;
         readonly operation: string;
         readonly resource: z.infer<typeof PolicyResourceV1Schema>;
@@ -114,12 +125,13 @@ export function evaluatePolicyKernel(
         readonly policy?: Omit<NonNullable<ProductPolicyInput['policy']>, 'subject'>;
       }
 ): PolicyDecision {
+  if ('goal' in input && input.goal.humanKernel.effect === 'deny') return input.goal.humanKernel;
   const { policy, request } = compilePolicyGraph(input);
   return evaluateAccess(policy, request);
 }
 
 /**
- * Pure synchronous projection of current primary/domain facts and admitted prohibitions.
+ * Pure synchronous projection of current primary, agent-domain and Goal/Task facts.
  * All classes constrain the same subject and target. Processes are mappings, never principals.
  */
 export function compilePolicyGraph(input: ExposureGraphFacts): { policy: PolicyState };
@@ -178,6 +190,51 @@ export function compilePolicyGraph(
             accessRights: Object.values(PRODUCT_OPERATION_ACCESS_RIGHTS),
             range: { type: 'disjunctive' as const, include: [objects] },
           })),
+      },
+    };
+  }
+  if ('goal' in input) {
+    const { goal } = input;
+    const operation = Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, input.operation)
+      ? (input.operation as ProductOperation)
+      : null;
+    const accessRights = operation ? [PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] : [];
+    const user = goal.user;
+    const classes = ['goal-envelope', 'goal-task'] as const;
+    const policy: PolicyState = {
+      elements: [
+        { id: user, kind: 'user' },
+        { id: 'goal-request', kind: 'object' },
+        ...classes.flatMap((id) => [
+          { id: `ua:${id}`, kind: 'userAttribute' as const },
+          { id: `oa:${id}`, kind: 'objectAttribute' as const },
+          { id: `pc:${id}`, kind: 'policyClass' as const },
+        ]),
+      ],
+      assignments: classes.flatMap((id) => [
+        { child: user, parent: `ua:${id}` },
+        { child: `ua:${id}`, parent: `pc:${id}` },
+        { child: 'goal-request', parent: `oa:${id}` },
+        { child: `oa:${id}`, parent: `pc:${id}` },
+      ]),
+      operations: operation ? [{ id: operation, accessRights }] : [],
+      associations: classes
+        .filter((id) => (id === 'goal-envelope' ? goal.inGoalEnvelope : goal.selectedByTask))
+        .map((id) => ({
+          id,
+          userAttribute: `ua:${id}`,
+          targetAttribute: `oa:${id}`,
+          accessRights,
+        })),
+      ...(goal.process ? { processUsers: [{ process: goal.process, user }] } : {}),
+    };
+    return {
+      policy,
+      request: {
+        operation: input.operation,
+        target: 'goal-request',
+        user,
+        ...(goal.process ? { process: goal.process } : {}),
       },
     };
   }
