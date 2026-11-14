@@ -6,13 +6,121 @@ import { CoreJournalRefusal } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+  type CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION,
   readExecutionJournalInvocation,
   readExecutionJournalLinkedInspections,
   readExecutionJournalRoot,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from './execution-journal.js';
-import type { ExecutionJournalIntent, ExecutionStepRef } from './execution-step-journal.js';
+import type {
+  ExecutionInvocationCarriage,
+  ExecutionJournalExecution,
+  ExecutionJournalIntent,
+  ExecutionJournalSpan,
+  ExecutionStepRef,
+} from './execution-step-journal.js';
+
+/** Builds only local Core acknowledgement/recovery decisions, never contact or retry authority. */
+export function localCoreJournalIntent(input: {
+  definitionVersion:
+    | typeof CORE_HARNESS_CONSUME_EXECUTION_DEFINITION
+    | typeof CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION;
+  executionId: string;
+  stepId: string;
+  workId: string;
+  fingerprint: string;
+  kind: 'admit' | 'consume-receipt' | 'inspect-cleanup';
+  actorId: string;
+  inputRefs: readonly string[];
+  authorityRefs: readonly string[];
+  carriage: ExecutionInvocationCarriage;
+  timestamp: string;
+  root?: ExecutionJournalExecution;
+  inspected?: { ref: ExecutionStepRef; span: ExecutionJournalSpan };
+}): ExecutionJournalIntent {
+  const time = BigInt(Date.parse(input.timestamp)) * 1_000_000n;
+  const digest = createHash('sha256').update(input.executionId).digest('hex');
+  const rootSpan: ExecutionJournalIntent['span'] = input.root
+    ? { ...input.root.span, endTimeUnixNano: null }
+    : {
+        traceId: digest.slice(0, 32),
+        spanId: digest.slice(32, 48),
+        flags: 0,
+        name: input.definitionVersion,
+        kind: 'INTERNAL',
+        startTimeUnixNano: time,
+        endTimeUnixNano: null,
+        status: { code: 'UNSET' },
+        attributes: [],
+        droppedAttributesCount: 0,
+        events: [],
+        droppedEventsCount: 0,
+        links: [],
+        droppedLinksCount: 0,
+        instrumentationScope: {
+          name: 'openkit.nanocore.runtime',
+          attributes: [],
+          droppedAttributesCount: 0,
+        },
+        resource: { attributes: [], droppedAttributesCount: 0 },
+      };
+  return {
+    execution: {
+      ref: { owner: { kind: 'server' }, executionId: input.executionId },
+      definitionVersion: input.definitionVersion,
+      workId: input.workId,
+      fingerprint: input.root?.fingerprint ?? input.fingerprint,
+      exclusionRefs: [],
+      span: rootSpan,
+    },
+    stepId: input.stepId,
+    parentStepId: null,
+    parent: null,
+    inspectedStep: input.inspected?.ref ?? null,
+    control: {
+      definitionVersion: input.definitionVersion,
+      kind: input.kind,
+      target: null,
+      workId: input.workId,
+      operationId: input.carriage.requestId,
+      attemptId: null,
+      invocationId: `${input.executionId}:${input.stepId}`,
+      actor: { kind: 'system', id: input.actorId, responsibleUserId: null },
+      inputRefs: input.inputRefs,
+      outputRefs: [],
+      fingerprint: input.fingerprint,
+      permittingDecisionRef: null,
+      authorityRefs: input.authorityRefs,
+      retryDeclarationRef: null,
+      retryPermitted: false,
+      deadlineUnixNano: null,
+      physicalFenceRefs: [],
+    },
+    carriage: input.carriage,
+    span: {
+      ...rootSpan,
+      spanId: createHash('sha256')
+        .update(`${input.executionId}:${input.stepId}`)
+        .digest('hex')
+        .slice(0, 16),
+      parentSpanId: rootSpan.spanId,
+      name: input.kind,
+      startTimeUnixNano: time < rootSpan.startTimeUnixNano ? rootSpan.startTimeUnixNano : time,
+      links: input.inspected
+        ? [
+            {
+              traceId: input.inspected.span.traceId,
+              spanId: input.inspected.span.spanId,
+              flags: input.inspected.span.flags,
+              attributes: [],
+              droppedAttributesCount: 0,
+            },
+          ]
+        : [],
+    },
+  };
+}
 
 /** Exact immutable receiver result tuple; the consumer remains a journal authority reference. */
 interface HarnessConsumptionKey {
@@ -69,79 +177,26 @@ export function recordCoreHarnessConsumption(
     return;
   }
   const fingerprint = commandInputHash({ ...key, consumer });
-  const execution = {
-    owner: { kind: 'server' as const },
+  const intent = localCoreJournalIntent({
+    definitionVersion: CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
     executionId: `harness-consume:${commandInputHash(key)}`,
-  };
-  const time = BigInt(Date.parse(timestamp)) * 1_000_000n;
-  const digest = createHash('sha256').update(execution.executionId).digest('hex');
-  const span: ExecutionJournalIntent['span'] = {
-    traceId: digest.slice(0, 32),
-    spanId: digest.slice(32, 48),
-    flags: 0,
-    name: 'nanohost.harness-consumption',
-    kind: 'INTERNAL',
-    startTimeUnixNano: time,
-    endTimeUnixNano: null,
-    status: { code: 'UNSET' },
-    attributes: [],
-    droppedAttributesCount: 0,
-    events: [],
-    droppedEventsCount: 0,
-    links: [],
-    droppedLinksCount: 0,
-    instrumentationScope: {
-      name: 'openkit.nanocore.runtime',
-      attributes: [],
-      droppedAttributesCount: 0,
-    },
-    resource: { attributes: [], droppedAttributesCount: 0 },
-  };
-  const intent: ExecutionJournalIntent = {
-    execution: {
-      ref: execution,
-      definitionVersion: CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
-      workId: key.operationId,
-      fingerprint,
-      exclusionRefs: [],
-      span,
-    },
     stepId: 'consume',
-    parentStepId: null,
-    parent: null,
-    inspectedStep: null,
-    control: {
-      definitionVersion: CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
-      kind: 'consume-receipt',
-      target: null,
-      workId: key.operationId,
-      operationId: key.operationId,
-      attemptId: null,
-      invocationId: execution.executionId,
-      actor: { kind: 'system', id: key.harnessBindingRef, responsibleUserId: null },
-      inputRefs: [key.resultFingerprint],
-      outputRefs: [],
-      fingerprint,
-      permittingDecisionRef: null,
-      authorityRefs: [consumer],
-      retryDeclarationRef: null,
-      retryPermitted: false,
-      deadlineUnixNano: null,
-      physicalFenceRefs: [],
-    },
+    workId: key.operationId,
+    fingerprint,
+    kind: 'consume-receipt',
+    actorId: key.harnessBindingRef,
+    inputRefs: [key.resultFingerprint],
+    authorityRefs: [consumer],
     carriage: {
       operation: 'harness.consume',
       requestId: key.operationId,
       sequence: key.sequence,
       bindingRef: key.harnessBindingRef,
     },
-    span: {
-      ...span,
-      spanId: digest.slice(48, 64),
-      parentSpanId: span.spanId,
-      name: 'harness.consume-receipt',
-    },
-  };
+    timestamp,
+  });
+  const execution = intent.execution.ref;
+  const time = intent.span.startTimeUnixNano;
   writeExecutionJournalIntent(db, intent);
   settleExecutionJournalStep(db, {
     ref: { execution, stepId: intent.stepId },

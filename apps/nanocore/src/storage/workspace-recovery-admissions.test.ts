@@ -7,24 +7,25 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { replaceRecoveryJournalProof } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
-import {
-  prepareRecoveryAdmission,
-  type RecoveryProof,
-  readRecoveryAdmission,
-} from './workspace-recovery-admissions.js';
 import { runWorkspaceRecoveryCli } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  prepareRecoveryExecution,
+  type RecoveryProof,
+  readRecoveryExecution,
+} from './workspace-recovery-journal.js';
 
 let root: string;
 let core: CoreDb;
 const requestId = randomUUID();
 let original: RecoveryProof;
-let candidate: string;
+let target: string;
 
 beforeAll(async () => {
   root = mkdtempSync(join(tmpdir(), 'recovery-intent-'));
@@ -82,7 +83,7 @@ beforeAll(async () => {
     () => {},
     { releaseIdentityPath }
   );
-  const target = join(root, 'target');
+  target = join(root, 'target');
   core = openCoreDb(target);
   applyMigrations(core);
   const targetOwner = ensureLocalUser(core);
@@ -106,15 +107,12 @@ beforeAll(async () => {
   );
   expect(result.disposition).toBe('imported');
   core = openCoreDb(target);
-  const admitted = readRecoveryAdmission(core, requestId)!;
+  const admitted = readRecoveryExecution(core, requestId)!;
   original = structuredClone(admitted.proof);
-  candidate = admitted.candidate_ref;
 }, 120_000);
 
 afterEach(() => {
-  core.sqlite
-    .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-    .run(JSON.stringify(original), requestId);
+  replaceRecoveryJournalProof(core.sqlite, requestId, target, original);
 });
 afterAll(async () => {
   core?.sqlite.close();
@@ -124,9 +122,7 @@ afterAll(async () => {
 
 /** Corrupts a genuine owner-produced record to exercise restart admission, not bundle parsing. */
 function retain(input: Record<string, unknown>): void {
-  core.sqlite
-    .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-    .run(JSON.stringify({ ...original, input }), requestId);
+  replaceRecoveryJournalProof(core.sqlite, requestId, target, { ...original, input });
 }
 /** The owner's bounded refusal must precede recovery use of the retained authority. */
 function refuses(body: () => unknown): void {
@@ -160,24 +156,19 @@ const corruptions = [
 
 describe('retained recovery admission intent', () => {
   it('reads the exact original MOVE identity and tolerates descriptive manifest annotations', () => {
-    core.sqlite
-      .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-      .run(
-        JSON.stringify({
-          ...original,
-          manifest: { ...original.manifest, operatorNote: 'descriptive only' },
-        }),
-        requestId
-      );
-    expect(readRecoveryAdmission(core, requestId)?.proof.input).toEqual(original.input);
-    expect(readRecoveryAdmission(core, requestId)?.proof.capture.manifestDigest).toBe(
+    replaceRecoveryJournalProof(core.sqlite, requestId, target, {
+      ...original,
+      manifest: { ...original.manifest, operatorNote: 'descriptive only' },
+    });
+    expect(readRecoveryExecution(core, requestId)?.proof.input).toEqual(original.input);
+    expect(readRecoveryExecution(core, requestId)?.proof.capture.manifestDigest).toBe(
       original.capture.manifestDigest
     );
   });
 
   it.each(corruptions)('refuses retained %s before restart recovery', (_name, changed) => {
     retain({ ...original.input, ...changed });
-    refuses(() => readRecoveryAdmission(core, requestId));
+    refuses(() => readRecoveryExecution(core, requestId));
   });
 
   it('refuses two explicit sources that share the resolved target owner', () => {
@@ -190,37 +181,37 @@ describe('retained recovery admission intent', () => {
         { sourceAccountId: allocateEntityId('usr'), targetAccountId: input.targetOwnerId },
       ],
     });
-    refuses(() => readRecoveryAdmission(core, requestId));
+    refuses(() => readRecoveryExecution(core, requestId));
   });
 
   it('refuses a retained capture identity that contradicts the original manifest', () => {
-    core.sqlite
-      .prepare('UPDATE workspace_recovery_admissions SET proof_json=? WHERE admission_id=?')
-      .run(
-        JSON.stringify({
-          ...original,
-          capture: { ...original.capture, backupId: allocateEntityId('wsbak') },
-        }),
-        requestId
-      );
-    refuses(() => readRecoveryAdmission(core, requestId));
+    replaceRecoveryJournalProof(core.sqlite, requestId, target, {
+      ...original,
+      capture: { ...original.capture, backupId: allocateEntityId('wsbak') },
+    });
+    refuses(() => readRecoveryExecution(core, requestId));
   });
 
   it('refuses malformed intent before the existing writer persists ownership', () => {
     core.sqlite.exec('BEGIN');
     try {
-      core.sqlite
-        .prepare('DELETE FROM workspace_recovery_admissions WHERE admission_id=?')
-        .run(requestId);
+      const invalidId = randomUUID();
+      const invalidCandidate = join(
+        `${target}.workspace-recovery-${invalidId}`,
+        'workspaces',
+        DEMO_WORKSPACE_ID
+      );
       const proof = {
         ...original,
-        input: { ...original.input, command: 'resume-with-grants' },
+        input: { ...original.input, requestId: invalidId, command: 'resume-with-grants' },
       } as unknown as RecoveryProof;
-      refuses(() => prepareRecoveryAdmission(core, requestId, candidate, proof));
+      refuses(() => prepareRecoveryExecution(core, invalidId, invalidCandidate, proof));
       expect(
         core.sqlite
-          .prepare('SELECT 1 FROM workspace_recovery_admissions WHERE admission_id=?')
-          .get(requestId)
+          .prepare(
+            `SELECT 1 FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?`
+          )
+          .get(invalidId)
       ).toBeUndefined();
     } finally {
       core.sqlite.exec('ROLLBACK');

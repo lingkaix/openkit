@@ -36,7 +36,7 @@ import { openWorkspaceReadDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
 import * as captureProtection from './storage/workspace-capture-protection.js';
 import { nativeProductScope, readNativeProduct } from './storage/workspace-file-records.js';
-import { readRecoveryAdmission } from './storage/workspace-recovery-admissions.js';
+import { readRecoveryExecution } from './storage/workspace-recovery-journal.js';
 import { type CreateAppOptions, createAppWithLocalIdentity } from './test-support/app.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -1012,7 +1012,7 @@ describe('C-a composed snapshot App API', () => {
       await stopping;
       expect(captured.ok).toBe(false);
       intercept.mockRestore();
-      expect(readRecoveryAdmission(f.coreDb, backupId)).toBeUndefined();
+      expect(readRecoveryExecution(f.coreDb, backupId)).toBeUndefined();
       const generation = join(f.dataRoot, 'server/backups/workspaces', workspaceId, backupId);
       expect(existsSync(join(generation, 'manifest.json'))).toBe(false);
       expect(existsSync(join(generation, 'seal.json'))).toBe(false);
@@ -1329,7 +1329,7 @@ describe('C-a composed snapshot App API', () => {
         expect(interrupted.ok).toBe(false);
         intercept.mockRestore();
         syncBuiltinESMExports();
-        const owned = readRecoveryAdmission(f.coreDb, requestId)!;
+        const owned = readRecoveryExecution(f.coreDb, requestId)!;
         expect(owned).toMatchObject({
           admission_id: requestId,
           workspace_id: workspaceId,
@@ -1350,7 +1350,7 @@ describe('C-a composed snapshot App API', () => {
           const refused = await request(f.app, operation, input);
           expect(refused.status, await refused.clone().text()).toBe(409);
           ApiErrorSchema.parse(await refused.json());
-          expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(owned);
+          expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(owned);
         }
         const issued = accessTokens.createOpenKitAccessTokenRecord(f.coreDb, {
           ownerUserId: f.ownerId,
@@ -1368,7 +1368,7 @@ describe('C-a composed snapshot App API', () => {
           body: JSON.stringify({ workspaceId, selection }),
         });
         expect([401, 403]).toContain(denied.status);
-        expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(owned);
+        expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(owned);
         if (decision === 'abandon') {
           const candidateConfig = join(owned.candidate_ref, 'config/workspace.jsonc');
           const retainedConfig = readFileSync(candidateConfig);
@@ -1391,7 +1391,7 @@ describe('C-a composed snapshot App API', () => {
           retirement.mockRestore();
           syncBuiltinESMExports();
           // Target Admission closes finish rights before retirement; restart must permit the same decision.
-          expect(readRecoveryAdmission(f.coreDb, requestId)).toMatchObject({
+          expect(readRecoveryExecution(f.coreDb, requestId)).toMatchObject({
             state: 'abandoned',
             proof: { result: { disposition: 'quarantined' } },
           });
@@ -1421,7 +1421,7 @@ describe('C-a composed snapshot App API', () => {
           selection,
           nextAction: 'none',
         });
-        const terminal = readRecoveryAdmission(f.coreDb, requestId)!;
+        const terminal = readRecoveryExecution(f.coreDb, requestId)!;
         expect(terminal.state).toBe(decision === 'finish' ? 'finished' : 'abandoned');
         expect(f.store.getThread(workspaceId, DEMO_THREAD_ID).name).toBe(
           decision === 'finish' ? 'Captured target history' : 'Preserved predecessor history'
@@ -1447,7 +1447,7 @@ describe('C-a composed snapshot App API', () => {
           { workspaceId, selection }
         );
         expect(opposite.status, await opposite.clone().text()).toBe(409);
-        expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(terminal);
+        expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(terminal);
         const fresh = await request(f.app, 'thread.create', {
           workspaceId,
           name: 'Fresh admission after explicit recovery',
@@ -1490,7 +1490,7 @@ describe('C-a composed snapshot App API', () => {
       });
       expect(restored.status, await restored.clone().text()).toBe(200);
       const original = WorkspaceSnapshotReportSchema.parse(await restored.json());
-      const owned = readRecoveryAdmission(f.coreDb, requestId);
+      const owned = readRecoveryExecution(f.coreDb, requestId);
       expect(owned).toMatchObject({
         admission_id: requestId,
         workspace_id: workspaceId,
@@ -1510,7 +1510,7 @@ describe('C-a composed snapshot App API', () => {
         selection,
         nextAction: 'none',
       });
-      expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(owned);
+      expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(owned);
       const refused = await request(f.app, 'workspace.recovery-inspect', {
         workspaceId,
         selection: { kind: 'admission', requestId: randomUUID() },

@@ -54,6 +54,7 @@ import {
 } from '../storage/workspace-restore.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recoveryJournalFact } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
@@ -421,9 +422,7 @@ function crashSourceState(f: Awaited<ReturnType<typeof fixture>>, backupId: stri
       calls: Record<string, unknown>[];
     };
     const core = read(coreDbPath(f.dataRoot), 'core', (db) => ({
-      admission: db
-        .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
-        .get(backupId),
+      admission: recoveryJournalFact(db, backupId, f.dataRoot),
       registry: db.prepare('SELECT * FROM workspace_registry WHERE workspace_id=?').all(f.badId),
       members: db
         .prepare('SELECT * FROM workspace_members WHERE workspace_id=? ORDER BY rowid')
@@ -1186,9 +1185,7 @@ function crashTargetState(dataRoot: string, workspaceId: string, requestId: stri
       }
     };
     const core = read(coreDbPath(dataRoot), 'core', (db) => ({
-      admission: db
-        .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
-        .get(requestId),
+      admission: recoveryJournalFact(db, requestId, dataRoot),
       registry: db
         .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
         .all(workspaceId),
@@ -1253,6 +1250,7 @@ async function crashTargetAdmission(
   // Observe the real transaction before and after its outer COMMIT. The process,
   // not a rejected publication promise, is lost while that native host is held.
   const nativePrelude = `
+    const recoveryJournalFact = ${recoveryJournalFact.toString()};
     const { workerData } = require('node:worker_threads');
     const Database = require(workerData.databaseModule);
     const execute = Database.prototype.exec;
@@ -1261,9 +1259,7 @@ async function crashTargetAdmission(
       if (!/^COMMIT$/i.test(sql) || this.name !== workerData.corePath ||
           Atomics.load(gate, 0) !== 1 || Atomics.load(gate, 1) !== 0)
         return execute.call(this, sql);
-      const admission = this.prepare(
-        'SELECT workspace_id, state, proof_json FROM workspace_recovery_admissions WHERE admission_id=?'
-      ).get(workerData.admissionId);
+      const admission = recoveryJournalFact(this, workerData.admissionId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
       // A posted request can wait behind another transaction. Only the actual
       // terminal tuple on this connection can identify its covering COMMIT.
       if (!admission || admission.state !== 'finished' ||

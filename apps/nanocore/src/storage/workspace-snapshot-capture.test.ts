@@ -137,7 +137,7 @@ import {
   readNativeProductEntries,
   readNativeTurnHistory,
 } from './workspace-file-records.js';
-import { endRecoveryAdmission, readRecoveryAdmission } from './workspace-recovery-admissions.js';
+import { finishRecoveryExecution, readRecoveryExecution } from './workspace-recovery-journal.js';
 
 const namespaceSyncFault = vi.hoisted(() => ({
   beforeSync: undefined as ((descriptor: number) => void) | undefined,
@@ -988,7 +988,7 @@ describe('C-a snapshot authoritative blockers', () => {
           purpose: 'move',
         });
         expect(move.disposition).toBe('prepared');
-        endRecoveryAdmission(f.coreDb, move.manifest.backupId, 'abandoned');
+        finishRecoveryExecution(f.coreDb, move.manifest.backupId, 'abandoned');
         abandonCapture(db, workspaceId, move.manifest.backupId);
         // A fresh Store reads the stopped capture's retained Core scalar authority.
         source = {
@@ -999,9 +999,21 @@ describe('C-a snapshot authoritative blockers', () => {
         expect(readBlockers({ ...source, workspaceId })).toEqual([]);
         f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
         try {
-          f.coreDb.sqlite
-            .prepare('UPDATE workspace_recovery_admissions SET state=? WHERE admission_id=?')
-            .run(unsupported, move.manifest.backupId);
+          const { sql } = f.coreDb.sqlite
+            .prepare(
+              "SELECT sql FROM sqlite_schema WHERE name='control_executions_identity_immutable'"
+            )
+            .get() as { sql: string };
+          f.coreDb.sqlite.exec('DROP TRIGGER control_executions_identity_immutable');
+          try {
+            f.coreDb.sqlite
+              .prepare(
+                `UPDATE control_executions SET phase=? WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
+              )
+              .run(unsupported, move.manifest.backupId);
+          } finally {
+            f.coreDb.sqlite.exec(sql);
+          }
         } finally {
           f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
         }
@@ -1293,7 +1305,7 @@ describe('C-a manual recovery closure after restart', () => {
       if (kind === 'prepared-MOVE') {
         const captured = await createWorkspaceBackup(input);
         expect(captured.disposition).toBe('prepared');
-        expect(readRecoveryAdmission(f.coreDb, input.backupId)).toMatchObject({
+        expect(readRecoveryExecution(f.coreDb, input.backupId)).toMatchObject({
           state: 'prepared',
           purpose: 'move',
         });
@@ -1305,7 +1317,7 @@ describe('C-a manual recovery closure after restart', () => {
           db.sqlite.close();
         }
       }
-      const beforeAdmission = readRecoveryAdmission(f.coreDb, input.backupId);
+      const beforeAdmission = readRecoveryExecution(f.coreDb, input.backupId);
       const inspectDb = bindWorkspaceSqlite(
         new Database(workspaceDbPath(f.dataRoot, workspaceId), {
           readonly: true,
@@ -1419,7 +1431,7 @@ describe('C-a manual recovery closure after restart', () => {
       expect(candidates.map((candidate) => candidate.scheduleId)).toEqual([healthy.id]);
       expect(targetCoreRows()).toEqual(beforeRows);
       expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-      expect(readRecoveryAdmission(coreDb, input.backupId)).toEqual(beforeAdmission);
+      expect(readRecoveryExecution(coreDb, input.backupId)).toEqual(beforeAdmission);
       const retainedDb = bindWorkspaceSqlite(
         new Database(workspaceDbPath(f.dataRoot, workspaceId), {
           readonly: true,
@@ -3325,7 +3337,7 @@ describe('C-a independent sealed generations', () => {
       Database.prototype.prepare = function(sql, ...args) {
         if (this.name === selectedCore) this.pragma('query_only = ON');
         const statement = prepareCore.call(this, sql, ...args);
-        if (this.name === selectedCore && /INSERT INTO workspace_recovery_admissions/.test(sql)) {
+        if (this.name === selectedCore && /INSERT INTO control_executions/.test(sql)) {
           const run = statement.run.bind(statement);
           statement.run = function(...values) {
             try { return run(...values); }
@@ -3359,14 +3371,21 @@ describe('C-a independent sealed generations', () => {
       workspaceId,
       authority: { mode: 'source' },
       file: {
-        name: expect.stringMatching(/^\.proof-[0-9a-f-]+\.json$/),
         byteLength: expect.any(Number),
-        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        mediaType: 'application/json',
+        reference: {
+          contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          locator: {
+            ownerScope: { kind: 'server' },
+            mount: 'backend-evidence',
+            path: expect.stringMatching(/^sha256\/[0-9a-f]{64}$/),
+          },
+        },
       },
     });
     expect(JSON.stringify(frames)).not.toContain('"manifest":');
     expect(JSON.stringify(frames)).not.toContain(sourceBytes.toString());
-    const retained = readRecoveryAdmission(f.coreDb, input.backupId);
+    const retained = readRecoveryExecution(f.coreDb, input.backupId);
     expect(retained).toMatchObject({
       admission_id: input.backupId,
       workspace_id: workspaceId,
@@ -3381,7 +3400,7 @@ describe('C-a independent sealed generations', () => {
     f.coreDb.sqlite.close();
     const reopened = openCoreDb(f.dataRoot);
     databaseHandles.push(reopened);
-    expect(readRecoveryAdmission(reopened, input.backupId)).toEqual(retained);
+    expect(readRecoveryExecution(reopened, input.backupId)).toEqual(retained);
   }, 120_000);
 
   it('keeps the real capture Worker waiting for source preparation ACK and preserves its committed proof after ACK loss', async () => {
@@ -3436,7 +3455,7 @@ describe('C-a independent sealed generations', () => {
         }),
       ]);
       expect(continued).toBe(false);
-      const retained = readRecoveryAdmission(f.coreDb, input.backupId);
+      const retained = readRecoveryExecution(f.coreDb, input.backupId);
       expect(retained).toMatchObject({
         state: 'prepared',
         revision: 1,
@@ -3462,7 +3481,7 @@ describe('C-a independent sealed generations', () => {
             frame.input?.admissionId === input.backupId
         )
       ).toHaveLength(1);
-      expect(readRecoveryAdmission(f.coreDb, input.backupId)).toEqual(retained);
+      expect(readRecoveryExecution(f.coreDb, input.backupId)).toEqual(retained);
       expect(existsSync(join(input.bundleRoot, 'manifest.json'))).toBe(true);
       expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
       expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
@@ -3470,7 +3489,7 @@ describe('C-a independent sealed generations', () => {
       f.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       databaseHandles.push(reopened);
-      expect(readRecoveryAdmission(reopened, input.backupId)).toEqual(retained);
+      expect(readRecoveryExecution(reopened, input.backupId)).toEqual(retained);
       expect(readFileSync(sourceFile)).toEqual(sourceBytes);
       const coldAdmission = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
@@ -5565,7 +5584,7 @@ describe('C-b automatic capture origin after restart', () => {
       origin: 'automatic',
     });
     // Live capture has no Core recovery-admission authority to synthesize or end.
-    expect(readRecoveryAdmission(f.coreDb, input.backupId)).toBeUndefined();
+    expect(readRecoveryExecution(f.coreDb, input.backupId)).toBeUndefined();
     await shutdownControlStoreWorkerClient();
     f.coreDb.sqlite.close();
     const coreDb = openCoreDb(f.dataRoot);
@@ -5582,7 +5601,7 @@ describe('C-b automatic capture origin after restart', () => {
     release!();
     restoreWorkspaceRecoveryAdmission(coreDb, gate);
     expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(abandoned);
-    expect(readRecoveryAdmission(coreDb, input.backupId)).toBeUndefined();
+    expect(readRecoveryExecution(coreDb, input.backupId)).toBeUndefined();
     expect(tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId))).toEqual(
       generations
     );

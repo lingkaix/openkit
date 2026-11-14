@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { isEntityId } from '@openkit/protocol';
+import { isEntityId, WorkspaceIdSchema } from '@openkit/protocol';
 import { syncCanonicalDirectory } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { configureOwnedSqlite } from '../storage/control-store.js';
@@ -9,7 +9,11 @@ import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
 import { abandonCapture, inspectCapture } from '../storage/workspace-capture-protection.js';
 
-import { readFinishedDeletedWorkspaceRecovery } from '../storage/workspace-recovery-admissions.js';
+import {
+  listRecoveryExecutions,
+  type RecoveryExecution,
+  readFinishedDeletedWorkspaceRecovery,
+} from '../storage/workspace-recovery-journal.js';
 import { listAllWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
@@ -74,24 +78,31 @@ export function restoreWorkspaceRecoveryAdmission(
     if (entry.isDirectory() && entry.name !== '.staging' && !registered.has(entry.name))
       refuseScope(core.dataRoot, { scope: 'workspace', id: entry.name, check: 'recovery' });
   }
-  const rows = core.sqlite
-    .prepare(
-      'SELECT admission_id, workspace_id, state, revision, candidate_ref, proof_json FROM workspace_recovery_admissions'
-    )
-    .all() as {
-    admission_id: string;
-    workspace_id: string;
-    state: string;
-    revision: number;
-    candidate_ref: string;
-    proof_json: string;
-  }[];
+  // Root namespaces are refusal addresses, never recovery or serving authority.
+  const namespaces = core.sqlite
+    .prepare(`SELECT DISTINCT work_id FROM control_executions
+      WHERE definition_version GLOB 'core-workspace-recovery/*'`)
+    .pluck()
+    .all() as string[];
+  const rows: RecoveryExecution[] = [];
+  const opaque = new Set<string>();
+  for (const workspaceId of namespaces) {
+    WorkspaceIdSchema.parse(workspaceId);
+    try {
+      const scoped = listRecoveryExecutions(core, workspaceId);
+      if (!scoped.length) throw new Error('Recovery journal scope is unavailable.');
+      rows.push(...scoped);
+    } catch {
+      opaque.add(workspaceId);
+      refuseScope(core.dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
+    }
+  }
   const unresolved = rows.filter(
     (row) =>
       row.state === 'prepared' ||
       (row.admission_id.startsWith('wsbak_') && row.state === 'finished') ||
       (row.state === 'abandoned' &&
-        ['moved-out', 'quarantined'].includes(JSON.parse(row.proof_json).result?.disposition))
+        ['moved-out', 'quarantined'].includes(row.proof.result.disposition))
   );
   for (const row of unresolved)
     refuseScope(core.dataRoot, { scope: 'workspace', id: row.workspace_id, check: 'recovery' });
@@ -112,6 +123,7 @@ export function restoreWorkspaceRecoveryAdmission(
   };
   // Capture protection also survives a failure before complete bundle facts can be recorded in Core.
   for (const id of registered) {
+    if (opaque.has(id)) continue;
     if (!isScopeAdmitted(core.dataRoot, 'workspace', id)) {
       const failure = scopeAdmissionFailures(core.dataRoot).find(
         (row) => row.scope === 'workspace' && row.id === id && row.check !== 'index'
@@ -191,6 +203,10 @@ export function restoreWorkspaceRecoveryAdmission(
   // Already-refused captures skip reopening above; their existing refusal still closes every producer.
   for (const failure of scopeAdmissionFailures(core.dataRoot)) {
     if (failure.scope !== 'workspace' || failure.check === 'index') continue;
+    if (opaque.has(failure.id)) {
+      mutationAdmission?.restoreClosed(failure.id, 'capture');
+      continue;
+    }
     const owners = unresolved.filter((row) => row.workspace_id === failure.id);
     if (failure.check === 'recovery' && owners.length === 1) {
       const owner = owners[0]!;

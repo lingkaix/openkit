@@ -29,7 +29,7 @@ import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { WORKSPACE_BACKUP_POLICY } from './storage/workspace-backup.js';
 import { readWorkspaceSnapshotMetadata } from './storage/workspace-backup-bundle.js';
-import { readRecoveryAdmission } from './storage/workspace-recovery-admissions.js';
+import { readRecoveryExecution } from './storage/workspace-recovery-journal.js';
 import {
   createAppWithLocalIdentity as createApp,
   createTestSessionActor,
@@ -796,10 +796,10 @@ it('continues the original committed recovery after serving activation fails wit
           }
         )
       );
-    let committed: ReturnType<typeof readRecoveryAdmission>;
+    let committed: ReturnType<typeof readRecoveryExecution>;
     let committedRegistry: ReturnType<typeof getWorkspaceRegistryLifecycleFact>;
     activation.mockImplementationOnce(() => {
-      committed = readRecoveryAdmission(f.coreDb, requestId);
+      committed = readRecoveryExecution(f.coreDb, requestId);
       committedRegistry = getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId);
       throw new Error('Injected serving activation failure after the Core result.');
     });
@@ -846,7 +846,7 @@ it('continues the original committed recovery after serving activation fails wit
     expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(
       fencedImage
     );
-    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(committed!);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
     expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
     // Recompose the real App from retained owners; this is not a cold-process restart claim.
@@ -877,7 +877,7 @@ it('continues the original committed recovery after serving activation fails wit
     expect(refused.status, await refused.clone().text()).toBe(409);
     await expect(refused.json()).resolves.toMatchObject({ code: 'recovery_required' });
     expect(existsSync(unreviewed)).toBe(true);
-    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(committed!);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
     expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
     expect(restartedGate.isClosed(f.workspaceId)).toBe(true);
@@ -897,7 +897,7 @@ it('continues the original committed recovery after serving activation fails wit
       restrictedRecovery: false,
       nextAction: 'none',
     });
-    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(committed!);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
     expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
     expect(restartedGate.isClosed(f.workspaceId)).toBe(false);
@@ -910,7 +910,7 @@ it('continues the original committed recovery after serving activation fails wit
     expect(replay.status, await replay.clone().text()).toBe(200);
     expect(await replay.json()).toEqual(result);
     expect(restartedStore.getThread(f.workspaceId, later.id)).toEqual(later);
-    expect(readRecoveryAdmission(f.coreDb, requestId)).toEqual(committed!);
+    expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(committed!);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
     expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
   } finally {

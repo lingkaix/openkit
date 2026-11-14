@@ -52,9 +52,9 @@ import {
   withVerifiedWorkspaceSnapshotSource,
 } from './storage/workspace-backup-bundle.js';
 import {
-  readRecoveryAdmission,
+  readRecoveryExecution,
   resumeWorkspaceRecoveryOwner,
-} from './storage/workspace-recovery-admissions.js';
+} from './storage/workspace-recovery-journal.js';
 import { finishWorkspaceRecoveryAtCore } from './storage/workspace-restore.js';
 import { recordTestAgentEnvironmentPackage } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
@@ -67,6 +67,7 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
+import { recoveryJournalFact } from './test-support/recovery-journal.js';
 import { WORKSPACE_DELETION_LEGAL_HOLD_OWNERS } from './workspace-deletion-evidence.js';
 import * as deletionRequestOwner from './workspace-deletion-request.js';
 import {
@@ -2918,9 +2919,7 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
       members: f.coreDb.sqlite
         .prepare('SELECT * FROM workspace_members ORDER BY workspace_id,user_id')
         .all(),
-      admission: f.coreDb.sqlite
-        .prepare('SELECT * FROM workspace_recovery_admissions WHERE admission_id=?')
-        .get(recoveryRequestId),
+      admission: recoveryJournalFact(f.coreDb.sqlite, recoveryRequestId, f.dataRoot),
       audit: f.coreDb.sqlite
         .prepare(
           "SELECT * FROM audit_events WHERE action='workspace.deleted-recover' AND request_id=? ORDER BY rowid"
@@ -2932,8 +2931,8 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
     // The final admission state change follows registry reactivation, its Audit
     // and the updated original report. They must all roll back with this fault.
     f.coreDb.sqlite.exec(`CREATE TRIGGER deletion_recovery_terminal_failure
-      BEFORE UPDATE OF state ON workspace_recovery_admissions
-      WHEN NEW.state='finished'
+      BEFORE UPDATE OF phase ON control_executions
+      WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause IS NULL
       BEGIN SELECT RAISE(ABORT, 'DELETION_RECOVERY_TERMINAL_FAULT'); END`);
     const refused = await recover();
     expect(refused.status, await refused.clone().text()).toBe(200);
@@ -2964,7 +2963,7 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
     expect(existsSync(join(f.dataRoot, 'workspaces', f.workspace.id))).toBe(true);
     expect(existsSync((prepared.admission as { candidate_ref: string }).candidate_ref)).toBe(false);
     const placedBytes = stagedDeletionBytes(join(f.dataRoot, 'workspaces', f.workspace.id));
-    const owned = readRecoveryAdmission(f.coreDb, recoveryRequestId)!;
+    const owned = readRecoveryExecution(f.coreDb, recoveryRequestId)!;
     // The original public admission already fenced this empty fixture's runtime.
     // Rejoin its exact owner for the SQL tuple; physical digest/integrity checks
     // still run in the real selected producer, without another public census.
@@ -3002,7 +3001,9 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
     f.coreDb.sqlite.pragma('query_only = ON');
     expect(() =>
       f.coreDb.sqlite
-        .prepare('UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?')
+        .prepare(
+          `UPDATE control_executions SET revision=revision WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
+        )
         .run(recoveryRequestId)
     ).toThrow(/readonly/i);
     const selectedResult = await finish();

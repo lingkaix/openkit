@@ -56,6 +56,10 @@ import {
 } from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  recoveryJournalFact,
+  replaceRecoveryJournalProof,
+} from '../test-support/recovery-journal.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -86,17 +90,17 @@ import { protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope, readNativeTurnHistory } from './workspace-file-records.js';
 import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
 import {
-  bindWorkspaceRecoveryNativeOwner,
-  openRecoveryDatabase,
-  readRecoveryAdmission,
-  resumeWorkspaceRecoveryOwner,
-  workspaceRecoveryPredecessorRoot,
-} from './workspace-recovery-admissions.js';
-import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
 } from './workspace-recovery-cli.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  bindWorkspaceRecoveryNativeOwner,
+  openRecoveryDatabase,
+  readRecoveryExecution,
+  resumeWorkspaceRecoveryOwner,
+  workspaceRecoveryPredecessorRoot,
+} from './workspace-recovery-journal.js';
 import {
   abandonWorkspaceRecoveryAtCore,
   activateWorkspaceRecoveryAtCore,
@@ -199,6 +203,7 @@ vi.mock('node:worker_threads', async (load) => {
             return;
           }
           const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
             const { workerData, parentPort } = require('node:worker_threads');
             const fs = require('node:fs');
             const { createHash } = require('node:crypto');
@@ -259,9 +264,7 @@ vi.mock('node:worker_threads', async (load) => {
             Database.prototype.exec = function(sql) {
               const result = execute.call(this, sql);
               if (/^COMMIT$/i.test(sql) && this.name === facts.corePath) {
-                const row = this.prepare(
-                  'SELECT state,workspace_id FROM workspace_recovery_admissions WHERE admission_id=?'
-                ).get(facts.admissionId);
+                const row = recoveryJournalFact(this, facts.admissionId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
                 if (row?.state === 'finished' && row.workspace_id === facts.workspaceId) {
                   if (this.inTransaction) throw new Error('Q05 covering COMMIT is still active.');
                   Atomics.store(gate,2,pragma.call(this,'synchronous',{simple:true}));
@@ -323,6 +326,7 @@ vi.mock('node:worker_threads', async (load) => {
           return;
         }
         const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
           const { workerData } = require('node:worker_threads');
           const Database = require(workerData.databaseModule);
           const execute = Database.prototype.exec;
@@ -330,9 +334,7 @@ vi.mock('node:worker_threads', async (load) => {
           Database.prototype.exec = function(sql) {
             const result = execute.call(this, sql);
             if (/^COMMIT$/i.test(sql) && this.name === workerData.corePath && Atomics.load(gate, 2)) {
-              const admission = this.prepare(
-                'SELECT state, workspace_id FROM workspace_recovery_admissions WHERE admission_id=?'
-              ).get(workerData.admissionId);
+              const admission = recoveryJournalFact(this, workerData.admissionId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
               if (admission?.state === 'finished' && admission.workspace_id === workerData.workspaceId &&
                   Atomics.load(gate, 0) === 0) {
                 Atomics.store(gate, 3, this.pragma('synchronous', { simple: true }));
@@ -805,7 +807,7 @@ async function readmissionFixture(
   const gate = new WorkspaceMutationAdmission();
   restoreWorkspaceRecoveryAdmission(core, gate);
   f.store.setWorkspaceMutationAdmission(gate);
-  const prepared = readRecoveryAdmission(core, f.requestId)!;
+  const prepared = readRecoveryExecution(core, f.requestId)!;
   expect(prepared.state).toBe('prepared');
   const freeze = resumeWorkspaceRecoveryOwner(core, prepared, gate, () => []);
   if (freeze.status !== 'frozen') throw new Error('Expected the boot-restored recovery freeze.');
@@ -870,11 +872,12 @@ describe('D0-2 same-deployment restore', () => {
       selection: { kind: 'admission' as const, requestId: f.requestId },
     };
     const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
-    const before = readRecoveryAdmission(core, f.requestId)!;
+    const before = readRecoveryExecution(core, f.requestId)!;
     const tuple = () =>
       Object.fromEntries(
         [
-          'workspace_recovery_admissions',
+          'control_executions',
+          'control_execution_steps',
           'workspace_registry',
           'workspace_members',
           'recurring_schedules',
@@ -907,7 +910,7 @@ describe('D0-2 same-deployment restore', () => {
       expect(registrationInterception.replied).toBe(false);
       expect(Atomics.load(gate, 3)).toBe(2);
       const committed = tuple();
-      const finished = readRecoveryAdmission(core, f.requestId)!;
+      const finished = readRecoveryExecution(core, f.requestId)!;
       expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
       expect(finished.proof.result).toMatchObject({ disposition: 'restored', workspaceId });
       expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
@@ -1002,7 +1005,8 @@ describe('D0-2 same-deployment restore', () => {
       const tuple = () =>
         Object.fromEntries(
           [
-            'workspace_recovery_admissions',
+            'control_executions',
+            'control_execution_steps',
             'workspace_registry',
             'workspace_members',
             'recurring_schedules',
@@ -1097,9 +1101,8 @@ describe('D0-2 same-deployment restore', () => {
             writer.sqlite.close();
           }
           expected = tuple();
-          expect(expected.workspace_recovery_admissions).toEqual(
-            before.workspace_recovery_admissions
-          );
+          expect(expected.control_executions).toEqual(before.control_executions);
+          expect(expected.control_execution_steps).toEqual(before.control_execution_steps);
           expect(expected.workspace_registry).toContainEqual(
             expect.objectContaining({
               workspace_id: workspaceId,
@@ -1114,7 +1117,7 @@ describe('D0-2 same-deployment restore', () => {
         expect(tuple()).toEqual(expected);
         expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-        expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+        expect(readRecoveryExecution(core, f.requestId)?.state).toBe('prepared');
       } finally {
         release();
         await command;
@@ -1130,13 +1133,14 @@ describe('D0-2 same-deployment restore', () => {
     'selected registration preserves retained report compatibility for %s before committing its result',
     async (shape) => {
       const f = await readmissionFixture(false, 'after-target-rename');
-      const retained = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const retained = readRecoveryExecution(f.owner.core, f.requestId)!;
       expect(retained.state).toBe('prepared');
       expect(retained.proof.candidateDigest).toBeTypeOf('string');
-      const rawProof = f.owner.core.sqlite
-        .prepare('SELECT proof_json FROM workspace_recovery_admissions WHERE admission_id=?')
-        .pluck()
-        .get(f.requestId) as string;
+      const rawProof = recoveryJournalFact(
+        f.owner.core.sqlite,
+        f.requestId,
+        f.dataRoot
+      )!.proof_json;
       const parent = verifyDataRootBackupManifest({
         backupRoot: join(dirname(f.dataRoot), 'parent'),
       }).manifest;
@@ -1164,20 +1168,17 @@ describe('D0-2 same-deployment restore', () => {
       const injected = { ...retained.proof, capture, result };
       // Retained-content fault/format specimen after genuine placement, following
       // the existing recovery-admission owner's corruption fixture. No authority changes.
-      const changed = f.owner.core.sqlite
-        .prepare(`UPDATE workspace_recovery_admissions
-      SET proof_json=? WHERE admission_id=? AND workspace_id=? AND state='prepared'
-      AND revision=? AND candidate_ref=? AND proof_json=?`)
-        .run(
-          JSON.stringify(injected),
-          f.requestId,
-          retained.workspace_id,
-          retained.revision,
-          retained.candidate_ref,
-          rawProof
-        );
+      expect(recoveryJournalFact(f.owner.core.sqlite, f.requestId, f.dataRoot)!.proof_json).toBe(
+        rawProof
+      );
+      const changed = replaceRecoveryJournalProof(
+        f.owner.core.sqlite,
+        f.requestId,
+        f.dataRoot,
+        injected
+      );
       expect(changed.changes).toBe(1);
-      const installed = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const installed = readRecoveryExecution(f.owner.core, f.requestId)!;
       expect(installed.state).toBe(retained.state);
       expect(installed.revision).toBe(retained.revision);
       expect(installed.candidate_ref).toBe(retained.candidate_ref);
@@ -1244,11 +1245,12 @@ describe('D0-2 same-deployment restore', () => {
           publication.mockRestore();
         }
       });
-      const before = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const before = readRecoveryExecution(f.owner.core, f.requestId)!;
       const tuple = () =>
         Object.fromEntries(
           [
-            'workspace_recovery_admissions',
+            'control_executions',
+            'control_execution_steps',
             'workspace_registry',
             'workspace_members',
             'recurring_schedules',
@@ -1272,7 +1274,7 @@ describe('D0-2 same-deployment restore', () => {
           Error
         );
         expect(tuple()).toEqual(original);
-        expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(before);
+        expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(before);
       } else {
         const result = await finishWorkspaceRecoveryAtCore(f.owner, selected);
         const expected = {
@@ -1282,7 +1284,7 @@ describe('D0-2 same-deployment restore', () => {
           nextAction: 'none',
         };
         expect(result).toEqual({ ...expected, command: 'finish', selection: selected.selection });
-        const finished = readRecoveryAdmission(f.owner.core, f.requestId)!;
+        const finished = readRecoveryExecution(f.owner.core, f.requestId)!;
         expect(finished).toMatchObject({ state: 'finished', revision: before.revision + 1 });
         expect(finished.proof).toEqual({ ...before.proof, result: expected });
         const committed = tuple();
@@ -1362,7 +1364,8 @@ describe('D0-2 same-deployment restore', () => {
     const tuple = () =>
       Object.fromEntries(
         [
-          'workspace_recovery_admissions',
+          'control_executions',
+          'control_execution_steps',
           'workspace_registry',
           'workspace_members',
           'recurring_schedules',
@@ -1374,11 +1377,11 @@ describe('D0-2 same-deployment restore', () => {
         ].map((table) => [table, rows(corePath, table)])
       );
     const before = tuple();
-    const prepared = readRecoveryAdmission(core, f.requestId)!;
+    const prepared = readRecoveryExecution(core, f.requestId)!;
     const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
     const sibling = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id));
     core.sqlite.exec(`CREATE TRIGGER restore_terminal_failure
-      BEFORE UPDATE OF state ON workspace_recovery_admissions WHEN NEW.state='finished'
+      BEFORE UPDATE OF phase ON control_executions WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause IS NULL
       BEGIN SELECT RAISE(ABORT, 'RESTORE_TERMINAL_FAULT'); END`);
     const selected = {
       dataRoot: f.dataRoot,
@@ -1387,7 +1390,7 @@ describe('D0-2 same-deployment restore', () => {
     };
     await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).rejects.toBeInstanceOf(Error);
     expect(tuple()).toEqual(before);
-    expect(readRecoveryAdmission(core, f.requestId)).toEqual(prepared);
+    expect(readRecoveryExecution(core, f.requestId)).toEqual(prepared);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id))).toEqual(sibling);
     expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
@@ -1430,7 +1433,7 @@ describe('D0-2 same-deployment restore', () => {
     );
     expect(committed.workspace_registry).toEqual(before.workspace_registry);
     expect(committed.workspace_members).toEqual(before.workspace_members);
-    const finished = readRecoveryAdmission(core, f.requestId)!;
+    const finished = readRecoveryExecution(core, f.requestId)!;
     expect(finished).toMatchObject({ state: 'finished', revision: prepared.revision + 1 });
     expect(finished.proof.result).toMatchObject({ disposition: 'restored', workspaceId });
     await expect(finishWorkspaceRecoveryAtCore(f.owner, selected)).resolves.toEqual(result);
@@ -1441,7 +1444,7 @@ describe('D0-2 same-deployment restore', () => {
   it('finishes the exact placed restore through the native Core owner with query-only Main', async () => {
     const f = await readmissionFixture(false, 'after-target-rename');
     const core = f.owner.core;
-    const before = readRecoveryAdmission(core, f.requestId)!;
+    const before = readRecoveryExecution(core, f.requestId)!;
     const corePath = coreDbPath(f.dataRoot);
     const registry = rows(corePath, 'workspace_registry');
     const members = rows(corePath, 'workspace_members');
@@ -1453,7 +1456,9 @@ describe('D0-2 same-deployment restore', () => {
     core.sqlite.pragma('query_only = ON');
     expect(() =>
       core.sqlite
-        .prepare('UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?')
+        .prepare(
+          `UPDATE control_executions SET revision=revision WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
+        )
         .run(f.requestId)
     ).toThrow(/readonly/i);
     const selection = { kind: 'admission' as const, requestId: f.requestId };
@@ -1469,7 +1474,7 @@ describe('D0-2 same-deployment restore', () => {
       selection,
       nextAction: 'none',
     });
-    const finished = readRecoveryAdmission(core, f.requestId)!;
+    const finished = readRecoveryExecution(core, f.requestId)!;
     expect(finished).toMatchObject({
       admission_id: before.admission_id,
       workspace_id: workspaceId,
@@ -1495,7 +1500,7 @@ describe('D0-2 same-deployment restore', () => {
     await expect(
       finishWorkspaceRecoveryAtCore(f.owner, { dataRoot: f.dataRoot, workspaceId, selection })
     ).resolves.toEqual(result);
-    expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+    expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
   }, 120_000);
 
   it('selected abandon closes an unsealed native candidate before terminal authority or byte retirement', async () => {
@@ -1527,14 +1532,14 @@ describe('D0-2 same-deployment restore', () => {
     const actualClose = client.close.bind(client);
     const closing = vi.spyOn(client, 'close').mockImplementation(async (...args) => {
       if (args[0] !== candidateDatabase) return actualClose(...args);
-      const owned = readRecoveryAdmission(core, f.requestId)!;
+      const owned = readRecoveryExecution(core, f.requestId)!;
       // Scoped Freeze requires actual writer exclusion before the first terminal Core effect.
       expect(owned.state).toBe('prepared');
       expect(existsSync(owned.candidate_ref)).toBe(true);
       if (refuseClose) throw closeFailure;
       await actualClose(...args);
       closed = true;
-      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('prepared');
+      expect(readRecoveryExecution(core, f.requestId)?.state).toBe('prepared');
       expect(existsSync(owned.candidate_ref)).toBe(true);
     });
     try {
@@ -1550,7 +1555,7 @@ describe('D0-2 same-deployment restore', () => {
         })
       ).rejects.toBe(closeFailure);
       await expect(cleanup.mock.results[0]!.value).rejects.toBe(preparationFailure);
-      const prepared = readRecoveryAdmission(core, f.requestId)!;
+      const prepared = readRecoveryExecution(core, f.requestId)!;
       expect(prepared.state).toBe('prepared');
       expect(prepared.proof.candidateDigest).toBeUndefined();
       expect(candidateDatabase).toBe(
@@ -1564,7 +1569,7 @@ describe('D0-2 same-deployment restore', () => {
         selection: { kind: 'admission' as const, requestId: f.requestId },
       };
       await expect(abandonWorkspaceRecoveryAtCore(owner, selected)).rejects.toThrow();
-      expect(readRecoveryAdmission(core, f.requestId)).toEqual(prepared);
+      expect(readRecoveryExecution(core, f.requestId)).toEqual(prepared);
       expect(inventoryRegularFiles(prepared.candidate_ref)).toEqual(candidateBefore);
       expect(closed).toBe(false);
       expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
@@ -1573,7 +1578,7 @@ describe('D0-2 same-deployment restore', () => {
         disposition: 'abandoned',
       });
       expect(closed).toBe(true);
-      expect(readRecoveryAdmission(core, f.requestId)?.state).toBe('abandoned');
+      expect(readRecoveryExecution(core, f.requestId)?.state).toBe('abandoned');
       expect(existsSync(prepared.candidate_ref)).toBe(false);
       // Native close can checkpoint SQLite; retained non-database content must stay exact.
       expect(
@@ -1591,7 +1596,7 @@ describe('D0-2 same-deployment restore', () => {
     'readmission: selected abandon validates and reopens the preserved predecessor after %s',
     async (interruption) => {
       const f = await readmissionFixture(false, interruption);
-      const prepared = readRecoveryAdmission(f.owner.core, f.requestId)!;
+      const prepared = readRecoveryExecution(f.owner.core, f.requestId)!;
       const candidate = existsSync(prepared.candidate_ref)
         ? prepared.candidate_ref
         : join(f.dataRoot, 'workspaces', workspaceId);
@@ -1604,7 +1609,7 @@ describe('D0-2 same-deployment restore', () => {
       };
       const result = await abandonWorkspaceRecoveryAtCore(f.owner, selected);
       expect(result).toMatchObject({ disposition: 'abandoned', nextAction: 'none' });
-      const abandoned = readRecoveryAdmission(f.owner.core, f.requestId);
+      const abandoned = readRecoveryExecution(f.owner.core, f.requestId);
       expect(abandoned?.state).toBe('abandoned');
       // Target Admission requires retirement to preserve owned bytes, including retained holds.
       expect(inventoryRegularFiles(join(dirname(prepared.candidate_ref), 'abandoned'))).toEqual(
@@ -1631,7 +1636,7 @@ describe('D0-2 same-deployment restore', () => {
         })
       ).toEqual(result);
       expect(checkedAuthority).toBe(true);
-      expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(abandoned);
+      expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(abandoned);
       expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
       // Same-Deployment Restore step 5 requires canonical authority, not the retired candidate.
       expect(f.store.getThread(workspaceId, f.staleThread.id)).toMatchObject({
@@ -1695,7 +1700,7 @@ describe('D0-2 same-deployment restore', () => {
     const f = await readmissionFixture();
     const result = await admitWorkspaceBackupAtCore(f.owner, f.input);
     expect(result).toMatchObject({ disposition: 'restored', workspaceId });
-    const finished = readRecoveryAdmission(f.owner.core, f.requestId);
+    const finished = readRecoveryExecution(f.owner.core, f.requestId);
     expect(finished?.state).toBe('finished');
     expect(() => f.store.getWorkspace(workspaceId)).toThrow();
     await expect(f.store.createThread(workspaceId, 'Still closed')).rejects.toBeInstanceOf(Error);
@@ -1723,7 +1728,7 @@ describe('D0-2 same-deployment restore', () => {
     });
     expect(activated).toEqual(result);
     expect(checkedAuthority).toBe(true);
-    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(finished);
+    expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(finished);
     expect(scopeAdmissionFailures(f.dataRoot)).toEqual(independent);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
     // Same-Deployment Restore step 5 requires the restored authority, never the predecessor cache.
@@ -1764,13 +1769,13 @@ describe('D0-2 same-deployment restore', () => {
     );
     assertClosed();
     // A previous result cannot settle the later recovery which owns the resumed boot closure.
-    expect(readRecoveryAdmission(f.owner.core, f.priorRequestId!)?.state).toBe('finished');
+    expect(readRecoveryExecution(f.owner.core, f.priorRequestId!)?.state).toBe('finished');
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: f.priorRequestId! })
     ).toThrow(WorkspaceRecoveryError);
     assertClosed();
     const result = await admitWorkspaceBackupAtCore(f.owner, f.input);
-    const finished = readRecoveryAdmission(f.owner.core, f.requestId);
+    const finished = readRecoveryExecution(f.owner.core, f.requestId);
     expect(result.disposition).toBe('restored');
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, {
@@ -1839,7 +1844,7 @@ describe('D0-2 same-deployment restore', () => {
     f.freeze.release();
     expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow();
     assertClosed();
-    expect(readRecoveryAdmission(f.owner.core, f.requestId)).toEqual(finished);
+    expect(readRecoveryExecution(f.owner.core, f.requestId)).toEqual(finished);
   }, 120_000);
 
   it('prepares an admitted frozen target under the existing root lock without publishing it', async () => {
@@ -1859,7 +1864,7 @@ describe('D0-2 same-deployment restore', () => {
           f.dataRoot,
           () => 128n * 1024n * 1024n,
           () => {
-            if (readRecoveryAdmission(core, f.requestId)?.state === 'prepared')
+            if (readRecoveryExecution(core, f.requestId)?.state === 'prepared')
               preparedCapacityChecks++;
             return 512n * 1024n * 1024n;
           }
@@ -1883,7 +1888,7 @@ describe('D0-2 same-deployment restore', () => {
         admitWorkspaceBackupAtCore(owner, { ...input, dataRoot: wrongRoot })
       ).rejects.toBeInstanceOf(WorkspaceRecoveryError);
       expect(existsSync(wrongRoot)).toBe(false);
-      expect(readRecoveryAdmission(core, f.requestId)).toBeUndefined();
+      expect(readRecoveryExecution(core, f.requestId)).toBeUndefined();
       let reachedPlacement = false;
       let capacityChecksBeforePlacement = 0;
       let ordinary: Promise<unknown> | undefined;
@@ -1904,7 +1909,7 @@ describe('D0-2 same-deployment restore', () => {
       expect(capacityChecksBeforePlacement).toBeGreaterThan(0);
       expect(await ordinary).toMatchObject({ code: 'workspace_frozen' });
       expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
-      const owned = readRecoveryAdmission(core, f.requestId)!;
+      const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned).toMatchObject({ state: 'prepared', workspace_id: workspaceId });
       expect(owned.proof.manifest).toEqual(f.manifest);
       expect(owned.proof.result.disposition).toBe('quarantined');
@@ -1949,7 +1954,7 @@ describe('D0-2 same-deployment restore', () => {
     expect(reachedPlacement).toBe(true);
     const core = openCoreDb(f.dataRoot);
     try {
-      const owned = readRecoveryAdmission(core, f.requestId)!;
+      const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned.state).toBe('prepared');
       const gate = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(core, gate);
@@ -2016,7 +2021,7 @@ describe('D0-2 same-deployment restore', () => {
         check: 'retired',
       });
       expect(gate.enter(workspaceId)).toBeNull();
-      expect(readRecoveryAdmission(core, f.requestId)).toEqual(owned);
+      expect(readRecoveryExecution(core, f.requestId)).toEqual(owned);
     } finally {
       core.sqlite.close();
     }
@@ -2048,7 +2053,7 @@ describe('D0-2 same-deployment restore', () => {
     ).rejects.toMatchObject({ code: 'recovery-required' });
     expect(reachedPlacement).toBe(true);
     const core = openCoreDb(f.dataRoot);
-    const owned = readRecoveryAdmission(core, f.requestId)!;
+    const owned = readRecoveryExecution(core, f.requestId)!;
     expect(owned.state).toBe('prepared');
     const gate = new WorkspaceMutationAdmission();
     const otherGate = new WorkspaceMutationAdmission();
@@ -2151,7 +2156,7 @@ describe('D0-2 same-deployment restore', () => {
       expect(rows(candidateScope.path, 'control_workspaces')).toEqual(candidateBefore);
       expect(rows(canonicalScope.path, 'control_workspaces')).toEqual(canonicalBefore);
       expect(rows(canonicalScope.path, 'control_threads')).toEqual(threadsBefore);
-      expect(readRecoveryAdmission(core, f.requestId)).toEqual(owned);
+      expect(readRecoveryExecution(core, f.requestId)).toEqual(owned);
     } finally {
       frozen.release();
       other.release();
@@ -2849,7 +2854,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
       currentAuthority();
       const report = await admitWorkspaceBackupAtCore(owner, f.input);
       expect(report).toMatchObject({ disposition: 'restored', workspaceId });
-      const finished = readRecoveryAdmission(core, f.requestId);
+      const finished = readRecoveryExecution(core, f.requestId);
       expect(finished?.state).toBe('finished');
       const failures = scopeAdmissionFailures(f.dataRoot);
       const sibling = f.store.getWorkspace(f.sibling.id);
@@ -2909,7 +2914,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
         expect(() => f.store.getWorkspace(workspaceId)).toThrow();
         expect(f.runtimeConfigManager.current()).toBe(previous);
-        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
         expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
         expect(f.store.getWorkspace(f.sibling.id)).toEqual(sibling);
 
@@ -2919,7 +2924,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
         releaseInspect();
         const result = await outcome;
         expect(settled).toBe(true);
-        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
         expect(f.store.getWorkspace(f.sibling.id)).toEqual(sibling);
         if (fault === 'current-owner') {
           expect(result.status).toBe('fulfilled');
@@ -3310,7 +3315,7 @@ describe('Q05 live selected recovery inspection policy', () => {
       // Restart only its physical native hosts, as the existing lost-reply case does.
       await shutdownControlStoreWorkerClient();
       const core = f.owner.core;
-      const before = readRecoveryAdmission(core, f.requestId)!;
+      const before = readRecoveryExecution(core, f.requestId)!;
       const canonical = workspaceDbPath(f.dataRoot, workspaceId);
       const placed = interruption === 'after-target-rename';
       const selectedRoot = existsSync(before.candidate_ref)
@@ -3339,7 +3344,7 @@ describe('Q05 live selected recovery inspection policy', () => {
       expect(() =>
         core.sqlite
           .prepare(
-            'UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?'
+            `UPDATE control_executions SET revision=revision WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
           )
           .run(f.requestId)
       ).toThrow(/readonly/i);
@@ -3410,7 +3415,7 @@ describe('Q05 live selected recovery inspection policy', () => {
           selection,
           nextAction: 'none',
         });
-        const finished = readRecoveryAdmission(core, f.requestId)!;
+        const finished = readRecoveryExecution(core, f.requestId)!;
         expect(finished).toMatchObject({
           admission_id: before.admission_id,
           workspace_id: workspaceId,
@@ -3501,7 +3506,7 @@ describe('Q05 live selected recovery inspection policy', () => {
             expectedRelease: f.manifest.release,
           })
         ).resolves.toEqual(result);
-        expect(readRecoveryAdmission(core, f.requestId)).toEqual(finished);
+        expect(readRecoveryExecution(core, f.requestId)).toEqual(finished);
         expect(recoveryInspectionObservation.posts).toHaveLength(1);
       } finally {
         main.stop();

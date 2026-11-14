@@ -10,9 +10,17 @@ import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
+import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
+import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
+import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recoveryJournalFact, recoveryJournalFacts } from '../test-support/recovery-journal.js';
+import {
+  publishWorkspaceOwnerMembership,
+  recordWorkspaceOwnerMembership,
+} from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import {
@@ -28,7 +36,7 @@ import {
   moveOutWorkspace,
   reactivateWorkspace,
 } from './workspace-move.js';
-import * as admissions from './workspace-recovery-admissions.js';
+import * as admissions from './workspace-recovery-journal.js';
 
 const workspaceId = DEMO_WORKSPACE_ID;
 const roots: string[] = [];
@@ -91,6 +99,7 @@ vi.mock('node:worker_threads', async (load) => {
           return;
         }
         const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
           const { workerData } = require('node:worker_threads');
           const Database = require(workerData.databaseModule);
           const execute = Database.prototype.exec;
@@ -107,8 +116,7 @@ vi.mock('node:worker_threads', async (load) => {
                 complete = row?.revision === workerData.expectedRevision + 1 &&
                   !JSON.parse(row.record_json).movedOut && audit.count === workerData.originalAuditCount + 1;
               } else {
-                const row = this.prepare('SELECT state,revision,proof_json FROM workspace_recovery_admissions WHERE admission_id=? AND workspace_id=?')
-                  .get(workerData.backupId, workerData.workspaceId);
+                const row = recoveryJournalFact(this, workerData.backupId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
                 const original = JSON.parse(workerData.originalProof);
                 const expected = workerData.stage === 'revoke' ? original : {
                   ...original, result: {...original.result,command:'reactivate',disposition:'reactivated',currentRevision:workerData.expectedRevision + 1,nextAction:'none'}
@@ -266,7 +274,12 @@ function snapshot(f: Fixture) {
   const workspacePath = workspaceDbPath(f.dataRoot, workspaceId);
   cpSync(dirname(corePath), join(copy, 'core'), { recursive: true });
   cpSync(dirname(workspacePath), join(copy, 'workspace'), { recursive: true });
-  const core = rows(join(copy, 'core', 'core.sqlite'), 'workspace_recovery_admissions');
+  const observer = new Database(join(copy, 'core/core.sqlite'), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  const core = recoveryJournalFacts(observer, f.dataRoot);
+  observer.close();
   const workspace = rows(join(copy, 'workspace', 'workspace.sqlite'), 'control_workspaces');
   const audit = rows(join(copy, 'workspace', 'workspace.sqlite'), 'audit_events');
   return {
@@ -412,11 +425,235 @@ async function inspectRetryReplay(
 }
 
 describe('Stopped source reactivation ownership and durable prefixes', () => {
+  it.each(['unsupported-current-marker', 'unreadable-proof'] as const)(
+    'boot contains %s to its addressed Workspace while Core and a healthy sibling remain usable',
+    async (fault) => {
+      const f = await fixture();
+      await expect(reactivateWorkspace(f.input)).resolves.toMatchObject({
+        disposition: 'reactivated',
+      });
+      const store = new FsStore({ dataRoot: f.dataRoot });
+      const healthy = await store.createWorkspace('Healthy recovery sibling');
+      await shutdownControlStoreWorkerClient();
+      const core = databases.openCoreDb(f.dataRoot);
+      try {
+        const ownerUserId = ensureLocalUser(core);
+        // createDemoStore also seeds the real personal Workspace; boot requires its registration.
+        const personalId = quickChatWorkspaceIdForUser(ownerUserId, f.dataRoot);
+        expect(store.getWorkspace(personalId).id).toBe(personalId);
+        for (const id of [personalId, healthy.id])
+          recordWorkspaceOwnerMembership({ coreDb: core, workspaceId: id, ownerUserId });
+        expect(
+          core.sqlite
+            .prepare('SELECT status FROM workspace_registry WHERE workspace_id=?')
+            .pluck()
+            .get(healthy.id)
+        ).toBe('active');
+        expect(admissions.readRecoveryExecution(core, f.backupId)).toMatchObject({
+          workspace_id: workspaceId,
+          state: 'abandoned',
+          proof: { result: { disposition: 'reactivated' } },
+        });
+        const latest = core.sqlite
+          .prepare(`SELECT s.* FROM control_execution_steps s
+          WHERE json_extract(s.invocation_json,'$.carriage.requestId')=?
+          ORDER BY json_extract(s.invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
+          .get(f.backupId) as { execution_id: string; step_id: string; control_json: string };
+        const control = JSON.parse(latest.control_json);
+        const descriptor = JSON.parse(control.inputRefs[0]);
+        const proofPath = join(
+          f.dataRoot,
+          'server/evidence/backend',
+          descriptor.reference.locator.path
+        );
+        const proofBytes = readFileSync(proofPath);
+        if (fault === 'unsupported-current-marker') {
+          core.sqlite.transaction(() => {
+            const triggers = [
+              'control_executions_identity_immutable',
+              'control_execution_steps_settle_once',
+            ].map((name) => {
+              const row = core.sqlite
+                .prepare('SELECT sql FROM sqlite_schema WHERE name=?')
+                .get(name) as { sql: string };
+              core.sqlite.exec(`DROP TRIGGER ${name}`);
+              return row.sql;
+            });
+            try {
+              core.sqlite
+                .prepare('UPDATE control_executions SET definition_version=? WHERE id=?')
+                .run('core-workspace-recovery/v99', latest.execution_id);
+              core.sqlite
+                .prepare(
+                  'UPDATE control_execution_steps SET control_json=? WHERE execution_id=? AND step_id=?'
+                )
+                .run(
+                  JSON.stringify({ ...control, definitionVersion: 'core-workspace-recovery/v99' }),
+                  latest.execution_id,
+                  latest.step_id
+                );
+            } finally {
+              for (const sql of triggers) core.sqlite.exec(sql);
+            }
+          })();
+          expect(readFileSync(proofPath)).toEqual(proofBytes);
+        } else {
+          // Remove only the original current Core body; keep every journal binding intact.
+          rmSync(proofPath);
+          expect(existsSync(proofPath)).toBe(false);
+        }
+        expect(
+          core.sqlite
+            .prepare(`SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN (?,?)`)
+            .all('control_executions_identity_immutable', 'control_execution_steps_settle_once')
+        ).toHaveLength(2);
+        expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError();
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
+        const gate = new WorkspaceMutationAdmission();
+        // Repeated census must neither reopen the opaque scope nor infer a recovery origin.
+        for (let pass = 0; pass < 2; pass++) {
+          expect(() => restoreWorkspaceRecoveryAdmission(core, gate)).not.toThrow();
+          expect(scopeAdmissionFailures(f.dataRoot)).toEqual([
+            { scope: 'workspace', id: workspaceId, check: 'recovery' },
+          ]);
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+          expect(gate.enter(workspaceId)).toBeNull();
+          expect(gate.tryResumeRecovery(workspaceId, { captureId: f.backupId }, () => [])).toEqual({
+            status: 'busy',
+          });
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
+          const release = gate.enter(healthy.id);
+          expect(release).toBeTypeOf('function');
+          release?.();
+        }
+        store.setWorkspaceMutationAdmission(gate);
+        await expect(store.createThread(workspaceId, 'Must stay refused')).rejects.toThrow();
+        await expect(
+          store.createThread(healthy.id, 'Healthy native publication')
+        ).resolves.toMatchObject({ owner: { kind: 'workspace', workspaceId: healthy.id } });
+        const additional = await store.createWorkspace('Core registry still writable');
+        await publishWorkspaceOwnerMembership({
+          coreDb: core,
+          workspaceId: additional.id,
+          ownerUserId,
+        });
+        expect(
+          core.sqlite
+            .prepare('SELECT status FROM workspace_registry WHERE workspace_id=?')
+            .pluck()
+            .get(additional.id)
+        ).toBe('active');
+        expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError();
+      } finally {
+        core.sqlite.close();
+      }
+    },
+    120_000
+  );
+
+  it('refuses an unsupported latest recovery definition instead of replaying an older closed root', async () => {
+    const f = await fixture();
+    const original = rows(coreDbPath(f.dataRoot), 'control_executions');
+    expect(original.every((root) => root.phase === 'closed')).toBe(true);
+    await expect(reactivateWorkspace(f.input)).resolves.toMatchObject({
+      disposition: 'reactivated',
+    });
+    await shutdownControlStoreWorkerClient();
+    const core = databases.openCoreDb(f.dataRoot);
+    try {
+      const current = admissions.readRecoveryExecution(core, f.backupId)!;
+      expect(current).toMatchObject({
+        state: 'abandoned',
+        proof: { result: { disposition: 'reactivated' } },
+      });
+      const latest = core.sqlite
+        .prepare(`SELECT s.* FROM control_execution_steps s
+        WHERE json_extract(s.invocation_json,'$.carriage.requestId')=?
+        ORDER BY json_extract(s.invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
+        .get(f.backupId) as { execution_id: string; step_id: string; control_json: string };
+      expect(original.some((root) => root.id === latest.execution_id)).toBe(false);
+      const root = core.sqlite
+        .prepare('SELECT * FROM control_executions WHERE id=?')
+        .get(latest.execution_id) as Record<string, unknown>;
+      expect(root.phase).toBe('closed');
+      const control = JSON.parse(latest.control_json);
+      const descriptor = JSON.parse(control.inputRefs[0]);
+      const proofPath = join(
+        f.dataRoot,
+        'server/evidence/backend',
+        descriptor.reference.locator.path
+      );
+      const proofBytes = readFileSync(proofPath);
+      // Only the latest current marker changes. This is retained corruption,
+      // not an upgrade corpus or a caller-produced recovery admission.
+      core.sqlite.transaction(() => {
+        const triggers = [
+          'control_executions_identity_immutable',
+          'control_execution_steps_settle_once',
+        ].map((name) => {
+          const row = core.sqlite
+            .prepare('SELECT sql FROM sqlite_schema WHERE name=?')
+            .get(name) as { sql: string };
+          core.sqlite.exec(`DROP TRIGGER ${name}`);
+          return row.sql;
+        });
+        try {
+          core.sqlite
+            .prepare('UPDATE control_executions SET definition_version=? WHERE id=?')
+            .run('core-workspace-recovery/v99', latest.execution_id);
+          core.sqlite
+            .prepare(
+              'UPDATE control_execution_steps SET control_json=? WHERE execution_id=? AND step_id=?'
+            )
+            .run(
+              JSON.stringify({ ...control, definitionVersion: 'core-workspace-recovery/v99' }),
+              latest.execution_id,
+              latest.step_id
+            );
+        } finally {
+          for (const sql of triggers) core.sqlite.exec(sql);
+        }
+      })();
+      const changedRoot = core.sqlite
+        .prepare('SELECT * FROM control_executions WHERE id=?')
+        .get(latest.execution_id);
+      const changedStep = core.sqlite
+        .prepare('SELECT * FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+        .get(latest.execution_id, latest.step_id);
+      expect(changedRoot).toEqual({ ...root, definition_version: 'core-workspace-recovery/v99' });
+      expect(changedStep).toEqual({
+        ...latest,
+        control_json: JSON.stringify({
+          ...control,
+          definitionVersion: 'core-workspace-recovery/v99',
+        }),
+      });
+      expect(readFileSync(proofPath)).toEqual(proofBytes);
+      expect(
+        core.sqlite
+          .prepare(`SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN (?,?)`)
+          .all('control_executions_identity_immutable', 'control_execution_steps_settle_once')
+      ).toHaveLength(2);
+      expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError(
+        expect.objectContaining({ code: 'recovery-required' })
+      );
+    } finally {
+      core.sqlite.close();
+    }
+  }, 120_000);
+
   it('reactivates the real moved-out source while every Main Core and Workspace connection is query-only', async () => {
     const f = await fixture();
     const corePath = coreDbPath(f.dataRoot);
     const workspacePath = workspaceDbPath(f.dataRoot, workspaceId);
-    const beforeCore = rows(corePath, 'workspace_recovery_admissions');
+    const beforeCore = (() => {
+      const db = new Database(corePath, { readonly: true, fileMustExist: true });
+      try {
+        return recoveryJournalFacts(db, f.dataRoot);
+      } finally {
+        db.close();
+      }
+    })();
     const beforeWorkspace = rows(workspacePath, 'control_workspaces');
     const beforeAudit = rows(workspacePath, 'audit_events');
     const ownedBefore = beforeCore.find((row) => row.admission_id === f.backupId)!;
@@ -435,7 +672,7 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
       const prepare = db.prepare.bind(db);
       vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
         const statement = prepare(sql);
-        if (/^UPDATE workspace_recovery_admissions SET state='abandoned'/i.test(sql)) {
+        if (/^INSERT INTO control_executions/i.test(sql)) {
           const run = statement.run.bind(statement);
           vi.spyOn(statement, 'run').mockImplementation((...parameters: unknown[]) => {
             try {
@@ -483,7 +720,14 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
         nextAction: 'none',
       },
     });
-    const afterCore = rows(corePath, 'workspace_recovery_admissions');
+    const afterCore = (() => {
+      const db = new Database(corePath, { readonly: true, fileMustExist: true });
+      try {
+        return recoveryJournalFacts(db, f.dataRoot);
+      } finally {
+        db.close();
+      }
+    })();
     const ownedAfter = afterCore.find((row) => row.admission_id === f.backupId)!;
     expect(afterCore.filter((row) => row.admission_id !== f.backupId)).toEqual(
       beforeCore.filter((row) => row.admission_id !== f.backupId)
@@ -589,12 +833,12 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
               coreDbPath(f.dataRoot),
               stage === 'revoke'
                 ? `
-          CREATE TRIGGER reactivation_fault AFTER UPDATE ON workspace_recovery_admissions
-          WHEN NEW.admission_id='${f.backupId}' AND NEW.state='abandoned' AND OLD.state='finished'
+          CREATE TRIGGER reactivation_fault AFTER UPDATE OF phase ON control_executions
+          WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause LIKE 'abandoned:%' AND EXISTS (SELECT 1 FROM control_execution_steps WHERE execution_id=NEW.id AND json_extract(invocation_json,'$.carriage.requestId')='${f.backupId}')
           BEGIN SELECT RAISE(ABORT,'deliberate late Core revocation fault'); END`
                 : `
-          CREATE TRIGGER reactivation_fault AFTER UPDATE OF proof_json ON workspace_recovery_admissions
-          WHEN NEW.admission_id='${f.backupId}' AND json_extract(NEW.proof_json,'$.result.disposition')='reactivated'
+          CREATE TRIGGER reactivation_fault AFTER INSERT ON control_execution_steps
+          WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1' AND json_extract(NEW.invocation_json,'$.carriage.requestId')='${f.backupId}' AND json_extract(NEW.invocation_json,'$.carriage.sequence')=(SELECT MAX(json_extract(invocation_json,'$.carriage.sequence'))+1 FROM control_execution_steps WHERE execution_id<>NEW.execution_id AND json_extract(invocation_json,'$.carriage.requestId')='${f.backupId}') AND (SELECT terminal_cause FROM control_executions WHERE id=NEW.inspected_execution_id) LIKE 'abandoned:%'
           BEGIN SELECT RAISE(ABORT,'deliberate late Core result fault'); END`
             );
       const client = getControlStoreWorkerClient();

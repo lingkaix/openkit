@@ -52,11 +52,11 @@ import { parseWorkspaceBackupSeal } from './workspace-backup-bundle.js';
 import { inspectCapture, protectCapture } from './workspace-capture-protection.js';
 import { nativeProductScope } from './workspace-file-records.js';
 import { abandonWorkspaceCaptureAtCore, finishWorkspaceCaptureAtCore } from './workspace-move.js';
-import {
-  readRecoveryAdmission,
-  resumeWorkspaceCaptureOwner,
-} from './workspace-recovery-admissions.js';
 import { WorkspaceRecoveryError } from './workspace-recovery-error.js';
+import {
+  readRecoveryExecution,
+  resumeWorkspaceCaptureOwner,
+} from './workspace-recovery-journal.js';
 
 const roots: string[] = [];
 const handles: (CoreDb | WorkspaceDb)[] = [];
@@ -147,7 +147,7 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
         movedOut?: { backupId: string; manifestDigest: string };
       },
       pin: inspectCapture(db, workspaceId, backupId),
-      core: readRecoveryAdmission(coreDb, backupId),
+      core: readRecoveryExecution(coreDb, backupId),
       audit: listWorkspaceAuditEvents(db, workspaceId).filter(
         (event) => event.action === 'workspace.move-out'
       ),
@@ -257,7 +257,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(finished.core);
+      expect(readRecoveryExecution(reopened, f.backupId)).toEqual(finished.core);
     } finally {
       f.freeze.release();
     }
@@ -281,9 +281,16 @@ describe('exact live source capture finalization', () => {
           workspaceId: f.workspaceId,
           authority: { mode: 'source' },
           file: {
-            name: expect.stringMatching(/^\.proof-[0-9a-f-]+\.json$/),
             byteLength: expect.any(Number),
-            digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+            mediaType: 'application/json',
+            reference: {
+              contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+              locator: {
+                ownerScope: { kind: 'server' },
+                mount: 'backend-evidence',
+                path: expect.stringMatching(/^sha256\/[0-9a-f]{64}$/),
+              },
+            },
           },
         });
       }
@@ -300,7 +307,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(finished.core);
+      expect(readRecoveryExecution(reopened, f.backupId)).toEqual(finished.core);
     } finally {
       f.freeze.release();
     }
@@ -643,7 +650,7 @@ describe('exact live source capture finalization', () => {
         f.owned.coreDb.sqlite.close();
         const reopened = openCoreDb(f.dataRoot);
         handles.push(reopened);
-        expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(retained.core);
+        expect(readRecoveryExecution(reopened, f.backupId)).toEqual(retained.core);
         expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
         if (stage !== 'source-abandon-final') {
           const coldAdmission = new WorkspaceMutationAdmission();
@@ -663,8 +670,8 @@ describe('exact live source capture finalization', () => {
   it('rolls back the exact native source preparation INSERT before any moved-out or seal effect', async () => {
     const f = await fixture(false, false, true);
     const before = f.state();
-    f.owned.coreDb.sqlite.exec(`CREATE TRIGGER refuse_source_prepare BEFORE INSERT ON workspace_recovery_admissions
-      WHEN NEW.admission_id='${f.backupId}' BEGIN SELECT RAISE(ABORT, 'source preparation refused'); END`);
+    f.owned.coreDb.sqlite.exec(`CREATE TRIGGER refuse_source_prepare BEFORE INSERT ON control_execution_steps
+      WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1' AND json_extract(NEW.invocation_json,'$.carriage.requestId')='${f.backupId}' BEGIN SELECT RAISE(ABORT, 'source preparation refused'); END`);
     const post = vi.spyOn(Worker.prototype, 'postMessage');
     try {
       await expect(finishWorkspaceCaptureAtCore(f.owned, f.input, f.freeze)).rejects.toMatchObject({
@@ -691,7 +698,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toBeUndefined();
+      expect(readRecoveryExecution(reopened, f.backupId)).toBeUndefined();
       const coldAdmission = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(f.workspaceId)).toBeNull();
@@ -702,37 +709,44 @@ describe('exact live source capture finalization', () => {
     }
   }, 30_000);
 
-  it('retires its exact private proof after real post-link directory-sync failure without publishing the Core finish report', async () => {
+  it('retains an unreferenced immutable proof after post-link directory-sync failure without publishing the Core finish report', async () => {
     const f = await fixture();
     const before = f.state();
-    const pool = dirname(f.bundleRoot);
+    const pool = join(f.dataRoot, 'server/evidence/backend/sha256');
+    const originalProofs = new Set(readdirSync(pool));
     const parent = lstatSync(pool);
     const handle = await open(pool, 'r');
     const prototype = Object.getPrototypeOf(handle) as FileHandle;
     const sync = prototype.sync;
     await handle.close();
     let publicationFailures = 0;
-    let cleanupSyncs = 0;
     vi.spyOn(prototype, 'sync').mockImplementation(async function (this: FileHandle) {
       const current = await this.stat();
       const selected = current.dev === parent.dev && current.ino === parent.ino;
       const proofs = selected
-        ? readdirSync(pool).filter((name) => /^\.proof-[0-9a-f-]+\.json$/.test(name))
+        ? readdirSync(pool).filter(
+            (name) => /^[0-9a-f]{64}$/.test(name) && !originalProofs.has(name)
+          )
         : [];
       if (selected && proofs.length && publicationFailures === 0) {
         expect(proofs).toHaveLength(1);
         publicationFailures += 1;
-        throw new Error('Injected private proof post-link directory synchronization failure.');
+        throw new Error('Injected immutable proof post-link directory synchronization failure.');
       }
       await sync.call(this);
-      if (selected && publicationFailures === 1 && proofs.length === 0) cleanupSyncs += 1;
     });
     const post = vi.spyOn(Worker.prototype, 'postMessage');
     try {
       await expect(finishWorkspaceCaptureAtCore(f.owned, f.input, f.freeze)).rejects.toThrow();
       expect(publicationFailures).toBe(1);
-      expect(cleanupSyncs).toBe(1);
-      expect(readdirSync(pool).filter((name) => /^\.proof-/.test(name))).toEqual([]);
+      expect(readdirSync(pool).filter((name) => /^\.publish-/.test(name))).toEqual([]);
+      const orphan = readdirSync(pool).filter((name) => !originalProofs.has(name));
+      expect(orphan).toHaveLength(1);
+      expect(
+        f.owned.coreDb.sqlite
+          .prepare(`SELECT 1 FROM control_execution_steps WHERE control_json LIKE ?`)
+          .get(`%sha256:${orphan[0]}%`)
+      ).toBeUndefined();
       const failed = f.state();
       expect(failed.core).toEqual(before.core);
       expect(failed.pin?.state).toBe('finished');
@@ -752,7 +766,7 @@ describe('exact live source capture finalization', () => {
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
-      expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(before.core);
+      expect(readRecoveryExecution(reopened, f.backupId)).toEqual(before.core);
       const coldAdmission = new WorkspaceMutationAdmission();
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(f.workspaceId)).toBeNull();
@@ -819,14 +833,19 @@ describe('exact live source capture finalization', () => {
     async (stage) => {
       const f = await fixture();
       const before = f.state();
-      const condition =
-        stage === 'abandon-final'
-          ? "OLD.state='abandoned' AND json_extract(NEW.proof_json,'$.result.disposition')='abandoned'"
-          : `NEW.state='${stage === 'finish' ? 'finished' : 'abandoned'}'`;
-      const column = stage === 'abandon-final' ? 'proof_json' : 'state';
-      f.owned.coreDb.sqlite.exec(`CREATE TRIGGER refuse_source_report BEFORE UPDATE OF ${column} ON workspace_recovery_admissions
-        WHEN OLD.admission_id='${f.backupId}' AND ${condition}
-        BEGIN SELECT RAISE(ABORT, 'source Core report refused'); END`);
+      const terminal = stage !== 'abandon-final';
+      f.owned.coreDb.sqlite.exec(
+        terminal
+          ? `CREATE TRIGGER refuse_source_report BEFORE UPDATE OF phase ON control_executions
+        WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed'
+          AND EXISTS (SELECT 1 FROM control_execution_steps WHERE execution_id=NEW.id AND json_extract(invocation_json,'$.carriage.requestId')='${f.backupId}')
+        BEGIN SELECT RAISE(ABORT, 'source Core report refused'); END`
+          : `CREATE TRIGGER refuse_source_report AFTER INSERT ON control_execution_steps
+        WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1'
+          AND json_extract(NEW.invocation_json,'$.carriage.requestId')='${f.backupId}'
+          AND (SELECT terminal_cause FROM control_executions WHERE id=NEW.inspected_execution_id) LIKE 'abandoned:%'
+        BEGIN SELECT RAISE(ABORT, 'source Core report refused'); END`
+      );
       try {
         await expect(
           stage === 'finish'
@@ -854,7 +873,7 @@ describe('exact live source capture finalization', () => {
         f.owned.coreDb.sqlite.close();
         const reopened = openCoreDb(f.dataRoot);
         handles.push(reopened);
-        expect(readRecoveryAdmission(reopened, f.backupId)).toEqual(failed.core);
+        expect(readRecoveryExecution(reopened, f.backupId)).toEqual(failed.core);
       } finally {
         if (f.owned.coreDb.sqlite.open)
           f.owned.coreDb.sqlite.exec('DROP TRIGGER IF EXISTS refuse_source_report');
@@ -932,7 +951,7 @@ describe('exact live source capture finalization', () => {
           if (${JSON.stringify(failSync)}) {
             const { FsStore } = await import(${JSON.stringify(new URL('../lib/store.ts', import.meta.url).href)});
             const { readWorkspaceRecoveryBlockers } = await import(${JSON.stringify(new URL('./workspace-backup.ts', import.meta.url).href)});
-            const { resumeWorkspaceCaptureOwner } = await import(${JSON.stringify(new URL('./workspace-recovery-admissions.ts', import.meta.url).href)});
+            const { resumeWorkspaceCaptureOwner } = await import(${JSON.stringify(new URL('./workspace-recovery-journal.ts', import.meta.url).href)});
             const store = new FsStore({ dataRoot: root });
             store.setWorkspaceMutationAdmission(gate);
             const selected = { captureId: ${JSON.stringify(f.backupId)} };
