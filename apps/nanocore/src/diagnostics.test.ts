@@ -163,7 +163,11 @@ describe('Settings diagnostics app API', () => {
         {
           baseUrl: 'https://openrouter.ai/api/v1',
           displayName: 'OpenRouter',
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+          gatewayCapabilities: {
+            chatCompletions: 'native',
+            responses: 'bridged',
+            decisions: 'bridged',
+          },
           id: 'openrouter',
           kind: 'llm-gateway',
           models: ['openai/gpt-5.1'],

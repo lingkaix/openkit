@@ -83,7 +83,11 @@ describe('ProviderRegistry', () => {
           baseUrl: 'https://example.com/v1',
           defaultModel: 'gpt-5.1',
           displayName: 'Redacted Provider',
-          gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+          gatewayCapabilities: {
+            chatCompletions: 'native',
+            responses: 'bridged',
+            decisions: 'bridged',
+          },
           id: 'redacted',
           kind: 'direct',
           models: ['gpt-5.1'],
@@ -91,7 +95,11 @@ describe('ProviderRegistry', () => {
         },
         {
           displayName: 'Codex Subscription',
-          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          gatewayCapabilities: {
+            chatCompletions: 'bridged',
+            responses: 'native',
+            decisions: 'bridged',
+          },
           id: 'codex-work',
           kind: 'oauth',
           models: ['openai-codex/gpt-5.6-sol'],
@@ -250,7 +258,11 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
       apiKey: null,
       baseUrl: 'https://gateway.example.invalid/v1',
       displayName: 'Team Gateway',
-      gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
+      gatewayCapabilities: {
+        chatCompletions: 'native',
+        responses: 'bridged',
+        decisions: 'bridged',
+      },
       id: 'team-gateway',
       models: ['fixture-model'],
       vendor: 'openrouter',
@@ -321,7 +333,7 @@ describe('Provider.kind vocabulary V5 through native profiles and the registry',
       expect(registry.get('openrouter')?.kind).toBe('llm-gateway');
       expect(
         registry.summarize().find(({ id }) => id === 'openrouter')?.gatewayCapabilities
-      ).toEqual({ chatCompletions: 'native', responses: 'bridged' });
+      ).toEqual({ chatCompletions: 'native', responses: 'bridged', decisions: 'bridged' });
       ensureLayout(dataRoot);
       expect(readFileSync(path, 'utf8')).toBe(source);
     } finally {
