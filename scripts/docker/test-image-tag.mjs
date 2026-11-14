@@ -110,6 +110,8 @@ const digest = digestBuildInputs(
     'containers/test-env/browser-tools/package-lock.json',
     'scripts/install-security-tools.mjs',
     'scripts/security-tools.json',
+    'scripts/download-native-client-tools.mjs',
+    'scripts/native-client-tools.json',
     'scripts/retrieval-dictionary.py',
     'packages/retrieval-kernel/vendor/mecab-ipadic-2.7.0-20250920.tar.gz',
     'packages/retrieval-kernel/vendor/IPADIC-COPYING',

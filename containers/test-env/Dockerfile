@@ -114,6 +114,20 @@ RUN node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool
   && node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool osv-scanner --directory /usr/local/bin \
   && node /usr/local/lib/openkit/security-tools/install-security-tools.mjs --tool cargo-auditable --directory /usr/local/bin
 
+# Deterministic credential tests consume these real CLIs against loopback fake services.
+# Keep every supplier version/hash committed; stage ALL verified bytes before installation.
+COPY scripts/download-native-client-tools.mjs scripts/native-client-tools.json /usr/local/lib/openkit/security-tools/
+RUN node /usr/local/lib/openkit/security-tools/download-native-client-tools.mjs /tmp/openkit-native-clients \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends unzip \
+    /tmp/openkit-native-clients/docker-cli.deb \
+    /tmp/openkit-native-clients/openssh-client.deb \
+  && unzip -q /tmp/openkit-native-clients/aws.zip -d /tmp/openkit-native-clients \
+  && /tmp/openkit-native-clients/aws/install --install-dir /opt/openkit-aws-cli --bin-dir /usr/local/bin \
+  && install -m 0755 /tmp/openkit-native-clients/kubectl /usr/local/bin/kubectl \
+  && node --input-type=module -e 'import {readFileSync} from "node:fs"; import {execFileSync} from "node:child_process"; const pins=JSON.parse(readFileSync("/usr/local/lib/openkit/security-tools/native-client-tools.json","utf8")).tools; const probe=(name,args)=>execFileSync(name,args,{encoding:"utf8"}).trim(); for(const [name,pkg] of [["docker","docker-ce-cli"],["openssh","openssh-client"]]) { if(probe("dpkg-query",["-W","-f=${Version}",pkg])!==pins[name].version) throw Error("Installed native client package version mismatch"); } if(!probe("aws",["--version"]).startsWith(`aws-cli/${pins.aws.version} `)) throw Error("AWS CLI version mismatch"); if(JSON.parse(probe("kubectl",["version","--client","--output=json"])).clientVersion.gitVersion!==pins.kubectl.version) throw Error("kubectl version mismatch"); const dockerVersion=pins.docker.version.split(":")[1].split("-")[0]; if(!probe("docker",["--version"]).startsWith(`Docker version ${dockerVersion},`)) throw Error("Docker CLI version mismatch"); execFileSync("ssh",["-V"],{stdio:"inherit"});' \
+  && rm -rf /tmp/openkit-native-clients /var/lib/apt/lists/*
+
 COPY containers/test-env/smoke.sh /usr/local/bin/openkit-test-env-smoke
 RUN chmod +x /usr/local/bin/openkit-test-env-smoke
 

@@ -479,6 +479,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'policy.write',
     'scheduler.admission.cancel',
     'scheduler.admission.retry',
+    'security.canary',
     'workspace.credential-binding.update',
   ]);
 });

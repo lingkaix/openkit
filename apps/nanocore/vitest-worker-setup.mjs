@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
+import { prepareNativeCredentialHelper } from '../../tests/support/native-credential-helper.mjs';
 
 /** Compile the real native Worker once per invocation, before any test starts its clock. */
 export default async function setup() {
@@ -18,6 +19,10 @@ export default async function setup() {
   );
   const root = join(tmpdir(), 'nanocore-worker');
   mkdirSync(root);
+  prepareNativeCredentialHelper({
+    root,
+    cli: join(appRoot, '../../packages/worker-shim/dist/credential-helper-cli.js'),
+  });
   // Preserve compiled-runtime dependency and asset resolution without copying retained test data.
   for (const name of ['node_modules', 'drizzle', 'data-templates']) {
     symlinkSync(join(appRoot, name), join(root, name), 'dir');
