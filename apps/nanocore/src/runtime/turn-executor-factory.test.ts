@@ -6483,31 +6483,44 @@ describe('createConfiguredTurnExecutor', () => {
     let idleCollection = false;
     let arrivedStage: string | undefined;
     const candidateResults: { requestId: string; result: Record<string, unknown> }[] = [];
-    const assertCandidateJournal = (database: typeof coreDb | NonNullable<typeof db>) => {
-      expect(candidateResults).toHaveLength(1);
-      const candidate = candidateResults[0]!;
-      const fingerprint = commandInputHash(candidate.result);
-      const rows = database.sqlite
-        .prepare(`SELECT state, control_json FROM control_execution_steps
-        WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
-          AND json_extract(invocation_json, '$.carriage.operation') = 'workspace.collect'`)
-        .all(candidate.requestId) as { state: string; control_json: string }[];
-      const original = rows.filter(
-        (row) => JSON.parse(row.control_json).kind !== 'consume-receipt'
-      );
-      const consumed = rows.filter(
-        (row) => JSON.parse(row.control_json).kind === 'consume-receipt'
-      );
-      expect(original).toHaveLength(1);
-      expect(original[0]!.state).toBe('completed');
-      expect(JSON.parse(original[0]!.control_json).outputRefs).toEqual([
-        fingerprint,
-        candidate.result.sha256,
-      ]);
-      expect(consumed).toHaveLength(1);
-      expect(consumed[0]!.state).toBe('completed');
-      expect(JSON.parse(consumed[0]!.control_json).inputRefs).toEqual([fingerprint]);
-      expect(JSON.parse(consumed[0]!.control_json).outputRefs).toEqual([fingerprint]);
+    const assertCandidateJournal = () => {
+      // A cleanup boundary can collect separately after a lost capture ACK. Each
+      // exact request still has one original result and one consumption tuple.
+      const candidates = new Map<string, Record<string, unknown>>();
+      for (const candidate of candidateResults) {
+        const original = candidates.get(candidate.requestId);
+        if (original) expect(candidate.result).toStrictEqual(original);
+        else candidates.set(candidate.requestId, candidate.result);
+      }
+      expect(candidates.size).toBeGreaterThan(0);
+      for (const [requestId, result] of candidates) {
+        const fingerprint = commandInputHash(result);
+        const rows = [coreDb, db!].flatMap((database) => {
+          const records = database.sqlite
+            .prepare(`SELECT state, control_json FROM control_execution_steps
+            WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
+              AND json_extract(invocation_json, '$.carriage.operation') = 'workspace.collect'`)
+            .all(requestId) as { state: string; control_json: string }[];
+          return records.map((row) => ({ ...row, owner: database.scope }));
+        });
+        const original = rows.filter(
+          (row) => JSON.parse(row.control_json).kind !== 'consume-receipt'
+        );
+        const consumed = rows.filter(
+          (row) => JSON.parse(row.control_json).kind === 'consume-receipt'
+        );
+        expect(original).toHaveLength(1);
+        expect(original[0]!.state).toBe('completed');
+        expect(JSON.parse(original[0]!.control_json).outputRefs).toEqual([
+          fingerprint,
+          result.sha256,
+        ]);
+        expect(consumed).toHaveLength(1);
+        expect(consumed[0]!.owner).toBe(original[0]!.owner);
+        expect(consumed[0]!.state).toBe('completed');
+        expect(JSON.parse(consumed[0]!.control_json).inputRefs).toEqual([fingerprint]);
+        expect(JSON.parse(consumed[0]!.control_json).outputRefs).toEqual([fingerprint]);
+      }
     };
 
     const a = Buffer.from(
@@ -6777,7 +6790,7 @@ describe('createConfiguredTurnExecutor', () => {
         refusal.mockRestore();
       }
       durableCore.sqlite.close();
-      assertCandidateJournal(coreDb);
+      assertCandidateJournal();
       expect(reserveRefused).toBe(true);
       expect(
         native.effects.slice(beforeIdle).filter((effect) => effect.kind === 'workspace.collect')
@@ -6890,7 +6903,7 @@ describe('createConfiguredTurnExecutor', () => {
         });
         expect(native.effects.slice(afterReopen)).toEqual([]);
       }
-      assertCandidateJournal(coreDb);
+      assertCandidateJournal();
       const coldReader = createExecutionStepJournalReader(db, closedRef.owner);
       expect(await coldReader.readExecution(closedRef)).toStrictEqual(closed);
       expect(await coldReader.readEndedSteps(closedRef)).toStrictEqual(ended);
@@ -6929,7 +6942,7 @@ describe('createConfiguredTurnExecutor', () => {
       if (fault === 'body') db.sqlite.exec('DROP TRIGGER refuse_capture_insert');
     }
     captureFault.mockRestore();
-    assertCandidateJournal(db);
+    assertCandidateJournal();
     if (!journalRef) throw new Error('Native admission did not acknowledge its real journal.');
     const ended = await createExecutionStepJournalReader(db, journalRef.owner).readEndedSteps(
       journalRef
