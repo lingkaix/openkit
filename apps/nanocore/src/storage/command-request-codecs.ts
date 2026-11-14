@@ -1,6 +1,7 @@
 import {
   ArtifactIdSchema,
   ArtifactReviewIdSchema,
+  AutomationIdSchema,
   InvitationIdSchema,
   KnowledgeReviewIdSchema,
   KnowledgeSourceIdSchema,
@@ -85,6 +86,7 @@ const StoredConversationMetadataV1ReaderSchema = StoredConversationMetadataV1Sch
 
 /** The response discriminator selects its declared entity owner; other owners keep opaque keys. */
 const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<string> | null> = {
+  scheduler_entry: z.string().min(1),
   workspace: WorkspaceIdSchema,
   workspace_invitation: InvitationIdSchema,
   workspace_member: null,
@@ -133,6 +135,16 @@ const COMMAND_RESPONSE_ID_SCHEMAS: Record<CommandRequestResponseKind, z.ZodType<
 /** Fixed retained scope payload; resolving the exact database owner remains a separate check. */
 const StoredCommandScopeV1Schema = z.record(z.string(), z.string());
 
+/** Complete original event identity in the existing physical Core command log. */
+export const ExternalTriggerCommandScopeSchema = z
+  .object({
+    coreId: z.literal('server'),
+    scheduleId: AutomationIdSchema,
+    eventKey: z.string().min(1).max(1024),
+    sourceTurnId: TurnIdSchema,
+  })
+  .strict();
+
 /** Parses the one retained command scope representation. */
 export function parseStoredCommandScope(input: unknown): CommandRequestScope {
   return StoredCommandScopeV1Schema.parse(input);
@@ -176,6 +188,8 @@ export function normalizeCommandRequestResponse(
   if (!Object.hasOwn(COMMAND_RESPONSE_ID_SCHEMAS, response.kind))
     throw new Error('Command receipt response kind is unsupported.');
   COMMAND_RESPONSE_ID_SCHEMAS[response.kind]?.parse(response.id);
+  if ((command === 'scheduler.external-trigger.admit') !== (response.kind === 'scheduler_entry'))
+    throw new Error('External-event command response differs from its scheduler entry.');
   if (response.steerMetadata !== undefined) {
     if (
       command !== 'task.steer' ||
@@ -212,8 +226,13 @@ export function readCommandResponseMetadata(command: CommandRequestName, json: s
 
 /** One serialization owner for current scoped writes and native command composition. */
 export function commandRequestValues(record: CommandRequestRecord) {
-  const scope = parseStoredCommandScope(record.scope);
+  const scope =
+    record.command === 'scheduler.external-trigger.admit'
+      ? ExternalTriggerCommandScopeSchema.parse(record.scope)
+      : parseStoredCommandScope(record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
+  if ((record.command === 'scheduler.external-trigger.admit') !== (record.expiresAt === null))
+    throw new Error('Only the original Core external-event command is non-expiring.');
   return {
     schema_version: writeRetainedV1({}).schemaVersion,
     request_key: record.key,

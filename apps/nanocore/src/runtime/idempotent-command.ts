@@ -27,7 +27,10 @@ import { workspaceDbPath } from '../storage/fs-layout.js';
 
 /** Original command facts passed to the existing producer before its single native tuple; the product owner supplies the final response pointer. */
 export type IdempotentCommandReceipt = Readonly<
-  Omit<CommandRequestRecord, 'response'> & { responseKind: CommandRequestResponseKind }
+  Omit<CommandRequestRecord, 'response' | 'expiresAt'> & {
+    responseKind: CommandRequestResponseKind;
+    expiresAt: string;
+  }
 >;
 
 /** In-flight command state used to collapse concurrent duplicate requests. */

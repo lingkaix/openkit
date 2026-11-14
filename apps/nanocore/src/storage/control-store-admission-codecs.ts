@@ -116,6 +116,7 @@ export function isControlNativeReceiptCommand(
 ): boolean {
   if (scope === 'user')
     return CONTROL_NATIVE_USER_RECEIPT_COMMANDS.some((name) => name === command);
+  if (scope === 'core' && command === 'scheduler.external-trigger.admit') return true;
   return (
     CONTROL_NATIVE_RECEIPT_COMMANDS.some((name) => name === command) ||
     (scope === 'core' &&

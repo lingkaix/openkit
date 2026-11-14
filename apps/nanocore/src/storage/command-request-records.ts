@@ -13,7 +13,6 @@ import type {
 import type { AppDb } from './app-db.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import {
-  CATALOG_COMMAND_RECEIPTS,
   type ControlCatalogCommandReceiptInput,
   ControlCatalogCommandReceiptInputSchema,
 } from './catalog-command-receipt-codecs.js';
@@ -21,6 +20,7 @@ import {
   type CommandRequestOwner,
   commandRequestOwner,
   commandRequestValues,
+  ExternalTriggerCommandScopeSchema,
   normalizeCommandRequestResponse,
   parseStoredCommandScope,
   prepareControlCommandRequestStatement,
@@ -30,13 +30,7 @@ import {
   CONTROL_NATIVE_EVALUATION_RECEIPT_SQL,
   pruneControlAdmissionReceipts,
 } from './control-store-admission.js';
-import {
-  CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
-  CONTROL_NATIVE_RECEIPT_COMMANDS,
-  CONTROL_NATIVE_USER_RECEIPT_COMMANDS,
-  CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
-  isControlNativeReceiptCommand,
-} from './control-store-admission-codecs.js';
+import { isControlNativeReceiptCommand } from './control-store-admission-codecs.js';
 import {
   ControlProductPreconditionError,
   openControlStoreProductReadHandle,
@@ -55,15 +49,10 @@ import {
 } from './db.js';
 import { coreDbPath, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
-import {
-  isSeparateScopedNotebookReceipt,
-  SCOPED_NOTEBOOK_SERVER_RECEIPTS,
-} from './scoped-notebook-sql-codecs.js';
+import { isSeparateScopedNotebookReceipt } from './scoped-notebook-sql-codecs.js';
 import {
   type ControlWorkspaceCommandReceiptInput,
   ControlWorkspaceCommandReceiptInputSchema,
-  SERVER_MCP_CORE_COMMAND_RECEIPTS,
-  WORKSPACE_LOCAL_COMMAND_RECEIPTS,
 } from './workspace-command-receipt-codecs.js';
 
 /** Raw SQLite row for one command idempotency request. */
@@ -78,7 +67,7 @@ type CommandRequestRow = {
   readonly responseId: string;
   readonly responseJson: string | null;
   readonly createdAt: string;
-  readonly expiresAt: string;
+  readonly expiresAt: string | null;
 };
 
 /** Scoped database that can own command idempotency requests. */
@@ -188,7 +177,6 @@ export function recordCommandRequestRecordInDb(
     throw new Error('Native admission receipts belong to the database worker.');
   }
   writeCommandRequestRecordInDb(db, record);
-  pruneCommandRequestRecords(db, new Date().toISOString());
 }
 
 /** Writes one original native receipt inside its complete owning command tuple, with only the native operation/scope maintenance partition. */
@@ -253,9 +241,12 @@ export function applyCatalogCommandReceiptInDb(
   if (!db.sqlite.inTransaction || db.workspaceId !== input.workspaceId)
     throw new ControlProductPreconditionError();
   if (input.stage === 'maintenance') {
-    // The old producer pruned ordinary expired rows after its receipt committed.
-    // Only these three moved names rejoin that original partition here.
-    pruneCommandRequestRecords(db, input.referenceTime, true);
+    // This remains the separate FULL maintenance commit after the original record ACK.
+    pruneControlAdmissionReceipts(
+      db.sqlite,
+      { kind: 'workspace', workspaceId: db.workspaceId },
+      input.referenceTime
+    );
     return;
   }
   const record = { ...input.receipt, scope: parseStoredCommandScope(input.receipt.scope) };
@@ -321,8 +312,11 @@ export function applyWorkspaceCommandReceiptInDb(
   }
 }
 
-/** Preserves the existing complete row read/check/write body; public entry points own authority and disjoint pruning. */
-function writeCommandRequestRecordInDb(db: CommandRequestDb, record: CommandRequestRecord): void {
+/** One row serializer on an actual scoped connection; command entry points retain authority, transaction and maintenance ownership. */
+export function writeCommandRequestRecordInDb(
+  db: CommandRequestDb,
+  record: CommandRequestRecord
+): void {
   const scope = parseStoredCommandScope(record.scope);
   const response = normalizeCommandRequestResponse(record.command, record.response);
   const previous = db.sqlite
@@ -428,7 +422,6 @@ export function getCommandRequestRecord(
       : openCommandRequestDb(dataRoot, owner);
 
   try {
-    if (!workerOwnedKey && db.scope !== 'app') pruneCommandRequestRecords(db, referenceTime);
     return getCommandRequestRecordFromDb(db, key, referenceTime);
   } finally {
     if (reader) reader.close();
@@ -483,7 +476,7 @@ export function getCommandRequestRecordFromDb(
   const record =
     db.scope === 'app' ? decodeCommandRequestPayloadV1(row) : mapCommandRequestRow(row);
   assertCommandRequestDbOwner(db, record.scope);
-  if (record.expiresAt <= referenceTime) {
+  if (record.expiresAt !== null && record.expiresAt <= referenceTime) {
     if (db.scope === 'app') {
       throw new KernelCommandError(
         'recovery_required',
@@ -716,7 +709,7 @@ export function listCommandRequestRecords(
           assertCommandRequestDbOwner(db, record.scope);
           return record;
         })
-        .filter((record) => record.expiresAt > referenceTime);
+        .filter((record) => record.expiresAt === null || record.expiresAt > referenceTime);
     } finally {
       if (reader) reader.close();
       else db.sqlite.close();
@@ -791,45 +784,6 @@ function assertCommandRequestDbOwner(db: CommandRequestDb, scope: CommandRequest
 }
 
 /**
- * Removes expired main-owned receipts after a main-owned write; worker receipts remain with their tuple owner.
- *
- * @param db Scoped database to prune.
- * @param referenceTime Current ISO timestamp used for expiry.
- * @param catalogMaintenance Preserves the original Candidate maintenance partition after its separate record ACK.
- */
-function pruneCommandRequestRecords(
-  db: CommandRequestDb,
-  referenceTime: string,
-  catalogMaintenance = false
-): void {
-  if (db.scope === 'app') {
-    return;
-  }
-  const commands =
-    db.scope === 'workspace'
-      ? [
-          ...CONTROL_NATIVE_RECEIPT_COMMANDS,
-          ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
-          ...WORKSPACE_LOCAL_COMMAND_RECEIPTS,
-          ...(catalogMaintenance ? [] : CATALOG_COMMAND_RECEIPTS),
-        ]
-      : db.scope === 'user'
-        ? CONTROL_NATIVE_USER_RECEIPT_COMMANDS
-        : [
-            ...CONTROL_NATIVE_RECEIPT_COMMANDS,
-            ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
-            ...SCOPED_NOTEBOOK_SERVER_RECEIPTS,
-            ...SERVER_MCP_CORE_COMMAND_RECEIPTS,
-          ];
-
-  db.sqlite
-    .prepare(
-      `DELETE FROM idempotency_requests WHERE expires_at <= ? AND command_name NOT IN (${commands.map(() => '?').join(',')})${db.scope === 'workspace' ? ` AND NOT ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}`
-    )
-    .run(referenceTime, ...commands);
-}
-
-/**
  * Maps one raw SQLite row to the public command request record.
  *
  * @param row Raw SQLite row.
@@ -841,11 +795,25 @@ export function mapCommandRequestRow(row: CommandRequestRow): CommandRequestReco
 
 /** Decodes the fixed receipt payload after its SQL row or native App format has been admitted. */
 function decodeCommandRequestPayloadV1(row: CommandRequestRow): CommandRequestRecord {
+  const scope =
+    row.command === 'scheduler.external-trigger.admit'
+      ? ExternalTriggerCommandScopeSchema.parse(JSON.parse(row.scopeJson))
+      : parseStoredCommandScope(JSON.parse(row.scopeJson));
+  if (row.command === 'scheduler.external-trigger.admit') {
+    if (
+      row.expiresAt !== null ||
+      row.requestId !== scope.eventKey ||
+      row.key !== commandRequestKey(row.command, row.requestId, scope)
+    )
+      throw new Error('The retained external-event command identity conflicts.');
+  } else if (row.expiresAt === null) {
+    throw new Error('An ordinary command receipt has no expiry.');
+  }
   return {
     key: row.key,
     command: row.command,
     requestId: row.requestId,
-    scope: parseStoredCommandScope(JSON.parse(row.scopeJson)),
+    scope,
     inputHash: row.inputHash,
     response: normalizeCommandRequestResponse(row.command, {
       kind: row.responseKind,

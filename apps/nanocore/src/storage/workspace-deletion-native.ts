@@ -62,8 +62,8 @@ export function applyControlWorkspaceDeletion(
   // The already verified closure and recovery export retain this exact Core-homed graph.
   // Remove children first; a failure rolls back the terminal registry transition too.
   db.sqlite
-    .prepare(`DELETE FROM external_trigger_admissions
-        WHERE schedule_id IN (SELECT id FROM recurring_schedules WHERE workspace_id = ?)`)
+    .prepare(`DELETE FROM idempotency_requests WHERE command_name = 'scheduler.external-trigger.admit'
+        AND json_extract(scope_json,'$.scheduleId') IN (SELECT id FROM recurring_schedules WHERE workspace_id = ?)`)
     .run(input.workspaceId);
   for (const table of ['recurring_occurrences', 'recurring_expired_ranges', 'recurring_schedules'])
     db.sqlite.prepare(`DELETE FROM ${table} WHERE workspace_id = ?`).run(input.workspaceId);

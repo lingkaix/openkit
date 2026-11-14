@@ -244,14 +244,6 @@ CREATE TABLE `evidence_bundles` (
   `created_at` text NOT NULL
 , `schema_version` integer DEFAULT 1 NOT NULL);
 --> statement-breakpoint
-CREATE TABLE external_trigger_admissions (
-  schedule_id TEXT NOT NULL REFERENCES recurring_schedules(id),
-  event_key TEXT NOT NULL CONSTRAINT external_trigger_admissions_event_key_check CHECK (length(event_key) BETWEEN 1 AND 1024),
-  source_turn_id TEXT NOT NULL,
-  queue_entry_id TEXT NOT NULL REFERENCES scheduler_admission_entries(queue_entry_id),
-  PRIMARY KEY (schedule_id, event_key)
-);
---> statement-breakpoint
 CREATE TABLE `harness_instance_records` (
 	`harness_instance_id` text PRIMARY KEY NOT NULL,
 	`sandbox_runtime_id` text NOT NULL REFERENCES `sandbox_runtime_records`(`sandbox_runtime_id`) ON DELETE CASCADE,
@@ -294,8 +286,11 @@ CREATE TABLE `idempotency_requests` (
   `response_id` text NOT NULL,
   `response_json` text,
   `created_at` text NOT NULL,
-  `expires_at` text NOT NULL
-, `schema_version` integer DEFAULT 1 NOT NULL);
+  `expires_at` text,
+  `schema_version` integer DEFAULT 1 NOT NULL,
+  CHECK ((command_name = 'scheduler.external-trigger.admit' AND expires_at IS NULL)
+    OR (command_name <> 'scheduler.external-trigger.admit' AND expires_at IS NOT NULL))
+);
 --> statement-breakpoint
 CREATE TABLE `nanohost_integration_identities` (
 	`identity_id` text PRIMARY KEY NOT NULL,
@@ -996,6 +991,13 @@ CREATE INDEX `boot_audit_events_boot_idx` ON `boot_audit_events` (`boot_id`,`cre
 CREATE UNIQUE INDEX `capability_calls_idempotency_idx` ON `capability_calls` (`request_id`,`family`,`operation`);
 --> statement-breakpoint
 CREATE INDEX `capability_calls_thread_idx` ON `capability_calls` (`thread_id`,`turn_id`,`started_at`);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `command_log_external_event_idx` ON `idempotency_requests`
+  (json_extract(scope_json,'$.scheduleId'), json_extract(scope_json,'$.eventKey'))
+  WHERE command_name = 'scheduler.external-trigger.admit';
+--> statement-breakpoint
+CREATE INDEX `command_log_external_queue_idx` ON `idempotency_requests` (response_id)
+  WHERE command_name = 'scheduler.external-trigger.admit';
 --> statement-breakpoint
 CREATE INDEX `command_receipts_pending_target_idx` ON `idempotency_requests` (coalesce(json_extract(scope_json,'$.approvalRequestId'),json_extract(scope_json,'$.userInputRequestId'),json_extract(scope_json,'$.pendingRequestId')));
 --> statement-breakpoint

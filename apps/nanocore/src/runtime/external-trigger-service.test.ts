@@ -755,7 +755,7 @@ describe('bounded scheduled poll event admission', () => {
     vi.spyOn(f.store, 'createTurn').mockImplementation(() => {
       f.db.sqlite
         .prepare(
-          'UPDATE scheduler_admission_entries SET workspace_id = ? WHERE queue_entry_id IN (SELECT queue_entry_id FROM external_trigger_admissions)'
+          "UPDATE scheduler_admission_entries SET workspace_id = ? WHERE queue_entry_id IN (SELECT response_id FROM idempotency_requests WHERE command_name = 'scheduler.external-trigger.admit')"
         )
         .run(allocateEntityId('ws'));
       throw new Error('injected accepted-history damage');
@@ -770,7 +770,7 @@ describe('bounded scheduled poll event admission', () => {
   it('rolls back both queue and join under a read-only Main and retries the same request', async () => {
     const f = await fixture();
     f.db.sqlite.exec(
-      "CREATE TRIGGER reject_external BEFORE INSERT ON external_trigger_admissions BEGIN SELECT RAISE(ABORT, 'injected join refusal'); END"
+      "CREATE TRIGGER reject_external BEFORE INSERT ON idempotency_requests WHEN NEW.command_name = 'scheduler.external-trigger.admit' BEGIN SELECT RAISE(ABORT, 'injected join refusal'); END"
     );
     f.db.sqlite.pragma('query_only = ON');
     const refused = f.admit();

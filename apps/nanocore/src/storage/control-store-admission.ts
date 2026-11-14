@@ -2,17 +2,12 @@ import { isDeepStrictEqual } from 'node:util';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import type { CommandRequestResponse } from '../lib/store.js';
-import { CATALOG_COMMAND_RECEIPTS } from './catalog-command-receipt-codecs.js';
 import {
   commandRequestKey,
   mapCommandRequestRow,
   normalizeCommandRequestResponse,
 } from './command-request-records.js';
 import {
-  CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
-  CONTROL_NATIVE_RECEIPT_COMMANDS,
-  CONTROL_NATIVE_USER_RECEIPT_COMMANDS,
-  CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
   type ControlAdmission,
   type ControlAdmissionResult,
   ControlAdmissionSchema,
@@ -30,11 +25,6 @@ import {
   type PreparedControlEntry,
   type prepareControlTaskSteerReceipt,
 } from './control-store-products.js';
-import { SCOPED_NOTEBOOK_SERVER_RECEIPTS } from './scoped-notebook-sql-codecs.js';
-import {
-  SERVER_MCP_CORE_COMMAND_RECEIPTS,
-  WORKSPACE_LOCAL_COMMAND_RECEIPTS,
-} from './workspace-command-receipt-codecs.js';
 
 /** Existing target annotations partition the shared judgement operation without changing its retained scope or adding ownership state. */
 export const CONTROL_NATIVE_EVALUATION_RECEIPT_SQL = `(command_name='evaluation.judgement-add'
@@ -61,7 +51,7 @@ function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, st
     throw new ControlProductPreconditionError();
 }
 
-/** Prunes only this activated operation/scope partition; never touches another owner's receipts or Audit rows. */
+/** The native database owner prunes ordinary expired commands; permanent event joins and other physical owners remain untouched. */
 export function pruneControlAdmissionReceipts(
   sqlite: Database.Database,
   owner: ControlProductOwner | { readonly kind: 'user'; readonly userId: string },
@@ -72,34 +62,20 @@ export function pruneControlAdmissionReceipts(
   if (owner.kind === 'user') {
     sqlite
       .prepare(
-        `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND command_name IN (${CONTROL_NATIVE_USER_RECEIPT_COMMANDS.map(() => '?').join(',')}) AND json_extract(scope_json,'$.userId')=? AND json_extract(scope_json,'$.coreId') IS NULL AND json_extract(scope_json,'$.workspaceId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+        `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at IS NOT NULL AND expires_at<=? AND json_extract(scope_json,'$.userId')=? AND json_extract(scope_json,'$.coreId') IS NULL AND json_extract(scope_json,'$.workspaceId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
       )
-      .run(referenceTime, ...CONTROL_NATIVE_USER_RECEIPT_COMMANDS, owner.userId);
+      .run(referenceTime, owner.userId);
     return;
   }
   const scope =
     owner.kind === 'server'
       ? "json_extract(scope_json,'$.coreId')='server' AND json_extract(scope_json,'$.workspaceId') IS NULL"
       : "json_extract(scope_json,'$.workspaceId')=? AND json_extract(scope_json,'$.coreId') IS NULL";
-  const commands =
-    owner.kind === 'workspace'
-      ? [
-          ...CONTROL_NATIVE_RECEIPT_COMMANDS,
-          ...CONTROL_NATIVE_WORKSPACE_KNOWLEDGE_COMMANDS,
-          ...CATALOG_COMMAND_RECEIPTS,
-          ...WORKSPACE_LOCAL_COMMAND_RECEIPTS,
-        ]
-      : [
-          ...CONTROL_NATIVE_RECEIPT_COMMANDS,
-          ...CONTROL_NATIVE_CORE_LIFECYCLE_COMMANDS,
-          ...SCOPED_NOTEBOOK_SERVER_RECEIPTS,
-          ...SERVER_MCP_CORE_COMMAND_RECEIPTS,
-        ];
   sqlite
     .prepare(
-      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at<=? AND (command_name IN (${commands.map(() => '?').join(',')})${owner.kind === 'workspace' ? ` OR ${CONTROL_NATIVE_EVALUATION_RECEIPT_SQL}` : ''}) AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
+      `DELETE FROM idempotency_requests WHERE schema_version=1 AND expires_at IS NOT NULL AND expires_at<=? AND ${scope} AND json_extract(scope_json,'$.userId') IS NULL AND json_extract(scope_json,'$.appId') IS NULL`
     )
-    .run(referenceTime, ...commands, ...(owner.kind === 'workspace' ? [owner.workspaceId] : []));
+    .run(referenceTime, ...(owner.kind === 'workspace' ? [owner.workspaceId] : []));
 }
 
 /** Applies the original receipt, required local Audit and complete product tuple in the caller's savepoint, never a nested commit. */
@@ -128,7 +104,7 @@ export function applyControlAdmission(
       'SELECT schema_version AS schemaVersion,request_key AS key,command_name AS command,request_id AS requestId,scope_json AS scopeJson,input_hash AS inputHash,response_kind AS responseKind,response_id AS responseId,response_json AS responseJson,created_at AS createdAt,expires_at AS expiresAt FROM idempotency_requests WHERE request_key=?'
     )
     .get(receipt.key) as Parameters<typeof mapCommandRequestRow>[0] | undefined;
-  if (prior && prior.expiresAt > receipt.createdAt) {
+  if (prior && (prior.expiresAt === null || prior.expiresAt > receipt.createdAt)) {
     // Retained descriptive additions use the frozen reader, never the stricter current writer parser.
     const retained = mapCommandRequestRow(prior);
     if (

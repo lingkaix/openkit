@@ -121,7 +121,9 @@ function retained(path: string, workspaceId: string) {
         .all(workspaceId),
       // No join: a dangling child must still be visible after a wrong parent-first purge.
       external: reader
-        .prepare('SELECT * FROM external_trigger_admissions ORDER BY schedule_id, event_key')
+        .prepare(
+          "SELECT * FROM idempotency_requests WHERE command_name = 'scheduler.external-trigger.admit' ORDER BY request_key"
+        )
         .all(),
       audit: listSqliteAuditEvents(reader, workspaceId),
       receipts: readCommandRequestRecordsFromSqlite(reader),
@@ -350,7 +352,10 @@ function expectComplete(f: Awaited<ReturnType<typeof fixture>>) {
   });
   const receipts = tuple.receipts.filter((record) => record.key === f.key);
   expect(receipts).toHaveLength(1);
-  expect(tuple.receipts).toHaveLength(f.before.receipts.length + 1);
+  expect(tuple.receipts).toHaveLength(f.before.receipts.length - f.before.external.length + 1);
+  expect(tuple.receipts.filter((record) => record.key !== f.key)).toEqual(
+    f.before.receipts.filter((record) => record.command !== 'scheduler.external-trigger.admit')
+  );
   expect(receipts[0]).toMatchObject({
     command: 'workspace.delete',
     requestId: f.complete.request.requestId,

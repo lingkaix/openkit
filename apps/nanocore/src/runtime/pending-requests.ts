@@ -1824,7 +1824,7 @@ export function validateCanonicalLoad(
   if (!isFinalOutcome(record) && record.delivery !== 'undelivered')
     return { requestId: record.requestId, reason: 'not-ready-delivery' };
   for (const receipt of receipts) {
-    if (Date.parse(receipt.expiresAt) <= Date.now()) continue;
+    if (receipt.expiresAt !== null && Date.parse(receipt.expiresAt) <= Date.now()) continue;
     const target =
       receipt.scope.approvalRequestId ??
       receipt.scope.userInputRequestId ??
