@@ -8,7 +8,7 @@ import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 /**
  * Gateway endpoint family used for usage aggregation.
  */
-export type GatewayUsageEndpoint = 'chat_completions' | 'responses' | 'quick_chat';
+export type GatewayUsageEndpoint = 'chat_completions' | 'responses' | 'quick_chat' | 'decision';
 
 /**
  * One usage aggregation input.
@@ -277,7 +277,10 @@ export function parseUsage(usage: unknown): ParsedUsage {
     readNumber(promptDetails.cached_tokens) ??
     readNumber(inputDetails.cached_tokens) ??
     readNumber(record.cached_tokens);
-  const cacheWriteTokens = readNumber(record.cacheWrite) ?? readNumber(record.cache_write);
+  const cacheWriteTokens =
+    readNumber(record.cacheWrite) ??
+    readNumber(record.cache_write) ??
+    readNumber(inputDetails.cache_write_tokens);
   const costEstimateUsd = readNumber(cost.total);
 
   return {

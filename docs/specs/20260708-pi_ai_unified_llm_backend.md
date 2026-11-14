@@ -44,6 +44,8 @@ OpenKit keeps its cache optimization above the adapter. NanoCore derives one non
 
 ## Decision
 
+E9 decision calls use pi-ai's documented classifier provider extension inside PiAiGatewayClient; no parallel transport.
+
 - `PiAiGatewayClient` is the only production LLM transport owner.
 - The internal `codex-oauth` backend kind is removed rather than retained as an alias; a subscription-backed profile is still a normal pi-ai provider profile with an explicit account-slot binding.
 - OpenAI, Codex, Anthropic, Google, OpenRouter, xAI, custom OpenAI-compatible endpoints, and future accepted providers use the corresponding pi-ai adapter family.

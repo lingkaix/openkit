@@ -3,6 +3,8 @@ import type { ProviderProfile } from '../config/providers-loader.js';
 
 /** Gateway support matrix for one runtime provider profile. */
 export interface ProviderGatewayCapabilities {
+  /** Private decision support. An undeclared capability never admits a decision call. */
+  readonly decisions?: 'native' | 'bridged' | 'unsupported';
   /** Support for `/v1/chat/completions`. */
   readonly chatCompletions: 'native' | 'bridged' | 'unsupported';
   /** Support for `/v1/responses`. */
@@ -44,14 +46,14 @@ export function gatewayCapabilitiesForProfile(
   const subscriptionFamily = resolveProviderSubscriptionFamily(profile);
 
   if (profileId === 'openai' || vendorId === 'openai') {
-    return { chatCompletions: 'native', responses: 'native' };
+    return { chatCompletions: 'native', responses: 'native', decisions: 'native' };
   }
 
   if (subscriptionFamily === 'openai-codex' || subscriptionFamily === 'xai') {
-    return { chatCompletions: 'bridged', responses: 'native' };
+    return { chatCompletions: 'bridged', responses: 'native', decisions: 'bridged' };
   }
 
-  return { chatCompletions: 'native', responses: 'bridged' };
+  return { chatCompletions: 'native', responses: 'bridged', decisions: 'bridged' };
 }
 
 /**

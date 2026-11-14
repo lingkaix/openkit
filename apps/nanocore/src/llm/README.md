@@ -2,6 +2,8 @@
 
 This directory owns LLM Gateway behavior, provider dispatch, upstream clients and adapters, provider-subscription accounts, public OpenAI-compatible projection, and usage observation.
 
+`gateway-decision.ts` owns the private E9 decision request, its closed action and verdict codecs, and auxiliary usage linkage. `PiAiGatewayClient` uses stock pi-ai's documented classifier extension for native Decisions, with request-local Models, explicit selected-member credentials and one HTTP attempt. A separately selected bridge supplies the fixed JSON schema through the stock adapter and validates raw terminal evidence before accepting its output. Native allow probability and bridge confidence remain distinct. This adds no public or Worker endpoint/model category and activates no security-review route; the [Runtime Security E9 owner](../../../../docs/specs/20261109-runtime_security.md#security-review-gate-e9) owns evaluation and restrict-only Policy integration. An owned existing reader keeps native usage recording alive through cancellation cleanup, without extending the original two-second decision deadline. Run the whole `gateway-decision.test.ts` and `gateway-decision-usage.test.ts` files for transport, deadline, disclosure and actual native usage checks.
+
 NanoCore pins pi-ai `0.99.2` and consumes the vendored models.dev `2026-10-01` snapshot. The adapter supplies `Context` to the stock `Models` entry points; provider callbacks receive normalized `TranscriptContext`, with prompts and tools carried by system messages. Conformance fixtures inspect those declarations through the stock transcript accessors.
 
 ## Boundaries
