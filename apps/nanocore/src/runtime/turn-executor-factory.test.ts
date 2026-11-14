@@ -324,6 +324,57 @@ afterAll(() => {
   }
 });
 
+/** Reads the exact closed Core consumption proof without using the production projection. */
+function requireFixtureHarnessConsumption(
+  coreDb: ReturnType<typeof openCoreDb>,
+  result: {
+    harnessInstanceId: string;
+    operationId: string;
+    sequence: number;
+  }
+) {
+  const rows = coreDb.sqlite
+    .prepare(`SELECT s.state, s.control_json, s.invocation_json, e.phase,
+    h.harness_binding_ref, h.result_json, h.result_fingerprint
+    FROM control_execution_steps s JOIN control_executions e ON e.id = s.execution_id
+    JOIN harness_instance_records h ON h.harness_instance_id = ?
+    WHERE json_extract(s.control_json, '$.definitionVersion') = 'core-harness-consume/v1'
+      AND json_extract(s.invocation_json, '$.carriage.bindingRef') = h.harness_binding_ref
+      AND json_extract(s.invocation_json, '$.carriage.requestId') = ?
+      AND json_extract(s.invocation_json, '$.carriage.sequence') = ?`)
+    .all(result.harnessInstanceId, result.operationId, result.sequence) as {
+    state: string;
+    control_json: string;
+    invocation_json: string;
+    phase: string;
+    harness_binding_ref: string;
+    result_json: string;
+    result_fingerprint: string;
+  }[];
+  expect(rows).toHaveLength(1);
+  const row = rows[0]!;
+  expect(row).toMatchObject({ state: 'completed', phase: 'closed' });
+  expect(createHash('sha256').update(row.result_json).digest('hex')).toBe(row.result_fingerprint);
+  const { consumerContext: _context, ...original } = JSON.parse(row.result_json);
+  const fingerprint = commandInputHash(original).slice(7);
+  const control = JSON.parse(row.control_json);
+  expect(control.kind).toBe('consume-receipt');
+  expect(control.inputRefs).toEqual([fingerprint]);
+  expect(control.outputRefs).toEqual([fingerprint]);
+  expect(control.authorityRefs).toHaveLength(1);
+  expect(JSON.parse(row.invocation_json).carriage).toEqual({
+    operation: 'harness.consume',
+    requestId: result.operationId,
+    sequence: result.sequence,
+    bindingRef: row.harness_binding_ref,
+  });
+  return {
+    operationId: result.operationId,
+    sequence: result.sequence,
+    consumerReceipt: control.authorityRefs[0] as string,
+  };
+}
+
 /** Creates the durable deployment identity required by real executor construction. */
 function createFactoryCoreDb() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-executor-factory-'));
@@ -15597,7 +15648,7 @@ describe('createConfiguredTurnExecutor', () => {
             throw new Error('Ordinary close receiver receipt is unavailable.');
           const receipt = JSON.parse(retained.resultJson);
           expect(receipt.consumerContext).toEqual({ workspaceId, threadId: original.threadId });
-          expect(receipt.consumption).toMatchObject({
+          expect(requireFixtureHarnessConsumption(coreDb, result)).toMatchObject({
             operationId: close.operationId,
             sequence: close.sequence,
           });
@@ -26697,15 +26748,9 @@ describe('inert initial private Login exchange through the concrete backend sess
               throw new Error('Actual first close settlement evidence is unavailable.');
             const consumed = harnessRecords.readConsumedNanoHostHarnessResult(coreDb, closeResult);
             expect(consumed).not.toBeNull();
-            const row = coreDb.sqlite
-              .prepare(
-                'SELECT result_json AS resultJson FROM harness_instance_records WHERE harness_instance_id = ?'
-              )
-              .get(closeResult.harnessInstanceId);
-            if (!isRecord(row) || typeof row.resultJson !== 'string')
-              throw new Error('Actual close consumer receipt is unavailable.');
-            const receipt = JSON.parse(row.resultJson);
-            const consumer = JSON.parse(receipt.consumption.consumerReceipt);
+            const consumer = JSON.parse(
+              requireFixtureHarnessConsumption(coreDb, closeResult).consumerReceipt
+            );
             expect(Object.keys(consumer).sort()).toEqual(
               ending === 'departure-ordinary'
                 ? ['executionId', 'stepId', 'turnId', 'workspaceId']
