@@ -374,6 +374,17 @@ describe('native Knowledge maintenance admission', () => {
     expect(
       await f.sql("SELECT json_extract(record_json,'$.futureNote') AS note FROM control_threads")
     ).toEqual([{ note: 'retain me' }]);
+    // ORACLE S2 F13: a busy request is born terminal in the same physical owner;
+    // a replay or input conflict cannot add another Turn, receipt or projection revision.
+    expect(
+      await f.sql(`SELECT status,json_extract(record_json,'$.durationMs') AS duration,
+      json_extract(record_json,'$.completedAt') AS completedAt
+      FROM control_turns WHERE id='${next.turnId}'`)
+    ).toEqual([{ status: 'completed', duration: 0, completedAt: next.startedAt }]);
+    const originalTurns = await f.sql('SELECT * FROM control_turns ORDER BY id');
+    const originalReceipts = await f.sql('SELECT * FROM idempotency_requests ORDER BY request_key');
+    expect(originalReceipts).toHaveLength(2);
+
     const replay = { ...first, threadId: allocateEntityId('th'), turnId: allocateEntityId('tu') };
     await expect(f.apply(replay)).resolves.toMatchObject({
       threadId: first.threadId,
@@ -383,6 +394,10 @@ describe('native Knowledge maintenance admission', () => {
     await expect(
       f.apply({ ...replay, receipt: { ...first.receipt!, inputHash: commandInputHash('changed') } })
     ).rejects.toMatchObject({ name: 'IdempotencyKeyConflictError' });
+    expect(await f.sql('SELECT * FROM control_turns ORDER BY id')).toEqual(originalTurns);
+    expect(await f.sql('SELECT * FROM idempotency_requests ORDER BY request_key')).toEqual(
+      originalReceipts
+    );
     expect(await f.sql('SELECT count(*) AS count FROM control_turns')).toEqual([{ count: 2 }]);
   }, 30_000);
 
