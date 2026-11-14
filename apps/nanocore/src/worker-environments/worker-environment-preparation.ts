@@ -21,6 +21,7 @@ import {
   AuthoredAgentRuntimeSchema,
 } from '@openkit/config-schema';
 import {
+  allocateEntityId,
   compareCodeUnits,
   deriveEntityId,
   isSealedTurnTerminal,
@@ -29,6 +30,7 @@ import {
 } from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
+import { recordAdministrationAuthorityDecision } from '../administration/authority-decision.js';
 import {
   evaluateSecurityInvestigationGrant,
   SECURITY_INVESTIGATION_AGENT_ID,
@@ -47,6 +49,7 @@ import type {
   WorkerEnvironmentRuntimeEffects,
 } from '../runtime/worker-environment-runtime-effects.js';
 import { WorkerReleaseIncompatibleError } from '../runtime/worker-release-identity.js';
+import type { CoreDb } from '../storage/db.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 
 type ConfigFiles = Pick<RuntimeConfigFileService, 'readFile'>;
@@ -74,6 +77,8 @@ export interface DeriveWorkerEnvironmentAffectedStorageInput {
 
 /** Dependencies for immutable Worker environment preparation. */
 export interface CreateWorkerEnvironmentPreparationInput {
+  /** Existing Core owner used by the canonical linked permission/Audit recorder. */
+  readonly coreDb: CoreDb;
   /** Rechecks the current usable deployment-administrator authority or throws. */
   readonly requireCurrentAdministrator: (actor: Actor) => void;
   /** Rechecks that one exact Thread/Turn remains in the current user's private home. */
@@ -262,7 +267,7 @@ export function createWorkerEnvironmentPreparation(
     context: WorkerEnvironmentPreparationContext,
     request: PrepareWorkerEnvironmentRequest,
     workspaceId: string
-  ): void {
+  ): Promise<never> | undefined {
     if (!context.administrationTurnId) return;
     const execution = dependencies.store.getTurn(
       workspaceId,
@@ -270,7 +275,7 @@ export function createWorkerEnvironmentPreparation(
       context.administrationTurnId
     );
     if (execution.agentId !== SECURITY_INVESTIGATION_AGENT_ID) return;
-    const decision = evaluateSecurityInvestigationGrant(`worker-environment.${request.mode}`, {
+    const subject = {
       principal: { kind: 'agent', id: SECURITY_INVESTIGATION_AGENT_ID },
       onBehalfOf: context.actor.userId,
       actor: {
@@ -281,13 +286,40 @@ export function createWorkerEnvironmentPreparation(
       responsibleHumanId: context.actor.userId,
       credentialKind: context.actor.kind,
       process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
-    });
-    if (decision.effect !== 'allow')
+    } as const;
+    const action = `worker-environment.${request.mode}`;
+    const decision = evaluateSecurityInvestigationGrant(action, subject);
+    if (decision.effect === 'allow') return;
+    return recordAdministrationAuthorityDecision(
+      {
+        coreDb: dependencies.coreDb,
+        decisionId: allocateEntityId('pd'),
+        ownerScope: 'server',
+        policyEngineVersion: 'nanocore-security-investigation:v1',
+        policySnapshotId: 'security-investigation-fixed-grant:v1',
+        subjectSummary: subject,
+        action,
+        resourceSummary: { workspaceId, administrationThreadId: execution.threadId },
+        contextSummary: {
+          threadId: execution.threadId,
+          turnId: execution.id,
+          requestId: request.requestId,
+          entry: 'administration',
+          effectScope: 'private',
+        },
+        enforcementPoint: action,
+        auditActor: subject.actor,
+        now: new Date(now()),
+      },
+      decision,
+      true
+    ).then(() => {
       throw new OperationError(
         'not_granted',
         'The investigation grant does not permit environment preparation or recovery.',
         403
       );
+    });
   }
 
   return {
@@ -296,13 +328,19 @@ export function createWorkerEnvironmentPreparation(
       dependencies.requireCurrentAdministrator(context.actor);
       const workspaceId = dependencies.privateWorkspaceIdForUser(context.actor.userId);
       requireAdministrationThread(dependencies.store, workspaceId, request.administrationThreadId);
-      requireInvestigationGrant(context, request, workspaceId);
+      const investigationRefusal = requireInvestigationGrant(context, request, workspaceId);
+      if (investigationRefusal) await investigationRefusal;
 
       const response = await runIdempotentCommand({
         command: 'worker_environment.prepare',
         execute: async (receipt) => {
           dependencies.requireCurrentAdministrator(context.actor);
-          requireInvestigationGrant(context, request, workspaceId);
+          const currentInvestigationRefusal = requireInvestigationGrant(
+            context,
+            request,
+            workspaceId
+          );
+          if (currentInvestigationRefusal) await currentInvestigationRefusal;
           const response = await (request.mode === 'prepare'
             ? executeInitialPreparation(context, request, workspaceId)
             : executeRecovery(context, request, workspaceId));

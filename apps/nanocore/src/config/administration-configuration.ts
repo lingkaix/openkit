@@ -28,6 +28,7 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
+import { recordAdministrationAuthorityDecision } from '../administration/authority-decision.js';
 import {
   evaluateSecurityInvestigationOperation,
   SECURITY_INVESTIGATION_AGENT_ID,
@@ -48,10 +49,6 @@ import {
   readAdmittedPolicyDocument,
   recordPolicyWriteDecision,
 } from '../policy/configuration.js';
-import {
-  recordPermissionDecision,
-  recordProductPermissionDecision,
-} from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { evaluateWorkerGitReadMaintenance } from '../policy/worker-git-read-maintenance.js';
 import {
@@ -444,23 +441,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             auditActor: subject?.actor ?? { kind: 'user' as const, id: actor.userId },
             now,
           };
-          if (subject)
-            await recordProductPermissionDecision({
-              ...permissionRecord,
-              result: decision.effect,
-              reasonCode:
-                decision.reasons[0]?.code === 'missing-privilege'
-                  ? 'not_granted'
-                  : (decision.reasons[0]?.code ?? 'unknown'),
-              contextSummary: {
-                ...permissionRecord.contextSummary,
-                kernelTrace: {
-                  matchedAssociations: decision.trace.matchedAssociations,
-                  matchedProhibitions: decision.trace.matchedProhibitions,
-                },
-              },
-            });
-          else await recordPermissionDecision({ ...permissionRecord, policyDecision: decision });
+          await recordAdministrationAuthorityDecision(permissionRecord, decision, Boolean(subject));
           if (decision.effect !== 'allow')
             fail(subject ? 'not_granted' : 'configuration_delegation_required');
           const current = currentMaintenance();

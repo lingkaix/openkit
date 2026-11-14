@@ -957,6 +957,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     : null;
   const workerEnvironmentPreparation = options.coreDb
     ? createWorkerEnvironmentPreparation({
+        coreDb: options.coreDb,
         store: sharedStore,
         inflightCommands,
         runtimeEffects: workerEnvironmentRuntimeEffects,

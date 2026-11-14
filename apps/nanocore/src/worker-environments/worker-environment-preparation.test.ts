@@ -22,7 +22,7 @@ import { commandInputHash, IdempotencyKeyConflictError } from '../runtime/idempo
 import type { WorkerEnvironmentRuntimeEffects } from '../runtime/worker-environment-runtime-effects.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { testEntityId } from '../test-support/entity-ids.js';
-import { createTestStore } from '../test-support/store.js';
+import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environment-operation-implementations.js';
 import { WorkerEnvironmentOperationError } from './worker-environment-operations.js';
 import {
@@ -42,9 +42,11 @@ const storageRef = 'wst_00000000-0000-7b39-9ec2-cb19893c9f63';
 const imageDigest = `sha256:${'b'.repeat(64)}`;
 const layoutDigest = `sha256:${'c'.repeat(64)}`;
 const dataRoots: string[] = [];
+const coreDbs: ReturnType<typeof createTestCoreDb>[] = [];
 
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+  for (const coreDb of coreDbs.splice(0)) closeTestCoreDb(coreDb);
   for (const dataRoot of dataRoots.splice(0)) rmSync(dataRoot, { force: true, recursive: true });
 });
 
@@ -101,6 +103,8 @@ async function createFixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-worker-environment-preparation-'));
   dataRoots.push(dataRoot);
   const store = createTestStore({ dataRoot });
+  const coreDb = createTestCoreDb(dataRoot);
+  coreDbs.push(coreDb);
   const workspace = await store.ensureQuickChatWorkspace(actor.userId);
   const thread = await store.createThread(
     workspace.id,
@@ -157,6 +161,7 @@ async function createFixture() {
 
   const createService = (serviceStore = store) =>
     createWorkerEnvironmentPreparation({
+      coreDb,
       authorizePrivateHome: ({ actor: current, workspaceId }) =>
         state.privateHome &&
         current.userId === actor.userId &&
@@ -721,4 +726,106 @@ describe('E7 environment effect boundary', () => {
     });
     expect(f.runtimeEffects.prepareImage).toHaveBeenCalledOnce();
   });
+});
+
+// Append to existing worker-environment-preparation.test.ts; reuse its real Store fixture.
+// Distinct responsibility: a returned denial cannot prove linked native Audit attribution.
+describe('E7 environment refusal native evidence', () => {
+  it.each(['prepare', 'recover'] as const)(
+    'audits %s with the actual agent and on-behalf-of lineage',
+    async (operation) => {
+      const { closeTestCoreDb, createTestCoreDb } = await import('../test-support/store.js');
+      const { listServerPermissionDecisions } = await import('../policy/permission-decisions.js');
+      const { listServerAuditEvents } = await import('../audit-events.js');
+      const f = await createFixture();
+      // createTestStore already initializes this same Core database. This opens an observer,
+      // not a new record owner, and supplies no fake recorder or prewritten evidence.
+      const coreDb = createTestCoreDb(f.dataRoot);
+      try {
+        const service = f.createService();
+        let recoverFrom: { artifactId: string; artifactVersion: 1; contentDigest: string } | null =
+          null;
+        if (operation === 'recover') {
+          vi.mocked(f.runtimeEffects.prepareImage).mockRejectedValueOnce(
+            new Error('lost response')
+          );
+          await expect(
+            service.prepare({ actor }, prepareRequest(f.thread.id, f.configuration))
+          ).rejects.toMatchObject({ code: 'effect_failed' });
+          const authored = f.store.listArtifacts(f.workspace.id);
+          expect(authored).toHaveLength(1);
+          expect(authored[0]!.origin.kind).toBe('turn-output');
+          if (authored[0]!.origin.kind !== 'turn-output')
+            throw new Error('Expected authored Turn output.');
+          expect(
+            f.store.getTurn(f.workspace.id, f.thread.id, authored[0]!.origin.turnId).status
+          ).toBe('failed');
+          recoverFrom = {
+            artifactId: authored[0]!.id,
+            artifactVersion: 1,
+            contentDigest: authored[0]!.contentDigest,
+          };
+        }
+        const turn = await f.store.createTurn(
+          f.workspace.id,
+          f.thread.id,
+          'Investigate without changing the environment.',
+          { kind: 'user', id: actor.userId },
+          null,
+          { agentId: 'security-investigation' }
+        );
+        const request = recoverFrom
+          ? {
+              administrationThreadId: f.thread.id,
+              mode: 'recover' as const,
+              recoverFrom,
+              requestId: randomUUID(),
+            }
+          : prepareRequest(f.thread.id, f.configuration);
+        const beforeIds = new Set(
+          listServerPermissionDecisions(coreDb).map((row) => row.decisionId)
+        );
+        await expect(
+          service.prepare({ actor, administrationTurnId: turn.id }, request)
+        ).rejects.toMatchObject({ code: 'not_granted', status: 403 });
+        const decisions = listServerPermissionDecisions(coreDb).filter(
+          (row) => !beforeIds.has(row.decisionId)
+        );
+        const denial = decisions.find((row) => row.action === `worker-environment.${operation}`);
+        expect(
+          denial,
+          'A truthful denial must have native PermissionDecision evidence.'
+        ).toMatchObject({
+          ownerScope: 'server',
+          result: 'deny',
+          reasonCode: 'not_granted',
+          subjectSummary: {
+            principal: { kind: 'agent', id: 'security-investigation' },
+            onBehalfOf: actor.userId,
+            actor: { kind: 'agent', id: 'security-investigation', responsibleUserId: actor.userId },
+            process: { workspaceId: f.workspace.id, threadId: f.thread.id, turnId: turn.id },
+          },
+          contextSummary: { threadId: f.thread.id, turnId: turn.id, requestId: request.requestId },
+        });
+        if (!denial) throw new Error('The required denial evidence is absent.');
+        const audit = listServerAuditEvents(coreDb).find(
+          (event) => event.permissionDecisionId === denial.decisionId
+        );
+        expect(
+          audit,
+          'The denial must link to real native Audit, not a supplied callback.'
+        ).toMatchObject({
+          permissionDecisionId: denial.decisionId,
+          actor: { kind: 'agent', id: 'security-investigation', responsibleUserId: actor.userId },
+          threadId: f.thread.id,
+          turnId: turn.id,
+          requestId: request.requestId,
+        });
+        expect(denial.auditEventId).toBe(audit!.id);
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        closeTestCoreDb(coreDb);
+      }
+    }
+  );
 });
