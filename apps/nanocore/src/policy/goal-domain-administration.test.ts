@@ -61,12 +61,11 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
-import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listServerPermissionDecisions,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
+import { EMPTY_POLICY_DOCUMENT, policyDigest, selectHumanToolConditions } from './statements.js';
 import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */
@@ -1021,7 +1020,7 @@ describe('bounded native Goal-domain administration', () => {
     const decision = await new PolicyInterception().decide({
       ...approvalInput,
       document,
-      permissions: selectMcpToolPermissions({
+      permissions: selectHumanToolConditions({
         document,
         proposal: { ...approvalInput.proposal, ...approvalInput.proposal.resource },
         authorCurrent: approvalInput.authorCurrent,
@@ -1044,7 +1043,7 @@ describe('bounded native Goal-domain administration', () => {
     const pending = await new PolicyInterception().decide({
       ...approvalInput,
       document,
-      permissions: selectMcpToolPermissions({
+      permissions: selectHumanToolConditions({
         document,
         proposal: { ...approvalInput.proposal, ...approvalInput.proposal.resource },
         authorCurrent: approvalInput.authorCurrent,

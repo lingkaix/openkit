@@ -16,12 +16,11 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
 import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './goal-task-access.js';
 import { PolicyInterception } from './interception.js';
-import { selectMcpToolPermissions } from './mcp-tool-permissions.js';
 import {
   listExportableWorkspacePermissionDecisions,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
-import { type PolicyProposal, policyDigest } from './statements.js';
+import { type PolicyProposal, policyDigest, selectHumanToolConditions } from './statements.js';
 
 const workspaceId = testEntityId('ws', 'goal-classification');
 const humanId = testEntityId('usr', 'goal-classification');
@@ -356,7 +355,7 @@ describe('Goal Task classification at the final Policy interception seam', () =>
   it('keeps a human-only approval condition as the destination of the same missing Task association', async () => {
     const input = fixture();
     const document = withHumanMcpApproval(input);
-    const permissions = selectMcpToolPermissions({
+    const permissions = selectHumanToolConditions({
       document,
       proposal: { ...proposal, serverId: 'issues', toolName: 'read' },
       authorCurrent: input.authorCurrent,

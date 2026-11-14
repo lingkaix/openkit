@@ -37,6 +37,8 @@ export function readThreadPolicyFacts(input: {
   readonly actor?: ThreadPolicyActor | undefined;
   /** Same-Workspace ancestors restored by the native Thread reader, nearest first. */
   readonly ancestorThreadIds?: readonly string[];
+  /** Exact current native MCP conditions; these ids can only restrict Tool use. */
+  readonly toolProhibitions?: readonly string[];
 }): Extract<Parameters<typeof evaluatePolicyKernel>[0], { readonly thread: unknown }> {
   if (
     !input.userId ||
@@ -64,6 +66,7 @@ export function readThreadPolicyFacts(input: {
       policy: input.policy,
       resource: { family: 'thread', id: input.thread.id, ancestors },
       operation: input.operation,
+      toolProhibitions: input.toolProhibitions ?? [],
     },
   };
 }
