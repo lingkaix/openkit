@@ -1019,15 +1019,39 @@ export function applyControlVault(
               throw new ControlProductPreconditionError();
           }
         }
-        if (request.record.workerAuthority)
-          assertCurrentWorkerCredentialAuthority(
-            db,
-            {
-              ...request.record.workerAuthority.consumer,
-              credentials: { declarations: request.record.workerAuthority.declarations },
-            },
-            () => new Date().toISOString()
-          );
+        if (plan?.injectionVisibility === 'backend-provider' && !request.record.workerAuthority)
+          throw new ControlProductPreconditionError();
+        if (request.record.workerAuthority) {
+          const authority = request.record.workerAuthority;
+          const consumer = {
+            ...authority.consumer,
+            credentials: { declarations: authority.declarations },
+          };
+          assertCurrentWorkerCredentialAuthority(db, consumer, () => new Date().toISOString());
+          if (plan?.injectionVisibility === 'backend-provider') {
+            if (
+              plan.packageSnapshotId !== consumer.snapshotId ||
+              request.record.agentSessionId !== consumer.scope.agentSessionId
+            )
+              throw new ControlProductPreconditionError();
+            const declarations = authority.declarations.filter(
+              (declaration) =>
+                declaration.visibility === 'sandbox-provider' &&
+                declaration.vaultGrantId === plan.grantId &&
+                declaration.provider.credentialKey === plan.targetEnvVarName
+            );
+            if (declarations.length !== 1 || authority.materialVersion === undefined)
+              throw new ControlProductPreconditionError();
+            const current = assertCurrentWorkerCredentialAuthority(
+              db,
+              consumer,
+              () => new Date().toISOString(),
+              declarations[0]!
+            );
+            if (current.reference.currentVersion !== authority.materialVersion)
+              throw new ControlProductPreconditionError();
+          }
+        }
         result = {
           kind: request.kind,
           value: createVaultInjectionReceipt(db, definedFields(request.record)),

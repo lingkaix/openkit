@@ -17,8 +17,20 @@ import { createBetterAuth } from '../auth/better-auth.js';
 import type { Actor } from '../auth/identity.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { policyDigest } from '../policy/statements.js';
-import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
+import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
+import {
+  assertCurrentWorkerCredentialAuthority,
+  readVaultRequesterAuthority,
+} from '../runtime/worker-credential-authority.js';
+import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
+import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  resolveAgentEnvironmentPackage,
+  resolveAgentSessionCompatibilityKey,
+} from '../test-support/prepared-agent-environment.js';
 import { createVaultGrant, getVaultGrant } from '../vault/vault-grants.js';
 import {
   advanceActiveVaultReferenceVersion,
@@ -27,8 +39,10 @@ import {
   getVaultReference,
   rebindWorkspaceVaultReference,
 } from '../vault/vault-references.js';
+import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { createVaultInjectionPlan, getVaultInjectionPlan } from '../vault-injection-plans.js';
 import {
+  type CreateVaultInjectionReceiptInput,
   createVaultInjectionReceipt,
   getVaultInjectionReceipt,
   listVaultInjectionReceipts,
@@ -45,7 +59,7 @@ import {
   controlWorkerInputBytes,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
-import { openCoreDb } from './db.js';
+import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { importUnboundWorkspaceVaultReference } from './test-support/vault-retained-fixtures.js';
 import {
@@ -615,6 +629,304 @@ describe('Vault native binding withdrawal currentness', () => {
     }
   );
 });
+
+it('joins Provider receipt generations at the actual sequential native decision', async () => {
+  const f = await fixture();
+  const localUserId = ensureLocalUser(f.db);
+  const timestamp = new Date().toISOString();
+  const store = await createDemoStore({ dataRoot: f.db.dataRoot });
+  recordWorkspaceOwnerMembership({
+    coreDb: f.db,
+    ownerUserId: localUserId,
+    workspaceId: DEMO_WORKSPACE_ID,
+  });
+  const agentSessionId = allocateEntityId('as');
+  const originalReference = await createVaultReference(f.db, {
+    ...createInput(),
+    backendKind: 'encrypted-file',
+    now: () => timestamp,
+  });
+  const grant = await createVaultGrant(f.db, {
+    grantId: allocateEntityId('grant'),
+    vaultReferenceId: originalReference.referenceId,
+    ownerScope: 'server',
+    lifetime: 'agent-session',
+    targetAgentSessionId: agentSessionId,
+    targetAgentId: 'agent_codex_host',
+    allowedInjectionPaths: ['backend-provider'],
+    expiresAt: '2099-01-01T00:00:00.000Z',
+    now: () => timestamp,
+  });
+  // This is a resolved direct-server declaration, not an authored Workspace requirement.
+  const providerDeclaration = {
+    id: 'native_generation_provider',
+    vaultGrantId: grant.grantId,
+    visibility: 'sandbox-provider' as const,
+    provider: {
+      instanceId: 'native-generation',
+      type: 'github_mcp',
+      credentialKey: 'GITHUB_TOKEN',
+      profileId: 'github_mcp',
+    },
+  };
+  const setup = createTestAgentSetup({
+    imageRef: `sha256:${'a'.repeat(64)}`,
+    requiredCapabilities: ['trusted-worker-inference-relay'],
+    credentialDeclarations: [providerDeclaration],
+  });
+  await store.createAgentSession({
+    id: agentSessionId,
+    agentId: setup.manifest.id,
+    workspaceId: DEMO_WORKSPACE_ID,
+    threadId: DEMO_THREAD_ID,
+    status: 'idle',
+    message: null,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  });
+  const createdTurn = await store.createTurn(
+    DEMO_WORKSPACE_ID,
+    DEMO_THREAD_ID,
+    'Native Provider generation one',
+    { kind: 'user', id: localUserId },
+    null,
+    { startedAt: timestamp }
+  );
+  const turn = await store.updateTurn(createdTurn.id, {
+    agentId: setup.manifest.id,
+    agentSessionId,
+  });
+  const entry = createSchedulerAdmissionEntry(f.db, {
+    backendId: 'nanohost',
+    triggerActor: turn.triggerActor,
+    profileRef: 'profile_worker',
+    queueEntryId: `queue_${turn.id}`,
+    requestId: randomUUID(),
+    requestedAgentId: setup.manifest.id,
+    threadId: turn.threadId,
+    turnId: turn.id,
+    turnInput: 'Native Provider generation one',
+    workspaceId: DEMO_WORKSPACE_ID,
+    now: () => timestamp,
+  });
+  const unlock = createVaultUnlockState({
+    backendKind: 'encrypted-file',
+    storeDir: join(f.db.dataRoot, 'vault-generation'),
+  });
+  const workspaceDb = openWorkspaceDb(f.db.dataRoot, DEMO_WORKSPACE_ID);
+  let ownerStage = 'primary-preparation';
+  try {
+    unlock.unlock({ masterKey: Buffer.alloc(32, 37) });
+    const storedMaterial = unlock.backend().store({
+      referenceId: originalReference.referenceId,
+      material: 'synthetic-native-provider-generation-one',
+      metadata: { ownerScope: 'server' },
+    });
+    expect(storedMaterial.currentVersion).toBe(1);
+    expect(originalReference.currentVersion).toBe(1);
+    const resolverInput = {
+      agentSetup: setup,
+      agentSessionId,
+      coreDb: f.db,
+      turn,
+      triggerActor: turn.triggerActor,
+      workspaceRoots: [],
+      backend: { kind: 'openshell' as const },
+      vaultBackend: () => unlock.backend(),
+      createdAt: timestamp,
+      now: () => timestamp,
+    };
+    const attempt = recordTestExecutionAttempt(f.db, {
+      entry,
+      attemptId: allocateEntityId('attempt'),
+      agentSessionId,
+      inputRef: `aepsnap_${turn.id}_${agentSessionId}`,
+      bindingRef: `lease-binding:${turn.id}`,
+      sessionCompatibilityKey: resolveAgentSessionCompatibilityKey(resolverInput),
+      now: () => timestamp,
+    });
+    // Collect the actual MAIN producer's pending completion input. Neither sink publishes a
+    // canonical receipt or supplies permission, and neither is a queue/advance stand-in.
+    const pending: CreateVaultInjectionReceiptInput[] = [];
+    let supplied = 0;
+    const environmentPackage = await resolveAgentEnvironmentPackage({
+      ...resolverInput,
+      providerCredentialSink: (credential) => {
+        expect(credential.providerInstanceId).toBe(providerDeclaration.provider.instanceId);
+        expect(credential.credentialKey).toBe(providerDeclaration.provider.credentialKey);
+        supplied += 1;
+      },
+      credentialReceiptSink: (receipt) => {
+        pending.push(receipt);
+      },
+    });
+    expect(supplied).toBe(1);
+    expect(pending).toHaveLength(1);
+    const receipt = pending[0];
+    if (!receipt) throw new Error('The original producer completion input is absent.');
+    const ledger = recordAgentEnvironmentPackageSnapshot(workspaceDb, {
+      environmentPackage,
+      createdAt: timestamp,
+    });
+    expect(ledger.snapshotId).toBe(environmentPackage.snapshotId);
+    expect(ledger.agentSessionId).toBe(agentSessionId);
+    assertCurrentWorkerCredentialAuthority(f.db, environmentPackage);
+    const originalPlan = getVaultInjectionPlan(f.db, receipt.planId);
+    if (!originalPlan) throw new Error('The original native Provider plan is absent.');
+    expect(originalPlan).toMatchObject({
+      grantId: grant.grantId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      injectionVisibility: 'backend-provider',
+      targetEnvVarName: providerDeclaration.provider.credentialKey,
+    });
+    expect(receipt.grantId).toBe(grant.grantId);
+    expect(receipt.agentSessionId).toBe(agentSessionId);
+    expect(getVaultGrant(f.db, originalPlan.grantId)).toEqual(grant);
+    expect(grant.targetAgentSessionId).toBe(environmentPackage.scope.agentSessionId);
+    const workerAuthority = {
+      consumer: {
+        snapshotId: environmentPackage.snapshotId,
+        scope: {
+          workspaceId: environmentPackage.scope.workspaceId,
+          threadId: environmentPackage.scope.threadId,
+          turnId: environmentPackage.scope.turnId,
+          agentSessionId: environmentPackage.scope.agentSessionId,
+          triggerActor: environmentPackage.scope.triggerActor,
+        },
+        agent: { agentId: environmentPackage.agent.agentId },
+      },
+      declarations: environmentPackage.credentials.declarations,
+    };
+    expect(listVaultInjectionReceipts(f.db)).toEqual([]);
+    const rotated = unlock.backend().rotate({
+      referenceId: originalReference.referenceId,
+      material: 'synthetic-native-provider-generation-two',
+    });
+    expect(rotated.currentVersion).toBe(2);
+    const client = getControlStoreWorkerClient();
+    const advanced = await client.vault(f.db, 'reference-advance', {
+      referenceId: originalReference.referenceId,
+      currentVersion: 2,
+      now: () => timestamp,
+    });
+    expect(advanced).toMatchObject({
+      referenceId: originalReference.referenceId,
+      currentVersion: 2,
+    });
+    expect(getVaultReference(f.db, originalReference.referenceId)?.currentVersion).toBe(2);
+    const staleAuthority = {
+      ...workerAuthority,
+      materialVersion: originalReference.currentVersion,
+    };
+    const staleRecord = { ...receipt, workerAuthority: staleAuthority };
+    // Parent enables ONLY the accepted transient codec field for OLD. No unknown-field
+    // decoder failure is a verdict; this request must reach the real original native body.
+    expect(
+      ControlVaultInputSchema.safeParse({ kind: 'receipt-create', record: staleRecord }).success
+    ).toBe(true);
+    const beforeStale = f.submissions();
+    const stale = await f.start(() => client.vault(f.db, 'receipt-create', staleRecord)).result;
+    expect(f.submissions()).toBe(beforeStale + 1);
+    if (stale.ok) expect(getVaultInjectionReceipt(f.db, receipt.receiptId)).toEqual(stale.value);
+    // FIRST deciding assertion: OLD must actually commit this stale canonical receipt.
+    expect(getVaultInjectionReceipt(f.db, receipt.receiptId)).toBeNull();
+    expect(stale.ok).toBe(false);
+
+    // The remaining arms run only after the actual generation refusal frontier on NEW.
+    ownerStage = 'other-grant-create';
+    const otherGrant = await createVaultGrant(f.db, {
+      grantId: allocateEntityId('grant'),
+      vaultReferenceId: originalReference.referenceId,
+      ownerScope: 'server',
+      lifetime: 'agent-session',
+      targetAgentSessionId: agentSessionId,
+      targetAgentId: setup.manifest.id,
+      allowedInjectionPaths: ['backend-provider'],
+      expiresAt: grant.expiresAt,
+      now: () => timestamp,
+    });
+    ownerStage = 'wrong-key-plan-create';
+    const wrongKeyPlan = await createVaultInjectionPlan(f.db, {
+      planId: `plan_wrong_key_${randomUUID()}`,
+      grantId: grant.grantId,
+      packageSnapshotId: environmentPackage.snapshotId,
+      injectionVisibility: 'backend-provider',
+      targetEnvVarName: 'OTHER_TOKEN',
+      backendCapabilityRequirement: originalPlan.backendCapabilityRequirement,
+      expirationBehavior: originalPlan.expirationBehavior,
+      revocationBehavior: originalPlan.revocationBehavior,
+      redactionRule: originalPlan.redactionRule,
+      now: () => timestamp,
+    });
+    const currentAuthority = { ...workerAuthority, materialVersion: 2 };
+    const refusals = [
+      { label: 'missing-version', record: { ...receipt, workerAuthority } },
+      { label: 'missing-worker-authority', record: receipt },
+      {
+        label: 'missing-parent-plan',
+        record: {
+          ...receipt,
+          planId: `plan_missing_${randomUUID()}`,
+          workerAuthority: currentAuthority,
+        },
+      },
+      {
+        label: 'different-real-grant',
+        record: { ...receipt, grantId: otherGrant.grantId, workerAuthority: currentAuthority },
+      },
+      {
+        label: 'different-real-plan-key',
+        record: { ...receipt, planId: wrongKeyPlan.planId, workerAuthority: currentAuthority },
+      },
+    ];
+    for (const { label, record } of refusals) {
+      ownerStage = label;
+      expect(
+        ControlVaultInputSchema.safeParse({ kind: 'receipt-create', record }).success,
+        label
+      ).toBe(true);
+      const before = f.submissions();
+      const result = await f.start(() => client.vault(f.db, 'receipt-create', record)).result;
+      expect(f.submissions(), label).toBe(before + 1);
+      expect(result.ok, label).toBe(false);
+      expect(getVaultInjectionReceipt(f.db, receipt.receiptId), label).toBeNull();
+    }
+    ownerStage = 'first-current-receipt';
+    const firstCurrentRecord = { ...receipt, workerAuthority: currentAuthority };
+    expect(
+      ControlVaultInputSchema.safeParse({ kind: 'receipt-create', record: firstCurrentRecord })
+        .success
+    ).toBe(true);
+    const beforeFirstCurrent = f.submissions();
+    const firstCurrent = await f.start(() =>
+      client.vault(f.db, 'receipt-create', firstCurrentRecord)
+    ).result;
+    expect(f.submissions()).toBe(beforeFirstCurrent + 1);
+    expect(firstCurrent.ok).toBe(true);
+    if (!firstCurrent.ok) throw firstCurrent.error;
+    expect(firstCurrent.value).toMatchObject({
+      receiptId: receipt.receiptId,
+      planId: originalPlan.planId,
+      grantId: grant.grantId,
+      agentSessionId,
+      revocationStatus: 'active',
+    });
+    expect(getVaultInjectionReceipt(f.db, receipt.receiptId)).toEqual(firstCurrent.value);
+    expect(listVaultInjectionReceipts(f.db)).toEqual([firstCurrent.value]);
+    expect(getVaultReference(f.db, originalReference.referenceId)?.currentVersion).toBe(2);
+    expect(getVaultGrant(f.db, grant.grantId)).toEqual(grant);
+    expect(getVaultInjectionPlan(f.db, originalPlan.planId)).toEqual(originalPlan);
+    // No Harness/SDK/Worker operation was ever submitted; all prefix native calls are joined.
+    expect(attempt.operationId).toBeNull();
+  } catch (error) {
+    if (error instanceof ControlStoreWorkerError)
+      throw new Error(`Native generation fixture owner stage: ${ownerStage}.`, { cause: error });
+    throw error;
+  } finally {
+    unlock.lock();
+    workspaceDb.sqlite.close();
+  }
+}, 30_000);
 
 // COORD04:04 retains the original receipt bound while the complete session projection is counted as pending bytes.
 describe('Vault session authority envelope admission', () => {

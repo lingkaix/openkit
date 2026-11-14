@@ -2233,6 +2233,7 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
             .object({
               consumer: credentialConsumer,
               declarations: z.array(AgentEnvironmentCredentialDeclarationSchema),
+              materialVersion: z.number().int().positive().safe().optional(),
             })
             .strict()
             .optional(),
@@ -2415,6 +2416,7 @@ export interface ControlVaultMainInputMap {
   'receipt-create': CreateVaultInjectionReceiptInput & {
     readonly loginBinding?: z.infer<typeof loginBindingAuthority>;
     readonly workerAuthority?: {
+      readonly materialVersion?: number;
       readonly consumer: import('../runtime/worker-credential-authority.js').WorkerCredentialConsumer;
       readonly declarations: readonly import('@openkit/config-schema').AgentEnvironmentCredentialDeclaration[];
     };
