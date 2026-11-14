@@ -51,7 +51,7 @@ import {
 } from './capability/usage-ledger.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
-import type { RuntimeConfigSnapshot } from './config/runtime-config.js';
+import type { RuntimeConfigManager, RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { redactInternalAgentDiagnosticValue } from './internal-agents/redaction.js';
 import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
 import {
@@ -160,6 +160,7 @@ import {
   WorkerRawOutputBudgetExceededError,
 } from './runtime/worker-raw-output.js';
 import { createSecurityCanaryMcpSupply, SECURITY_CANARY_TOOLS } from './security/canaries.js';
+import { SecurityTriggerStore } from './security/trigger.js';
 import {
   type ControlCapabilityAdmissionFailure,
   ControlCapabilityCommandInputSchema,
@@ -281,6 +282,8 @@ export interface RegisterWorkerMcpRoutesInput {
   readonly coreDb?: CoreDb;
   /** Returns the current complete runtime configuration snapshot. */
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
+  /** Actual reload/publication owner; missing ownership never activates autonomous containment. */
+  readonly runtimeConfigManager?: RuntimeConfigManager;
   /** Item owner for product-safe tool-call projections. */
   readonly store: FsStore;
   /** Shared gate fencing Workspace writes against deletion. */
@@ -666,6 +669,24 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                     // A failed observation has no useful fallback or durable-trip claim.
                     throw unavailableServer();
                   }
+                  if (input.runtimeConfigManager) {
+                    try {
+                      await new SecurityTriggerStore(input.coreDb!).consumeCanary(
+                        {
+                          workspaceId: scope.workspaceId,
+                          threadId: scope.threadId,
+                          turnId: scope.turnId,
+                          agentSessionId: scope.agentSessionId,
+                          packageSnapshotId: environmentPackage.snapshotId,
+                          requestId: scope.requestId ?? null,
+                        },
+                        input.runtimeConfigManager
+                      );
+                    } catch {
+                      // A committed sensor fact is not proof of a completed restriction or stop.
+                      throw unavailableServer();
+                    }
+                  }
                 }
                 throw mcpDeniedError();
               }
@@ -713,21 +734,19 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   request.params.name,
                   activeWorkspaceDb!
                 );
-                if (toolConditions.length > 0) {
-                  const authority = currentMcpPolicyAuthority({
-                    input,
-                    environmentPackage,
-                    workspaceDb: activeWorkspaceDb!,
-                    serverId,
-                    toolName: request.params.name,
-                  });
-                  const kernel = authority.kernel;
-                  if (
-                    applyMcpToolProhibitions(kernel, toolConditions).effect !== 'allow' ||
-                    toolConditions.some((rule) => rule.effect === 'require_approval')
-                  )
-                    throw mcpDeniedError();
-                }
+                const authority = currentMcpPolicyAuthority({
+                  input,
+                  environmentPackage,
+                  workspaceDb: activeWorkspaceDb!,
+                  serverId,
+                  toolName: request.params.name,
+                });
+                // Exact Tool conditions are additional constraints, never the global process gate.
+                if (
+                  applyMcpToolProhibitions(authority.kernel, toolConditions).effect !== 'allow' ||
+                  toolConditions.some((rule) => rule.effect === 'require_approval')
+                )
+                  throw mcpDeniedError();
               };
               requireCurrentBuiltinToolPolicy();
               if (workBuiltin && request.params.name === 'work_input_request') {
@@ -2594,6 +2613,8 @@ function currentMcpPolicyAuthority(
   decision?: PolicyUseDecision
 ) {
   let evaluated: { decision: PolicyDecision; facts: unknown } | null = null;
+  const initiatingHumanId = responsibleUserIdForActor(input.environmentPackage.scope.triggerActor);
+  if (!initiatingHumanId) throw mcpDeniedError();
   const authority = currentWorkerLineageWorkspaceAuthority(
     input.input.coreDb!,
     { ...input.environmentPackage.scope, packageSnapshotId: input.environmentPackage.snapshotId },
@@ -2603,6 +2624,51 @@ function currentMcpPolicyAuthority(
       dependencyFailure: 'throw',
       onEvaluation: (event) => {
         evaluated = event;
+      },
+      policy: {
+        document: readAdmittedPolicyDocument(
+          input.input.coreDb!,
+          input.input.runtimeConfig().openKitConfig.policy?.mediation
+        ),
+        subject: {
+          principal: { kind: 'human', id: initiatingHumanId },
+          onBehalfOf: null,
+          actor: {
+            kind: 'agent',
+            id: input.environmentPackage.agent.agentId,
+            responsibleUserId: initiatingHumanId,
+          },
+          // The original Workspace authority owner supplies the verified admission process tuple.
+          process: null,
+          credentialKind: 'worker-package',
+          responsibleHumanId: initiatingHumanId,
+        },
+        now: Date.now(),
+        authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.input.coreDb!, userId),
+        anchorCurrent: (anchor) => {
+          if (anchor.owner.kind === 'server' && anchor.kind === 'server' && anchor.id === 'server')
+            return true;
+          if (
+            anchor.owner.kind !== 'workspace' ||
+            anchor.owner.workspaceId !== input.environmentPackage.scope.workspaceId
+          )
+            throw mcpDeniedError();
+          if (anchor.kind === 'workspace')
+            return anchor.id === input.environmentPackage.scope.workspaceId;
+          if (anchor.kind === 'turn') {
+            const turn =
+              anchor.id === input.environmentPackage.scope.turnId
+                ? input.input.store.getTurnMetadata(
+                    input.environmentPackage.scope.workspaceId,
+                    input.environmentPackage.scope.threadId,
+                    anchor.id
+                  )
+                : input.input.store.getTurnById(anchor.id);
+            return !isSealedTurnTerminal(turn.status);
+          }
+          // No missing Thread/Goal/lifecycle fact is evidence that a restriction ended.
+          throw mcpDeniedError();
+        },
       },
     }
   );

@@ -123,6 +123,7 @@ import {
   markSchedulerExecutionAttemptClosing,
   schedulerExecutionCorrelation,
 } from './runtime/execution-attempt-records.js';
+import { createExecutionStepJournalReader } from './runtime/execution-journal.js';
 import {
   canonicalMcpToolSchemas,
   importMcpToolSchemaSnapshots,
@@ -170,6 +171,7 @@ import {
 import { SecurityTriggerStore } from './security/trigger.js';
 import { lightAppDbPath } from './storage/app-db.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import * as canonicalWrites from './storage/canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -3303,10 +3305,15 @@ describe('worker MCP routes', () => {
     'native-send-failure',
     'settled-lineage',
     'containment-check',
+    'containment-intent-before-restriction',
+    'containment-cap-flood-recovery',
   ] as const)(
     'observes only authenticated current exact native canary route calls: %s',
     { timeout: 60_000 },
     async (scenario) => {
+      const consumer =
+        scenario === 'containment-intent-before-restriction' ||
+        scenario === 'containment-cap-flood-recovery';
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-canary-route-'));
       const coreDb = openCopiedMcpCore(dataRoot);
       const userId = await ensureCanonicalLocalUser(coreDb);
@@ -3344,14 +3351,37 @@ describe('worker MCP routes', () => {
         workspaceMutationAdmission: mutation,
       });
       admitTestNativeEnvironment(coreDb, setup.manifest);
-      if (scenario === 'containment-check') {
+      if (scenario === 'containment-check' || consumer) {
         fs.mkdirSync(join(dataRoot, 'config'), { recursive: true });
         writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+        if (consumer) {
+          fs.mkdirSync(join(dataRoot, 'config/agents'), { recursive: true });
+          fs.mkdirSync(join(dataRoot, 'config/providers'), { recursive: true });
+          writeFileSync(
+            join(dataRoot, `config/agents/${setup.manifest.id}.agent.jsonc`),
+            JSON.stringify({ schemaVersion: 1, ...setup.manifest })
+          );
+          writeFileSync(
+            join(dataRoot, 'config/gateway.jsonc'),
+            JSON.stringify(readConfiguration().gatewayConfig)
+          );
+          writeFileSync(
+            join(dataRoot, 'config/providers/agent-openrouter.provider.jsonc'),
+            JSON.stringify({
+              schemaVersion: 1,
+              id: 'agent-openrouter',
+              displayName: 'Canary source fixture',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            })
+          );
+        }
       }
       const runtimeManager = createRuntimeConfigManager({
-        dataRoot: scenario === 'containment-check' ? dataRoot : null,
+        dataRoot: scenario === 'containment-check' || consumer ? dataRoot : null,
         initialSnapshot: readConfiguration(),
       });
+      const gateway = createDefaultWorkerMcpGateway(coreDb);
       const taskApp = createApp({
         coreDb,
         store,
@@ -3360,8 +3390,8 @@ describe('worker MCP routes', () => {
         workerControlGateway: native.workerControlGateway,
         workspaceMutationAdmission: mutation,
         runtimeConfigManager: runtimeManager,
+        ...(consumer ? { workerMcpGateway: gateway } : {}),
       });
-      const gateway = createDefaultWorkerMcpGateway(coreDb);
       const app = new Hono();
       registerWorkerMcpRoutes({
         app,
@@ -3376,6 +3406,8 @@ describe('worker MCP routes', () => {
       const upstreamList = vi.spyOn(gateway, 'listTools');
       const upstreamCall = vi.spyOn(gateway, 'callTool');
       let execution: ReturnType<typeof native.executionFor> | undefined;
+      const additionalExecutions: ReturnType<typeof native.executionFor>[] = [];
+      let restoreWriteObservation: (() => void) | undefined;
       let detachStartupFailure: (() => void) | undefined;
       try {
         const started = await taskApp.request(
@@ -3447,16 +3479,23 @@ describe('worker MCP routes', () => {
           id: number,
           bearer = capabilityToken
         ) => {
-          const response = await app.request(`/api/worker-capabilities/mcp/${serverId}`, {
-            method: 'POST',
-            headers: {
-              accept: 'application/json, text/event-stream',
-              'content-type': 'application/json',
-              authorization: `Bearer ${bearer}`,
-            },
-            body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-          });
-          return { response, body: await response.json() };
+          const response = await (consumer ? taskApp : app).request(
+            `/api/worker-capabilities/mcp/${serverId}`,
+            {
+              method: 'POST',
+              headers: {
+                accept: 'application/json, text/event-stream',
+                'content-type': 'application/json',
+                authorization: `Bearer ${bearer}`,
+              },
+              body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+            }
+          );
+          const body = await response.json();
+          if (consumer)
+            mediation =
+              runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+          return { response, body };
         };
         // Dormant baseline MUST pass this real source/list/ordinary precondition before any OLD credit.
         const workList = await rpc('openkit-work', 'tools/list', {}, 100);
@@ -3552,6 +3591,107 @@ describe('worker MCP routes', () => {
           expect(hidden.body).toMatchObject({ result: { tools: [] } });
         }
         const trigger = new SecurityTriggerStore(coreDb);
+        async function activateContainment() {
+          const { createAdministrationConfiguration } = await import(
+            './config/administration-configuration.js'
+          );
+          const { RuntimeConfigFileService } = await import('./config/runtime-config-files.js');
+          await runtimeManager.bindNativePolicyPublication(coreDb);
+          const files = new RuntimeConfigFileService({
+            dataRoot,
+            userId,
+            workspaceIds: [workspaceId],
+            runtimeConfigManager: runtimeManager,
+            readRuntimeConfigStatus: () => runtimeManager.status(),
+          });
+          const { quickChatWorkspaceIdForUser } = await import('./lib/store.js');
+          const reviewWorkspaceId = quickChatWorkspaceIdForUser(userId);
+          const homeThread = await store.createThread(
+            reviewWorkspaceId,
+            'Containment review',
+            allocateEntityId('th'),
+            'administration',
+            { visibility: 'private', privateOwnerUserId: userId }
+          );
+          const homeTurn = await store.createTurn(
+            reviewWorkspaceId,
+            homeThread.id,
+            'Review bounded containment',
+            { kind: 'user', id: userId },
+            null
+          );
+          const service = createAdministrationConfiguration({
+            coreDb,
+            store,
+            files,
+            actor: { kind: 'local', userId },
+            runtimeConfig: () => runtimeManager.current(),
+            reload: () => runtimeManager.reload({ mode: 'safe', dryRun: false }),
+            inflightCommands: new WeakMap(),
+            repositoryWorkspaceDb: () => {
+              throw new Error('This Server grant has no Workspace Policy read.');
+            },
+          });
+          const current =
+            runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+          const review = await trigger.containmentUsage(current);
+          const proposal = await service.propose(
+            {
+              targetFamily: 'policy',
+              targetId: 'server',
+              expectedRevision: files.readFile('server.jsonc').file.revision,
+              changes: {
+                rationale: 'Review exact release bounds and native usage.',
+                proposed: {
+                  schemaVersion: 1,
+                  statements: [
+                    {
+                      id: 'native-containment-grant',
+                      kind: 'permission',
+                      state: 'active',
+                      effect: 'allow',
+                      grant: { kind: 'ordinary' },
+                      author: { kind: 'human', id: userId },
+                      authority: { kind: 'human', userId },
+                      authoredAt: new Date().toISOString(),
+                      scope: {
+                        subjects: [{ kind: 'human', id: userId }],
+                        actions: ['security.containment'],
+                        resources: [
+                          {
+                            kind: 'container',
+                            container: {
+                              owner: { kind: 'server' },
+                              kind: 'containment-template',
+                              id: policyDigest(review.limits),
+                            },
+                          },
+                        ],
+                      },
+                      lifetime: {
+                        anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+            { threadId: homeThread.id, turnId: homeTurn.id, requestId: randomUUID() }
+          );
+          const applied = await service.apply({
+            requestId: randomUUID(),
+            candidate: proposal.candidate,
+            confirmation: proposal.confirmation,
+          });
+          expect(applied).toMatchObject({ persisted: true, reload: 'applied' });
+
+          mediation =
+            runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+          await store.updateTurn(homeTurn.id, {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+          });
+        }
         if (scenario === 'off') expect(await trigger.current()).toMatchObject({ state: 'off' });
         else {
           expect(await trigger.enable({ kind: 'local', userId })).toMatchObject({
@@ -3566,6 +3706,121 @@ describe('worker MCP routes', () => {
         const rows = () =>
           listServerAuditEvents(coreDb).filter((row) => row.action === 'security.canary');
         expect(rows()).toEqual([]);
+        const witnesses = [{ pkg: original, token: capabilityToken, turnId: turn.id }];
+        const journal = createExecutionStepJournalReader(coreDb, { kind: 'server' });
+        const containmentRef = (pkg: AgentEnvironmentPackage) => ({
+          execution: {
+            owner: { kind: 'server' as const },
+            executionId: `containment:${policyDigest({ kind: 'process', workspaceId: pkg.scope.workspaceId, threadId: pkg.scope.threadId, turnId: pkg.scope.turnId })}`,
+          },
+          stepId: 'quarantine',
+        });
+        const policyNow = () =>
+          runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+        type Invocation = Awaited<ReturnType<typeof journal.readInvocation>>;
+        const beforeRestriction: Promise<{ invocation?: Invocation; error?: unknown }>[] = [];
+        async function launchWitness(n: number) {
+          // Finish the previous actual run first; this witness needs no concurrent execution.
+          const siblingThread = await store.createThread(
+            workspaceId,
+            `Independent containment witness ${n}`
+          );
+          const response = await taskApp.request(
+            ...operationRequest(
+              'task.start',
+              { workspaceId, threadId: siblingThread.id },
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  input: `Start independent containment process ${n}.`,
+                  requestId: randomUUID(),
+                }),
+              }
+            )
+          );
+          expect(response.status, await response.clone().text()).toBe(202);
+          const sibling = StartTaskModeResponseSchema.parse(await response.json()).turn;
+          const handle = native.executionFor(sibling.id);
+          additionalExecutions.push(handle);
+          await handle.launched.promise;
+          await native.waitForStartup(sibling.id);
+          const token = native.executor.capabilityToken;
+          const pkg = native.workerControlGateway.authenticatePackageToken(`Bearer ${token}`, {
+            tokenFamily: 'capability',
+          });
+          expect(pkg.scope).toMatchObject({
+            workspaceId,
+            threadId: siblingThread.id,
+            turnId: sibling.id,
+          });
+          const witness = { pkg, token, turnId: sibling.id };
+          witnesses.push(witness);
+          const allowed = await rpc(
+            'openkit-work',
+            'tools/call',
+            { name: 'work_peer_list', arguments: {} },
+            430 + n,
+            token
+          );
+          expect(allowed.body.error, JSON.stringify(allowed.body)).toBeUndefined();
+          expect(allowed.body.result?.isError).not.toBe(true);
+          expect(allowed.body).toHaveProperty('result.content');
+          return witness;
+        }
+        if (consumer) {
+          await activateContainment();
+          expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
+            usage: { currentServer: 0, cumulativeServer: 0, pendingServer: 0 },
+          });
+          for (const [n, witness] of witnesses.entries()) {
+            const allowed = await rpc(
+              'openkit-work',
+              'tools/call',
+              { name: 'work_peer_list', arguments: {} },
+              400 + n,
+              witness.token
+            );
+            expect(allowed.body.error, JSON.stringify(allowed.body)).toBeUndefined();
+            expect(allowed.body.result?.isError).not.toBe(true);
+            expect(allowed.body).toHaveProperty('result.content');
+          }
+          if (scenario === 'containment-intent-before-restriction') {
+            const write = canonicalWrites.writeFileAtomic;
+            const observed = vi
+              .spyOn(canonicalWrites, 'writeFileAtomic')
+              .mockImplementation((...args) => {
+                if (args[0] === join(dataRoot, 'config/server.jsonc')) {
+                  const value = parse(String(args[1]));
+                  const document = PolicyDocumentV1Schema.safeParse(value?.policy?.mediation);
+                  if (
+                    document.success &&
+                    document.data.statements.some(
+                      (statement) => statement.id === containmentRef(original).execution.executionId
+                    )
+                  ) {
+                    // Read the actual owning journal BEFORE forwarding the real canonical write.
+                    // This observes, but never synthesizes, changes or acknowledges an owner receipt.
+                    expect(
+                      native.workerControlGateway.authenticatePackageToken(
+                        `Bearer ${capabilityToken}`,
+                        { tokenFamily: 'capability' }
+                      ).snapshotId
+                    ).toBe(original.snapshotId);
+                    expect(store.getTurnById(turn.id).status).toBe('running');
+                    beforeRestriction.push(
+                      journal.readInvocation(containmentRef(original)).then(
+                        (invocation) => ({ invocation }),
+                        (error: unknown) => ({ error })
+                      )
+                    );
+                  }
+                }
+                return write(...args);
+              });
+            restoreWriteObservation = () => observed.mockRestore();
+          }
+        }
         if (scenario === 'settled-lineage') {
           execution.completion.resolve();
           await execution.execution;
@@ -3666,6 +3921,8 @@ describe('worker MCP routes', () => {
           'policy-hidden-foreign',
           'repeat',
           'containment-check',
+          'containment-intent-before-restriction',
+          'containment-cap-flood-recovery',
         ].includes(scenario);
         if (shouldTrip) {
           const facts = rows();
@@ -3698,98 +3955,7 @@ describe('worker MCP routes', () => {
           expect(facts[0]?.subject).toStrictEqual(actor);
           expect(JSON.stringify(facts)).not.toContain('foreign-canary-');
           if (scenario === 'containment-check') {
-            const { createAdministrationConfiguration } = await import(
-              './config/administration-configuration.js'
-            );
-            const { RuntimeConfigFileService } = await import('./config/runtime-config-files.js');
-            await runtimeManager.bindNativePolicyPublication(coreDb);
-            const files = new RuntimeConfigFileService({
-              dataRoot,
-              userId,
-              workspaceIds: [workspaceId],
-              runtimeConfigManager: runtimeManager,
-              readRuntimeConfigStatus: () => runtimeManager.status(),
-            });
-            const { quickChatWorkspaceIdForUser } = await import('./lib/store.js');
-            const reviewWorkspaceId = quickChatWorkspaceIdForUser(userId);
-            const homeThread = await store.createThread(
-              reviewWorkspaceId,
-              'Containment review',
-              allocateEntityId('th'),
-              'administration',
-              { visibility: 'private', privateOwnerUserId: userId }
-            );
-            const homeTurn = await store.createTurn(
-              reviewWorkspaceId,
-              homeThread.id,
-              'Review bounded containment',
-              { kind: 'user', id: userId },
-              null
-            );
-            const service = createAdministrationConfiguration({
-              coreDb,
-              store,
-              files,
-              actor: { kind: 'local', userId },
-              runtimeConfig: () => runtimeManager.current(),
-              reload: () => runtimeManager.reload({ mode: 'safe', dryRun: false }),
-              inflightCommands: new WeakMap(),
-              repositoryWorkspaceDb: () => {
-                throw new Error('This Server grant has no Workspace Policy read.');
-              },
-            });
-            const current =
-              runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
-            const review = await trigger.containmentUsage(current);
-            const proposal = await service.propose(
-              {
-                targetFamily: 'policy',
-                targetId: 'server',
-                expectedRevision: files.readFile('server.jsonc').file.revision,
-                changes: {
-                  rationale: 'Review exact release bounds and native usage.',
-                  proposed: {
-                    schemaVersion: 1,
-                    statements: [
-                      {
-                        id: 'native-containment-grant',
-                        kind: 'permission',
-                        state: 'active',
-                        effect: 'allow',
-                        grant: { kind: 'ordinary' },
-                        author: { kind: 'human', id: userId },
-                        authority: { kind: 'human', userId },
-                        authoredAt: new Date().toISOString(),
-                        scope: {
-                          subjects: [{ kind: 'human', id: userId }],
-                          actions: ['security.containment'],
-                          resources: [
-                            {
-                              kind: 'container',
-                              container: {
-                                owner: { kind: 'server' },
-                                kind: 'containment-template',
-                                id: policyDigest(review.limits),
-                              },
-                            },
-                          ],
-                        },
-                        lifetime: {
-                          anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
-                        },
-                      },
-                    ],
-                  },
-                },
-              },
-              { threadId: homeThread.id, turnId: homeTurn.id, requestId: randomUUID() }
-            );
-            const applied = await service.apply({
-              requestId: randomUUID(),
-              candidate: proposal.candidate,
-              confirmation: proposal.confirmation,
-            });
-            expect(applied).toMatchObject({ persisted: true, reload: 'applied' });
+            await activateContainment();
             const policy =
               runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
             const intent = await trigger.prepareContainment({
@@ -3822,6 +3988,193 @@ describe('worker MCP routes', () => {
               usage: { cumulativeServer: 1, pendingServer: 1, currentServer: 0 },
             });
           }
+          if (scenario === 'containment-intent-before-restriction') {
+            const ref = containmentRef(original);
+            // On entry-only OLD the real sensor exists, but this automatic consumer intent does not.
+            await expect(journal.readInvocation(ref)).resolves.toMatchObject({
+              ref,
+              control: {
+                definitionVersion: 'containment',
+                kind: 'fence',
+                workId: facts[0]!.id,
+                actor: { kind: 'system', id: 'security.containment', responsibleUserId: userId },
+              },
+              carriage: { operation: 'policy.write' },
+            });
+            expect(beforeRestriction).toHaveLength(1);
+            const observed = (await Promise.all(beforeRestriction))[0]!;
+            expect(observed.error).toBeUndefined();
+            expect(observed.invocation).toMatchObject({
+              ref,
+              state: 'intent',
+              control: {
+                workId: facts[0]!.id,
+                inputRefs: expect.arrayContaining([facts[0]!.id]),
+                authorityRefs: expect.arrayContaining([
+                  policyDigest((await trigger.containmentUsage(policyNow())).limits),
+                ]),
+              },
+            });
+            expect(observed.invocation!.control.permittingDecisionRef).toBeTruthy();
+            const quarantines = policyNow().statements.filter(
+              (statement) => statement.lifetime.anchor.kind === 'quarantine'
+            );
+            expect(quarantines).toHaveLength(1);
+            expect(quarantines[0]).toMatchObject({
+              id: ref.execution.executionId,
+              kind: 'permission',
+              state: 'active',
+              effect: 'prohibit',
+              grant: { kind: 'ordinary' },
+              author: { kind: 'human', id: userId },
+              authority: { kind: 'human', userId },
+              authoredAt: new Date(
+                Number(observed.invocation!.clock.admittedUnixNano / 1_000_000n)
+              ).toISOString(),
+              scope: {
+                subjects: [{ kind: 'process', workspaceId, threadId, turnId: turn.id }],
+                resources: [
+                  {
+                    kind: 'container',
+                    container: {
+                      owner: { kind: 'workspace', workspaceId },
+                      kind: 'workspace',
+                      id: workspaceId,
+                    },
+                  },
+                ],
+              },
+              lifetime: {
+                anchor: { owner: { kind: 'server' }, kind: 'quarantine', id: facts[0]!.id },
+              },
+            });
+            expect(quarantines[0]!.lifetime).not.toHaveProperty('uses');
+            expect(quarantines[0]!.lifetime).not.toHaveProperty('notAfter');
+            const denied = await rpc(
+              'openkit-work',
+              'tools/call',
+              { name: 'work_peer_list', arguments: {} },
+              410
+            );
+            expect(denied.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+            expect(
+              native.workerControlGateway.authenticatePackageToken(`Bearer ${capabilityToken}`, {
+                tokenFamily: 'capability',
+              }).snapshotId
+            ).toBe(original.snapshotId);
+            expect(store.getTurnById(turn.id).status).toBe('running');
+            // Policy refusal above precedes deliberate ordinary completion; expiration is not its proof.
+            execution.completion.resolve();
+            await execution.execution;
+            await launchWitness(1);
+            const sibling = await rpc(
+              'openkit-work',
+              'tools/call',
+              { name: 'work_peer_list', arguments: {} },
+              411,
+              witnesses[1]!.token
+            );
+            expect(sibling.body.error, JSON.stringify(sibling.body)).toBeUndefined();
+            expect(sibling.body.result?.isError).not.toBe(true);
+            expect(sibling.body).toHaveProperty('result.content');
+          }
+          if (scenario === 'containment-cap-flood-recovery') {
+            for (let n = 0; n < 2; n++) {
+              const prior = n === 0 ? execution : additionalExecutions.at(-1)!;
+              prior.completion.resolve();
+              await prior.execution;
+              const witness = await launchWitness(n + 1);
+              const response = await rpc(
+                'openkit-security',
+                'tools/call',
+                { name: 'security_admin_export', arguments: {} },
+                420 + n,
+                witness.token
+              );
+              expect(response.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+            }
+            expect(rows()).toHaveLength(3);
+            const review = await trigger.containmentUsage(policyNow(), workspaceId);
+            // Native owner counts, not test-side counters: the third real process cannot exceed two.
+            expect(review.limits).toEqual({
+              version: 'containment/v1',
+              currentServer: 8,
+              currentWorkspace: 2,
+              cumulativeServer: 16,
+              cumulativeWorkspace: 4,
+              windowSeconds: 3600,
+              pendingServer: 16,
+              pendingWorkspace: 4,
+              actionSeconds: 60,
+              reviewSeconds: 86400,
+            });
+            expect(review.usage).toMatchObject({
+              currentServer: 2,
+              currentWorkspace: 2,
+              cumulativeServer: 2,
+              cumulativeWorkspace: 2,
+              pendingServer: 0,
+              pendingWorkspace: 0,
+            });
+            const quarantines = policyNow().statements.filter(
+              (statement) => statement.lifetime.anchor.kind === 'quarantine'
+            );
+            expect(quarantines.map((statement) => statement.scope.subjects)).toEqual(
+              witnesses.slice(0, 2).map(({ pkg }) => [
+                {
+                  kind: 'process',
+                  workspaceId,
+                  threadId: pkg.scope.threadId,
+                  turnId: pkg.scope.turnId,
+                },
+              ])
+            );
+            await expect(
+              journal.readInvocation(containmentRef(witnesses[2]!.pkg))
+            ).rejects.toThrow();
+            const retained = policyNow();
+            expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
+              state: 'stopping',
+            });
+            const alarms = (await trigger.readAlarms()).filter((alarm) => alarm.rule === 'R1');
+            expect(alarms.length).toBeGreaterThan(0);
+            const { publishSecurityAlarm, readSecurityAlarmPublication } = await import(
+              './security/publication.js'
+            );
+            for (const alarm of alarms) {
+              const publication = await publishSecurityAlarm({
+                coreDb,
+                store,
+                requestId: alarm.requestId,
+              });
+              expect(publication.status).toBe('published');
+              if (publication.status !== 'published')
+                throw new Error('Actual R1 publication did not progress at the containment cap.');
+              expect(
+                await readSecurityAlarmPublication({
+                  coreDb,
+                  store,
+                  requestId: alarm.requestId,
+                  workspaceId: publication.publication.workspaceId,
+                  threadId: publication.publication.threadId,
+                })
+              ).not.toBeNull();
+            }
+            expect(
+              (await trigger.readAlarms())
+                .filter((alarm) => alarm.rule === 'R1')
+                .every((alarm) => alarm.raised)
+            ).toBe(true);
+            expect(await trigger.current()).toMatchObject({ state: 'off' });
+            expect(await trigger.enable({ kind: 'local', userId })).toMatchObject({
+              state: 'on',
+              delegationCurrent: true,
+            });
+            expect(policyNow()).toEqual(retained);
+            expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
+              usage: { currentWorkspace: 2, cumulativeWorkspace: 2, pendingWorkspace: 0 },
+            });
+          }
           if (scenario === 'repeat') {
             for (const id of [204, 203]) {
               const again = await rpc(
@@ -3841,9 +4194,12 @@ describe('worker MCP routes', () => {
         expect(upstreamCall).not.toHaveBeenCalled();
       } finally {
         detachStartupFailure?.();
+        restoreWriteObservation?.();
         upstreamList.mockRestore();
         upstreamCall.mockRestore();
         execution?.completion.resolve();
+        for (const additional of additionalExecutions) additional.completion.resolve();
+        await Promise.allSettled(additionalExecutions.map((additional) => additional.execution));
         if (native.executor.launches > 0) await execution?.execution.catch(() => undefined);
         await native.restore();
         await gateway.close();

@@ -436,8 +436,28 @@ export function currentWorkspaceAuthority(
     const responsibleUserId = responsibleUserIdForActor(actor);
     if (!responsibleUserId) return null;
     if (requestActor && requestActor.userId !== responsibleUserId) return null;
+    const policySubject = options?.policy?.subject;
+    const nativeProcess =
+      policySubject?.credentialKind === 'worker-package' ? policySubject.process : null;
+    const nativeAdmission = nativeProcess
+      ? findSchedulerAdmissionForTurn(coreDb, nativeProcess)
+      : null;
+    const nativeWorkerPolicy = !!(
+      nativeAdmission &&
+      nativeProcess &&
+      policySubject &&
+      nativeProcess.workspaceId === workspaceId &&
+      sameActorRef(nativeAdmission.triggerActor, actor) &&
+      policySubject.principal.kind === 'human' &&
+      policySubject.principal.id === responsibleUserId &&
+      policySubject.actor.kind === 'agent' &&
+      policySubject.actor.responsibleUserId === responsibleUserId &&
+      policySubject.responsibleHumanId === responsibleUserId &&
+      policySubject.onBehalfOf === null
+    );
     if (
       options?.policy &&
+      !nativeWorkerPolicy &&
       (!presentedActor ||
         actor.kind !== 'user' ||
         options.policy.subject.principal.kind !== 'human' ||
@@ -623,12 +643,32 @@ export function currentWorkerLineageWorkspaceAuthority(
   if (!admission || !sameActorRef(admission.triggerActor, lineage.triggerActor)) {
     return null;
   }
+  const responsibleHumanId = responsibleUserIdForActor(admission.triggerActor);
+  if (!responsibleHumanId) return null;
   return currentSchedulerAdmissionWorkspaceAuthority(
     coreDb,
     admission,
     operation,
     effectAuthority,
-    options
+    options?.policy
+      ? {
+          ...options,
+          policy: {
+            ...options.policy,
+            subject: {
+              ...options.policy.subject,
+              principal: { kind: 'human', id: responsibleHumanId },
+              onBehalfOf: null,
+              responsibleHumanId,
+              process: {
+                workspaceId: admission.workspaceId,
+                threadId: admission.threadId,
+                turnId: admission.turnId,
+              },
+            },
+          },
+        }
+      : options
   );
 }
 

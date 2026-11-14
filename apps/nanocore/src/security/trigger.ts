@@ -1,7 +1,17 @@
-import type { PolicyDocumentV1 } from '@openkit/protocol';
-import type { WorkerLineage } from '@openkit/worker-protocol';
+import { OpenKitConfigSchema, PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
+import { compareCodeUnits, type PolicyDocumentV1 } from '@openkit/protocol';
+import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
+import { parseJsoncObject } from '../config/jsonc.js';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
+import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import {
+  EMPTY_POLICY_DOCUMENT,
+  policyDigest,
+  preparePolicyDocument,
+  validatePolicyDocument,
+} from '../policy/statements.js';
 import { publishCoreJournal } from '../runtime/core-journal-owner.js';
 import { decodeExecutionJournalInvocation } from '../runtime/execution-journal.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -92,6 +102,141 @@ export class SecurityTriggerStore {
   ) {
     const bytes = await publishCoreJournal(this.db, { kind: 'containment-check', policy, ref });
     return bytes === null ? null : decodeExecutionJournalInvocation(bytes);
+  }
+
+  /** Applies only the native-admitted exact deny through the existing file/reload owner, never a publication Turn. */
+  async consumeCanary(lineage: WorkerLineage, manager: RuntimeConfigManager) {
+    const policy = validatePolicyDocument(
+      manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+    );
+    // Presence only avoids work in observation mode. The native owner still decides all authority.
+    if (
+      !policy.statements.some(
+        (statement) =>
+          statement.kind === 'permission' &&
+          statement.state === 'active' &&
+          statement.effect === 'allow' &&
+          statement.scope.actions.includes('security.containment')
+      )
+    )
+      return { kind: 'not-admitted' as const };
+    if (manager.getDataRoot() !== this.db.dataRoot)
+      throw new TypeError('Containment requires its original runtime owner.');
+    const intent = await this.prepareContainment({ lineage, policy });
+    if (intent === null) return { kind: 'not-admitted' as const };
+    const author = intent.control.actor;
+    if (author.kind !== 'system' || author.responsibleUserId === null)
+      throw new TypeError('Containment author is unavailable.');
+    const originalReferences = intent.control.inputRefs.filter((ref) => ref.startsWith('lineage:'));
+    if (originalReferences.length !== 1)
+      throw new TypeError('Original containment scope is unavailable.');
+    const original = WorkerLineageSchema.parse(JSON.parse(originalReferences[0]!.slice(8)));
+    const quarantine: PolicyDocumentV1['statements'][number] = {
+      id: intent.ref.execution.executionId,
+      kind: 'permission',
+      state: 'active',
+      effect: 'prohibit',
+      grant: { kind: 'ordinary' },
+      author: { kind: 'human', id: author.responsibleUserId },
+      authority: { kind: 'human', userId: author.responsibleUserId },
+      authoredAt: new Date(Number(intent.clock.admittedUnixNano / 1_000_000n)).toISOString(),
+      scope: {
+        subjects: [
+          {
+            kind: 'process',
+            workspaceId: original.workspaceId,
+            threadId: original.threadId,
+            turnId: original.turnId,
+          },
+        ],
+        actions: [...new Set([...Object.keys(PRODUCT_OPERATION_ACCESS_RIGHTS), 'tool.use'])].sort(
+          compareCodeUnits
+        ),
+        resources: [
+          {
+            kind: 'container',
+            container: {
+              owner: { kind: 'workspace', workspaceId: original.workspaceId },
+              kind: 'workspace',
+              id: original.workspaceId,
+            },
+          },
+        ],
+      },
+      lifetime: {
+        anchor: { owner: { kind: 'server' }, kind: 'quarantine', id: intent.control.workId },
+      },
+    };
+    const files = new RuntimeConfigFileService({
+      dataRoot: this.db.dataRoot,
+      workspaceIds: [],
+      userId: author.responsibleUserId,
+      runtimeConfigManager: manager,
+      readRuntimeConfigStatus: () => manager.status(),
+    });
+    const read = files.readFile('server.jsonc');
+    const raw = parseJsoncObject(read.content, 'server.jsonc');
+    const config = OpenKitConfigSchema.parse(raw);
+    const current = validatePolicyDocument(config.policy?.mediation ?? EMPTY_POLICY_DOCUMENT);
+    const installed = current.statements.find((statement) => statement.id === quarantine.id);
+    if (installed && policyDigest(installed) !== policyDigest(quarantine))
+      throw new TypeError('Containment Policy receipt conflicts.');
+    const ref = {
+      execution: {
+        owner: { kind: 'server' as const },
+        executionId: intent.ref.execution.executionId,
+      },
+      stepId: intent.ref.stepId,
+    };
+    if (!installed) {
+      const prepared = preparePolicyDocument({
+        current,
+        proposed: { schemaVersion: 1, statements: [...current.statements, quarantine] },
+        userId: author.responsibleUserId,
+        now: quarantine.authoredAt,
+      });
+      if (
+        prepared.diff.added.length !== 1 ||
+        prepared.diff.added[0] !== quarantine.id ||
+        prepared.diff.changed.length ||
+        prepared.diff.removed.length ||
+        policyDigest(prepared.document) !==
+          policyDigest({ schemaVersion: 1, statements: [...current.statements, quarantine] })
+      )
+        throw new TypeError('Containment exceeds its fixed deny template.');
+      // This final native check follows preparation and immediately precedes the optimistic owner write.
+      if ((await this.checkContainment(current, ref)) === null)
+        return { kind: 'not-admitted' as const };
+      const existingPolicy =
+        raw.policy && typeof raw.policy === 'object' && !Array.isArray(raw.policy)
+          ? raw.policy
+          : {};
+      await files.updateFile(
+        {
+          id: 'server.jsonc',
+          kind: 'server',
+          expectedRevision: read.file.revision,
+          content: `${JSON.stringify({ ...raw, policy: { ...existingPolicy, mediation: prepared.document } }, null, 2)}\n`,
+        },
+        { policyWrite: true }
+      );
+      await manager.reload({ dryRun: false, mode: 'safe' });
+    }
+    const actual = validatePolicyDocument(
+      manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+    );
+    const receipt = await publishCoreJournal(this.db, {
+      kind: 'containment-settle',
+      policy: actual,
+      ref,
+    });
+    if (receipt === null) throw new TypeError('Containment Policy outcome is unknown.');
+    return {
+      kind: 'quarantined' as const,
+      sensorAuditEventId: intent.control.workId,
+      execution: ref.execution,
+      policyRevision: policyDigest(actual),
+    };
   }
 
   /** The caller supplies its original authenticated Actor; native admission rechecks current rows. */

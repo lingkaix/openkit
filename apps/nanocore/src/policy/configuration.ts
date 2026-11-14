@@ -24,12 +24,14 @@ import {
   RuntimeConfigFileServiceError,
 } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { readExecutionJournalInvocation } from '../runtime/execution-journal.js';
 import { readCurrentMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
 import {
   OPENKIT_GENERATIVE_MCP_ID,
   OPENKIT_GENERATIVE_TOOLS,
 } from '../runtime/openkit-generative-supply.js';
 import { OPENKIT_WORK_MCP_ID, OPENKIT_WORK_TOOLS } from '../runtime/openkit-work-supply.js';
+import { SECURITY_CONTAINMENT_LIMITS } from '../storage/core-journal-codecs.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import {
   listExportableWorkspacePermissionDecisions,
@@ -505,26 +507,74 @@ export function preparePolicyConfiguration(input: {
   };
 }
 
-/** Loaded authority bytes need their actual native human Policy decision before use. */
+/** Loaded bytes need their original human decision or an exact settled native restriction on that base. */
 export function readAdmittedPolicyDocument(coreDb: CoreDb, input: unknown): PolicyDocumentV1 {
   const document = validatePolicyDocument(input ?? EMPTY_POLICY_DOCUMENT);
   if (!document.statements.some((statement) => statement.state !== 'inactive')) return document;
-  const revision = policyDigest(document);
-  const admitted = listServerPermissionDecisions(coreDb).some((decision) => {
-    const context = decision.contextSummary as { operation?: unknown } | null;
-    if (
-      decision.action !== 'workspace.configure' ||
-      context?.operation !== 'policy.write' ||
-      decision.result !== 'allow'
-    )
-      return false;
-    const resource = decision.resourceSummary as { policyRevision?: unknown } | null;
-    return resource?.policyRevision === revision;
-  });
-  if (!admitted) throw new Error('Loaded Policy revision has no admitted native Policy change.');
-  // The current authored collection, anchor and human authority remain the grant.
-  // A historical decision alone never makes an absent statement active.
-  return document;
+  const decisions = listServerPermissionDecisions(coreDb);
+  let current = document;
+  for (let depth = 0; depth <= SECURITY_CONTAINMENT_LIMITS.currentServer; depth++) {
+    if (!current.statements.some((statement) => statement.state !== 'inactive')) return document;
+    const revision = policyDigest(current);
+    const admitted = decisions.some((decision) => {
+      const context = decision.contextSummary as { operation?: unknown } | null;
+      const resource = decision.resourceSummary as { policyRevision?: unknown } | null;
+      return (
+        decision.action === 'workspace.configure' &&
+        context?.operation === 'policy.write' &&
+        decision.result === 'allow' &&
+        resource?.policyRevision === revision
+      );
+    });
+    if (admitted) return document;
+    // Peel only a native-verified exact single restriction, never an unproved changed grant.
+    const quarantines = current.statements.filter(
+      (statement) =>
+        statement.kind === 'permission' &&
+        statement.state === 'active' &&
+        statement.effect === 'prohibit' &&
+        statement.lifetime.anchor.kind === 'quarantine'
+    );
+    if (quarantines.length > SECURITY_CONTAINMENT_LIMITS.currentServer) break;
+    let previous: PolicyDocumentV1 | null = null;
+    for (const quarantine of quarantines) {
+      let original: ReturnType<typeof readExecutionJournalInvocation>;
+      try {
+        original = readExecutionJournalInvocation(coreDb, {
+          execution: { owner: { kind: 'server' }, executionId: quarantine.id },
+          stepId: 'quarantine',
+        });
+      } catch {
+        continue;
+      }
+      const before = {
+        schemaVersion: 1 as const,
+        statements: current.statements.filter((statement) => statement.id !== quarantine.id),
+      };
+      if (
+        original.state !== 'completed' ||
+        original.control.definitionVersion !== 'containment' ||
+        original.control.kind !== 'fence' ||
+        original.carriage.operation !== 'policy.write' ||
+        original.control.workId !== quarantine.lifetime.anchor.id ||
+        !original.control.outputRefs.includes(`policy:${revision}`) ||
+        !original.control.outputRefs.includes(`quarantine:${quarantine.id}`) ||
+        !original.control.authorityRefs.includes(policyDigest(before)) ||
+        !decisions.some(
+          (decision) =>
+            decision.decisionId === original.control.permittingDecisionRef &&
+            decision.action === 'security.containment' &&
+            decision.result === 'allow'
+        )
+      )
+        continue;
+      previous = before;
+      break;
+    }
+    if (!previous) break;
+    current = previous;
+  }
+  throw new Error('Loaded Policy revision has no admitted native Policy change.');
 }
 
 /** Records the current human admission before the existing file writer can persist Policy. */

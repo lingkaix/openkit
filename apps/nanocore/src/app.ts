@@ -1964,6 +1964,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     approvalPolicy: startupOpenKitConfig.policy,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     runtimeConfig,
+    runtimeConfigManager,
     store: sharedStore,
     vaultUnlockState,
     workerControlGateway,

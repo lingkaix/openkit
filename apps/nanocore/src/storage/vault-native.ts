@@ -2,10 +2,12 @@ import { isDeepStrictEqual } from 'node:util';
 import { AgentEnvironmentPackageSchema } from '@openkit/config-schema';
 import {
   type ActorRef,
+  canonicalIdentifierName,
   isEntityId,
   responsibleUserIdForActor,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { sha256Hex } from '@openkit/protocol/digest';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
 import { requireCurrentDeploymentAdmin } from '../auth/access-token-store.js';
 import {
@@ -15,7 +17,6 @@ import {
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
 import { OperationError } from '../operation-error.js';
-import { policyDigest } from '../policy/statements.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { requireHarnessLoginBinding } from '../runtime/harness-login-authority.js';
@@ -1370,7 +1371,8 @@ function assertBindingRequester(
     'vault.use',
     true
   );
-  if (policyDigest(current) !== authority.revision) throw new ControlProductPreconditionError();
+  if (`sha256:${sha256Hex(canonicalIdentifierName(current))}` !== authority.revision)
+    throw new ControlProductPreconditionError();
 }
 
 /** Repeats the initial token delivery's exact current facts inside the native savepoint, after FIFO predecessors. */
