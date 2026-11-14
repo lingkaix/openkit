@@ -683,6 +683,7 @@ test('one catalog covers the checked App API and public Core projection', async 
       .map(([id]) => id)
       .sort(),
     [
+      'administration.report-prepare',
       'artifact.download',
       'artifact.import',
       'artifact.version-file-commit',
@@ -700,6 +701,15 @@ test('one catalog covers the checked App API and public Core projection', async 
     assert.ok(exclusion.reason);
     assert.ok(exclusion.owner);
   }
+  assert.equal(
+    operationCatalog.some((entry) => entry.id === 'administration.report-prepare'),
+    false
+  );
+  assert.ok(
+    operationExclusions.some(
+      (entry) => entry.source === 'app-api' && entry.name === 'administration.report-prepare'
+    )
+  );
   const appMappings = operationCatalog
     .filter((entry) => entry.source === 'app-api')
     .map((entry) => entry.appOperationId);
@@ -726,6 +736,7 @@ test('one catalog covers the checked App API and public Core projection', async 
   assert.deepEqual(new Set([...coreMappings, ...coreExclusions]), new Set(coreMethods));
 
   assert.deepEqual(operationExclusions.map(({ source, name }) => `${source}:${name}`).sort(), [
+    'app-api:administration.report-prepare',
     'app-api:channel.discord.pair',
     'app-api:knowledge.package.export',
     'app-api:knowledge.package.import',

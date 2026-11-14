@@ -1,6 +1,8 @@
 import {
   ApplyAdministrationConfigurationRequestSchema,
   ApplyAdministrationConfigurationResponseSchema,
+  PrepareAdministrationReportRequestSchema,
+  PrepareAdministrationReportResponseSchema,
   SubmitAdministrationConversationRequestSchema,
   SubmitAdministrationConversationResponseSchema,
 } from './administration.js';
@@ -8,6 +10,21 @@ import type { OperationDefinition } from './operation-contract.js';
 
 /** Release-authored family facts; authority, replay and effects remain with their native owners. */
 export const ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS = {
+  'administration.report-prepare': {
+    stability: 'release-coupled',
+    binding: 'json',
+    returnsOneTimeSecret: false,
+    successStatus: 200,
+    description:
+      'Prepare local private report drafts, person-selected non-security Task proposals or operator guidance from a private source. No automatic work or upstream submission.',
+    inputSchema: PrepareAdministrationReportRequestSchema,
+    outputSchema: PrepareAdministrationReportResponseSchema,
+    credentials: ['local-user', 'user-session'],
+    scope: { kind: 'actor-quick-chat-workspace' },
+    target: { kind: 'workspace' },
+    policyOperation: 'turn.run',
+    mutating: true,
+  },
   'administration.configuration-apply': {
     stability: 'release-coupled',
     binding: 'json',
