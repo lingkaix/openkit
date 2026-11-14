@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { RegisterKnowledgeSourceRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, KnowledgeSourceIdSchema, RequestIdSchema } from '@openkit/protocol';
 import { assertCanonicalDirectory } from '@openkit/storage';
@@ -10,8 +10,9 @@ import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
+import { openUserReadDb } from '../storage/db.js';
 import { userDbPath } from '../storage/fs-layout.js';
-
 import { admitMemoryContext, type MemoryContext, type MemoryWriter } from './memory-lifecycle.js';
 import { readMemorySuppressions } from './memory-maintenance.js';
 import { NotebookError } from './notebook.js';
@@ -21,6 +22,7 @@ import {
   stringFrontmatterField,
   stringListFrontmatterField,
 } from './okf.js';
+import { resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
 import { type SourceMetadataSchema, sourceNotebookRoot } from './source-pointers.js';
 import { publishCapturedSource, readPublishedSourcePointers } from './source-publication.js';
 import { readManagedSourceText } from './source-reading.js';
@@ -145,13 +147,82 @@ export async function readUserKnowledgeSource(
 
 /** Admits only current self literal Source versions before page disclosure or publication; source-free pages need no Source family. */
 export function admitUserMemorySources(
-  input: MemoryContext,
-  files: Readonly<Record<string, string>>
+  ...request:
+    | readonly [input: MemoryContext, files: Readonly<Record<string, string>>]
+    | readonly [
+        input: {
+          readonly coreDb: MemoryContext['coreDb'];
+          readonly actor: NonNullable<MemoryContext['actor']>;
+          readonly captured: {
+            readonly pageId: string;
+            readonly content: string;
+            readonly ownerScope: { readonly kind: 'user'; readonly userId: string };
+            readonly sourceFingerprints: readonly string[];
+          };
+        },
+      ]
 ): { registeredSources: Map<string, string | null>; sourceFingerprints: readonly string[] } {
+  const [input, files] = request;
+  if ('captured' in input) {
+    const { coreDb, actor, captured } = input;
+    const parsed = parseOkfDocument({ path: `${captured.pageId}.md`, content: captured.content });
+    if (!parsed.ok)
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'The captured Memory target is unavailable.',
+        409
+      );
+    const references = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (!references)
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'The captured Memory target is unavailable.',
+        409
+      );
+    if (!references.length && !captured.sourceFingerprints.length)
+      return { registeredSources: new Map(), sourceFingerprints: [] };
+    if (actor.userId !== captured.ownerScope.userId)
+      throw new PendingRequestCommandError(
+        'workspace_access_denied',
+        'Current self Source authority is unavailable.',
+        403
+      );
+    const scope = resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } });
+    const userRoot = dirname(scope.notebookRoot);
+    let userDb: ReturnType<typeof openUserReadDb> | undefined;
+    try {
+      for (const path of [
+        coreDb.dataRoot,
+        join(coreDb.dataRoot, 'users'),
+        userRoot,
+        join(userRoot, 'db'),
+      ])
+        assertCanonicalDirectory(path);
+      // Retained preview and approval reads never initialize, migrate or replace User storage.
+      userDb = openUserReadDb(coreDb.dataRoot, actor.userId);
+      const admitted = admitUserMemorySources(
+        { coreDb, actor, userDb },
+        { [`${captured.pageId}.md`]: captured.content }
+      );
+      if (
+        JSON.stringify(admitted.sourceFingerprints) !== JSON.stringify(captured.sourceFingerprints)
+      )
+        throw new Error('Unavailable Source versions.');
+      return admitted;
+    } catch {
+      throw new PendingRequestCommandError(
+        'recovery_required',
+        'The captured Memory Source versions are unavailable.',
+        503
+      );
+    } finally {
+      userDb?.sqlite.close();
+    }
+  }
   admitMemoryContext(input);
   const registeredSources = new Map<string, string | null>();
   const fingerprints = new Set<string>();
-  for (const [path, content] of Object.entries(files)) {
+  for (const [path, content] of Object.entries(files!)) {
     const parsed = parseOkfDocument({ path, content });
     if (!parsed.ok) throw new NotebookError('invalid_request');
     const references = stringListFrontmatterField(parsed.document, 'source_refs');
