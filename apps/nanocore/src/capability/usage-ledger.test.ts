@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,6 +52,70 @@ function createWorkspaceLedgerActor(workspaceDb: ReturnType<typeof openWorkspace
 }
 
 describe('capability usage ledger', () => {
+  it('refuses decision admission 2001 in one Workspace UTC day without creating another call', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'security-review-daily-quota-'));
+    const workspaceDb = openWorkspaceDb(dataRoot, allocateEntityId('ws'));
+    const unfinished = new Set<string>();
+    try {
+      applyScopedMigrations(workspaceDb);
+      const actor = createWorkspaceLedgerActor(workspaceDb);
+      await openTestNativeWorkspace(workspaceDb);
+      const now = new Date();
+      const admit = async (callId = allocateEntityId('cap')) => {
+        const call = await startCapabilityCall({
+          workspaceDb,
+          workspaceId: workspaceDb.workspaceId,
+          authorityActor: actor,
+          family: 'llm',
+          operation: 'decision',
+          capabilityId: 'llm.decision',
+          redactionClass: 'metadata-only',
+          requestId: randomUUID(),
+          callId,
+          now,
+        });
+        unfinished.add(call.id);
+        return call;
+      };
+      // These are real native admissions, not inserted counters or usage specimens.
+      // No Provider is invoked; terminal aborted calls still consumed admission budget.
+      for (let i = 0; i < 2000; i++) {
+        const call = await admit();
+        expect(call.inserted).toBe(true);
+        await finishCapabilityCall({ workspaceDb, callId: call.id, status: 'aborted', now });
+        unfinished.delete(call.id);
+      }
+      const admitted = listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId);
+      expect(admitted).toHaveLength(2000);
+      expect(new Set(admitted.map((call) => call.id)).size).toBe(2000);
+      expect(
+        admitted.every(
+          (call) =>
+            call.family === 'llm' &&
+            call.operation === 'decision' &&
+            call.capabilityId === 'llm.decision' &&
+            call.status === 'aborted' &&
+            call.startedAt.slice(0, 10) === now.toISOString().slice(0, 10)
+        )
+      ).toBe(true);
+      const overflowId = allocateEntityId('cap');
+      await expect(admit(overflowId)).rejects.toThrow(
+        'Security Review daily invocation budget is exhausted.'
+      );
+      expect(listWorkspaceCapabilityCalls(workspaceDb, workspaceDb.workspaceId)).toEqual(admitted);
+      expect(listWorkspaceUsageRecords(workspaceDb, workspaceDb.workspaceId)).toEqual([]);
+    } finally {
+      try {
+        for (const callId of unfinished)
+          await finishCapabilityCall({ workspaceDb, callId, status: 'aborted' });
+      } finally {
+        await shutdownControlStoreWorkerClient();
+        workspaceDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  }, 180_000);
+
   it.each([
     {
       diagnostics: { upstreamHttpStatus: 503 },

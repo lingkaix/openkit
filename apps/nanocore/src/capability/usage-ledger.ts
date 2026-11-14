@@ -317,6 +317,17 @@ export function startCapabilityCall(
       if (result === null || typeof result !== 'object' || !('inserted' in result))
         throw new TypeError('Invalid native capability admission result.');
       return presentControlFacts({ ...result, context: presentControlFacts(result.context) });
+    })
+    .catch((error: unknown) => {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'capability' &&
+        error.domain.kind === 'operation' &&
+        error.domain.code === 'security_review_budget_exhausted'
+      )
+        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+      throw error;
     });
 }
 

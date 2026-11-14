@@ -18,6 +18,7 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { recordServerAuditEvent, recordWorkspaceAuditEvent } from '../audit-events.js';
+import { OperationError } from '../operation-error.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
 import { WorkerRawOutputStateSchema } from '../runtime/worker-raw-output.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -717,6 +718,13 @@ export function startCapabilityCallInDb(
 
       const startedAt = (input.now ?? new Date()).toISOString();
       const callId = input.callId ?? allocateEntityId('cap');
+      const decisionBudget =
+        input.workspaceDb.scope === 'workspace' &&
+        input.family === 'llm' &&
+        input.operation === 'decision' &&
+        input.capabilityId === 'llm.decision';
+      const dayStart = `${startedAt.slice(0, 10)}T00:00:00.000Z`;
+      const dayEnd = new Date(Date.parse(dayStart) + 86_400_000).toISOString();
       if (
         input.workspaceDb.scope === 'core'
           ? input.workspaceId !== undefined || !('owner' in input) || input.owner.kind !== 'server'
@@ -748,6 +756,8 @@ export function startCapabilityCallInDb(
         completedAt: null,
       });
 
+      // The existing native INSERT owns the UTC-day reservation and idempotent replay.
+      // No extra counter row, query site or admission race precedes Provider contact.
       const insertion = input.workspaceDb.sqlite
         .prepare(
           `INSERT OR IGNORE INTO capability_calls (
@@ -776,7 +786,12 @@ export function startCapabilityCallInDb(
         schema_snapshot_id,
         runtime_origin_ref,
         runtime_cache_lineage_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+      WHERE CASE WHEN ? THEN (
+        SELECT count(*) FROM capability_calls
+        WHERE workspace_id = ? AND family = 'llm' AND operation = 'decision'
+          AND capability_id = 'llm.decision' AND started_at >= ? AND started_at < ?
+      ) < 2000 ELSE 1 END`
         )
         .run(
           writeRetainedV1(protocolCall).schemaVersion,
@@ -803,7 +818,11 @@ export function startCapabilityCallInDb(
           protocolCall.packageSnapshotId,
           protocolCall.schemaSnapshotId,
           protocolCall.runtimeOriginRef,
-          protocolCall.runtimeCacheLineageRef
+          protocolCall.runtimeCacheLineageRef,
+          decisionBudget ? 1 : 0,
+          protocolCall.owner.kind === 'workspace' ? protocolCall.owner.workspaceId : null,
+          dayStart,
+          dayEnd
         );
 
       if (insertion.changes === 1 && input.authorityActor) {
@@ -839,7 +858,11 @@ export function startCapabilityCallInDb(
           });
       }
 
-      const stored = findCapabilityCallByIdOrIdempotency(input.workspaceDb, { ...input, callId });
+      const stored = findCapabilityCallByIdOrIdempotency(
+        input.workspaceDb,
+        { ...input, callId },
+        decisionBudget ? 'Security Review daily invocation budget is exhausted.' : undefined
+      );
       assertMatchingCapabilityCallAttribution(stored, protocolCall, input);
 
       return {
@@ -880,11 +903,13 @@ export function startCapabilityCallInDb(
  *
  * @param workspaceDb Workspace-scoped database handle.
  * @param input Original start input.
+ * @param missingMessage Fixed refusal when no call was admitted or replayed.
  * @returns Stored capability call row.
  */
 function findCapabilityCallByIdOrIdempotency(
   workspaceDb: WorkspaceDb | CoreDb,
-  input: StartCapabilityCallInput | StartServerCapabilityCallInput
+  input: StartCapabilityCallInput | StartServerCapabilityCallInput,
+  missingMessage = 'Capability call was not stored.'
 ): CapabilityCallRow {
   if (input.requestId) {
     const storedByRequest = workspaceDb.sqlite
@@ -921,7 +946,9 @@ function findCapabilityCallByIdOrIdempotency(
     }
   }
 
-  throw new Error('Capability call was not stored.');
+  if (missingMessage === 'Security Review daily invocation budget is exhausted.')
+    throw new OperationError('security_review_budget_exhausted', missingMessage, 429);
+  throw new Error(missingMessage);
 }
 
 /**
