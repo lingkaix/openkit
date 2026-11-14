@@ -13,7 +13,8 @@ export default async function setup() {
   execFileSync(
     'pnpm',
     ['exec', 'turbo', 'run', 'build', '--filter=@openkit/worker-shim', '--output-logs=errors-only'],
-    { cwd: join(appRoot, '../..'), stdio: 'inherit' }
+    // Vitest's machine-readable inventory owns stdout; build diagnostics use stderr.
+    { cwd: join(appRoot, '../..'), stdio: ['ignore', 2, 2] }
   );
   const root = join(tmpdir(), 'nanocore-worker');
   mkdirSync(root);
