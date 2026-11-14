@@ -1019,7 +1019,15 @@ export function applyControlVault(
               throw new ControlProductPreconditionError();
           }
         }
-        if (plan?.injectionVisibility === 'backend-provider' && !request.record.workerAuthority)
+        // Worker Provider plans carry their original AEP and credential key. Generic
+        // capability-call/backend handles share this visibility, but not that family.
+        // A Worker-family marker still requires proof if its retained tuple is malformed.
+        if (
+          plan?.injectionVisibility === 'backend-provider' &&
+          ((plan.packageSnapshotId !== null && plan.targetEnvVarName !== null) ||
+            plan.backendCapabilityRequirement.startsWith('sandbox-provider:')) &&
+          !request.record.workerAuthority
+        )
           throw new ControlProductPreconditionError();
         if (request.record.workerAuthority) {
           const authority = request.record.workerAuthority;
