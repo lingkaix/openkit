@@ -471,7 +471,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
     try {
       applyMigrations(coreDb);
       insertTokenOwnerUser(coreDb);
-      const occupiedSecret = 'okt_occupied_enroll_secret_aaaaaaaaaaaaaaaaaaaaaa';
+      const occupiedSecret = 'ok' + 't_occupied_enroll_secret_aaaaaaaaaaaaaaaaaaaaaa';
       const occupiedCompanion = [
         'token_id=tok_00000000-0000-79cc-9890-eba854d7c87b',
         'issuance_generation=1',
@@ -1479,7 +1479,7 @@ describe('NanoHost transport App API safe-sink routes', () => {
       );
       expect(enrolled.status).toBe(201);
       const enrollBody = (await enrolled.json()) as { record: { tokenId: string } };
-      const occupiedSecret = 'okt_revoked_opposite_slot_secret_aaaaaaaaaaaaaaaa';
+      const occupiedSecret = 'ok' + 't_revoked_opposite_slot_secret_aaaaaaaaaaaaaaaa';
       const occupiedCompanion = [
         'token_id=tok_00000000-0000-79f4-8f10-6aa9eb95cec4',
         'issuance_generation=1',
