@@ -325,10 +325,18 @@ async function installPolicy(
       confirmation: proposed.confirmation,
     })
   ).toMatchObject({ persisted: true, reload: 'applied' });
+  // Human confirmation also admits reviewed defaults; verify this fixture's exact binding.
   expect(
-    readAdmittedPolicyDocument(f.coreDb, f.manager.current().openKitConfig.policy?.mediation)
-      .statements
-  ).toHaveLength(1);
+    readAdmittedPolicyDocument(
+      f.coreDb,
+      f.manager.current().openKitConfig.policy?.mediation
+    ).statements.filter((statement) => statement.id === 'withdrawal-policy')
+  ).toEqual([
+    expect.objectContaining({
+      ...document.statements[0],
+      authoredAt: expect.any(String),
+    }),
+  ]);
 }
 
 describe('departed User owner withdrawal', () => {
