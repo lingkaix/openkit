@@ -543,7 +543,8 @@ describe('retained SQL receipt format', () => {
   it('refuses an unknown row version before JSON decoding without repairing the receipt', () => {
     const { db, record } = retainedReceiptFixture();
     db.sqlite
-      .prepare('UPDATE idempotency_requests SET schema_version = 2, scope_json = ?')
+      // Scope JSON is indexed by the current schema; corrupt the unindexed payload instead.
+      .prepare('UPDATE idempotency_requests SET schema_version = 2, response_json = ?')
       .run('{invalid');
     const before = db.sqlite.prepare('SELECT * FROM idempotency_requests').all();
     expect(() => getCommandRequestRecordFromDb(db, record.key, record.createdAt)).toThrow(

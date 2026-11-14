@@ -127,15 +127,7 @@ function fixture(kind: 'server' | 'workspace' = 'server') {
     rmSync(root, { recursive: true, force: true });
   });
   if (db.scope === 'core') applyMigrations(db);
-  else {
-    applyScopedMigrations(db);
-    // Raw terminal-owner fixture: install current product DDL without activating Knowledge.
-    // It never serves an application Workspace or claims the full migration ledger.
-    for (const tag of ['0020_thread_turn_reads', '0021_timeline_windows', '0022_thread_dashboard'])
-      db.sqlite.exec(
-        readFileSync(new URL(`../../drizzle/workspace/${tag}.sql`, import.meta.url), 'utf8')
-      );
-  }
+  else applyScopedMigrations(db);
   mkdirSync(join(root, 'content'));
   const mount = {
     root: join(root, 'content'),

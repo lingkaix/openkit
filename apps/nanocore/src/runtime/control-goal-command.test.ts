@@ -67,8 +67,6 @@ async function fixture() {
       const products = await import(${JSON.stringify(productsUrl)});
       let db = storage.openWorkspaceDb(workerData.root, workerData.workspaceId);
       migrations.applyScopedMigrations(db);
-      // Raw deciding-body fixture only; no application or Knowledge activation claim.
-      for (const sql of workerData.productMigrations) db.sqlite.exec(sql);
       const owner = { kind: 'workspace', workspaceId: workerData.workspaceId };
       const at = new Date().toISOString();
       db.sqlite.transaction(() => products.applyControlProducts(db.sqlite, owner, [{
@@ -100,13 +98,6 @@ async function fixture() {
         root,
         workspaceId,
         mount,
-        productMigrations: [
-          '0020_thread_turn_reads',
-          '0021_timeline_windows',
-          '0022_thread_dashboard',
-        ].map((tag) =>
-          readFileSync(new URL(`../../drizzle/workspace/${tag}.sql`, import.meta.url), 'utf8')
-        ),
       },
     }
   );

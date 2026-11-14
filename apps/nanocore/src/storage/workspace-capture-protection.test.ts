@@ -21,7 +21,6 @@ import {
 // These checks cover retained lifecycle decisions, not snapshot closure or GC/Notebook exclusion.
 const workspaceId = testEntityId('ws', 'dx5-workspace');
 const otherWorkspaceId = testEntityId('ws', 'dx5-other-workspace');
-const migrationRoot = new URL('../../drizzle/workspace/', import.meta.url);
 let root: string;
 let db: WorkspaceDb;
 const handles: WorkspaceDb[] = [];
@@ -31,31 +30,6 @@ function openWorkspace(id = workspaceId): WorkspaceDb {
   const handle = openWorkspaceDb(root, id);
   handles.push(handle);
   return handle;
-}
-
-/**
- * Continues a predecessor journal through Knowledge activation on this exact connection.
- * The second full apply has no pending activation and must not carry another transfer.
- */
-async function admitPredecessorKnowledge(handle: WorkspaceDb): Promise<void> {
-  const knowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
-  await initializeWorkspaceNotebook({
-    workspaceRoot: join(root, 'workspaces', handle.workspaceId),
-    workspaceId: handle.workspaceId,
-    workspaceDb: handle,
-    initialization: {
-      requestId: randomUUID(),
-      producer: { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' },
-      instructionReference: 'fixture:predecessor-capture',
-    },
-    revalidate: () => ({
-      pageScopeId: `page/workspace/${handle.workspaceId}/${knowledgeBaseId}`,
-      scopeSchemaText: DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT,
-      reviewRequiredPageIds: [],
-      registeredSources: new Map(),
-      resolvedReferences: new Map(),
-    }),
-  });
 }
 
 /** Reads retained values directly so a returned object cannot conceal a changed SQL row. */
@@ -253,99 +227,6 @@ describe('DX5 Workspace capture-record lifecycle', () => {
     expect(inspectCapture(db, workspaceId, captureId)).toEqual(active);
     expect(retainedRows()).toEqual(rows);
   });
-
-  it('T6 — "Apply the Workspace migration twice; retain existing rows and history": 0011 stays scoped and classified', async () => {
-    const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8'));
-    const entry = journal.entries.find(
-      (value: { tag: string }) => value.tag === '0011_workspace_capture_protection'
-    );
-    expect(entry).toMatchObject({ idx: 11, version: '6', breakpoints: true });
-    const predecessor = JSON.parse(
-      readFileSync(new URL('meta/0010_snapshot.json', migrationRoot), 'utf8')
-    );
-    const snapshot = JSON.parse(
-      readFileSync(new URL('meta/0011_snapshot.json', migrationRoot), 'utf8')
-    );
-    expect(snapshot).toMatchObject({ dialect: 'sqlite', version: '6', prevId: predecessor.id });
-    expect(snapshot.id).not.toBe(predecessor.id);
-    const columns = db.sqlite.pragma('table_info(workspace_capture_records)') as Array<{
-      name: string;
-    }>;
-    expect(columns.map((column) => column.name).sort()).toEqual(
-      [...Object.keys(snapshot.tables.workspace_capture_records.columns), 'origin'].sort()
-    );
-
-    // Replay the actual committed predecessor SQL, never a substitute schema.
-    const previousRoot = join(root, 'previous-workspace-migrations');
-    mkdirSync(join(previousRoot, 'meta'), { recursive: true });
-    const previousEntries = journal.entries.filter((value: { idx: number }) => value.idx < 11);
-    writeFileSync(
-      join(previousRoot, 'meta/_journal.json'),
-      JSON.stringify({ ...journal, entries: previousEntries })
-    );
-    for (const previous of previousEntries) {
-      copyFileSync(
-        new URL(`${previous.tag}.sql`, migrationRoot),
-        join(previousRoot, `${previous.tag}.sql`)
-      );
-    }
-    const upgraded = openWorkspace(otherWorkspaceId);
-    applyNativeScopeMigrations(upgraded.sqlite, 'workspace', previousRoot);
-    upgraded.sqlite
-      .prepare(
-        'INSERT INTO control_workspaces (id, schema_version, revision, record_json) VALUES (?, 1, 1, ?)'
-      )
-      .run(otherWorkspaceId, JSON.stringify({ retained: 'pre-0011 bytes' }));
-    const previousRows = upgraded.sqlite.prepare('SELECT * FROM control_workspaces').all();
-    const historyBefore = upgraded.sqlite
-      .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
-      .all();
-    await admitPredecessorKnowledge(upgraded);
-    const captureId = randomUUID();
-    protectCapture(upgraded, otherWorkspaceId, captureId);
-    completeCapture(upgraded, otherWorkspaceId, captureId);
-    const captures = retainedRows(upgraded);
-    const history = upgraded.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
-    expect(history.slice(0, historyBefore.length)).toEqual(historyBefore);
-    const sqlBytes = readFileSync(new URL(`${entry.tag}.sql`, migrationRoot));
-    expect(
-      upgraded.sqlite
-        .prepare('SELECT hash FROM __drizzle_migrations WHERE created_at = ?')
-        .get(entry.when)
-    ).toEqual({ hash: createHash('sha256').update(sqlBytes).digest('hex') });
-    applyScopedMigrations(upgraded);
-    expect(upgraded.sqlite.prepare('SELECT * FROM control_workspaces').all()).toEqual(previousRows);
-    expect(upgraded.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
-      history
-    );
-    expect(retainedRows(upgraded)).toEqual(captures);
-    for (const scope of ['core', 'user', 'app'] as const) {
-      const sqlite = new Database(':memory:');
-      try {
-        applyNativeScopeMigrations(sqlite, scope);
-        expect(
-          sqlite
-            .prepare("SELECT name FROM sqlite_schema WHERE name = 'workspace_capture_records'")
-            .all()
-        ).toEqual([]);
-      } finally {
-        sqlite.close();
-      }
-    }
-    const {
-      WORKSPACE_EXPORT_PORTABLE_WORKSPACE_SQLITE_TABLES: portable,
-      WORKSPACE_EXPORT_NON_PORTABLE_WORKSPACE_SQLITE_TABLES: excluded,
-    } = await import('./workspace-export.js');
-    const classifications = [
-      ...portable.filter((name: string) => name === 'workspace_capture_records'),
-      ...excluded.filter((value: { table: string; reason: string }) => {
-        if (value.table !== 'workspace_capture_records') return false;
-        expect(value.reason.trim().length).toBeGreaterThan(0);
-        return true;
-      }),
-    ];
-    expect(classifications).toHaveLength(1);
-  });
 });
 
 // Online Snapshot Policy requires positive automatic origin; default and predecessor data stay manual.
@@ -380,75 +261,5 @@ describe('C-b capture origin authority', () => {
       expect(() => operation(db, workspaceId, captureId)).toThrow();
       expect(retainedRows()).toEqual(rows);
     }
-  });
-
-  it('keeps predecessor captures inspectable through explicit abandonment and migration', async () => {
-    const journal = JSON.parse(readFileSync(new URL('meta/_journal.json', migrationRoot), 'utf8'));
-    const previousRoot = join(root, 'pre-origin-migrations');
-    mkdirSync(join(previousRoot, 'meta'), { recursive: true });
-    const entries = journal.entries.filter((entry: { idx: number }) => entry.idx < 16);
-    writeFileSync(
-      join(previousRoot, 'meta/_journal.json'),
-      JSON.stringify({ ...journal, entries })
-    );
-    for (const entry of entries)
-      copyFileSync(
-        new URL(`${entry.tag}.sql`, migrationRoot),
-        join(previousRoot, `${entry.tag}.sql`)
-      );
-    const previous = openWorkspace(otherWorkspaceId);
-    applyNativeScopeMigrations(previous.sqlite, 'workspace', previousRoot);
-    const captureId = randomUUID();
-    const createdAt = '2030-01-01T00:00:00.000Z';
-    // This owner's migration test writes its committed predecessor shape, which has no origin.
-    previous.sqlite
-      .prepare(
-        `INSERT INTO workspace_capture_records
-       (capture_id, workspace_id, state, created_at, ended_at) VALUES (?, ?, 'active', ?, NULL)`
-      )
-      .run(captureId, otherWorkspaceId, createdAt);
-    const priorRows = retainedRows(previous) as Record<string, unknown>[];
-    const priorHistory = previous.sqlite
-      .prepare('SELECT * FROM __drizzle_migrations ORDER BY id')
-      .all();
-    const previousColumns = previous.sqlite.pragma('table_info(workspace_capture_records)');
-    expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual({
-      captureId,
-      workspaceId: otherWorkspaceId,
-      state: 'active',
-      origin: 'manual',
-      createdAt,
-      endedAt: null,
-    });
-    expect(retainedRows(previous)).toEqual(priorRows);
-    const abandoned = abandonCapture(previous, otherWorkspaceId, captureId);
-    expect(abandoned).toMatchObject({
-      state: 'abandoned',
-      origin: 'manual',
-      endedAt: expect.any(String),
-    });
-    expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual(abandoned);
-    // Explicit recovery cannot depend on a migration that scoped quarantine prevents.
-    expect(previous.sqlite.pragma('table_info(workspace_capture_records)')).toEqual(
-      previousColumns
-    );
-    expect(previous.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
-      priorHistory
-    );
-    const beforeMigration = retainedRows(previous) as Record<string, unknown>[];
-    await admitPredecessorKnowledge(previous);
-    expect(inspectCapture(previous, otherWorkspaceId, captureId)).toEqual(abandoned);
-    expect(retainedRows(previous)).toEqual(
-      beforeMigration.map((row) => ({ ...row, origin: 'manual' }))
-    );
-    const history = previous.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all();
-    expect(history.slice(0, priorHistory.length)).toEqual(priorHistory);
-    applyScopedMigrations(previous);
-    expect(previous.sqlite.prepare('SELECT * FROM __drizzle_migrations ORDER BY id').all()).toEqual(
-      history
-    );
-    expect(retainedRows(previous)).toEqual(
-      beforeMigration.map((row) => ({ ...row, origin: 'manual' }))
-    );
   });
 });

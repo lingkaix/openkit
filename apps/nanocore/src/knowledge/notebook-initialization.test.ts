@@ -24,7 +24,6 @@ const knowledgeBaseId = 'kb_00000000-0000-7000-8000-000000000001';
 function fixture() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'notebook-initialization-'));
   const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
-  applyScopedMigrations(workspaceDb);
   const workspaceRoot = join(dataRoot, 'workspaces', workspaceId);
   const repositoryPath = join(workspaceRoot, 'knowledge', 'notebook.git');
   const initialization = {
@@ -49,14 +48,28 @@ function fixture() {
     ...input,
     repositoryPath,
     initialize: () => initializeWorkspaceNotebook(input),
+    failAudit(action: 'knowledge.notebook.admit' | 'knowledge.notebook.initialize') {
+      const prepare = workspaceDb.sqlite.prepare.bind(workspaceDb.sqlite);
+      vi.spyOn(workspaceDb.sqlite, 'prepare').mockImplementation((sql) => {
+        // The fresh baseline creates Audit in the same transaction as initial authority.
+        // Install the deliberate fault only once that real DDL has run.
+        if (/^\s*INSERT\s+INTO\s+audit_events\b/i.test(sql))
+          workspaceDb.sqlite.exec(
+            `CREATE TRIGGER IF NOT EXISTS fail_notebook_audit BEFORE INSERT ON audit_events WHEN NEW.action = '${action}' BEGIN SELECT RAISE(ABORT, 'notebook audit fault'); END`
+          );
+        return prepare(sql);
+      });
+    },
     notebook: () =>
       readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId }).notebook,
     rows: () =>
-      workspaceDb.sqlite
-        .prepare(
-          'SELECT action, notebook_admission_json AS evidence FROM audit_events ORDER BY rowid'
-        )
-        .all() as Array<{ action: string; evidence: string }>,
+      workspaceDb.sqlite.pragma('table_info(audit_events)').length === 0
+        ? []
+        : (workspaceDb.sqlite
+            .prepare(
+              'SELECT action, notebook_admission_json AS evidence FROM audit_events ORDER BY rowid'
+            )
+            .all() as Array<{ action: string; evidence: string }>),
   };
 }
 
@@ -560,9 +573,7 @@ ${body}`;
 
   it('refuses publication when required admission Audit fails', async () => {
     const f = fixture();
-    f.workspaceDb.sqlite.exec(
-      "CREATE TRIGGER fail_notebook_admission BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.admit' BEGIN SELECT RAISE(ABORT, 'admission fault'); END"
-    );
+    f.failAudit('knowledge.notebook.admit');
     await expect(f.initialize()).rejects.toMatchObject({
       code: 'migration_failed',
       message: expect.stringContaining('SQLITE_CONSTRAINT_TRIGGER'),
@@ -583,9 +594,7 @@ ${body}`;
 
   it('does not fabricate completion after a post-ref Audit fault', async () => {
     const f = fixture();
-    f.workspaceDb.sqlite.exec(
-      "CREATE TRIGGER fail_notebook_completion BEFORE INSERT ON audit_events WHEN NEW.action = 'knowledge.notebook.initialize' BEGIN SELECT RAISE(ABORT, 'completion fault'); END"
-    );
+    f.failAudit('knowledge.notebook.initialize');
     // SQL selection and both Audits now commit together; no legacy partial ref is authority.
     await expect(f.initialize()).rejects.toMatchObject({
       code: 'migration_failed',
