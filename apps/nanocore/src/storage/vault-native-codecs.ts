@@ -1068,6 +1068,8 @@ export interface VaultInjectionPlanRow {
 
 /** Input used to create one non-secret injection plan. */
 export interface CreateVaultInjectionPlanInput {
+  /** Hash-only native Identity issuance proof, never retained in the plan. */
+  readonly identityMaterial?: { readonly tokenHash: string; readonly materialVersion: number };
   /** Stable injection plan id. */
   readonly planId: string;
   /** Vault grant authorized by this plan. */
@@ -2221,7 +2223,23 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
     .object({ kind: z.literal('grant-narrow'), record: z.object(narrowingFields).strict() })
     .strict(),
   z.object({ kind: z.literal('use-create'), record: z.object(useFields).strict() }).strict(),
-  z.object({ kind: z.literal('plan-create'), record: z.object(planFields).strict() }).strict(),
+  z
+    .object({
+      kind: z.literal('plan-create'),
+      record: z
+        .object({
+          ...planFields,
+          identityMaterial: z
+            .object({
+              tokenHash: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+              materialVersion: z.number().int().positive(),
+            })
+            .strict()
+            .optional(),
+        })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('receipt-create'),

@@ -676,7 +676,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                   }
                   if (input.runtimeConfigManager) {
                     try {
-                      await new SecurityTriggerStore(input.coreDb!).consumeCanary(
+                      await new SecurityTriggerStore(input.coreDb!).consumeSensor(
                         {
                           workspaceId: scope.workspaceId,
                           threadId: scope.threadId,

@@ -3,8 +3,9 @@ import { hrtime } from 'node:process';
 import { isDeepStrictEqual } from 'node:util';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { allocateEntityId, compareCodeUnits } from '@openkit/protocol';
-import { WorkerLineageSchema } from '@openkit/worker-protocol';
+import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { auditEventFromRow } from '../audit-events.js';
+import { verifyRunBoundSensorInDb } from '../auth/run-bound-access-token-native.js';
 import { recordProductPermissionDecisionInDb } from '../policy/permission-decisions.js';
 import { policyDigest, validatePolicyDocument } from '../policy/statements.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
@@ -45,10 +46,27 @@ import {
   recordContainmentGapInDb,
 } from './security-canary-audit-native.js';
 import { applySecurityTriggerInDb } from './security-trigger-native.js';
-import {
-  ControlStandaloneAuditInputSchema,
-  SECURITY_CANARY_AUDIT_FACT,
-} from './standalone-audit-codecs.js';
+import { ControlStandaloneAuditInputSchema } from './standalone-audit-codecs.js';
+
+/** Only the original native cryptographic or canary owner can prove a sensor. */
+function existingSensor(db: CoreDb, row: unknown, lineage: WorkerLineage): boolean {
+  if (!row) return false;
+  const event = auditEventFromRow(row);
+  if (event.action === 'security.honey-credential')
+    return verifyRunBoundSensorInDb(db, row, lineage);
+  if (event.action !== 'security.canary') return false;
+  return (
+    prepareSecurityCanaryAuditInDb(
+      db,
+      ControlStandaloneAuditInputSchema.parse({
+        stage: 'security.canary',
+        canaryLineage: lineage,
+        event,
+      })
+    ) === 'existing'
+  );
+}
+
 import { applyControlVault } from './vault-native.js';
 
 /** Decides one original Core journal tuple against current rows inside its savepoint and FULL commit. */
@@ -1020,17 +1038,7 @@ function applyContainmentJournal(
     const row = db.sqlite
       .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
       .get(quarantine.control.workId);
-    if (
-      prepareSecurityCanaryAuditInDb(
-        db,
-        ControlStandaloneAuditInputSchema.parse({
-          stage: 'security.canary',
-          canaryLineage: lineage,
-          event: auditEventFromRow(row),
-        })
-      ) !== 'existing'
-    )
-      return null;
+    if (!existingSensor(db, row, lineage)) return null;
     if (
       impact.size > SECURITY_CONTAINMENT_LIMITS.currentServer ||
       (currentWorkspace.get(lineage.workspaceId)?.size ?? 0) >
@@ -1142,12 +1150,7 @@ function applyContainmentJournal(
     const row = db.sqlite
       .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
       .get(original.control.workId);
-    const source = ControlStandaloneAuditInputSchema.parse({
-      stage: 'security.canary',
-      canaryLineage: lineage,
-      event: auditEventFromRow(row),
-    });
-    if (prepareSecurityCanaryAuditInDb(db, source) !== 'existing') return null;
+    if (!existingSensor(db, row, lineage)) return null;
     const workspaceImpact = new Set([
       ...(currentWorkspace.get(lineage.workspaceId) ?? []),
       ...[...pendingTargets].filter(([, ws]) => ws === lineage.workspaceId).map(([key]) => key),
@@ -1162,25 +1165,20 @@ function applyContainmentJournal(
   }
   const raw = db.sqlite
     .prepare(
-      `SELECT * FROM audit_events WHERE action=? AND resource=? AND workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=? LIMIT 2`
+      `SELECT * FROM audit_events WHERE action IN ('security.canary','security.honey-credential') AND workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=? ORDER BY rowid LIMIT 3`
     )
     .all(
-      SECURITY_CANARY_AUDIT_FACT.action,
-      SECURITY_CANARY_AUDIT_FACT.resource,
       input.lineage.workspaceId,
       input.lineage.threadId,
       input.lineage.turnId,
       input.lineage.agentSessionId
     );
   if (raw.length === 0) return null;
-  if (raw.length !== 1)
+  if (raw.length > 2)
     throw new CoreJournalRefusal('The original native sensor fact is unavailable.');
-  const source = ControlStandaloneAuditInputSchema.parse({
-    stage: 'security.canary',
-    canaryLineage: input.lineage,
-    event: auditEventFromRow(raw[0]),
-  });
-  if (prepareSecurityCanaryAuditInDb(db, source) !== 'existing') return null;
+  const selected = raw.find((row) => existingSensor(db, row, input.lineage));
+  if (!selected) return null;
+  const source = { event: auditEventFromRow(selected) };
   const process = policyDigest({
     kind: 'process',
     workspaceId: input.lineage.workspaceId,

@@ -7,6 +7,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import { revokeRunBoundAccessTokensInDb } from '../auth/run-bound-access-token-native.js';
 import {
   requireSchedulerAdmissionEntry,
   type SchedulerAdmissionEntryRecord,
@@ -367,6 +368,7 @@ export function markSchedulerExecutionAttemptClosing(
   }
 ): SchedulerExecutionAttemptRecord {
   requireSchedulerExecutionAttempt(coreDb, input.attemptId);
+  revokeRunBoundAccessTokensInDb(coreDb, input.attemptId);
   coreDb.sqlite
     .prepare(
       `UPDATE scheduler_execution_attempts SET phase = 'closing', terminal_cause = COALESCE(terminal_cause, ?), outcome_ref = COALESCE(outcome_ref, ?), updated_at = ? WHERE attempt_id = ? AND phase <> 'closed'`
@@ -403,6 +405,7 @@ export function closeSchedulerExecutionAttemptWithoutEffects(
         throw new ExecutionAttemptRefusal('Accepted effects require the proved release fence.');
       if (input.requeue) requireSchedulerAdmissionEntry(coreDb, attempt.queueEntryId);
       const timestamp = input.now?.() ?? new Date().toISOString();
+      revokeRunBoundAccessTokensInDb(coreDb, input.attemptId);
       coreDb.sqlite
         .prepare(
           `UPDATE scheduler_execution_attempts SET phase = 'closed', disposition = 'not_accepted', terminal_cause = COALESCE(terminal_cause, ?), updated_at = ? WHERE attempt_id = ? AND phase <> 'closed'`

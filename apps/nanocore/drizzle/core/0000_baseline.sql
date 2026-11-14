@@ -373,7 +373,7 @@ CREATE TABLE `openkit_access_tokens` (
 	`rotated_grace_expires_at` text,
 	`last_used_at` text,
 	`last_used_channel` text,
-	`last_used_source` text, `schema_version` integer DEFAULT 1 NOT NULL, `issuer_ref_json` text, `principal_ref_json` text,
+	`last_used_source` text, `schema_version` integer DEFAULT 1 NOT NULL, `issuer_ref_json` text, `principal_ref_json` text, `run_subject_json` text,
 	FOREIGN KEY (`owner_user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
@@ -1083,6 +1083,10 @@ CREATE INDEX notification_attention_recipient ON notification_attention (recipie
 CREATE UNIQUE INDEX notification_one_active_attempt ON notification_delivery_attempts (attention_id) WHERE status = 'sending';
 --> statement-breakpoint
 CREATE UNIQUE INDEX `openkit_access_tokens_hash_idx` ON `openkit_access_tokens` (`token_hash`);
+--> statement-breakpoint
+CREATE INDEX `openkit_access_tokens_run_idx` ON `openkit_access_tokens` (json_extract(`run_subject_json`,'$.attemptId')) WHERE `run_subject_json` IS NOT NULL;
+--> statement-breakpoint
+CREATE UNIQUE INDEX `openkit_access_tokens_plan_idx` ON `openkit_access_tokens` (json_extract(`run_subject_json`,'$.planId')) WHERE `run_subject_json` IS NOT NULL;
 --> statement-breakpoint
 CREATE INDEX `openkit_access_tokens_owner_idx` ON `openkit_access_tokens` (`owner_user_id`,`status`);
 --> statement-breakpoint

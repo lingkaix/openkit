@@ -119,7 +119,7 @@ export class SecurityTriggerStore {
   }
 
   /** Applies only the native-admitted exact deny through the existing file/reload owner, never a publication Turn. */
-  async consumeCanary(lineage: WorkerLineage, manager: RuntimeConfigManager) {
+  async consumeSensor(lineage: WorkerLineage, manager: RuntimeConfigManager) {
     const policy = validatePolicyDocument(
       manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
     );

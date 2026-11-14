@@ -5,7 +5,10 @@ import {
   ControlAccessTokenIssuerRefSchema,
   type ControlAccessTokenPrincipalRef,
   ControlAccessTokenPrincipalRefSchema,
+  type ControlAccessTokenRunSubject,
+  ControlAccessTokenRunSubjectSchema,
 } from '../storage/access-token-verification-codecs.js';
+import { assertControlProductWriter } from '../storage/control-store-products.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   createOpenKitAccessTokenSecret,
@@ -16,6 +19,7 @@ import {
   type OpenKitAccessTokenStatus,
 } from './access-token.js';
 import type { Actor } from './identity.js';
+import { observeRunBoundAccessTokenInDb } from './run-bound-access-token-native.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 /** Stable server_settings key prefix for one user's default server-admin token id. */
@@ -97,6 +101,8 @@ export interface OpenKitAccessTokenRecord {
   issuerRef: ControlAccessTokenIssuerRef | null;
   /** Actual native Integration selection; only NULL means an ordinary User token. */
   principalRef: ControlAccessTokenPrincipalRef | null;
+  /** Native run subject, never a useful Human or Integration credential. */
+  runSubject: ControlAccessTokenRunSubject | null;
   /** Token scope. */
   scope: OpenKitAccessTokenScope;
   /** Workspace ids bound to workspace-scoped tokens. */
@@ -131,6 +137,7 @@ interface OpenKitAccessTokenRow {
   owner_user_id: string;
   issuer_ref_json: string | null;
   principal_ref_json: string | null;
+  run_subject_json: string | null;
   scope: OpenKitAccessTokenScope;
   workspace_ids_json: string;
   status: OpenKitAccessTokenStatus;
@@ -197,6 +204,7 @@ export interface InsertOpenKitAccessTokenRecordInput {
   readonly predecessorTokenId?: string | null;
   readonly issuerRef?: ControlAccessTokenIssuerRef | null;
   readonly principalRef?: ControlAccessTokenPrincipalRef | null;
+  readonly runSubject?: ControlAccessTokenRunSubject;
 }
 
 /** Inserts and reads back one record without generating or transporting its plaintext material. */
@@ -204,7 +212,24 @@ export function insertOpenKitAccessTokenRecord(
   coreDb: CoreDb,
   input: InsertOpenKitAccessTokenRecordInput
 ): OpenKitAccessTokenRecord {
-  const binding = normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
+  const runSubject = input.runSubject
+    ? ControlAccessTokenRunSubjectSchema.parse(input.runSubject)
+    : null;
+  if (runSubject) {
+    assertControlProductWriter(coreDb.sqlite);
+    if (
+      input.scope !== 'workspace' ||
+      input.workspaceIds.length !== 0 ||
+      input.principalRef ||
+      input.ownerUserId !== runSubject.responsibleUserId ||
+      input.issuerRef?.kind !== 'user' ||
+      input.issuerRef.id !== runSubject.responsibleUserId
+    )
+      throw new Error('Invalid run credential binding.');
+  }
+  const binding = runSubject
+    ? { scope: 'workspace' as const, workspaceIds: [] }
+    : normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
   const issuerRef =
     input.issuerRef == null ? null : ControlAccessTokenIssuerRefSchema.parse(input.issuerRef);
   const principalRef =
@@ -227,8 +252,8 @@ export function insertOpenKitAccessTokenRecord(
         expires_at,
         predecessor_token_id,
         issuer_ref_json,
-        principal_ref_json
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+        principal_ref_json, run_subject_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
     )
     .run(
       input.tokenId,
@@ -241,7 +266,8 @@ export function insertOpenKitAccessTokenRecord(
       input.expiresAt,
       input.predecessorTokenId ?? null,
       issuerRef === null ? null : JSON.stringify(issuerRef),
-      principalRef === null ? null : JSON.stringify(principalRef)
+      principalRef === null ? null : JSON.stringify(principalRef),
+      runSubject === null ? null : JSON.stringify(runSubject)
     );
   const record = getOpenKitAccessTokenRecord(coreDb, input.tokenId);
   if (!record) {
@@ -275,8 +301,12 @@ export function recordVerifiedOpenKitAccessTokenUse(
       ).usable
     )
       return null;
-    if (!readCurrentOpenKitAccessTokenLineage(coreDb, readOpenKitAccessTokenRecord(row), now))
+    const record = readOpenKitAccessTokenRecord(row);
+    if (record.runSubject) {
+      observeRunBoundAccessTokenInDb(coreDb, record);
       return null;
+    }
+    if (!readCurrentOpenKitAccessTokenLineage(coreDb, record, now)) return null;
     coreDb.sqlite
       .prepare(`UPDATE openkit_access_tokens
       SET last_used_at = ?, last_used_channel = ?, last_used_source = ? WHERE token_id = ?`)
@@ -450,6 +480,7 @@ export function readCurrentOpenKitAccessTokenLineage(
   token: OpenKitAccessTokenRecord,
   now = new Date()
 ): { issuers: OpenKitAccessTokenRecord[]; terminalUserId: string | null } | null {
+  if (token.runSubject) return null;
   if (token.principalRef) {
     const root = getOpenKitAccessTokenRecord(coreDb, token.principalRef.id);
     if (
@@ -675,6 +706,10 @@ function readOpenKitAccessTokenRecord(row: OpenKitAccessTokenRow): OpenKitAccess
     lastUsedSource: row.last_used_source,
     ownerUserId: row.owner_user_id,
     issuerRef: parseIssuerRef(row.issuer_ref_json),
+    runSubject:
+      row.run_subject_json == null
+        ? null
+        : ControlAccessTokenRunSubjectSchema.parse(JSON.parse(row.run_subject_json)),
     principalRef:
       row.principal_ref_json === null
         ? null

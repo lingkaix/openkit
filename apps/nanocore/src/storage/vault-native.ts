@@ -16,6 +16,7 @@ import {
   evaluateOwnedUserOperation,
   requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
+import { issueRunBoundAccessTokenInDb } from '../auth/run-bound-access-token-native.js';
 import { OperationError } from '../operation-error.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
@@ -610,6 +611,7 @@ function createVaultInjectionPlan(
   ) {
     throw new Error('Vault injection plan identity conflict.');
   }
+  if (input.identityMaterial) issueRunBoundAccessTokenInDb(coreDb, stored, input.identityMaterial);
   return stored;
 }
 

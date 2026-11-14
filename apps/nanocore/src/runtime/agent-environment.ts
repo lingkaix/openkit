@@ -1,3 +1,4 @@
+import { hashOpenKitAccessTokenSecret, isOpenKitAccessTokenSecret } from '../auth/access-token.js';
 import {
   aepVaultGrantScope,
   assertCredentialGrantMatchesDeclaration,
@@ -1565,7 +1566,7 @@ function resolveWorkerCredentialDeclarations(
       const vaultBackend = requireVaultBackend(input);
       assertCredentialBackendMatchesReference(vaultBackend, reference);
 
-      await createVaultInjectionPlan(coreDb, {
+      const planInput = {
         backendCapabilityRequirement: injection.backendCapabilityRequirement,
         expirationBehavior: grant.expiresAt ? `expires-at:${grant.expiresAt}` : 'grant-lifetime',
         grantId: grant.grantId,
@@ -1577,7 +1578,8 @@ function resolveWorkerCredentialDeclarations(
         ...(injection.targetEnvVarName ? { targetEnvVarName: injection.targetEnvVarName } : {}),
         ...(injection.targetPath ? { targetPath: injection.targetPath } : {}),
         now: input.now,
-      });
+      };
+      await createVaultInjectionPlan(coreDb, planInput);
       const recheck = () => {
         const fresh = admit(declaration);
         if (fresh.reference.currentVersion !== reference.currentVersion)
@@ -1610,7 +1612,7 @@ function resolveWorkerCredentialDeclarations(
       }
       const ownerScope = vaultUseOwnerScope(grant);
       const material =
-        declaration.visibility === 'runtime-file'
+        declaration.visibility === 'runtime-file' && declaration.id !== 'security_honey_inbound'
           ? null
           : await createVaultUseAuditedBackend({
               agentSessionId: input.agentSessionId,
@@ -1625,6 +1627,19 @@ function resolveWorkerCredentialDeclarations(
             }).resolve({ referenceId: reference.referenceId, version: reference.currentVersion });
 
       recheck();
+      if (declaration.id === 'security_honey_inbound') {
+        const secret = material === null ? null : vaultSecretMaterialToString(material);
+        if (secret === null || !isOpenKitAccessTokenSecret(secret))
+          throw new Error('Selected inbound credential material is invalid.');
+        await createVaultInjectionPlan(coreDb, {
+          ...planInput,
+          identityMaterial: {
+            tokenHash: hashOpenKitAccessTokenSecret(secret),
+            materialVersion: reference.currentVersion,
+          },
+        });
+        recheck();
+      }
       try {
         appendCredentialDeclarationArtifacts({
           artifacts,

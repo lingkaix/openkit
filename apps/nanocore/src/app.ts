@@ -717,6 +717,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ? async (secret: string, request: Request) => {
         const pathname = new URL(request.url).pathname;
         const token = await verifyOpenKitAccessTokenRecord(options.coreDb!, secret, {
+          ...(options.runtimeConfigManager
+            ? { runtimeConfigManager: options.runtimeConfigManager }
+            : {}),
           channel: requestAuditChannel(request, pathname),
           source: requestAuditSource(request, pathname),
         });

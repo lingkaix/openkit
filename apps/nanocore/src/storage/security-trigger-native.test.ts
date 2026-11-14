@@ -9,6 +9,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
 import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
+import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
@@ -199,7 +200,7 @@ async function serverFixture() {
   });
   const admin = await tokenActor(f, owner.token);
   const backupUser = await signup(f, 'N1 independent administrator');
-  const backupIssue = await f.tokens()['token.create'](
+  await f.tokens()['token.create'](
     {
       ownerUserId: backupUser.actor.userId,
       scope: 'server-admin',
@@ -207,6 +208,19 @@ async function serverFixture() {
       expiresAt: EXPIRY,
     },
     context(admin)
+  );
+  // The independent Human uses its actual administrator session to own its credential.
+  // A Token issued by the enabling bearer would correctly lose that issuer chain with it.
+  const adminTokenId = resolveSessionDeploymentAdminTokenId(f.db, backupUser.actor.userId);
+  assert.ok(adminTokenId, 'the real session must have an owned usable administrator credential');
+  const backupIssue = await f.tokens()['token.create'](
+    {
+      ownerUserId: backupUser.actor.userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: EXPIRY,
+    },
+    context({ ...backupUser.actor, adminTokenId })
   );
   const backup = await tokenActor(f, backupIssue.token);
   return {

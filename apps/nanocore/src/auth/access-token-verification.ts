@@ -1,4 +1,6 @@
 import { readRetainedV1 } from '@openkit/protocol';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
+import { SecurityTriggerStore } from '../security/trigger.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -24,7 +26,12 @@ import {
 export async function verifyOpenKitAccessTokenRecord(
   coreDb: CoreDb,
   secret: string,
-  options: { channel?: string; now?: Date; source?: string } = {}
+  options: {
+    channel?: string;
+    now?: Date;
+    source?: string;
+    runtimeConfigManager?: RuntimeConfigManager;
+  } = {}
 ): Promise<VerifiedOpenKitAccessTokenRecord | null> {
   if (!isOpenKitAccessTokenSecret(secret)) return null;
   const expectedHash = hashOpenKitAccessTokenSecret(secret);
@@ -37,7 +44,7 @@ export async function verifyOpenKitAccessTokenRecord(
     | undefined;
   if (!row || !verifyOpenKitAccessTokenSecret(secret, row.token_hash)) return null;
   // Preserve retained-format refusal before admission; this read grants no authority.
-  readRetainedV1(row, () => getOpenKitAccessTokenRecord(coreDb, row.token_id));
+  const retained = readRetainedV1(row, () => getOpenKitAccessTokenRecord(coreDb, row.token_id));
   const input = {
     tokenId: row.token_id,
     expectedHash,
@@ -57,5 +64,15 @@ export async function verifyOpenKitAccessTokenRecord(
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  return client.accessTokenVerification(database, input);
+  const result = await client.accessTokenVerification(database, input);
+  if (retained?.runSubject) {
+    if (options.runtimeConfigManager) {
+      await new SecurityTriggerStore(coreDb).consumeSensor(
+        retained.runSubject.lineage,
+        options.runtimeConfigManager
+      );
+    }
+    return null;
+  }
+  return result;
 }

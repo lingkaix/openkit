@@ -1,4 +1,23 @@
+import { WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
+
+/** Identity-owned zero-grant Automation subject; never an issuer or Kernel principal. */
+export const ControlAccessTokenRunSubjectSchema = z
+  .object({
+    kind: z.literal('automation'),
+    id: z.string().min(1),
+    responsibleUserId: z.string().min(1),
+    grants: z.tuple([]),
+    lineage: WorkerLineageSchema,
+    attemptId: z.string().min(1),
+    planId: z.string().min(1),
+    grantId: z.string().min(1),
+    referenceId: z.string().min(1),
+    materialVersion: z.number().int().positive(),
+    receiptId: z.string().min(1),
+  })
+  .strict();
+export type ControlAccessTokenRunSubject = z.infer<typeof ControlAccessTokenRunSubjectSchema>;
 
 /** Private canonical issuance link, never a caller-supplied grant or a session lifetime. */
 export const ControlAccessTokenIssuerRefSchema = z
@@ -34,6 +53,7 @@ export const ControlAccessTokenVerificationResultSchema = z
     ownerUserId: z.string(),
     issuerRef: ControlAccessTokenIssuerRefSchema.nullable(),
     principalRef: ControlAccessTokenPrincipalRefSchema.nullable(),
+    runSubject: ControlAccessTokenRunSubjectSchema.nullable(),
     scope: z.enum(['server-admin', 'workspace', 'workspace-readonly']),
     workspaceIds: z.array(z.string()),
     status: z.enum(['active', 'expired', 'revoked', 'rotated']),

@@ -143,7 +143,7 @@ export function prepareSecurityCanaryAuditInDb(
   const windowStart = containmentWindowStart();
   const admitted = coreDb.sqlite
     .prepare(`SELECT workspace_id AS workspaceId FROM audit_events
-    WHERE action='security.canary' AND created_at>=? LIMIT ?`)
+    WHERE action IN ('security.canary','security.honey-credential') AND created_at>=? LIMIT ?`)
     .all(windowStart, SECURITY_OBSERVATION_LIMITS.serverWindow + 1) as {
     workspaceId: string | null;
   }[];
