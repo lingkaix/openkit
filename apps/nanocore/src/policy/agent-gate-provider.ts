@@ -26,7 +26,7 @@ import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { CoreDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import type { AgentPolicyParticipant } from './interception.js';
-import type { PolicyProposal } from './statements.js';
+import { type PolicyProposal, policyDigest } from './statements.js';
 
 /** Uses the existing Gateway, capture and capability owners only when an agent gate is invoked. */
 export function createAgentPolicyParticipant(deps: {
@@ -49,14 +49,20 @@ export function createAgentPolicyParticipant(deps: {
     readonly deadline: number;
   }) => Promise<GatewayDecisionResult>;
 }): AgentPolicyParticipant {
+  // Assessments only: the outer interception still writes a fresh decision and runs current Kernel facts.
+  const cache = new Map<
+    string,
+    { readonly expiresAt: number; readonly result: GatewayDecisionResult }
+  >();
   return {
     invoke: async (input) => {
       if (!deps.coreDb) throw new Error('Agent Policy storage is unavailable.');
       const snapshot = deps.runtimeConfig();
-      const declaration = readAdmittedPolicyDocument(
+      const document = readAdmittedPolicyDocument(
         deps.coreDb,
         snapshot.openKitConfig.policy?.mediation
-      ).statements.find(
+      );
+      const declaration = document.statements.find(
         (s) => s.kind === 'agent-principal' && s.agentId === input.binding.participant.id
       );
       if (declaration?.kind !== 'agent-principal')
@@ -76,13 +82,42 @@ export function createAgentPolicyParticipant(deps: {
         )
           throw new Error('Security Review decision facts or original deadline are unavailable.');
         input.signal.throwIfAborted();
-        return deps.requestSecurityReviewDecision({
+        const key = policyDigest([
+          policyDigest(input.binding),
+          policyDigest(document),
+          policyDigest(input.action),
+          input.action.influenceSources,
+        ]);
+        const previous = cache.get(key);
+        if (previous && previous.expiresAt > Date.now()) {
+          cache.delete(key);
+          cache.set(key, previous);
+          return structuredClone(previous.result);
+        }
+        cache.delete(key);
+        const result = await deps.requestSecurityReviewDecision({
           binding: input.binding,
           proposal: input.proposal,
           action: input.action,
           signal: input.signal,
           deadline: input.deadline,
         });
+        if (
+          !input.signal.aborted &&
+          Date.now() < input.deadline &&
+          (result.decision === 'allow' || result.decision === 'block')
+        ) {
+          cache.delete(key);
+          if (cache.size >= 10_000) {
+            const oldest = cache.keys().next().value;
+            if (oldest !== undefined) cache.delete(oldest);
+          }
+          cache.set(key, {
+            expiresAt: Date.now() + 24 * 60 * 60 * 1000,
+            result: structuredClone(result),
+          });
+        }
+        return result;
       }
       const process = input.proposal.subject.process;
       if (!process) throw new Error('The agent gate has no admitted native process.');

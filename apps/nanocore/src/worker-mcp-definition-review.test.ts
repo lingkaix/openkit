@@ -37,6 +37,7 @@ import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js'
 import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
 import { readAdmittedPolicyDocument } from './policy/configuration.js';
 import { PolicyInterception } from './policy/interception.js';
+import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
 import { type PolicyProposal, policyDigest } from './policy/statements.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
@@ -110,7 +111,7 @@ const stable: Tools[number] = {
 afterEach(() => vi.restoreAllMocks());
 
 describe('MCP definition review through real Pending and native admission', () => {
-  async function definitionReviewFlow(processlessReview = false) {
+  async function definitionReviewFlow(processlessReview = false, cacheReview = false) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-definition-review-'));
     const upstream = await createMcpHttpStub({ serverVersion: 'primary-fixture' });
     const foreignUpstream = await createMcpHttpStub({ serverVersion: 'foreign-fixture' });
@@ -253,9 +254,11 @@ describe('MCP definition review through real Pending and native admission', () =
         deadline: number;
         action?: GatewayDecisionAction;
       }): Promise<GatewayDecisionResult> => ({
-        decision: 'escalate',
-        reasonCode: 'review_failed',
-        metric: { kind: 'failure', code: 'invalid_input' },
+        decision: cacheReview ? 'block' : 'escalate',
+        reasonCode: cacheReview ? 'policy_risk' : 'review_failed',
+        metric: cacheReview
+          ? { kind: 'native_probability', allowProbability: 0.01, confidence: 0.99 }
+          : { kind: 'failure', code: 'invalid_input' },
         usageRecordIds: [],
         capabilityCallId: allocateEntityId('cap'),
         route: {
@@ -779,6 +782,35 @@ describe('MCP definition review through real Pending and native admission', () =
           expect((await discover('direct')).tools.map((tool) => tool.name)).not.toContain(
             toolB.name
           );
+          if (cacheReview) {
+            // This is unqualified requester-effect/cache evidence, not Provider, evaluation or usage evidence.
+            const decisionsDb = createTestWorkspaceDb(dataRoot, workspaceId);
+            try {
+              const finalDecisions = () =>
+                listExportableWorkspacePermissionDecisions(decisionsDb, workspaceId).filter(
+                  (decision) =>
+                    decision.mediation?.role === 'final' &&
+                    decision.mediation.operation === 'mcp.definition.approve'
+                );
+              expect(finalDecisions()).toHaveLength(1);
+              const replay = await respond(original, administrator.secret, randomUUID());
+              expect(replay.status, await replay.clone().text()).toBe(409);
+              expect(requestSecurityReviewDecision).toHaveBeenCalledTimes(1);
+              expect(finalDecisions()).toHaveLength(2);
+              vi.useFakeTimers({ toFake: ['Date'] });
+              try {
+                vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000 + 1);
+                const expired = await respond(original, administrator.secret, randomUUID());
+                expect(expired.status, await expired.clone().text()).toBe(409);
+                expect(requestSecurityReviewDecision).toHaveBeenCalledTimes(2);
+                expect(finalDecisions()).toHaveLength(3);
+              } finally {
+                vi.useRealTimers();
+              }
+            } finally {
+              closeTestCoreDb(decisionsDb);
+            }
+          }
           return;
         } finally {
           closeTestCoreDb(homeDb);
@@ -1034,6 +1066,11 @@ describe('MCP definition review through real Pending and native admission', () =
   it(
     'keeps the original held-definition Pending after processless C4 receives complete native metadata but no audience',
     () => definitionReviewFlow(true),
+    60_000
+  );
+  it(
+    'replays a block assessment without another requester until 24h while retaining each current native decision',
+    () => definitionReviewFlow(true, true),
     60_000
   );
 });
