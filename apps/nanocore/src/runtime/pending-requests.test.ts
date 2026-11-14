@@ -2488,6 +2488,24 @@ describe('pending requests', () => {
 
   it('answers once, rejects a changed map and a secret question before a write, and withdraws', async () => {
     const { app, coreDb, store } = await openPendingApp();
+    const arrived = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    onTestFinished(() => {
+      release.resolve();
+    });
+    const originalTransition = store.applyPendingRequestCommand.bind(store);
+    let held = false;
+    const transition = vi
+      .spyOn(store, 'applyPendingRequestCommand')
+      .mockImplementation(async (...args) => {
+        if (args[1].action === 'delivery-release' && !held) {
+          held = true;
+          arrived.resolve();
+          await release.promise;
+        }
+        return originalTransition(...args);
+      });
+
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
@@ -2666,7 +2684,21 @@ describe('pending requests', () => {
     } finally {
       recorded.sqlite.close();
     }
-    coreDb.sqlite.close();
+    await arrived.promise;
+    let stopped = false;
+    const stopping = shutdownControlStoreWorkerClient().then(() => {
+      stopped = true;
+    });
+    try {
+      // A definite asynchronous refusal is still an accepted producer until its real native closeout.
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_000));
+      expect(stopped).toBe(false);
+    } finally {
+      release.resolve();
+      await stopping;
+      transition.mockRestore();
+      coreDb.sqlite.close();
+    }
   });
 
   it('settles an unfinished claim to outcome-unknown and does not execute it again', async () => {

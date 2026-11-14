@@ -20,6 +20,7 @@ import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
@@ -1318,29 +1319,50 @@ async function deliverWorkerOutcome(
   dependencies: PendingAdmissionDependencies,
   turnId: string
 ): Promise<void> {
-  let refusal: TurnStartValidationError | undefined;
-  let submitted = false;
-  try {
-    const turn = store.getTurnById(turnId);
+  const deliver = async () => {
+    let refusal: TurnStartValidationError | undefined;
+    let submitted = false;
     try {
-      const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
-      const delivery =
-        executor === 'coordinator'
-          ? dependencies.coordinatorDelivery
-          : executor === 'assistant'
-            ? dependencies.assistantDelivery
-            : dependencies.workerDelivery;
-      if (!delivery) return;
-      submitted = true;
-      await delivery.startTurn(store, turnId);
-      // The worker execution owner records delivery at native acceptance, before completion.
-    } catch (error) {
-      const now = new Date().toISOString();
-      if (error instanceof TurnStartValidationError) {
-        refusal = error;
-        refusedOutcomeTurns.add(turnId);
+      const turn = store.getTurnById(turnId);
+      try {
+        const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
+        const delivery =
+          executor === 'coordinator'
+            ? dependencies.coordinatorDelivery
+            : executor === 'assistant'
+              ? dependencies.assistantDelivery
+              : dependencies.workerDelivery;
+        if (!delivery) return;
+        submitted = true;
+        await delivery.startTurn(store, turnId);
+        // The worker execution owner records delivery at native acceptance, before completion.
+      } catch (error) {
+        const now = new Date().toISOString();
+        if (error instanceof TurnStartValidationError) {
+          refusal = error;
+          refusedOutcomeTurns.add(turnId);
+          await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+            action: 'delivery-release',
+            workspaceId: workspaceIdForOwner(turn.owner),
+            turnId,
+            now,
+          });
+          if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
+            await store.completeTurn(turnId, {
+              status: 'failed',
+              completedAt: now,
+              error: { code: error.code, message: error.message },
+            });
+          await closeoutUnavailableRequests(
+            store,
+            dependencies,
+            workspaceIdForOwner(turn.owner),
+            turn.threadId
+          );
+          return;
+        }
         await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
-          action: 'delivery-release',
+          action: 'delivery-unknown',
           workspaceId: workspaceIdForOwner(turn.owner),
           turnId,
           now,
@@ -1349,68 +1371,59 @@ async function deliverWorkerOutcome(
           await store.completeTurn(turnId, {
             status: 'failed',
             completedAt: now,
-            error: { code: error.code, message: error.message },
+            error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
           });
-        await closeoutUnavailableRequests(
-          store,
-          dependencies,
-          workspaceIdForOwner(turn.owner),
-          turn.threadId
+      }
+    } catch (error) {
+      if (!submitted && !refusal) {
+        console.error(
+          `Outcome delivery for Turn ${turnId} failed before submission; leaving it for boot resume.`,
+          error
         );
         return;
       }
-      await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
-        action: 'delivery-unknown',
-        workspaceId: workspaceIdForOwner(turn.owner),
-        turnId,
-        now,
-      });
-      if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        await store.completeTurn(turnId, {
-          status: 'failed',
-          completedAt: now,
-          error: { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+      // Preserve a proved refusal when its bookkeeping fails; only an uncertain submission is unknown.
+      console.error(`Recording the outcome delivery result failed for Turn ${turnId}.`, error);
+      const now = new Date().toISOString();
+      try {
+        const turn = store.getTurnById(turnId);
+        await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
+          action: refusal ? 'delivery-release' : 'delivery-unknown',
+          workspaceId: workspaceIdForOwner(turn.owner),
+          turnId,
+          now,
         });
+      } catch (storageError) {
+        console.error(
+          refusal
+            ? `Could not release refused outcomes for Turn ${turnId}.`
+            : `Could not mark delivery unknown for Turn ${turnId}.`,
+          storageError
+        );
+      }
+      try {
+        if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
+          await store.completeTurn(turnId, {
+            status: 'failed',
+            completedAt: now,
+            error: refusal
+              ? { code: refusal.code, message: refusal.message }
+              : { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
+          });
+      } catch (storageError) {
+        console.error(`Could not fail outcome Turn ${turnId}.`, storageError);
+      }
     }
+  };
+  if (!dependencies.coreDb) return deliver();
+  // Retain the accepted outcome across awaited refusal bookkeeping before Core can close.
+  try {
+    await getControlStoreWorkerClient().runOperation(deliver);
   } catch (error) {
-    if (!submitted && !refusal) {
-      console.error(
-        `Outcome delivery for Turn ${turnId} failed before submission; leaving it for boot resume.`,
-        error
-      );
-      return;
-    }
-    // Preserve a proved refusal when its bookkeeping fails; only an uncertain submission is unknown.
-    console.error(`Recording the outcome delivery result failed for Turn ${turnId}.`, error);
-    const now = new Date().toISOString();
-    try {
-      const turn = store.getTurnById(turnId);
-      await store.applyPendingRequestCommand(workspaceIdForOwner(turn.owner), {
-        action: refusal ? 'delivery-release' : 'delivery-unknown',
-        workspaceId: workspaceIdForOwner(turn.owner),
-        turnId,
-        now,
-      });
-    } catch (storageError) {
-      console.error(
-        refusal
-          ? `Could not release refused outcomes for Turn ${turnId}.`
-          : `Could not mark delivery unknown for Turn ${turnId}.`,
-        storageError
-      );
-    }
-    try {
-      if (!isSealedTurnTerminal(store.getTurnById(turnId).status))
-        await store.completeTurn(turnId, {
-          status: 'failed',
-          completedAt: now,
-          error: refusal
-            ? { code: refusal.code, message: refusal.message }
-            : { code: 'delivery_unknown', message: 'Outcome delivery could not be proved.' },
-        });
-    } catch (storageError) {
-      console.error(`Could not fail outcome Turn ${turnId}.`, storageError);
-    }
+    console.error(
+      `Outcome delivery for Turn ${turnId} could not enter its native lifetime; leaving it for boot resume.`,
+      error
+    );
   }
 }
 

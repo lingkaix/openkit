@@ -68,6 +68,8 @@ A definite pre-submit failure keeps a previously proved AgentSession idle only a
 
 Goal Coordinator retains admitted background execution, wake and boot work through the existing native client lifetime. Shutdown refuses unrelated new producers, drains accepted producers and their still-active nested publication, then closes the worker before listener teardown under the existing deadline. Capturing an unused lifetime starts no worker. Terminal hooks await their Goal wake admission before the command owner may issue another wake against the native Thread revision. A closed Core database leaves truthful retained nonterminal work for ordinary restart recovery; it supplies no terminal or release proof.
 
+Detached Pending outcome delivery retains the existing native client producer lifetime through submission and refusal closeout. Shutdown drains that accepted work before Core closes; a refused new producer leaves its retained outcome for boot recovery.
+
 NanoHost materialization awaits the existing `beforeMaterialization` callback after both no-effect capacity refusal routes and before any incoming reservation or effect. The callback acknowledges the original durable execution lineage; it supplies no execution, evidence or physical-release proof.
 
 Native FIFO admission reuses `execution-journal.ts`’s validated synchronous root read to identify an existing settlement’s Turn. An earlier queued intent supplies only an admission dependency; the original journal SQL owner still validates the committed root and unchanged revisions.
