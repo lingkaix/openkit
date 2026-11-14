@@ -1,5 +1,4 @@
-import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
-import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
+import type { PolicyDecision } from '@openkit/policy-kernel';
 import {
   AgentIdSchema,
   PolicyPermissionV1Schema,
@@ -10,6 +9,7 @@ import {
 import type { z } from 'zod';
 import type { GoalDomainStatement } from './goal-domains.js';
 import { policyDigest, policyScopeContains } from './statements.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Trusted native input after current Goal-domain read and exact scheduler admission readback. */
 export interface GoalTaskAccessInput {
@@ -98,13 +98,15 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
             candidate.scope.resources.some((value) => policyDigest(value) === resourceDigest)
           );
         });
-  const kernel = scopeKernel({
+  const kernel = evaluatePolicyKernel({
     operation: input.operation,
-    user: `${subject.principal.kind}:${subject.principal.id}`,
-    ...(subject.process ? { process: subject.process.turnId } : {}),
-    inGoalEnvelope,
-    selectedByTask: selectedByTask || Boolean(permission),
-    humanKernel: input.humanKernel,
+    goal: {
+      user: `${subject.principal.kind}:${subject.principal.id}`,
+      ...(subject.process ? { process: subject.process.turnId } : {}),
+      inGoalEnvelope,
+      selectedByTask: selectedByTask || Boolean(permission),
+      humanKernel: input.humanKernel,
+    },
   });
   return {
     kernel,
@@ -176,12 +178,14 @@ export function evaluateGoalTaskAdmission(input: GoalTaskAdmissionInput): Pick<
   return {
     // Report the existing selected owner fact; only the Kernel decides admission.
     domainAvailable: domain?.state === 'active',
-    kernel: scopeKernel({
+    kernel: evaluatePolicyKernel({
       operation: 'turn.run',
-      user: `agent:${agentId}`,
-      inGoalEnvelope,
-      selectedByTask,
-      humanKernel: input.humanKernel,
+      goal: {
+        user: `agent:${agentId}`,
+        inGoalEnvelope,
+        selectedByTask,
+        humanKernel: input.humanKernel,
+      },
     }),
     authorizationRevision: policyDigest({
       domain,
@@ -192,52 +196,4 @@ export function evaluateGoalTaskAdmission(input: GoalTaskAdmissionInput): Pick<
       humanKernel: input.humanKernel,
     }),
   };
-}
-
-/** Reuses the same two mandatory NGAC classes for prepared admission and concrete effects. */
-function scopeKernel(input: {
-  operation: string;
-  user: string;
-  process?: string;
-  inGoalEnvelope: boolean;
-  selectedByTask: boolean;
-  humanKernel: PolicyDecision;
-}): PolicyDecision {
-  const operation = Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, input.operation)
-    ? (input.operation as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS)
-    : null;
-  const accessRights = operation ? [PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] : [];
-  // Graph-local names are disjoint from attributes and are not product identifiers.
-  const user = input.user;
-  const classes = ['goal-envelope', 'goal-task'] as const;
-  const graph: PolicyState = {
-    elements: [
-      { id: user, kind: 'user' },
-      { id: 'goal-request', kind: 'object' },
-      ...classes.flatMap((id) => [
-        { id: `ua:${id}`, kind: 'userAttribute' as const },
-        { id: `oa:${id}`, kind: 'objectAttribute' as const },
-        { id: `pc:${id}`, kind: 'policyClass' as const },
-      ]),
-    ],
-    assignments: classes.flatMap((id) => [
-      { child: user, parent: `ua:${id}` },
-      { child: `ua:${id}`, parent: `pc:${id}` },
-      { child: 'goal-request', parent: `oa:${id}` },
-      { child: `oa:${id}`, parent: `pc:${id}` },
-    ]),
-    operations: operation ? [{ id: operation, accessRights }] : [],
-    associations: classes
-      .filter((id) => (id === 'goal-envelope' ? input.inGoalEnvelope : input.selectedByTask))
-      .map((id) => ({ id, userAttribute: `ua:${id}`, targetAttribute: `oa:${id}`, accessRights })),
-    ...(input.process ? { processUsers: [{ process: input.process, user }] } : {}),
-  };
-  return input.humanKernel.effect === 'deny'
-    ? input.humanKernel
-    : evaluateAccess(graph, {
-        operation: input.operation,
-        target: 'goal-request',
-        user,
-        ...(input.process ? { process: input.process } : {}),
-      });
 }
