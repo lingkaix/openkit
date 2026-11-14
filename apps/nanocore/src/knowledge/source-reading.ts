@@ -1,7 +1,7 @@
 import { join, resolve } from 'node:path';
 import { LocalStorage, type StorageResult } from '@openkit/storage';
 import { readKnowledgeMounts } from '../config/knowledge-base.js';
-import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';
+import { deriveManagedSourceAccess } from './managed-source-access.js';
 import { readSourceText } from './source-bytes.js';
 import {
   type SourcePointer,
@@ -13,7 +13,7 @@ import {
 export async function readManagedSourceText(input: {
   readonly owner: SourcePointerOwner;
   readonly pointer: SourcePointer;
-  readonly access: ManagedSourceAdmission['access'];
+  readonly access: Parameters<typeof deriveManagedSourceAccess>[0]['access'];
 }): Promise<StorageResult<string>> {
   const mount = readKnowledgeMounts({
     dataRoot: input.owner.dataRoot,

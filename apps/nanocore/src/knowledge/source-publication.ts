@@ -28,7 +28,7 @@ import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
 
-import { deriveManagedSourceAccess, type ManagedSourceAdmission } from './managed-source-access.js';
+import { deriveManagedSourceAccess } from './managed-source-access.js';
 import { KnowledgeNotebook, NotebookError } from './notebook.js';
 import { initializeNotebookNative } from './notebook-initialization.js';
 import type { NotebookPublicationOwner } from './notebook-publication.js';
@@ -47,7 +47,7 @@ import {
 export interface SourcePublication {
   readonly owner: SourcePointerOwner;
   readonly database: NotebookPublicationOwner;
-  readonly access: ManagedSourceAdmission['access'];
+  readonly access: Parameters<typeof deriveManagedSourceAccess>[0]['access'];
   readonly producer: ActorRef & { readonly kind: 'user' | 'agent' };
   readonly requestId: string;
   readonly commandInput: unknown;

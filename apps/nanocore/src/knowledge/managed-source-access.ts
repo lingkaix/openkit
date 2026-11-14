@@ -12,8 +12,10 @@ import {
 import { resolveScopedNotebookOwner, ScopedNotebookAccessError } from './scoped-notebook-owner.js';
 import { type SourcePointerOwner, sourceNotebookRoot } from './source-pointers.js';
 
-/** Trusted native assembly fixes the consumer and owner; model arguments cannot select this boundary. */
-export interface ManagedSourceAdmission {
+/** Projects current exact-KB authority without minting, persisting or borrowing a lease.
+ * Trusted native assembly fixes consumer and owner; model arguments cannot select this boundary.
+ */
+export function deriveManagedSourceAccess(input: {
   readonly owner: SourcePointerOwner;
   readonly knowledgeBaseId: string;
   readonly mount: KnowledgeMount;
@@ -24,10 +26,7 @@ export interface ManagedSourceAdmission {
   readonly mode: 'read-only' | 'staged-write';
   /** Only the existing native Notebook publisher supplies current write admission. */
   readonly revalidatePublication?: () => void;
-}
-
-/** Projects current exact-KB authority without minting, persisting or borrowing a lease. */
-export function deriveManagedSourceAccess(input: ManagedSourceAdmission): StorageAccess | null {
+}): StorageAccess | null {
   try {
     const { owner, access, mount } = input;
     if (
