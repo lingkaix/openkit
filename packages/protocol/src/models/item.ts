@@ -60,6 +60,10 @@ const BaseItemSchema = z.object({
   workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   turnId: TurnIdSchema,
+  /** Core receiving-boundary fact; historical absence remains unknown, never Core. */
+  ingress: z
+    .enum(['api', 'remote-mcp', 'channel', 'provider', 'tool', 'import', 'core'])
+    .optional(),
   status: ItemStatusSchema,
   parentItemId: ItemIdSchema.nullable().optional(),
   causationId: z.string().min(1).nullable().optional(),

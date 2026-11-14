@@ -137,6 +137,9 @@
         }
       ]
     },
+    "externallyInfluenced": {
+      "type": "boolean"
+    },
     "items": {
       "type": "array",
       "items": {
@@ -196,6 +199,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -408,6 +423,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -530,6 +557,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -715,6 +754,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -847,6 +898,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -994,6 +1057,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -1154,6 +1229,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -1295,6 +1382,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -1471,6 +1570,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -1731,6 +1842,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -1893,6 +2016,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -2025,6 +2160,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -2204,6 +2351,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -2339,6 +2498,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",
@@ -2532,6 +2703,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -2700,6 +2883,18 @@
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
               },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
+              },
               "status": {
                 "type": "string",
                 "enum": [
@@ -2843,6 +3038,18 @@
               "turnId": {
                 "type": "string",
                 "pattern": "^tu_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+              },
+              "ingress": {
+                "type": "string",
+                "enum": [
+                  "api",
+                  "remote-mcp",
+                  "channel",
+                  "provider",
+                  "tool",
+                  "import",
+                  "core"
+                ]
               },
               "status": {
                 "type": "string",

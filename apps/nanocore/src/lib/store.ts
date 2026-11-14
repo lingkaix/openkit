@@ -1,5 +1,10 @@
 import type { TaskSteerReceiptMetadata } from '../runtime/task-steer-receipt.js';
 import {
+  contextInfluenceWasCleared,
+  contextIsExternallyInfluenced,
+  receivedItemInfluences,
+} from '../security/context-influence.js';
+import {
   isRecordedItemFailure,
   prepareControlReadMetadata,
 } from '../storage/control-store-read-metadata.js';
@@ -793,6 +798,8 @@ export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
 };
 
 interface CreateTurnOptions {
+  /** Trusted Core context fact; absence stays unknown/influenced, never a false default. */
+  externallyInfluenced?: boolean;
   /** Actual initiating command facts committed with this admitted Turn, never a later receipt backfill. */
   commandReceipt?: IdempotentCommandReceipt;
   /** Exact entry-owned response metadata, including a selected Worker's original conversation receipt. */
@@ -832,6 +839,7 @@ interface CreateTurnOptions {
 /** Server admission shares existing internal-role Turn choices without Workspace file or runtime hooks. */
 export type CreateServerTurnOptions = Pick<
   CreateTurnOptions,
+  | 'externallyInfluenced'
   | 'turnId'
   | 'startedAt'
   | 'internalExecution'
@@ -843,6 +851,7 @@ export type CreateServerTurnOptions = Pick<
 > & { status?: Turn['status']; completedAt?: string };
 
 const SERVER_TURN_UPDATE_FIELDS = [
+  'externallyInfluenced',
   'agentId',
   'agentProfileId',
   'agentSessionId',
@@ -859,6 +868,7 @@ const SERVER_TURN_UPDATE_FIELDS = [
 export type ServerTurnUpdate = Partial<
   Pick<
     Turn,
+    | 'externallyInfluenced'
     | 'agentId'
     | 'agentProfileId'
     | 'agentSessionId'
@@ -4426,6 +4436,8 @@ export class FsStore {
       ? readNativeTurnHistory(this.nativeScope({ kind: 'server' }), turnId)
       : undefined;
     const turn = native?.turn ?? this.getServerTurnById(turnId);
+    if (contextInfluenceWasCleared(turn, { ...turn, ...input }))
+      throw new Error('Server Turn influence cannot be cleared.');
     for (const key of Object.keys(input))
       if (!SERVER_TURN_UPDATE_FIELDS.includes(key))
         throw new Error(`Server Turn update cannot change field: ${key}`);
@@ -4462,8 +4474,9 @@ export class FsStore {
       ]);
       return this.getServerTurnById(turnId);
     }
-    this.serverTurns.set(turn.id, updated);
-    return updated;
+    const retained = this.retainInMemoryInfluence(updated);
+    this.serverTurns.set(turn.id, retained);
+    return retained;
   }
 
   /** Appends a full Item revision to its Server Turn before publishing its in-memory projection. */
@@ -4498,12 +4511,15 @@ export class FsStore {
         throw terminalTurnWriteRejected(turn.id);
     }
     if (this.dataRoot) return this.persistNativeItem(item, native!, admission);
-    const updatedTurn = TurnSchema.parse({
-      ...turn,
-      items: existing
-        ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
-        : [...turn.items, item],
-    });
+    const updatedTurn = this.retainInMemoryInfluence(
+      TurnSchema.parse({
+        ...turn,
+        items: existing
+          ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
+          : [...turn.items, item],
+      }),
+      item
+    );
     this.serverItems.set(item.id, item);
     this.serverTurns.set(turn.id, updatedTurn);
     return item;
@@ -4965,6 +4981,14 @@ export class FsStore {
         : {}),
       ...(options.agentId !== undefined ? { agentId: options.agentId } : {}),
       ...(options.agentSessionId !== undefined ? { agentSessionId: options.agentSessionId } : {}),
+      ...(options.externallyInfluenced !== undefined
+        ? { externallyInfluenced: options.externallyInfluenced }
+        : {}),
+      ...(!this.dataRoot &&
+      options.agentSessionId &&
+      contextIsExternallyInfluenced(this.agentSessions.get(options.agentSessionId) ?? {})
+        ? { externallyInfluenced: true }
+        : {}),
       ...(options.triggerSource !== undefined ? { triggerSource: options.triggerSource } : {}),
     });
     if (options.fileInputs?.length) options.assertFileInputAdmission?.();
@@ -5337,6 +5361,7 @@ export class FsStore {
     input: Partial<
       Pick<
         Turn,
+        | 'externallyInfluenced'
         | 'agentId'
         | 'agentProfileId'
         | 'agentSessionId'
@@ -5368,6 +5393,8 @@ export class FsStore {
     if (!turn) {
       throw new StoreRecordNotFoundError(`Turn not found: ${turnId}`);
     }
+    if (contextInfluenceWasCleared(turn, { ...turn, ...input }))
+      throw new Error('Turn influence cannot be cleared.');
 
     const unsupportedField = Object.keys(input).find(
       (field) =>
@@ -5382,13 +5409,14 @@ export class FsStore {
           'status',
           'triggerSource',
           'internalExecution',
+          'externallyInfluenced',
         ].includes(field)
     );
     if (unsupportedField) {
       throw new Error(`Turn update cannot change field: ${unsupportedField}`);
     }
 
-    const updated = TurnSchema.parse({
+    let updated = TurnSchema.parse({
       ...TurnReaderSchema.parse(turn),
       ...input,
       durationMs:
@@ -5439,6 +5467,7 @@ export class FsStore {
       );
       return this.getTurnById(turnId);
     }
+    updated = this.retainInMemoryInfluence(updated);
     if (!isSealedTurnTerminal(turn.status) && isSealedTurnTerminal(updated.status))
       this.turnAdmissionHooks?.onTerminalFact?.(updated);
     this.turns.set(turnId, updated);
@@ -5813,6 +5842,20 @@ export class FsStore {
       : publish();
   }
 
+  /** Matches the native transaction's restrictive facts without adding another state owner. */
+  private retainInMemoryInfluence(turn: Turn, item?: Item): Turn {
+    const session = turn.agentSessionId ? this.agentSessions.get(turn.agentSessionId) : undefined;
+    const received = item !== undefined && receivedItemInfluences(item, turn.triggerActor);
+    const inherited = turn.agentSessionId != null && contextIsExternallyInfluenced(session ?? {});
+    const retained =
+      turn.externallyInfluenced === false && (received || inherited)
+        ? { ...turn, externallyInfluenced: true }
+        : turn;
+    if (session?.externallyInfluenced === false && contextIsExternallyInfluenced(retained))
+      this.agentSessions.set(session.id, { ...session, externallyInfluenced: true });
+    return retained;
+  }
+
   /** Applies the original checks inside the admitted same-Turn boundary. */
   private async createItemPublication(
     input: Item,
@@ -5848,12 +5891,15 @@ export class FsStore {
     const existing = turn.items.find((value) => value.id === item.id);
     if (checkControlItemAppend(item, turn, existing, turn.items, admission?.category))
       return existing!;
-    const updatedTurn = {
-      ...turn,
-      items: existing
-        ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
-        : [...turn.items, item],
-    };
+    const updatedTurn = this.retainInMemoryInfluence(
+      {
+        ...turn,
+        items: existing
+          ? turn.items.map((candidate) => (candidate.id === item.id ? item : candidate))
+          : [...turn.items, item],
+      },
+      item
+    );
     this.itemRevisions.push(item);
     this.items.set(item.id, item);
     this.turns.set(item.turnId, updatedTurn);
@@ -5942,10 +5988,13 @@ export class FsStore {
     }
     assertImmutableItemAttribution(item, updated);
     if (this.dataRoot) return this.persistNativeItem(updated, native!, admission);
-    const updatedTurn = {
-      ...turn,
-      items: turn.items.map((candidate) => (candidate.id === itemId ? updated : candidate)),
-    };
+    const updatedTurn = this.retainInMemoryInfluence(
+      {
+        ...turn,
+        items: turn.items.map((candidate) => (candidate.id === itemId ? updated : candidate)),
+      },
+      updated
+    );
 
     this.itemRevisions.push(updated);
     this.items.set(itemId, updated);
@@ -6496,6 +6545,7 @@ export class FsStore {
         AgentSession,
         | 'configVersion'
         | 'environmentPackageSnapshotId'
+        | 'externallyInfluenced'
         | 'message'
         | 'nativeHandleDigest'
         | 'retainedStorage'
@@ -6513,11 +6563,14 @@ export class FsStore {
     const agentSession = previous
       ? (AgentSessionRecordSchema.parse(previous.record) as AgentSession)
       : initial;
+    if (contextInfluenceWasCleared(agentSession, { ...agentSession, ...input }))
+      throw new Error('AgentSession influence cannot be cleared.');
     const unsupportedField = Object.keys(input).find(
       (field) =>
         ![
           'configVersion',
           'environmentPackageSnapshotId',
+          'externallyInfluenced',
           'message',
           'nativeHandleDigest',
           'retainedStorage',

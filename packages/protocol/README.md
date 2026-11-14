@@ -1,5 +1,7 @@
 # @openkit/protocol
 
+Item `ingress` is an optional closed Core receiving fact: `api`, `remote-mcp`, `channel`, `provider`, `tool`, `import` or `core`. It is not client/model authorship and cannot be rewritten by a lifecycle revision. Historical absence stays absent. Turn and AgentSession `externallyInfluenced` are optional sticky context facts; missing means influenced, never an implicit false default. Only Core can establish known-clear input, and these facts grant no authority. [Runtime Security E9](../../docs/specs/20261109-runtime_security.md) owns receiving, inheritance and restrictive use; schema acceptance alone does not qualify continuity or activate the gate.
+
 Ordinary product SSE adds `item-preview` with at most 4 KiB of exact UTF-8 body text, field, side, original byte size, truncation flag and an exact Workspace/Thread/Turn/Item body selector. Its selector must match the envelope lineage. This outward projection does not extend the native retained event grammar or grant body access. Ordinary Turn event projections carry headers with empty Items.
 
 

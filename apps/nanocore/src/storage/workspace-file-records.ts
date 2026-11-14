@@ -346,7 +346,13 @@ export function assertImmutableItemAttribution(previousRecord: Item, nextRecord:
     (previous.owner.kind === 'workspace' &&
       next.owner.kind === 'workspace' &&
       previous.owner.workspaceId !== next.owner.workspaceId);
-  if (ownerChanged || actorChanged || responsibleUserChanged || causationChanged) {
+  if (
+    ownerChanged ||
+    actorChanged ||
+    responsibleUserChanged ||
+    causationChanged ||
+    previous.ingress !== next.ingress
+  ) {
     throw new Error(`Item attribution cannot change: ${next.id}.`);
   }
 }

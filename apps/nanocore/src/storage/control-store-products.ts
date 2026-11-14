@@ -29,6 +29,11 @@ import { ControlPendingCommandInputSchema } from '../runtime/pending-request-cod
 import type { PreparedControlPendingCommand } from '../runtime/pending-requests.js';
 import { applyControlPendingCommand } from '../runtime/pending-requests.js';
 import { StoredRuntimeEvidenceV1Schema } from '../runtime/runtime-evidence-v1.js';
+import {
+  contextInfluenceWasCleared,
+  contextIsExternallyInfluenced,
+  receivedItemInfluences,
+} from '../security/context-influence.js';
 import type { ControlAdmission } from './control-store-admission-codecs.js';
 import { prepareControlPendingCommands } from './control-store-pending.js';
 import {
@@ -166,6 +171,8 @@ function checkReplacement(
   )
     throw new ControlProductPreconditionError();
   if (!before) return;
+  if ((kind === 'turn' || kind === 'agent-session') && contextInfluenceWasCleared(before, after))
+    throw new ControlProductPreconditionError();
   if (
     kind === 'turn' &&
     before.id !== terminalTurnId &&
@@ -228,6 +235,63 @@ export function applyControlProducts(
   applyProducts(sqlite, owner, mutations, entries);
 }
 
+/** Derives restrictive context changes in the same transaction, using only the existing product writer. */
+function withReceivedInfluence(
+  sqlite: Database.Database,
+  owner: ControlProductOwner,
+  mutations: readonly ControlProductMutation[],
+  entries: readonly PreparedControlEntry[]
+): ControlProductMutation[] {
+  const planned = new Map<string, ControlProductMutation>();
+  const observed = new Map<string, ControlProductMutation>();
+  for (const mutation of mutations) {
+    const record = decode(mutation.kind, mutation.record, owner);
+    const key = `${mutation.kind}:${record.id}`;
+    if (planned.has(key)) throw new ControlProductPreconditionError();
+    planned.set(key, mutation);
+  }
+  const load = (kind: 'turn' | 'agent-session', id: string): ControlProductMutation => {
+    const key = `${kind}:${id}`;
+    const cached = planned.get(key) ?? observed.get(key);
+    if (cached) return cached;
+    const head = readProduct(sqlite, owner, kind, id);
+    if (!head) throw new ControlProductPreconditionError();
+    const mutation = {
+      kind,
+      expectedRevision: head.revision,
+      record: writeRetainedV1(head.record),
+    };
+    observed.set(key, mutation);
+    return mutation;
+  };
+  const restrict = (kind: 'turn' | 'agent-session', id: string): void => {
+    const mutation = load(kind, id);
+    // Unknown is already influenced. Do not backfill historical context records.
+    if (mutation.record.externallyInfluenced !== false) return;
+    planned.set(`${kind}:${id}`, {
+      ...mutation,
+      record: writeRetainedV1({ ...mutation.record, externallyInfluenced: true }),
+    });
+  };
+  for (const entry of entries) {
+    if (entry.input.kind !== 'item') continue;
+    const item = StoredItemV1Schema.parse(readPreparedControlEntry(entry));
+    const turn = StoredTurnV1Schema.parse(load('turn', item.turnId).record);
+    if (receivedItemInfluences(item, turn.triggerActor)) restrict('turn', turn.id);
+  }
+  // A sessionless Turn is its own context. Bound Turns inherit the actual session,
+  // and received influence restricts that same session before the Item ACK.
+  for (const mutation of [...planned.values()].filter((value) => value.kind === 'turn')) {
+    const turn = StoredTurnV1Schema.parse(mutation.record);
+    if (turn.agentSessionId == null) continue;
+    const session = load('agent-session', turn.agentSessionId);
+    if (contextIsExternallyInfluenced(session.record)) restrict('turn', turn.id);
+    if (contextIsExternallyInfluenced(load('turn', turn.id).record))
+      restrict('agent-session', turn.agentSessionId);
+  }
+  return [...planned.values()];
+}
+
 /** Shared SQL mechanics; only the complete terminal owner supplies its exact terminal identity. */
 function applyProducts(
   sqlite: Database.Database,
@@ -237,6 +301,7 @@ function applyProducts(
   terminalTurnId?: string
 ): void {
   assertControlProductWriter(sqlite);
+  mutations = withReceivedInfluence(sqlite, owner, mutations, entries);
   if (owner.kind === 'workspace' && !mutations.some((input) => input.kind === 'workspace')) {
     const createdThreads = mutations
       .filter((input) => input.kind === 'thread')
@@ -816,6 +881,7 @@ async function prepareEntries(
         owner: item.owner,
         threadId: item.threadId,
         turnId: item.turnId,
+        ...(item.ingress === undefined ? {} : { ingress: item.ingress }),
         actor: 'actor' in item ? item.actor : null,
         responsibleUserId: 'responsibleUserId' in item ? item.responsibleUserId : null,
         causationId: item.causationId ?? null,

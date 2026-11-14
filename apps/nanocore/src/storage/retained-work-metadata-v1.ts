@@ -216,6 +216,7 @@ export const StoredTurnPayloadV1Shape = {
   workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   triggerActor: StoredActorV1Schema,
+  externallyInfluenced: z.boolean().optional(),
   fileInputs: StoredTurnFileInputsV1Schema.optional(),
   error: z
     .object({
@@ -426,6 +427,7 @@ const StoredWorkspaceRootV1Schema = z.discriminatedUnion('sourceKind', [
 
 /** Fixed header-free AgentSession fields shared by retained metadata and event snapshots. */
 export const StoredAgentSessionPayloadV1Shape = {
+  externallyInfluenced: z.boolean().optional(),
   id: AgentSessionIdSchema,
   agentId: AgentIdSchema,
   workspaceId: WorkspaceIdSchema,

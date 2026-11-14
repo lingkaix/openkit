@@ -203,6 +203,8 @@ const TurnBaseSchema = z.object({
   workspaceId: z.never().optional(),
   threadId: ThreadIdSchema,
   triggerActor: ActorRefSchema,
+  /** Sticky context fact, including sessionless Turns. Missing means influenced. */
+  externallyInfluenced: z.boolean().optional(),
   items: z.array(ItemSchema),
   /** Optional retained absence is an empty inventory; original bytes stay outside this record. */
   fileInputs: TurnFileInputsSchema.optional(),

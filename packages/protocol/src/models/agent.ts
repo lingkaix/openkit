@@ -41,6 +41,8 @@ export const AgentSandboxSummarySchema = z.object({
  * Product-visible AgentSession record without adapter-native launch details.
  */
 export const AgentSessionSchema = z.object({
+  /** Missing is influenced; only Core can establish a known-clear context. */
+  externallyInfluenced: z.boolean().optional(),
   id: AgentSessionIdSchema,
   agentId: AgentIdSchema,
   workspaceId: WorkspaceIdSchema,
