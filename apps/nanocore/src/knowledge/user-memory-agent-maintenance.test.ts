@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { operationToolName } from '@openkit/app-api-schemas';
+import { UserConfigSchema } from '@openkit/config-schema';
 import { formatReferenceUri, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -192,7 +193,17 @@ function fixture(enabled = true) {
     userDb,
     store,
     runtimeConfigManager: {
-      current: () => ({ userConfigs: [{ userId, config: { knowledgeMaintenance: settings } }] }),
+      current: () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          userConfigs: [
+            {
+              userId,
+              path: join(dataRoot, 'users', userId, 'config', 'user.jsonc'),
+              config: UserConfigSchema.parse({ schemaVersion: 1, knowledgeMaintenance: settings }),
+            },
+          ],
+        }),
     } as unknown as RuntimeConfigManager,
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
