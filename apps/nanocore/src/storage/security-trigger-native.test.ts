@@ -16,6 +16,7 @@ import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
 import { type Actor, actorFromSession, ensureLocalUser } from '../auth/identity.js';
 import { createCatalogOperationImplementations } from '../catalog/catalog-operations.js';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { securityRequestId } from '../security/identifiers.js';
@@ -78,13 +79,13 @@ function observeNativeSecurity() {
     checkpoint() {
       return sent.mock.calls.length;
     },
-    assertRoundTrip(since = 0) {
+    assertRoundTrip(since = 0, operation = 'security-trigger') {
       const ids = new Set(
         sent.mock.calls
           .slice(since)
           .map(([message]) => message)
           .filter(protocolMessage)
-          .filter((message) => message.operation === 'security-trigger')
+          .filter((message) => message.operation === operation)
           .map((message) => message.id)
       );
       assert.ok(
@@ -96,7 +97,7 @@ function observeNativeSecurity() {
           ([event, message]) =>
             event === 'message' &&
             protocolMessage(message) &&
-            message.operation === 'security-trigger' &&
+            message.operation === operation &&
             message.status === 'ok' &&
             ids.has(message.id)
         ),
@@ -243,6 +244,41 @@ function assertAlarms(
     );
   }
 }
+
+it('reads complete native containment usage from the actual published owner without granting effects', async () => {
+  const f = await fixture();
+  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  await manager.bindNativePolicyPublication(f.db);
+  const policy = manager.current().openKitConfig.policy?.mediation ?? {
+    schemaVersion: 1 as const,
+    statements: [],
+  };
+  const observed = await f.trigger.containmentUsage(policy);
+  assert.deepEqual(observed.limits, {
+    version: 'containment/v1',
+    currentServer: 8,
+    currentWorkspace: 2,
+    cumulativeServer: 16,
+    cumulativeWorkspace: 4,
+    windowSeconds: 3600,
+    pendingServer: 16,
+    pendingWorkspace: 4,
+    actionSeconds: 60,
+    reviewSeconds: 86400,
+  });
+  const { windowStart, ...counts } = observed.usage;
+  assert.ok(Number.isFinite(Date.parse(windowStart)));
+  assert.deepEqual(counts, {
+    currentServer: 0,
+    currentWorkspace: 0,
+    cumulativeServer: 0,
+    cumulativeWorkspace: 0,
+    pendingServer: 0,
+    pendingWorkspace: 0,
+    workspaces: [],
+  });
+  f.trace.assertRoundTrip(0, 'core-journal');
+});
 
 describe('N1 real-native Server security trigger authority and alarms', () => {
   it('starts off without delegation, alarms or an authorized Audit read', async () => {

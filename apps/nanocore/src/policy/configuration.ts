@@ -210,7 +210,12 @@ export function preparePolicyConfiguration(input: {
                     input.coreDb,
                     input.actor,
                     { kind: 'server' },
-                    operation,
+                    // The closed native grant delegates only this fixed Core consumer;
+                    // its human author must own actual Server configuration authority.
+                    resource.container.kind === 'containment-template' &&
+                      operation === 'security.containment'
+                      ? 'workspace.configure'
+                      : operation,
                     true
                   )
                 : null;

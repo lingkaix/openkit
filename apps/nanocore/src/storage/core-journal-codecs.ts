@@ -1,4 +1,5 @@
-import { ActorRefSchema } from '@openkit/protocol';
+import { ActorRefSchema, PolicyDocumentV1Schema, WorkspaceIdSchema } from '@openkit/protocol';
+import { WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
 const text = z.string().min(1);
@@ -10,8 +11,50 @@ const stepRef = z
     stepId: text,
   })
   .strict();
-/** Only the four existing Core journal producer decisions may cross this private owner boundary. */
+/** Release-authored bounds are part of the fixed reviewed template, never operator configuration. */
+export const SECURITY_CONTAINMENT_LIMITS = Object.freeze({
+  version: 'containment/v1',
+  currentServer: 8,
+  currentWorkspace: 2,
+  cumulativeServer: 16,
+  cumulativeWorkspace: 4,
+  windowSeconds: 3_600,
+  pendingServer: 16,
+  pendingWorkspace: 4,
+  actionSeconds: 60,
+  reviewSeconds: 86_400,
+});
+
+/** Closed existing Core producer decisions; callers cannot provide permission or capacity results. */
 export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('containment-inspect'),
+      policy: PolicyDocumentV1Schema,
+      workspaceId: WorkspaceIdSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('containment-intent'),
+      policy: PolicyDocumentV1Schema,
+      lineage: WorkerLineageSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('containment-check'),
+      policy: PolicyDocumentV1Schema,
+      ref: stepRef,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('containment-settle'),
+      policy: PolicyDocumentV1Schema,
+      ref: stepRef,
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('image-intent'),

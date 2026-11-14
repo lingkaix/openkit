@@ -1009,6 +1009,20 @@ CREATE UNIQUE INDEX `control_execution_steps_harness_consumption_idx`
 ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'), json_extract(`invocation_json`, '$.carriage.requestId'), json_extract(`invocation_json`, '$.carriage.sequence'))
 WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-harness-consume/v1';
 --> statement-breakpoint
+CREATE INDEX `control_executions_containment_recent_idx`
+ON `control_executions` (CAST(json_extract(`span_json`, '$.startTimeUnixNano') AS INTEGER))
+WHERE `definition_version` = 'containment';
+--> statement-breakpoint
+CREATE INDEX `control_execution_steps_containment_clock_idx`
+ON `control_execution_steps` (CAST(json_extract(`invocation_json`, '$.clock.admittedUnixNano') AS INTEGER))
+WHERE json_extract(`control_json`, '$.definitionVersion') = 'containment'
+AND json_extract(`control_json`, '$.kind') = 'fence';
+--> statement-breakpoint
+CREATE INDEX `control_execution_steps_containment_pending_idx`
+ON `control_execution_steps` (`state`)
+WHERE json_extract(`control_json`, '$.definitionVersion') = 'containment'
+AND json_extract(`control_json`, '$.kind') = 'fence';
+--> statement-breakpoint
 CREATE INDEX `control_execution_steps_idle_resident_idx`
 ON `control_execution_steps` (json_extract(`invocation_json`, '$.carriage.bindingRef'))
 WHERE json_extract(`control_json`, '$.definitionVersion') = 'core-idle-cleanup/v1'

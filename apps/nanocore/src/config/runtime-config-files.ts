@@ -39,7 +39,12 @@ import {
   type WorkspaceDataSourceCatalog,
   WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
-import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  canonicalIdentifierName,
+  readRetainedV1,
+  writeRetainedV1,
+} from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
   createPrivateTreeSync,
@@ -52,7 +57,6 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
-import { policyDigest } from '../policy/statements.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 
 import { VaultBackendError } from '../vault/vault-backend.js';
@@ -338,8 +342,8 @@ export class RuntimeConfigFileService {
         : null;
       const next = parse(input.content) as { policy?: { mediation?: unknown } };
       if (
-        policyDigest(previous?.policy?.mediation ?? null) !==
-        policyDigest(next?.policy?.mediation ?? null)
+        canonicalIdentifierName(previous?.policy?.mediation ?? null) !==
+        canonicalIdentifierName(next?.policy?.mediation ?? null)
       ) {
         throw new RuntimeConfigFileServiceError(
           'policy_write_required',

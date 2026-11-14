@@ -28,6 +28,10 @@ export const controlExecutions = sqliteTable(
     spanJson: text('span_json').notNull(),
   },
   (table) => [
+    // Conservative recent-root census also detects a missing original admission step.
+    index('control_executions_containment_recent_idx')
+      .on(sql`CAST(json_extract(${table.spanJson}, '$.startTimeUnixNano') AS INTEGER)`)
+      .where(sql`${table.definitionVersion} = 'containment'`),
     check('control_executions_version_check', sql`${table.schemaVersion} = 1`),
     check('control_executions_phase_check', sql`${table.phase} IN ('open', 'closing', 'closed')`),
     check(
@@ -93,6 +97,16 @@ export const controlExecutionSteps = sqliteTable(
       .where(
         sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'core-harness-consume/v1'`
       ),
+    // The original writer clock locates admitted targets independently of decision-row presence.
+    index('control_execution_steps_containment_clock_idx')
+      .on(sql`CAST(json_extract(${table.invocationJson}, '$.clock.admittedUnixNano') AS INTEGER)`)
+      .where(sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'containment'
+        AND json_extract(${table.controlJson}, '$.kind') = 'fence'`),
+    // Core containment admission must not scan unrelated retained execution history under flood.
+    index('control_execution_steps_containment_pending_idx')
+      .on(table.state)
+      .where(sql`json_extract(${table.controlJson}, '$.definitionVersion') = 'containment'
+        AND json_extract(${table.controlJson}, '$.kind') = 'fence'`),
     // Core-only: pending residents address originals without scanning history.
     index('control_execution_steps_idle_resident_idx')
       .on(sql`json_extract(${table.invocationJson}, '$.carriage.bindingRef')`)

@@ -18,6 +18,7 @@ import {
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import { SECURITY_CONTAINMENT_LIMITS } from '../storage/core-journal-codecs.js';
 import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Safe current references supplied by each native operation owner, never caller material. */
@@ -181,6 +182,41 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
         statement.lifetime.uses !== undefined)
     )
       throw new Error('Quarantine requires an ordinary prohibition without expiry or uses.');
+    if (
+      statement.scope.resources.some(
+        (resource) =>
+          resource.kind === 'container' && resource.container.kind === 'containment-template'
+      )
+    ) {
+      const subject = statement.scope.subjects[0];
+      const resource = statement.scope.resources[0];
+      const anchor = statement.lifetime.anchor;
+      if (
+        statement.kind !== 'permission' ||
+        statement.effect !== 'allow' ||
+        statement.grant.kind !== 'ordinary' ||
+        statement.author.kind !== 'human' ||
+        statement.authority.kind !== 'human' ||
+        statement.author.id !== statement.authority.userId ||
+        statement.scope.subjects.length !== 1 ||
+        subject?.kind !== 'human' ||
+        subject.id !== statement.author.id ||
+        statement.scope.actions.length !== 1 ||
+        statement.scope.actions[0] !== 'security.containment' ||
+        statement.scope.resources.length !== 1 ||
+        resource?.kind !== 'container' ||
+        resource.container.owner.kind !== 'server' ||
+        resource.container.id !== policyDigest(SECURITY_CONTAINMENT_LIMITS) ||
+        anchor.owner.kind !== 'server' ||
+        anchor.kind !== 'server' ||
+        anchor.id !== 'server' ||
+        statement.lifetime.uses !== undefined
+      )
+        throw new Error(
+          'Containment requires its exact reviewed human Server permission template.'
+        );
+      continue;
+    }
     const group = routeGroupSwitchGroup(statement);
     if (group !== null) {
       if (exposureGroups.has(group)) throw new Error('Duplicate route-group switch control.');

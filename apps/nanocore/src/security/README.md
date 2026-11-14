@@ -58,6 +58,14 @@ The destination-only cut creates no report, Turn, Pending Request, Attention or 
 
 `readAlarmNotice` reads this stored progress, not current send or Workspace publication authority. Generic Attention enqueue cannot create the native-only source. Existing channel source admission rejects it until that consumer is implemented. Channel admission/fixed text, notice acknowledgement, triage, archive rollover, scheduling/drain and recipient-loss closeout remain incomplete. No useful grant, public activation or effect admission is introduced.
 
+## Bounded containment preparation
+
+The existing `SecurityTriggerStore` exposes native containment usage, intent preparation and current checks. Activation uses the existing human-confirmed Server Policy proposal and apply path. The only admitted positive template is an ordinary permission for its real human author, the single `security.containment` action and the exact release-authored Server template digest. The native owner checks the complete scope, current E4 delegation, grant expiry and the runtime owner's published Policy identity. E4 state or a caller-supplied document alone grants nothing.
+
+The Core-only `containment` journal definition retains the original sensor Audit identity and exact live lineage. One covering FULL commit records the actual allowing decision, capacity reservation, restriction intent and non-effect review deadline. Current quarantines count across windows; accepted targets still count in the original window after human release. Incomplete, overflowing or mismatched journal and decision censuses refuse new admission. Indexed bounded queries keep this work separate from unrelated retained execution history. Limits are release constants, not a new setting, counter store or queue.
+
+This preparation stage does not connect an automatic consumer to a sensor route. It does not install a quarantine, revoke a credential, interrupt a Turn or stop a Sandbox. Those effect owners and their public-flow qualification remain separate work. A prepared intent, reviewed permission or elapsed review deadline is never proof of a restriction, a stop or a release.
+
 ## Checks
 
 Run the inventory and feeds owner suites with NanoCore's Vitest configuration and zero retries. Run `server.security.test.ts` in Config Schema for authored feed choices. Tests use fixture SBOMs, checksum bytes and injected recorded/hostile feed streams, not third-party endpoints.

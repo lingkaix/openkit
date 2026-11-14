@@ -3302,6 +3302,7 @@ describe('worker MCP routes', () => {
     'ordinary',
     'native-send-failure',
     'settled-lineage',
+    'containment-check',
   ] as const)(
     'observes only authenticated current exact native canary route calls: %s',
     { timeout: 60_000 },
@@ -3343,6 +3344,14 @@ describe('worker MCP routes', () => {
         workspaceMutationAdmission: mutation,
       });
       admitTestNativeEnvironment(coreDb, setup.manifest);
+      if (scenario === 'containment-check') {
+        fs.mkdirSync(join(dataRoot, 'config'), { recursive: true });
+        writeFileSync(join(dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
+      }
+      const runtimeManager = createRuntimeConfigManager({
+        dataRoot: scenario === 'containment-check' ? dataRoot : null,
+        initialSnapshot: readConfiguration(),
+      });
       const taskApp = createApp({
         coreDb,
         store,
@@ -3350,10 +3359,7 @@ describe('worker MCP routes', () => {
         turnExecutor: native.executor,
         workerControlGateway: native.workerControlGateway,
         workspaceMutationAdmission: mutation,
-        runtimeConfigManager: createRuntimeConfigManager({
-          dataRoot: null,
-          initialSnapshot: readConfiguration(),
-        }),
+        runtimeConfigManager: runtimeManager,
       });
       const gateway = createDefaultWorkerMcpGateway(coreDb);
       const app = new Hono();
@@ -3655,7 +3661,12 @@ describe('worker MCP routes', () => {
         } finally {
           transportFault?.mockRestore();
         }
-        const shouldTrip = ['trip', 'policy-hidden-foreign', 'repeat'].includes(scenario);
+        const shouldTrip = [
+          'trip',
+          'policy-hidden-foreign',
+          'repeat',
+          'containment-check',
+        ].includes(scenario);
         if (shouldTrip) {
           const facts = rows();
           expect(facts).toHaveLength(1);
@@ -3686,6 +3697,131 @@ describe('worker MCP routes', () => {
           expect(facts[0]?.actor).toStrictEqual(actor);
           expect(facts[0]?.subject).toStrictEqual(actor);
           expect(JSON.stringify(facts)).not.toContain('foreign-canary-');
+          if (scenario === 'containment-check') {
+            const { createAdministrationConfiguration } = await import(
+              './config/administration-configuration.js'
+            );
+            const { RuntimeConfigFileService } = await import('./config/runtime-config-files.js');
+            await runtimeManager.bindNativePolicyPublication(coreDb);
+            const files = new RuntimeConfigFileService({
+              dataRoot,
+              userId,
+              workspaceIds: [workspaceId],
+              runtimeConfigManager: runtimeManager,
+              readRuntimeConfigStatus: () => runtimeManager.status(),
+            });
+            const { quickChatWorkspaceIdForUser } = await import('./lib/store.js');
+            const reviewWorkspaceId = quickChatWorkspaceIdForUser(userId);
+            const homeThread = await store.createThread(
+              reviewWorkspaceId,
+              'Containment review',
+              allocateEntityId('th'),
+              'administration',
+              { visibility: 'private', privateOwnerUserId: userId }
+            );
+            const homeTurn = await store.createTurn(
+              reviewWorkspaceId,
+              homeThread.id,
+              'Review bounded containment',
+              { kind: 'user', id: userId },
+              null
+            );
+            const service = createAdministrationConfiguration({
+              coreDb,
+              store,
+              files,
+              actor: { kind: 'local', userId },
+              runtimeConfig: () => runtimeManager.current(),
+              reload: () => runtimeManager.reload({ mode: 'safe', dryRun: false }),
+              inflightCommands: new WeakMap(),
+              repositoryWorkspaceDb: () => {
+                throw new Error('This Server grant has no Workspace Policy read.');
+              },
+            });
+            const current =
+              runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+            const review = await trigger.containmentUsage(current);
+            const proposal = await service.propose(
+              {
+                targetFamily: 'policy',
+                targetId: 'server',
+                expectedRevision: files.readFile('server.jsonc').file.revision,
+                changes: {
+                  rationale: 'Review exact release bounds and native usage.',
+                  proposed: {
+                    schemaVersion: 1,
+                    statements: [
+                      {
+                        id: 'native-containment-grant',
+                        kind: 'permission',
+                        state: 'active',
+                        effect: 'allow',
+                        grant: { kind: 'ordinary' },
+                        author: { kind: 'human', id: userId },
+                        authority: { kind: 'human', userId },
+                        authoredAt: new Date().toISOString(),
+                        scope: {
+                          subjects: [{ kind: 'human', id: userId }],
+                          actions: ['security.containment'],
+                          resources: [
+                            {
+                              kind: 'container',
+                              container: {
+                                owner: { kind: 'server' },
+                                kind: 'containment-template',
+                                id: policyDigest(review.limits),
+                              },
+                            },
+                          ],
+                        },
+                        lifetime: {
+                          anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+              { threadId: homeThread.id, turnId: homeTurn.id, requestId: randomUUID() }
+            );
+            const applied = await service.apply({
+              requestId: randomUUID(),
+              candidate: proposal.candidate,
+              confirmation: proposal.confirmation,
+            });
+            expect(applied).toMatchObject({ persisted: true, reload: 'applied' });
+            const policy =
+              runtimeManager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+            const intent = await trigger.prepareContainment({
+              policy,
+              lineage: {
+                workspaceId,
+                threadId,
+                turnId: turn.id,
+                agentSessionId: original.scope.agentSessionId,
+                packageSnapshotId: original.snapshotId,
+                requestId: original.scope.requestId ?? null,
+              },
+            });
+            expect(intent).not.toBeNull();
+            if (!intent || intent.ref.execution.owner.kind !== 'server')
+              throw new Error('Native containment admission did not commit.');
+            const checked = await trigger.checkContainment(policy, {
+              execution: {
+                owner: { kind: 'server' },
+                executionId: intent.ref.execution.executionId,
+              },
+              stepId: intent.ref.stepId,
+            });
+            expect(checked).toMatchObject({
+              ref: intent.ref,
+              control: { workId: facts[0]!.id, definitionVersion: 'containment' },
+            });
+            expect(checked!.remainingMs).toBeGreaterThan(0);
+            expect(await trigger.containmentUsage(policy)).toMatchObject({
+              usage: { cumulativeServer: 1, pendingServer: 1, currentServer: 0 },
+            });
+          }
           if (scenario === 'repeat') {
             for (const id of [204, 203]) {
               const again = await rpc(

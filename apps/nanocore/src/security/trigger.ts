@@ -1,5 +1,11 @@
+import type { PolicyDocumentV1 } from '@openkit/protocol';
+import type { WorkerLineage } from '@openkit/worker-protocol';
+import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
+import { publishCoreJournal } from '../runtime/core-journal-owner.js';
+import { decodeExecutionJournalInvocation } from '../runtime/execution-journal.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import { SECURITY_CONTAINMENT_LIMITS } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   type ControlSecurityTrigger,
@@ -33,6 +39,59 @@ export class SecurityTriggerStore {
     const result = await this.apply({ action: 'current', timestamp: now });
     if (result.kind !== 'state') throw new TypeError('Unexpected security trigger state result.');
     return result.snapshot;
+  }
+
+  /** Native current usage is review evidence, never a caller-provided counter or positive grant. */
+  async containmentUsage(policy: PolicyDocumentV1, workspaceId?: string) {
+    const bytes = await publishCoreJournal(this.db, {
+      kind: 'containment-inspect',
+      policy,
+      workspaceId,
+    });
+    if (bytes === null) throw new TypeError('Containment usage is unavailable.');
+    const count = z.number().int().nonnegative().safe();
+    return {
+      limits: SECURITY_CONTAINMENT_LIMITS,
+      usage: z
+        .object({
+          currentServer: count,
+          currentWorkspace: count,
+          cumulativeServer: count,
+          cumulativeWorkspace: count,
+          pendingServer: count,
+          pendingWorkspace: count,
+          windowStart: z.iso.datetime(),
+          workspaces: z
+            .array(
+              z
+                .object({
+                  workspaceId: z.string(),
+                  current: count,
+                  cumulative: count,
+                  pending: count,
+                })
+                .strict()
+            )
+            .max(40),
+        })
+        .strict()
+        .parse(JSON.parse(bytes)),
+    };
+  }
+
+  /** Commits capacity and the review deadline before any effect; null grants no containment. */
+  async prepareContainment(input: { policy: PolicyDocumentV1; lineage: WorkerLineage }) {
+    const bytes = await publishCoreJournal(this.db, { kind: 'containment-intent', ...input });
+    return bytes === null ? null : decodeExecutionJournalInvocation(bytes);
+  }
+
+  /** Every new effect rechecks the actual current Policy, E4 authority and original action clock. */
+  async checkContainment(
+    policy: PolicyDocumentV1,
+    ref: { execution: { owner: { kind: 'server' }; executionId: string }; stepId: string }
+  ) {
+    const bytes = await publishCoreJournal(this.db, { kind: 'containment-check', policy, ref });
+    return bytes === null ? null : decodeExecutionJournalInvocation(bytes);
   }
 
   /** The caller supplies its original authenticated Actor; native admission rechecks current rows. */

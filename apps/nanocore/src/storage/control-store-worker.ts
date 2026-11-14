@@ -1425,7 +1425,18 @@ function requestLanes(owner: OwnedDatabase, request: WriteCommand): ReadonlySet<
       lanes.add(`session:${request.input.lineage.agentSessionId}`);
       break;
     case 'core-journal':
-      if (request.input.kind === 'image-abandon') {
+      if (
+        request.input.kind === 'containment-inspect' ||
+        request.input.kind === 'containment-intent' ||
+        request.input.kind === 'containment-check' ||
+        request.input.kind === 'containment-settle'
+      ) {
+        lanes.add('security-containment');
+        if (request.input.kind === 'containment-intent') {
+          lanes.add(request.input.lineage.turnId);
+          lanes.add(`session:${request.input.lineage.agentSessionId}`);
+        }
+      } else if (request.input.kind === 'image-abandon') {
         if (!owner.scopeDb) throw new ControlProductPreconditionError();
         lanes.add(readExecutionJournalRoot(owner.scopeDb, request.input.ref.execution).workId);
       } else lanes.add(decodeExecutionJournalIntent(request.input.intentJson).execution.workId);
@@ -2578,7 +2589,11 @@ function flush(owner: OwnedDatabase): void {
             };
           } else if (request.operation === 'core-journal') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            const result = applyControlCoreJournal(owner.scopeDb, request.input);
+            const result = applyControlCoreJournal(
+              owner.scopeDb,
+              request.input,
+              owner.runtimePolicy
+            );
             outcome = {
               version: CONTROL_WORKER_VERSION,
               id: request.id,

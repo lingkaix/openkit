@@ -13,6 +13,7 @@ import type {
   ExecutionJournalRef,
   ExecutionJournalSettlement,
   ExecutionJournalSpan,
+  ExecutionStepControl,
   ExecutionStepJournalReader,
   ExecutionStepRef,
 } from './execution-step-journal.js';
@@ -29,6 +30,9 @@ export const CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION = 'core-image-acquire/v1';
 export const CORE_IDLE_CLEANUP_EXECUTION_DEFINITION = 'core-idle-cleanup/v1';
 /** Local Core acknowledgement of an immutable Harness result, never native dispatch authority. */
 export const CORE_HARNESS_CONSUME_EXECUTION_DEFINITION = 'core-harness-consume/v1';
+
+/** Exact suspect-only Core consumer; this definition never grants an effect by itself. */
+export const CORE_CONTAINMENT_EXECUTION_DEFINITION = 'containment';
 
 /** Observed Core identity/revision; selection must reread its owning rows before advancement. */
 export interface ExecutionCandidate {
@@ -136,6 +140,32 @@ const workspaceStepKinds = new Set([
   'inspect-cleanup',
   'release',
 ]);
+
+/** Containment uses only accepted control kinds and original authority references. */
+function requireContainmentControl(control: ExecutionStepControl): void {
+  if (control.definitionVersion !== CORE_CONTAINMENT_EXECUTION_DEFINITION) return;
+  if (
+    ![
+      'fence',
+      'cancel',
+      'inspect-cleanup',
+      'collect',
+      'release',
+      'consume-receipt',
+      'human-wait',
+    ].includes(control.kind) ||
+    control.actor.kind !== 'system' ||
+    control.actor.id !== 'security.containment' ||
+    control.actor.responsibleUserId === null ||
+    control.permittingDecisionRef === null ||
+    control.authorityRefs.length === 0 ||
+    !control.inputRefs.includes(control.workId) ||
+    control.deadlineUnixNano === null ||
+    control.retryPermitted ||
+    control.retryDeclarationRef !== null
+  )
+    throw new Error('Containment control has no exact native producer authority.');
+}
 
 // A witness is process-local evidence, not a clock registry or a restart allowance.
 const processWitness = randomUUID();
@@ -264,6 +294,7 @@ const definition = z.enum([
   CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
   CORE_HARNESS_CONSUME_EXECUTION_DEFINITION,
+  CORE_CONTAINMENT_EXECUTION_DEFINITION,
   WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION,
 ]);
 const controlSchema = z.object({
@@ -542,7 +573,8 @@ function requireDefinition(db: CoreDb | WorkspaceDb, value: string): void {
     db.scope === 'core'
       ? value === CORE_IMAGE_ACQUIRE_EXECUTION_DEFINITION ||
         value === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION ||
-        value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION
+        value === CORE_HARNESS_CONSUME_EXECUTION_DEFINITION ||
+        value === CORE_CONTAINMENT_EXECUTION_DEFINITION
       : value === WORKSPACE_WORKER_TURN_EXECUTION_DEFINITION;
   if (!admitted) throw new Error('Execution definition conflicts with its physical owner.');
 }
@@ -593,6 +625,7 @@ function storedStep(db: CoreDb | WorkspaceDb, ref: ExecutionStepRef) {
       .get(ref.execution.executionId, ref.stepId)
   );
   const control = decode(controlSchema, row.control_json);
+  requireContainmentControl(control);
   if (
     db.scope === 'core' &&
     root.definitionVersion === CORE_IDLE_CLEANUP_EXECUTION_DEFINITION &&
@@ -760,6 +793,7 @@ export function writeExecutionJournalIntent(
   requireWriter(db, input.execution.ref);
   const admission = input.execution;
   const control = controlSchema.parse(input.control);
+  requireContainmentControl(control);
   const span = spanSchema.parse(input.span);
   const rootSpan = spanSchema.parse(admission.span);
   definition.parse(admission.definitionVersion);

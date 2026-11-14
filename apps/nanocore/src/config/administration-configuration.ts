@@ -20,6 +20,7 @@ import {
 } from '@openkit/config-schema';
 import {
   allocateEntityId,
+  canonicalIdentifierName,
   deriveEntityId,
   PolicyDocumentV1Schema,
   PolicyWriteOutcomeV1Schema,
@@ -49,12 +50,12 @@ import {
   readAdmittedPolicyDocument,
   recordPolicyWriteDecision,
 } from '../policy/configuration.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { SecurityTriggerStore } from '../security/trigger.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { parseJsoncObject } from './jsonc.js';
@@ -379,7 +380,10 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
                 : null;
             const snapshot = options.runtimeConfig();
             const now = new Date();
-            const document = snapshot.openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+            const document = snapshot.openKitConfig.policy?.mediation ?? {
+              schemaVersion: 1 as const,
+              statements: [],
+            };
             const authorCurrent = (humanId: string) =>
               isCurrentServerPolicyAuthor(coreDb, humanId, now.getTime());
             const delegated = evaluatePolicyKernel({
@@ -523,18 +527,24 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         let policyInspectionUnknown = false;
         if (policyAdmission) {
           try {
-            activePolicyRevision = policyDigest(
-              readAdmittedPolicyDocument(
-                coreDb,
-                options.runtimeConfig().openKitConfig.policy?.mediation
+            activePolicyRevision = `sha256:${createHash('sha256')
+              .update(
+                canonicalIdentifierName(
+                  readAdmittedPolicyDocument(
+                    coreDb,
+                    options.runtimeConfig().openKitConfig.policy?.mediation
+                  )
+                )
               )
-            );
+              .digest('hex')}`;
           } catch {
             policyInspectionUnknown = true;
           }
         }
         const expectedPolicyRevision =
-          'policyProposal' in prepared ? policyDigest(prepared.policyProposal.proposed) : null;
+          'policyProposal' in prepared
+            ? `sha256:${createHash('sha256').update(canonicalIdentifierName(prepared.policyProposal.proposed)).digest('hex')}`
+            : null;
         const policyWriteOutcome = policyAdmission
           ? PolicyWriteOutcomeV1Schema.parse({
               candidate: {
@@ -673,7 +683,35 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
       home: { threadId: string; turnId: string; requestId: string }
     ) {
       requireHome(home.threadId, home.turnId);
-      const request = ProposeAdministrationConfigurationRequestSchema.parse(unsafeRequest);
+      let request = ProposeAdministrationConfigurationRequestSchema.parse(unsafeRequest);
+      if (request.targetFamily === 'policy') {
+        const loaded = options.runtimeConfig().openKitConfig.policy?.mediation ?? {
+          schemaVersion: 1 as const,
+          statements: [],
+        };
+        const activates = request.changes.proposed.statements.some(
+          (statement) =>
+            statement.kind === 'permission' &&
+            statement.state === 'active' &&
+            statement.effect === 'allow' &&
+            statement.scope.actions.includes('security.containment') &&
+            !loaded.statements.some(
+              (previous) =>
+                previous.id === statement.id &&
+                canonicalIdentifierName(previous) === canonicalIdentifierName(statement)
+            )
+        );
+        if (activates) {
+          const review = await new SecurityTriggerStore(coreDb).containmentUsage(loaded);
+          request = {
+            ...request,
+            changes: {
+              ...request.changes,
+              rationale: `${request.changes.rationale}\n\nE12 activation review: inspect false trips and reserved recovery capacity. Fixed release limits and current native usage: ${JSON.stringify(review)}. This grants only exact suspect containment; it never releases quarantine.`,
+            },
+          };
+        }
+      }
       const prepared = prepare(request);
       const body = ConfigurationCandidateArtifactSchema.parse({
         ...request,
