@@ -317,7 +317,7 @@
     },
     "policy": {
       "exports": 100,
-      "crossDirectoryImports": 73
+      "crossDirectoryImports": 70
     },
     "scheduler-recurring": {
       "exports": 85,

@@ -1,5 +1,5 @@
 import { OPERATION_DEFINITIONS, operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
-import type { ProductOperation } from '../policy/workspace-access.js';
+import type { ProductOperation } from '@openkit/config-schema';
 
 /** Public authorization scope declared by one canonical operation. */
 export type PublicOperationScope = 'server' | 'user' | 'workspace';

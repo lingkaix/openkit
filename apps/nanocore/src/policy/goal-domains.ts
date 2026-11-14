@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { OpenKitConfigSchema } from '@openkit/config-schema';
+import { OpenKitConfigSchema, PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import {
   allocateEntityId,
   isSealedTurnTerminal,
@@ -49,7 +49,6 @@ import {
   policyScopeContains,
   validatePolicyDocument,
 } from './statements.js';
-import { PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 
 /** Existing delegation format with the Goal lineage required by its native consumer. */
 export type GoalDomainStatement = z.infer<typeof PolicyDelegationV1Schema>;

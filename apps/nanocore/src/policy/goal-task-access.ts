@@ -1,3 +1,4 @@
+import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
 import {
   AgentIdSchema,
@@ -9,7 +10,6 @@ import {
 import type { z } from 'zod';
 import type { GoalDomainStatement } from './goal-domains.js';
 import { policyDigest, policyScopeContains } from './statements.js';
-import { PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 
 /** Trusted native input after current Goal-domain read and exact scheduler admission readback. */
 export interface GoalTaskAccessInput {

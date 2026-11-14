@@ -1,6 +1,6 @@
+import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
 import { PolicyDocumentV1Schema } from '@openkit/protocol';
-import { PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
 
 /** Immutable facts derived by the configuration owner before an exact Server-scoped effect. */
 export interface WorkerGitReadMaintenanceFacts {

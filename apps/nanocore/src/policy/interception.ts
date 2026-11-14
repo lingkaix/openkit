@@ -88,6 +88,7 @@ import {
   selectPolicyBindings,
   validatePolicyDocument,
 } from './statements.js';
+import { compilePolicyGraph } from './workspace-access.js';
 
 const GateOutput = z.object({ decision: z.enum(['allow', 'deny', 'escalate']) }).strict();
 const ObservationOutput = z.object({ observed: z.literal(true) }).strict();
@@ -259,18 +260,8 @@ export class PolicyInterception {
     if (exposure.kind !== 'switchable' || !exposure.group.trim())
       throw new Error('Operation exposure group is unavailable.');
     const document = validatePolicyDocument(input.policy ?? EMPTY_POLICY_DOCUMENT);
-    const closed = document.statements.some(
-      (statement) =>
-        statement.kind === 'permission' &&
-        statement.state === 'active' &&
-        statement.scope.resources.some(
-          (resource) =>
-            resource.kind === 'container' &&
-            resource.container.kind === 'route-group-switch' &&
-            resource.container.id === exposure.group
-        )
-    );
-    if (!closed) return true;
+    const { policy } = compilePolicyGraph({ exposure: { group: exposure.group, document } });
+    if (!policy.prohibitions?.length) return true;
     // A control's author identifies its native admission, not the evaluated caller.
     // Losing that author's current authority never restores shared availability.
     if (input.coreDb) readAdmittedPolicyDocument(input.coreDb, document);

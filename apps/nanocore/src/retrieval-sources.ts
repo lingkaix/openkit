@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
+import type { ProductOperation } from '@openkit/config-schema';
 import type { Actor } from './auth/identity.js';
 import {
   isCurrentDeploymentAdministrator,
@@ -12,7 +13,6 @@ import {
 } from './auth/thread-visibility.js';
 import type { FsStore } from './lib/store.js';
 import { OperationError } from './operation-error.js';
-import type { ProductOperation } from './policy/workspace-access.js';
 import {
   getRetrievalService,
   type RetrievalDocument,

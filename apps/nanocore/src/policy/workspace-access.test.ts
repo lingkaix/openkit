@@ -1,7 +1,7 @@
+import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import * as policyKernel from '@openkit/policy-kernel';
 import { describe, expect, it, vi } from 'vitest';
-
-import { evaluateProductAccess, PRODUCT_OPERATION_ACCESS_RIGHTS } from './workspace-access.js';
+import { evaluateProductAccess } from './workspace-access.js';
 
 const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'api.call': 'ar:core-api-call',
@@ -48,7 +48,7 @@ const target = {
 };
 
 describe('Workspace current-fact Policy projection', () => {
-  it('exports the exact closed product operation to access-right registry', () => {
+  it('uses the exact closed product operation to access-right registry', () => {
     expect(PRODUCT_OPERATION_ACCESS_RIGHTS).toEqual(EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS);
   });
 

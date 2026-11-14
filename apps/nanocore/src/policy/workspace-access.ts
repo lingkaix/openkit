@@ -15,8 +15,6 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 
-export { PRODUCT_OPERATION_ACCESS_RIGHTS, type ProductOperation } from '@openkit/config-schema';
-
 /** Ordinary membership never supplies Server, delegated-maintenance or Workspace export authority. */
 export const WORKSPACE_MEMBER_OPERATIONS = [
   'approval.respond',
@@ -75,6 +73,10 @@ export type ProductAccessTarget =
       readonly deletedRecovery?: { readonly ownerActive: boolean; readonly originalOwner: boolean };
     };
 
+type ExposureGraphFacts = {
+  readonly exposure: { readonly group: string; readonly document: PolicyDocumentV1 };
+};
+
 /** Evaluates the shared projection once; native callers retain admission and fact ownership. */
 export function evaluatePolicyKernel(
   input:
@@ -99,10 +101,65 @@ export function evaluatePolicyKernel(
  * Pure synchronous projection of current primary/domain facts and admitted prohibitions.
  * All classes constrain the same subject and target. Processes are mappings, never principals.
  */
-function compilePolicyGraph(input: Parameters<typeof evaluatePolicyKernel>[0]): {
+export function compilePolicyGraph(input: ExposureGraphFacts): { policy: PolicyState };
+export function compilePolicyGraph(input: Parameters<typeof evaluatePolicyKernel>[0]): {
   policy: PolicyState;
   request: AccessRequest;
+};
+export function compilePolicyGraph(
+  input: Parameters<typeof evaluatePolicyKernel>[0] | ExposureGraphFacts
+): {
+  policy: PolicyState;
+  request?: AccessRequest;
 } {
+  if ('exposure' in input) {
+    const { group, document } = input.exposure;
+    if (!group.trim()) throw new Error('Operation exposure group is unavailable.');
+    const subject = 'ua:current-subject';
+    const target = `object:route-group:${group}`;
+    const objects = `oa:route-group:${group}`;
+    const policyClass = 'pc:exposure';
+    // Resource availability has no requester (for example a signed Discord PING).
+    // Its unbound UA is an actual-requester join point, never an implicit wildcard.
+    // This parameterized class supplies no Actor, access request or allow association.
+    return {
+      policy: {
+        elements: [
+          { id: subject, kind: 'userAttribute' },
+          { id: target, kind: 'object' },
+          { id: objects, kind: 'objectAttribute' },
+          { id: policyClass, kind: 'policyClass' },
+        ],
+        assignments: [
+          { child: subject, parent: policyClass },
+          { child: target, parent: objects },
+          { child: objects, parent: policyClass },
+        ],
+        associations: [],
+        operations: [],
+        prohibitions: document.statements
+          .filter(
+            (statement) =>
+              statement.kind === 'permission' &&
+              statement.state === 'active' &&
+              statement.effect === 'prohibit' &&
+              statement.scope.resources.some(
+                (resource) =>
+                  resource.kind === 'container' &&
+                  resource.container.kind === 'route-group-switch' &&
+                  resource.container.id === group
+              )
+          )
+          .map((statement) => ({
+            id: statement.id,
+            kind: 'userAttribute' as const,
+            subject,
+            accessRights: Object.values(PRODUCT_OPERATION_ACCESS_RIGHTS),
+            range: { type: 'disjunctive' as const, include: [objects] },
+          })),
+      },
+    };
+  }
   const primary = 'facts' in input ? input : null;
   const principal =
     'facts' in input

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import type { ProductOperation } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import { type ActorRef, responsibleUserIdForActor, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -10,11 +11,7 @@ import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js'
 import type { FsStore } from '../lib/store.js';
 import { getAppApiRouteDefinition } from '../openapi.js';
 import { TurnStartValidationError } from '../operation-error.js';
-import {
-  evaluateProductAccess,
-  type ProductAccessTarget,
-  type ProductOperation,
-} from '../policy/workspace-access.js';
+import { evaluateProductAccess, type ProductAccessTarget } from '../policy/workspace-access.js';
 import {
   evaluateThreadAuthorization,
   parseWorkspacePolicy,

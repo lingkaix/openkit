@@ -1,3 +1,4 @@
+import type { ProductOperation } from '@openkit/config-schema';
 import {
   type Item,
   ProductItemPreviewEventSchema,
@@ -17,7 +18,6 @@ import {
 import { isThreadIdVisible } from './auth/thread-visibility.js';
 import { previewUtf8 } from './bounded-read-text.js';
 import type { FsStore } from './lib/store.js';
-import type { ProductOperation } from './policy/workspace-access.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import {
   isThreadItemSourceAllowed,
