@@ -41,6 +41,7 @@ import {
   resolveWorkspaceMembershipRelation,
 } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
+import { readThreadPolicyAncestors } from './thread-visibility.js';
 
 /** Canonical target of the existing product-authorization entry, also used by credential adapters. */
 export type { ProductAccessTarget } from '../policy/workspace-access.js';
@@ -1294,9 +1295,11 @@ function denyIfThreadInaccessible(
   }
   try {
     const workspace = input.store.getWorkspace(workspaceId);
+    const thread = input.store.getThread(workspaceId, threadId);
     const decision = evaluateThreadAuthorization({
       workspaceId,
-      thread: input.store.getThread(workspaceId, threadId),
+      thread,
+      ancestorThreadIds: readThreadPolicyAncestors(input.store, thread),
       userId: actor.userId,
       administrator: isCurrentDeploymentAdministrator(input.coreDb, actor),
       personalWorkspaceId:

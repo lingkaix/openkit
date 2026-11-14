@@ -19,6 +19,7 @@ import {
   isCanonicalUserOperationAuthorized,
   isCurrentDeploymentAdministrator,
 } from './auth/operation-authorizer.js';
+import { readThreadPolicyAncestors } from './auth/thread-visibility.js';
 import { readAutomationOperationLineage } from './automation-operations.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import { normalizeCapabilityRequestId } from './capability/usage-ledger-native.js';
@@ -539,10 +540,12 @@ function requireThreadAudience(
         processId: entry.lineage.agentSessionId,
       };
     }
+    const thread = store.getThread(workspaceId, threadId);
     if (
       evaluateThreadAuthorization({
         workspaceId,
-        thread: store.getThread(workspaceId, threadId),
+        thread,
+        ancestorThreadIds: readThreadPolicyAncestors(store, thread),
         userId: userId!,
         administrator:
           entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),

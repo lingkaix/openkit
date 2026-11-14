@@ -36,6 +36,7 @@ import {
   isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
+import { readThreadPolicyAncestors } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
@@ -578,6 +579,13 @@ function nativeThreadVisible(
   return (
     evaluateThreadAuthorization({
       thread: ThreadSchema.parse(thread.record),
+      ancestorThreadIds: readThreadPolicyAncestors(
+        {
+          getThread: (_workspaceId, id) =>
+            ThreadSchema.parse(readProduct(db.sqlite, owner, 'thread', id)?.record),
+        },
+        ThreadSchema.parse(thread.record)
+      ),
       workspaceId: db.workspaceId,
       userId: actor.userId,
       administrator: input.administrator?.userId === actor.userId,

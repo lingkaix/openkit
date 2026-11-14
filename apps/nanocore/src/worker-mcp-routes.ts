@@ -37,8 +37,9 @@ import {
   currentWorkspaceAuthority,
   isCurrentDeploymentAdministrator,
   isCurrentServerPolicyAuthor,
+  readCurrentWorkspacePolicy,
 } from './auth/operation-authorizer.js';
-import { isThreadVisible } from './auth/thread-visibility.js';
+import { isThreadVisible, readThreadPolicyAncestors } from './auth/thread-visibility.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import {
   type FinishCapabilityCallInput,
@@ -68,7 +69,6 @@ import {
 } from './operation-error.js';
 import { preflightPendingToolRequest } from './pending-request-operations.js';
 import { readAdmittedPolicyDocument } from './policy/configuration.js';
-import type { GoalTaskPolicyService } from './policy/goal-task-policy.js';
 import {
   type InterceptionDecision,
   type InterceptionInput,
@@ -91,6 +91,7 @@ import {
   readPolicyAgentPrincipal,
   selectPolicyBindings,
 } from './policy/statements.js';
+import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
 import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
@@ -262,7 +263,7 @@ interface WorkerMcpToolCallInput {
 /** Dependencies for the private worker-facing Streamable HTTP MCP endpoint. */
 export interface RegisterWorkerMcpRoutesInput {
   /** Native Goal-domain composition; linked Tasks cannot omit their mandatory Policy class. */
-  readonly goalTaskPolicy?: (db: WorkspaceDb, responsibleUserId: string) => GoalTaskPolicyService;
+  readonly goalTaskPolicy?: OperationInvocationDependencies['goalTaskPolicy'];
   /** Reuses the existing Goal wake after its durable change marker advances. */
   readonly goalWake?: (workspaceId: string, goalId: string) => void;
   /** Deterministic pilot participant injected by the native composition or tests. */
@@ -2690,6 +2691,29 @@ function currentMcpPolicyAuthority(
   const responsibleHumanId =
     context?.responsibleUserId ?? responsibleUserIdForActor(scope.triggerActor);
   if (!responsibleHumanId) throw mcpDeniedError();
+  const thread = input.input.store.getThread(scope.workspaceId, scope.threadId);
+  const ancestorThreadIds = readThreadPolicyAncestors(input.input.store, thread);
+  const resourcePolicy = readCurrentWorkspacePolicy({
+    coreDb: input.input.coreDb!,
+    workspaceId: scope.workspaceId,
+    policy: input.input.store.getWorkspaceResourceAccess(scope.workspaceId),
+  });
+  const resourceKernel = evaluateThreadAuthorization({
+    workspaceId: scope.workspaceId,
+    thread,
+    ancestorThreadIds,
+    userId: responsibleHumanId,
+    administrator: false,
+    policy: resourcePolicy,
+    operation: 'tool.use',
+    actor: {
+      kind: 'agent',
+      userId: responsibleHumanId,
+      agentId: input.environmentPackage.agent.agentId,
+      processId: scope.agentSessionId,
+    },
+  });
+  const kernel = captured.decision.effect === 'deny' ? captured.decision : resourceKernel;
   const subject = {
     principal: context
       ? { kind: 'agent' as const, id: context.agentId }
@@ -2719,7 +2743,7 @@ function currentMcpPolicyAuthority(
       serverId: input.serverId,
       toolName: input.toolName,
     },
-    humanKernel: captured.decision,
+    humanKernel: kernel,
   };
   let task: ReturnType<GoalTaskPolicyService['readTaskDecision']> = null;
   let authorizationUses: InterceptionInput['authorizationUses'] = [];
@@ -2734,14 +2758,21 @@ function currentMcpPolicyAuthority(
   if (context && !task) throw mcpDeniedError();
   return {
     subject,
-    kernel: task?.kernel ?? captured.decision,
+    kernel: task?.kernel ?? kernel,
     goalTask: task,
-    revision: task
-      ? policyDigest({ caller: captured, goalTask: task.authorizationRevision })
-      : policyDigest(captured),
+    revision: policyDigest({
+      caller: captured,
+      goalTask: task?.authorizationRevision ?? null,
+      resourcePolicy,
+      ancestorThreadIds,
+    }),
     authorizationUses,
   };
 }
+
+type GoalTaskPolicyService = ReturnType<
+  NonNullable<OperationInvocationDependencies['goalTaskPolicy']>
+>;
 
 /** Human binding authority uses current native owners, never its retained historical decision. */
 function currentMcpBindingAuthor(

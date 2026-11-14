@@ -9616,6 +9616,7 @@ function currentWorkerStorageAudienceAuthorizer(
     const audienceOwner = {
       getDataRoot: () => store.getDataRoot(),
       getWorkspace: () => workspace,
+      getThread: (workspaceId: string, threadId: string) => store.getThread(workspaceId, threadId),
       getWorkspaceResourceAccess: (workspaceId: string) => {
         if (!readRuntimeConfig) throw new Error('Current Workspace Policy is unavailable.');
         const loaded = readRuntimeConfig().workspaceConfigs.find(

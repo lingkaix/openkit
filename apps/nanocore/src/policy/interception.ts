@@ -18,6 +18,7 @@ import {
   type PolicyPermissionV1Schema,
   PolicySubjectV1Schema,
   responsibleUserIdForActor,
+  ThreadSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
@@ -427,6 +428,12 @@ export class PolicyInterception {
       personalWorkspaceCore: coreDb,
       getDataRoot: () => coreDb.dataRoot,
       getWorkspace: () => workspace.record as ReturnType<ThreadVisibilityReadPort['getWorkspace']>,
+      getThread(id: string, threadId: string) {
+        if (id !== workspaceId) throw new ControlProductPreconditionError();
+        return ThreadSchema.parse(
+          readProduct(db.sqlite, { kind: 'workspace', workspaceId }, 'thread', threadId)?.record
+        );
+      },
       getWorkspaceResourceAccess(id: string) {
         if (id !== workspaceId) throw new ControlProductPreconditionError();
         return readCurrentWorkspacePolicy({ coreDb, workspaceId, policy: document });

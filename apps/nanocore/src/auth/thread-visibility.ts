@@ -1,13 +1,12 @@
 import {
   type ArtifactSchema,
   canonicalIdentifierName,
-  type ThreadSchema,
+  ThreadSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import {
   evaluateThreadAuthorization,
-  evaluateWorkspaceResourceAccess,
   parseWorkspacePolicy,
   type ResourcePolicyActor,
   workspacePolicySubject,
@@ -29,12 +28,38 @@ export type ThreadVisibilityReadPort = Pick<
   readonly personalWorkspaceCore?: Pick<CoreDb, 'sqlite'>;
 };
 
+/** Restores only native containment; malformed, missing, cyclic and cross-owner parents never widen scope. */
+export function readThreadPolicyAncestors(
+  store: Partial<Pick<FsStore, 'getThread'>>,
+  addressed: Thread
+): string[] {
+  const workspaceId = workspaceIdForOwner(addressed.owner);
+  const ancestors: string[] = [];
+  const seen = new Set([addressed.id]);
+  let thread = addressed;
+  while (thread.parentThreadId) {
+    const id = thread.parentThreadId;
+    if (!store.getThread || seen.has(id)) throw new Error('Thread Policy lineage is unavailable.');
+    seen.add(id);
+    thread = ThreadSchema.parse(store.getThread(workspaceId, id));
+    if (
+      thread.id !== id ||
+      thread.owner.kind !== 'workspace' ||
+      workspaceIdForOwner(thread.owner) !== workspaceId
+    )
+      throw new Error('Thread Policy lineage belongs to another owner.');
+    ancestors.push(id);
+  }
+  return ancestors;
+}
+
 /** Unique Thread audience predicate after Workspace eligibility; administrator eligibility must come from the current credential owner. */
 export function isThreadVisible(
   store: Pick<
     ThreadVisibilityReadPort,
     'getWorkspace' | 'getWorkspaceResourceAccess' | 'getDataRoot' | 'personalWorkspaceCore'
-  >,
+  > &
+    Partial<Pick<ThreadVisibilityReadPort, 'getThread'>>,
   thread: Thread,
   userId: string | undefined,
   administratorEligible = false,
@@ -49,6 +74,7 @@ export function isThreadVisible(
     return (
       evaluateThreadAuthorization({
         thread,
+        ancestorThreadIds: readThreadPolicyAncestors(store, thread),
         workspaceId,
         userId,
         administrator: administratorEligible,
@@ -129,7 +155,7 @@ export function isArtifactVisible(
 
 /** Preserves the source audience on product-managed transfers; matching Policy facts never grant source read authority. */
 export function canDiscloseThreadToAudience(
-  store: Pick<FsStore, 'getWorkspaceResourceAccess'>,
+  store: Pick<FsStore, 'getWorkspaceResourceAccess'> & Partial<Pick<FsStore, 'getThread'>>,
   source: Thread,
   destination: Thread | null
 ): boolean {
@@ -149,7 +175,10 @@ export function canDiscloseThreadToAudience(
       workspaceId,
       store.getWorkspaceResourceAccess(workspaceId)
     );
-    const statementsFor = (threadId: string) =>
+    const ancestry = (thread: Thread) => [thread.id, ...readThreadPolicyAncestors(store, thread)];
+    const sourceIds = ancestry(source);
+    const destinationIds = destination ? ancestry(destination) : [];
+    const statementsFor = (threadIds: string[]) =>
       document.statements.filter(
         (statement) =>
           statement.state === 'active' &&
@@ -157,13 +186,13 @@ export function canDiscloseThreadToAudience(
             (resource) =>
               resource.kind === 'container' &&
               resource.container.kind === 'thread' &&
-              resource.container.id === threadId
+              threadIds.includes(resource.container.id)
           )
       );
-    const sourceStatements = statementsFor(source.id);
+    const sourceStatements = statementsFor(sourceIds);
     if (!sourceStatements.some((statement) => statement.kind === 'managed-boundary')) return true;
     if (destination?.visibility !== 'workspace') return false;
-    const destinationStatements = statementsFor(destination.id);
+    const destinationStatements = statementsFor(destinationIds);
     if (!destinationStatements.some((statement) => statement.kind === 'managed-boundary'))
       return false;
     // Managed recipients are finite: an unlisted User or Agent has no positive allocation,
@@ -189,24 +218,26 @@ export function canDiscloseThreadToAudience(
     }
     for (const actor of actors.values()) {
       for (const operation of operations) {
-        const evaluate = (threadId: string) =>
-          evaluateWorkspaceResourceAccess({
+        const evaluate = (thread: Thread, ids: string[]) =>
+          evaluateThreadAuthorization({
             actor,
+            userId: actor.userId,
             administrator: false,
-            visibility: 'workspace',
+            thread,
+            ancestorThreadIds: ids.slice(1),
             workspaceId,
             policy: document,
-            resource: { family: 'thread', id: threadId },
             operation,
           });
-        const recipient = evaluate(destination.id);
+        const recipient = evaluate(destination, destinationIds);
         if (
           recipient.reasons.some(
             (reason) => reason.code === 'invalid-policy' || reason.code === 'invalid-request'
           )
         )
           return false;
-        if (recipient.effect === 'allow' && evaluate(source.id).effect !== 'allow') return false;
+        if (recipient.effect === 'allow' && evaluate(source, sourceIds).effect !== 'allow')
+          return false;
       }
     }
     return true;

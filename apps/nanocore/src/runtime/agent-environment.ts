@@ -9,7 +9,7 @@ export { assertCurrentWorkerCredentialAuthority } from './worker-credential-auth
 
 import { existsSync } from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
-import type { MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
+import { GoalTaskLinkSchema, type MaterializedWorkspaceRoot } from '@openkit/app-api-schemas';
 import {
   type AgentEnvironmentCaptureCoverage,
   AgentEnvironmentCaptureCoverageSchema,
@@ -33,6 +33,7 @@ import {
   type ActorRef,
   ActorRefSchema,
   compareCodeUnits,
+  ThreadSchema,
   type TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
@@ -48,7 +49,9 @@ import { publishedErrorMessage } from '../api-errors.js';
 import {
   currentScheduledTurnWorkspaceAuthority,
   currentWorkerLineageWorkspaceAuthority,
+  readCurrentWorkspacePolicy,
 } from '../auth/operation-authorizer.js';
+import { isThreadVisible, type ThreadVisibilityReadPort } from '../auth/thread-visibility.js';
 import {
   CatalogContentUnavailableError,
   CatalogIntegrityError,
@@ -61,6 +64,7 @@ import { WORKSPACE_MATERIALIZATION_UNSUPPORTED_MESSAGE } from '../config/runtime
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
 import { createSecurityCanaryMcpSupply } from '../security/canaries.js';
+import { readProduct } from '../storage/control-store-product-records.js';
 import { type CoreDb, openWorkspaceReadDb } from '../storage/db.js';
 import { workspaceDbPath } from '../storage/fs-layout.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
@@ -75,6 +79,7 @@ import {
   isSchedulerExecutionBusyRefusal,
   listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
+import { readNativeGoalView } from './goal-owner.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-supply.js';
 import { createOpenkitWorkMcpSupply } from './openkit-work-supply.js';
@@ -342,6 +347,85 @@ function parseAgentEnvironmentPlanningFields(
   }
 }
 
+/** Restriction-only physical projection from the loaded Policy and original native Task responsibility. */
+function physicalThreadAccess(
+  input: Pick<
+    ResolveAgentEnvironmentPackageInput,
+    'coreDb' | 'readRuntimeConfig' | 'turn' | 'agentSessionId'
+  >,
+  agentId: string,
+  userId: string | null
+) {
+  const allowed = { network: true, vault: true, write: true };
+  if (!input.coreDb || !input.readRuntimeConfig) return allowed;
+  const coreDb = input.coreDb;
+  const workspaceId = workspaceIdForOwner(input.turn.owner);
+  const configured = input
+    .readRuntimeConfig()
+    .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId);
+  // Only the current loaded snapshot owns activation. Raw proposed/imported bytes
+  // cannot activate a Policy here; native Workspace readiness remains independent.
+  if (!configured) return allowed;
+  const authored = configured.config.workspace.policy?.mediation;
+  if (!authored?.statements.length) return allowed;
+  const policy = readCurrentWorkspacePolicy({ coreDb, workspaceId, policy: authored });
+  const db = openWorkspaceReadDb(coreDb.dataRoot, workspaceId);
+  try {
+    const owner = { kind: 'workspace', workspaceId } as const;
+    const workspace = readProduct(db.sqlite, owner, 'workspace', workspaceId);
+    if (!workspace) throw new Error('Current Workspace Policy owner is unavailable.');
+    const thread = ThreadSchema.parse(
+      readProduct(db.sqlite, owner, 'thread', input.turn.threadId)?.record
+    );
+    // Preparation precedes scheduler admission and binding. The native Goal/Task owner,
+    // not an admitted Worker package that cannot yet exist, identifies accountability.
+    const row = db.sqlite
+      .prepare(
+        'SELECT thread_id, goal_id, card_id, payload_json FROM goal_card_tasks WHERE thread_id=?'
+      )
+      .get(thread.id) as
+      | { thread_id: string; goal_id: string; card_id: string; payload_json: string }
+      | undefined;
+    const link = row ? GoalTaskLinkSchema.parse(JSON.parse(row.payload_json)) : null;
+    const goal = link ? readNativeGoalView(db, link.goalId).goal : null;
+    if (
+      link &&
+      (!row ||
+        link.threadId !== row.thread_id ||
+        link.goalId !== row.goal_id ||
+        link.cardId !== row.card_id ||
+        !goal ||
+        goal.workspaceId !== workspaceId ||
+        goal.disposition ||
+        goal.activePlanVersionId !== link.planVersionId)
+    )
+      throw new Error('Current Goal Task Policy responsibility is unavailable.');
+    const responsible = goal?.responsibleUserId ?? userId;
+    if (!responsible) throw new Error('Current Thread Policy responsibility is unavailable.');
+    const store: ThreadVisibilityReadPort = {
+      personalWorkspaceCore: coreDb,
+      getDataRoot: () => coreDb.dataRoot,
+      getWorkspace: () => workspace.record as ReturnType<ThreadVisibilityReadPort['getWorkspace']>,
+      getWorkspaceResourceAccess: () => policy,
+      getThread: (_workspaceId, id) =>
+        ThreadSchema.parse(readProduct(db.sqlite, owner, 'thread', id)?.record),
+    };
+    const actor = {
+      kind: 'agent' as const,
+      userId: responsible,
+      agentId,
+      processId: input.agentSessionId,
+    };
+    return {
+      network: isThreadVisible(store, thread, responsible, false, 'network.egress', actor),
+      vault: isThreadVisible(store, thread, responsible, false, 'vault.use', actor),
+      write: isThreadVisible(store, thread, responsible, false, 'workspace.write', actor),
+    };
+  } finally {
+    db.sqlite.close();
+  }
+}
+
 /** Reads whether the existing durable launch path will prepare a Context Package for this Turn. */
 function hasWorkerContextPackageCheckpoint(coreDb: CoreDb | undefined, turn: Turn): boolean {
   if (!coreDb) {
@@ -427,9 +511,13 @@ function resolveOpenShellAgentEnvironmentPackage(
         workspaceCatalog: input.workspaceMcpServerCatalog ?? { schemaVersion: 1, servers: [] },
       })
     : input.workspaceMcpServerCatalog;
-  const publicGrants = sandboxAccess.network.filter(
-    (grant) => 'publicAccess' in grant && grant.publicAccess !== undefined
-  );
+  const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
+  const physical = physicalThreadAccess(input, agent.agentId, responsibleUserId);
+  const publicGrants = physical.network
+    ? sandboxAccess.network.filter(
+        (grant) => 'publicAccess' in grant && grant.publicAccess !== undefined
+      )
+    : [];
   if (publicGrants.length > 0) {
     if (!input.coreDb || !input.readRuntimeConfig) {
       throw new Error('Public network current admission metadata is required.');
@@ -476,7 +564,6 @@ function resolveOpenShellAgentEnvironmentPackage(
     workerStorageDefaultWorkSlotRef(workspaceIdForOwner(input.turn.owner), input.turn.threadId);
   const workingDirectory = `${workspaceRoot}/worktrees/${workSlotRef}`;
   const packageId = `aepkg_${input.turn.id}_${input.agentSessionId}`;
-  const snapshotId = `aepsnap_${input.turn.id}_${input.agentSessionId}`;
   const createdAt = input.createdAt ?? new Date().toISOString();
   const { packagePath: workerPackagePath, contextRoot } = workerSessionInputPaths(
     input.agentSessionId
@@ -598,7 +685,7 @@ function resolveOpenShellAgentEnvironmentPackage(
   const credentialArtifacts = resolveWorkerCredentialDeclarations({
     agentId: agent.agentId,
     agentSessionId: input.agentSessionId,
-    declarations: sandboxAccess.credentialDeclarations,
+    declarations: physical.vault ? sandboxAccess.credentialDeclarations : [],
     ...(input.coreDb ? { coreDb: input.coreDb } : {}),
     now: () => createdAt,
     authorityNow: input.now ?? (() => new Date().toISOString()),
@@ -777,7 +864,7 @@ function resolveOpenShellAgentEnvironmentPackage(
           rules: [
             ...input.workspaceRoots.map((root) => ({
               id: root.id,
-              access: root.access,
+              access: physical.write ? root.access : ('read-only' as const),
               workerPath: root.workerPath,
             })),
             // Every native Turn reads the existing context slot, including ordinary outcome Turns.
@@ -790,14 +877,14 @@ function resolveOpenShellAgentEnvironmentPackage(
             ...(input.workspaceRoots.length === 0 && workingDirectory.startsWith('/workspace/')
               ? [
                   {
-                    access: 'read-write',
+                    access: physical.write ? 'read-write' : 'read-only',
                     id: 'openkit-working-directory',
                     workerPath: workingDirectory,
                   },
                 ]
               : []),
             ...sandboxAccess.filesystem.map((grant) => ({
-              access: grant.access,
+              access: physical.write ? grant.access : ('read-only' as const),
               id: grant.id,
               purpose: grant.purpose,
               scope: grant.scope,
@@ -808,7 +895,7 @@ function resolveOpenShellAgentEnvironmentPackage(
         network: {
           default: 'deny',
           enforcement: 'openshell',
-          rules: sandboxAccess.network.map((grant) => ({
+          rules: (physical.network ? sandboxAccess.network : []).map((grant) => ({
             action: 'allow' as const,
             binaries: grant.binaries,
             host:
