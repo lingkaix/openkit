@@ -57,6 +57,8 @@ export { schedulerExecutionAttempts } from './scheduler-execution-attempts.js';
 export { securityThreadDestinations } from './security-thread-destinations.js';
 export {
   securityTriggerAlarms,
+  securityTriggerAuditAssessments,
+  securityTriggerAuditProgress,
   securityTriggerOutbox,
   securityTriggerState,
 } from './security-trigger.js';
