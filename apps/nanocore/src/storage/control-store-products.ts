@@ -63,7 +63,11 @@ import {
   StoredTurnSnapshotV1Schema,
   THREAD_REQUIRED_FEATURES,
 } from './retained-work-events-v1.js';
-import { StoredItemPayloadV1Schema, StoredItemV1Schema } from './retained-work-items-v1.js';
+import {
+  StoredItemPayloadV1Schema,
+  StoredItemV1Schema,
+  StoredTaskSteerDispositionV1Schema,
+} from './retained-work-items-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
 import {
@@ -124,6 +128,8 @@ export interface PreparedControlEntry {
   readonly id: string;
   readonly identityJson: string;
   readonly readMetadataJson: string;
+  /** Original verified instruction resolved in this native preparation, never supplied by the sender. */
+  readonly previousItem?: z.infer<typeof StoredItemV1Schema>;
   /** Bounded event dependencies checked against the completed native graph, without retaining payloads or file I/O in SQL. */
   readonly referencedItemIds?: readonly string[];
 }
@@ -550,7 +556,8 @@ function applyProducts(
 }
 
 /** Appends an already-admitted immutable reference with the original identity, revision and sequence CAS. */
-function appendProductEntry(sqlite: Database.Database, entry: PreparedControlEntry): void {
+export function appendProductEntry(sqlite: Database.Database, entry: PreparedControlEntry): void {
+  assertControlProductWriter(sqlite);
   const input = entry.input;
   const last = sqlite
     .prepare(
@@ -589,9 +596,48 @@ export async function prepareControlEntries(
   owner: ControlProductOwner,
   contentMount: ControlProductContentMount | undefined,
   entries: readonly ControlProductEntry[],
-  newDirectories?: ControlContentPreparation
+  newDirectories?: ControlContentPreparation,
+  db?: CoreDb | WorkspaceDb
 ): Promise<PreparedControlEntry[]> {
-  return prepareEntries(owner, contentMount, entries, undefined, undefined, newDirectories);
+  const prepared = await prepareEntries(
+    owner,
+    contentMount,
+    entries,
+    undefined,
+    undefined,
+    newDirectories,
+    db
+  );
+  // New-write dependency preparation is separate from verification of retained history.
+  // In particular, reading a completed instruction must not recursively prepare its prior revision.
+  for (const entry of prepared) {
+    if (entry.input.kind !== 'item') continue;
+    const raw = preparedOriginals.get(entry);
+    if (!raw || typeof raw !== 'object' || !('steerDisposition' in raw)) continue;
+    StoredTaskSteerDispositionV1Schema.parse(raw.steerDisposition);
+    const item = StoredItemV1Schema.parse(readPreparedControlEntry(entry));
+    if (item.type !== 'user-message' || !item.steerDisposition || db?.scope !== 'workspace')
+      continue;
+    const head = readProduct(db.sqlite, owner, 'turn', item.turnId);
+    const prior = readControlItemHead(db, item);
+    if (
+      !head ||
+      !prior ||
+      prior.turn_id !== item.turnId ||
+      prior.revision !== entry.input.expectedRevision
+    )
+      throw new ControlProductPreconditionError();
+    const [previous] = await readControlItemHistory(
+      db,
+      contentMount,
+      StoredTurnV1Schema.parse(head.record),
+      [prior],
+      false
+    );
+    if (!previous) throw new ControlProductPreconditionError();
+    Object.assign(entry, { previousItem: StoredItemV1Schema.parse(writeRetainedV1(previous)) });
+  }
+  return prepared;
 }
 
 /** Reads exact committed dependencies without repeating their first-publication sync; SQL must still recheck their descriptors. */
@@ -1167,35 +1213,6 @@ function readControlItemHead(db: WorkspaceDb, item: { id: string }) {
       "SELECT id,turn_id,sequence,revision,schema_version,content_json FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
     )
     .get(item.id) as Parameters<typeof readControlItemHistory>[3][number] | undefined;
-}
-
-/** Resolves the original admitted Item without changing a live or terminal Turn. SQL rechecks its exact head. */
-export async function prepareControlTaskSteerReceipt(
-  db: WorkspaceDb,
-  input: ControlAdmission,
-  mount: ControlProductContentMount | undefined
-) {
-  if (isMainThread || db.sqlite.inTransaction || input.receipt.command !== 'task.steer')
-    throw new ControlProductPreconditionError();
-  const metadata = input.receipt.response.steerMetadata;
-  if (!metadata) throw new ControlProductPreconditionError();
-  const head = readProduct(
-    db.sqlite,
-    { kind: 'workspace', workspaceId: db.workspaceId },
-    'turn',
-    metadata.turnId
-  );
-  const row = readControlItemHead(db, { id: metadata.inputItemId });
-  if (!head || !row || row.turn_id !== metadata.turnId) throw new ControlProductPreconditionError();
-  const [item] = await readControlItemHistory(
-    db,
-    mount,
-    StoredTurnV1Schema.parse(head.record),
-    [row],
-    false
-  );
-  if (!item) throw new ControlProductPreconditionError();
-  return { item, row };
 }
 
 /** Resolves current native heads and original Item bytes before preparation, without a Main read round trip. */
@@ -2209,8 +2226,10 @@ export async function prepareControlTerminal(
     }
     if (
       !isDeepStrictEqual(
-        preparedPayloads.get(prepared),
-        StoredItemV1Schema.parse({ ...item, schemaVersion: 1 })
+        // The terminal event carries the public/embedded Item payload, not private
+        // retained-row disposition. Its actual descriptor/revision stays a CAS dependency.
+        StoredItemPayloadV1Schema.parse(preparedPayloads.get(prepared)),
+        StoredItemPayloadV1Schema.parse(item)
       )
     )
       throw new ControlProductPreconditionError();

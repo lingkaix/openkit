@@ -22,6 +22,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import * as harnessOwner from '../runtime/nanohost-harness.js';
+import { taskSteerInputItemId } from '../runtime/task-steer.js';
 import { readTaskSteerState } from '../runtime/task-steer-receipt.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
 import { getWorkerControlAcceptedFinalStatus } from '../runtime/worker-control-records.js';
@@ -249,10 +250,14 @@ describe('Task steer through the existing native Harness slot', () => {
     expect(itemCommitted).toBe(true);
     expect(f.native.steerCalls).toHaveLength(0);
     expect(
-      f.store.getCommandRequest('task.steer', f.input.requestId, f.scope)?.response.steerMetadata
+      f.store.readThreadTimelineSnapshot(f.input.workspaceId, f.input.threadId, (snapshot) =>
+        snapshot.item(taskSteerInputItemId(f.input, f.userId))
+      )
     ).toMatchObject({
-      disposition: 'refused',
-      refusal: { code: 'operation_storage_unavailable', status: 503 },
+      steerDisposition: {
+        disposition: 'refused',
+        refusal: { code: 'operation_storage_unavailable', status: 503 },
+      },
     });
   }, 30_000);
 
@@ -453,9 +458,10 @@ describe('Task steer through the existing native Harness slot', () => {
     expect(f.native.steerCalls).toHaveLength(1);
     expect(f.native.steerCalls[0]!.body.input).toBe(f.input.input);
     expect(
-      f.store.getCommandRequest('task.steer', f.input.requestId, f.scope)?.response.steerMetadata
-        ?.disposition
-    ).toBe('accepted');
+      f.store.readThreadTimelineSnapshot(f.input.workspaceId, f.input.threadId, (snapshot) =>
+        snapshot.item(taskSteerInputItemId(f.input, f.userId))
+      )
+    ).toMatchObject({ steerDisposition: { disposition: 'accepted' } });
   }, 30_000);
 
   it('shows Sending only for the exact live Harness attempt and refuses another request before its Item', async () => {
@@ -594,9 +600,14 @@ describe('Task steer through the existing native Harness slot', () => {
       expect(f.native.steerCalls).toHaveLength(0);
       expect(f.store.getTurnById(f.input.turnId).status).toBe('interrupted');
       const receipt = f.store.getCommandRequest('task.steer', f.input.requestId, f.scope);
-      expect(receipt?.response.steerMetadata).toMatchObject({
-        disposition: 'refused',
+      expect(receipt?.response).toEqual({ kind: 'turn', id: f.input.turnId });
+      expect(
+        f.store.readThreadTimelineSnapshot(f.input.workspaceId, f.input.threadId, (snapshot) =>
+          snapshot.item(taskSteerInputItemId(f.input, f.userId))
+        )
+      ).toMatchObject({
         turnId: f.input.turnId,
+        steerDisposition: { disposition: 'refused' },
       });
       await expect(f.invoke('task.steer', f.input, f.context)).rejects.toMatchObject({
         code: 'steer_target_stale',
@@ -652,11 +663,15 @@ describe('Task steer through the existing native Harness slot', () => {
       expect(f.native.steerCalls).toHaveLength(0);
       expect(f.store.getTurnById(f.input.turnId).status).toBe('running');
       expect(
-        f.store.getCommandRequest('task.steer', f.input.requestId, f.scope)?.response.steerMetadata
+        f.store.readThreadTimelineSnapshot(f.input.workspaceId, f.input.threadId, (snapshot) =>
+          snapshot.item(taskSteerInputItemId(f.input, f.userId))
+        )
       ).toMatchObject({
-        disposition: 'refused',
-        reason: 'workspace_access_denied',
-        refusal: { code: 'workspace_access_denied', status: 403 },
+        steerDisposition: {
+          disposition: 'refused',
+          reason: 'workspace_access_denied',
+          refusal: { code: 'workspace_access_denied', status: 403 },
+        },
       });
     } finally {
       release.resolve();
@@ -765,7 +780,13 @@ describe('Task steer through the existing native Harness slot', () => {
         .get(input.result.harnessInstanceId) as { operation: string };
       if (row.operation === 'turn.steer') {
         const receipt = f.store.getCommandRequest('task.steer', f.input.requestId, f.scope);
-        expect(receipt?.response.steerMetadata?.disposition).toBe('accepted');
+        expect(receipt?.response).toEqual({ kind: 'turn', id: f.input.turnId });
+        const instruction = f.store.readThreadTimelineSnapshot(
+          f.input.workspaceId,
+          f.input.threadId,
+          (snapshot) => snapshot.item(taskSteerInputItemId(f.input, f.userId))
+        );
+        expect(instruction).toMatchObject({ steerDisposition: { disposition: 'accepted' } });
         const command = db.sqlite
           .prepare(
             'SELECT command_body_json FROM harness_instance_records WHERE harness_instance_id=?'
@@ -773,7 +794,7 @@ describe('Task steer through the existing native Harness slot', () => {
           .get(input.result.harnessInstanceId) as { command_body_json: string };
         const refs = JSON.parse(command.command_body_json);
         expect(refs).not.toHaveProperty('input');
-        expect(refs.inputItemId).toBe(receipt!.response.steerMetadata!.inputItemId);
+        expect(refs.inputItemId).toBe(instruction!.id);
         expect(f.store.getTurnById(f.input.turnId).items.at(-1)?.text).toBe(f.input.input);
         checked = true;
       }

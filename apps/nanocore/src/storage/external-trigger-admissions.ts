@@ -117,8 +117,7 @@ function readAdmission(coreDb: CoreDb, value: unknown): ExternalTriggerAdmission
     command.key !== commandRequestKey(EVENT_COMMAND, command.requestId, command.scope) ||
     command.inputHash !== commandInputHash(record) ||
     command.response.kind !== 'scheduler_entry' ||
-    command.response.conversationMetadata !== undefined ||
-    command.response.steerMetadata !== undefined
+    command.response.conversationMetadata !== undefined
   )
     throw new Error('The retained external-event command binding conflicts.');
   return checkLineage(coreDb, record);

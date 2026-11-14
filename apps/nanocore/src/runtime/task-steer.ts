@@ -3,6 +3,7 @@ import type { SteerTaskRequest, SteerTaskResponse } from '@openkit/app-api-schem
 import {
   allocateEntityId,
   deriveEntityId,
+  type Item,
   ItemSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
@@ -12,17 +13,16 @@ import type { AdmittedOperationContext } from '../operation-contract.js';
 import { publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import {
+  StoredTaskSteerDispositionV1ReaderSchema,
+  type TaskSteerDisposition,
+} from '../storage/retained-work-items-v1.js';
+import {
   commandInputHash,
   IdempotencyKeyConflictError,
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from './idempotent-command.js';
-import {
-  type TaskSteerReceiptMetadata,
-  TaskSteerReceiptMetadataSchema,
-  taskSteerCausation,
-  taskSteerRefusal,
-} from './task-steer-receipt.js';
+import { taskSteerCausation, taskSteerRefusal } from './task-steer-receipt.js';
 import type { TurnExecutor } from './types.js';
 
 /** Names one submitted instruction independently of its text and addressed Turn, so changed replay conflicts. */
@@ -69,18 +69,33 @@ export async function steerTask(
   };
   const failure = (code: string, message: string) =>
     new OperationError(code, message, 409, { details: target });
+  const instruction = (): Item | null =>
+    store.readThreadTimelineSnapshot(input.workspaceId, input.threadId, (snapshot) =>
+      snapshot.position(inputItemId) ? (snapshot.item(inputItemId) ?? null) : null
+    );
   const replay = (
-    record: NonNullable<ReturnType<FsStore['getCommandRequest']>>
+    record?: NonNullable<ReturnType<FsStore['getCommandRequest']>>
   ): SteerTaskResponse => {
-    const metadata = TaskSteerReceiptMetadataSchema.strip().safeParse(
-      record.response.steerMetadata
+    const item = instruction();
+    if (
+      item &&
+      (item.type !== 'user-message' ||
+        item.turnId !== input.turnId ||
+        item.text !== input.input ||
+        item.actor.kind !== 'user' ||
+        item.actor.id !== actor.userId ||
+        item.causationId !== taskSteerCausation(input.requestId))
+    )
+      throw new IdempotencyKeyConflictError();
+    const metadata = StoredTaskSteerDispositionV1ReaderSchema.safeParse(
+      (item as unknown as Record<string, unknown> | null)?.steerDisposition
     );
     if (
       !metadata.success ||
-      record.response.kind !== 'turn' ||
-      record.response.id !== input.turnId ||
-      metadata.data.turnId !== input.turnId ||
-      metadata.data.inputItemId !== inputItemId ||
+      !item ||
+      item.id !== inputItemId ||
+      (record !== undefined &&
+        (record.response.kind !== 'turn' || record.response.id !== input.turnId)) ||
       metadata.data.inputHash !== inputHash
     )
       throw failure('steer_outcome_unknown', 'Steer delivery cannot be proved.');
@@ -109,6 +124,10 @@ export async function steerTask(
         : 'The instruction was not delivered to the addressed Turn.'
     );
   };
+  // A completed original Item remains replay authority after ordinary receipt pruning.
+  // Incomplete Items still join the existing in-flight owner; restart never resends them.
+  const completed = instruction();
+  if (completed && Object.hasOwn(completed, 'steerDisposition')) return replay();
   return runIdempotentCommand({
     store,
     inflightCommands: dependencies.inflightCommands,
@@ -168,15 +187,13 @@ export async function steerTask(
       if (!turnExecutor?.steerTurn)
         throw failure('steer_unsupported', 'The runtime has no qualified live-steer boundary.');
       let correlation: { operationId: string; executionId: string } | undefined;
-      let observed:
-        | Pick<TaskSteerReceiptMetadata, 'disposition' | 'reason' | 'refusal'>
-        | undefined;
+      let observed: Pick<TaskSteerDisposition, 'disposition' | 'reason' | 'refusal'> | undefined;
       const recheck = async () => {
         await context.recheckAdmission?.();
         assertTarget();
       };
       const complete = async (
-        result: Pick<TaskSteerReceiptMetadata, 'disposition' | 'reason' | 'refusal'>
+        result: Pick<TaskSteerDisposition, 'disposition' | 'reason' | 'refusal'>
       ) => {
         if (!correlation) throw new Error('Steer receipt requires its admitted original Item.');
         observed ??= result;
@@ -185,20 +202,15 @@ export async function steerTask(
         if (retained) return;
         const timestamp = new Date().toISOString();
         const { responseKind: _responseKind, ...originalReceipt } = receipt;
-        await store.publishTaskSteerReceipt({
+        await store.settleTaskSteerDisposition({
+          itemId: inputItemId,
+          disposition: { inputHash, ...result, ...correlation },
           receipt: {
             ...originalReceipt,
             command: 'task.steer',
             response: {
               kind: 'turn',
               id: input.turnId,
-              steerMetadata: {
-                turnId: input.turnId,
-                inputItemId,
-                inputHash,
-                ...result,
-                ...correlation,
-              },
             },
           },
           audit: {

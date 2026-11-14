@@ -188,11 +188,17 @@ describe('Real simulator Task live steer through the public operation', () => {
       status: 'completed',
     });
     expect(
-      f.store.getCommandRequest('task.steer', f.input.requestId, f.scope)?.response.steerMetadata
+      f.store.readThreadTimelineSnapshot(f.input.workspaceId, f.thread.id, (snapshot) =>
+        snapshot.item(result.inputItemId)
+      )
     ).toMatchObject({
-      disposition: 'accepted',
       turnId: f.turn.id,
-      inputItemId: result.inputItemId,
+      id: result.inputItemId,
+      steerDisposition: { disposition: 'accepted' },
+    });
+    expect(f.store.getCommandRequest('task.steer', f.input.requestId, f.scope)?.response).toEqual({
+      kind: 'turn',
+      id: f.turn.id,
     });
     expect(readTaskSteerState(f.store, f.input.workspaceId, f.thread.id, instructions[0]!)).toEqual(
       { requestId: f.input.requestId, state: 'accepted', reason: null }

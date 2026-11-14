@@ -41,12 +41,14 @@ import {
   readProduct,
 } from './control-store-product-records.js';
 import {
+  appendProductEntry,
   applyControlProducts,
   assertControlProductWriter,
   type PreparedControlEntry,
-  type prepareControlTaskSteerReceipt,
+  readPreparedControlEntry,
 } from './control-store-products.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
+import { StoredItemV1Schema } from './retained-work-items-v1.js';
 
 /** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */
 function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, string>): void {
@@ -91,8 +93,7 @@ export function applyControlAdmission(
   sqlite: Database.Database,
   owner: ControlProductOwner,
   value: ControlAdmission,
-  entries: readonly PreparedControlEntry[],
-  preparedSteer?: Awaited<ReturnType<typeof prepareControlTaskSteerReceipt>>
+  entries: readonly PreparedControlEntry[]
 ): ControlAdmissionResult;
 export function applyControlAdmission(
   db: CoreDb | WorkspaceDb,
@@ -110,8 +111,7 @@ export function applyControlAdmission(
     | Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
     | ControlCommandReceiptAdmission,
   value?: ControlAdmission,
-  entries: readonly PreparedControlEntry[] = [],
-  preparedSteer?: Awaited<ReturnType<typeof prepareControlTaskSteerReceipt>>
+  entries: readonly PreparedControlEntry[] = []
 ): ControlAdmissionResult | ControlKnowledgeAdmissionResult | null {
   if ('sqlite' in connection) {
     assertControlProductWriter(connection.sqlite);
@@ -158,46 +158,55 @@ export function applyControlAdmission(
       throw new ControlProductPreconditionError();
     return { replayed: true, response: retained.response };
   }
+  const steerEntry = receipt.command === 'task.steer' ? entries[0] : undefined;
+  const steerItem = steerEntry
+    ? StoredItemV1Schema.parse(readPreparedControlEntry(steerEntry))
+    : undefined;
+  const disposition = steerItem?.type === 'user-message' ? steerItem.steerDisposition : undefined;
   if (receipt.command === 'task.steer') {
-    const metadata = response.steerMetadata;
-    const item = preparedSteer?.item;
-    const row = preparedSteer?.row;
-    const current = row
-      ? (sqlite
-          .prepare(
-            "SELECT content_json AS contentJson FROM control_product_entries WHERE kind='item' AND id=? ORDER BY revision DESC LIMIT 1"
-          )
-          .get(row.id) as { contentJson: string } | undefined)
-      : undefined;
+    const previous = steerEntry?.previousItem;
     if (
       owner.kind !== 'workspace' ||
-      !metadata ||
-      !item ||
-      item.type !== 'user-message' ||
-      item.actor.kind !== 'user' ||
+      input.products.length !== 0 ||
+      entries.length !== 1 ||
+      (input.pending?.length ?? 0) !== 0 ||
+      !steerEntry ||
+      steerEntry.input.kind !== 'item' ||
+      !steerItem ||
+      steerItem.type !== 'user-message' ||
+      steerItem.actor.kind !== 'user' ||
+      !previous ||
+      previous.type !== 'user-message' ||
+      !disposition ||
       response.kind !== 'turn' ||
-      response.id !== metadata.turnId ||
-      item.turnId !== metadata.turnId ||
-      item.id !== metadata.inputItemId ||
-      item.threadId !== receipt.scope.threadId ||
-      item.actor.id !== receipt.scope.actorId ||
-      item.causationId !== `task.steer:${receipt.requestId}` ||
-      metadata.inputHash !== receipt.inputHash ||
+      response.id !== steerItem.turnId ||
+      steerItem.threadId !== receipt.scope.threadId ||
+      steerItem.actor.id !== receipt.scope.actorId ||
+      steerItem.causationId !== `task.steer:${receipt.requestId}` ||
+      disposition.inputHash !== receipt.inputHash ||
       receipt.inputHash !==
         commandInputHash({
           workspaceId: owner.workspaceId,
-          threadId: item.threadId,
-          turnId: item.turnId,
-          input: item.text,
+          threadId: steerItem.threadId,
+          turnId: steerItem.turnId,
+          input: steerItem.text,
         }) ||
-      current?.contentJson !== row?.content_json ||
-      input.audit.threadId !== item.threadId ||
-      input.audit.turnId !== item.turnId ||
-      input.audit.itemId !== item.id ||
+      !isDeepStrictEqual(
+        { ...steerItem, steerDisposition: undefined },
+        { ...previous, steerDisposition: undefined }
+      ) ||
+      input.audit.threadId !== steerItem.threadId ||
+      input.audit.turnId !== steerItem.turnId ||
+      input.audit.itemId !== steerItem.id ||
       input.audit.actor?.kind !== 'user' ||
-      input.audit.actor.id !== item.actor.id
+      input.audit.actor.id !== steerItem.actor.id
     )
       throw new ControlProductPreconditionError();
+    if (previous.steerDisposition) {
+      if (!isDeepStrictEqual(previous.steerDisposition, disposition))
+        throw new ControlProductPreconditionError();
+      return { replayed: true, response };
+    }
   }
   let products = input.products;
   let event = input.audit;
@@ -238,13 +247,23 @@ export function applyControlAdmission(
     event.requestId !== receipt.requestId ||
     event.workspaceId !== (owner.kind === 'workspace' ? owner.workspaceId : null) ||
     event.outcome !==
-      (receipt.command === 'task.steer' && response.steerMetadata?.disposition !== 'accepted'
+      (receipt.command === 'task.steer' && disposition?.disposition !== 'accepted'
         ? 'failed'
         : 'succeeded')
   )
     throw new ControlProductPreconditionError();
   pruneControlAdmissionReceipts(sqlite, owner, receipt.createdAt);
-  applyControlProducts(sqlite, owner, products, entries);
+  if (steerEntry) {
+    // Item-only disposition does not run received-influence or any Turn-head projection.
+    const next = (
+      sqlite
+        .prepare(
+          "SELECT coalesce(max(sequence),0)+1 AS sequence FROM control_product_entries WHERE kind='item' AND turn_id=?"
+        )
+        .get(steerEntry.input.turnId) as { sequence: number }
+    ).sequence;
+    appendProductEntry(sqlite, { ...steerEntry, input: { ...steerEntry.input, sequence: next } });
+  } else applyControlProducts(sqlite, owner, products, entries);
   const targetKind =
     response.kind === 'thread' ? 'thread' : response.kind === 'turn' ? 'turn' : null;
   if (
@@ -268,9 +287,9 @@ export function applyControlAdmission(
       receipt.inputHash,
       response.kind,
       response.id,
-      response.conversationMetadata === undefined && response.steerMetadata === undefined
+      response.conversationMetadata === undefined
         ? null
-        : JSON.stringify(response.conversationMetadata ?? response.steerMetadata),
+        : JSON.stringify(response.conversationMetadata),
       receipt.createdAt,
       receipt.expiresAt
     );

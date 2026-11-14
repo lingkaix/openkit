@@ -110,7 +110,7 @@ export interface TaskSteerControl {
   /** FULL immutable receipt commit before the existing private result consumption acknowledgement. */
   readonly complete: (
     result: Pick<
-      import('./task-steer-receipt.js').TaskSteerReceiptMetadata,
+      import('../storage/retained-work-items-v1.js').TaskSteerDisposition,
       'disposition' | 'reason' | 'refusal'
     >
   ) => Promise<void>;
