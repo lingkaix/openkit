@@ -8,9 +8,13 @@ import { HTTPException } from 'hono/http-exception';
 import { z } from 'zod';
 import { apiErrorPayload, asApiError } from '../api-errors.js';
 import { assertScopeAdmitted, isScopeAdmitted } from '../bootstrap/readiness.js';
-import type { FsStore } from '../lib/store.js';
+import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { getAppApiRouteDefinition } from '../openapi.js';
-import { TurnStartValidationError } from '../operation-error.js';
+import type {
+  AssistantOperationInvocationContext,
+  OperationInvocationContext,
+} from '../operation-contract.js';
+import { OperationError, TurnStartValidationError } from '../operation-error.js';
 import {
   evaluatePolicyKernel,
   type ProductAccessTarget,
@@ -19,6 +23,7 @@ import {
 import {
   evaluateThreadAuthorization,
   parseWorkspacePolicy,
+  type ResourcePolicyActor,
 } from '../policy/workspace-resource-access.js';
 import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import {
@@ -1250,13 +1255,22 @@ async function authorizeWorkspaceOperation(
     kind: 'workspace',
     policyOperation: route.access.policyOperation,
   });
-  return denyIfThreadInaccessible(
-    context,
-    actor,
-    input,
-    authorized.workspaceId,
-    route.access.policyOperation
-  );
+  const threadId = nonempty(context.req.param('threadId'));
+  if (threadId === null) return null;
+  try {
+    requireThreadAudience(
+      input.store,
+      input.coreDb,
+      { kind: 'public', actor, signal: context.req.raw.signal },
+      authorized.workspaceId,
+      threadId,
+      route.access.policyOperation,
+      { quickChatWorkspaceIdForUser: input.quickChatWorkspaceIdForUser }
+    );
+    return null;
+  } catch {
+    return threadNotFound();
+  }
 }
 
 /** Checks current initiating-user or administrator retry authority; the deletion owner validates the exact request before effects. */
@@ -1398,47 +1412,59 @@ export function authorizeWorkspace(
   }
 }
 
-/**
- * Applies Thread audience after current Workspace eligibility for any addressed existing Thread.
- *
- * Missing, corrupt, Workspace-mismatched, and inaccessible Threads fail as the same 404 before disclosure or effect. The check is independent of the catalog policy operation, including writes.
- *
- * @param context Authenticated request context.
- * @param actor Authenticated request actor.
- * @param input Existing lineage owners.
- * @param workspaceId Already authorized Workspace id.
- * @returns Uniform Thread-not-found response, or null when the operation does not address a Thread or the actor may see it.
- */
-function denyIfThreadInaccessible(
-  context: Context<{ Variables: AuthVariables }>,
-  actor: Actor,
-  input: RegisterOperationAccessGuardsInput,
+/** Audience is checked after selected-Workspace authority and before addressed content. */
+export function requireThreadAudience(
+  store: FsStore,
+  coreDb: CoreDb,
+  entry:
+    | Exclude<OperationInvocationContext, { kind: 'bootstrap' }>
+    | AssistantOperationInvocationContext,
   workspaceId: string,
-  operation: ProductOperation
-): Response | null {
-  const threadId = nonempty(context.req.param('threadId'));
-  if (threadId === null) {
-    return null;
-  }
+  threadId: string,
+  operation = 'thread.read',
+  retained?: { readonly quickChatWorkspaceIdForUser: (userId: string) => string }
+): void {
+  const userId =
+    entry.kind === 'worker' ? responsibleUserIdForActor(entry.actor) : entry.actor.userId;
   try {
-    const workspace = input.store.getWorkspace(workspaceId);
-    const thread = input.store.getThread(workspaceId, threadId);
-    const decision = evaluateThreadAuthorization({
-      workspaceId,
-      thread,
-      ancestorThreadIds: readThreadPolicyAncestors(input.store, thread),
-      userId: actor.userId,
-      administrator: isCurrentDeploymentAdministrator(input.coreDb, actor),
-      personalWorkspaceId:
-        workspace.kind === 'personal' ? input.quickChatWorkspaceIdForUser(actor.userId) : undefined,
-      policy: input.store.getWorkspaceResourceAccess(workspaceId),
-      operation,
-    });
-    if (decision.effect === 'allow') return null;
+    const retainedWorkspace = retained ? store.getWorkspace(workspaceId) : undefined;
+    let actor: ResourcePolicyActor = { kind: 'user', userId: userId! };
+    if (entry.kind === 'worker') {
+      const turn = store.getTurnById(entry.lineage.turnId);
+      if (!turn.agentId || turn.agentSessionId !== entry.lineage.agentSessionId)
+        throw new Error('Thread access denied.');
+      actor = {
+        kind: 'agent',
+        userId: userId!,
+        agentId: turn.agentId,
+        processId: entry.lineage.agentSessionId,
+      };
+    }
+    const thread = store.getThread(workspaceId, threadId);
+    if (
+      evaluateThreadAuthorization({
+        workspaceId,
+        thread,
+        ancestorThreadIds: readThreadPolicyAncestors(store, thread),
+        userId: userId!,
+        administrator:
+          entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
+        personalWorkspaceId: retained
+          ? retainedWorkspace!.kind === 'personal'
+            ? retained.quickChatWorkspaceIdForUser(userId!)
+            : undefined
+          : store.getWorkspace(workspaceId).kind === 'personal'
+            ? quickChatWorkspaceIdForUser(userId!, store.getDataRoot())
+            : undefined,
+        actor,
+        operation,
+        policy: store.getWorkspaceResourceAccess(workspaceId),
+      }).effect !== 'allow'
+    )
+      throw new Error('Thread access denied.');
   } catch {
-    // Missing, corrupt and inaccessible Thread facts share the existing non-disclosing response.
+    throw new OperationError('not_found', 'Thread not found.', 404);
   }
-  return threadNotFound();
 }
 
 /**

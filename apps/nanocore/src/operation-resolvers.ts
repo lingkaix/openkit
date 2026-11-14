@@ -5,7 +5,6 @@ import type {
   OperationTarget,
 } from '@openkit/app-api-schemas';
 import { OPERATION_DEFINITIONS, operationUsesBootstrapSecret } from '@openkit/app-api-schemas';
-import { responsibleUserIdForActor } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { HTTPException } from 'hono/http-exception';
 import { getOpenKitAccessTokenRecord } from './auth/access-token-store.js';
@@ -19,8 +18,8 @@ import {
   hasWorkspaceDeletionRetryAuthority,
   isCanonicalUserOperationAuthorized,
   isCurrentDeploymentAdministrator,
+  requireThreadAudience,
 } from './auth/operation-authorizer.js';
-import { readThreadPolicyAncestors } from './auth/thread-visibility.js';
 import { readAutomationOperationLineage } from './automation-operations.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import { normalizeCapabilityRequestId } from './capability/usage-ledger-native.js';
@@ -40,8 +39,6 @@ import type {
 import { OperationError, WorkspaceCaptureAdmissionError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
 import { PolicyInterception } from './policy/interception.js';
-import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
-import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
@@ -533,55 +530,6 @@ export async function admitOperation(
     },
   };
   return { input, context, release, assertExposureAvailable };
-}
-
-/** Audience is checked after selected-Workspace authority and before addressed content. */
-function requireThreadAudience(
-  store: FsStore,
-  coreDb: CoreDb,
-  entry:
-    | Exclude<OperationInvocationContext, { kind: 'bootstrap' }>
-    | AssistantOperationInvocationContext,
-  workspaceId: string,
-  threadId: string,
-  operation = 'thread.read'
-): void {
-  const userId =
-    entry.kind === 'worker' ? responsibleUserIdForActor(entry.actor) : entry.actor.userId;
-  try {
-    let actor: ResourcePolicyActor = { kind: 'user', userId: userId! };
-    if (entry.kind === 'worker') {
-      const turn = store.getTurnById(entry.lineage.turnId);
-      if (!turn.agentId || turn.agentSessionId !== entry.lineage.agentSessionId) throw denied();
-      actor = {
-        kind: 'agent',
-        userId: userId!,
-        agentId: turn.agentId,
-        processId: entry.lineage.agentSessionId,
-      };
-    }
-    const thread = store.getThread(workspaceId, threadId);
-    if (
-      evaluateThreadAuthorization({
-        workspaceId,
-        thread,
-        ancestorThreadIds: readThreadPolicyAncestors(store, thread),
-        userId: userId!,
-        administrator:
-          entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
-        personalWorkspaceId:
-          store.getWorkspace(workspaceId).kind === 'personal'
-            ? quickChatWorkspaceIdForUser(userId!, store.getDataRoot())
-            : undefined,
-        actor,
-        operation,
-        policy: store.getWorkspaceResourceAccess(workspaceId),
-      }).effect !== 'allow'
-    )
-      throw denied();
-  } catch {
-    throw new OperationError('not_found', 'Thread not found.', 404);
-  }
 }
 
 /** Static wiring dispatches declared target strategies, including Recovery's distinct missing-lineage outcome. */
