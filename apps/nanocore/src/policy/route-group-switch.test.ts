@@ -459,6 +459,40 @@ async function fixture(withReviewerDomain = false) {
 }
 
 describe('E13 Phase A native human configuration', () => {
+  it('admits an editable E7 default only through actual human Policy proposal and apply, never boot or proposal writes', async () => {
+    const f = await fixture();
+    const original = f.bytes();
+    const isInvestigation = (statement: PolicyDocumentV1['statements'][number]) =>
+      (statement.kind === 'agent-principal' && statement.agentId === 'security-investigation') ||
+      (statement.kind === 'permission' &&
+        statement.scope.subjects.some(
+          (subject) => subject.kind === 'agent' && subject.id === 'security-investigation'
+        ));
+    expect(f.loaded().statements.filter(isInvestigation)).toEqual([]);
+    await f.manager.reload({ mode: 'safe', dryRun: false });
+    expect(f.bytes()).toBe(original);
+    const proposed = await f.propose(document(control(f.first.userId)));
+    expect(f.bytes()).toBe(original);
+    expect(await f.apply(proposed)).toMatchObject({ persisted: true, reload: 'applied' });
+    const admitted = f.loaded();
+    const defaults = admitted.statements.filter(isInvestigation);
+    expect(defaults.length).toBeGreaterThan(0);
+    for (const statement of defaults)
+      expect(statement).toMatchObject({
+        state: 'active',
+        author: { kind: 'human', id: f.first.userId },
+        authority: { kind: 'human', userId: f.first.userId },
+        lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+      });
+    // A default is editable Policy, not an immutable source-code grant or automatic backfill.
+    const removal = await f.propose({
+      ...admitted,
+      statements: admitted.statements.filter((statement) => !isInvestigation(statement)),
+    });
+    expect(await f.apply(removal)).toMatchObject({ persisted: true, reload: 'applied' });
+    expect(f.loaded().statements.filter(isInvestigation)).toEqual([]);
+  });
+
   it.each([
     ['Server security-review', 'security-review', 'server', true],
     ['Workspace security-review', 'security-review', 'workspace', false],
