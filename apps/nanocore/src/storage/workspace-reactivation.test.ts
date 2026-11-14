@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recoveryJournalFact, recoveryJournalFacts } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
@@ -91,6 +92,7 @@ vi.mock('node:worker_threads', async (load) => {
           return;
         }
         const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
           const { workerData } = require('node:worker_threads');
           const Database = require(workerData.databaseModule);
           const execute = Database.prototype.exec;
@@ -107,8 +109,7 @@ vi.mock('node:worker_threads', async (load) => {
                 complete = row?.revision === workerData.expectedRevision + 1 &&
                   !JSON.parse(row.record_json).movedOut && audit.count === workerData.originalAuditCount + 1;
               } else {
-                const row = this.prepare('SELECT state,revision,proof_json FROM workspace_recovery_admissions WHERE admission_id=? AND workspace_id=?')
-                  .get(workerData.backupId, workerData.workspaceId);
+                const row = recoveryJournalFact(this, workerData.backupId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
                 const original = JSON.parse(workerData.originalProof);
                 const expected = workerData.stage === 'revoke' ? original : {
                   ...original, result: {...original.result,command:'reactivate',disposition:'reactivated',currentRevision:workerData.expectedRevision + 1,nextAction:'none'}
@@ -266,7 +267,12 @@ function snapshot(f: Fixture) {
   const workspacePath = workspaceDbPath(f.dataRoot, workspaceId);
   cpSync(dirname(corePath), join(copy, 'core'), { recursive: true });
   cpSync(dirname(workspacePath), join(copy, 'workspace'), { recursive: true });
-  const core = rows(join(copy, 'core', 'core.sqlite'), 'workspace_recovery_admissions');
+  const observer = new Database(join(copy, 'core/core.sqlite'), {
+    readonly: true,
+    fileMustExist: true,
+  });
+  const core = recoveryJournalFacts(observer, f.dataRoot);
+  observer.close();
   const workspace = rows(join(copy, 'workspace', 'workspace.sqlite'), 'control_workspaces');
   const audit = rows(join(copy, 'workspace', 'workspace.sqlite'), 'audit_events');
   return {
@@ -416,7 +422,14 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
     const f = await fixture();
     const corePath = coreDbPath(f.dataRoot);
     const workspacePath = workspaceDbPath(f.dataRoot, workspaceId);
-    const beforeCore = rows(corePath, 'workspace_recovery_admissions');
+    const beforeCore = (() => {
+      const db = new Database(corePath, { readonly: true, fileMustExist: true });
+      try {
+        return recoveryJournalFacts(db, f.dataRoot);
+      } finally {
+        db.close();
+      }
+    })();
     const beforeWorkspace = rows(workspacePath, 'control_workspaces');
     const beforeAudit = rows(workspacePath, 'audit_events');
     const ownedBefore = beforeCore.find((row) => row.admission_id === f.backupId)!;
@@ -435,7 +448,7 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
       const prepare = db.prepare.bind(db);
       vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
         const statement = prepare(sql);
-        if (/^UPDATE workspace_recovery_admissions SET state='abandoned'/i.test(sql)) {
+        if (/^INSERT INTO control_executions/i.test(sql)) {
           const run = statement.run.bind(statement);
           vi.spyOn(statement, 'run').mockImplementation((...parameters: unknown[]) => {
             try {
@@ -483,7 +496,14 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
         nextAction: 'none',
       },
     });
-    const afterCore = rows(corePath, 'workspace_recovery_admissions');
+    const afterCore = (() => {
+      const db = new Database(corePath, { readonly: true, fileMustExist: true });
+      try {
+        return recoveryJournalFacts(db, f.dataRoot);
+      } finally {
+        db.close();
+      }
+    })();
     const ownedAfter = afterCore.find((row) => row.admission_id === f.backupId)!;
     expect(afterCore.filter((row) => row.admission_id !== f.backupId)).toEqual(
       beforeCore.filter((row) => row.admission_id !== f.backupId)
@@ -589,12 +609,12 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
               coreDbPath(f.dataRoot),
               stage === 'revoke'
                 ? `
-          CREATE TRIGGER reactivation_fault AFTER UPDATE ON workspace_recovery_admissions
-          WHEN NEW.admission_id='${f.backupId}' AND NEW.state='abandoned' AND OLD.state='finished'
+          CREATE TRIGGER reactivation_fault AFTER UPDATE OF phase ON control_executions
+          WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause LIKE 'abandoned:%' AND EXISTS (SELECT 1 FROM control_execution_steps WHERE execution_id=NEW.id AND json_extract(invocation_json,'$.carriage.requestId')='${f.backupId}')
           BEGIN SELECT RAISE(ABORT,'deliberate late Core revocation fault'); END`
                 : `
-          CREATE TRIGGER reactivation_fault AFTER UPDATE OF proof_json ON workspace_recovery_admissions
-          WHEN NEW.admission_id='${f.backupId}' AND json_extract(NEW.proof_json,'$.result.disposition')='reactivated'
+          CREATE TRIGGER reactivation_fault AFTER INSERT ON control_execution_steps
+          WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1' AND json_extract(NEW.invocation_json,'$.carriage.requestId')='${f.backupId}' AND json_extract(NEW.invocation_json,'$.carriage.sequence')=(SELECT MAX(json_extract(invocation_json,'$.carriage.sequence'))+1 FROM control_execution_steps WHERE execution_id<>NEW.execution_id AND json_extract(invocation_json,'$.carriage.requestId')='${f.backupId}') AND (SELECT terminal_cause FROM control_executions WHERE id=NEW.inspected_execution_id) LIKE 'abandoned:%'
           BEGIN SELECT RAISE(ABORT,'deliberate late Core result fault'); END`
             );
       const client = getControlStoreWorkerClient();

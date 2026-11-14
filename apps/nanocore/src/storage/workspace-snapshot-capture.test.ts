@@ -999,9 +999,21 @@ describe('C-a snapshot authoritative blockers', () => {
         expect(readBlockers({ ...source, workspaceId })).toEqual([]);
         f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
         try {
-          f.coreDb.sqlite
-            .prepare('UPDATE workspace_recovery_admissions SET state=? WHERE admission_id=?')
-            .run(unsupported, move.manifest.backupId);
+          const { sql } = f.coreDb.sqlite
+            .prepare(
+              "SELECT sql FROM sqlite_schema WHERE name='control_executions_identity_immutable'"
+            )
+            .get() as { sql: string };
+          f.coreDb.sqlite.exec('DROP TRIGGER control_executions_identity_immutable');
+          try {
+            f.coreDb.sqlite
+              .prepare(
+                `UPDATE control_executions SET phase=? WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
+              )
+              .run(unsupported, move.manifest.backupId);
+          } finally {
+            f.coreDb.sqlite.exec(sql);
+          }
         } finally {
           f.coreDb.sqlite.pragma('ignore_check_constraints = OFF');
         }
@@ -3325,7 +3337,7 @@ describe('C-a independent sealed generations', () => {
       Database.prototype.prepare = function(sql, ...args) {
         if (this.name === selectedCore) this.pragma('query_only = ON');
         const statement = prepareCore.call(this, sql, ...args);
-        if (this.name === selectedCore && /INSERT INTO workspace_recovery_admissions/.test(sql)) {
+        if (this.name === selectedCore && /INSERT INTO control_executions/.test(sql)) {
           const run = statement.run.bind(statement);
           statement.run = function(...values) {
             try { return run(...values); }
@@ -3359,9 +3371,16 @@ describe('C-a independent sealed generations', () => {
       workspaceId,
       authority: { mode: 'source' },
       file: {
-        name: expect.stringMatching(/^\.proof-[0-9a-f-]+\.json$/),
         byteLength: expect.any(Number),
-        digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        mediaType: 'application/json',
+        reference: {
+          contentDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+          locator: {
+            ownerScope: { kind: 'server' },
+            mount: 'backend-evidence',
+            path: expect.stringMatching(/^sha256\/[0-9a-f]{64}$/),
+          },
+        },
       },
     });
     expect(JSON.stringify(frames)).not.toContain('"manifest":');
