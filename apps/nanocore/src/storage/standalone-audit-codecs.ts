@@ -1,5 +1,21 @@
-import { AccessTokenIdSchema, AuditEventSchema, WorkspaceIdSchema } from '@openkit/protocol';
+import {
+  AccessTokenIdSchema,
+  AuditEventSchema,
+  RequestIdSchema,
+  WorkspaceIdSchema,
+} from '@openkit/protocol';
+import { WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
+import { createSecurityCanaryMcpSupply, SECURITY_CANARY_TOOLS } from '../security/canaries.js';
+
+/** One source-fixed inert observation; no caller payload or authority is represented here. */
+export const SECURITY_CANARY_AUDIT_FACT = Object.freeze({
+  action: 'security.canary' as const,
+  resource: `mcp:${createSecurityCanaryMcpSupply().id}/${SECURITY_CANARY_TOOLS[0]!.name}@${createSecurityCanaryMcpSupply().catalogDigest}`,
+  resourceRevision: null,
+  summary: 'Authenticated inert MCP canary call refused.',
+  errorCode: 'mcp-denied',
+});
 
 /** Originally standalone Catalog, Data Source, App-update, Server MCP, token and configuration outcomes; never arbitrary Audit actions. */
 export const STANDALONE_AUDIT_STAGES = [
@@ -54,19 +70,51 @@ export const STANDALONE_AUDIT_STAGES = [
   'mcp.server.lifecycle.inactive',
   'mcp.server.lifecycle.ready',
   'mcp.server.lifecycle.starting',
+  'security.canary',
 ] as const;
 /** One original prepared Audit, bound to its exact existing scope and admitted stage. */
 export const ControlStandaloneAuditInputSchema = z
   .strictObject({
     workspaceId: WorkspaceIdSchema.optional(),
     stage: z.enum(STANDALONE_AUDIT_STAGES),
+    /** Original non-secret worker lineage; native resolves its retained owners, never a permission. */
+    canaryLineage: WorkerLineageSchema.optional(),
     event: AuditEventSchema.strict().extend({
       createdAt: z.string().datetime(),
       occurredAt: z.string().datetime(),
     }),
   })
-  .refine(({ workspaceId, stage, event }) => {
+  .refine(({ workspaceId, stage, event, canaryLineage }) => {
     if (event.action !== stage || event.notebookAdmission !== undefined) return false;
+    if (stage !== 'security.canary' && canaryLineage !== undefined) return false;
+    if (stage === 'security.canary')
+      return (
+        workspaceId === undefined &&
+        canaryLineage !== undefined &&
+        event.workspaceId === canaryLineage.workspaceId &&
+        event.threadId === canaryLineage.threadId &&
+        event.turnId === canaryLineage.turnId &&
+        event.agentSessionId === canaryLineage.agentSessionId &&
+        event.agentId !== null &&
+        event.actor?.kind === 'agent' &&
+        event.actor.id === event.agentId &&
+        event.subject?.kind === 'agent' &&
+        event.subject.id === event.agentId &&
+        event.requestId === (RequestIdSchema.safeParse(canaryLineage.requestId).data ?? null) &&
+        event.capabilityCallId === null &&
+        event.permissionDecisionId === null &&
+        event.vaultGrantId === null &&
+        event.authentication === undefined &&
+        event.policyInvocation === undefined &&
+        event.policyWriteOutcome === undefined &&
+        event.category === 'capability' &&
+        event.outcome === 'denied' &&
+        event.severity === 'warning' &&
+        event.resource === SECURITY_CANARY_AUDIT_FACT.resource &&
+        event.resourceRevision === SECURITY_CANARY_AUDIT_FACT.resourceRevision &&
+        event.summary === SECURITY_CANARY_AUDIT_FACT.summary &&
+        event.errorCode === SECURITY_CANARY_AUDIT_FACT.errorCode
+      );
     if (
       stage === 'catalog.light-app-import' ||
       stage === 'catalog.light-app-history-import' ||

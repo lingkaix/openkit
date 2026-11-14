@@ -15,6 +15,7 @@ import { importWorkspaceVaultGrants } from './storage/test-support/vault-retaine
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 // openkit-test-platform: posix
 
+import { Worker } from 'node:worker_threads';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import fs, {
@@ -56,18 +57,26 @@ import {
   canonicalJsonText,
   deriveEntityId,
   PolicyDocumentV1Schema,
+  RequestIdSchema,
+  responsibleUserIdForActor,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { listWorkspaceAuditEvents } from './audit-events.js';
+import {
+  listServerAuditEvents,
+  listWorkspaceAuditEvents,
+  prepareServerAuditEvent,
+} from './audit-events.js';
+import { SecurityTriggerStore } from './security/trigger.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from './auth/access-token-verification.js';
 import { createBetterAuth } from './auth/better-auth.js';
+import { ensureLocalUser as ensureCanonicalLocalUser } from './auth/identity.js';
 import { consumeServerBootstrapToken, ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import {
   createNanoHostTransportSessionAuthority,
@@ -2879,6 +2888,828 @@ describe('worker MCP routes', () => {
         coreDb.sqlite.close();
         rmSync(dataRoot, { recursive: true, force: true });
         expect.soft(closeouts.filter((result) => result.status === 'rejected')).toEqual([]);
+      }
+    }
+  );
+
+  it.each([true, false])(
+    'admits release-authored canary supply only through the real Task manifest selection: %s',
+    { timeout: 60_000 },
+    async (selected) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-canary-source-producer-'));
+      const coreDb = openCopiedMcpCore(dataRoot);
+      const userId = ensureLocalUser(coreDb);
+      const store = await reopenCopiedMcpStore(dataRoot);
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+      const mutation = new WorkspaceMutationAdmission();
+      store.setWorkspaceMutationAdmission(mutation);
+      const setup = createTestAgentSetup({
+        mcpIds: selected ? ['openkit-security'] : [],
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      const configuration = createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Canary source fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+        agentManifests: [setup.manifest],
+        workspaceMcpServerCatalogs: [],
+      });
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => configuration,
+        workspaceMutationAdmission: mutation,
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const app = createApp({
+        coreDb,
+        store,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        workspaceMutationAdmission: mutation,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: configuration,
+        }),
+      });
+      let execution: ReturnType<typeof native.executionFor> | undefined;
+      let detachStartupFailure: (() => void) | undefined;
+      try {
+        const started = await app.request(
+          ...operationRequest(
+            'task.start',
+            { workspaceId, threadId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                input: 'Prepare selected source supply',
+                requestId: randomUUID(),
+              }),
+            }
+          )
+        );
+        expect(started.status, await started.clone().text()).toBe(202);
+        const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
+        execution = native.executionFor(turn.id);
+        const failedStartup = Promise.withResolvers<never>();
+        const inspectStartup = () => {
+          const current = store.getTurnById(turn.id);
+          if (current.status !== 'pending' && current.status !== 'running') {
+            failedStartup.reject(
+              new Error(
+                current.error?.message ?? `Task ended before native launch with status ${current.status}.`
+              )
+            );
+          }
+        };
+        detachStartupFailure = store.addTurnListener(turn.id, inspectStartup);
+        inspectStartup();
+        await Promise.race([
+          execution.launched.promise,
+          execution.execution.then(() => {
+            const current = store.getTurnById(turn.id);
+            throw new Error(current.error?.message ?? 'Native execution ended before startup completed.');
+          }),
+          failedStartup.promise,
+        ]);
+        detachStartupFailure();
+        detachStartupFailure = undefined;
+        await native.waitForStartup(turn.id);
+        const authenticated = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        expect(authenticated.scope).toMatchObject({ workspaceId, threadId, turnId: turn.id });
+        expect(native.executor.nativeLineage).toMatchObject({
+          workspaceId,
+          threadId,
+          turnId: turn.id,
+          agentSessionId: authenticated.scope.agentSessionId,
+          packageSnapshotId: authenticated.snapshotId,
+        });
+        // Prior source contract bytes, not the candidate descriptor or digest exports.
+        const declaration = [
+          {
+            name: 'security_admin_export',
+            description:
+              'Security-administration decoy. No ordinary task purpose. No useful effect.',
+            inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+          },
+        ];
+        const expectedSelection = {
+          id: 'openkit-security',
+          catalogDigest: `sha256:${createHash('sha256').update(JSON.stringify(declaration)).digest('hex')}`,
+          allowedTools: ['security_admin_export'],
+          schemaPolicy: 'pinned',
+          pinnedSchemaSnapshotId: null,
+        };
+        const chosen = authenticated.supply.mcpServers.filter(
+          (server) => server.id === 'openkit-security'
+        );
+        expect(chosen).toEqual(selected ? [expectedSelection] : []);
+        expect(authenticated.supply.mcpServers.map((server) => server.id)).toEqual(
+          expect.arrayContaining(['openkit-work', 'openkit-generative'])
+        );
+        expect(configuration.workspaceMcpServerCatalogs).toEqual([]);
+        const db = openWorkspaceDb(dataRoot, workspaceId);
+        try {
+          const retained = snapshotLedger.requireAgentEnvironmentPackageSnapshot(
+            db,
+            workspaceId,
+            authenticated.snapshotId
+          ).snapshot;
+          expect(retained.snapshotId).toBe(authenticated.snapshotId);
+          expect(retained.scope).toEqual(authenticated.scope);
+          expect(retained.supply.mcpServers).toEqual(authenticated.supply.mcpServers);
+        } finally {
+          db.sqlite.close();
+        }
+      } finally {
+        detachStartupFailure?.();
+        execution?.completion.resolve();
+        // Preparation can fail before startTurn; its never-started observation has no join.
+        if (native.executor.launches > 0) await execution?.execution.catch(() => undefined);
+        await native.restore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    { claim: 'legitimate', repeat: false },
+    { claim: 'actor-foreign', repeat: false },
+    { claim: 'subject-foreign', repeat: false },
+    { claim: 'actor-null', repeat: false },
+    { claim: 'subject-null', repeat: false },
+    { claim: 'actor-foreign', repeat: true },
+    { claim: 'subject-foreign', repeat: true },
+    { claim: 'actor-null', repeat: true },
+    { claim: 'subject-null', repeat: true },
+  ] as const)(
+    'requires original full Actor and subject responsibility at native canary publication: %j',
+    { timeout: 60_000 },
+    async ({ claim, repeat }) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-canary-responsibility-'));
+      const coreDb = openCopiedMcpCore(dataRoot);
+      const userId = await ensureCanonicalLocalUser(coreDb);
+      const store = await reopenCopiedMcpStore(dataRoot);
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+      const mutation = new WorkspaceMutationAdmission();
+      store.setWorkspaceMutationAdmission(mutation);
+      const setup = createTestAgentSetup({
+        mcpIds: ['openkit-security'],
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      const configuration = createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Canary source fixture',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+        workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+        agentManifests: [setup.manifest],
+        workspaceMcpServerCatalogs: [],
+      });
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => configuration,
+        workspaceMutationAdmission: mutation,
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const app = createApp({
+        coreDb,
+        store,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        workspaceMutationAdmission: mutation,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: configuration,
+        }),
+      });
+      let execution: ReturnType<typeof native.executionFor> | undefined;
+      let detachStartupFailure: (() => void) | undefined;
+      try {
+        const started = await app.request(
+          ...operationRequest(
+            'task.start',
+            { workspaceId, threadId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                input: 'Prepare source-bound observation',
+                requestId: randomUUID(),
+              }),
+            }
+          )
+        );
+        expect(started.status, await started.clone().text()).toBe(202);
+        const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
+        execution = native.executionFor(turn.id);
+        const failedStartup = Promise.withResolvers<never>();
+        const inspectStartup = () => {
+          const current = store.getTurnById(turn.id);
+          if (current.status !== 'pending' && current.status !== 'running')
+            failedStartup.reject(
+              new Error(current.error?.message ?? `Task ended before startup: ${current.status}.`)
+            );
+        };
+        detachStartupFailure = store.addTurnListener(turn.id, inspectStartup);
+        inspectStartup();
+        await Promise.race([
+          execution.launched.promise,
+          execution.execution.then(() => {
+            const current = store.getTurnById(turn.id);
+            throw new Error(current.error?.message ?? 'Native execution ended before startup.');
+          }),
+          failedStartup.promise,
+        ]);
+        detachStartupFailure();
+        detachStartupFailure = undefined;
+        await native.waitForStartup(turn.id);
+        const original = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${native.executor.capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        const lineage = native.executor.nativeLineage;
+        if (!lineage) throw new Error('Actual native startup did not retain its lineage.');
+        expect(lineage).toMatchObject({
+          workspaceId,
+          threadId,
+          turnId: turn.id,
+          agentSessionId: original.scope.agentSessionId,
+          packageSnapshotId: original.snapshotId,
+        });
+        const expectedActor = {
+          kind: 'agent' as const,
+          id: original.agent.agentId,
+          responsibleUserId: responsibleUserIdForActor(original.scope.triggerActor),
+        };
+        expect(expectedActor.responsibleUserId).toBe(userId);
+        // A real foreign User supplies malicious responsibility claims, not administrator authority.
+        const auth = createBetterAuth(coreDb, { mode: 'local', env: {} });
+        const signup = await auth.api.signUpEmail({
+          body: {
+            name: 'Canary foreign responsibility witness',
+            email: `${randomUUID()}@example.invalid`,
+            password: randomUUID(),
+          },
+        });
+        expect(signup.user.id).not.toBe(expectedActor.responsibleUserId);
+        // Original N1 canonical-local producer; no pretend server-mode token administration.
+        const trigger = new SecurityTriggerStore(coreDb);
+        const enabled = await trigger.enable({ kind: 'local', userId });
+        expect(enabled).toMatchObject({
+          state: 'on',
+          delegationCurrent: true,
+          enablingUserId: userId,
+        });
+        // Distinct-enabler positive is unavailable here, not silently credited by this fixture.
+        const resource =
+          'mcp:openkit-security/security_admin_export@sha256:86b1f3a320ba7463e0a7618d375e624964cbf6a1767533c683431ce7774db036';
+        const requestId = RequestIdSchema.safeParse(original.scope.requestId);
+        const eventFor = (
+          actorResponsibility: string | null,
+          subjectResponsibility: string | null
+        ) =>
+          prepareServerAuditEvent({
+            coreDb,
+            workspaceId,
+            threadId,
+            turnId: turn.id,
+            itemId: original.scope.itemId ?? null,
+            agentId: original.agent.agentId,
+            agentSessionId: original.scope.agentSessionId,
+            requestId: requestId.success ? requestId.data : null,
+            actor: { ...expectedActor, responsibleUserId: actorResponsibility },
+            subject: { ...expectedActor, responsibleUserId: subjectResponsibility },
+            action: 'security.canary',
+            category: 'capability',
+            outcome: 'denied',
+            severity: 'warning',
+            resource,
+            resourceRevision: null,
+            summary: 'Authenticated inert MCP canary call refused.',
+            errorCode: 'mcp-denied',
+          });
+        const publish = (event: ReturnType<typeof eventFor>) =>
+          getControlStoreWorkerClient().standaloneAudit(coreDb, {
+            stage: 'security.canary',
+            canaryLineage: lineage,
+            event,
+          });
+        const rows = () =>
+          listServerAuditEvents(coreDb).filter(
+            (row) =>
+              row.action === 'security.canary' &&
+              row.resource === resource &&
+              row.turnId === turn.id
+          );
+        expect(rows()).toEqual([]);
+        if (repeat || claim === 'legitimate') {
+          await publish(eventFor(expectedActor.responsibleUserId, expectedActor.responsibleUserId));
+          expect(rows()).toHaveLength(1);
+          expect(rows()[0]?.actor).toStrictEqual(expectedActor);
+          expect(rows()[0]?.subject).toStrictEqual(expectedActor);
+        }
+        const before = rows();
+        const actorResponsibility =
+          claim === 'actor-foreign'
+            ? signup.user.id
+            : claim === 'actor-null'
+              ? null
+              : expectedActor.responsibleUserId;
+        const subjectResponsibility =
+          claim === 'subject-foreign'
+            ? signup.user.id
+            : claim === 'subject-null'
+              ? null
+              : expectedActor.responsibleUserId;
+        const attemptedEvent = eventFor(actorResponsibility, subjectResponsibility);
+        expect(attemptedEvent.actor).toStrictEqual({
+          ...expectedActor,
+          responsibleUserId: actorResponsibility,
+        });
+        expect(attemptedEvent.subject).toStrictEqual({
+          ...expectedActor,
+          responsibleUserId: subjectResponsibility,
+        });
+        const sent = vi.spyOn(Worker.prototype, 'postMessage');
+        try {
+          const attempt = publish(attemptedEvent);
+          if (claim === 'legitimate') await expect(attempt).resolves.toBeUndefined();
+          else await expect(attempt).rejects.toBeInstanceOf(ControlStoreWorkerError);
+          expect(
+            sent.mock.calls.some(
+              ([message]) =>
+                typeof message === 'object' &&
+                message !== null &&
+                'operation' in message &&
+                message.operation === 'standalone-audit'
+            )
+          ).toBe(true);
+          expect(rows()).toEqual(before);
+        } finally {
+          sent.mockRestore();
+        }
+      } finally {
+        detachStartupFailure?.();
+        execution?.completion.resolve();
+        if (native.executor.launches > 0) await execution?.execution.catch(() => undefined);
+        await native.restore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
+      }
+    }
+  );
+
+  it.each([
+    'trip',
+    'policy-hidden-foreign',
+    'near-name',
+    'foreign-server',
+    'bad-token',
+    'source-unselected',
+    'off',
+    'stopping',
+    'list-and-mention',
+    'repeat',
+    'ordinary',
+    'native-send-failure',
+    'settled-lineage',
+  ] as const)(
+    'observes only authenticated current exact native canary route calls: %s',
+    { timeout: 60_000 },
+    async (scenario) => {
+      const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-canary-route-'));
+      const coreDb = openCopiedMcpCore(dataRoot);
+      const userId = await ensureCanonicalLocalUser(coreDb);
+      const store = await reopenCopiedMcpStore(dataRoot);
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const threadId = 'th_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
+      const mutation = new WorkspaceMutationAdmission();
+      store.setWorkspaceMutationAdmission(mutation);
+      const selected = scenario !== 'source-unselected';
+      const setup = createTestAgentSetup({
+        mcpIds: selected ? ['openkit-security'] : [],
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      });
+      let mediation = EMPTY_POLICY_DOCUMENT;
+      const readConfiguration = () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot,
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Canary source fixture',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+          workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+          agentManifests: [setup.manifest],
+          workspaceMcpServerCatalogs: [],
+          openKitConfig: { policy: { mediation } },
+        });
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: readConfiguration,
+        workspaceMutationAdmission: mutation,
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const taskApp = createApp({
+        coreDb,
+        store,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        workspaceMutationAdmission: mutation,
+        runtimeConfigManager: createRuntimeConfigManager({
+          dataRoot: null,
+          initialSnapshot: readConfiguration(),
+        }),
+      });
+      const gateway = createDefaultWorkerMcpGateway(coreDb);
+      const app = new Hono();
+      registerWorkerMcpRoutes({
+        app,
+        coreDb,
+        store,
+        workerMcpGateway: gateway,
+        workerControlGateway: native.workerControlGateway,
+        workspaceMutationAdmission: mutation,
+        fileAdmission: native.fileAdmission,
+        runtimeConfig: readConfiguration,
+      });
+      const upstreamList = vi.spyOn(gateway, 'listTools');
+      const upstreamCall = vi.spyOn(gateway, 'callTool');
+      let execution: ReturnType<typeof native.executionFor> | undefined;
+      let detachStartupFailure: (() => void) | undefined;
+      try {
+        const started = await taskApp.request(
+          ...operationRequest(
+            'task.start',
+            { workspaceId, threadId },
+            {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                input: 'Prepare source-bound observation',
+                requestId: randomUUID(),
+              }),
+            }
+          )
+        );
+        expect(started.status, await started.clone().text()).toBe(202);
+        const turn = StartTaskModeResponseSchema.parse(await started.json()).turn;
+        execution = native.executionFor(turn.id);
+        const failedStartup = Promise.withResolvers<never>();
+        const inspectStartup = () => {
+          const current = store.getTurnById(turn.id);
+          if (current.status !== 'pending' && current.status !== 'running')
+            failedStartup.reject(
+              new Error(current.error?.message ?? `Task ended before startup: ${current.status}.`)
+            );
+        };
+        detachStartupFailure = store.addTurnListener(turn.id, inspectStartup);
+        inspectStartup();
+        await Promise.race([
+          execution.launched.promise,
+          execution.execution.then(() => {
+            const current = store.getTurnById(turn.id);
+            throw new Error(current.error?.message ?? 'Native execution ended before startup.');
+          }),
+          failedStartup.promise,
+        ]);
+        detachStartupFailure();
+        detachStartupFailure = undefined;
+        await native.waitForStartup(turn.id);
+        const capabilityToken = native.executor.capabilityToken;
+        const original = native.workerControlGateway.authenticatePackageToken(
+          `Bearer ${capabilityToken}`,
+          { tokenFamily: 'capability' }
+        );
+        expect(original.scope).toMatchObject({ workspaceId, threadId, turnId: turn.id });
+        expect(native.executor.nativeLineage).toMatchObject({
+          workspaceId,
+          threadId,
+          turnId: turn.id,
+          agentSessionId: original.scope.agentSessionId,
+          packageSnapshotId: original.snapshotId,
+        });
+        const digest = 'sha256:86b1f3a320ba7463e0a7618d375e624964cbf6a1767533c683431ce7774db036';
+        const source = original.supply.mcpServers.find((entry) => entry.id === 'openkit-security');
+        if (selected)
+          expect(source).toStrictEqual({
+            id: 'openkit-security',
+            catalogDigest: digest,
+            allowedTools: ['security_admin_export'],
+            schemaPolicy: 'pinned',
+            pinnedSchemaSnapshotId: null,
+          });
+        else expect(source).toBeUndefined();
+        const rpc = async (
+          serverId: string,
+          method: string,
+          params: object,
+          id: number,
+          bearer = capabilityToken
+        ) => {
+          const response = await app.request(`/api/worker-capabilities/mcp/${serverId}`, {
+            method: 'POST',
+            headers: {
+              accept: 'application/json, text/event-stream',
+              'content-type': 'application/json',
+              authorization: `Bearer ${bearer}`,
+            },
+            body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+          });
+          return { response, body: await response.json() };
+        };
+        // Dormant baseline MUST pass this real source/list/ordinary precondition before any OLD credit.
+        const workList = await rpc('openkit-work', 'tools/list', {}, 100);
+        expect(workList.response.status).toBe(200);
+        expect(workList.body).toMatchObject({
+          result: {
+            tools: expect.arrayContaining([expect.objectContaining({ name: 'work_peer_list' })]),
+          },
+        });
+        if (selected) {
+          const visible = await rpc('openkit-security', 'tools/list', {}, 101);
+          expect(visible.response.status).toBe(200);
+          expect(visible.body).toMatchObject({
+            result: {
+              tools: expect.arrayContaining([
+                expect.objectContaining({
+                  name: 'security_admin_export',
+                  inputSchema: {
+                    type: 'object',
+                    properties: {},
+                    additionalProperties: false,
+                  },
+                }),
+              ]),
+            },
+          });
+        }
+        if (scenario === 'policy-hidden-foreign') {
+          const prepared = preparePolicyDocument({
+            current: mediation,
+            userId,
+            now: new Date().toISOString(),
+            proposed: PolicyDocumentV1Schema.parse({
+              schemaVersion: 1,
+              statements: [
+                {
+                  id: 'canary-route-real-prohibition',
+                  kind: 'permission',
+                  state: 'active',
+                  effect: 'prohibit',
+                  grant: { kind: 'ordinary' },
+                  author: { kind: 'human', id: userId },
+                  authority: { kind: 'human', userId },
+                  authoredAt: new Date().toISOString(),
+                  scope: {
+                    subjects: [
+                      { kind: 'agent', id: original.agent.agentId },
+                      { kind: 'human', id: userId },
+                    ],
+                    actions: ['tool.use'],
+                    resources: [
+                      {
+                        kind: 'mcp-tool',
+                        workspaceId,
+                        serverId: 'openkit-security',
+                        toolName: 'security_admin_export',
+                      },
+                    ],
+                  },
+                  lifetime: {
+                    anchor: {
+                      owner: { kind: 'workspace', workspaceId },
+                      kind: 'workspace',
+                      id: workspaceId,
+                    },
+                  },
+                },
+              ],
+            }),
+          });
+          await recordPolicyWriteDecision({
+            coreDb,
+            actor: { kind: 'local', userId },
+            candidate: {
+              artifactId: allocateEntityId('ar'),
+              contentDigest: policyDigest(prepared.document),
+            },
+            proposal: {
+              schemaVersion: 1,
+              proposer: { kind: 'human', id: userId },
+              rationale: 'Restrict the actual selected canary Tool.',
+              baseRevision: policyDigest(mediation),
+              proposed: prepared.document,
+              validation: 'valid',
+            },
+            requestId: randomUUID(),
+            threadId,
+            turnId: turn.id,
+          });
+          mediation = prepared.document;
+          const hidden = await rpc('openkit-security', 'tools/list', {}, 102);
+          expect(hidden.response.status).toBe(200);
+          expect(hidden.body).toMatchObject({ result: { tools: [] } });
+        }
+        const trigger = new SecurityTriggerStore(coreDb);
+        if (scenario === 'off') expect(await trigger.current()).toMatchObject({ state: 'off' });
+        else {
+          expect(await trigger.enable({ kind: 'local', userId })).toMatchObject({
+            state: 'on',
+            delegationCurrent: true,
+          });
+          if (scenario === 'stopping')
+            expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
+              state: 'stopping',
+            });
+        }
+        const rows = () =>
+          listServerAuditEvents(coreDb).filter((row) => row.action === 'security.canary');
+        expect(rows()).toEqual([]);
+        if (scenario === 'settled-lineage') {
+          execution.completion.resolve();
+          await execution.execution;
+          expect(['pending', 'running']).not.toContain(store.getTurnById(turn.id).status);
+        }
+        let sendFailures = 0;
+        const actualPost = Worker.prototype.postMessage;
+        const transportFault =
+          scenario === 'native-send-failure'
+            ? vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+                this: Worker,
+                ...args: Parameters<Worker['postMessage']>
+              ) {
+                const message = args[0];
+                if (
+                  typeof message === 'object' &&
+                  message !== null &&
+                  'operation' in message &&
+                  message.operation === 'standalone-audit'
+                ) {
+                  sendFailures++;
+                  throw new Error('Controlled native publication frame send failure.');
+                }
+                return Reflect.apply(actualPost, this, args);
+              })
+            : undefined;
+        try {
+          if (scenario === 'list-and-mention') {
+            const listed = await rpc(
+              'openkit-security',
+              'tools/list',
+              {
+                _meta: { mention: 'security_admin_export openkit-security' },
+              },
+              200
+            );
+            expect(listed.body).toHaveProperty('result.tools');
+            const mentioned = await rpc(
+              'openkit-work',
+              'tools/list',
+              {
+                _meta: { mention: 'security_admin_export openkit-security' },
+              },
+              201
+            );
+            expect(mentioned.body.error).toBeUndefined();
+            expect(mentioned.body).toHaveProperty('result.tools');
+          } else if (scenario === 'ordinary') {
+            const ordinary = await rpc(
+              'openkit-work',
+              'tools/call',
+              { name: 'work_peer_list', arguments: {} },
+              202
+            );
+            expect(ordinary.body.error).toBeUndefined();
+            expect(ordinary.body.result?.isError).not.toBe(true);
+            expect(ordinary.body).toHaveProperty('result.content');
+          } else {
+            const reply = await rpc(
+              scenario === 'foreign-server' ? 'openkit-work' : 'openkit-security',
+              'tools/call',
+              {
+                name:
+                  scenario === 'near-name' ? 'security_admin_export_near' : 'security_admin_export',
+                arguments:
+                  scenario === 'policy-hidden-foreign'
+                    ? {
+                        workspaceId: 'foreign-canary-workspace-marker',
+                        agentId: 'foreign-canary-agent-marker',
+                        responsibleUserId: 'foreign-canary-human-marker',
+                        schemaPolicy: 'tracking',
+                        pinnedSchemaSnapshotId: 'foreign-canary-schema-marker',
+                        payload: 'foreign-canary-payload-marker',
+                      }
+                    : {},
+              },
+              203,
+              scenario === 'bad-token' ? `${capabilityToken}x` : capabilityToken
+            );
+            if (
+              ![
+                'bad-token',
+                'settled-lineage',
+                'source-unselected',
+                'native-send-failure',
+              ].includes(scenario)
+            ) {
+              expect(reply.response.status).toBe(200);
+              expect(reply.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+            } else
+              expect(reply.response.status >= 400 || reply.body.error !== undefined).toBe(true);
+          }
+        } finally {
+          transportFault?.mockRestore();
+        }
+        const shouldTrip = ['trip', 'policy-hidden-foreign', 'repeat'].includes(scenario);
+        if (shouldTrip) {
+          const facts = rows();
+          expect(facts).toHaveLength(1);
+          const requestId = RequestIdSchema.safeParse(original.scope.requestId);
+          expect(facts[0]).toMatchObject({
+            workspaceId,
+            threadId,
+            turnId: turn.id,
+            agentId: original.agent.agentId,
+            agentSessionId: original.scope.agentSessionId,
+            itemId: original.scope.itemId ?? null,
+            requestId: requestId.success ? requestId.data : null,
+            action: 'security.canary',
+            category: 'capability',
+            outcome: 'denied',
+            severity: 'warning',
+            resource: `mcp:openkit-security/security_admin_export@${digest}`,
+            resourceRevision: null,
+            capabilityCallId: null,
+            summary: 'Authenticated inert MCP canary call refused.',
+            errorCode: 'mcp-denied',
+          });
+          const actor = {
+            kind: 'agent',
+            id: original.agent.agentId,
+            responsibleUserId: responsibleUserIdForActor(original.scope.triggerActor),
+          };
+          expect(facts[0]?.actor).toStrictEqual(actor);
+          expect(facts[0]?.subject).toStrictEqual(actor);
+          expect(JSON.stringify(facts)).not.toContain('foreign-canary-');
+          if (scenario === 'repeat') {
+            for (const id of [204, 203]) {
+              const again = await rpc(
+                'openkit-security',
+                'tools/call',
+                { name: 'security_admin_export', arguments: {} },
+                id
+              );
+              expect(again.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+              expect(rows()).toStrictEqual(facts);
+            }
+          }
+        } else expect(rows()).toEqual([]);
+        expect(JSON.stringify(listServerAuditEvents(coreDb))).not.toContain('foreign-canary-');
+        if (scenario === 'native-send-failure') expect(sendFailures).toBe(1);
+        expect(upstreamList).not.toHaveBeenCalled();
+        expect(upstreamCall).not.toHaveBeenCalled();
+      } finally {
+        detachStartupFailure?.();
+        upstreamList.mockRestore();
+        upstreamCall.mockRestore();
+        execution?.completion.resolve();
+        if (native.executor.launches > 0) await execution?.execution.catch(() => undefined);
+        await native.restore();
+        await gateway.close();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+        rmSync(dataRoot, { recursive: true, force: true });
       }
     }
   );

@@ -75,6 +75,7 @@ import {
   listSchedulerExecutionAttemptsForTurn,
 } from './execution-attempt-records.js';
 import { resolvePublicNativeEnvironment } from './native-environment.js';
+import { createSecurityCanaryMcpSupply } from '../security/canaries.js';
 import { createOpenkitGenerativeMcpSupply } from './openkit-generative-supply.js';
 import { createOpenkitWorkMcpSupply } from './openkit-work-supply.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -1283,6 +1284,8 @@ function resolveWorkerMcpServerSupply(
 ) {
   if (mcpServerIds.length === 0) return [];
   return mcpServerIds.map((mcpServerId) => {
+    const canary = createSecurityCanaryMcpSupply();
+    if (mcpServerId === canary.id) return canary;
     if (!catalog)
       throw new Error('Workspace MCP server catalog is required by the selected Agent.');
     const entry = resolveWorkspaceMcpServer({ catalog, serverId: mcpServerId });

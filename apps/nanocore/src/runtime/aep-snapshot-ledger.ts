@@ -20,10 +20,12 @@ import {
 } from '@openkit/config-schema';
 import { writeRetainedV1 } from '@openkit/protocol';
 import type { WorkspaceDb } from '../storage/db.js';
+import { workspaceDbPath } from '../storage/fs-layout.js';
 import {
   type AgentEnvironmentPackageSnapshotReadRecord,
   type AgentEnvironmentPackageSnapshotRecord,
   agentSessionsRoot,
+  agentSessionsRootAtDatabasePath,
   assertPathSegment,
   assertWorkspaceOwner,
   readSnapshotRecord,
@@ -189,6 +191,37 @@ export function findNamedAgentEnvironmentPackageSnapshot(
   const path = snapshotPath(workspaceDb, agentSessionId, snapshotId);
 
   const root = agentSessionsRoot(workspaceDb);
+  return findNamedSnapshotAtPath(workspaceDb, root, path, agentSessionId, snapshotId);
+}
+
+/**
+ * Reads the original immutable snapshot in the canonical live Workspace namespace.
+ * Native callers first resolve the original live attempt; this is only a file selector,
+ * not a database handle, admission proof, connection or new retained record.
+ * Existing handle-based callers retain their exact physical/custom-root namespace.
+ */
+export function findNamedAgentEnvironmentPackageSnapshotAtDataRoot(
+  dataRoot: string,
+  workspaceId: string,
+  agentSessionId: string,
+  snapshotId: string
+): AgentEnvironmentPackageSnapshotReadRecord | null {
+  assertPathSegment(workspaceId, 'Workspace id');
+  assertPathSegment(agentSessionId, 'AgentSession id');
+  assertPathSegment(snapshotId, 'snapshot id');
+  const root = agentSessionsRootAtDatabasePath(workspaceDbPath(dataRoot, workspaceId));
+  const path = join(root, agentSessionId, 'aep-snapshots', `${snapshotId}.json`);
+  return findNamedSnapshotAtPath({ workspaceId }, root, path, agentSessionId, snapshotId);
+}
+
+/** Shared original immutable-file checks; ownership metadata is not a pretend SQLite handle. */
+function findNamedSnapshotAtPath(
+  workspaceDb: Pick<WorkspaceDb, 'workspaceId'>,
+  root: string,
+  path: string,
+  agentSessionId: string,
+  snapshotId: string
+): AgentEnvironmentPackageSnapshotReadRecord | null {
   // Inspect only the named path. Missing entries prove absence; unreadable storage does not.
   // Parent checks also refuse links and non-directories before a child can appear missing.
   for (const directory of [dirname(root), root, join(root, agentSessionId), dirname(path)]) {

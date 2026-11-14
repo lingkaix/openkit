@@ -3916,7 +3916,7 @@ export function listExportableAgentEnvironmentPackageSnapshots(
  * @returns Validated snapshot record.
  */
 export function readSnapshotRecord(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'workspaceId'>,
   path: string,
   agentSessionId: string,
   snapshotId: string
@@ -3953,7 +3953,7 @@ export function readSnapshotRecord(
  * @throws Error for unsafe original evidence, invalid integrity or lineage, or changed retained core.
  */
 export function validateSnapshotRecord(
-  workspaceDb: WorkspaceDb,
+  workspaceDb: Pick<WorkspaceDb, 'workspaceId'>,
   value: unknown
 ): AgentEnvironmentPackageSnapshotReadRecord {
   const candidate = value as AgentEnvironmentPackageSnapshotReadRecord;
@@ -4020,7 +4020,12 @@ export function validateSnapshotRecord(
  * @returns Absolute AgentSession root.
  */
 export function agentSessionsRoot(workspaceDb: WorkspaceDb): string {
-  return join(dirname(dirname(workspaceDb.sqlite.name)), 'runtime', 'agent-sessions');
+  return agentSessionsRootAtDatabasePath(workspaceDb.sqlite.name);
+}
+
+/** Resolves only the immutable-file namespace; this path grants no database ownership. */
+export function agentSessionsRootAtDatabasePath(databasePath: string): string {
+  return join(dirname(dirname(databasePath)), 'runtime', 'agent-sessions');
 }
 
 /**
@@ -4039,7 +4044,10 @@ export function snapshotDigest(snapshot: Readonly<Record<string, unknown>>): str
  * @param workspaceDb Open workspace database metadata.
  * @param workspaceId Workspace id supplied by the record or caller.
  */
-export function assertWorkspaceOwner(workspaceDb: WorkspaceDb, workspaceId: string): void {
+export function assertWorkspaceOwner(
+  workspaceDb: Pick<WorkspaceDb, 'workspaceId'>,
+  workspaceId: string
+): void {
   if (workspaceId !== workspaceDb.workspaceId) {
     throw new Error(`Agent environment package snapshot workspace mismatch: ${workspaceId}`);
   }
