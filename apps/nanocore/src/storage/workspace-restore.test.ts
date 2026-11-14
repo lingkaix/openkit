@@ -56,6 +56,10 @@ import {
 } from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import {
+  recoveryJournalFact,
+  replaceRecoveryJournalProof,
+} from '../test-support/recovery-journal.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -199,6 +203,7 @@ vi.mock('node:worker_threads', async (load) => {
             return;
           }
           const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
             const { workerData, parentPort } = require('node:worker_threads');
             const fs = require('node:fs');
             const { createHash } = require('node:crypto');
@@ -259,9 +264,7 @@ vi.mock('node:worker_threads', async (load) => {
             Database.prototype.exec = function(sql) {
               const result = execute.call(this, sql);
               if (/^COMMIT$/i.test(sql) && this.name === facts.corePath) {
-                const row = this.prepare(
-                  'SELECT state,workspace_id FROM workspace_recovery_admissions WHERE admission_id=?'
-                ).get(facts.admissionId);
+                const row = recoveryJournalFact(this, facts.admissionId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
                 if (row?.state === 'finished' && row.workspace_id === facts.workspaceId) {
                   if (this.inTransaction) throw new Error('Q05 covering COMMIT is still active.');
                   Atomics.store(gate,2,pragma.call(this,'synchronous',{simple:true}));
@@ -323,6 +326,7 @@ vi.mock('node:worker_threads', async (load) => {
           return;
         }
         const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
           const { workerData } = require('node:worker_threads');
           const Database = require(workerData.databaseModule);
           const execute = Database.prototype.exec;
@@ -330,9 +334,7 @@ vi.mock('node:worker_threads', async (load) => {
           Database.prototype.exec = function(sql) {
             const result = execute.call(this, sql);
             if (/^COMMIT$/i.test(sql) && this.name === workerData.corePath && Atomics.load(gate, 2)) {
-              const admission = this.prepare(
-                'SELECT state, workspace_id FROM workspace_recovery_admissions WHERE admission_id=?'
-              ).get(workerData.admissionId);
+              const admission = recoveryJournalFact(this, workerData.admissionId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
               if (admission?.state === 'finished' && admission.workspace_id === workerData.workspaceId &&
                   Atomics.load(gate, 0) === 0) {
                 Atomics.store(gate, 3, this.pragma('synchronous', { simple: true }));
@@ -874,7 +876,8 @@ describe('D0-2 same-deployment restore', () => {
     const tuple = () =>
       Object.fromEntries(
         [
-          'workspace_recovery_admissions',
+          'control_executions',
+          'control_execution_steps',
           'workspace_registry',
           'workspace_members',
           'recurring_schedules',
@@ -1002,7 +1005,8 @@ describe('D0-2 same-deployment restore', () => {
       const tuple = () =>
         Object.fromEntries(
           [
-            'workspace_recovery_admissions',
+            'control_executions',
+            'control_execution_steps',
             'workspace_registry',
             'workspace_members',
             'recurring_schedules',
@@ -1097,9 +1101,8 @@ describe('D0-2 same-deployment restore', () => {
             writer.sqlite.close();
           }
           expected = tuple();
-          expect(expected.workspace_recovery_admissions).toEqual(
-            before.workspace_recovery_admissions
-          );
+          expect(expected.control_executions).toEqual(before.control_executions);
+          expect(expected.control_execution_steps).toEqual(before.control_execution_steps);
           expect(expected.workspace_registry).toContainEqual(
             expect.objectContaining({
               workspace_id: workspaceId,
@@ -1133,10 +1136,11 @@ describe('D0-2 same-deployment restore', () => {
       const retained = readRecoveryExecution(f.owner.core, f.requestId)!;
       expect(retained.state).toBe('prepared');
       expect(retained.proof.candidateDigest).toBeTypeOf('string');
-      const rawProof = f.owner.core.sqlite
-        .prepare('SELECT proof_json FROM workspace_recovery_admissions WHERE admission_id=?')
-        .pluck()
-        .get(f.requestId) as string;
+      const rawProof = recoveryJournalFact(
+        f.owner.core.sqlite,
+        f.requestId,
+        f.dataRoot
+      )!.proof_json;
       const parent = verifyDataRootBackupManifest({
         backupRoot: join(dirname(f.dataRoot), 'parent'),
       }).manifest;
@@ -1164,18 +1168,15 @@ describe('D0-2 same-deployment restore', () => {
       const injected = { ...retained.proof, capture, result };
       // Retained-content fault/format specimen after genuine placement, following
       // the existing recovery-admission owner's corruption fixture. No authority changes.
-      const changed = f.owner.core.sqlite
-        .prepare(`UPDATE workspace_recovery_admissions
-      SET proof_json=? WHERE admission_id=? AND workspace_id=? AND state='prepared'
-      AND revision=? AND candidate_ref=? AND proof_json=?`)
-        .run(
-          JSON.stringify(injected),
-          f.requestId,
-          retained.workspace_id,
-          retained.revision,
-          retained.candidate_ref,
-          rawProof
-        );
+      expect(recoveryJournalFact(f.owner.core.sqlite, f.requestId, f.dataRoot)!.proof_json).toBe(
+        rawProof
+      );
+      const changed = replaceRecoveryJournalProof(
+        f.owner.core.sqlite,
+        f.requestId,
+        f.dataRoot,
+        injected
+      );
       expect(changed.changes).toBe(1);
       const installed = readRecoveryExecution(f.owner.core, f.requestId)!;
       expect(installed.state).toBe(retained.state);
@@ -1248,7 +1249,8 @@ describe('D0-2 same-deployment restore', () => {
       const tuple = () =>
         Object.fromEntries(
           [
-            'workspace_recovery_admissions',
+            'control_executions',
+            'control_execution_steps',
             'workspace_registry',
             'workspace_members',
             'recurring_schedules',
@@ -1362,7 +1364,8 @@ describe('D0-2 same-deployment restore', () => {
     const tuple = () =>
       Object.fromEntries(
         [
-          'workspace_recovery_admissions',
+          'control_executions',
+          'control_execution_steps',
           'workspace_registry',
           'workspace_members',
           'recurring_schedules',
@@ -1378,7 +1381,7 @@ describe('D0-2 same-deployment restore', () => {
     const placed = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
     const sibling = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id));
     core.sqlite.exec(`CREATE TRIGGER restore_terminal_failure
-      BEFORE UPDATE OF state ON workspace_recovery_admissions WHEN NEW.state='finished'
+      BEFORE UPDATE OF phase ON control_executions WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause IS NULL
       BEGIN SELECT RAISE(ABORT, 'RESTORE_TERMINAL_FAULT'); END`);
     const selected = {
       dataRoot: f.dataRoot,
@@ -1453,7 +1456,9 @@ describe('D0-2 same-deployment restore', () => {
     core.sqlite.pragma('query_only = ON');
     expect(() =>
       core.sqlite
-        .prepare('UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?')
+        .prepare(
+          `UPDATE control_executions SET revision=revision WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
+        )
         .run(f.requestId)
     ).toThrow(/readonly/i);
     const selection = { kind: 'admission' as const, requestId: f.requestId };
@@ -3339,7 +3344,7 @@ describe('Q05 live selected recovery inspection policy', () => {
       expect(() =>
         core.sqlite
           .prepare(
-            'UPDATE workspace_recovery_admissions SET revision=revision WHERE admission_id=?'
+            `UPDATE control_executions SET revision=revision WHERE id IN (SELECT execution_id FROM control_execution_steps WHERE json_extract(invocation_json,'$.carriage.requestId')=?)`
           )
           .run(f.requestId)
       ).toThrow(/readonly/i);

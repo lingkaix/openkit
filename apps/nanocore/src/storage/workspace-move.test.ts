@@ -27,6 +27,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { FsStore } from '../lib/store.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recoveryJournalFact } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
@@ -525,7 +526,8 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
     const tuple = () =>
       Object.fromEntries(
         [
-          'workspace_recovery_admissions',
+          'control_executions',
+          'control_execution_steps',
           'workspace_registry',
           'workspace_members',
           'audit_events',
@@ -541,8 +543,8 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
       // Fail after the new registry, both memberships and the terminal result
       // have run, at the final admission state change in their same transaction.
       fault.exec(`CREATE TRIGGER d0_refuse_target_terminal
-        BEFORE UPDATE OF state ON workspace_recovery_admissions
-        WHEN NEW.state='finished'
+        BEFORE UPDATE OF phase ON control_executions
+        WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause IS NULL
         BEGIN SELECT RAISE(ABORT, 'TARGET_TERMINAL_FAULT'); END`);
     } finally {
       fault.close();
@@ -590,10 +592,9 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
       )
     );
     expect(committed.workspace_members).toHaveLength(2);
-    const admission = committed.workspace_recovery_admissions![0] as {
-      state: string;
-      proof_json: string;
-    };
+    const observer = new Database(corePath, { readonly: true, fileMustExist: true });
+    const admission = recoveryJournalFact(observer, f.requestId, f.dataRoot)!;
+    observer.close();
     expect(admission.state).toBe('finished');
     expect(JSON.parse(admission.proof_json).result).toMatchObject({
       disposition: 'imported',
@@ -627,7 +628,8 @@ describe('D0-2 identity-preserving MOVE target admission', () => {
       const tuple = () =>
         Object.fromEntries(
           [
-            'workspace_recovery_admissions',
+            'control_executions',
+            'control_execution_steps',
             'workspace_registry',
             'workspace_members',
             'audit_events',

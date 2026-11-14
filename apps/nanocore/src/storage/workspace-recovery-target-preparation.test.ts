@@ -11,6 +11,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -18,7 +19,7 @@ import { dirname, join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import { type Worker as NativeWorker, Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
-import { publishDurableFile, removeDurableFile } from '@openkit/storage';
+import { publishDurableFile } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -30,6 +31,7 @@ import { acquireDataRootLock } from '../bootstrap/lock.js';
 import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { recoveryJournalFact } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
@@ -48,6 +50,7 @@ import { inspectWorkspaceRecoveryAtCore } from './workspace-move.js';
 import {
   bindWorkspaceRecoveryNativeOwner,
   finishRecoveryExecution,
+  publishRecoveryProof,
   readRecoveryExecution,
   resumeWorkspaceRecoveryOwner,
   unresolvedRecoveryExecutions,
@@ -100,6 +103,7 @@ vi.mock('node:worker_threads', async (load) => {
           return;
         }
         const prelude = `
+        const recoveryJournalFact = ${recoveryJournalFact.toString()};
         const { workerData } = require('node:worker_threads');
         const Database = require(workerData.databaseModule);
         const execute = Database.prototype.exec;
@@ -108,9 +112,7 @@ vi.mock('node:worker_threads', async (load) => {
           const result = execute.call(this, sql);
           if (/^COMMIT$/i.test(sql) && this.name === workerData.corePath &&
               Atomics.load(gate, 2) && Atomics.load(gate, 0) === 0) {
-            const admission = this.prepare(
-              'SELECT state,revision,workspace_id,proof_json FROM workspace_recovery_admissions WHERE admission_id=?'
-            ).get(workerData.admissionId);
+            const admission = recoveryJournalFact(this, workerData.admissionId, require('node:path').resolve(this.name,'../../..'), require('node:fs').readFileSync, require('node:crypto').createHash);
             const proof = admission && JSON.parse(admission.proof_json);
             const complete = admission?.state === 'prepared' && admission.revision === 1 &&
               admission.workspace_id === workerData.workspaceId && proof.input.requestId === workerData.admissionId &&
@@ -560,7 +562,8 @@ describe('Target admission original preparation boundaries', () => {
     const f = await fixture();
     const source = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
     const registry = rows(coreDbPath(f.dataRoot), 'workspace_registry');
-    f.owner.core.sqlite.exec(`CREATE TRIGGER target_prepare_fault AFTER INSERT ON workspace_recovery_admissions
+    f.owner.core.sqlite.exec(`CREATE TRIGGER target_prepare_fault AFTER INSERT ON control_execution_steps
+      WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1' AND json_extract(NEW.control_json,'$.kind')='admit'
       BEGIN SELECT RAISE(ABORT, 'TARGET_PREPARE_LATE_FAULT'); END`);
     f.owner.core.sqlite.pragma('query_only = ON');
     const client = getControlStoreWorkerClient(f.owner.native.gate);
@@ -576,15 +579,21 @@ describe('Target admission original preparation boundaries', () => {
     // Already staged private bytes are not falsely described as a filesystem rollback.
     const container = `${f.dataRoot}.workspace-recovery-${f.input.requestId}`;
     expect(existsSync(join(container, 'workspaces', f.input.workspaceId))).toBe(true);
-    expect(readdirSync(container).filter((name) => name.startsWith('.proof-'))).toEqual([]);
+    expect(
+      readdirSync(join(f.dataRoot, 'server/evidence/backend/sha256')).filter((name) =>
+        name.startsWith('.publish-')
+      )
+    ).toEqual([]);
   }, 120_000);
 
-  it('rolls a late whole-proof UPDATE back and preserves explicit partial abandonment', async () => {
+  it('rolls a late whole-proof journal stage back and preserves explicit partial abandonment', async () => {
     const f = await fixture();
     const source = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
-    f.owner.core.sqlite.exec(`CREATE TRIGGER target_proof_fault AFTER UPDATE OF proof_json ON workspace_recovery_admissions
-      WHEN json_extract(OLD.proof_json,'$.candidateDigest') IS NULL
-        AND json_extract(NEW.proof_json,'$.candidateDigest') IS NOT NULL
+    f.owner.core.sqlite.exec(`CREATE TRIGGER target_proof_fault AFTER INSERT ON control_execution_steps
+      WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1' AND json_extract(NEW.control_json,'$.kind')='inspect-cleanup'
+        AND (SELECT phase FROM control_executions WHERE id=NEW.execution_id)='open'
+        AND json_extract(NEW.invocation_json,'$.carriage.sequence')=2
+        AND json_extract(NEW.control_json,'$.authorityRefs[1]')='1'
       BEGIN SELECT RAISE(ABORT, 'TARGET_PROOF_LATE_FAULT'); END`);
     f.owner.core.sqlite.pragma('query_only = ON');
     const client = getControlStoreWorkerClient(f.owner.native.gate);
@@ -636,12 +645,16 @@ describe('Target admission original preparation boundaries', () => {
       const candidate = inventoryRegularFiles(owned.candidate_ref);
       const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
       physical.completedDirectorySyncs.length = 0;
-      const condition =
+      f.owner.core.sqlite.exec(
         kind === 'abandon'
-          ? "OLD.state='prepared' AND NEW.state='abandoned'"
-          : "json_extract(NEW.proof_json,'$.result.disposition')='abandoned'";
-      f.owner.core.sqlite.exec(`CREATE TRIGGER target_abandon_fault AFTER UPDATE ON workspace_recovery_admissions
-        WHEN ${condition} BEGIN SELECT RAISE(ABORT, 'TARGET_ABANDON_LATE_FAULT'); END`);
+          ? `CREATE TRIGGER target_abandon_fault AFTER UPDATE OF phase ON control_executions
+        WHEN NEW.definition_version='core-workspace-recovery/v1' AND OLD.phase='open' AND NEW.phase='closed' AND NEW.terminal_cause LIKE 'abandoned:%'
+        BEGIN SELECT RAISE(ABORT, 'TARGET_ABANDON_LATE_FAULT'); END`
+          : `CREATE TRIGGER target_abandon_fault AFTER INSERT ON control_execution_steps
+        WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1'
+          AND (SELECT terminal_cause FROM control_executions WHERE id=NEW.inspected_execution_id) LIKE 'abandoned:%'
+        BEGIN SELECT RAISE(ABORT, 'TARGET_ABANDON_LATE_FAULT'); END`
+      );
       f.owner.core.sqlite.pragma('query_only = ON');
       const client = getControlStoreWorkerClient(f.owner.native.gate);
       const actual = client.recoveryTargetPreparation.bind(client);
@@ -857,7 +870,7 @@ describe('Target admission original preparation boundaries', () => {
       const f = await fixture();
       const client = getControlStoreWorkerClient(f.owner.native.gate);
       const actual = client.recoveryTargetPreparation.bind(client);
-      const container = `${f.dataRoot}.workspace-recovery-${f.input.requestId}`;
+      const container = join(f.dataRoot, 'server/evidence/backend');
       const displaced = `${container}-retained`;
       let substituted = false;
       const publication = vi
@@ -865,16 +878,25 @@ describe('Target admission original preparation boundaries', () => {
         .mockImplementation(async (...args) => {
           if (args[1].kind !== 'prepare') return actual(...args);
           const input = args[1];
-          if (fault === 'digest-mismatch')
-            return actual(
-              args[0],
-              { ...input, file: { ...input.file, digest: `sha256:${'0'.repeat(64)}` } },
-              args[2]
-            );
+          if (fault === 'digest-mismatch') {
+            const path = join(container, input.file.reference.locator!.path);
+            const original = readFileSync(path),
+              damaged = Buffer.from(original);
+            damaged[0] ^= 1;
+            writeFileSync(path, damaged);
+            try {
+              return await actual(...args);
+            } finally {
+              writeFileSync(path, original);
+            }
+          }
           const outside = join(f.root, 'outside-operation');
-          mkdirSync(outside);
-          const bytes = readFileSync(join(container, input.file.name));
-          await publishDurableFile({ destinationPath: join(outside, input.file.name), bytes });
+          mkdirSync(join(outside, 'sha256'), { recursive: true });
+          const bytes = readFileSync(join(container, input.file.reference.locator!.path));
+          await publishDurableFile({
+            destinationPath: join(outside, input.file.reference.locator!.path),
+            bytes,
+          });
           renameSync(container, displaced);
           symlinkSync(outside, container, 'dir');
           substituted = true;
@@ -930,33 +952,24 @@ describe('Target admission original preparation boundaries', () => {
       .mockImplementation(async (...args) => {
         const input = args[1];
         if (input.kind !== 'prepare') return actual(...args);
-        const container = `${f.dataRoot}.workspace-recovery-${f.input.requestId}`;
-        const proof = JSON.parse(readFileSync(join(container, input.file.name), 'utf8'));
+        const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
+        const proof = JSON.parse(
+          readFileSync(join(scope.contentMount.root, input.file.reference.locator!.path), 'utf8')
+        );
         // Transport sizing only: this descriptive addition does not claim 850,000 real graph records.
         proof.result.futureTransportDescription = 'x'.repeat(64 * 1024 * 1024 + 1024);
         const bytes = Buffer.from(JSON.stringify(proof), 'utf8');
         expectedBytes = bytes.length;
         expectedDigest = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
         expect(bytes.length).toBeGreaterThan(CONTROL_WORKER_LIMITS.pendingBytes);
-        const name = `.proof-${randomUUID()}.json`;
-        const path = join(container, name);
-        const reservation = f.owner.fileAdmission.forPath(container).reserve({
-          stagingBytes: BigInt(bytes.length),
-          extractionBytes: 0n,
-          derivativeBytes: 0n,
-          publicationBytes: 0n,
-        });
-        try {
-          reservation.assertAvailable();
-          const written = await publishDurableFile({ destinationPath: path, bytes });
-          reservation.recordWritten(written.bytes);
-          expect(written.sha256).toBe(expectedDigest);
-          const descriptor = { name, byteLength: bytes.length, digest: expectedDigest };
-          await actual(args[0], { ...input, file: descriptor }, args[2]);
-        } finally {
-          await removeDurableFile({ destinationPath: path });
-          reservation.release();
-        }
+        const descriptor = await publishRecoveryProof(
+          f.dataRoot,
+          proof,
+          f.owner.fileAdmission.forPath(scope.contentMount.root)
+        );
+        expect(descriptor.reference.contentDigest).toBe(expectedDigest);
+        expect(descriptor.byteLength).toBe(expectedBytes);
+        await actual(args[0], { ...input, file: descriptor }, args[2]);
         throw stopped;
       });
     const post = vi.spyOn(Worker.prototype, 'postMessage');
@@ -974,11 +987,7 @@ describe('Target admission original preparation boundaries', () => {
       expect(controlWorkerInputBytes(commands[0]) + 64).toBeLessThan(1024 * 1024);
       const reader = new Database(coreDbPath(f.dataRoot), { readonly: true, fileMustExist: true });
       try {
-        const row = reader
-          .prepare(
-            'SELECT state,revision,proof_json FROM workspace_recovery_admissions WHERE admission_id=?'
-          )
-          .get(f.input.requestId) as { state: string; revision: number; proof_json: string };
+        const row = recoveryJournalFact(reader, f.input.requestId, f.dataRoot)!;
         expect(row.state).toBe('prepared');
         expect(row.revision).toBe(1);
         expect(Buffer.byteLength(row.proof_json)).toBe(expectedBytes);

@@ -186,12 +186,12 @@ export function listRecoveryExecutions(
     .prepare(`SELECT DISTINCT json_extract(s.invocation_json,'$.carriage.requestId') AS id
     FROM control_executions e JOIN control_execution_steps s ON s.execution_id=e.id
     WHERE e.definition_version='core-workspace-recovery/v1'
-    ${workspaceId === undefined ? '' : 'AND e.work_id=?'} ${state === undefined ? '' : 'AND e.phase=?'}`)
-    .all(
-      ...(workspaceId === undefined ? [] : [workspaceId]),
-      ...(state === undefined ? [] : [state === 'prepared' ? 'open' : 'closed'])
-    ) as { id: string }[];
-  return ids.map(({ id }) => readRecoveryExecution(core, id)!);
+    ${workspaceId === undefined ? '' : 'AND e.work_id=?'}`)
+    .all(...(workspaceId === undefined ? [] : [workspaceId])) as { id: string }[];
+  // Validate the complete owner census before applying a lifecycle predicate.
+  return ids.map(({ id }) => readRecoveryExecution(core, id)!).filter(
+    (row) => state === undefined || (state === 'prepared' ? row.state === 'prepared' : row.state !== 'prepared')
+  );
 }
 
 /** Selects the unique finished original recovery; this grants no serving or replacement authority. */
