@@ -66,7 +66,6 @@ import {
   DeploymentAdminRequiredError,
   isWorkspaceOperationAuthorized,
   readCurrentWorkspacePolicy,
-  registerOperationAccessGuards,
   requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
@@ -144,7 +143,10 @@ import { createAppOpenApiDocument, registerAppApiRoute } from './openapi.js';
 import type { OperationInvocationDependencies } from './operation-composition.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError, projectOperationError } from './operation-error.js';
-import { registerOperationJsonRoutes } from './operation-json-routes.js';
+import {
+  registerOperationJsonRoutes,
+  registerRetainedOperationRoutes,
+} from './operation-json-routes.js';
 import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
 import { createGoalDomainPolicyService } from './policy/goal-domains.js';
 import {
@@ -2025,7 +2027,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   if (options.coreDb) {
-    registerOperationAccessGuards({
+    registerRetainedOperationRoutes({
       app,
       coreDb: options.coreDb,
       operationAvailable: operationExposureAvailable,

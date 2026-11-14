@@ -16,6 +16,7 @@ import {
   createRuntimeConfigManager,
 } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
+import { registerRetainedOperationRoutes } from '../operation-json-routes.js';
 import { admitOperation } from '../operation-resolvers.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -29,7 +30,6 @@ import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { AuthVariables } from './middleware.js';
-import { registerOperationAccessGuards } from './operation-authorizer.js';
 
 describe('managed Thread native admission', () => {
   it('preserves concrete operation restrictions and excludes a revoked Thread from shared lists', async () => {
@@ -81,7 +81,7 @@ describe('managed Thread native admission', () => {
         context.set('actor', { kind: 'local', userId: FIXTURE_LOCAL_USER_ID });
         await next();
       });
-      registerOperationAccessGuards({
+      registerRetainedOperationRoutes({
         app: retained,
         coreDb: db,
         store,

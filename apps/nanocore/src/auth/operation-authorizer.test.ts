@@ -31,7 +31,10 @@ import {
 import { AutomationStore } from '../lib/automation-store.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import * as appOpenApi from '../openapi.js';
-import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import {
+  registerOperationJsonRoutes,
+  registerRetainedOperationRoutes,
+} from '../operation-json-routes.js';
 import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -75,7 +78,6 @@ import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
   isCanonicalUserOperationAuthorized,
-  registerOperationAccessGuards,
   type WorkspaceAuthorityEvaluation,
   type WorkspaceAuthorityOptions,
 } from './operation-authorizer.js';
@@ -227,7 +229,7 @@ async function createFixture(prepared?: PreparedAuthBase) {
     c.set('actor', actorState.current);
     await next();
   });
-  registerOperationAccessGuards({
+  registerRetainedOperationRoutes({
     app,
     coreDb,
     quickChatWorkspaceIdForUser,
@@ -395,7 +397,7 @@ describe('central Workspace operation authorizer', () => {
         c.set('actor', fixture.actorState.current);
         await next();
       });
-      registerOperationAccessGuards({
+      registerRetainedOperationRoutes({
         app,
         coreDb: fixture.coreDb,
         store: fixture.store,
@@ -455,7 +457,7 @@ describe('central Workspace operation authorizer', () => {
     });
     try {
       expect(() =>
-        registerOperationAccessGuards({
+        registerRetainedOperationRoutes({
           app: new Hono<{ Variables: AuthVariables }>(),
           coreDb: fixture.coreDb,
           store: fixture.store,
@@ -2585,7 +2587,7 @@ describe('canonical administration Workspace admission', () => {
           c.set('actor', fixture.actorState.current);
           await next();
         });
-        registerOperationAccessGuards({
+        registerRetainedOperationRoutes({
           app,
           coreDb: fixture.coreDb,
           store: fixture.store,

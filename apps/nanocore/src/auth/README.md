@@ -4,6 +4,8 @@
 
 Native public, Skill and internal operations and retained HTTP routes use `operation-authorizer.ts`'s `requireThreadAudience` for the same current Thread Policy decision. Retained routes keep their Workspace-first fact read and route-derived personal Workspace selector; native Worker calls keep their exact live AgentSession and responsibility facts. Each entry retains its existing credential, exposure, readiness and freeze ordering around that common decision.
 
+`operation-json-routes.ts` owns both JSON framing and retained HTTP route registration. `registerRetainedOperationRoutes` resolves transport selectors and projects the existing exposure, readiness and freeze results around canonical Workspace and Thread decisions; it adds no separate Policy evaluator or compatibility path.
+
 Operation admission awaits administrator-bearer Quick Chat provisioning before it checks the resulting Workspace authority and audience. Better Auth session creation awaits the existing active-user provisioning hook before session recording. Both paths keep their current active-user, owner and membership checks.
 
 This directory owns NanoCore authentication middleware, Better Auth browser sessions, actor resolution, server access-token authentication, bootstrap credential flow, and request-scope authorization helpers.
