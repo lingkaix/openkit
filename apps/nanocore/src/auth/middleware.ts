@@ -6,7 +6,10 @@ import {
 
 import { ApiErrorSchema, PROTOCOL_VERSION } from '@openkit/protocol';
 import type { MiddlewareHandler } from 'hono';
+import { prepareServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import type { CoreDb } from '../storage/db.js';
 import {
   type Actor,
   type AuthSessionIdentity,
@@ -71,6 +74,8 @@ type SessionDeploymentAdminResolver = (userId: string) => string | null | Promis
  * Optional auth middleware dependencies.
  */
 interface AuthMiddlewareOptions {
+  /** Original native Server Audit owner; never supplied by a request. */
+  coreDb?: CoreDb;
   /** Unique recorded local User selected at trusted app construction; never a caller input. */
   localUserId?: string;
   /** Verifier for OpenKit `okt_` bearer tokens. */
@@ -94,6 +99,55 @@ export function createAuthMiddleware(
   auth?: BetterAuthServer,
   options: AuthMiddlewareOptions = {}
 ): MiddlewareHandler<{ Variables: AuthVariables }> {
+  // Process-local, bounded source history; no admission, throttling or retained counter state.
+  const failedSources = new Map<
+    string,
+    { startedAt: number; count: number; publication?: Promise<void> }
+  >();
+  async function recordBearerFailure(context: Parameters<MiddlewareHandler>[0]): Promise<void> {
+    const coreDb = options.coreDb;
+    if (!coreDb) return;
+    const env = context.env as { incoming?: unknown; server?: { incoming?: unknown } } | undefined;
+    const incoming = env?.incoming ?? env?.server?.incoming;
+    const source = (incoming as { socket?: { remoteAddress?: unknown } } | null)?.socket
+      ?.remoteAddress;
+    // Host, URL and forwarding text cannot manufacture the physical peer identity.
+    if (typeof source !== 'string' || source.length === 0) return;
+    const now = Date.now();
+    let entry = failedSources.get(source);
+    if (!entry || now < entry.startedAt || now - entry.startedAt >= 900_000) {
+      entry = { startedAt: now, count: 0 };
+    }
+    failedSources.delete(source);
+    failedSources.set(source, entry);
+    if (failedSources.size > 1024) {
+      const oldest = failedSources.keys().next().value;
+      if (oldest !== undefined) failedSources.delete(oldest);
+    }
+    entry.count = Math.min(100, entry.count + 1);
+    if (entry.count === 100 && !entry.publication) {
+      // One in-flight publication per crossing, also for concurrent rejected requests.
+      entry.publication = (async () => {
+        await getControlStoreWorkerClient().standaloneAudit(coreDb, {
+          stage: 'auth.failure-threshold',
+          event: prepareServerAuditEvent({
+            coreDb,
+            action: 'auth.failure-threshold',
+            category: 'system',
+            actor: null,
+            outcome: 'failed',
+            resource: null,
+            severity: 'warning',
+            summary: '{"kind":"bearer","keyKind":"source","window":900000,"count":100}',
+          }),
+        });
+      })().catch((error: unknown) => {
+        // Publication failure never converts credential refusal into admission or throttling.
+        console.error('Bearer failure threshold Audit unavailable.', error);
+      });
+    }
+    await entry.publication;
+  }
   return async (c, next) => {
     const bootstrap = isBootstrapOperationPath(c.req.method, c.req.path);
     if (bootstrap || isPublicRoute(c.req.method, c.req.path)) {
@@ -148,6 +202,7 @@ export function createAuthMiddleware(
       const token = await options.accessTokenVerifier?.(bearerToken, c.req.raw);
 
       if (!token) {
+        await recordBearerFailure(c);
         return unauthorized(c);
       }
 

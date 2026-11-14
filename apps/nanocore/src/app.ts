@@ -732,6 +732,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(accessTokenVerifier ? { accessTokenVerifier } : {}),
     ...(options.coreDb
       ? {
+          coreDb: options.coreDb,
           canonicalUserActive: (userId: string) => isCanonicalUserActive(options.coreDb!, userId),
           sessionDeploymentAdmin: (userId: string) =>
             resolveSessionDeploymentAdminTokenId(options.coreDb!, userId),
@@ -1981,12 +1982,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     services: () => channelServices,
   });
 
+  // All bearer-authenticated surfaces share this App's bounded physical-source accounting.
+  const authMiddleware = createAuthMiddleware(mode, auth, authMiddlewareOptions);
   app.use('/api/*', browserCors);
-  app.use('/api/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
+  app.use('/api/*', authMiddleware);
   app.use('/v1/*', browserCors);
-  app.use('/v1/*', createAuthMiddleware(mode, auth, authMiddlewareOptions));
+  app.use('/v1/*', authMiddleware);
   app.use('/mcp', browserCors);
-  app.use('/mcp', createAuthMiddleware(mode, auth, authMiddlewareOptions));
+  app.use('/mcp', authMiddleware);
 
   if (options.coreDb) {
     registerOperationAccessGuards({

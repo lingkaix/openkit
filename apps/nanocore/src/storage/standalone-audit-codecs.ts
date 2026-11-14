@@ -42,6 +42,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'catalog.mcp-select',
   'catalog.mcp-binding',
   'catalog.plugin-import',
+  'auth.failure-threshold',
   'auth.bootstrap.consume',
   'auth.token.issue',
   'auth.token.revoke',
@@ -87,6 +88,32 @@ export const ControlStandaloneAuditInputSchema = z
               event.actor.kind === 'agent' ||
               event.actor.kind === 'system')
           : event.resource === `light-app-definition:${workspaceId}`)
+      );
+    if (stage === 'auth.failure-threshold')
+      return (
+        workspaceId === undefined &&
+        event.workspaceId === null &&
+        event.threadId === null &&
+        event.turnId === null &&
+        event.itemId === null &&
+        event.capabilityCallId === null &&
+        event.permissionDecisionId === null &&
+        event.vaultGrantId === null &&
+        event.requestId === null &&
+        event.resourceRevision === null &&
+        event.resource === null &&
+        event.actor === null &&
+        event.subject === null &&
+        event.agentId === null &&
+        event.agentSessionId === null &&
+        event.authentication === undefined &&
+        event.policyInvocation === undefined &&
+        event.policyWriteOutcome === undefined &&
+        event.errorCode === null &&
+        event.category === 'system' &&
+        event.outcome === 'failed' &&
+        event.severity === 'warning' &&
+        event.summary === '{"kind":"bearer","keyKind":"source","window":900000,"count":100}'
       );
     if (stage === 'auth.bootstrap.consume')
       return (
