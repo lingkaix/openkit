@@ -151,7 +151,7 @@ async function createWorkspace(
 
         if (store.getDataRoot() !== null) {
           const { responseKind, ...originalReceipt } = receipt;
-          await store.publishWorkspaceCommandReceipt({
+          await store.publishCommandReceipt({
             ...originalReceipt,
             command: 'workspace.create',
             scope: { userId: actor.userId },
@@ -212,7 +212,7 @@ async function updateWorkspace(
         );
         if (store.getDataRoot() !== null) {
           const { responseKind, ...originalReceipt } = receipt;
-          await store.publishWorkspaceCommandReceipt({
+          await store.publishCommandReceipt({
             ...originalReceipt,
             command: 'workspace.update',
             scope: { workspaceId },

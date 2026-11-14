@@ -590,7 +590,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
         );
         if (store.getDataRoot() !== null) {
           const { responseKind, ...facts } = receipt;
-          await store.publishWorkspaceCommandReceipt({
+          await store.publishCommandReceipt({
             ...facts,
             command: 'administration.configuration.apply',
             scope: { actorId: actor.userId, workspaceId, threadId },

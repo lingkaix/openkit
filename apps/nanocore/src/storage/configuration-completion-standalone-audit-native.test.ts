@@ -471,14 +471,12 @@ async function fixture(
     observation.trace.push('artifact');
     return publish(...args);
   });
-  const record = store.publishWorkspaceCommandReceipt.bind(store);
-  const receipts = vi
-    .spyOn(store, 'publishWorkspaceCommandReceipt')
-    .mockImplementation(async (...args) => {
-      const result = await record(...args);
-      observation.trace.push('receipt');
-      return result;
-    });
+  const record = store.publishCommandReceipt.bind(store);
+  const receipts = vi.spyOn(store, 'publishCommandReceipt').mockImplementation(async (...args) => {
+    const result = await record(...args);
+    observation.trace.push('receipt');
+    return result;
+  });
   const mainInsert = { attempts: 0 };
   const prepare = coreDb.sqlite.prepare.bind(coreDb.sqlite);
   vi.spyOn(coreDb.sqlite, 'prepare').mockImplementation((sql: string) => {

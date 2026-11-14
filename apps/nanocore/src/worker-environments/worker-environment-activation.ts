@@ -362,7 +362,7 @@ export function createWorkerEnvironmentActivation(
           });
           if (dependencies.store.getDataRoot() !== null) {
             const { responseKind, ...originalReceipt } = receipt;
-            await dependencies.store.publishWorkspaceCommandReceipt({
+            await dependencies.store.publishCommandReceipt({
               ...originalReceipt,
               command: 'worker_environment.activate',
               scope: {

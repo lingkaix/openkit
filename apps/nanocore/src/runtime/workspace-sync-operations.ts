@@ -199,7 +199,7 @@ export function createWorkspaceSyncOperationImplementations({
             }
             if (store.getDataRoot() !== null) {
               const { responseKind, ...facts } = receipt;
-              await store.publishWorkspaceCommandReceipt({
+              await store.publishCommandReceipt({
                 ...facts,
                 command: 'workspace_sync.review.decide',
                 scope: { workspaceId, reviewId },

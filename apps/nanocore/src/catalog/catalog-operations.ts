@@ -450,7 +450,7 @@ export function createCatalogOperationImplementations(
             catalog.revision
           );
           await afterMutation(input.workspaceId);
-          await getControlStoreWorkerClient().recordCatalogCommandReceipt(owners.workspaceDb, {
+          await getControlStoreWorkerClient().recordCommandReceipt(owners.workspaceDb, {
             key: receipt.key,
             command: operation,
             requestId: receipt.requestId,
@@ -784,7 +784,7 @@ export function createCatalogOperationImplementations(
               result.catalog.revision
             );
             await afterMutation(input.workspaceId);
-            await getControlStoreWorkerClient().recordCatalogCommandReceipt(owners.workspaceDb, {
+            await getControlStoreWorkerClient().recordCommandReceipt(owners.workspaceDb, {
               key: receipt.key,
               command: 'catalog.skill-candidate-submit',
               requestId: receipt.requestId,

@@ -155,10 +155,6 @@ import {
   ControlAutomationScannerSchema,
 } from './automation-scanner-codecs.js';
 import {
-  type ControlCatalogCommandReceiptInput,
-  ControlCatalogCommandReceiptInputSchema,
-} from './catalog-command-receipt-codecs.js';
-import {
   type ControlAdmissionInput,
   ControlAdmissionInputSchema,
   type ControlAdmissionResult,
@@ -281,7 +277,6 @@ import {
 import {
   type ControlScopedNotebookSqlInput,
   ControlScopedNotebookSqlInputSchema,
-  ControlScopedNotebookSqlRefusalSchema,
 } from './scoped-notebook-sql-codecs.js';
 import {
   type ControlSecurityTrigger,
@@ -786,7 +781,13 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'recovery-move-out'; readonly input: ControlRecoveryMoveOutInput }
       | { readonly operation: 'recovery-safety'; readonly input: ControlRecoverySafetyInput }
-      | { readonly operation: 'transition'; readonly transition: ControlAdmissionInput }
+      | {
+          readonly operation: 'transition';
+          readonly transition:
+            | Exclude<ControlAdmissionInput, { kind: 'command-receipt' }>
+            | { readonly kind: 'command-receipt'; readonly input: ControlScalarText };
+          readonly content?: ArrayBuffer;
+        }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
       | {
           readonly operation: 'item';
@@ -879,15 +880,6 @@ export type ControlWorkerCommand =
           readonly input: ControlResolvedAgentSetupInput;
         }
       | { readonly operation: 'scoped-notebook-sql'; readonly input: ControlScopedNotebookSqlInput }
-      | {
-          readonly operation: 'catalog-command-receipt';
-          readonly input: ControlCatalogCommandReceiptInput;
-        }
-      | {
-          readonly operation: 'workspace-command-receipt';
-          readonly input: ControlScalarText;
-          readonly content: ArrayBuffer;
-        }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
       | { readonly operation: 'security-trigger'; readonly input: ControlSecurityTrigger }
@@ -1025,7 +1017,9 @@ export function controlWorkerInputBytes(
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
               command.operation === 'attention-enqueue' ||
-              command.operation === 'workspace-command-receipt' ||
+              (command.operation === 'transition' &&
+                'kind' in command.transition &&
+                command.transition.kind === 'command-receipt') ||
               command.operation === 'standalone-audit' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
@@ -1157,7 +1151,6 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlWorkspaceTakeoverRefusalSchema>
   | z.infer<typeof ControlWorkspaceRecoveryDecisionRefusalSchema>
   | z.infer<typeof ControlResolvedAgentSetupRefusalSchema>
-  | z.infer<typeof ControlScopedNotebookSqlRefusalSchema>
   | z.infer<typeof ControlWorkspaceStageReviewRefusalSchema>
   | z.infer<typeof ControlWorkspaceBackendHandoffRefusalSchema>
   | z.infer<typeof ControlSchemaApplicationRefusalSchema>
@@ -1309,12 +1302,6 @@ export type ControlWorkerReply = {
       readonly result: ControlResolvedAgentSetupResult;
     }
   | { readonly status: 'ok'; readonly operation: 'scoped-notebook-sql'; readonly result: null }
-  | { readonly status: 'ok'; readonly operation: 'catalog-command-receipt'; readonly result: null }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'workspace-command-receipt';
-      readonly result: null;
-    }
   | { readonly status: 'ok'; readonly operation: 'workspace-stage-review'; readonly result: null }
   | {
       readonly status: 'ok';
@@ -1501,7 +1488,7 @@ export type ControlWorkerReply = {
   | {
       readonly status: 'ok';
       readonly operation: 'transition';
-      readonly result: ControlAdmissionResult | ControlKnowledgeAdmissionResult;
+      readonly result: ControlAdmissionResult | ControlKnowledgeAdmissionResult | null;
     }
   | {
       readonly status: 'ok';
@@ -1622,8 +1609,6 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlPrivateWorkspaceRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'resolved-agent-setup')
     return ControlResolvedAgentSetupRefusalSchema.safeParse(value).success;
-  if (isRecord(value) && value.operation === 'scoped-notebook-sql')
-    return ControlScopedNotebookSqlRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-stage-review')
     return ControlWorkspaceStageReviewRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'workspace-recovery-decision')
@@ -1955,8 +1940,6 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'resolved-agent-setup')
     return ControlResolvedAgentSetupResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'scoped-notebook-sql') return reply.result === null;
-  if (reply.operation === 'catalog-command-receipt') return reply.result === null;
-  if (reply.operation === 'workspace-command-receipt') return reply.result === null;
   if (reply.operation === 'workspace-stage-review') return reply.result === null;
   if (reply.operation === 'workspace-baseline') return reply.result === null;
   if (reply.operation === 'workspace-recovery-decision')
@@ -2008,6 +1991,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return Array.isArray(reply.results) && reply.results.every(isSqlResult);
   if (reply.operation === 'transition') {
     return (
+      reply.result === null ||
       ControlKnowledgeAdmissionResultSchema.safeParse(reply.result).success ||
       (isRecord(reply.result) &&
         typeof reply.result.replayed === 'boolean' &&
@@ -2301,6 +2285,20 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         value.initialize === 'workspace')
     );
   }
+  if (
+    value.operation === 'transition' &&
+    isRecord(value.transition) &&
+    value.transition.kind === 'command-receipt'
+  ) {
+    const parsed = ControlScalarTextSchema.safeParse(value.transition.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'transition', 'content']) &&
+      exactFields(value.transition, ['kind', 'input']) &&
+      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
+    );
+  }
   if (value.operation === 'transition' || value.operation === 'products') {
     try {
       const schema =
@@ -2313,8 +2311,9 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         parsed.success &&
         ('products' in parsed.data
           ? controlProductMetadataJson(parsed.data).length <= 2 * 1024 * 1024
-          : Buffer.byteLength(JSON.stringify(parsed.data.input)) <=
-            CONTROL_PRODUCT_LIMITS.payloadBytes)
+          : 'input' in parsed.data &&
+            Buffer.byteLength(JSON.stringify(parsed.data.input)) <=
+              CONTROL_PRODUCT_LIMITS.payloadBytes)
       );
     } catch {
       return false;
@@ -2575,21 +2574,6 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlResolvedAgentSetupInputSchema.safeParse(value.input).success &&
-      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
-    );
-  if (value.operation === 'workspace-command-receipt') {
-    const parsed = ControlScalarTextSchema.safeParse(value.input);
-    return (
-      parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
-      parsed.data.byteLength <= CONTROL_WORKER_LIMITS.materialPendingBytes &&
-      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
-    );
-  }
-  if (value.operation === 'catalog-command-receipt')
-    return (
-      exactFields(value, [...scoped, 'input']) &&
-      ControlCatalogCommandReceiptInputSchema.safeParse(value.input).success &&
       Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'scoped-notebook-sql')
