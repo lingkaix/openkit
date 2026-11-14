@@ -1839,6 +1839,7 @@ function gatewayProviderFailureMessage(code: string): string {
  */
 export function registerWorkerInferenceRoutes({
   app,
+  exposureAvailable,
   providerCredentialConfigured,
   coreDb,
   llmGatewayDispatcher,
@@ -1868,12 +1869,21 @@ export function registerWorkerInferenceRoutes({
   readonly runtimeConfig: () => RuntimeConfigSnapshot;
   /** Worker token and durable lease authority. */
   readonly workerControlGateway: WorkerControlGateway;
+  readonly exposureAvailable?: () => boolean;
   /** Existing native stop owner; missing coverage blocks Worker inference before Provider access. */
   readonly onRawOutputStop?: (
     scope: { workspaceId: string; threadId: string; turnId: string },
     reason: 'budget_exhausted' | 'error'
   ) => Promise<void>;
 }): void {
+  const assertExposureAvailable = () => {
+    if (exposureAvailable && !exposureAvailable())
+      throw new WorkerInferenceRouteError(
+        'worker_inference_unavailable',
+        'Worker inference resource is unavailable.',
+        403
+      );
+  };
   const activeRawCalls = new Map<
     string,
     {
@@ -1913,6 +1923,7 @@ export function registerWorkerInferenceRoutes({
         workerInferenceTokenHashAuthentication
       );
 
+      assertExposureAvailable();
       rejectWorkerInferenceAuthorityHeaders(c.req.raw.headers);
       const json = await parseWorkerInferenceJsonRequest(c.req.raw);
       const input =
@@ -1966,6 +1977,7 @@ export function registerWorkerInferenceRoutes({
             503
           );
         }
+        assertExposureAvailable();
       };
       assertAuthority();
       let logicalModel: ResolvedLogicalModel | null = null;
@@ -3218,6 +3230,7 @@ export async function dispatchLogicalModel<T>(input: {
  */
 export function registerLlmGatewayRoutes({
   app,
+  exposureAvailable,
   providerCredentialConfigured,
   coreDb,
   requestStore,
@@ -3228,6 +3241,8 @@ export function registerLlmGatewayRoutes({
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly coreDb?: CoreDb;
+  /** Fresh shared resource restriction; this does not replace the Gateway's caller authority. */
+  readonly exposureAvailable?: () => boolean;
   readonly requestStore?: (context: Context<{ Variables: AuthVariables }>) => FsStore;
   readonly llmGatewayDispatcher: LLMGatewayProviderDispatcher;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
@@ -3246,7 +3261,7 @@ export function registerLlmGatewayRoutes({
    * @returns True when Gateway routes are enabled.
    */
   function isGatewayEnabled(): boolean {
-    return runtimeConfig().gatewayConfig.enabled;
+    return runtimeConfig().gatewayConfig.enabled && (exposureAvailable?.() ?? true);
   }
 
   /** Rechecks current public Workspace authority at each effect or disclosure boundary. */

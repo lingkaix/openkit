@@ -8,7 +8,7 @@ import {
   ProtocolErrorCode,
   Server,
 } from '@modelcontextprotocol/server';
-import { operationToolName } from '@openkit/app-api-schemas';
+import { OPERATION_REGISTRY, operationToolName } from '@openkit/app-api-schemas';
 import type {
   AgentEnvironmentPackage,
   OpenKitConfig,
@@ -294,6 +294,14 @@ export interface RegisterWorkerMcpRoutesInput {
   /** Durably queues the existing Codex Harness stop after a Gate and denial are durable. */
 }
 
+function workerMcpExposureAvailable(input: RegisterWorkerMcpRoutesInput): boolean {
+  return PolicyInterception.isExposureAvailable({
+    coreDb: input.coreDb,
+    policy: input.runtimeConfig().openKitConfig.policy?.mediation,
+    exposure: OPERATION_REGISTRY['mcp.call-tool'].exposure,
+  });
+}
+
 /** Registers the private per-catalog-entry MCP Streamable HTTP endpoint. */
 export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): void {
   const interception = input.interception ?? new PolicyInterception();
@@ -330,6 +338,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
       if (!releaseMutation) throw unavailableServer();
       requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
       requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+      if (!workerMcpExposureAvailable(input))
+        throw new WorkerControlGatewayError('mcp-denied', 'MCP resource is unavailable.', 403);
       if (environmentPackage.capabilities.mode !== 'enabled') throw unavailableServer();
       const localCatalog = input
         .runtimeConfig()
@@ -429,6 +439,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           await finishCapabilityCall({ callId: call.id, status: 'succeeded', workspaceDb });
           requireMcpCapabilityTurnAdmission(input.store, environmentPackage);
           requireCurrentMcpWorkspaceAuthority(input.coreDb!, environmentPackage);
+          if (!workerMcpExposureAvailable(input))
+            throw new WorkerControlGatewayError('mcp-denied', 'MCP resource is unavailable.', 403);
           return context.json(result);
         } catch (error) {
           const normalized =
@@ -457,6 +469,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         context.req.header('authorization') ?? null,
         { tokenFamily: 'capability' }
       );
+      if (!workerMcpExposureAvailable(input)) throw mcpDeniedError();
       const serverId = context.req.param('serverId');
       if (serverId === '_discovery') {
         const protocolMessage = await context.req.raw
@@ -679,6 +692,20 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
 
               requireRawOutputCapabilityAdmission(activeWorkspaceDb, environmentPackage);
               const requireCurrentBuiltinToolPolicy = () => {
+                if (!workerMcpExposureAvailable(input)) throw mcpDeniedError();
+                const operation = Object.entries(OPERATION_REGISTRY).find(
+                  ([id, definition]) =>
+                    definition.binding !== 'native' && operationToolName(id) === request.params.name
+                )?.[1];
+                if (
+                  operation &&
+                  !PolicyInterception.isExposureAvailable({
+                    coreDb: input.coreDb,
+                    policy: input.runtimeConfig().openKitConfig.policy?.mediation,
+                    exposure: operation.exposure,
+                  })
+                )
+                  throw mcpDeniedError();
                 const toolConditions = currentWorkerMcpPermissions(
                   input,
                   environmentPackage,
@@ -895,6 +922,9 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       workspaceDb: workspaceDb,
                       scope: environmentPackage.scope,
                       protocolRequestId: ctx.mcpReq.id,
+                      readRuntimePolicy: () =>
+                        input.runtimeConfig().openKitConfig.policy?.mediation,
+                      recheckEntry: async () => requireCurrentBuiltinToolPolicy(),
                     },
                     request.params.name,
                     (request.params.arguments ?? {}) as Record<string, unknown>
@@ -2249,6 +2279,7 @@ export async function reviewCapturedMcpPolicy(input: {
   readonly interception: PolicyInterception;
 }): Promise<NonNullable<PreparedCapturedPendingCall['mediation']> | null> {
   const { record, workspaceDb } = input;
+  if (!workerMcpExposureAvailable(input.routes)) return null;
   if (
     !record.policyDecisionId ||
     !record.serverId ||
@@ -2523,6 +2554,7 @@ function mcpInterceptionInput(
   lifecycleCurrent = () =>
     hasMcpCapabilityTurnAdmission(input.input.store, input.environmentPackage)
 ): InterceptionInput & { readonly useDecision: (decision: InterceptionDecision) => void } {
+  if (!workerMcpExposureAvailable(input.input)) throw mcpDeniedError();
   const scope = input.environmentPackage.scope;
   const authority = currentMcpPolicyAuthority(input);
   let ownDecision: PolicyUseDecision | undefined;
@@ -2688,6 +2720,7 @@ function mcpInterceptionInput(
       return current.goalTask ? { ...current.goalTask, kernel } : kernel;
     },
     stillCurrent: () =>
+      workerMcpExposureAvailable(input.input) &&
       !input.signal.aborted &&
       lifecycleCurrent() &&
       agentBindingsCurrent() &&

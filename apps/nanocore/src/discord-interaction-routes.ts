@@ -11,6 +11,7 @@ export function registerDiscordInteractionRoutes(input: {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly config: NonNullable<OpenKitConfig['channels']>['discord'];
   readonly services: () => ChannelServices | undefined;
+  readonly exposureAvailable?: () => boolean;
 }): void {
   input.app.post(
     '/api/channels/discord/interactions',
@@ -33,6 +34,8 @@ export function registerDiscordInteractionRoutes(input: {
           applicationId: input.config.applicationId,
           publicKey: input.config.publicKey,
         });
+        if (input.exposureAvailable && !input.exposureAvailable())
+          throw new OperationError('route_group_unavailable', 'Resource is unavailable.', 403);
         const work = discord.handleVerified(verified).then((reply) => {
           queueMicrotask(async () => {
             try {

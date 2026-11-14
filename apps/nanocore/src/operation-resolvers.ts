@@ -37,7 +37,7 @@ import type {
 } from './operation-contract.js';
 import { OperationError, WorkspaceCaptureAdmissionError } from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
-import { evaluateProductAccess } from './policy/workspace-access.js';
+import { PolicyInterception } from './policy/interception.js';
 import type { ResourcePolicyActor } from './policy/workspace-resource-access.js';
 import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
@@ -59,6 +59,11 @@ export interface OperationAdmissionDependencies {
   readonly automationStore?: AutomationStore;
   readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
+  readonly readRuntimePolicy?: () => unknown;
+  readonly runtimeConfigManager?: Pick<
+    import('./config/runtime-config.js').RuntimeConfigManager,
+    'current'
+  >;
 }
 
 /** Uniform scope refusal reveals neither child content nor credential details. */
@@ -173,7 +178,8 @@ export async function admitOperation(
   if ((entry.kind === 'bootstrap') !== bootstrap)
     throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
   const input = parseOperationInput(definition, value, entry);
-  if (entry.kind === 'bootstrap') return { input, context: entry, release: undefined };
+  if (entry.kind === 'bootstrap')
+    return { input, context: entry, release: undefined, assertExposureAvailable: undefined };
   const credential =
     entry.kind === 'coordinator'
       ? 'coordinator'
@@ -208,6 +214,19 @@ export async function admitOperation(
   const actorRef =
     entry.kind === 'worker' ? entry.actor : { kind: 'user' as const, id: entry.actor.userId };
   const { coreDb, store, workspaceMutationAdmission: admission } = dependencies;
+  const assertExposureAvailable = () => {
+    if (
+      !PolicyInterception.isExposureAvailable({
+        coreDb: dependencies.coreDb,
+        policy:
+          dependencies.readRuntimePolicy?.() ??
+          dependencies.runtimeConfigManager?.current().openKitConfig.policy?.mediation,
+        exposure: definition.exposure,
+      })
+    )
+      throw new OperationError('route_group_unavailable', 'Resource is unavailable.', 403);
+  };
+  assertExposureAvailable();
   let scope: AdmittedOperationScope;
   let resolvedLineage: AdmittedOperationContext['resolvedLineage'];
   let mutationWorkspaceId: string | undefined;
@@ -240,38 +259,15 @@ export async function admitOperation(
         );
       try {
         if (
-          (coreDb
-            ? evaluateProductAuthorization(
-                coreDb,
-                entry.actor,
-                {
-                  kind: 'server',
-                  family:
-                    definition.target.kind === 'server' ? definition.target.family : undefined,
-                },
-                definition.policyOperation,
-                definition.mutating
-              )
-            : evaluateProductAccess({
-                facts: {
-                  userId: entry.actor.userId,
-                  activeUser: true,
-                  administrator: entry.actor.kind === 'local',
-                  credential: {
-                    current: entry.actor.kind === 'local',
-                    workspaceBound: false,
-                    readOnly: false,
-                    kind: entry.actor.kind,
-                  },
-                },
-                target: {
-                  kind: 'server',
-                  family:
-                    definition.target.kind === 'server' ? definition.target.family : undefined,
-                },
-                operation: definition.policyOperation,
-                mutating: definition.mutating,
-              })
+          evaluateProductAuthorization(
+            coreDb,
+            entry.actor,
+            {
+              kind: 'server',
+              family: definition.target.kind === 'server' ? definition.target.family : undefined,
+            },
+            definition.policyOperation,
+            definition.mutating
           ).effect !== 'allow'
         )
           throw denied();
@@ -515,7 +511,7 @@ export async function admitOperation(
       entry.observeSuccessStatus?.(status);
     },
   };
-  return { input, context, release };
+  return { input, context, release, assertExposureAvailable };
 }
 
 /** Audience is checked after selected-Workspace authority and before addressed content. */

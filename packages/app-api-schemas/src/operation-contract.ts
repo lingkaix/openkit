@@ -109,6 +109,10 @@ export type OperationMutationTarget = {
 };
 /** Closed response framing facts with current JSON and MCP consumers. */
 export interface OperationProjectionFacts {
+  /** Source-only resource availability; never a caller grant or transport projection. */
+  readonly exposure?:
+    | { readonly kind: 'switchable'; readonly owner: string; readonly group: string }
+    | { readonly kind: 'independent'; readonly owner: string };
   readonly binding: 'json' | 'streaming';
   /** Owner-declared binary framing accepted alongside the operation's JSON input. */
   readonly binaryRequestBody?: {
@@ -149,6 +153,7 @@ export type OperationStability = 'settled' | 'release-coupled' | 'experimental';
 
 /** Core-mediated native contracts have no implicit HTTP, CLI or model projection. */
 export interface NativeOperationDefinition extends OperationInsertionPoints {
+  readonly exposure?: OperationProjectionFacts['exposure'];
   readonly binding: 'native';
   readonly stability: OperationStability;
   readonly description: string;

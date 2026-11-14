@@ -153,6 +153,8 @@ export interface RegisterOperationAccessGuardsInput {
   readonly app: Hono<{ Variables: AuthVariables }>;
   /** Core database owning Workspace registry and membership authority. */
   readonly coreDb: CoreDb;
+  /** App composition supplies only current shared availability, never caller authority. */
+  readonly operationAvailable?: (operationKey: string) => boolean;
   /** Derives the built-in Quick Chat Workspace for one canonical user. */
   readonly quickChatWorkspaceIdForUser: (userId: string) => string;
   /** Existing Workspace record owner used for opaque child lineage. */
@@ -236,6 +238,8 @@ export function registerOperationAccessGuards(input: RegisterOperationAccessGuar
       if (denied) {
         return denied;
       }
+      if (input.operationAvailable && !input.operationAvailable(route.operationKey))
+        return asApiError('Resource is unavailable.', 'route_group_unavailable', 403);
       const access = context.get('workspaceAccess');
       const workspaceId = access?.kind === 'workspace' ? access.workspaceId : null;
       if (!workspaceId) {
@@ -688,7 +692,7 @@ async function authorizeOperation(
 
 /** Reads current facts before the evaluator-only boundary; Server refusals retain their public causes. */
 export function evaluateProductAuthorization(
-  coreDb: CoreDb,
+  coreDb: CoreDb | undefined,
   actor: Actor,
   target:
     | { readonly kind: 'user'; readonly userId?: string }
@@ -699,7 +703,31 @@ export function evaluateProductAuthorization(
   mutating = false,
   now = new Date()
 ): PolicyDecision {
-  const input = readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now);
+  // The original in-memory local Server projection belongs with the other
+  // credential facts here, rather than being duplicated by operation admission.
+  if (!coreDb && (actor.kind !== 'local' || target.kind !== 'server'))
+    throw new HTTPException(503, { message: 'Operation authority storage is unavailable.' });
+  const input = coreDb
+    ? readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now)
+    : {
+        facts: {
+          userId: actor.userId,
+          activeUser: true,
+          administrator: actor.kind === 'local',
+          credential: {
+            current: actor.kind === 'local',
+            workspaceBound: false,
+            readOnly: false,
+            kind: actor.kind,
+          },
+        },
+        target: {
+          kind: 'server' as const,
+          family: target.kind === 'server' ? target.family : undefined,
+        },
+        operation,
+        mutating,
+      };
   let decision: PolicyDecision;
   try {
     decision = evaluateProductAccess(input);

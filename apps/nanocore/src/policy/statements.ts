@@ -130,7 +130,7 @@ function routeGroupSwitchGroup(statement: PolicyDocumentV1['statements'][number]
     throw new Error('Route-group switches require exact human Server control scope and lifetime.');
   const group = resource.container.id;
   if (
-    !Object.values(NON_API_EXPOSURE_DEFINITIONS).some(
+    ![...Object.values(OPERATION_REGISTRY), ...Object.values(NON_API_EXPOSURE_DEFINITIONS)].some(
       (descriptor) =>
         descriptor.exposure.kind === 'switchable' &&
         descriptor.exposure.owner.length > 0 &&

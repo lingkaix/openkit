@@ -389,7 +389,8 @@ export interface NanoHostSessionDispatch {
   poll(
     physicalConnection: object,
     operation: NanoHostEffectOperation,
-    telemetryHeaders?: Record<string, string>
+    telemetryHeaders?: Record<string, string>,
+    recheckAdmission?: () => void
   ): Promise<Record<string, unknown> | null>;
   /** Accepts one correlated success or exact typed failure on its fixed operation path. */
   result(
@@ -518,6 +519,7 @@ interface NanoHostFileResultIdentity {
 export interface RegisterNanoHostSessionEffectRoutesInput {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly dispatch: NanoHostSessionDispatch;
+  readonly exposureAvailable?: (entry: string) => boolean;
 }
 
 /** Dependencies for readiness and semantic projections outside the public route inventory. */
@@ -1111,8 +1113,9 @@ export function createNanoHostSessionDispatch(
       return register();
     },
 
-    async poll(physicalConnection, operation, telemetryHeaders) {
+    async poll(physicalConnection, operation, telemetryHeaders, recheckAdmission) {
       requireAuthoritativeSession(input.sessionAuthority, physicalConnection);
+      recheckAdmission?.();
       const pollingReadiness = readyPhysicalConnections.get(physicalConnection);
       if (!pollingReadiness) {
         throw new Error('NanoHost physical connection has not completed durable readiness.');
@@ -1227,6 +1230,9 @@ export function createNanoHostSessionDispatch(
         if (pendingEffects.get(operation) !== pending || pending.accepted || !pending.command)
           return null;
       }
+      // Native image/dispatch admission can await. Keep an unavailable, unaccepted
+      // command queued for authorized recovery rather than claiming or losing it.
+      recheckAdmission?.();
       pending.accepted = true;
       pending.acceptedConnection = physicalConnection;
       const command = { ...pending.command };
@@ -2547,6 +2553,10 @@ export function registerNanoHostSessionEffectRoutes(
   input: RegisterNanoHostSessionEffectRoutesInput
 ): void {
   let fileDataTransferActive = false;
+  const assertExposureAvailable = (entry: string) => {
+    if (input.exposureAvailable && !input.exposureAvailable(entry))
+      throw effectTransportError(403, 'NanoHost resource is unavailable.');
+  };
 
   input.app.use('*', async (context, next) => {
     if (context.req.path !== '/api/nanohost/transport/effects/image.build/input') {
@@ -2562,10 +2572,17 @@ export function registerNanoHostSessionEffectRoutes(
     }
     fileDataTransferActive = true;
     try {
+      assertExposureAvailable('POST /api/nanohost/transport/effects/image.build/input');
       const file = await input.dispatch.imageBuildInput(
         requirePhysicalConnection(context.env),
         context.req.raw
       );
+      if (
+        input.exposureAvailable &&
+        !input.exposureAvailable('POST /api/nanohost/transport/effects/image.build/input')
+      ) {
+        throw effectTransportError(403, 'NanoHost resource is unavailable.');
+      }
       return createChunkedFileDataResponse(
         file.body,
         {
@@ -2601,7 +2618,14 @@ export function registerNanoHostSessionEffectRoutes(
         await readBoundedJsonObject(context.req.raw);
         const physicalConnection = requirePhysicalConnection(context.env);
         const telemetryHeaders: Record<string, string> = {};
-        const command = await input.dispatch.poll(physicalConnection, operation, telemetryHeaders);
+        const recheckAdmission = () => assertExposureAvailable(`POST ${commandPath}`);
+        recheckAdmission();
+        const command = await input.dispatch.poll(
+          physicalConnection,
+          operation,
+          telemetryHeaders,
+          recheckAdmission
+        );
         for (const [name, value] of Object.entries(telemetryHeaders)) context.header(name, value);
         if (operation === 'reference.import' && command) {
           const file = requireReferenceImportCommand(command, readRequestId(command));
@@ -2659,6 +2683,7 @@ export function registerNanoHostSessionEffectRoutes(
       let collectionDelivery: { abandon: () => void; signal: AbortSignal | undefined } | undefined;
       try {
         const physicalConnection = requirePhysicalConnection(context.env);
+        assertExposureAvailable(`POST ${resultPath}`);
         if (operation === 'workspace.collect')
           collectionDelivery =
             input.dispatch.beginWorkspaceCollectionDelivery?.(physicalConnection);
@@ -2691,6 +2716,7 @@ export function registerNanoHostSessionEffectRoutes(
             );
           }
           const result = await readBoundedJsonObject(context.req.raw);
+          assertExposureAvailable(`POST ${resultPath}`);
           await input.dispatch.result(
             physicalConnection,
             operation,
@@ -2715,6 +2741,7 @@ export function registerNanoHostSessionEffectRoutes(
           operation === 'workspace.collect'
             ? await readWorkspaceCollectionJson(context.req.raw, collectionDelivery?.signal)
             : await readBoundedJsonObject(context.req.raw);
+        assertExposureAvailable(`POST ${resultPath}`);
         await input.dispatch.result(physicalConnection, operation, result, context.req.raw.headers);
         return context.body(null, 204);
       } catch (error) {
@@ -3648,7 +3675,7 @@ function isNormalizedRelativePath(value: string): boolean {
  * @param message Bounded private diagnostic.
  * @returns Tagged error consumed only by the private route projection.
  */
-function effectTransportError(status: 400 | 409 | 413 | 500 | 503, message: string): Error {
+function effectTransportError(status: 400 | 403 | 409 | 413 | 500 | 503, message: string): Error {
   return Object.assign(new Error(message), { status });
 }
 
@@ -3843,6 +3870,7 @@ function privateEffectError(error: unknown): Response {
   const explicitStatus = (error as { readonly status?: unknown } | null)?.status;
   const status =
     explicitStatus === 400 ||
+    explicitStatus === 403 ||
     explicitStatus === 409 ||
     explicitStatus === 413 ||
     explicitStatus === 500 ||

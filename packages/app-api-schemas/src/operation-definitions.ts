@@ -45,7 +45,11 @@ import { LOCAL_AI_OPERATION_DEFINITIONS } from './local-ai-operations.js';
 import { MATERIAL_OPERATION_DEFINITIONS } from './material-operations.js';
 import { MEMORY_OPERATION_DEFINITIONS } from './memory.js';
 import { NANOHOST_OPERATION_DEFINITIONS } from './nanohost-operations.js';
-import { composeOperationTables, type NativeOperationDefinition } from './operation-contract.js';
+import {
+  composeOperationTables,
+  type NativeOperationDefinition,
+  type OperationDefinition,
+} from './operation-contract.js';
 import { PENDING_REQUEST_OPERATION_DEFINITIONS } from './pending-request-operations.js';
 import { PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS } from './provider-subscription-operations.js';
 import { RECOVERY_OPERATION_DEFINITIONS } from './recovery-operations.js';
@@ -301,12 +305,49 @@ const NATIVE_OPERATION_DEFINITIONS = {
   } satisfies NativeOperationDefinition,
 } as const;
 
+type ExposedOperations<T> = {
+  [K in keyof T]: T[K] & { readonly exposure: NonNullable<OperationDefinition['exposure']> };
+};
+// Recovery and current configuration retain their original independent authority.
+const independentOperations = new Set([
+  ...Object.keys(ADMINISTRATION_OPERATION_DEFINITIONS),
+  ...Object.keys(ACCESS_TOKEN_OPERATION_DEFINITIONS),
+  ...Object.keys(CALLER_OPERATION_DEFINITIONS),
+  ...Object.keys(RUNTIME_CONFIG_OPERATION_DEFINITIONS),
+  ...Object.keys(RECOVERY_OPERATION_DEFINITIONS),
+  ...Object.keys(PENDING_REQUEST_OPERATION_DEFINITIONS),
+  ...Object.keys(SERVER_THREAD_OPERATION_DEFINITIONS),
+  'turn.interrupt',
+  'policy.write',
+]);
+
 /** The shared registry includes native dispatch without publishing a transport projection. */
-export const OPERATION_REGISTRY: typeof API_OPERATION_DEFINITIONS &
-  typeof NATIVE_OPERATION_DEFINITIONS = composeOperationTables(
-  API_OPERATION_DEFINITIONS,
-  NATIVE_OPERATION_DEFINITIONS
-);
+export const OPERATION_REGISTRY = Object.fromEntries(
+  Object.entries(
+    composeOperationTables(API_OPERATION_DEFINITIONS, NATIVE_OPERATION_DEFINITIONS)
+  ).map(([id, definition]) => {
+    const owner = id.slice(0, id.indexOf('.'));
+    const exposure = independentOperations.has(id)
+      ? { kind: 'independent' as const, owner }
+      : {
+          kind: 'switchable' as const,
+          owner,
+          group: id === 'mcp.call-tool' ? 'worker-mcp' : owner,
+        };
+    // Native family invokers retain these same declaration objects.
+    return [id, Object.assign(definition, { exposure: Object.freeze(exposure) })];
+  })
+) as ExposedOperations<typeof API_OPERATION_DEFINITIONS & typeof NATIVE_OPERATION_DEFINITIONS>;
+
+function sourceExposure(owner: string, group?: string) {
+  return {
+    exposure: Object.freeze(
+      group === undefined
+        ? { kind: 'independent' as const, owner }
+        : { kind: 'switchable' as const, owner, group }
+    ),
+  };
+}
 
 /** Source-only non-API descriptors; metadata never adds an operation or transport projection. */
 export const NON_API_EXPOSURE_DEFINITIONS = {
@@ -319,12 +360,97 @@ export const NON_API_EXPOSURE_DEFINITIONS = {
   'POST /v1/responses': {
     exposure: { kind: 'switchable', owner: 'llm', group: 'llm-gateway' },
   },
+  'ALL /*': sourceExposure('app'),
+  'ALL /api/*': sourceExposure('auth'),
+  'ALL /v1/*': sourceExposure('auth'),
+  'ALL /v1/chat/completions': sourceExposure('auth'),
+  'ALL /v1/responses': sourceExposure('auth'),
+  'ALL /api/workspaces/:workspaceId/threads/:threadId/events': sourceExposure('auth'),
+  'ALL /api/app/workspaces/:workspaceId/exports/:exportId/archive': sourceExposure('auth'),
+  'GET /api/workspaces/:workspaceId/threads/:threadId/events': sourceExposure('thread', 'thread'),
+  'ALL /mcp': sourceExposure('mcp', 'mcp'),
+  'ALL /api/auth/*': sourceExposure('auth'),
+  'POST /api/nanohost/transport/session/admit': sourceExposure('auth'),
+  'ALL /api/nanohost/transport/session/readiness': sourceExposure('auth'),
+  'GET /api/meta': sourceExposure('app'),
+  'GET /health': sourceExposure('app'),
+  'GET /api/health': sourceExposure('app'),
+  'GET /api/diagnostics': sourceExposure('diagnostics'),
+  'GET /api/openapi.json': sourceExposure('app'),
+  'POST /api/channels/discord/interactions': sourceExposure('discord', 'discord'),
+  'ALL /api/worker-control/*': sourceExposure('auth'),
+  'ALL /api/worker-control/credential-helper': sourceExposure('auth'),
+  'POST /api/worker-control/credential-helper': sourceExposure('worker', 'worker-control'),
+  'POST /api/worker-control/heartbeat': sourceExposure('worker', 'worker-control'),
+  'POST /api/worker-control/artifacts': sourceExposure('worker', 'worker-control'),
+  'POST /api/worker-control/events/append': sourceExposure('worker', 'worker-control'),
+  'POST /api/worker-control/final-status': sourceExposure('worker', 'worker-control'),
+  'POST /api/worker-control/supply-refresh-ack': sourceExposure('worker', 'worker-control'),
+  'POST /api/worker-control/capability-summary': sourceExposure('worker', 'worker-control'),
+  'ALL /api/worker-inference/*': sourceExposure('auth'),
+  'POST /api/worker-inference/v1/chat/completions': sourceExposure('llm', 'llm-gateway'),
+  'POST /api/worker-inference/v1/responses': sourceExposure('llm', 'llm-gateway'),
+  'ALL /api/worker-capabilities/*': sourceExposure('auth'),
+  'POST /api/worker-capabilities/mcp/_list-servers': sourceExposure('mcp', 'worker-mcp'),
+  'POST /api/worker-capabilities/mcp/:serverId': sourceExposure('mcp', 'worker-mcp'),
+  'POST /api/nanohost/transport/effects/image.build/input': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/sandbox.create': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/sandbox.create/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/sandbox.delete': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/sandbox.delete/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/bridge.open': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/bridge.open/result': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/bridge.close': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/bridge.close/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/image.acquire': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/image.acquire/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/image.build': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/image.build/result': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/image.inspect': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/image.inspect/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/storage.inspect': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/storage.inspect/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/storage.purge': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/storage.purge/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/file.export': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/file.export/result': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/reference.import': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/reference.import/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
+  'POST /api/nanohost/transport/effects/workspace.collect': sourceExposure('nanohost', 'nanohost'),
+  'POST /api/nanohost/transport/effects/workspace.collect/result': sourceExposure(
+    'nanohost',
+    'nanohost'
+  ),
 } as const;
 
 /** Existing API projections are selected from the single composed registry. */
 export const OPERATION_DEFINITIONS = Object.fromEntries(
   Object.entries(OPERATION_REGISTRY).filter(([, definition]) => definition.binding !== 'native')
-) as typeof API_OPERATION_DEFINITIONS;
+) as ExposedOperations<typeof API_OPERATION_DEFINITIONS>;
 
 /** JSON product ids inferred from the static public composition. */
 export type ProductOperationId = keyof typeof PRODUCT_OPERATION_DEFINITIONS;

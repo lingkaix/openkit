@@ -48,6 +48,9 @@ export interface OpenkitGenerativeMcpContext {
   readonly scope: AgentEnvironmentPackage['scope'];
   /** MCP protocol request identity used to stabilize Kernel request ids. */
   readonly protocolRequestId?: string | number;
+  /** Existing current Policy and entry recheck, shared with transport-free invocation. */
+  readonly readRuntimePolicy?: () => unknown;
+  readonly recheckEntry?: () => Promise<void>;
 }
 
 /**
@@ -87,6 +90,7 @@ export async function dispatchOpenkitGenerativeTool(
     store: context.store,
     inflightCommands: context.inflightCommands,
     workspaceMutationAdmission: context.workspaceMutationAdmission,
+    ...(context.readRuntimePolicy ? { readRuntimePolicy: context.readRuntimePolicy } : {}),
     repositoryWorkspaceDb: (workspaceId) =>
       openAdmittedWorkspaceReadDb(context.dataRoot, workspaceId),
   });
@@ -108,6 +112,7 @@ export async function dispatchOpenkitGenerativeTool(
       ...('turnField' in OPERATION_DEFINITIONS[id].target ? { turnId: context.scope.turnId } : {}),
     },
     delivery: 'model' as const,
+    ...(context.recheckEntry ? { recheckEntry: context.recheckEntry } : {}),
   });
   const output = await invoke(operationId, args, trustedFor(operationId));
   if (operationId === 'generative-ui.publish') {

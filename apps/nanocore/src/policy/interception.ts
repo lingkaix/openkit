@@ -85,6 +85,7 @@ import {
   policyScopeIncludesProposal,
   readPolicyAgentPrincipal,
   selectPolicyBindings,
+  validatePolicyDocument,
 } from './statements.js';
 
 const GateOutput = z.object({ decision: z.enum(['allow', 'deny', 'escalate']) }).strict();
@@ -176,6 +177,39 @@ export class PolicyInterception {
     private readonly participant?: DeterministicPolicyParticipant,
     private readonly agentParticipant?: AgentPolicyParticipant
   ) {}
+
+  /** Resource availability only: an open group supplies no caller or Kernel authority. */
+  static isExposureAvailable(input: {
+    readonly coreDb: CoreDb | undefined;
+    readonly policy: unknown;
+    readonly exposure:
+      | { readonly kind: 'switchable'; readonly owner: string; readonly group: string }
+      | { readonly kind: 'independent'; readonly owner: string }
+      | undefined;
+  }): boolean {
+    const exposure = input.exposure;
+    if (!exposure?.owner.trim()) throw new Error('Operation exposure owner is unavailable.');
+    if (exposure.kind === 'independent') return true;
+    if (exposure.kind !== 'switchable' || !exposure.group.trim())
+      throw new Error('Operation exposure group is unavailable.');
+    const document = validatePolicyDocument(input.policy ?? EMPTY_POLICY_DOCUMENT);
+    const closed = document.statements.some(
+      (statement) =>
+        statement.kind === 'permission' &&
+        statement.state === 'active' &&
+        statement.scope.resources.some(
+          (resource) =>
+            resource.kind === 'container' &&
+            resource.container.kind === 'route-group-switch' &&
+            resource.container.id === exposure.group
+        )
+    );
+    if (!closed) return true;
+    // A control's author identifies its native admission, not the evaluated caller.
+    // Losing that author's current authority never restores shared availability.
+    if (input.coreDb) readAdmittedPolicyDocument(input.coreDb, document);
+    return false;
+  }
 
   /** Repeats the actual caller, Coordinator and optional Task composition for all governed Vault operations. */
   static readVaultAuthority(input: {

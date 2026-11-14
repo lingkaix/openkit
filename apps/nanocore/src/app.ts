@@ -4,7 +4,9 @@ import type { HttpBindings } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import {
   type BootReadinessSnapshot,
+  NON_API_EXPOSURE_DEFINITIONS,
   OPERATION_DEFINITIONS,
+  OPERATION_REGISTRY,
   type ReleaseBuildIdentity,
 } from '@openkit/app-api-schemas';
 import {
@@ -1878,6 +1880,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerWorkerControlRoutes({
     app,
     coreDb: options.coreDb,
+    exposureAvailable: operationExposureAvailable,
     workerControlGateway,
     ...(configuredWorkerRuntime?.registerCredentialHelperComparisonValues
       ? {
@@ -1902,6 +1905,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   app.use('/api/worker-inference/*', browserCors);
   registerWorkerInferenceRoutes({
+    exposureAvailable: () =>
+      operationExposureAvailable('POST /api/worker-inference/v1/chat/completions'),
     onRawOutputStop: (scope, reason) =>
       turnExecutor.interruptTurn(sharedStore, scope.turnId, {
         requestId: null,
@@ -1981,6 +1986,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   registerNanoHostSessionEffectRoutes({
     app,
     dispatch: nanoHostSessionDispatch,
+    exposureAvailable: operationExposureAvailable,
   });
 
   let channelServices: ChannelServices | undefined;
@@ -1988,6 +1994,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     app,
     config: startupOpenKitConfig.channels?.discord,
     services: () => channelServices,
+    exposureAvailable: () => operationExposureAvailable('POST /api/channels/discord/interactions'),
   });
 
   // All bearer-authenticated surfaces share this App's bounded physical-source accounting.
@@ -1999,10 +2006,24 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   app.use('/mcp', browserCors);
   app.use('/mcp', authMiddleware);
 
+  function operationExposureAvailable(operationKey: string): boolean {
+    const descriptor = Object.hasOwn(OPERATION_REGISTRY, operationKey)
+      ? OPERATION_REGISTRY[operationKey as keyof typeof OPERATION_REGISTRY]
+      : Object.hasOwn(NON_API_EXPOSURE_DEFINITIONS, operationKey)
+        ? NON_API_EXPOSURE_DEFINITIONS[operationKey as keyof typeof NON_API_EXPOSURE_DEFINITIONS]
+        : undefined;
+    return PolicyInterception.isExposureAvailable({
+      coreDb: options.coreDb,
+      policy: runtimeConfig().openKitConfig.policy?.mediation,
+      exposure: descriptor?.exposure,
+    });
+  }
+
   if (options.coreDb) {
     registerOperationAccessGuards({
       app,
       coreDb: options.coreDb,
+      operationAvailable: operationExposureAvailable,
       quickChatWorkspaceIdForUser: (userId) =>
         quickChatWorkspaceIdForUser(userId, options.coreDb!.dataRoot),
       store: sharedStore,
@@ -2137,6 +2158,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
   registerLlmGatewayRoutes({
     app,
+    exposureAvailable: () => operationExposureAvailable('GET /v1/models'),
     providerCredentialConfigured,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     requestStore,
@@ -2682,6 +2704,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerRemoteMcpRoutes({
+    exposureAvailable: () => operationExposureAvailable('ALL /mcp'),
     policyInterception,
     goalTaskPolicy,
     knowledgeAgent,

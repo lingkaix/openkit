@@ -48,6 +48,8 @@ export function createOperationEngine<const T extends Partial<OperationImplement
       const admitted = await admitOperation(definition, value, entry, dependencies);
       try {
         if (recheckEntry) await recheckEntry();
+        // A native credential ACK can wait after admission; never carry its earlier availability.
+        admitted.assertExposureAvailable?.();
         const implementation = implementations[id] as OperationImplementations[K];
         const context = {
           ...admitted.context,
@@ -56,6 +58,7 @@ export function createOperationEngine<const T extends Partial<OperationImplement
             const current = await admitOperation(definition, admitted.input, entry, dependencies);
             try {
               if (recheckEntry) await recheckEntry();
+              current.assertExposureAvailable?.();
             } finally {
               current.release?.();
             }

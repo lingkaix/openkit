@@ -109,13 +109,33 @@ function search(query: string) {
 export function registerRemoteMcpRoutes({
   app,
   getBootReadiness,
+  exposureAvailable,
   ...dependencies
 }: OperationInvocationDependencies & {
   readonly app: Hono<{ Variables: AuthVariables }>;
   readonly getBootReadiness: () => BootReadinessSnapshot;
+  readonly exposureAvailable?: () => boolean;
 }): void {
+  const assertExposureAvailable = () => {
+    if (exposureAvailable && !exposureAvailable())
+      throw new OperationError('route_group_unavailable', 'MCP resource is unavailable.', 403);
+  };
   app.all('/mcp', async (c) => {
     const actor = c.get('actor');
+    if (exposureAvailable && !exposureAvailable()) {
+      if (dependencies.coreDb)
+        await recordRemoteMcpAudit(dependencies.coreDb, {
+          userId: actor.userId,
+          ...(actor.tokenId === undefined ? {} : { tokenId: actor.tokenId }),
+          authentication: auditAuthenticationFromActor(actor),
+          requestId: null,
+          outcome: 'denied',
+        });
+      return c.json(
+        { error: { code: 'route_group_unavailable', message: 'MCP resource is unavailable.' } },
+        403
+      );
+    }
     let refused = false;
     let operationId: string | undefined;
     let requestId: string | undefined;
@@ -126,45 +146,49 @@ export function registerRemoteMcpRoutes({
         instructions: GUIDE,
       }
     );
-    server.setRequestHandler('tools/list', async () => ({
-      tools: [
-        {
-          name: operationToolName('openkit.search'),
-          description:
-            'Search bounded operation metadata by semantic id and description; discovery is not permission.',
-          inputSchema: mcpInputSchema(querySchema),
-          annotations: { readOnlyHint: true, destructiveHint: false },
-        },
-        {
-          name: operationToolName('openkit.describe'),
-          description:
-            'Read one operation contract and its mutation annotations from the definition table.',
-          inputSchema: mcpInputSchema(describeSchema),
-          annotations: { readOnlyHint: true, destructiveHint: false },
-        },
-        {
-          name: operationToolName('openkit.guide'),
-          description: 'Read product workflow, human-decision and recovery guidance.',
-          inputSchema: mcpInputSchema(guideSchema),
-          annotations: { readOnlyHint: true, destructiveHint: false },
-        },
-        // A multiplexed call can mutate; openkit_describe carries the exact selected operation's posture.
-        {
-          name: operationToolName('openkit.call'),
-          description:
-            'Invoke one described operation as the authenticated Token user. May mutate; use openkit_describe for the selected operation. Ask the user for every server-required human decision.',
-          inputSchema: mcpInputSchema(callSchema),
-          annotations: {
-            readOnlyHint: false,
-            destructiveHint: true,
-            idempotentHint: false,
-            openWorldHint: true,
+    server.setRequestHandler('tools/list', async () => {
+      assertExposureAvailable();
+      return {
+        tools: [
+          {
+            name: operationToolName('openkit.search'),
+            description:
+              'Search bounded operation metadata by semantic id and description; discovery is not permission.',
+            inputSchema: mcpInputSchema(querySchema),
+            annotations: { readOnlyHint: true, destructiveHint: false },
           },
-        },
-      ],
-    }));
+          {
+            name: operationToolName('openkit.describe'),
+            description:
+              'Read one operation contract and its mutation annotations from the definition table.',
+            inputSchema: mcpInputSchema(describeSchema),
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+          {
+            name: operationToolName('openkit.guide'),
+            description: 'Read product workflow, human-decision and recovery guidance.',
+            inputSchema: mcpInputSchema(guideSchema),
+            annotations: { readOnlyHint: true, destructiveHint: false },
+          },
+          // A multiplexed call can mutate; openkit_describe carries the exact selected operation's posture.
+          {
+            name: operationToolName('openkit.call'),
+            description:
+              'Invoke one described operation as the authenticated Token user. May mutate; use openkit_describe for the selected operation. Ask the user for every server-required human decision.',
+            inputSchema: mcpInputSchema(callSchema),
+            annotations: {
+              readOnlyHint: false,
+              destructiveHint: true,
+              idempotentHint: false,
+              openWorldHint: true,
+            },
+          },
+        ],
+      };
+    });
     server.setRequestHandler('tools/call', async (request) => {
       try {
+        assertExposureAvailable();
         const args = request.params.arguments ?? {};
         let result: unknown;
         switch (request.params.name) {
@@ -195,7 +219,13 @@ export function registerRemoteMcpRoutes({
             result = await createOperationInvocation(dependencies)(
               operation as JsonOperationId,
               input,
-              { kind: 'public', actor, delivery: 'model', signal: c.req.raw.signal }
+              {
+                kind: 'public',
+                actor,
+                delivery: 'model',
+                signal: c.req.raw.signal,
+                recheckEntry: async () => assertExposureAvailable(),
+              }
             );
             break;
           }

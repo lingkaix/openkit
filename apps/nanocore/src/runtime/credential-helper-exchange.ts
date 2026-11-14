@@ -96,6 +96,7 @@ async function readHelperRequest(request: Request): Promise<z.infer<typeof reque
 export function createCredentialHelperHandler(input: {
   readonly operations: OperationInvocationDependencies;
   readonly gateway: WorkerControlGateway;
+  readonly recheckAdmission?: () => void;
   /** Native App composition supplies the actual comparison owner; dormant Core-use tests omit it. */
   readonly registerCredentialValues?: (
     lineage: WorkerLineage,
@@ -128,6 +129,7 @@ export function createCredentialHelperHandler(input: {
       const authorization = request.headers.get('authorization');
       // Refuse unknown or retired tokens before collecting any private request body.
       gateway.authenticatePackageToken(authorization, { tokenFamily: 'worker-control' });
+      input.recheckAdmission?.();
       const command = await readHelperRequest(request);
       const currentPackage = () => {
         request.signal.throwIfAborted();
@@ -136,6 +138,7 @@ export function createCredentialHelperHandler(input: {
           tokenFamily: 'worker-control',
           lineage: command.lineage,
         });
+        input.recheckAdmission?.();
         if (!authenticated.scope.workspaceId) return unavailable();
         operations.store!.getWorkspace(authenticated.scope.workspaceId);
         const db = workspaceDb(authenticated.scope.workspaceId);

@@ -482,6 +482,8 @@ interface AuthenticatedWorkerControlInput {
   lineage: WorkerControlLineage;
   /** Reports gateway-owned lineage only after the existing authentication and binding checks. */
   onAuthenticated?: ((lineage: WorkerControlLineage) => void) | undefined;
+  /** Current shared resource restriction, never an authentication verdict. */
+  recheckAdmission?: (() => void) | undefined;
 }
 
 /**
@@ -797,6 +799,9 @@ export class WorkerControlGateway {
         if (resolution?.status === 'rejected' && resolution.reason !== 'reconnect-required')
           this.throwTokenBindingRejection(resolution.reason);
       }
+      // Reconnect authentication completes in the native owner; unavailable
+      // resources must still refuse before that heartbeat publication begins.
+      input.recheckAdmission?.();
       return this.publishHeartbeat({
         lineage: request.lineage,
         sandboxBindingRef,
@@ -964,7 +969,8 @@ export class WorkerControlGateway {
           sequence: input.sequence,
           acceptedAt: artifact.noticedAt,
         },
-        sequencedControlFingerprint(input)
+        sequencedControlFingerprint(input),
+        input.recheckAdmission
       ).then((sequence) => {
         if (sequence.duplicate) {
           let original = state.snapshot.artifacts.find(
@@ -1071,7 +1077,8 @@ export class WorkerControlGateway {
           sequence: input.sequence,
           acceptedAt: ack.acknowledgedAt,
         },
-        sequencedControlFingerprint({ ...body, lineage: input.lineage, sequence: input.sequence })
+        sequencedControlFingerprint({ ...body, lineage: input.lineage, sequence: input.sequence }),
+        input.recheckAdmission
       ).then((sequence) => {
         if (sequence.duplicate) {
           let original = state.snapshot.supplyRefreshAcks.find(
@@ -1179,7 +1186,8 @@ export class WorkerControlGateway {
           sequence: summary.sequence,
           acceptedAt: summary.completedAt ?? this.now(),
         },
-        sequencedControlFingerprint(summary)
+        sequencedControlFingerprint(summary),
+        input.recheckAdmission
       ).then((sequence) => {
         if (!sequence.duplicate)
           state.snapshot.capabilitySummaries.push(cloneCapabilitySummary(summary));
@@ -1328,7 +1336,8 @@ export class WorkerControlGateway {
             sequence: record.sequence,
             acceptedAt: this.now(),
           },
-          canonicalJsonText(workerControlEventReceipt(record))
+          canonicalJsonText(workerControlEventReceipt(record)),
+          input.recheckAdmission
         ).then((sequence) => {
           const fingerprint = canonicalJsonText(workerControlEventReceipt(record));
           const previous = state.eventFingerprintsBySequence.get(record.sequence);
@@ -1357,6 +1366,7 @@ export class WorkerControlGateway {
         : publish();
     }
     const accept = (): WorkerControlResponseEnvelope => {
+      input.recheckAdmission?.();
       this.acceptCanonicalEvent(state, input.lineage, record);
       return WorkerControlResponseEnvelopeSchema.parse({
         accepted: true,
@@ -1745,10 +1755,12 @@ export class WorkerControlGateway {
   private async publishNonterminal(
     state: WorkerControlSessionState,
     payload: ControlWorkerOperationCommand['payload'],
-    fingerprint: string
+    fingerprint: string,
+    recheckAdmission?: () => void
   ): Promise<ControlWorkerOperationResult> {
     if (!this.publishControlOperation)
       throw new Error('Worker control publication is unavailable.');
+    recheckAdmission?.();
     const result = await this.publishControlOperation({
       lineage: state.lineage,
       sandboxBindingRef: this.requireSandboxBindingRef(state),
@@ -2203,6 +2215,7 @@ function sequencedControlFingerprint(payload: unknown): string {
   const canonicalPayload = { ...payload } as Record<string, unknown>;
   delete canonicalPayload.authorization;
   delete canonicalPayload.onAuthenticated;
+  delete canonicalPayload.recheckAdmission;
   return canonicalJsonText(canonicalPayload);
 }
 

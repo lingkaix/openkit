@@ -60,8 +60,10 @@ export function registerWorkerControlRoutes({
   workerControlGateway,
   credentialHelperOperations,
   credentialHelperRegister,
+  exposureAvailable,
 }: {
   readonly app: Hono<{ Variables: AuthVariables }>;
+  readonly exposureAvailable?: (entry: string) => boolean;
   readonly coreDb: CoreDb | undefined;
   readonly workerControlGateway: WorkerControlGateway;
   readonly credentialHelperOperations?: () => OperationInvocationDependencies;
@@ -69,6 +71,30 @@ export function registerWorkerControlRoutes({
     Parameters<typeof createCredentialHelperHandler>[0]['registerCredentialValues']
   >;
 }): void {
+  const assertExposureAvailable = (c: Context) => {
+    if (exposureAvailable && !exposureAvailable(`POST ${c.req.path}`))
+      throw new WorkerControlGatewayError(
+        'route_group_unavailable',
+        'Worker resource is unavailable.',
+        403
+      );
+  };
+  // Bind the same restriction to native authentication and the final publication hook.
+  function workerControlTokenHashAuthentication(c: Context) {
+    let authenticatedLineage: WorkerControlLineage | undefined;
+    return {
+      input: {
+        authorization: c.req.header('authorization') ?? null,
+        tokenFamily: 'worker-control' as const,
+        recheckAdmission: () => assertExposureAvailable(c),
+        onAuthenticated: (lineage: WorkerControlLineage) => {
+          authenticatedLineage = { ...lineage };
+          assertExposureAvailable(c);
+        },
+      },
+      authenticatedLineage: () => authenticatedLineage,
+    };
+  }
   app.post('/api/worker-control/credential-helper', async (c) => {
     if (!credentialHelperOperations || !credentialHelperRegister)
       return new Response(null, { status: 503, headers: { 'cache-control': 'no-store' } });
@@ -76,6 +102,7 @@ export function registerWorkerControlRoutes({
       operations: credentialHelperOperations(),
       gateway: workerControlGateway,
       registerCredentialValues: credentialHelperRegister,
+      recheckAdmission: () => assertExposureAvailable(c),
     })(c.req.raw);
   });
   app.post('/api/worker-control/heartbeat', async (c) => {
@@ -524,34 +551,6 @@ async function quarantineWorkerControlRejection(input: {
     rejectedAt: new Date().toISOString(),
     route: input.route,
   });
-}
-
-/**
- * Selects the worker-control family and captures proof from the existing gateway admission.
- *
- * @param c Worker-control HTTP request context.
- * @returns Gateway authentication input and the proved lineage available to rejection handling.
- */
-function workerControlTokenHashAuthentication(c: Context): {
-  readonly input: {
-    readonly authorization: string | null;
-    readonly tokenFamily: 'worker-control';
-    readonly onAuthenticated: (lineage: WorkerControlLineage) => void;
-  };
-  readonly authenticatedLineage: () => WorkerControlLineage | undefined;
-} {
-  let authenticatedLineage: WorkerControlLineage | undefined;
-
-  return {
-    input: {
-      authorization: c.req.header('authorization') ?? null,
-      tokenFamily: 'worker-control',
-      onAuthenticated: (lineage) => {
-        authenticatedLineage = { ...lineage };
-      },
-    },
-    authenticatedLineage: () => authenticatedLineage,
-  };
 }
 
 /**
