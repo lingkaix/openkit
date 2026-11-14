@@ -10,7 +10,10 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
-import { ADMINISTRATION_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import {
+  ADMINISTRATION_OPERATION_DEFINITIONS,
+  operationMcpEligible,
+} from '@openkit/app-api-schemas';
 import { describe, expect, it, vi } from 'vitest';
 import { createCoreClient } from '../../../../packages/core-client/src/index.js';
 import { listServerAuditEvents } from '../audit-events.js';
@@ -2098,9 +2101,26 @@ describe('definition-derived deployment administration cutover', () => {
         await f.client.operations['backup.verify']({ backupId: created.result.backupId })
       ).toEqual(created.result);
       // @ts-expect-error The bundled CLI catalog is JavaScript.
-      const { operationCatalog } = await import('../../../../skills/openkit-operations.mjs');
+      const { operationCatalog, operationExclusions } = await import(
+        '../../../../skills/openkit-operations.mjs'
+      );
       for (const [id, definition] of Object.entries(ADMINISTRATION_OPERATION_DEFINITIONS)) {
-        const row = operationCatalog.find((entry: { id: string }) => entry.id === id)!;
+        const row = operationCatalog.find((entry: { id: string }) => entry.id === id);
+        if (id === 'administration.report-prepare') {
+          // Human-only preparation is intentionally absent, not a missing deployment-CLI projection.
+          expect(definition.credentials).toEqual(['local-user', 'user-session']);
+          expect(operationMcpEligible(definition)).toBe(false);
+          expect(row).toBeUndefined();
+          expect(operationExclusions).toContainEqual(
+            expect.objectContaining({
+              source: 'app-api',
+              name: id,
+              owner: 'apps/nanocore/README.md',
+            })
+          );
+          continue;
+        }
+        expect(row, id).toBeDefined();
         expect(row.appOperationId).toBe(id);
         expect(row.clientMethod).toBe(`operations.${id}`);
         expect(row.inputSchema.def.checks).toBe(definition.inputSchema.def.checks);
