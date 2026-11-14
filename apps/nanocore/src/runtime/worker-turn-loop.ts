@@ -25,7 +25,7 @@ import {
 import type { GoalTaskAdmission } from './goal-task-admission.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
-import { validateLiveProductTurnAdmission } from './product-turn-start.js';
+import { verifyAcceptedTurnLineage } from './product-turn-start.js';
 import { type StopAfterTurnDecision, shouldStopAfterTurn } from './stop-after-turn.js';
 import {
   createWorkerCheckpointContextDiagnostics,
@@ -299,7 +299,7 @@ export async function runWorkerTurnLoop(
               input.threadId,
               turn.turnId
             );
-            const admission = validateLiveProductTurnAdmission({
+            const admission = verifyAcceptedTurnLineage({
               coreDb: input.coreDb,
               store: input.store,
               actorId: input.triggerActor.id,

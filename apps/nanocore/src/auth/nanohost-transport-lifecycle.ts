@@ -15,8 +15,6 @@ import {
   nanoHostTransportCommitState,
   prepareNanoHostTransportWriter,
   recordNanoHostTransportAudit,
-  submitNanoHostTransportDecommission,
-  submitNanoHostTransportRevocation,
   submitNanoHostTransportRotationAbort,
 } from './nanohost-transport-token-store.js';
 
@@ -42,14 +40,6 @@ export interface AbortNanoHostTransportRotationResult {
   readonly successor: NanoHostTransportTokenRecord;
 }
 
-/** Input for revoking one Token and fencing live authoritative work. */
-export interface RevokeNanoHostTransportTokenAndFenceInput {
-  /** Durable Token id to revoke. */
-  readonly tokenId: string;
-  /** Optional revocation clock. */
-  readonly now?: Date;
-}
-
 /** Input for fencing when a known Token is no longer usable. */
 export interface FenceNanoHostTransportOnTokenUnusableInput {
   /** Configured NanoHost identity id whose live session may need fencing. */
@@ -66,16 +56,6 @@ export interface FenceNanoHostTransportOnTokenUnusableResult {
   readonly usable: boolean;
   /** Whether an authoritative session was fenced by this call. */
   readonly fenced: boolean;
-}
-
-/** Input for decommissioning one NanoHost identity's transport Tokens. */
-export interface DecommissionNanoHostTransportAndFenceInput {
-  /** Configured NanoHost identity id. */
-  readonly identityId: string;
-  /** Exact deployment bound to the configured NanoHost identity. */
-  readonly deploymentId: string;
-  /** Optional decommission clock. */
-  readonly now?: Date;
 }
 
 /** Fences process authority before attempting the existing durable readiness close. */
@@ -102,20 +82,6 @@ export async function fenceNanoHostTransportAuthority(
     observedAt,
     targetId: target.targetId,
   });
-}
-
-/** Preserves the original uncertain write when the separately attempted readiness close also fails. */
-async function fenceUncertainNanoHostCredential(
-  coreDb: CoreDb,
-  authority: NanoHostTransportSessionAuthority,
-  identityId: string,
-  observedAt: string
-): Promise<void> {
-  try {
-    await fenceNanoHostTransportAuthority(coreDb, authority, identityId, observedAt);
-  } catch {
-    /* Process fencing ran first; secondary readiness refusal cannot prove this credential's rollback. */
-  }
 }
 
 /** Evaluates the existing retained Token without introducing another writer or lifecycle. */
@@ -221,75 +187,4 @@ export async function abortNanoHostTransportRotation(
   }
   if (cleanupFailure !== undefined) throw cleanupFailure;
   return aborted;
-}
-
-/** Awaits revocation before its original process fence and readiness stage. */
-export async function revokeNanoHostTransportTokenAndFence(
-  coreDb: CoreDb,
-  authority: NanoHostTransportSessionAuthority,
-  input: RevokeNanoHostTransportTokenAndFenceInput,
-  actor?: Actor,
-  beforeSubmit?: () => Promise<void>
-): Promise<NanoHostTransportTokenRecord | null> {
-  const tokenId = input.tokenId;
-  const now = input.now ? new Date(input.now.getTime()) : undefined;
-  const admin = actor ? { ...actor } : undefined;
-  const prior = getNanoHostTransportTokenRecord(coreDb, tokenId);
-  const writer = await prepareNanoHostTransportWriter(coreDb);
-  await beforeSubmit?.();
-  let record: NanoHostTransportTokenRecord | null;
-  try {
-    record = await submitNanoHostTransportRevocation(writer, tokenId, now ? { now } : {}, admin);
-  } catch (error) {
-    if (nanoHostTransportCommitState(error) === 'unknown' && prior)
-      await fenceUncertainNanoHostCredential(
-        coreDb,
-        authority,
-        prior.ownerNanoHostIdentityId,
-        (now ?? new Date()).toISOString()
-      );
-    throw error;
-  }
-  if (!record) return null;
-  await fenceNanoHostTransportAuthority(
-    coreDb,
-    authority,
-    record.ownerNanoHostIdentityId,
-    (now ?? new Date()).toISOString()
-  );
-  return record;
-}
-
-/** Keeps all Token revocations and the exact active identity transition in one native SQL stage. */
-export async function decommissionNanoHostTransportAndFence(
-  coreDb: CoreDb,
-  authority: NanoHostTransportSessionAuthority,
-  input: DecommissionNanoHostTransportAndFenceInput,
-  actor?: Actor,
-  beforeSubmit?: () => Promise<void>
-): Promise<NanoHostTransportTokenRecord[]> {
-  const snapshot = { ...input, ...(input.now ? { now: new Date(input.now.getTime()) } : {}) };
-  const admin = actor ? { ...actor } : undefined;
-  const writer = await prepareNanoHostTransportWriter(coreDb);
-  await beforeSubmit?.();
-  let revoked: NanoHostTransportTokenRecord[];
-  try {
-    revoked = await submitNanoHostTransportDecommission(writer, snapshot, admin);
-  } catch (error) {
-    if (nanoHostTransportCommitState(error) === 'unknown')
-      await fenceUncertainNanoHostCredential(
-        coreDb,
-        authority,
-        snapshot.identityId,
-        (snapshot.now ?? new Date()).toISOString()
-      );
-    throw error;
-  }
-  await fenceNanoHostTransportAuthority(
-    coreDb,
-    authority,
-    snapshot.identityId,
-    (snapshot.now ?? new Date()).toISOString()
-  );
-  return revoked;
 }

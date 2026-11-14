@@ -14,7 +14,6 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import { createNanoHostOperationImplementations } from '../auth/nanohost-operations.js';
 import { admitNanoHostTransportConnection } from '../auth/nanohost-transport-admission.js';
-import { revokeNanoHostTransportTokenAndFence } from '../auth/nanohost-transport-lifecycle.js';
 import transportRevision from '../auth/nanohost-transport-revision.json' with { type: 'json' };
 import {
   createNanoHostTransportSessionAuthority,
@@ -1161,11 +1160,9 @@ describe('NanoHost native credential ownership', () => {
     expect(f.authority.mayCarryWork(live)).toBe(true);
     expect(getNanoHostRuntimeTarget(f.db, identityId)).toEqual(before.target);
     expect(audits(f)).toBe(before.audit);
-    expect(
-      await revokeNanoHostTransportTokenAndFence(f.db, f.authority, {
-        tokenId: allocateEntityId('nhtok'),
-      })
-    ).toBeNull();
+    await expect(
+      f.op('nanohost.token-revoke', { tokenId: allocateEntityId('nhtok') })
+    ).rejects.toMatchObject({ code: 'nanohost_transport_token_not_found', status: 404 });
     expect(f.authority.mayCarryWork(live)).toBe(true);
   });
 

@@ -10,18 +10,20 @@ import {
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
+import { testEntityId } from '../test-support/entity-ids.js';
+import { ensureLocalUser } from '../test-support/local-user.js';
+import { createNanoHostOperationImplementations } from './nanohost-operations.js';
 import { admitNanoHostTransportConnection } from './nanohost-transport-admission.js';
 import {
   abortNanoHostTransportRotation,
-  decommissionNanoHostTransportAndFence,
   fenceNanoHostTransportOnTokenUnusable,
-  revokeNanoHostTransportTokenAndFence,
 } from './nanohost-transport-lifecycle.js';
 import transportRevision from './nanohost-transport-revision.json' with { type: 'json' };
 import { createNanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import { deliverNanoHostTransportTokenToNamedSlot } from './nanohost-transport-sink.js';
 import {
   createNanoHostTransportTokenRecord,
+  getNanoHostTransportTokenRecord,
   rotateNanoHostTransportTokenRecord,
   verifyNanoHostTransportTokenRecord,
 } from './nanohost-transport-token-store.js';
@@ -35,7 +37,7 @@ import {
  */
 
 const IDENTITY = 'integration_nanohost_primary';
-const DEPLOYMENT = 'deploy_primary';
+const DEPLOYMENT = testEntityId('dep', 'transport-lifecycle');
 const TARGET = 'target_primary';
 const PHYSICAL_EPOCH = 'a'.repeat(64);
 
@@ -213,10 +215,21 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const revoked = await revokeNanoHostTransportTokenAndFence(coreDb, authority, {
-        now: new Date('2026-08-08T02:00:00.000Z'),
-        tokenId: issued.tokenId,
+      const userId = ensureLocalUser(coreDb);
+      const operations = createNanoHostOperationImplementations({
+        coreDb,
+        mode: 'server',
+        sessionAuthority: authority,
       });
+      const { record: revoked } = await operations['nanohost.token-revoke'](
+        { tokenId: issued.tokenId },
+        {
+          kind: 'public',
+          actor: { kind: 'local', userId },
+          actorRef: { kind: 'user', id: userId },
+          scope: { kind: 'server' },
+        }
+      );
       expect(revoked?.status).toBe('revoked');
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
       expectRuntimeTargetUnready(coreDb);
@@ -295,15 +308,30 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         ownerNanoHostIdentityId: IDENTITY,
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
-      const revoked = await decommissionNanoHostTransportAndFence(coreDb, authority, {
-        deploymentId: DEPLOYMENT,
-        identityId: IDENTITY,
-        now: new Date('2026-08-08T02:00:00.000Z'),
+      const userId = ensureLocalUser(coreDb);
+      const operations = createNanoHostOperationImplementations({
+        coreDb,
+        mode: 'server',
+        sessionAuthority: authority,
+        nanoHostConfig: {
+          identityId: IDENTITY,
+          deploymentId: DEPLOYMENT,
+          credentialSlots: slotPair(),
+        },
       });
-      expect(revoked.map((row) => row.tokenId).sort()).toEqual(
-        [first.tokenId, second.tokenId].sort()
+      const result = await operations['nanohost.decommission'](
+        {},
+        {
+          kind: 'public',
+          actor: { kind: 'local', userId },
+          actorRef: { kind: 'user', id: userId },
+          scope: { kind: 'server' },
+        }
       );
-      expect(revoked.every((row) => row.status === 'revoked')).toBe(true);
+      expect(result).toMatchObject({ status: 'decommissioned', revokedTokenCount: 2 });
+      for (const tokenId of [first.tokenId, second.tokenId]) {
+        expect(getNanoHostTransportTokenRecord(coreDb, tokenId)?.status).toBe('revoked');
+      }
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
       expectRuntimeTargetUnready(coreDb);
       expect(

@@ -20,7 +20,7 @@ export type ExecutionOperationDisposition = 'not_accepted' | 'accepted' | 'unkno
 
 /** Correlated observations do not decide the Core product outcome or release barriers. */
 export interface ExecutionBackendObservation extends ExecutionBackendCorrelation {
-  readonly credentialReceipts?: readonly ExecutionCredentialReceipt[];
+  readonly credentialReceipts?: readonly WorkerCredentialReceipt[];
   readonly disposition: ExecutionOperationDisposition;
   readonly execution: 'pending' | 'running' | 'terminal' | 'unknown';
   readonly fenceRef: string | null;
@@ -59,7 +59,7 @@ export interface ExecutionBackend {
       readonly credentialValue: string;
     },
     recheckAuthority: () => Promise<void>
-  ): Promise<ExecutionCredentialReceipt>;
+  ): Promise<WorkerCredentialReceipt>;
   /** Standalone revoke must prove removal or preserve the existing execution fence. */
   revokeCredentialBinding?(
     input: ExecutionBackendCorrelation & {
@@ -76,14 +76,11 @@ export interface ExecutionBackend {
   >;
 }
 
-/** Placement attestation; no native implementation detail or material is retained. */
-export type ExecutionCredentialReceipt = WorkerCredentialReceipt;
-
 /** Reject missing, surplus, mismatched or weaker protection before issuing Vault receipts. */
 export function requireExecutionCredentialReceipts(
   bindings: readonly WorkerCredentialFileBinding[],
-  receipts: readonly ExecutionCredentialReceipt[] | undefined
-): readonly ExecutionCredentialReceipt[] {
+  receipts: readonly WorkerCredentialReceipt[] | undefined
+): readonly WorkerCredentialReceipt[] {
   WorkerCredentialBindingsSchema.parse(bindings);
   if (bindings.length !== (receipts?.length ?? 0))
     throw new Error('Placement credential protection is unproved.');

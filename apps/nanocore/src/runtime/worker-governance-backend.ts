@@ -1142,7 +1142,7 @@ export interface WorkerGovernanceBackend extends ExecutionBackend {
     credentialValue: string,
     materialVersion: number,
     recheckAuthority: () => Promise<void>
-  ): Promise<import('./execution-backend.js').ExecutionCredentialReceipt>;
+  ): Promise<import('@openkit/config-schema').WorkerCredentialReceipt>;
   /** Reads only the original Core-prepared references on this live owner, never native observations or material. */
   readProviderCredentialBinding?(
     packageSnapshotId: string,

@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from 'node:util';
 import {
   type ActorRef,
   isSealedTurnTerminal,
@@ -30,7 +29,7 @@ import { TurnStartValidationError } from './runtime/orchestrator.js';
 import {
   observeTurnAdmission,
   startProductTurn,
-  validateLiveProductTurnAdmission,
+  verifyAcceptedTurnLineage,
 } from './runtime/product-turn-start.js';
 import type { TurnCommandRuntimeContext, TurnExecutor } from './runtime/types.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
@@ -44,55 +43,6 @@ type TurnReadModel = z.infer<typeof TurnSchema>;
 
 // Core database identity scopes process-local execution ownership to this App.
 const activeTurnCloseouts = new WeakMap<CoreDb, Map<string, Promise<void>>>();
-
-/**
- * Binds Core command input to the common durable live Turn admission.
- *
- * Receipt lookup already verifies the complete semantic-input hash before replay; this predicate verifies the admitted scheduler fields and the canonical Turn Skill choices without duplicating them in scheduler storage.
- *
- * @param coreDb Scheduler authority, required for worker admission.
- * @param store Command store.
- * @param input Immutable command input.
- * @param actorId Original initiating actor, retained on replay.
- * @param turnId Original admitted Turn.
- * @throws TurnStartValidationError when Core input or scheduler authority disagrees.
- */
-function validateCoreTurnAdmission(
-  coreDb: CoreDb | undefined,
-  store: FsStore,
-  input: z.infer<typeof SubmitTurnInputRequestSchema>,
-  actorId: string,
-  turnId: string
-): void {
-  if (!coreDb)
-    throw new TurnStartValidationError(
-      'recovery_required',
-      'Turn admission has no scheduler storage.',
-      409
-    );
-  const { admission, turn } = validateLiveProductTurnAdmission({
-    coreDb,
-    store,
-    actorId,
-    workspaceId: input.workspaceId,
-    threadId: input.threadId,
-    requestId: input.requestId,
-    turnId,
-  });
-  if (
-    admission.turnInput !== input.input ||
-    admission.modelId !== (input.modelId ?? null) ||
-    admission.profileRef !== (input.profileId ?? null) ||
-    (input.agentId !== undefined && admission.requestedAgentId !== input.agentId) ||
-    admission.reasoningEffort !== input.reasoningEffort ||
-    !isDeepStrictEqual(turn.skillSelections, input.skillSelections)
-  )
-    throw new TurnStartValidationError(
-      'recovery_required',
-      'Turn scheduler admission contradicts command input.',
-      409
-    );
-}
 
 /**
  * Projects one durable Turn onto the ordinary product-safe response shape.
@@ -178,7 +128,16 @@ export async function startTurn(
             workerPlacement,
             ...(coreDb ? { coreDb } : {}),
             onTurnCreated: (created) => {
-              validateCoreTurnAdmission(coreDb, store, input, actor.userId, created.id);
+              verifyAcceptedTurnLineage({
+                coreDb,
+                store,
+                actorId: actor.userId,
+                workspaceId: input.workspaceId,
+                threadId: input.threadId,
+                requestId: input.requestId,
+                turnId: created.id,
+                commandInput: input,
+              });
               admittedTurnId = created.id;
               closeouts.set(created.id, observed.closeout);
               admit(created);
@@ -202,7 +161,16 @@ export async function startTurn(
           store.getTurn(input.workspaceId, input.threadId, record.response.id)
         );
         if (current.status === 'pending' || current.status === 'running') {
-          validateCoreTurnAdmission(coreDb, store, input, current.triggerActor.id, current.id);
+          verifyAcceptedTurnLineage({
+            coreDb,
+            store,
+            actorId: current.triggerActor.id,
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            requestId: input.requestId,
+            turnId: current.id,
+            commandInput: input,
+          });
         } else {
           if (
             coreDb &&

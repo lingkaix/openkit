@@ -14,6 +14,7 @@ import {
   type WorkerCredentialFileBinding,
   WorkerCredentialFileBindingSchema,
   WorkerCredentialProtectionSchema,
+  type WorkerCredentialReceipt,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import { isRecord } from '@openkit/protocol';
@@ -84,10 +85,7 @@ import {
   resolveAgentEnvironmentPackageMetadata,
 } from './agent-environment.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
-import {
-  type ExecutionCredentialReceipt,
-  requireExecutionCredentialReceipts,
-} from './execution-backend.js';
+import { requireExecutionCredentialReceipts } from './execution-backend.js';
 import { commandInputHash } from './idempotent-command.js';
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
@@ -448,10 +446,7 @@ function neutralBinding(referenceId: string, path: string): WorkerCredentialFile
 /** Exercises malformed placement evidence without printing private input in an assertion diff. */
 function acceptsPlacementReceipt(binding: WorkerCredentialFileBinding, value: unknown): boolean {
   try {
-    requireExecutionCredentialReceipts(
-      [binding],
-      value as ExecutionCredentialReceipt[] | undefined
-    );
+    requireExecutionCredentialReceipts([binding], value as WorkerCredentialReceipt[] | undefined);
     return true;
   } catch {
     return false;
@@ -509,7 +504,7 @@ describe('credential carrier slice 1: Core acceptance', () => {
 
   it('requires exact correlated actual-protection evidence before a placement receipt is usable', () => {
     const binding = neutralBinding(testEntityId('vault', randomUUID()), `/sandbox/${randomUUID()}`);
-    const exact: ExecutionCredentialReceipt = {
+    const exact: WorkerCredentialReceipt = {
       declarationId: binding.declarationId,
       planId: binding.planId,
       receiptId: binding.receiptId,

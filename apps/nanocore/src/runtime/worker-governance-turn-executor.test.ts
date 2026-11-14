@@ -14375,7 +14375,7 @@ describe('credential carrier neutral placement acceptance', () => {
         return {
           ...observation,
           credentialReceipts: evidence as unknown as
-            | import('./execution-backend.js').ExecutionCredentialReceipt[]
+            | import('@openkit/config-schema').WorkerCredentialReceipt[]
             | undefined,
         };
       });

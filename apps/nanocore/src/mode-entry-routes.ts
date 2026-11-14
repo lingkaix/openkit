@@ -144,10 +144,7 @@ import {
   type PendingRequestRecord,
   pendingRequestItemId,
 } from './runtime/pending-requests.js';
-import {
-  observeTurnAdmission,
-  validateLiveProductTurnAdmission,
-} from './runtime/product-turn-start.js';
+import { observeTurnAdmission, verifyAcceptedTurnLineage } from './runtime/product-turn-start.js';
 import type { TurnCommandRuntimeContext } from './runtime/types.js';
 import {
   createWorkerCheckpointEvidenceDiagnostics,
@@ -490,7 +487,7 @@ function replayConversationCommand(
           ) {
             throw new Error('Conversation Worker execution requires recovery.');
           }
-          const { admission } = validateLiveProductTurnAdmission({
+          const { admission } = verifyAcceptedTurnLineage({
             coreDb,
             store,
             actorId,
@@ -763,16 +760,15 @@ function replayConversationCommand(
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
           // The existing handoff checkpoint binds the Assistant's initiating text.
-          validateLiveTaskAdmission({
+          verifyAcceptedTurnLineage({
             coreDb,
             store,
-            workspaceDb,
             actorId,
             workspaceId,
             threadId: receivingThreadId,
             requestId: record.requestId,
-            requestInputHash: record.inputHash,
             turnId: downstreamTurn.id,
+            task: { workspaceDb, requestInputHash: record.inputHash },
           });
         } finally {
           workspaceDb.sqlite.close();
@@ -893,16 +889,15 @@ async function replayTaskModeCommand(
         if (!coreDb) throw new Error('Task runtime owners are unavailable.');
         const workspaceDb = repositoryWorkspaceDb(workspaceId);
         try {
-          validateLiveTaskAdmission({
+          verifyAcceptedTurnLineage({
             coreDb,
             store,
-            workspaceDb,
             actorId,
             workspaceId,
             threadId,
             requestId: record.requestId,
-            requestInputHash: record.inputHash,
             turnId: currentTurn.id,
+            task: { workspaceDb, requestInputHash: record.inputHash },
           });
           return StartTaskModeResponseSchema.parse({
             state: pendingRequestTaskState(store, workspaceDb, workspaceId, threadId, 'running'),
@@ -1018,54 +1013,6 @@ async function replayTaskModeCommand(
       409
     );
   }
-}
-
-/**
- * Validates durable Task admission before the executor has necessarily written its input Item.
- *
- * @param input Exact command, checkpoint, Turn and scheduler owners.
- * @throws TurnStartValidationError when live admission authority is absent or contradictory.
- */
-function validateLiveTaskAdmission(input: {
-  readonly coreDb: CoreDb;
-  readonly store: FsStore;
-  readonly workspaceDb: WorkspaceDb;
-  readonly actorId: string;
-  readonly workspaceId: string;
-  readonly threadId: string;
-  readonly requestId: string;
-  readonly requestInputHash: string;
-  readonly turnId: string;
-  readonly contextDigest?: string;
-}): void {
-  const checkpoint = getWorkerCheckpoint(
-    input.workspaceDb,
-    input.workspaceId,
-    input.threadId,
-    input.turnId
-  );
-  const { attempt, admission } = validateLiveProductTurnAdmission(input);
-  if (
-    !checkpoint ||
-    checkpoint.requestId !== input.requestId ||
-    checkpoint.requestInputHash !== input.requestInputHash ||
-    checkpoint.goalId !== null ||
-    checkpoint.taskId !== null ||
-    checkpoint.iteration !== 0 ||
-    !['preparing', 'running_worker'].includes(checkpoint.stage) ||
-    checkpoint.stopReason !== null ||
-    !checkpoint.contextDigest ||
-    (input.contextDigest !== undefined && checkpoint.contextDigest !== input.contextDigest) ||
-    parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
-      checkpoint.contextDigest ||
-    (checkpoint.workerSessionId !== null && checkpoint.workerSessionId !== attempt?.agentSessionId)
-  )
-    throw directTaskModeRecoveryError('The Task live admission owner tuple requires recovery.');
-  const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
-    JSON.parse(admission.turnInput)
-  );
-  if (commandInputHash(workerRequest) !== checkpoint.contextDigest)
-    throw directTaskModeRecoveryError('The Task scheduler input contradicts its checkpoint.');
 }
 
 /**
@@ -1775,9 +1722,10 @@ async function recoverSessionlessTaskAdmission(input: {
     checkpoint?.stage === 'preparing' &&
     checkpoint.stopReason === null
   ) {
-    validateLiveTaskAdmission({
+    verifyAcceptedTurnLineage({
       ...input,
       ...scope,
+      task: { workspaceDb: input.workspaceDb, requestInputHash: input.requestInputHash },
     });
     return StartTaskModeResponseSchema.parse({
       state: pendingRequestTaskState(
@@ -4708,17 +4656,19 @@ export function createConversationService({
                       await onAdmitted(created, agentSessionId);
                       const taskDb = repositoryWorkspaceDb(targetWorkspaceId);
                       try {
-                        validateLiveTaskAdmission({
+                        verifyAcceptedTurnLineage({
                           coreDb,
                           store,
-                          workspaceDb: taskDb,
                           actorId,
                           workspaceId: targetWorkspaceId,
                           threadId: receivingThreadId,
                           requestId,
-                          requestInputHash: sourceInputHash,
                           turnId: taskTurnId,
-                          contextDigest: prepared.contextPackageDigest,
+                          task: {
+                            workspaceDb: taskDb,
+                            requestInputHash: sourceInputHash,
+                            contextDigest: prepared.contextPackageDigest,
+                          },
                         });
                       } finally {
                         taskDb.sqlite.close();
@@ -5389,17 +5339,19 @@ export function createTaskStartOperation({
                   await onAdmitted(created, agentSessionId);
                   const workspaceDb = repositoryWorkspaceDb(workspaceId);
                   try {
-                    validateLiveTaskAdmission({
+                    verifyAcceptedTurnLineage({
                       coreDb,
                       store,
-                      workspaceDb,
                       actorId,
                       workspaceId,
                       threadId,
                       requestId: taskInput.requestId,
-                      requestInputHash,
                       turnId,
-                      contextDigest: prepared.contextPackageDigest,
+                      task: {
+                        workspaceDb,
+                        requestInputHash,
+                        contextDigest: prepared.contextPackageDigest,
+                      },
                     });
                   } finally {
                     workspaceDb.sqlite.close();
@@ -5484,16 +5436,15 @@ export function createTaskStartOperation({
       if (turn.status !== 'pending' && turn.status !== 'running') return observed.execution;
       const workspaceDb = repositoryWorkspaceDb(workspaceId);
       try {
-        validateLiveTaskAdmission({
+        verifyAcceptedTurnLineage({
           coreDb,
           store,
-          workspaceDb,
           actorId,
           workspaceId,
           threadId,
           requestId: taskInput.requestId,
-          requestInputHash,
           turnId: reservedTurnId,
+          task: { workspaceDb, requestInputHash },
         });
         return StartTaskModeResponseSchema.parse({
           state: pendingRequestTaskState(store, workspaceDb, workspaceId, threadId, 'running'),

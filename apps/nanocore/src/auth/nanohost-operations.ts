@@ -26,8 +26,7 @@ import {
 import { NANOHOST_TRANSPORT_ADMIN_REFUSAL } from './nanohost-transport-codecs.js';
 import {
   abortNanoHostTransportRotation,
-  decommissionNanoHostTransportAndFence,
-  revokeNanoHostTransportTokenAndFence,
+  fenceNanoHostTransportAuthority,
 } from './nanohost-transport-lifecycle.js';
 import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
 import {
@@ -52,7 +51,9 @@ import {
   recordNanoHostTransportAudit,
   revokeNanoHostTransportTokenRecord,
   rotateNanoHostTransportTokenRecord,
+  submitNanoHostTransportDecommission,
   submitNanoHostTransportEnrollment,
+  submitNanoHostTransportRevocation,
 } from './nanohost-transport-token-store.js';
 
 /** Exact native NanoHost handler signatures; facts remain in the browser-safe family table. */
@@ -406,23 +407,47 @@ export function createNanoHostOperationImplementations({
       const actor = context.actorRef;
       requireNanoHostEnvironment();
 
-      const record = sessionAuthority
-        ? await revokeNanoHostTransportTokenAndFence(
+      const tokenId = input.tokenId;
+      const admin = { ...publicOperationActor(context) };
+      const beforeSubmit = context.recheckAdmission;
+      let record: NanoHostTransportTokenRecord | null;
+      if (sessionAuthority) {
+        const prior = getNanoHostTransportTokenRecord(coreDb!, tokenId);
+        const writer = await prepareNanoHostTransportWriter(coreDb!);
+        await beforeSubmit?.();
+        try {
+          record = await submitNanoHostTransportRevocation(writer, tokenId, {}, admin);
+        } catch (error) {
+          if (nanoHostTransportCommitState(error) === 'unknown' && prior) {
+            try {
+              await fenceNanoHostTransportAuthority(
+                coreDb!,
+                sessionAuthority,
+                prior.ownerNanoHostIdentityId,
+                new Date().toISOString()
+              );
+            } catch {
+              // Process fencing ran first; readiness failure must preserve the original unknown commit.
+            }
+          }
+          throw error;
+        }
+        if (record)
+          await fenceNanoHostTransportAuthority(
             coreDb!,
             sessionAuthority,
-            {
-              tokenId: input.tokenId,
-            },
-            publicOperationActor(context),
-            context.recheckAdmission
-          )
-        : await revokeNanoHostTransportTokenRecord(
-            coreDb!,
-            input.tokenId,
-            {},
-            publicOperationActor(context),
-            context.recheckAdmission
+            record.ownerNanoHostIdentityId,
+            new Date().toISOString()
           );
+      } else {
+        record = await revokeNanoHostTransportTokenRecord(
+          coreDb!,
+          tokenId,
+          {},
+          admin,
+          beforeSubmit
+        );
+      }
       if (!record) {
         return failure(
           'NanoHost transport token not found.',
@@ -583,15 +608,34 @@ export function createNanoHostOperationImplementations({
           503
         );
       }
-      const records = await decommissionNanoHostTransportAndFence(
+      const snapshot = { deploymentId: config.deploymentId, identityId: config.identityId };
+      const admin = { ...publicOperationActor(context) };
+      const beforeSubmit = context.recheckAdmission;
+      const writer = await prepareNanoHostTransportWriter(coreDb!);
+      await beforeSubmit?.();
+      let records: NanoHostTransportTokenRecord[];
+      try {
+        records = await submitNanoHostTransportDecommission(writer, snapshot, admin);
+      } catch (error) {
+        if (nanoHostTransportCommitState(error) === 'unknown') {
+          try {
+            await fenceNanoHostTransportAuthority(
+              coreDb!,
+              sessionAuthority,
+              snapshot.identityId,
+              new Date().toISOString()
+            );
+          } catch {
+            // Keep the uncertain native outcome after process authority has been fenced.
+          }
+        }
+        throw error;
+      }
+      await fenceNanoHostTransportAuthority(
         coreDb!,
         sessionAuthority,
-        {
-          deploymentId: config.deploymentId,
-          identityId: config.identityId,
-        },
-        publicOperationActor(context),
-        context.recheckAdmission
+        snapshot.identityId,
+        new Date().toISOString()
       );
       clearDecommissionedSlot(config, 'A');
       clearDecommissionedSlot(config, 'B');

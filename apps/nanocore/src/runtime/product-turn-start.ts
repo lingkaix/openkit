@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { ActorRef, SubmitTurnInputRequestSchema, TurnSchema } from '@openkit/protocol';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { z } from 'zod';
@@ -12,6 +13,7 @@ import {
 import type { Actor } from '../auth/identity.js';
 import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { type RuntimeConfigSnapshot, resolveDefaultAgentId } from '../config/runtime-config.js';
+import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/delegation.js';
 import type { CommandRequestRecord, FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
@@ -21,13 +23,13 @@ import {
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import type { CoreDb } from '../storage/db.js';
+import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
 import type { ExternalSourceSchema } from '../storage/scheduler-admission-codecs.js';
 import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
-import type { IdempotentCommandReceipt } from './idempotent-command.js';
+import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
 import { assertAgentManifestSupportsModel, TurnStartValidationError } from './orchestrator.js';
 import {
   getSchedulerPreparationClaims,
@@ -35,6 +37,7 @@ import {
 } from './scheduler-dispatch-loop.js';
 import { materializeWorkspaceRootsForTurn } from './turn-workspace-context.js';
 import type { TurnExecutor } from './types.js';
+import { getWorkerCheckpoint, parseWorkerCheckpointContextAssembly } from './worker-checkpoints.js';
 
 /** Product turn inputs needed for scheduler admission and worker startup. */
 interface StartProductTurnInput
@@ -513,33 +516,51 @@ export function observeTurnAdmission<T>(input: {
 /**
  * Validates the common live Turn, scheduler, and optional initiating Item owners.
  *
- * Family-specific request hashes and checkpoint context remain with their command owner.
+ * Core command fields and direct Task checkpoint context are checked with the same accepted lineage.
  *
  * @param input Exact human command and admitted Turn lineage.
  * @returns The validated Turn, attempt, and scheduler admission.
  * @throws TurnStartValidationError when live ownership is missing or contradictory.
  */
-export function validateLiveProductTurnAdmission(input: {
-  readonly coreDb: CoreDb;
+export function verifyAcceptedTurnLineage(input: {
+  readonly coreDb: CoreDb | undefined;
   readonly store: FsStore;
   readonly actorId: string;
   readonly workspaceId: string;
   readonly threadId: string;
   readonly requestId: string;
   readonly turnId: string;
+  readonly commandInput?: z.infer<typeof SubmitTurnInputRequestSchema>;
+  readonly task?: {
+    readonly workspaceDb: WorkspaceDb;
+    readonly requestInputHash: string;
+    readonly contextDigest?: string;
+  };
 }) {
+  if (!input.coreDb)
+    throw new TurnStartValidationError(
+      'recovery_required',
+      'Turn admission has no scheduler storage.',
+      409
+    );
+  const checkpoint = input.task
+    ? getWorkerCheckpoint(input.task.workspaceDb, input.workspaceId, input.threadId, input.turnId)
+    : null;
+  let turn: z.infer<typeof TurnSchema>;
+  let attempt: ReturnType<typeof listSchedulerExecutionAttemptsForTurn>[number] | null;
+  let admission: SchedulerAdmissionEntryRecord;
   try {
-    const turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
+    turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
     const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb, input);
     const held = attempts.filter((attempt) => attempt.phase !== 'closed');
-    const attempt = held[0] ?? null;
+    attempt = held[0] ?? null;
     const row = input.coreDb.sqlite
       .prepare(
         'SELECT queue_entry_id AS queueEntryId FROM scheduler_admission_entries WHERE workspace_id = ? AND thread_id = ? AND turn_id = ?'
       )
       .get(input.workspaceId, input.threadId, input.turnId) as { queueEntryId: string } | undefined;
     if (!row) throw new Error('Live Turn has no exact scheduler admission.');
-    const admission = requireSchedulerAdmissionEntry(input.coreDb, row.queueEntryId, input);
+    admission = requireSchedulerAdmissionEntry(input.coreDb, row.queueEntryId, input);
     if (
       !['pending', 'running'].includes(turn.status) ||
       turn.triggerActor.kind !== 'user' ||
@@ -573,7 +594,6 @@ export function validateLiveProductTurnAdmission(input: {
         initiatingItem.text !== admission.turnInput)
     )
       throw new Error('Live Turn input Item contradicts scheduler admission.');
-    return { turn, attempt, admission };
   } catch {
     throw new TurnStartValidationError(
       'recovery_required',
@@ -581,4 +601,54 @@ export function validateLiveProductTurnAdmission(input: {
       409
     );
   }
+  if (input.commandInput) {
+    const command = input.commandInput;
+    if (
+      admission.turnInput !== command.input ||
+      admission.modelId !== (command.modelId ?? null) ||
+      admission.profileRef !== (command.profileId ?? null) ||
+      (command.agentId !== undefined && admission.requestedAgentId !== command.agentId) ||
+      admission.reasoningEffort !== command.reasoningEffort ||
+      !isDeepStrictEqual(turn.skillSelections, command.skillSelections)
+    )
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'Turn scheduler admission contradicts command input.',
+        409
+      );
+  }
+  if (input.task) {
+    if (
+      !checkpoint ||
+      checkpoint.requestId !== input.requestId ||
+      checkpoint.requestInputHash !== input.task.requestInputHash ||
+      checkpoint.goalId !== null ||
+      checkpoint.taskId !== null ||
+      checkpoint.iteration !== 0 ||
+      !['preparing', 'running_worker'].includes(checkpoint.stage) ||
+      checkpoint.stopReason !== null ||
+      !checkpoint.contextDigest ||
+      (input.task.contextDigest !== undefined &&
+        checkpoint.contextDigest !== input.task.contextDigest) ||
+      parseWorkerCheckpointContextAssembly(checkpoint.diagnosticsSummary)?.contextDigest !==
+        checkpoint.contextDigest ||
+      (checkpoint.workerSessionId !== null &&
+        checkpoint.workerSessionId !== attempt?.agentSessionId)
+    )
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Task live admission owner tuple requires recovery.',
+        409
+      );
+    const workerRequest = StructuredWorkerDelegationRequestSchema.parse(
+      JSON.parse(admission.turnInput)
+    );
+    if (commandInputHash(workerRequest) !== checkpoint.contextDigest)
+      throw new TurnStartValidationError(
+        'recovery_required',
+        'The Task scheduler input contradicts its checkpoint.',
+        409
+      );
+  }
+  return { turn, attempt, admission };
 }
