@@ -275,7 +275,12 @@ function withReceivedInfluence(
   };
   for (const entry of entries) {
     if (entry.input.kind !== 'item') continue;
-    const item = StoredItemV1Schema.parse(readPreparedControlEntry(entry));
+    // Native owners may resequence a prepared entry by cloning its descriptor. These
+    // bounded projections still come from the sealed original; the clone is not a WeakMap key.
+    const item = {
+      ...JSON.parse(entry.identityJson),
+      ...JSON.parse(entry.readMetadataJson),
+    };
     const turn = StoredTurnV1Schema.parse(load('turn', item.turnId).record);
     if (receivedItemInfluences(item, turn.triggerActor)) restrict('turn', turn.id);
   }
