@@ -172570,7 +172570,8 @@
                           "enum": [
                             "chat_completions",
                             "responses",
-                            "quick_chat"
+                            "quick_chat",
+                            "decision"
                           ]
                         },
                         "inputTokens": {
@@ -172767,6 +172768,14 @@
                           ]
                         },
                         "responses": {
+                          "type": "string",
+                          "enum": [
+                            "native",
+                            "bridged",
+                            "unsupported"
+                          ]
+                        },
+                        "decisions": {
                           "type": "string",
                           "enum": [
                             "native",
@@ -182972,5 +182981,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:d6ca9f162adc2614e29983915ac2f72bf8098cae968fdc257046d832cc0800c2"
+  "x-openkit-source-digest": "sha256:8339c6f838ea50605027b86f0cd61f2a1e2da0797c091b3875819a18e741b2b2"
 }

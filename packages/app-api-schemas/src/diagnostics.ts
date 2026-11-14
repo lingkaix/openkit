@@ -8,6 +8,8 @@ const GatewayCapabilitiesSchema = z
   .object({
     chatCompletions: z.enum(['native', 'bridged', 'unsupported']),
     responses: z.enum(['native', 'bridged', 'unsupported']),
+    // This describes Provider infrastructure, not an offered or activated decision model.
+    decisions: z.enum(['native', 'bridged', 'unsupported']).optional(),
   })
   .strict();
 
@@ -169,7 +171,7 @@ export const GatewayUsageSummarySchema = z
     cacheReadTokens: z.number().optional(),
     cacheWriteTokens: z.number().optional(),
     completionTokens: z.number(),
-    endpoint: z.enum(['chat_completions', 'responses', 'quick_chat']),
+    endpoint: z.enum(['chat_completions', 'responses', 'quick_chat', 'decision']),
     inputTokens: z.number(),
     lastObservedAt: z.string().min(1),
     model: z.string().min(1),

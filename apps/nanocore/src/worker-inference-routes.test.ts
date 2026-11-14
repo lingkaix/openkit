@@ -823,6 +823,31 @@ function postRawWorkerResponses(
 }
 
 describe('worker inference routes', () => {
+  it('does not expose the private decision category to an authenticated Worker inference session', async () => {
+    const fixture = await createWorkerInferenceRouteFixture();
+    const ordinary = await postWorkerResponses(fixture, {
+      model: WORKER_LOGICAL_MODEL_ID,
+      input: 'Authenticated ordinary inference control',
+    });
+    expect(ordinary.status).toBe(200);
+    await ordinary.text();
+    expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+    expect(
+      fixture.app.routes.some((route) => route.path === '/api/worker-inference/v1/decisions')
+    ).toBe(false);
+    const response = await fixture.app.request('/api/worker-inference/v1/decisions', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${fixture.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: WORKER_LOGICAL_MODEL_ID,
+        input: 'No Worker decision endpoint',
+      }),
+    });
+    // Some unmatched paths reach the generic Token-family refusal; that status alone is not the absence proof.
+    expect([401, 404]).toContain(response.status);
+    expect(fixture.dispatcher.responseCalls).toHaveLength(1);
+    expect(fixture.dispatcher.chatCalls).toHaveLength(0);
+  });
   it.each([false, true])(
     'refuses successful Provider output without native raw observation proof (stream=%s)',
     async (stream) => {

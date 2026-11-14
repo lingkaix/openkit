@@ -1,0 +1,45 @@
+{
+  "provenance": {
+    "classification": "documented/synthetic; not actual provider measurement",
+    "source": "https://developers.openai.com/api/docs/guides/decisions",
+    "sourceSections": [
+      "Evaluate JSON data",
+      "Choice questions",
+      "Reuse shared input with prompt caching"
+    ],
+    "repositoryBaseline": "f23f172d16431c7cd9aa46a932c5bc32cd81ad63",
+    "adaptation": "The documented native input_json, choice question, answers array and probability entries are specialized to E9 verdict choices. IDs, counts and verdict values are synthetic."
+  },
+  "native": {
+    "id": "decision_synthetic",
+    "model": "gpt-6-luna",
+    "answers": [
+      {
+        "type": "choice",
+        "name": "verdict",
+        "choice": "allow",
+        "probabilities": [
+          { "value": "allow", "probability": 0.9 },
+          { "value": "block", "probability": 0.06 },
+          { "value": "escalate", "probability": 0.04 }
+        ],
+        "confidence": 0.31
+      }
+    ],
+    "usage": { "input_tokens": 13, "output_tokens": 7, "total_tokens": 20 }
+  },
+  "bridge": { "decision": "allow", "reasonCode": "no_objection", "confidence": 0.9 },
+  "bridgeSchema": {
+    "type": "object",
+    "properties": {
+      "decision": { "type": "string", "enum": ["allow", "block", "escalate"] },
+      "reasonCode": {
+        "type": "string",
+        "enum": ["no_objection", "policy_risk", "insufficient_evidence"]
+      },
+      "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+    },
+    "required": ["decision", "reasonCode", "confidence"],
+    "additionalProperties": false
+  }
+}

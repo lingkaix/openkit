@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   type AssistantMessage,
   type AssistantMessageEvent,
+  type ClassifierModel,
   type Context,
   calculateCost,
   createModels,
@@ -40,6 +41,21 @@ import type { ProviderProfile } from '@openkit/config-schema';
 import { ReasoningEffortSchema } from '@openkit/protocol';
 import { redactInternalAgentText } from '../internal-agents/redaction.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import {
+  type GatewayDecisionAssessment,
+  GatewayDecisionBridgeGuard,
+  type GatewayDecisionFailureCode,
+  GatewayDecisionTransportError,
+  type GatewayDecisionTransportRequest,
+  gatewayDecisionBridgeInstructions,
+  gatewayDecisionFailureCode,
+  gatewayDecisionQuestion,
+  nativeDecisionAssessment,
+  readBridgedDecisionAssessment,
+  readGatewayDecisionJson,
+  readGatewayDecisionUsage,
+  readNativeDecisionAnswer,
+} from './gateway-decision.js';
 import { mergeAdapterCostRates, resolveEffectiveModelMetadata } from './logical-models.js';
 import { admittedModelEvent, type ModelSemanticEvent } from './model-semantic-content.js';
 import type {
@@ -558,6 +574,8 @@ export class PiAiGatewayConfigurationError extends Error {
  * Construction options for the pi-ai gateway client.
  */
 export interface PiAiGatewayClientOptions {
+  /** Remote HTTP effect for private decision calls; normal Gateway calls retain their existing transport. */
+  readonly fetch?: typeof globalThis.fetch;
   /** pi-ai model collection used for model lookup and calls. */
   readonly models?: MutableModels;
   /** Process-local attribution owner; injectable to prove restart and eviction behavior. */
@@ -590,6 +608,7 @@ export class PiAiGatewayClient {
   private readonly adapterProviders: ReadonlyMap<string, Provider>;
   private readonly models: MutableModels;
   private readonly reasoningAttribution: ReasoningAttribution;
+  private readonly decisionFetch: typeof globalThis.fetch;
 
   /**
    * Creates one pi-ai gateway adapter.
@@ -598,10 +617,251 @@ export class PiAiGatewayClient {
    */
   public constructor(options: PiAiGatewayClientOptions = {}) {
     this.reasoningAttribution = options.reasoningAttribution ?? gatewayReasoningAttribution;
+    const decisionFetch = options.fetch ?? globalThis.fetch;
+    this.decisionFetch = (input, init) => decisionFetch(input, { ...init, redirect: 'error' });
     this.models = options.models ?? createDefaultPiAiGatewayModels();
     this.adapterProviders = new Map(
       this.models.getProviders().map((provider) => [provider.id, provider])
     );
+  }
+
+  /**
+   * Invokes one private decision transport. No ordinary Gateway retry or format fallback is used.
+   * @param provider Explicit selected-member configuration from the existing credential owner.
+   * @param request Closed action, configured model and preselected transport mode.
+   * @param onUsage Observer for actual Provider counters, never inferred prices.
+   * @param transport Entry deadline, cancellation and final current-authority admission.
+   * @param models Exact selected stock collection for a prequalified bridge.
+   * @returns A transient assessment, not an authorization.
+   */
+  public async createDecision(
+    provider: ResolvedLLMProviderConfig,
+    request: GatewayDecisionTransportRequest,
+    onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
+    transport: LLMGatewayTransportContext,
+    models: Models = this.models
+  ): Promise<GatewayDecisionAssessment> {
+    this.assertExplicitCredential(provider);
+    if (!transport.signal || !transport.finalRequestAdmission)
+      throw new GatewayDecisionTransportError('unavailable');
+    if (request.mode === 'native')
+      return this.classifyNativeDecision(provider, request, onUsage, transport);
+    return this.classifyBridgedDecision(provider, request, onUsage, transport, models);
+  }
+
+  /** Uses stock's documented classifier operation without changing any shared Provider registration. */
+  private async classifyNativeDecision(
+    provider: ResolvedLLMProviderConfig,
+    request: GatewayDecisionTransportRequest,
+    onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
+    transport: LLMGatewayTransportContext
+  ): Promise<GatewayDecisionAssessment> {
+    if (
+      request.model !== 'gpt-6-luna' ||
+      provider.adapterId !== 'openai' ||
+      provider.subscriptionProviderId !== undefined
+    )
+      throw new GatewayDecisionTransportError('unsupported');
+    const metadata = resolveEffectiveModelMetadata(metadataProfile(provider), request.model);
+    if (metadata.limit?.context === undefined)
+      throw new GatewayDecisionTransportError('unsupported');
+    const rates = mergeAdapterCostRates(undefined, metadata);
+    const classifier: ClassifierModel<'openai-decisions'> = {
+      type: 'classifier',
+      api: 'openai-decisions',
+      id: request.model,
+      name: request.model,
+      provider: provider.id,
+      baseUrl: provider.baseUrl ?? 'https://api.openai.com/v1',
+      contextWindow: metadata.limit.context,
+      input: ['text'],
+      // Required stock descriptor slots are not measured prices. Missing rates are never published.
+      cost: {
+        input: rates.rates.input ?? 0,
+        output: 0,
+        cacheRead: rates.rates.cacheRead ?? 0,
+        cacheWrite: rates.rates.cacheWrite ?? 0,
+      },
+    };
+    // Native counters, unlike stock Usage, do not imply a computed price. Keep
+    // their exact inclusive input/cache quantities on the existing Gateway observer.
+    let observedUsage: unknown;
+    let adapterFailure: GatewayDecisionFailureCode | undefined;
+    const localModels = createModels({
+      authContext: { env: async () => undefined, fileExists: async () => false },
+    });
+    localModels.setProvider(
+      createProvider({
+        id: provider.id,
+        auth: {
+          apiKey: {
+            name: 'Explicit admitted decision credential',
+            resolve: async ({ credential, signal }) => {
+              signal.throwIfAborted();
+              return credential?.key ? { auth: { apiKey: credential.key } } : undefined;
+            },
+          },
+        },
+        models: [classifier],
+        classifiers: {
+          'openai-decisions': {
+            classify: async (selected, context, options = {}) => {
+              const base = {
+                api: selected.api,
+                provider: selected.provider,
+                model: selected.id,
+                timestamp: Date.now(),
+              };
+              try {
+                options.signal?.throwIfAborted();
+                const body = {
+                  model: selected.id,
+                  input: [{ role: 'user', content: [{ type: 'input_json', data: context.state }] }],
+                  questions: [gatewayDecisionQuestion()],
+                };
+                await transport.finalRequestAdmission?.(
+                  {
+                    payload: body,
+                    contextWindowTokens: selected.contextWindow,
+                    outputReserveTokens: 0,
+                  },
+                  options.signal
+                );
+                options.signal?.throwIfAborted();
+                const response = await (options.fetch ?? this.decisionFetch)(
+                  `${selected.baseUrl.replace(/\/+$/, '')}/decisions`,
+                  {
+                    method: 'POST',
+                    redirect: 'error',
+                    ...(options.signal ? { signal: options.signal } : {}),
+                    headers: {
+                      ...options.headers,
+                      'content-type': 'application/json',
+                      ...(options.apiKey ? { authorization: `Bearer ${options.apiKey}` } : {}),
+                    },
+                    body: JSON.stringify(body),
+                  }
+                );
+                if (!response.ok) throw new GatewayDecisionTransportError('unavailable');
+                // A remote effect can ignore cancellation. Read its bounded late
+                // receipt for consumption only; the original gate stays aborted.
+                const receiptSignal = options.signal?.aborted
+                  ? AbortSignal.timeout(1000)
+                  : options.signal;
+                const payload = await readGatewayDecisionJson(response, receiptSignal);
+                observedUsage = readGatewayDecisionUsage(payload.usage);
+                const answer = readNativeDecisionAnswer(payload);
+                return {
+                  ...base,
+                  stopReason: 'stop' as const,
+                  answers: { verdict: answer },
+                };
+              } catch (error) {
+                adapterFailure = gatewayDecisionFailureCode(error, options.signal);
+                return {
+                  ...base,
+                  stopReason: options.signal?.aborted ? ('aborted' as const) : ('error' as const),
+                  answers: {},
+                  errorMessage: adapterFailure,
+                };
+              }
+            },
+          },
+        },
+      })
+    );
+    const question = gatewayDecisionQuestion();
+    const result = await localModels.classify(
+      classifier,
+      {
+        state: JSON.parse(JSON.stringify(request.action)) as JsonObject,
+        questions: {
+          verdict: {
+            type: 'choice',
+            instructions: question.instructions,
+            criteria: Object.fromEntries(
+              question.choices.map((choice) => [choice.value, choice.description])
+            ),
+          },
+        },
+      },
+      {
+        ...(provider.apiKey ? { apiKey: provider.apiKey } : {}),
+        env: {},
+        ...(transport.signal ? { signal: transport.signal } : {}),
+        maxRetries: 0,
+        fetch: this.decisionFetch,
+      }
+    );
+    // Keep reported consumption even when the native answer is refused or invalid.
+    if (observedUsage !== undefined) await onUsage?.(observedUsage);
+    if (result.stopReason !== 'stop')
+      throw new GatewayDecisionTransportError(adapterFailure ?? 'unavailable');
+    transport.signal?.throwIfAborted();
+    const answer = result.answers.verdict;
+    if (!answer || answer.type !== 'choice')
+      throw new GatewayDecisionTransportError('invalid_output');
+    return nativeDecisionAssessment(answer);
+  }
+
+  /** Adds only the fixed private verdict schema to a supported stock adapter and observes raw terminal evidence. */
+  private async classifyBridgedDecision(
+    provider: ResolvedLLMProviderConfig,
+    request: GatewayDecisionTransportRequest,
+    onUsage: ((usage: unknown) => void | Promise<void>) | undefined,
+    transport: LLMGatewayTransportContext,
+    models: Models
+  ): Promise<GatewayDecisionAssessment> {
+    const { model } = this.resolveModel(provider, request.model, models);
+    const guard = new GatewayDecisionBridgeGuard(model.api);
+    const bridgeRequest: OpenAICompatibleChatCompletionRequest = {
+      model: request.model,
+      messages: [
+        { role: 'system', content: gatewayDecisionBridgeInstructions() },
+        { role: 'user', content: JSON.stringify(request.action) },
+      ],
+      max_tokens: Math.min(model.maxTokens, request.outputLimit ?? Infinity, 1024),
+    };
+    // Install the fixed schema before the existing final admission callback, not after it.
+    const mappingTransport = { ...transport };
+    delete mappingTransport.finalRequestAdmission;
+    const options = this.toStreamOptions(provider, bridgeRequest, mappingTransport, model);
+    const overlay = options.onPayload;
+    options.onPayload = async (payload, selected) => {
+      const overlaid = await overlay?.(payload, selected);
+      return guard.payload(overlaid === undefined ? payload : overlaid);
+    };
+    const observe = options.onProviderStreamEvent;
+    options.onProviderStreamEvent = async (event, selected) => {
+      guard.observe(event);
+      await observe?.(event, selected);
+    };
+    options.maxRetries = 0;
+    // Stock Google explicitly rejects a custom fetch. Keep its native transport;
+    // its per-request SDK retry limit is set with the schema payload instead.
+    if (model.api !== 'google-generative-ai') options.fetch = this.decisionFetch;
+    this.bindFinalRequestAdmission(options, model, transport);
+    let response: AssistantMessage;
+    try {
+      response = await completeObservedModel(
+        models,
+        model,
+        this.toContext(bridgeRequest, model),
+        options,
+        transport,
+        async () => {}
+      );
+    } finally {
+      if (guard.usage !== undefined) await onUsage?.(guard.usage);
+    }
+    transport.signal?.throwIfAborted();
+    guard.assertCompleted();
+    if (response.stopReason === 'length') throw new GatewayDecisionTransportError('incomplete');
+    if (response.stopReason !== 'stop') throw new GatewayDecisionTransportError('invalid_output');
+    const outward = response.content.filter((part) => part.type !== 'thinking');
+    if (outward.length !== 1 || outward[0]?.type !== 'text')
+      throw new GatewayDecisionTransportError('invalid_output');
+    return readBridgedDecisionAssessment(guard.terminalText ?? outward[0].text);
   }
 
   /**

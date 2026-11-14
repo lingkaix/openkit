@@ -1,6 +1,11 @@
 import type { Models } from '@earendil-works/pi-ai';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import {
+  type GatewayDecisionAssessment,
+  GatewayDecisionTransportError,
+  type GatewayDecisionTransportRequest,
+} from './gateway-decision.js';
+import {
   type GatewayUsageEndpoint,
   type GatewayUsageRecordInput,
   GatewayUsageTracker,
@@ -139,6 +144,43 @@ export class LLMGatewayProviderDispatcher {
     this.promptCacheKeyResolver = options.promptCacheKeyResolver ?? new PromptCacheKeyResolver();
     this.providerSubscriptionAccountManager = options.providerSubscriptionAccountManager;
     this.usageTracker = options.usageTracker ?? new GatewayUsageTracker();
+  }
+
+  /**
+   * Dispatches one private decision to its already selected transport, without retry or fallback.
+   * @param provider Existing resolved member, including its explicit credential binding.
+   * @param request Closed action and mode fixed before invocation.
+   * @param context Original deadline, current admission and native consumption observer.
+   * @returns Transient assessment; no permission is granted here.
+   */
+  public async createDecision(
+    provider: ResolvedLLMProviderConfig,
+    request: GatewayDecisionTransportRequest,
+    context: LLMGatewayDispatchContext
+  ): Promise<GatewayDecisionAssessment> {
+    this.assertConfiguredModel(provider, request.model);
+    const support = provider.gatewayCapabilities.decisions;
+    if (
+      !support ||
+      support === 'unsupported' ||
+      (request.mode === 'native' && support !== 'native')
+    )
+      throw new GatewayDecisionTransportError('unsupported');
+    const models =
+      request.mode === 'bridged'
+        ? await resolveGatewaySubscriptionModels(
+            provider,
+            this.providerSubscriptionAccountManager,
+            context.models
+          )
+        : undefined;
+    return this.piAiClient.createDecision(
+      provider,
+      request,
+      (usage) => this.recordUsage(provider, request.model, 'decision', usage, context.onUsage),
+      context.transport ?? {},
+      models
+    );
   }
 
   /**
