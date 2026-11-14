@@ -1001,6 +1001,39 @@ it('E7 keeps explicit human confirmation of a security-origin proposal available
     status: 'completed',
     completedAt: new Date().toISOString(),
   });
+  const humanTurn = await f.store.createTurn(
+    f.workspaceId,
+    f.home.threadId,
+    'Review the editable investigation default.',
+    { kind: 'user', id: f.actor.userId },
+    null
+  );
+  const defaultCandidate = await f.service.propose(
+    {
+      targetFamily: 'policy',
+      targetId: 'server',
+      expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+      changes: {
+        proposed: f.manager.current().openKitConfig.policy?.mediation ?? {
+          schemaVersion: 1,
+          statements: [],
+        },
+        rationale: 'Human review before enabling this investigation proposal fixture.',
+      },
+    },
+    { threadId: f.home.threadId, turnId: humanTurn.id, requestId: randomUUID() }
+  );
+  expect(
+    await f.service.apply({
+      requestId: randomUUID(),
+      candidate: defaultCandidate.candidate,
+      confirmation: defaultCandidate.confirmation,
+    })
+  ).toMatchObject({ persisted: true, reload: 'applied' });
+  await f.store.updateTurn(humanTurn.id, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
   const investigation = await f.store.createTurn(
     f.workspaceId,
     f.home.threadId,

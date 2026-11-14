@@ -690,6 +690,7 @@ describe('E13 Phase A native human configuration', () => {
     });
     const clear = await f.propose(document());
     const before = f.bytes();
+    const beforePolicy = f.loaded();
     const revoke = await f.app.request(
       ...operationRequest(
         'token.revoke',
@@ -700,6 +701,6 @@ describe('E13 Phase A native human configuration', () => {
     expect(revoke.status).toBe(200);
     await expect(f.apply(clear)).rejects.toThrow();
     expect(f.bytes()).toBe(before);
-    expect(f.loaded().statements).toHaveLength(1);
+    expect(f.loaded()).toEqual(beforePolicy);
   });
 });
