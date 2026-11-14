@@ -1,14 +1,16 @@
-import { isDeepStrictEqual } from 'node:util';
 import {
   type ArtifactSchema,
-  compareCodeUnits,
+  canonicalIdentifierName,
   type ThreadSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import {
   evaluateThreadAuthorization,
+  evaluateWorkspaceResourceAccess,
+  parseWorkspacePolicy,
   type ResourcePolicyActor,
+  workspacePolicySubject,
 } from '../policy/workspace-resource-access.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
@@ -126,7 +128,6 @@ export function isArtifactVisible(
 }
 
 /** Preserves the source audience on product-managed transfers; matching Policy facts never grant source read authority. */
-// Deny-only audience containment stays here until Kernel support: GitHub #534 (after v0.1.0).
 export function canDiscloseThreadToAudience(
   store: Pick<FsStore, 'getWorkspaceResourceAccess'>,
   source: Thread,
@@ -143,7 +144,11 @@ export function canDiscloseThreadToAudience(
       destination.privateOwnerUserId === source.privateOwnerUserId
     );
   try {
-    const document = store.getWorkspaceResourceAccess(workspaceIdForOwner(source.owner));
+    const workspaceId = workspaceIdForOwner(source.owner);
+    const document = parseWorkspacePolicy(
+      workspaceId,
+      store.getWorkspaceResourceAccess(workspaceId)
+    );
     const statementsFor = (threadId: string) =>
       document.statements.filter(
         (statement) =>
@@ -161,23 +166,50 @@ export function canDiscloseThreadToAudience(
     const destinationStatements = statementsFor(destination.id);
     if (!destinationStatements.some((statement) => statement.kind === 'managed-boundary'))
       return false;
-    // Compare effective recipient/operation restrictions, excluding ids and attributable authorship.
-    const restrictions = (statements: typeof sourceStatements) =>
-      statements
-        .flatMap((statement) =>
-          statement.kind === 'permission'
-            ? [
-                {
-                  effect: statement.effect,
-                  subjects: statement.scope.subjects,
-                  actions: statement.scope.actions,
-                  grant: statement.grant,
-                },
-              ]
-            : []
+    // Managed recipients are finite: an unlisted User or Agent has no positive allocation,
+    // including administrators. Probe every destination allocation/right through the Kernel;
+    // splitting statements or adding a prohibition cannot manufacture a wider audience.
+    const actors = new Map<string, ResourcePolicyActor>();
+    const operations = new Set<string>();
+    for (const statement of destinationStatements) {
+      if (statement.kind !== 'permission' || statement.effect !== 'allow') continue;
+      const recipient = workspacePolicySubject(statement);
+      if (!recipient) return false;
+      actors.set(
+        canonicalIdentifierName(recipient),
+        recipient.kind === 'user'
+          ? recipient
+          : {
+              ...recipient,
+              // A transient NGAC witness, not an authenticated run, Turn or retained identity.
+              processId: 'audience-containment',
+            }
+      );
+      for (const operation of statement.scope.actions) operations.add(operation);
+    }
+    for (const actor of actors.values()) {
+      for (const operation of operations) {
+        const evaluate = (threadId: string) =>
+          evaluateWorkspaceResourceAccess({
+            actor,
+            administrator: false,
+            visibility: 'workspace',
+            workspaceId,
+            policy: document,
+            resource: { family: 'thread', id: threadId },
+            operation,
+          });
+        const recipient = evaluate(destination.id);
+        if (
+          recipient.reasons.some(
+            (reason) => reason.code === 'invalid-policy' || reason.code === 'invalid-request'
+          )
         )
-        .sort((left, right) => compareCodeUnits(JSON.stringify(left), JSON.stringify(right)));
-    return isDeepStrictEqual(restrictions(sourceStatements), restrictions(destinationStatements));
+          return false;
+        if (recipient.effect === 'allow' && evaluate(source.id).effect !== 'allow') return false;
+      }
+    }
+    return true;
   } catch {
     return false;
   }
