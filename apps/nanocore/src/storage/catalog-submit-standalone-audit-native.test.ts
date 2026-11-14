@@ -439,6 +439,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'app.update.start',
     'app.update.start.handoff',
     'auth.bootstrap.consume',
+    'auth.failure-threshold',
     'auth.token.issue',
     'auth.token.revoke',
     'auth.token.rotate',

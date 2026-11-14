@@ -295,6 +295,7 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'catalog.mcp-select',
     'catalog.mcp-binding',
     'catalog.plugin-import',
+    'auth.failure-threshold',
     'auth.bootstrap.consume',
     'auth.token.issue',
     'auth.token.revoke',

@@ -411,6 +411,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'app.update.start',
     'app.update.start.handoff',
     'auth.bootstrap.consume',
+    'auth.failure-threshold',
     'auth.token.issue',
     'auth.token.revoke',
     'auth.token.rotate',
