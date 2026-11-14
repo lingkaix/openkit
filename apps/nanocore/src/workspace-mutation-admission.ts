@@ -26,6 +26,7 @@ export type WorkspaceRecoveryFreezeOrigin =
 /** Source recovery binds only canonical bytes; target recovery also binds its owned candidate. */
 interface CaptureClosure {
   owner: WorkspaceFrozenAdmission | null;
+  preparing?: true;
   origin?: WorkspaceRecoveryFreezeOrigin;
   recovery?:
     | { readonly canonical: object; readonly candidate?: object }
@@ -41,7 +42,10 @@ interface WorkspaceMutationGateState {
 }
 
 /** Registered canonical publishers that can write after ordinary handler admission. */
-export const WORKSPACE_MUTATION_LATE_PUBLISHERS = ['worker-turn-closeout'] as const;
+export const WORKSPACE_MUTATION_LATE_PUBLISHERS = [
+  'worker-turn-closeout',
+  'mcp-workspace-data',
+] as const;
 
 /** Registered canonical publisher that must name late mutation admission. */
 export type WorkspaceMutationLatePublisher = (typeof WORKSPACE_MUTATION_LATE_PUBLISHERS)[number];
@@ -66,6 +70,50 @@ export class WorkspaceMutationAdmission {
       return { status: 'blocked', blockers };
     }
     if (state.captureClosed !== closure || state.closed) return { status: 'busy' };
+    return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Stops new ordinary calls while original bounded calls/cleanup settle, then takes the same cut. */
+  public async tryFreezeAfterDrain(
+    workspaceId: string,
+    prepare: () => Promise<readonly WorkspaceBlocker[] | void>,
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): Promise<WorkspaceFreezeAdmission> {
+    const state = this.state(workspaceId);
+    if (this.isClosed(workspaceId)) return { status: 'busy' };
+    const closure: CaptureClosure = { owner: null, preparing: true };
+    state.captureClosed = closure;
+    const drain = async () => {
+      while (state.admitted !== 0) await new Promise<void>((resolve) => state.waiters.add(resolve));
+    };
+    try {
+      await drain();
+      const preparationBlockers = await prepare();
+      if (preparationBlockers?.length) {
+        if (state.captureClosed === closure) state.captureClosed = null;
+        return { status: 'blocked', blockers: preparationBlockers };
+      }
+      await drain();
+    } catch {
+      // Unknown physical stop must not reopen admission. All original prepare calls are joined.
+      delete closure.preparing;
+      return {
+        status: 'blocked',
+        blockers: [{ kind: 'unavailable', reason: 'unavailable', actions: [] }],
+      };
+    }
+    if (state.captureClosed !== closure || state.closed) {
+      if (state.captureClosed === closure) state.captureClosed = null;
+      return { status: 'busy' };
+    }
+    delete closure.preparing;
+    const blockers = this.freezeBlockers(readBlockers);
+    if (blockers.length) {
+      if (state.captureClosed === closure) state.captureClosed = null;
+      return { status: 'blocked', blockers };
+    }
+    if (state.captureClosed !== closure || state.closed || state.admitted !== 0)
+      return { status: 'busy' };
     return this.ownFreeze(workspaceId, state, closure);
   }
 
@@ -229,7 +277,14 @@ export class WorkspaceMutationAdmission {
     if (!WORKSPACE_MUTATION_LATE_PUBLISHERS.includes(publisher)) {
       throw new Error(`Unknown Workspace late publisher: ${publisher}.`);
     }
-    return this.enter(workspaceId);
+    const state = this.gates.get(workspaceId);
+    // Existing closeout may settle during preparation, never through the actual cut or deletion.
+    return this.enter(
+      workspaceId,
+      publisher === 'worker-turn-closeout' && state?.captureClosed?.preparing && !state.closed
+        ? 'capture'
+        : 'ordinary'
+    );
   }
 
   /** Closes one Workspace gate and waits for previously admitted mutations to leave. */
@@ -262,7 +317,11 @@ export class WorkspaceMutationAdmission {
   /** Tests ordinary exclusion or the capture-only exclusion required by already-owned low-level settlement. */
   public isClosed(workspaceId: string, exclusion: 'ordinary' | 'capture' = 'ordinary'): boolean {
     const state = this.state(workspaceId);
-    return state.captureClosed !== null || (exclusion === 'ordinary' && state.closed);
+    return (
+      (state.captureClosed !== null &&
+        (exclusion === 'ordinary' || !state.captureClosed.preparing)) ||
+      (exclusion === 'ordinary' && state.closed)
+    );
   }
 
   /** A live capture owner can release its fence; retained recovery and deletion closures cannot. */

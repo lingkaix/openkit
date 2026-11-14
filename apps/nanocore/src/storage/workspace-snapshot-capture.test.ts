@@ -4147,6 +4147,7 @@ describe('C-a independent sealed generations', () => {
     const authored = join(f.workspaceRoot, 'files', captureWorkerProbe.payloadName);
     mkdirSync(dirname(authored), { recursive: true });
     writeFileSync(authored, original, { mode: 0o640 });
+    chmodSync(authored, 0o640);
     captureWorkerProbe.payloadHex = original.toString('hex');
     let frozenHashes = 0;
     let frozenSyncs = 0;
@@ -4394,6 +4395,7 @@ describe('C-a independent sealed generations', () => {
     const mutablePath = join(f.workspaceRoot, 'files', 'authored.bin');
     mkdirSync(dirname(mutablePath), { recursive: true });
     writeFileSync(mutablePath, 'First mutable head', { mode: 0o640 });
+    chmodSync(mutablePath, 0o640);
     const beforeFirstWorkspace = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
     const beforeFirstApp = databaseRows(
       join(f.workspaceRoot, 'light-apps', app.appId, 'data.sqlite'),
@@ -4946,6 +4948,7 @@ describe('C-a independent sealed generations', () => {
     mkdirSync(dirname(sourcePath), { recursive: true });
     const authored = Buffer.from('An exact mutable cut short-write specimen. '.repeat(100));
     writeFileSync(sourcePath, authored, { mode: 0o640 });
+    chmodSync(sourcePath, 0o640);
     const predecessor = await createWorkspaceBackup(f.input());
     const input = f.input();
     const before = tree(f.workspaceRoot);

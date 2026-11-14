@@ -24,6 +24,7 @@ import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from '../knowledge/notebook-workspace-selection.js';
+import { bindMcpCaptureAdmission } from '../runtime/worker-mcp-capture.js';
 import { prepareWorkspaceKnowledgeProposal } from '../storage/control-store-knowledge.js';
 import {
   type ControlKnowledgeHead,
@@ -3258,7 +3259,10 @@ export class FsStore {
   public setWorkspaceMutationAdmission(admission: WorkspaceMutationAdmission): void {
     if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
       throw new Error('Store already has a different Workspace mutation owner.');
-    if (this.dataRoot) getControlStoreWorkerClient(admission);
+    if (this.dataRoot) {
+      getControlStoreWorkerClient(admission);
+      bindMcpCaptureAdmission(this.dataRoot, admission);
+    }
     this.workspaceMutationAdmission = admission;
   }
 

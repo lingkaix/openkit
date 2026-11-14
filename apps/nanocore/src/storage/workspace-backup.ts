@@ -89,6 +89,7 @@ import { readExecutionJournalRoot } from '../runtime/execution-journal.js';
 import { hasUnprovedNanoHostWorkspaceCleanup } from '../runtime/nanohost-attempt-records.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
+import { hasWorkspaceMcpData, quiesceWorkspaceMcpData } from '../runtime/worker-mcp-capture.js';
 import { getWorkerStorageBinding } from '../runtime/worker-storage-bindings.js';
 import {
   listWorkspaceApplyPlans,
@@ -437,6 +438,17 @@ function readWorkspaceBlockerFacts(
           });
       }
     };
+    if (
+      input.operation !== undefined &&
+      input.operation !== 'capture' &&
+      hasWorkspaceMcpData(coreDb.dataRoot, workspaceId)
+    )
+      add({
+        kind: 'publication',
+        reason: 'pending-publication',
+        reference: { workspaceId },
+        actions: [],
+      });
     if (input.operation === 'delete') {
       addCaptureBlockers();
       return blockers;
@@ -1920,12 +1932,24 @@ async function runWorkspaceCapture(
                 live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
                 let hold: Promise<() => void> | null = null;
                 const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
-                const captureBlockers = (): readonly WorkspaceBlocker[] => {
-                  const blockers = readBlockers({
+                const workspaceBlockers = (): readonly WorkspaceBlocker[] =>
+                  readBlockers({
                     ...live,
                     workspaceId: targetWorkspaceId,
                     operation: 'capture',
                   });
+                const captureBlockers = (): readonly WorkspaceBlocker[] => {
+                  const blockers = workspaceBlockers();
+                  // A destructive caller keeps its existing freeze/blockers, not a new stop permission.
+                  if (live.freezeOwner && hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId))
+                    return [
+                      {
+                        kind: 'publication',
+                        reason: 'pending-publication',
+                        reference: { workspaceId: targetWorkspaceId },
+                        actions: [],
+                      },
+                    ];
                   if (blockers.length) return blockers;
                   nativeCaptureClient = getControlStoreWorkerClient();
                   hold = nativeCaptureClient.tryPauseForWorkspaceCapture(
@@ -1947,6 +1971,19 @@ async function runWorkspaceCapture(
                 if (live.freezeOwner) {
                   const blockers = captureBlockers();
                   admission = blockers.length ? { status: 'blocked', blockers } : live.freezeOwner;
+                } else if (hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId)) {
+                  const priorBlockers = workspaceBlockers();
+                  admission = priorBlockers.length
+                    ? { status: 'blocked', blockers: priorBlockers }
+                    : await live.mutationAdmission.tryFreezeAfterDrain(
+                        targetWorkspaceId,
+                        async () => {
+                          const blockers = workspaceBlockers();
+                          if (blockers.length) return blockers;
+                          await quiesceWorkspaceMcpData(live.dataRoot, targetWorkspaceId);
+                        },
+                        captureBlockers
+                      );
                 } else {
                   admission = live.mutationAdmission.tryFreeze(targetWorkspaceId, captureBlockers);
                 }

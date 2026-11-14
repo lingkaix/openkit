@@ -44,6 +44,7 @@ import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import type { RegisterWorkerMcpRoutesInput } from '../worker-mcp-routes.js';
 import { WorkerControlGatewayError } from './worker-control-gateway.js';
+import { enterMcpCaptureCall, registerMcpCaptureParticipant } from './worker-mcp-capture.js';
 
 /** Maximum complete MCP result or explicit discovery observation, including metadata. */
 export const MCP_RESULT_MAX_BYTES = 512 * 1024;
@@ -230,14 +231,86 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   private readonly sessionTeardowns = new Map<string, () => Promise<void>>();
   private readonly teardowns = new Map<string, Promise<void>>();
   private readonly teardownRequired = new Set<string>();
+  private readonly releaseCaptureParticipant: (() => void) | undefined;
 
   public constructor(
     private readonly coreDb?: CoreDb,
     private readonly previewAudit?: McpPreviewAuditContext
-  ) {}
+  ) {
+    this.releaseCaptureParticipant = coreDb
+      ? registerMcpCaptureParticipant(coreDb.dataRoot, {
+          hasWorkspaceData: (workspaceId) => this.hasWorkspaceData(workspaceId),
+          stopWorkspace: (workspaceId) => this.stopWorkspaceForCapture(workspaceId),
+        })
+      : undefined;
+  }
+
+  /** Reserves the original exchange through actual settlement; capture never cancels it. */
+  private async withCaptureAdmission<T>(
+    input: WorkerMcpGatewayServerInput,
+    call: () => Promise<T>
+  ): Promise<T> {
+    if (
+      input.signal?.aborted ||
+      !this.coreDb ||
+      input.temporaryContext ||
+      input.server.transport.kind !== 'stdio'
+    )
+      return call();
+    const release = enterMcpCaptureCall(this.coreDb.dataRoot, input.workspaceId);
+    if (!release)
+      throw new WorkerMcpGatewayCallError(
+        'mcp-server-unavailable',
+        'Workspace MCP capture is in progress.',
+        503,
+        'not-contacted'
+      );
+    try {
+      return await call();
+    } finally {
+      release();
+    }
+  }
+
+  public async listTools(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpLiveTools> {
+    return this.withCaptureAdmission(input, () => this.listToolsAdmitted(input));
+  }
+
+  public async callTool(
+    input: Parameters<WorkerMcpGateway['callTool']>[0]
+  ): Promise<Awaited<ReturnType<Client['callTool']>>> {
+    return this.withCaptureAdmission(input, () => this.callToolAdmitted(input));
+  }
+
+  private hasWorkspaceData(workspaceId?: string): boolean {
+    return [...this.sessionInputs.values()].some(
+      (input) =>
+        (workspaceId === undefined || input.workspaceId === workspaceId) &&
+        input.server.transport.kind === 'stdio' &&
+        !input.temporaryContext
+    );
+  }
+
+  /** Stop only this Workspace's canonical stdio pools; the same Gateway reconnects lazily after cut. */
+  private async stopWorkspaceForCapture(workspaceId: string): Promise<void> {
+    const keys = [...this.sessionInputs]
+      .filter(
+        ([, input]) =>
+          input.workspaceId === workspaceId &&
+          input.server.transport.kind === 'stdio' &&
+          !input.temporaryContext
+      )
+      .map(([key]) => key);
+    const stopped = await Promise.allSettled(keys.map((key) => this.discard(key, 'inactive')));
+    const errors = stopped
+      .filter((result) => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (errors.length)
+      throw new AggregateError(errors, 'MCP Workspace process close is unconfirmed.');
+  }
 
   /** Lists live tools, following pagination up to the page cap and the result byte bound. */
-  public async listTools(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpLiveTools> {
+  private async listToolsAdmitted(input: WorkerMcpGatewayServerInput): Promise<WorkerMcpLiveTools> {
     if (input.signal?.aborted) {
       throw new WorkerMcpGatewayCallError(
         'mcp-server-unavailable',
@@ -367,7 +440,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
   }
 
   /** Calls one MCP tool and rejects oversized results without truncation. */
-  public async callTool(
+  private async callToolAdmitted(
     input: WorkerMcpGatewayServerInput & {
       readonly arguments: Record<string, unknown>;
       readonly toolName: string;
@@ -547,6 +620,7 @@ class DefaultWorkerMcpGateway implements WorkerMcpGateway {
       while (entry.pending) await entry.pending.promise.catch(() => undefined);
     }
     this.health.clear();
+    this.releaseCaptureParticipant?.();
   }
 
   /** Stops every cached session for one Workspace server authority. */
