@@ -1,16 +1,3 @@
-import {
-  type ControlMaintenanceAdmissionInput,
-  ControlMaintenanceAdmissionInputSchema,
-  type ControlMaintenanceAdmissionResult,
-} from '../storage/control-store-maintenance-codecs.js';
-
-export {
-  type ControlMaintenanceAdmissionInput,
-  ControlMaintenanceAdmissionInputSchema,
-  type ControlMaintenanceAdmissionResult,
-  ControlMaintenanceAdmissionResultSchema,
-} from '../storage/control-store-maintenance-codecs.js';
-
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { KnowledgeMaintenanceResponseSchema } from '@openkit/app-api-schemas';
@@ -43,6 +30,11 @@ import {
   type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import {
+  type ControlKnowledgeAdmissionInput,
+  ControlKnowledgeAdmissionInputSchema,
+  type ControlKnowledgeAdmissionResult,
+} from '../storage/control-store-admission-codecs.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -88,8 +80,8 @@ type Turn = ReturnType<FsStore['getTurnById']>;
 export async function admitControlMaintenance(
   dataRoot: string,
   workspaceId: string | undefined,
-  input: ControlMaintenanceAdmissionInput
-): Promise<ControlMaintenanceAdmissionResult> {
+  input: ControlKnowledgeAdmissionInput
+): Promise<ControlKnowledgeAdmissionResult> {
   const scope = nativeProductScope(
     dataRoot,
     workspaceId === undefined ? { kind: 'server' } : { kind: 'workspace', workspaceId }
@@ -106,7 +98,7 @@ export async function admitControlMaintenance(
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
-  return client.maintenance(database, input);
+  return client.transition(database, { kind: 'knowledge-work', input });
 }
 
 /** Trusted request admission supplies identity and the native authority closure, never model arguments. */
@@ -215,9 +207,7 @@ export async function prepareKnowledgeMaintenance(
     captureCoverage: store.getLiveCaptureCoverage(),
     ...(input.receipt
       ? {
-          receipt: ControlMaintenanceAdmissionInputSchema.shape.receipt
-            .unwrap()
-            .parse(input.receipt),
+          receipt: ControlKnowledgeAdmissionInputSchema.shape.receipt.unwrap().parse(input.receipt),
         }
       : {}),
   });

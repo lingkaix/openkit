@@ -162,10 +162,7 @@ import {
   type ControlAppWire,
 } from '../generative-kernel/native-command-codecs.js';
 import type { ControlGenerativePresentation } from '../generative-ui/native-publication-codecs.js';
-import type {
-  ControlMaintenanceAdmissionInput,
-  ControlMaintenanceAdmissionResult,
-} from '../knowledge/knowledge-agent-maintenance.js';
+
 import { NotebookError } from '../knowledge/notebook.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 import {
@@ -207,7 +204,12 @@ import {
   type FileStorageReservation,
 } from './artifacts/file-admission.js';
 import { CONTROL_STORE_BUDGET, type ControlCheckpoint } from './control-store.js';
-import type { ControlAdmission, ControlAdmissionResult } from './control-store-admission-codecs.js';
+import type {
+  ControlAdmission,
+  ControlAdmissionInput,
+  ControlAdmissionResult,
+  ControlKnowledgeAdmissionResult,
+} from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
@@ -966,7 +968,7 @@ class ControlStoreWorkerClient {
     switch (command.operation) {
       case 'products':
       case 'transition':
-        entries.push(...command.transition.entries);
+        if ('entries' in command.transition) entries.push(...command.transition.entries);
         break;
       case 'publication':
       case 'terminal':
@@ -2168,12 +2170,35 @@ class ControlStoreWorkerClient {
    *
    * Immutable entries must already be published through Storage; the worker verifies and synchronizes their actual bytes before SQL. This preparation API has no public caller binding. Receipt replay returns the original response, not a newly proposed resource identity.
    */
+  async transition(database: string, transition: ControlAdmission): Promise<ControlAdmissionResult>;
   async transition(
     database: string,
-    transition: ControlAdmission
-  ): Promise<ControlAdmissionResult> {
-    const reply = await this.request({ operation: 'transition', database, transition });
-    return (reply as Extract<Success, { operation: 'transition' }>).result;
+    transition: Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
+  ): Promise<ControlKnowledgeAdmissionResult>;
+  async transition(
+    database: string,
+    transition: ControlAdmissionInput
+  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult>;
+  async transition(
+    database: string,
+    transition: ControlAdmissionInput
+  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult> {
+    try {
+      const reply = await this.request({ operation: 'transition', database, transition });
+      return (reply as Extract<Success, { operation: 'transition' }>).result;
+    } catch (error) {
+      if (
+        'kind' in transition &&
+        error instanceof ControlStoreWorkerError &&
+        error.domain?.operation === 'transition'
+      ) {
+        if (error.domain.code === 'idempotency_key_conflict')
+          throw new IdempotencyKeyConflictError();
+        if (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
+          throw new NotebookError(error.domain.code);
+      }
+      throw error;
+    }
   }
 
   /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
@@ -4096,25 +4121,6 @@ class ControlStoreWorkerClient {
       }
     }
     throw new ControlStoreWorkerError('busy', 'not-committed');
-  }
-
-  /** Admits one scoped Knowledge unit; model work starts only after its native acknowledgement. */
-  async maintenance(
-    database: string,
-    input: ControlMaintenanceAdmissionInput
-  ): Promise<ControlMaintenanceAdmissionResult> {
-    try {
-      const reply = await this.request({ operation: 'maintenance', database, input });
-      return (reply as Extract<Success, { operation: 'maintenance' }>).result;
-    } catch (error) {
-      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'maintenance') {
-        if (error.domain.code === 'idempotency_key_conflict')
-          throw new IdempotencyKeyConflictError();
-        if (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
-          throw new NotebookError(error.domain.code);
-      }
-      throw error;
-    }
   }
 
   /** Executes one complete Material-family body; only its outer FULL commit acknowledges the result. */

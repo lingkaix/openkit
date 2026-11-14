@@ -288,8 +288,8 @@ export async function assertTaskDurableAdmissionResponse({
   // The real native method resolves only after its outer FULL COMMIT acknowledgement.
   const receiptPublication = vi.spyOn(writer, 'transition').mockImplementation(async (...args) => {
     const result = await transition(...args);
-    const receipt = args[1].receipt;
-    if (receipt.command === command && receipt.requestId === requestId)
+    const receipt = 'receipt' in args[1] ? args[1].receipt : undefined;
+    if (receipt?.command === command && receipt.requestId === requestId)
       publicationEvents.push('publication');
     return result;
   });
