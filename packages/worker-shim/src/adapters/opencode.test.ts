@@ -4939,6 +4939,10 @@ function fakeIntegration(): { calls: string[]; client: SandboxIntegrationClient 
   const calls: string[] = [];
   const client = {
     ready: Promise.resolve(),
+    async openCredentialAgentSocket(agentSessionId: string): Promise<string> {
+      // Opaque component address only; this fixture binds no socket.
+      return join(tmpdir(), `openkit-component-agent-${agentSessionId}.sock`);
+    },
     registerSessionLoopback(agentSessionId: string) {
       calls.push(`register:${agentSessionId}`);
     },

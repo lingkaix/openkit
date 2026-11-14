@@ -39,6 +39,10 @@ function fakeIntegration(
   const loopbacks = new Set<string>();
   return {
     ready: Promise.resolve(),
+    async openCredentialAgentSocket(agentSessionId: string): Promise<string> {
+      // Opaque component address only; this fixture binds no socket.
+      return join(tmpdir(), `openkit-component-agent-${agentSessionId}.sock`);
+    },
     registerSessionLoopback(agentSessionId: string) {
       if (loopbacks.has(agentSessionId)) throw new Error('loopback conflict');
       loopbacks.add(agentSessionId);

@@ -814,7 +814,9 @@ describe('worker control routes', () => {
       .map(({ method, path }) => `${method} ${path}`);
 
     expect(routes).toEqual([
+      'ALL /api/worker-control/credential-helper',
       'ALL /api/worker-control/*',
+      'POST /api/worker-control/credential-helper',
       'POST /api/worker-control/heartbeat',
       'POST /api/worker-control/artifacts',
       'POST /api/worker-control/events/append',

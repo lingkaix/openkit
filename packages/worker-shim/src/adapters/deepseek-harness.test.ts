@@ -74,6 +74,10 @@ it.each([
     };
     const integration = {
       ready: Promise.resolve(),
+      async openCredentialAgentSocket(agentSessionId: string): Promise<string> {
+        // Opaque component address only; this fixture binds no socket.
+        return join(tmpdir(), `openkit-component-agent-${agentSessionId}.sock`);
+      },
       registerSessionLoopback: () => undefined,
       destroySessionLoopback: () => undefined,
       bindTurnRouteTokens: () => undefined,
