@@ -10,10 +10,14 @@ import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { acquireDataRootLock } from '../bootstrap/lock.js';
+import { isScopeAdmitted, scopeAdmissionFailures } from '../bootstrap/readiness.js';
+import { restoreWorkspaceRecoveryAdmission } from '../bootstrap/workspace-recovery.js';
+import { FsStore } from '../lib/store.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact, recoveryJournalFacts } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import {
@@ -418,6 +422,115 @@ async function inspectRetryReplay(
 }
 
 describe('Stopped source reactivation ownership and durable prefixes', () => {
+  it.each(['unsupported-current-marker', 'unreadable-proof'] as const)(
+    'boot contains %s to its addressed Workspace while Core and a healthy sibling remain usable',
+    async (fault) => {
+      const f = await fixture();
+      await expect(reactivateWorkspace(f.input)).resolves.toMatchObject({
+        disposition: 'reactivated',
+      });
+      const store = new FsStore({ dataRoot: f.dataRoot });
+      const healthy = await store.createWorkspace('Healthy recovery sibling');
+      await shutdownControlStoreWorkerClient();
+      const core = databases.openCoreDb(f.dataRoot);
+      try {
+        expect(admissions.readRecoveryExecution(core, f.backupId)).toMatchObject({
+          workspace_id: workspaceId,
+          state: 'abandoned',
+          proof: { result: { disposition: 'reactivated' } },
+        });
+        const latest = core.sqlite
+          .prepare(`SELECT s.* FROM control_execution_steps s
+          WHERE json_extract(s.invocation_json,'$.carriage.requestId')=?
+          ORDER BY json_extract(s.invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
+          .get(f.backupId) as { execution_id: string; step_id: string; control_json: string };
+        const control = JSON.parse(latest.control_json);
+        const descriptor = JSON.parse(control.inputRefs[0]);
+        const proofPath = join(
+          f.dataRoot,
+          'server/evidence/backend',
+          descriptor.reference.locator.path
+        );
+        const proofBytes = readFileSync(proofPath);
+        if (fault === 'unsupported-current-marker') {
+          core.sqlite.transaction(() => {
+            const triggers = [
+              'control_executions_identity_immutable',
+              'control_execution_steps_settle_once',
+            ].map((name) => {
+              const row = core.sqlite
+                .prepare('SELECT sql FROM sqlite_schema WHERE name=?')
+                .get(name) as { sql: string };
+              core.sqlite.exec(`DROP TRIGGER ${name}`);
+              return row.sql;
+            });
+            try {
+              core.sqlite
+                .prepare('UPDATE control_executions SET definition_version=? WHERE id=?')
+                .run('core-workspace-recovery/v99', latest.execution_id);
+              core.sqlite
+                .prepare(
+                  'UPDATE control_execution_steps SET control_json=? WHERE execution_id=? AND step_id=?'
+                )
+                .run(
+                  JSON.stringify({ ...control, definitionVersion: 'core-workspace-recovery/v99' }),
+                  latest.execution_id,
+                  latest.step_id
+                );
+            } finally {
+              for (const sql of triggers) core.sqlite.exec(sql);
+            }
+          })();
+          expect(readFileSync(proofPath)).toEqual(proofBytes);
+        } else {
+          // Remove only the original current Core body; keep every journal binding intact.
+          rmSync(proofPath);
+          expect(existsSync(proofPath)).toBe(false);
+        }
+        expect(
+          core.sqlite
+            .prepare(`SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN (?,?)`)
+            .all('control_executions_identity_immutable', 'control_execution_steps_settle_once')
+        ).toHaveLength(2);
+        expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError();
+        expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
+        const gate = new WorkspaceMutationAdmission();
+        // Repeated census must neither reopen the opaque scope nor infer a recovery origin.
+        for (let pass = 0; pass < 2; pass++) {
+          expect(() => restoreWorkspaceRecoveryAdmission(core, gate)).not.toThrow();
+          expect(scopeAdmissionFailures(f.dataRoot)).toEqual([
+            { scope: 'workspace', id: workspaceId, check: 'recovery' },
+          ]);
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
+          expect(gate.enter(workspaceId)).toBeNull();
+          expect(gate.tryResumeRecovery(workspaceId, { captureId: f.backupId }, () => [])).toEqual({
+            status: 'busy',
+          });
+          expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
+          const release = gate.enter(healthy.id);
+          expect(release).toBeTypeOf('function');
+          release?.();
+        }
+        store.setWorkspaceMutationAdmission(gate);
+        await expect(store.createThread(workspaceId, 'Must stay refused')).rejects.toThrow();
+        await expect(
+          store.createThread(healthy.id, 'Healthy native publication')
+        ).resolves.toMatchObject({ workspaceId: healthy.id });
+        const additional = await store.createWorkspace('Core registry still writable');
+        expect(
+          core.sqlite
+            .prepare('SELECT status FROM workspace_registry WHERE workspace_id=?')
+            .pluck()
+            .get(additional.id)
+        ).toBe('active');
+        expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError();
+      } finally {
+        core.sqlite.close();
+      }
+    },
+    120_000
+  );
+
   it('refuses an unsupported latest recovery definition instead of replaying an older closed root', async () => {
     const f = await fixture();
     const original = rows(coreDbPath(f.dataRoot), 'control_executions');
