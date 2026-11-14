@@ -28,7 +28,7 @@ import {
 import { createServer as createNativeTlsPeerServer } from 'node:https';
 import { connect as connectCredentialSocket } from 'node:net';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as delay, setImmediate as nextTurn } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -22617,6 +22617,10 @@ describe('Core credential helpers through the actual App and durable fake-backen
       );
       expect(git.code).toBe(0);
       expect(git.stdout.includes(`password=${gitPassword}\n`)).toBe(true);
+      // Match the Worker image's real built CLI alias without a host helper installation.
+      const dockerHelperBin = join(root, 'docker', 'bin');
+      mkdirSync(dockerHelperBin, { mode: 0o700 });
+      symlinkSync(cli, join(dockerHelperBin, 'docker-credential-openkit'));
       writeFileSync(
         join(root, 'docker', 'config.json'),
         JSON.stringify({ credHelpers: { [registryAuthority]: 'openkit' } })
@@ -22631,7 +22635,11 @@ describe('Core credential helpers through the actual App and durable fake-backen
           '--insecure',
           `${registryAuthority}/fixture/image:latest`,
         ],
-        { ...env, DOCKER_CONFIG: join(root, 'docker') }
+        {
+          ...env,
+          PATH: `${dockerHelperBin}${delimiter}${env.PATH}`,
+          DOCKER_CONFIG: join(root, 'docker'),
+        }
       );
       expect(
         docker.code,
