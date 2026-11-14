@@ -234,6 +234,21 @@ describe('E10 full-diff Policy mutation ceiling', () => {
       statements: [gate(DEMO_WORKSPACE_ID)],
     });
     expect(f.authority(DEMO_WORKSPACE_ID)).not.toBeNull();
-    expect(f.prepare([]).after.statements).toEqual([]);
+    const candidate = f.prepare([]);
+    // The first human candidate also carries the fixed, explicitly reviewed defaults.
+    expect(candidate.after.statements.map(({ id }) => id).sort()).toEqual([
+      'context-preset.agent-initiated',
+      'context-preset.owner-direct',
+      'context-preset.workspace-members',
+      'security-investigation',
+    ]);
+    expect(
+      preparePolicyDocument({
+        current: candidate.before,
+        proposed: candidate.after,
+        userId,
+        now: '2026-11-13T00:00:00.000Z',
+      }).classification
+    ).toBe('widening');
   });
 });
