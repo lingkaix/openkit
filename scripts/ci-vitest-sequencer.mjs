@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { relative, sep } from 'node:path';
 
 const timings = JSON.parse(readFileSync(new URL('./ci-nanocore-timings.json', import.meta.url)));
+const isolatedTimelineFile = 'src/storage/thread-timeline-activity-budget.test.ts';
 
 /** Start expensive files first, with path ties independent of discovery order. */
 function longestFirst(files, duration) {
@@ -38,13 +39,28 @@ export default class CiVitestSequencer {
     return timings.files[path] ?? timings.fallbackMs;
   }
 
-  /** Use the same complete weighted assignment for every partition and both collection modes. */
+  /** Keep the timing oracle alone while collection and execution share the complete discovery union. */
   async shard(files) {
     const { index, count } = this.ctx.config.shard;
+    if (count === 9) {
+      const isolated = files.filter(
+        (file) =>
+          relative(this.ctx.config.root, file.moduleId).split(sep).join('/') ===
+          isolatedTimelineFile
+      );
+      if (isolated.length !== 1)
+        throw Error('NanoCore CI requires exactly one whole Timeline timing oracle');
+      if (index === count) return isolated;
+      return balanceFiles(
+        files.filter((file) => file !== isolated[0]),
+        count - 1,
+        (file) => this.duration(file)
+      )[index - 1];
+    }
     return balanceFiles(files, count, (file) => this.duration(file))[index - 1];
   }
 
-  /** Apply the measured longest-first order within each two-worker partition. */
+  /** Apply the measured longest-first order within each partition. */
   async sort(files) {
     return longestFirst(files, (file) => this.duration(file));
   }

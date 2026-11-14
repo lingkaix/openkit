@@ -46,12 +46,13 @@ export function shardPlan(root = process.cwd()) {
       .filter((owner) => ['@openkit/worker-shim', '@openkit/nanocore'].includes(owner.name))
       .flatMap((owner) => {
         const id = owner.name.replace('@openkit/', '');
-        const count = owner.name === '@openkit/nanocore' ? 8 : 2;
+        const count = owner.name === '@openkit/nanocore' ? 9 : 2;
         return Array.from({ length: count }, (_, index) => ({
           id: `${id}-${index + 1}`,
           kind: 'coverage',
           owners: [owner.name],
           partition: { index: index + 1, count },
+          ...(owner.name === '@openkit/nanocore' && index === count - 1 ? { workers: 1 } : {}),
         }));
       }),
     {
@@ -141,6 +142,8 @@ export function runShard(
   const nanoCore = shard.owners[0] === '@openkit/nanocore';
   if (!Number.isSafeInteger(workers) || workers < 1 || workers > 4 || (!nanoCore && workers !== 2))
     throw Error('Invalid NanoCore workers');
+  // A timing partition cannot inherit the concurrent shard width, including from an explicit probe.
+  workers = shard.workers ?? workers;
   const owners = testOwners(root).filter((o) => shard.owners.includes(o.name));
   if (shard.kind === 'coverage') {
     prepare(owners, { root });

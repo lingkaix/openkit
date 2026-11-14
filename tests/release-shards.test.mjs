@@ -17,6 +17,7 @@ import { test } from 'node:test';
 import { parse } from 'yaml';
 import { coveragePlan, requireShardResults, runShard, shardPlan } from '../scripts/ci-l0-l2.mjs';
 import {
+  coveredSuite,
   rootNodeInventory,
   rootNodeSuite,
   rootSuite,
@@ -43,10 +44,10 @@ test('execution inventory refuses missing and repeated files or cases', () => {
   );
 });
 
-test('the sixteen-job plan preserves every owner and all four static tasks', () => {
+test('the seventeen-job plan preserves every owner and all four static tasks', () => {
   const owners = testOwners(process.cwd());
   const plan = shardPlan();
-  assert.equal(plan.length, 16);
+  assert.equal(plan.length, 17);
   assert.equal(new Set(plan.map((s) => s.id)).size, plan.length);
   assert.equal(plan.filter((s) => s.kind === 'root').length, 1);
   const statics = plan.filter((s) => s.kind === 'static');
@@ -63,7 +64,7 @@ test('the sixteen-job plan preserves every owner and all four static tasks', () 
   for (const owner of owners) {
     const matches = plan.filter((s) => s.owners.includes(owner.name));
     const count =
-      owner.name === '@openkit/nanocore' ? 8 : owner.name === '@openkit/worker-shim' ? 2 : 1;
+      owner.name === '@openkit/nanocore' ? 9 : owner.name === '@openkit/worker-shim' ? 2 : 1;
     assert.equal(matches.length, count);
     for (const shard of matches) assert.equal(shard.kind, owner.vitest ? 'coverage' : 'native');
     if (count > 1) {
@@ -131,7 +132,7 @@ test('default aggregate requires split-owner coverage and the exact root invento
 
 test('coverage merge matrix contains exactly the partitioned owners', () => {
   assert.deepEqual(coveragePlan(), [
-    { id: 'nanocore', owners: ['@openkit/nanocore'], count: 8 },
+    { id: 'nanocore', owners: ['@openkit/nanocore'], count: 9 },
     { id: 'worker-shim', owners: ['@openkit/worker-shim'], count: 2 },
   ]);
 });
@@ -349,9 +350,9 @@ test('completed worker-width probes are retired without changing authoritative c
   }
   assert.ok(!jobs['l0-l2-shards'].steps.some((step) => /--workers/.test(step.run ?? '')));
   assert.ok(jobs['l0-l2-shards'].steps.some((step) => /nproc/.test(step.run ?? '')));
-  assert.equal(shardPlan().length + 2, 18, 'sixteen authoritative jobs and two fixed installers');
+  assert.equal(shardPlan().length + 2, 19, 'seventeen authoritative jobs and two fixed installers');
   assert.deepEqual(coveragePlan(), [
-    { id: 'nanocore', owners: ['@openkit/nanocore'], count: 8 },
+    { id: 'nanocore', owners: ['@openkit/nanocore'], count: 9 },
     { id: 'worker-shim', owners: ['@openkit/worker-shim'], count: 2 },
   ]);
 });
@@ -370,7 +371,7 @@ test('only NanoCore accepts bounded explicit worker probes, with two remaining t
     assert.equal(calls.length, 1);
     assert.equal(calls[0].workers, workers ?? 2);
     assert.equal(details.workers, workers ?? 2);
-    assert.deepEqual(calls[0].partition, { index: 1, count: 8 });
+    assert.deepEqual(calls[0].partition, { index: 1, count: 9 });
   }
   for (const workers of [0, -1, 1.5, 5, NaN])
     assert.throws(
@@ -378,6 +379,185 @@ test('only NanoCore accepts bounded explicit worker probes, with two remaining t
       /workers/
     );
   assert.throws(() => runShard('root', { workers: 3 }), /workers/);
+});
+
+test('coverage execution explicitly disables retries and propagates its first failure', () => {
+  const executions = [];
+  assert.throws(
+    () =>
+      coveredSuite(
+        { name: '@openkit/nanocore', cwd: '/example' },
+        {
+          workers: 1,
+          run: ({ command, env }) => {
+            executions.push({ command, env });
+            return ['intentional first failure'];
+          },
+        }
+      ),
+    /intentional first failure/
+  );
+  assert.equal(executions.length, 1);
+  assert.deepEqual(
+    executions[0].command.filter((arg) => arg.startsWith('--retry')),
+    ['--retry=0']
+  );
+  assert(executions[0].command.includes('--fsModuleCache=false'));
+  assert(executions[0].command.includes('--cache=false'));
+  assert.equal(executions[0].env.VITEST_MAX_WORKERS, '1');
+});
+
+// Accepted isolation changes placement only: the ninth whole-file shard and coverage stay gating.
+test('isolated Timeline shard stays in both dynamic matrices and every aggregate obligation', () => {
+  for (const [flag, expectedCount] of [
+    ['--matrix', 17],
+    ['--coverage-matrix', 2],
+  ]) {
+    const result = spawnSync(process.execPath, ['scripts/ci-l0-l2.mjs', flag], {
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const matrix = JSON.parse(result.stdout).include;
+    assert.equal(matrix.length, expectedCount);
+    if (flag === '--matrix') {
+      const isolated = matrix.filter((shard) => shard.id === 'nanocore-9');
+      assert.equal(isolated.length, 1);
+      assert.equal(isolated[0].workers, 1);
+      assert.deepEqual(isolated[0].partition, { index: 9, count: 9 });
+    } else assert.equal(matrix.find((merge) => merge.id === 'nanocore').count, 9);
+  }
+  const ids = [
+    ...shardPlan().map((shard) => shard.id),
+    ...coveragePlan().map((merge) => `${merge.id}-coverage`),
+  ];
+  assert(ids.includes('nanocore-9'));
+  const results = ids.map((id) => ({
+    id,
+    conclusion: 'success',
+    ...(id === 'root' ? { files: rootNodeInventory().files } : {}),
+  }));
+  assert.doesNotThrow(() => requireShardResults(results));
+  for (const id of ['nanocore-9', 'nanocore-coverage']) {
+    assert.throws(() => requireShardResults(results.filter((result) => result.id !== id)));
+    assert.throws(() => requireShardResults([...results, { id, conclusion: 'success' }]));
+    for (const conclusion of ['failure', 'cancelled', 'skipped', 'timed_out'])
+      assert.throws(() =>
+        requireShardResults(
+          results.map((result) => (result.id === id ? { ...result, conclusion } : result))
+        )
+      );
+  }
+});
+
+test('isolated Timeline shard forces one worker for default and explicit worker requests', () => {
+  for (const workers of [undefined, 1, 2, 3, 4]) {
+    const calls = [];
+    const details = runShard('nanocore-9', {
+      ...(workers === undefined ? {} : { workers }),
+      prepare: () => {},
+      runCoverage: (owner, options) => {
+        calls.push({ owner: owner.name, options });
+        return { name: owner.name };
+      },
+    });
+    assert.equal(calls.length, 1, 'one owner execution, not a repeated budget attempt');
+    assert.equal(calls[0].owner, '@openkit/nanocore');
+    assert.equal(calls[0].options.workers, 1);
+    assert.equal(details.workers, 1);
+    assert.deepEqual(calls[0].options.partition, { index: 9, count: 9 });
+  }
+});
+
+test('isolated shard composes the real coverage recipe with one-worker children and one no-retry execution', () => {
+  const root = mkdtempSync(join(tmpdir(), 'openkit-timeline-isolation-'));
+  const previousWorkers = process.env.VITEST_MAX_WORKERS;
+  try {
+    for (const owner of testOwners(process.cwd())) {
+      const directory = join(root, relative(process.cwd(), owner.cwd));
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(
+        join(directory, 'package.json'),
+        JSON.stringify({
+          name: owner.name,
+          scripts: {
+            test: owner.vitest ? 'vitest run --reporter=tap-flat' : 'fixture test',
+            ...(owner.vitest ? { 'test:coverage': 'vitest run --coverage' } : {}),
+          },
+        })
+      );
+    }
+    process.env.VITEST_MAX_WORKERS = '4';
+    const file = join(root, 'apps/nanocore/src/storage/thread-timeline-activity-budget.test.ts');
+    const expected = [{ file, name: 'fixture budget case' }];
+    for (const fail of [false, true]) {
+      const collections = [],
+        executions = [];
+      const invoke = () =>
+        runShard('nanocore-9', {
+          root,
+          workers: 4,
+          prepare: () => {},
+          runCoverage: (owner, options) =>
+            coveredSuite(owner, {
+              ...options,
+              spawn: (_executable, args, child) => {
+                collections.push({ args, env: child.env });
+                return { status: 0, stdout: JSON.stringify(expected) };
+              },
+              run: ({ command, env }) => {
+                executions.push({ command, env });
+                if (fail) return ['intentional coverage failure'];
+                writeFileSync(
+                  options.reportFile,
+                  JSON.stringify({
+                    success: true,
+                    testResults: [
+                      {
+                        name: file,
+                        status: 'passed',
+                        assertionResults: [
+                          { ancestorTitles: [], title: 'fixture budget case', status: 'passed' },
+                        ],
+                      },
+                    ],
+                  })
+                );
+                return [];
+              },
+            }),
+        });
+      if (fail) assert.throws(invoke, /intentional coverage failure/);
+      else assert.equal(invoke().workers, 1);
+      assert.equal(collections.length, 2, 'unit and coverage discovery are not executions');
+      assert.equal(executions.length, 1, 'a failed execution is not retried');
+      for (const { args, env } of collections) {
+        assert.equal(env.VITEST_MAX_WORKERS, '1');
+        assert(args.includes('--maxWorkers=1'));
+        assert(args.includes('--shard=9/9'));
+      }
+      const { command, env } = executions[0];
+      assert.equal(env.VITEST_MAX_WORKERS, '1');
+      assert(command.includes('--maxWorkers=1'));
+      assert(command.includes('--shard=9/9'));
+      assert(command.includes('--fsModuleCache=false'));
+      assert(command.includes('--cache=false'));
+      assert.deepEqual(
+        command.filter((arg) => arg.startsWith('--retry')),
+        ['--retry=0']
+      );
+      assert(
+        !command.includes(file),
+        'whole-file selection belongs to the shared sequencer, not a CLI filter'
+      );
+      assert(
+        !command.some((arg) => /--(?:testNamePattern|exclude|include|passWithNoTests)/.test(arg))
+      );
+    }
+  } finally {
+    if (previousWorkers === undefined) delete process.env.VITEST_MAX_WORKERS;
+    else process.env.VITEST_MAX_WORKERS = previousWorkers;
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('real Turbo cache restores removed outputs without rebuilding and rejects changed source', (t) => {
