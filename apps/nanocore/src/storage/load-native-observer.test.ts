@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { BroadcastChannel, type Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId, ItemSchema } from '@openkit/protocol';
 import { afterEach, expect, it, vi } from 'vitest';
-import { DISPLAY_PROJECTION_REFRESH_ADMISSION, FsStore } from '../lib/store.js';
+import { FsStore } from '../lib/store.js';
 import { createTestStore } from '../test-support/store.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -227,11 +227,7 @@ for (const operation of ['item', 'event', 'publication'] as const) {
               turnId: turn.id,
               data: { type: 'item-created', item },
             })
-          : store.updateItem(
-              item.id,
-              { title: 'After observer window' },
-              DISPLAY_PROJECTION_REFRESH_ADMISSION
-            );
+          : store.refreshDisplayProjectionItem(item.id, { title: 'After observer window' });
     pending = producer.then(
       (value) => {
         settled = true;

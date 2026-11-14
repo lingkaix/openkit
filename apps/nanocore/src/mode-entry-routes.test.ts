@@ -522,15 +522,18 @@ describe('conversation.submit worker storage choice', () => {
     const executor = native.executor;
     const itemPublications: {
       itemId: string;
-      input: Parameters<typeof store.updateItem>[1];
-      completion: ReturnType<typeof store.updateItem>;
+      input: Parameters<typeof store.refreshDisplayProjectionItem>[1];
+      completion: ReturnType<typeof store.refreshDisplayProjectionItem>;
     }[] = [];
-    const updateItem = store.updateItem.bind(store);
-    const publicationObservation = vi.spyOn(store, 'updateItem').mockImplementation((...args) => {
-      const completion = updateItem(...args);
-      itemPublications.push({ itemId: args[0], input: args[1], completion });
-      return completion;
-    });
+    const refreshDisplayProjectionItem = store.refreshDisplayProjectionItem.bind(store);
+    const publicationObservation = vi
+      .spyOn(store, 'refreshDisplayProjectionItem')
+      .mockImplementation((...args) => {
+        const completion = refreshDisplayProjectionItem(...args);
+        if (typeof args[0] === 'string')
+          itemPublications.push({ itemId: args[0], input: args[1], completion });
+        return completion;
+      });
     const workerLoops: ReturnType<typeof loopOwners.runWorkerTurnLoop>[] = [];
     const originalLoop = loopOwners.runWorkerTurnLoop;
     const loopObservation = vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation((args) => {
@@ -784,7 +787,7 @@ describe('conversation.submit worker storage choice', () => {
     });
 
     const loops = vi.spyOn(loopOwners, 'runWorkerTurnLoop');
-    const publications = vi.spyOn(store, 'updateItem');
+    const publications = vi.spyOn(store, 'refreshDisplayProjectionItem');
     try {
       const response = await app.request(
         ...operationRequest(
@@ -825,7 +828,10 @@ describe('conversation.submit worker storage choice', () => {
       );
       await Promise.all(
         publications.mock.results
-          .filter((result) => result.type === 'return')
+          .filter(
+            (result, index) =>
+              result.type === 'return' && typeof publications.mock.calls[index]?.[0] === 'string'
+          )
           .map((result) => result.value)
       );
       await vi.waitFor(() => expect(executor.startContexts).toHaveLength(1));
@@ -935,7 +941,10 @@ describe('conversation.submit worker storage choice', () => {
       );
       await Promise.allSettled(
         publications.mock.results
-          .filter((result) => result.type === 'return')
+          .filter(
+            (result, index) =>
+              result.type === 'return' && typeof publications.mock.calls[index]?.[0] === 'string'
+          )
           .map((result) => result.value)
       );
       publications.mockRestore();
@@ -958,15 +967,18 @@ describe('conversation.submit worker acceptance wait', () => {
     const executor = native.executor;
     const itemPublications: {
       itemId: string;
-      input: Parameters<typeof store.updateItem>[1];
-      completion: ReturnType<typeof store.updateItem>;
+      input: Parameters<typeof store.refreshDisplayProjectionItem>[1];
+      completion: ReturnType<typeof store.refreshDisplayProjectionItem>;
     }[] = [];
-    const updateItem = store.updateItem.bind(store);
-    const publicationObservation = vi.spyOn(store, 'updateItem').mockImplementation((...args) => {
-      const completion = updateItem(...args);
-      itemPublications.push({ itemId: args[0], input: args[1], completion });
-      return completion;
-    });
+    const refreshDisplayProjectionItem = store.refreshDisplayProjectionItem.bind(store);
+    const publicationObservation = vi
+      .spyOn(store, 'refreshDisplayProjectionItem')
+      .mockImplementation((...args) => {
+        const completion = refreshDisplayProjectionItem(...args);
+        if (typeof args[0] === 'string')
+          itemPublications.push({ itemId: args[0], input: args[1], completion });
+        return completion;
+      });
     const workerLoops: ReturnType<typeof loopOwners.runWorkerTurnLoop>[] = [];
     const originalLoop = loopOwners.runWorkerTurnLoop;
     const loopObservation = vi.spyOn(loopOwners, 'runWorkerTurnLoop').mockImplementation((args) => {
@@ -1484,19 +1496,23 @@ describe('conversation.submit worker acceptance wait', () => {
       const itemPublications: {
         itemId: string;
         turnStatus: string | undefined;
-        completion: ReturnType<typeof store.updateItem>;
+        completion: ReturnType<typeof store.refreshDisplayProjectionItem>;
       }[] = [];
-      const updateItem = store.updateItem.bind(store);
-      const publicationObservation = vi.spyOn(store, 'updateItem').mockImplementation((...args) => {
-        const turnStatus = accepted && store.getTurnById(accepted.turn.id).status;
-        const failedResult = args[0] === accepted?.item.id && turnStatus === 'failed';
-        const completion =
-          projectionFailure && failedResult
-            ? Promise.reject(new Error('Controlled result publication loss.'))
-            : updateItem(...args);
-        itemPublications.push({ itemId: args[0], turnStatus, completion });
-        return completion;
-      });
+      const refreshDisplayProjectionItem = store.refreshDisplayProjectionItem.bind(store);
+      const publicationObservation = vi
+        .spyOn(store, 'refreshDisplayProjectionItem')
+        .mockImplementation((...args) => {
+          const turnStatus = accepted && store.getTurnById(accepted.turn.id).status;
+          const failedResult =
+            typeof args[0] === 'string' && args[0] === accepted?.item.id && turnStatus === 'failed';
+          const completion =
+            projectionFailure && failedResult
+              ? Promise.reject(new Error('Controlled result publication loss.'))
+              : refreshDisplayProjectionItem(...args);
+          if (typeof args[0] === 'string')
+            itemPublications.push({ itemId: args[0], turnStatus, completion });
+          return completion;
+        });
       const pending = submit();
       try {
         await executor.launched.promise;

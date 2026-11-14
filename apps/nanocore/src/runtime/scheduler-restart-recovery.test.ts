@@ -27,7 +27,6 @@ import {
   ALREADY_DECIDED_PUBLICATION_ADMISSION,
   commandRequestExpiresAt,
   commandRequestKey,
-  DISPLAY_PROJECTION_REFRESH_ADMISSION,
   FsStore,
 } from '../lib/store.js';
 import type { PiAiGatewayClient } from '../llm/pi-ai-client.js';
@@ -1513,14 +1512,10 @@ describe('terminal failed-start product recovery', () => {
         expect(readNativeEventBytes(eventsSource)).toBe(eventsBefore);
 
         // Core Protocol admits only these named display fields after the terminal snapshot.
-        await f.store.updateItem(
-          display.id,
-          {
-            title: 'Worker Turn failed',
-            summary: 'Worker turn ended without success.',
-          },
-          DISPLAY_PROJECTION_REFRESH_ADMISSION
-        );
+        await f.store.refreshDisplayProjectionItem(display.id, {
+          title: 'Worker Turn failed',
+          summary: 'Worker turn ended without success.',
+        });
         const restarted = new FsStore({ dataRoot: f.dataRoot });
         const current = restarted.getTurnById(f.turnId);
         expect(published?.data.type).toBe('turn-completed');

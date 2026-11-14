@@ -13,11 +13,7 @@ import {
   readRetainedBodyBytes,
 } from '../test-support/retained-body-observation.js';
 import { createTestStore } from '../test-support/store.js';
-import {
-  DISPLAY_PROJECTION_REFRESH_ADMISSION,
-  FsStore,
-  StoreRecordNotFoundError,
-} from './store.js';
+import { FsStore, StoreRecordNotFoundError } from './store.js';
 
 const observation = vi.hoisted(() => ({
   active: undefined as { root: string; metadata: number } | undefined,
@@ -266,7 +262,7 @@ describe('Store native write complexity', () => {
       observation.active = active;
       let returned: Item;
       try {
-        returned = await f.store.createItem(item, DISPLAY_PROJECTION_REFRESH_ADMISSION);
+        returned = await f.store.refreshDisplayProjectionItem(item);
       } finally {
         observation.active = undefined;
         observer.restore();
