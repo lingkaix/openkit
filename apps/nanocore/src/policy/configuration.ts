@@ -128,6 +128,50 @@ export function preparePolicyConfiguration(input: {
   // Revalidation uses the exact immutable candidate's server-stamped authorship,
   // rather than making application manufacture a new statement version.
   const authoredAt = input.candidate && changed ? changed.authoredAt : new Date().toISOString();
+  // Defaults are part of the human's reviewed candidate, never boot writes or implicit consent.
+  if (
+    !input.candidate &&
+    !currentDocument.statements.some((statement) =>
+      statement.scope.resources.some(
+        (resource) => resource.kind === 'container' && resource.container.kind === 'context-preset'
+      )
+    )
+  ) {
+    for (const id of ['owner-direct', 'workspace-members', 'agent-initiated']) {
+      if (
+        proposed.statements.some((statement) =>
+          statement.scope.resources.some(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.kind === 'context-preset' &&
+              resource.container.id === id
+          )
+        )
+      )
+        continue;
+      proposed.statements.push({
+        id: `context-preset.${id}`,
+        kind: 'permission',
+        state: 'active',
+        effect: 'allow',
+        grant: { kind: 'ordinary' },
+        author: { kind: 'human', id: input.actor.userId },
+        authority: { kind: 'human', userId: input.actor.userId },
+        authoredAt,
+        scope: {
+          subjects: [{ kind: 'human', id: input.actor.userId }],
+          actions: ['workspace.configure'],
+          resources: [
+            {
+              kind: 'container',
+              container: { owner: { kind: 'server' }, kind: 'context-preset', id },
+            },
+          ],
+        },
+        lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+      });
+    }
+  }
   const prepared = preparePolicyDocument({
     current: currentDocument,
     proposed,

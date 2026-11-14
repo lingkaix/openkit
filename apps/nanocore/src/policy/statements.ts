@@ -90,25 +90,33 @@ export function policyProposalDigest(proposal: PolicyProposal): string {
 /** Empty Policy still has an exact revision and cannot supply a participant grant. */
 export const EMPTY_POLICY_DOCUMENT: PolicyDocumentV1 = { schemaVersion: 1, statements: [] };
 
-/** Reserved exposure controls are resource availability, never a caller permission or grant. */
-function routeGroupSwitchGroup(statement: PolicyDocumentV1['statements'][number]): string | null {
+/** Reserved Server controls activate fixed narrowing templates, never a requesting Agent grant. */
+function serverControl(statement: PolicyDocumentV1['statements'][number]): {
+  kind: 'route-group-switch' | 'context-preset';
+  id: string;
+} | null {
   const resources = [...statement.scope.resources];
   if (statement.kind === 'binding') resources.push(...statement.inputDisclosure.resources);
-  const reserved =
-    statement.lifetime.anchor.kind === 'route-group-switch' ||
-    resources.some(
-      (resource) =>
-        resource.kind === 'container' && resource.container.kind === 'route-group-switch'
-    );
-  if (!reserved) return null;
+  const kinds = new Set(
+    [
+      statement.lifetime.anchor,
+      ...resources.flatMap((r) => (r.kind === 'container' ? [r.container] : [])),
+    ]
+      .map((container) => container.kind)
+      .filter((kind) => kind === 'route-group-switch' || kind === 'context-preset')
+  );
+  if (!kinds.size) return null;
+  const kind = kinds.has('context-preset') ? 'context-preset' : 'route-group-switch';
+  const label = kind === 'context-preset' ? 'Context presets' : 'Route-group switches';
   if (statement.kind !== 'permission')
-    throw new Error('Route-group switches require an ordinary human prohibition.');
+    throw new Error(`${label} require an ordinary human permission.`);
   const subject = statement.scope.subjects[0];
   const resource = statement.scope.resources[0];
   const anchor = statement.lifetime.anchor;
   if (
+    kinds.size !== 1 ||
     !['active', 'inactive'].includes(statement.state) ||
-    statement.effect !== 'prohibit' ||
+    statement.effect !== (kind === 'context-preset' ? 'allow' : 'prohibit') ||
     statement.grant.kind !== 'ordinary' ||
     statement.author.kind !== 'human' ||
     statement.authority.kind !== 'human' ||
@@ -121,25 +129,28 @@ function routeGroupSwitchGroup(statement: PolicyDocumentV1['statements'][number]
     statement.scope.resources.length !== 1 ||
     resource?.kind !== 'container' ||
     resource.container.owner.kind !== 'server' ||
-    resource.container.kind !== 'route-group-switch' ||
+    resource.container.kind !== kind ||
     anchor.owner.kind !== 'server' ||
     anchor.kind !== 'server' ||
     anchor.id !== 'server' ||
-    statement.lifetime.notAfter !== undefined ||
+    (kind === 'route-group-switch' && statement.lifetime.notAfter !== undefined) ||
     statement.lifetime.uses !== undefined
   )
-    throw new Error('Route-group switches require exact human Server control scope and lifetime.');
-  const group = resource.container.id;
-  if (
+    throw new Error(`${label} require exact human Server control scope and lifetime.`);
+  const id = resource.container.id;
+  if (kind === 'context-preset') {
+    if (!['owner-direct', 'workspace-members', 'agent-initiated'].includes(id))
+      throw new Error('Context preset is unavailable.');
+  } else if (
     ![...Object.values(OPERATION_REGISTRY), ...Object.values(NON_API_EXPOSURE_DEFINITIONS)].some(
       (descriptor) =>
         descriptor.exposure.kind === 'switchable' &&
         descriptor.exposure.owner.length > 0 &&
-        descriptor.exposure.group === group
+        descriptor.exposure.group === id
     )
   )
     throw new Error('Route-group switch group is unavailable.');
-  return group;
+  return { kind, id };
 }
 
 /** The restrict-only Server reviewer has no Turn lifetime or ordinary agent approval authority. */
@@ -162,6 +173,7 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
   const document = PolicyDocumentV1Schema.parse(input);
   const positions = new Set<string>();
   const exposureGroups = new Set<string>();
+  const contextPresets = new Set<string>();
   for (const statement of document.statements) {
     const scopes =
       statement.kind === 'binding'
@@ -217,10 +229,16 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
         );
       continue;
     }
-    const group = routeGroupSwitchGroup(statement);
-    if (group !== null) {
-      if (exposureGroups.has(group)) throw new Error('Duplicate route-group switch control.');
-      exposureGroups.add(group);
+    const control = serverControl(statement);
+    if (control) {
+      if (control.kind === 'route-group-switch') {
+        if (exposureGroups.has(control.id))
+          throw new Error('Duplicate route-group switch control.');
+        exposureGroups.add(control.id);
+      } else if (statement.state === 'active') {
+        if (contextPresets.has(control.id)) throw new Error('Duplicate active context preset.');
+        contextPresets.add(control.id);
+      }
       continue;
     }
     // The native containment producer validates activation authority. Reading its committed

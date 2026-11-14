@@ -55,6 +55,8 @@ export type AssistantHistoryContext = AssistantHistoryAuthority & {
   readonly workspaceId: string;
   readonly threadId: string;
   readonly turnId: string;
+  /** Native entry's current context-template check, also repeated before source reads/publication. */
+  readonly assertContextCurrent?: () => void;
 };
 
 type Selection = ConversationRetrievalTrace['selected'][number];
@@ -63,6 +65,7 @@ type Selection = ConversationRetrievalTrace['selected'][number];
 function requireAudience(input: AssistantHistoryContext): void {
   const { actor, coreDb, store, workspaceId, threadId, turnId } = input;
   input.nativeAuthority?.assertCurrent();
+  input.assertContextCurrent?.();
   const actorRef = input.nativeAuthority?.actorRef ?? { kind: 'user', id: actor!.userId };
   const userId = responsibleUserIdForActor(actorRef);
   if (!userId) throw unavailable();

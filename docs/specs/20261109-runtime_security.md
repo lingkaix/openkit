@@ -432,7 +432,7 @@ Ordinary work gains no agent step: checks stay at current boundaries. The gate f
 
 ## Current Implementation Projection
 
-The first E10 cut checks current resource authority when a Policy candidate removes or weakens an existing restriction or changes an admitted direct grant. It refuses self-relaxation of an existing restriction. Review-agent decisions preserve the direct human requester's on-behalf-of identity separately from the agent's accountable human. Full context intersection, presets, audience joins and the remaining runtime-security mechanisms are not implemented. Background and the E11 inventory describe the earlier baseline. The gate participant still runs the default model in a loop (`policy/agent-gate-provider.ts`).
+E10 checks the complete Policy diff and refuses self-relaxation; review decisions preserve the actual requester's on-behalf-of identity. The first human Policy proposal carries the three fixed context-preset activations, with no boot write or auto-confirm. Requested Assistant entry and continuation derive private-owner or Workspace-member context from the actual Thread; a mandatory context class narrows current requester/credential authority, and history/Tools/generation/publication repeat currentness. Missing activation or unresolved audience denies. Activation is not an Agent grant; absent-initiator work remains refused outside an established exact context, and Goal/Task delegation keeps its existing envelope. E11 has the private native issuer reference but not full native client binding/list/cascade. E13 has source descriptors, current native effect rechecks and the actorless shared compiler projection. Broader dev completion and activation/real-use acceptance are separate claims.
 
 ## Alternatives Considered
 

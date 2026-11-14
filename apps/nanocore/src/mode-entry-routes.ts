@@ -102,6 +102,7 @@ import {
   createOperationInvocation,
 } from './operation-composition.js';
 import { OperationError } from './operation-error.js';
+import { PolicyInterception } from './policy/interception.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
 import { QUICK_CHAT_AGENT_ID } from './quick-chat-agent.js';
@@ -3845,6 +3846,24 @@ export function createConversationService({
         return startSelectedWorker();
       }
 
+      const assertAssistantContext = () => {
+        if (
+          !PolicyInterception.isConversationAvailable({
+            coreDb,
+            policy: runtimeConfig().openKitConfig.policy?.mediation,
+            store,
+            actor,
+            workspaceId,
+            threadId,
+          })
+        )
+          throw new TurnStartValidationError(
+            'context_permission_denied',
+            'Conversation context permission is unavailable.',
+            403
+          );
+      };
+      assertAssistantContext();
       const selection = quickChatSelection(actor.userId, workspaceId, logicalModelId ?? undefined);
       const sessionId = `chat-mode:${workspaceId}:${threadId}`;
 
@@ -3887,6 +3906,7 @@ export function createConversationService({
             workspaceId,
             threadId,
             turnId: turn.id,
+            assertContextCurrent: assertAssistantContext,
           });
           const fixedTools = createAssistantTools({
             actorUserId: actor.userId,
@@ -4820,6 +4840,24 @@ export function createConversationService({
             'The Assistant model is unavailable.',
             409
           );
+        const assertAssistantContext = () => {
+          if (
+            !PolicyInterception.isConversationAvailable({
+              coreDb,
+              policy: runtimeConfig().openKitConfig.policy?.mediation,
+              store,
+              actor: outcomeActor,
+              workspaceId: workspaceIdForOwner(turn.owner),
+              threadId: turn.threadId,
+            })
+          )
+            throw new TurnStartValidationError(
+              'context_permission_denied',
+              'Conversation context permission is unavailable.',
+              403
+            );
+        };
+        assertAssistantContext();
         const systemPrompt = assembleBuiltInSystemPrompt('quick-chat');
         const history = createAssistantHistory({
           store,
@@ -4828,6 +4866,7 @@ export function createConversationService({
           workspaceId: workspaceIdForOwner(turn.owner),
           threadId: turn.threadId,
           turnId: turn.id,
+          assertContextCurrent: assertAssistantContext,
         });
         const fixedTools = createAssistantTools({
           actorUserId: actorId,

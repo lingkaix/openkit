@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   allocateEntityId,
   type PolicyDocumentV1,
@@ -10,7 +11,7 @@ import {
   PolicyWriteProposalV1Schema,
 } from '@openkit/protocol';
 import { Hono } from 'hono';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createApp } from '../app.js';
 import {
   createOpenKitAccessTokenRecord,
@@ -22,9 +23,17 @@ import { type AuthVariables, createAuthMiddleware } from '../auth/middleware.js'
 import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
-import { createRuntimeConfigManager } from '../config/runtime-config.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
+import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import { ProviderRegistry } from '../providers/registry.js';
+import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { conversationBody } from '../test-support/mode-entry-fixture.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
   createTestCoreDb,
@@ -410,6 +419,7 @@ async function fixture(withReviewerDomain = false) {
     },
     inflightCommands: new WeakMap(),
   });
+  const mutation = new WorkspaceMutationAdmission();
   const app = createApp({
     mode: 'server',
     coreDb,
@@ -417,7 +427,7 @@ async function fixture(withReviewerDomain = false) {
     store,
     auth,
     runtimeConfigManager: manager,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: mutation,
   });
   function request(proposed: PolicyDocumentV1) {
     return {
@@ -443,7 +453,10 @@ async function fixture(withReviewerDomain = false) {
     second,
     actor,
     coreDb,
+    auth,
+    store,
     app,
+    mutation,
     personal,
     reviewerDomain,
     service,
@@ -457,6 +470,196 @@ async function fixture(withReviewerDomain = false) {
     bytes,
   };
 }
+
+describe('E10 explicit context preset activation', () => {
+  it('refuses the registered Assistant submission without an admitted context preset before generation or answer publication', async () => {
+    const f = await fixture();
+    const dataRoot = f.manager.getDataRoot()!;
+    const original = f.bytes();
+    recordWorkspaceOwnerMembership({
+      coreDb: f.coreDb,
+      ownerUserId: f.first.userId,
+      workspaceId: f.personal.id,
+    });
+    expect(
+      evaluateProductAuthorization(
+        f.coreDb,
+        f.actor,
+        { kind: 'workspace', workspaceId: f.personal.id },
+        OPERATION_DEFINITIONS['conversation.submit'].policyOperation,
+        false
+      ).effect
+    ).toBe('allow');
+    const timeline = await openAssistantTimeline(
+      f.store,
+      f.personal.id,
+      f.first.userId,
+      'Actual private Assistant Timeline'
+    );
+    const manager = createRuntimeConfigManager({
+      dataRoot,
+      initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+        dataRoot,
+        openKitConfig: f.manager.current().openKitConfig,
+        workspaceConfigs: f.manager.current().workspaceConfigs,
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Uncalled synthetic Assistant transport',
+            kind: 'local',
+            defaultModel: 'openai/gpt-5.2',
+            models: ['openai/gpt-5.2'],
+            modelMetadata: {
+              'openai/gpt-5.2': { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+            },
+          },
+        ]),
+      }),
+    });
+    const createResponses = vi.fn(async () => ({
+      id: 'context-default-refusal-witness',
+      object: 'response',
+      status: 'completed',
+      output: [
+        {
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'output_text', text: 'An ungranted context reached generation.' }],
+        },
+      ],
+      usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+    }));
+    const createChatCompletion = vi.fn(async () => ({
+      id: 'context-default-refusal-witness',
+      object: 'chat.completion',
+      choices: [
+        {
+          index: 0,
+          finish_reason: 'stop',
+          message: { role: 'assistant', content: 'An ungranted context reached generation.' },
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+    }));
+    const app = createApp({
+      mode: 'server',
+      dataRoot,
+      coreDb: f.coreDb,
+      store: f.store,
+      auth: f.auth,
+      runtimeConfigManager: manager,
+      llmGatewayDispatcher: {
+        createResponses,
+        createChatCompletion,
+      } as unknown as LLMGatewayProviderDispatcher,
+      workspaceMutationAdmission: f.mutation,
+    });
+    expect(
+      readAdmittedPolicyDocument(f.coreDb, manager.current().openKitConfig.policy?.mediation)
+        .statements
+    ).toEqual([]);
+    const response = await app.request(
+      ...operationRequest(
+        'conversation.submit',
+        {
+          workspaceId: f.personal.id,
+          threadId: timeline.id,
+        },
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: f.first.cookie },
+          body: conversationBody({
+            input: 'Answer using my private Assistant context.',
+            requestId: randomUUID(),
+            targetRef: 'internal-role:assistant',
+          }),
+        }
+      )
+    );
+    const reply = await response.text();
+    expect.soft(response.status, reply).toBe(403);
+    expect.soft(JSON.parse(reply), reply).toMatchObject({ code: 'context_permission_denied' });
+    expect.soft(createResponses).not.toHaveBeenCalled();
+    expect.soft(createChatCompletion).not.toHaveBeenCalled();
+    expect(
+      f.store
+        .listThreadTurns(f.personal.id, timeline.id)
+        .flatMap((turn) => turn.items)
+        .filter((item) => item.type === 'assistant-message')
+    ).toEqual([]);
+    expect(f.bytes()).toBe(original);
+    expect(
+      readAdmittedPolicyDocument(f.coreDb, manager.current().openKitConfig.policy?.mediation)
+        .statements
+    ).toEqual([]);
+  });
+
+  it('previews three actual-human context defaults without boot writes and installs only the confirmed editable Policy candidate', async () => {
+    const f = await fixture();
+    const original = f.bytes();
+    const presets = (policy: PolicyDocumentV1) =>
+      policy.statements.filter((statement) =>
+        statement.scope.resources.some(
+          (resource) =>
+            resource.kind === 'container' &&
+            resource.container.owner.kind === 'server' &&
+            resource.container.kind === 'context-preset'
+        )
+      );
+    expect(presets(f.loaded())).toEqual([]);
+    await f.manager.reload({ mode: 'safe', dryRun: false });
+    expect(f.bytes()).toBe(original);
+    expect(presets(f.loaded())).toEqual([]);
+    const candidate = await f.propose(document(control(f.first.userId)));
+    expect(f.bytes()).toBe(original);
+    expect(presets(f.loaded())).toEqual([]);
+    expect(candidate.preview.targetFamily).toBe('policy');
+    if (candidate.preview.targetFamily !== 'policy')
+      throw new Error('Expected the actual Policy candidate.');
+    const preview = PolicyDocumentV1Schema.parse(candidate.preview.after);
+    expect(candidate.preview.policyProposal.proposed).toEqual(preview);
+    const defaults = presets(preview);
+    expect(defaults).toHaveLength(3);
+    const slots = ['agent-initiated', 'owner-direct', 'workspace-members'];
+    expect(
+      defaults
+        .flatMap((statement) =>
+          statement.scope.resources.flatMap((resource) =>
+            resource.kind === 'container' && resource.container.kind === 'context-preset'
+              ? [resource.container.id]
+              : []
+          )
+        )
+        .sort()
+    ).toEqual(slots);
+    for (const statement of defaults) {
+      expect(statement).toMatchObject({
+        kind: 'permission',
+        state: 'active',
+        effect: 'allow',
+        grant: { kind: 'ordinary' },
+        author: { kind: 'human', id: f.first.userId },
+        authority: { kind: 'human', userId: f.first.userId },
+      });
+      expect(statement.scope.subjects).toEqual([{ kind: 'human', id: f.first.userId }]);
+      expect(statement.scope.actions).toEqual(['workspace.configure']);
+      expect(statement.scope.resources).toHaveLength(1);
+      expect(statement.lifetime).toEqual({
+        anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+      });
+    }
+    expect(await f.apply(candidate)).toMatchObject({ persisted: true, reload: 'applied' });
+    expect(f.loaded()).toEqual(preview);
+    // These are editable context controls, not immutable source-code grants to an Agent.
+    const removed = await f.propose({
+      ...preview,
+      statements: preview.statements.filter((statement) => !defaults.includes(statement)),
+    });
+    expect(await f.apply(removed)).toMatchObject({ persisted: true, reload: 'applied' });
+    expect(presets(f.loaded())).toEqual([]);
+  });
+});
 
 describe('E13 Phase A native human configuration', () => {
   it.each([
@@ -690,6 +893,7 @@ describe('E13 Phase A native human configuration', () => {
     });
     const clear = await f.propose(document());
     const before = f.bytes();
+    const active = f.loaded();
     const revoke = await f.app.request(
       ...operationRequest(
         'token.revoke',
@@ -700,6 +904,17 @@ describe('E13 Phase A native human configuration', () => {
     expect(revoke.status).toBe(200);
     await expect(f.apply(clear)).rejects.toThrow();
     expect(f.bytes()).toBe(before);
-    expect(f.loaded().statements).toHaveLength(1);
+    expect(f.loaded()).toEqual(active);
+    expect(
+      f
+        .loaded()
+        .statements.filter(
+          (statement) =>
+            !statement.scope.resources.some(
+              (resource) =>
+                resource.kind === 'container' && resource.container.kind === 'context-preset'
+            )
+        )
+    ).toHaveLength(1);
   });
 });

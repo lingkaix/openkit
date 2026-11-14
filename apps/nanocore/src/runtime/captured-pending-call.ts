@@ -9,7 +9,6 @@ import {
   readCapturedMediationAllowInDb,
   readCapturedMediationSource,
 } from '../policy/permission-decisions.js';
-import type { readPermissionDecisionRowV1 } from '../policy/retained-records-v1.js';
 import { ControlCapabilityCommandInputSchema } from '../storage/control-store-capability.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import {
@@ -306,7 +305,7 @@ export function evaluateCapturedPendingCall(input: {
 function readCapturedMediationAllow(
   record: PendingRequestRecord,
   sqlite: WorkspaceDb['sqlite'],
-  source: ReturnType<typeof readPermissionDecisionRowV1>,
+  source: Parameters<typeof readCapturedMediationAllowInDb>[2],
   reviewed: PreparedCapturedPendingCall['mediation']
 ) {
   if (!reviewed || !reviewed.current()) return null;

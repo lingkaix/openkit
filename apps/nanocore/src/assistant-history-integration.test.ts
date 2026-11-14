@@ -29,6 +29,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { confirmContextDefaultsForApp } from './test-support/mode-entry-fixture.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -140,7 +141,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
   const scriptErrors: unknown[] = [];
   let beforeAnswer: (() => void | Promise<void>) | undefined;
   let answerText = 'The history query is complete.';
-  const app = createApp({
+  const appOptions = await confirmContextDefaultsForApp({
     coreDb,
     store,
     gatewayConfig: {
@@ -212,6 +213,7 @@ async function fixture(queries: HistoryQuery[], privateSourceTurnOpen = false) {
       },
     }),
   });
+  const app = createApp(appOptions);
   const opened = await app.request(
     ...operationRequest(
       'thread.create',

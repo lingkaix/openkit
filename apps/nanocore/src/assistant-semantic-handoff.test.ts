@@ -71,6 +71,7 @@ import {
   ensureLocalUser,
   FIXTURE_LOCAL_USER_ID as LOCAL_USER_ID,
 } from './test-support/local-user.js';
+import { confirmContextDefaultsForApp } from './test-support/mode-entry-fixture.js';
 import { recordTestNativeRuntimeTarget } from './test-support/native-environment.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { asPiAiGatewayClientDouble } from './test-support/pi-ai-gateway-client-double.js';
@@ -307,28 +308,32 @@ async function fixture(
         : answer();
     },
   });
-  const makeApp = (ownerStore: FsStore) =>
-    createApp({
-      coreDb,
-      dataRoot,
-      fileAdmission,
-      store: ownerStore,
-      turnExecutor: executor,
-      agentManifests: [preferred.manifest, selected.manifest],
-      gatewayConfig: createTestGatewayConfig(),
-      internalRoleProfiles: { schemaVersion: 1, defaultLogicalModelId: modelId, profiles: [] },
-      providerRegistry: new ProviderRegistry([
-        {
-          id: 'agent-openrouter',
-          displayName: 'Semantic fixture',
-          kind: 'local',
-          models: ['openai/gpt-5.2'],
-        },
-      ]),
-      openKitConfig: { defaults: { defaultAgentId: preferred.manifest.id } },
-      llmPiAiClient: provider,
-    });
+  const appOptions = await confirmContextDefaultsForApp({
+    coreDb,
+    dataRoot,
+    fileAdmission,
+    store,
+    turnExecutor: executor,
+    agentManifests: [preferred.manifest, selected.manifest],
+    gatewayConfig: createTestGatewayConfig(),
+    internalRoleProfiles: { schemaVersion: 1, defaultLogicalModelId: modelId, profiles: [] },
+    providerRegistry: new ProviderRegistry([
+      {
+        id: 'agent-openrouter',
+        displayName: 'Semantic fixture',
+        kind: 'local',
+        models: ['openai/gpt-5.2'],
+      },
+    ]),
+    openKitConfig: { defaults: { defaultAgentId: preferred.manifest.id } },
+    llmPiAiClient: provider,
+  });
+  const makeApp = (ownerStore: FsStore) => createApp({ ...appOptions, store: ownerStore });
   const app = makeApp(store);
+  const setupCommands = store.listCommandRequests();
+  expect(setupCommands).toEqual([
+    expect.objectContaining({ command: 'administration.configuration.apply' }),
+  ]);
   const workspaceDb = openWorkspaceDb(dataRoot, workspace.id);
   onTestFinished(async () => {
     await setImmediate();
@@ -367,6 +372,7 @@ async function fixture(
   return {
     dataRoot,
     coreDb,
+    setupCommands,
     fileAdmission,
     store,
     workspace,
@@ -591,7 +597,7 @@ describe('Assistant semantic Task handoff', () => {
     expect(receiving.threadSource).toBeUndefined();
     // At this prior queued boundary the source is running: its old it_chat_task_ result is not yet written.
     expect(f.store.getTurnById(source.id).status).toBe('running');
-    expect(f.store.listCommandRequests()).toEqual([]);
+    expect(f.store.listCommandRequests()).toEqual(f.setupCommands);
 
     /** Captures canonical history bytes and raw SQL values, including exact retained JSON strings. */
     const retained = (coreDb: typeof f.coreDb, workspaceDb: typeof f.workspaceDb) => {
@@ -675,7 +681,7 @@ describe('Assistant semantic Task handoff', () => {
           terminalResult: { status: 'queued', reason: 'entry-publication-pending' },
         });
         expect(retained(coreDb, workspaceDb)).toEqual(before);
-        expect(store.listCommandRequests()).toEqual([]);
+        expect(store.listCommandRequests()).toEqual(f.setupCommands);
         expect(f.requests).toEqual([]);
         expect(coordinator).not.toHaveBeenCalled();
         expect(f.preparation).not.toHaveBeenCalled();

@@ -702,7 +702,8 @@ export function evaluateProductAuthorization(
     | { readonly kind: 'workspace'; readonly workspaceId: string; readonly deletedRecovery?: true },
   operation: string,
   mutating = false,
-  now = new Date()
+  now = new Date(),
+  context?: ProductPolicyInput['context']
 ): PolicyDecision {
   // The original in-memory local Server projection belongs with the other
   // credential facts here, rather than being duplicated by operation admission.
@@ -731,7 +732,7 @@ export function evaluateProductAuthorization(
       };
   let decision: PolicyDecision;
   try {
-    decision = evaluatePolicyKernel(input);
+    decision = evaluatePolicyKernel({ ...input, ...(context ? { context } : {}) });
   } catch (error) {
     if (target.kind !== 'server') throw error;
     throw new HTTPException(403, { res: workspaceAccessDenied(), cause: error });

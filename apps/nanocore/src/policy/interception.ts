@@ -26,6 +26,7 @@ import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
   evaluateCoreConfirmedLoginQuarantine,
+  evaluateProductAuthorization,
   isCurrentServerPolicyAuthor,
   readCurrentWorkspacePolicy,
 } from '../auth/operation-authorizer.js';
@@ -266,6 +267,42 @@ export class PolicyInterception {
     // Losing that author's current authority never restores shared availability.
     if (input.coreDb) readAdmittedPolicyDocument(input.coreDb, document);
     return false;
+  }
+
+  /** Native requested conversation only; fixed activation adds a required, narrowing Kernel class. */
+  static isConversationAvailable(input: {
+    readonly coreDb: CoreDb | undefined;
+    readonly policy: unknown;
+    readonly store: Pick<ThreadVisibilityReadPort, 'getThread'>;
+    readonly actor: Parameters<typeof evaluateProductAuthorization>[1];
+    readonly workspaceId: string;
+    readonly threadId: string;
+  }): boolean {
+    if (!input.coreDb) return false;
+    const thread = input.store.getThread(input.workspaceId, input.threadId);
+    if (thread.visibility !== 'private' && thread.visibility !== 'workspace') return false;
+    const document = validatePolicyDocument(input.policy ?? EMPTY_POLICY_DOCUMENT);
+    const now = new Date();
+    const decision = evaluateProductAuthorization(
+      input.coreDb,
+      input.actor,
+      { kind: 'workspace', workspaceId: input.workspaceId },
+      'thread.read',
+      false,
+      now,
+      {
+        preset: thread.visibility === 'private' ? 'owner-direct' : 'workspace-members',
+        conversationId: thread.id,
+        privateOwnerUserId: thread.privateOwnerUserId ?? null,
+        document,
+        now: now.getTime(),
+        authorCurrent: (id) => isCurrentServerPolicyAuthor(input.coreDb!, id),
+      }
+    );
+    if (decision.effect !== 'allow') return false;
+    // File presence is not human admission. Only the original confirmed native change enables it.
+    readAdmittedPolicyDocument(input.coreDb, document);
+    return true;
   }
 
   /** Repeats the actual caller, Coordinator and optional Task composition for all governed Vault operations. */

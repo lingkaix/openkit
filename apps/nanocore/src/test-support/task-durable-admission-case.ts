@@ -6,9 +6,14 @@ import {
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
+import { OpenKitConfigSchema } from '@openkit/config-schema';
 import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import {
+  createInMemoryRuntimeConfigSnapshot,
+  createRuntimeConfigManager,
+} from '../config/runtime-config.js';
 import type { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { listThreadPendingRequests } from '../runtime/pending-requests.js';
@@ -33,6 +38,7 @@ import { createAppWithWorkspaceAuthority } from '../test-support/app.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
+  confirmContextDefaults,
   confirmTaskRequest,
   observeExecutionAttempts,
   taskProposalProvider,
@@ -179,6 +185,34 @@ export async function assertTaskDurableAdmissionResponse({
     requiredCapabilities: ['trusted-worker-inference-relay'],
   });
   const provider = taskProposalProvider(input, setup.manifest.id);
+  const runtimeConfigManager =
+    entry === 'assistant'
+      ? await confirmContextDefaults(
+          coreDb,
+          store,
+          createRuntimeConfigManager({
+            dataRoot,
+            initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+              dataRoot,
+              openKitConfig: OpenKitConfigSchema.parse({
+                schemaVersion: 1,
+                defaults: { defaultAgentId: setup.manifest.id },
+              }),
+              agentManifests: [setup.manifest],
+              gatewayConfig: createTestGatewayConfig(),
+              providerRegistry: new ProviderRegistry([
+                {
+                  id: 'agent-openrouter',
+                  displayName: 'Test inference provider',
+                  kind: 'local',
+                  defaultModel: 'openai/gpt-5.2',
+                  models: ['openai/gpt-5.2'],
+                },
+              ]),
+            }),
+          })
+        )
+      : undefined;
   const app = createAppWithWorkspaceAuthority({
     fileAdmission: native.fileAdmission,
     workerControlGateway: native.workerControlGateway,
@@ -189,6 +223,7 @@ export async function assertTaskDurableAdmissionResponse({
     agentManifests: [setup.manifest],
     openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     ...(entry === 'assistant' ? { llmPiAiClient: provider.client } : {}),
+    ...(runtimeConfigManager ? { runtimeConfigManager } : {}),
   });
   recordWorkspaceOwnerMembership({
     coreDb,

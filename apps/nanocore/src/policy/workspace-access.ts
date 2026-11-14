@@ -363,6 +363,60 @@ export function compilePolicyGraph(
     ];
   }
 
+  if (primary?.context) {
+    const context = primary.context;
+    const contextClass = 'pc:context';
+    const contextObjects = 'oa:context-resource';
+    policy.elements = [
+      ...policy.elements,
+      { id: contextClass, kind: 'policyClass' },
+      { id: contextObjects, kind: 'objectAttribute' },
+    ];
+    policy.assignments = [
+      ...policy.assignments,
+      { child: subject, parent: contextClass },
+      { child: target, parent: contextObjects },
+      { child: contextObjects, parent: contextClass },
+    ];
+    const resolved =
+      context.conversationId.length > 0 &&
+      primary.target.kind === 'workspace' &&
+      ((context.preset === 'owner-direct' && context.privateOwnerUserId === primary.facts.userId) ||
+        (context.preset === 'workspace-members' &&
+          context.privateOwnerUserId === null &&
+          primary.target.membership !== null));
+    // Template authorship is not a wildcard requester. The original primary/credential classes
+    // still authorize this exact requester. No autonomous association without trusted trigger facts.
+    const enabled =
+      resolved &&
+      context.document.statements.some(
+        (statement) =>
+          statement.kind === 'permission' &&
+          statement.state === 'active' &&
+          statement.effect === 'allow' &&
+          statement.author.kind === 'human' &&
+          context.authorCurrent(statement.author.id) &&
+          (statement.lifetime.notAfter === undefined ||
+            Date.parse(statement.lifetime.notAfter) > context.now) &&
+          statement.scope.resources.some(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.kind === 'context-preset' &&
+              resource.container.id === context.preset
+          )
+      );
+    if (enabled)
+      policy.associations = [
+        ...policy.associations,
+        {
+          id: `assoc:context:${context.preset}`,
+          userAttribute: subject,
+          targetAttribute: contextObjects,
+          accessRights: [right(input.operation)],
+        },
+      ];
+  }
+
   // Canonical resource attributes let the Kernel, not string-prefix matching, apply containment.
   const attributes = new Set<string>();
   const resourceAttribute = (resource: z.infer<typeof PolicyResourceV1Schema>): string => {
@@ -603,6 +657,15 @@ export interface ProductPolicyInput {
   readonly target: ProductAccessTarget;
   readonly operation: string;
   readonly mutating: boolean;
+  /** Current native conversation and admitted fixed-template activation; never model input. */
+  readonly context?: {
+    readonly preset: 'owner-direct' | 'workspace-members' | 'agent-initiated';
+    readonly conversationId: string;
+    readonly privateOwnerUserId: string | null;
+    readonly document: PolicyDocumentV1;
+    readonly now: number;
+    readonly authorCurrent: (userId: string) => boolean;
+  };
   /** Already admitted Policy and exact current subject, supplied by the native fact owner. */
   readonly policy?: {
     readonly document: PolicyDocumentV1;

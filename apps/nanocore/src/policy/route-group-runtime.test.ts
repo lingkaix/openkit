@@ -639,6 +639,7 @@ describe('E13 native current resource availability', () => {
   it('never opens after author authority loss; only another current human can clear', async () => {
     const f = await fixture();
     await f.change(document(control(f.first.userId)));
+    const restricted = f.loaded();
     const response = await f
       .graph()
       .app.request(
@@ -650,7 +651,18 @@ describe('E13 native current resource availability', () => {
       );
     expect(response.status).toBe(200);
     expect((await f.models(f.callers['ordinary other human']!)).status).toBe(403);
-    expect(f.loaded().statements).toHaveLength(1);
+    expect(f.loaded()).toEqual(restricted);
+    expect(
+      f
+        .loaded()
+        .statements.filter(
+          (statement) =>
+            !statement.scope.resources.some(
+              (resource) =>
+                resource.kind === 'container' && resource.container.kind === 'context-preset'
+            )
+        )
+    ).toHaveLength(1);
     await expect(f.graph().accounts[2]!.propose(document())).rejects.toThrow();
     const authenticated = await f
       .graph()
