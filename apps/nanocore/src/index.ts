@@ -117,6 +117,7 @@ import type { WorkerControlFinalStatusAcceptedInput } from './runtime/worker-con
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { terminalizeGovernedWorkerTurn } from './runtime/worker-turn-failure.js';
 import { requireSchedulerExecutionAttemptAdmissionContext } from './scheduler-records.js';
+import { SecurityTriggerStore } from './security/trigger.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
@@ -529,7 +530,18 @@ const bootResult = await runBootPhases({
         installPendingRequestAdmission(recoveryStore, pendingWorkspace);
         await recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
         runRecoveryMaintenance = {
-          scheduler: () => runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput),
+          scheduler: async () => {
+            try {
+              await new SecurityTriggerStore(recoveryCoreDb).advanceContainment(
+                runtimeConfigManager,
+                recoveryStore,
+                turnExecutor
+              );
+            } finally {
+              // Containment failure must not consume ordinary recovery capacity.
+              await runSchedulerRecoveryMaintenance(recoveryCoreDb, recoveryInput);
+            }
+          },
           native: () => runNanoHostAttemptRecoveryMaintenance(recoveryCoreDb, recoveryInput),
           checkpoints: () => classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb),
         };

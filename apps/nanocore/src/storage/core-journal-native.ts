@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
+import { hrtime } from 'node:process';
 import { isDeepStrictEqual } from 'node:util';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { allocateEntityId, compareCodeUnits } from '@openkit/protocol';
@@ -7,7 +8,10 @@ import { auditEventFromRow } from '../audit-events.js';
 import { recordProductPermissionDecisionInDb } from '../policy/permission-decisions.js';
 import { policyDigest, validatePolicyDocument } from '../policy/statements.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
-import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import {
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from '../runtime/execution-attempt-records.js';
 import {
   CORE_CONTAINMENT_EXECUTION_DEFINITION,
   CORE_IDLE_CLEANUP_EXECUTION_DEFINITION,
@@ -15,7 +19,9 @@ import {
   decodeExecutionJournalIntent,
   decodeExecutionJournalSpan,
   encodeExecutionJournalValue,
+  executionJournalProcessWitness,
   readExecutionJournalInvocation,
+  readExecutionJournalRoot,
   settleExecutionJournalStep,
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
@@ -31,6 +37,7 @@ import {
   SECURITY_CONTAINMENT_LIMITS,
 } from './core-journal-codecs.js';
 import type { CoreDb } from './db.js';
+import { insertEvidenceBundle } from './evidence-bundle-records.js';
 import type { NativeRuntimePolicyPublication } from './runtime-policy-publication.js';
 import { prepareSecurityCanaryAuditInDb } from './security-canary-audit-native.js';
 import { applySecurityTriggerInDb } from './security-trigger-native.js';
@@ -50,7 +57,9 @@ export function applyControlCoreJournal(
     input.kind === 'containment-inspect' ||
     input.kind === 'containment-intent' ||
     input.kind === 'containment-check' ||
-    input.kind === 'containment-settle'
+    input.kind === 'containment-settle' ||
+    input.kind === 'containment-cancel' ||
+    input.kind === 'containment-outcome'
   ) {
     return applyContainmentJournal(db, input, publication);
   }
@@ -224,7 +233,13 @@ export function applyControlCoreJournal(
 type ContainmentInput = Extract<
   ControlCoreJournalInput,
   {
-    kind: 'containment-inspect' | 'containment-intent' | 'containment-check' | 'containment-settle';
+    kind:
+      | 'containment-inspect'
+      | 'containment-intent'
+      | 'containment-check'
+      | 'containment-settle'
+      | 'containment-cancel'
+      | 'containment-outcome';
   }
 >;
 
@@ -238,6 +253,56 @@ function applyContainmentJournal(
   const revision = policyDigest(document);
   if (publication?.state !== 'active' || publication.identity?.serverRevision !== revision)
     throw new CoreJournalRefusal('Current containment Policy is unavailable.');
+  if (input.kind === 'containment-outcome') {
+    const original = readExecutionJournalInvocation(db, input.ref);
+    if (
+      original.control.definitionVersion !== 'containment' ||
+      original.control.kind !== 'cancel' ||
+      !original.control.attemptId ||
+      original.carriage.operation !== 'turn.interrupt'
+    )
+      throw new CoreJournalRefusal('Containment outcome has no original cancellation.');
+    const attempt = requireSchedulerExecutionAttempt(db, original.control.attemptId);
+    if (
+      attempt.operationId !== original.control.operationId ||
+      attempt.bindingRef !== original.carriage.bindingRef ||
+      !original.control.inputRefs.includes(`package:${attempt.inputRef}`)
+    )
+      throw new CoreJournalRefusal('Containment outcome conflicts with its original attempt.');
+    // An interrupt ACK is not stop proof. The scheduler and physical owners retain all barriers.
+    const root = readExecutionJournalRoot(db, original.ref.execution);
+    if (original.state === 'intent') {
+      const stored = db.sqlite
+        .prepare(
+          'SELECT span_json AS span FROM control_execution_steps WHERE execution_id=? AND step_id=?'
+        )
+        .get(input.ref.execution.executionId, input.ref.stepId) as { span: string };
+      settleExecutionJournalStep(db, {
+        ref: original.ref,
+        expectedExecutionRevision: root.revision,
+        state: 'unknown',
+        outputRefs: [
+          `scheduler-attempt:${attempt.attemptId}`,
+          `phase:${attempt.phase}`,
+          `disposition:${attempt.disposition}`,
+          ...(attempt.outcomeRef ? [attempt.outcomeRef] : []),
+          ...(attempt.fenceRef ? [attempt.fenceRef] : []),
+        ],
+        span: {
+          ...decodeExecutionJournalSpan(JSON.parse(stored.span)),
+          endTimeUnixNano: BigInt(Date.now()) * 1_000_000n,
+          status: {
+            code: 'ERROR',
+            description: 'Original cancellation requires outcome inspection.',
+          },
+        },
+        nextPhase: 'open',
+        terminalCause: null,
+        exclusionRefs: root.exclusionRefs,
+      });
+    }
+    return encodeExecutionJournalValue(readExecutionJournalInvocation(db, input.ref));
+  }
   if (input.kind === 'containment-settle') {
     const original = readExecutionJournalInvocation(db, input.ref);
     const control = original.control;
@@ -518,6 +583,130 @@ function applyContainmentJournal(
   )
     return null;
   const grantRef = `${grant.id}@${policyDigest(grant)}`;
+  if (input.kind === 'containment-cancel') {
+    const quarantine = readExecutionJournalInvocation(db, { ...input.ref, stepId: 'quarantine' });
+    if (
+      input.ref.stepId !== 'cancel' ||
+      quarantine.state !== 'completed' ||
+      quarantine.clock.processWitness !== executionJournalProcessWitness() ||
+      hrtime.bigint() - quarantine.clock.admittedMonotonicNano >=
+        BigInt(SECURITY_CONTAINMENT_LIMITS.actionSeconds) * 1_000_000_000n ||
+      !quarantine.control.authorityRefs.includes(grantRef) ||
+      quarantine.control.deadlineUnixNano === null ||
+      quarantine.control.deadlineUnixNano <= BigInt(now.getTime()) * 1_000_000n
+    )
+      return null;
+    // Re-prove the current exact Policy receipt, including its full deny scope.
+    applyContainmentJournal(
+      db,
+      { kind: 'containment-settle', policy: document, ref: { ...input.ref, stepId: 'quarantine' } },
+      publication
+    );
+    if (
+      db.sqlite
+        .prepare('SELECT 1 FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+        .get(input.ref.execution.executionId, input.ref.stepId)
+    )
+      return null; // Never repeat possibly invoked work.
+    const references = quarantine.control.inputRefs.filter((ref) => ref.startsWith('lineage:'));
+    if (references.length !== 1) throw new CoreJournalRefusal('Containment lineage is uncertain.');
+    const lineage = WorkerLineageSchema.parse(JSON.parse(references[0]!.slice(8)));
+    const attempts = db.sqlite
+      .prepare(`SELECT attempt_id AS id FROM scheduler_execution_attempts
+      WHERE input_ref=? AND workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=? AND phase='open' LIMIT 2`)
+      .all(
+        lineage.packageSnapshotId,
+        lineage.workspaceId,
+        lineage.threadId,
+        lineage.turnId,
+        lineage.agentSessionId
+      ) as { id: string }[];
+    if (attempts.length !== 1) return null;
+    const row = db.sqlite
+      .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
+      .get(quarantine.control.workId);
+    if (
+      prepareSecurityCanaryAuditInDb(
+        db,
+        ControlStandaloneAuditInputSchema.parse({
+          stage: 'security.canary',
+          canaryLineage: lineage,
+          event: auditEventFromRow(row),
+        })
+      ) !== 'existing'
+    )
+      return null;
+    if (
+      impact.size > SECURITY_CONTAINMENT_LIMITS.currentServer ||
+      (currentWorkspace.get(lineage.workspaceId)?.size ?? 0) >
+        SECURITY_CONTAINMENT_LIMITS.currentWorkspace
+    )
+      return null;
+    const attempt = requireSchedulerExecutionAttempt(db, attempts[0]!.id);
+    const correlation = schedulerExecutionCorrelation(attempt);
+    const root = readExecutionJournalRoot(db, quarantine.ref.execution);
+    const evidenceId = `containment-${policyDigest(root.ref)}`;
+    insertEvidenceBundle(db, {
+      id: evidenceId,
+      owner: { kind: 'server' },
+      threadId: lineage.threadId,
+      turnId: lineage.turnId,
+      agentSessionId: lineage.agentSessionId,
+      goalId: null,
+      backendType: attempt.backendId,
+      sourceKind: 'security-containment',
+      summary: 'Exact quarantine committed. Cancellation and physical stop are not yet proved.',
+      rawEvidenceRefs: [],
+      redactedEvidenceRefs: [
+        { kind: 'audit', ref: quarantine.control.workId },
+        { kind: 'policy', ref: revision },
+        { kind: 'grant', ref: grantRef },
+        { kind: 'package', ref: lineage.packageSnapshotId },
+        { kind: 'scheduler-attempt', ref: attempt.attemptId },
+      ],
+      contentDigests: [policyDigest(correlation)],
+      retentionClass: 'workspace-audit',
+      sensitivityClass: 'restricted',
+      importStatus: 'collected',
+      requiredFeatures: [],
+      createdAt: now.toISOString(),
+    });
+    return encodeExecutionJournalValue(
+      writeExecutionJournalIntent(db, {
+        execution: { ...root, span: { ...root.span, endTimeUnixNano: null } },
+        stepId: 'cancel',
+        parentStepId: null,
+        control: {
+          ...quarantine.control,
+          kind: 'cancel',
+          attemptId: attempt.attemptId,
+          operationId: correlation.operationId,
+          invocationId: randomUUID(),
+          inputRefs: [
+            ...quarantine.control.inputRefs,
+            `package:${attempt.inputRef}`,
+            `evidence:${evidenceId}`,
+          ],
+          outputRefs: [],
+          authorityRefs: [...quarantine.control.authorityRefs, revision],
+        },
+        parent: null,
+        carriage: {
+          operation: 'turn.interrupt',
+          requestId: correlation.operationId,
+          sequence: null,
+          bindingRef: correlation.bindingRef,
+        },
+        inspectedStep: null,
+        span: {
+          ...root.span,
+          spanId: randomBytes(8).toString('hex'),
+          name: 'containment cancellation',
+          endTimeUnixNano: null,
+        },
+      })
+    );
+  }
   if (input.kind === 'containment-check') {
     const original = readExecutionJournalInvocation(db, input.ref);
     if (

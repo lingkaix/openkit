@@ -56,6 +56,16 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z
+    .object({ kind: z.literal('containment-cancel'), policy: PolicyDocumentV1Schema, ref: stepRef })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('containment-outcome'),
+      policy: PolicyDocumentV1Schema,
+      ref: stepRef,
+    })
+    .strict(),
+  z
     .object({
       kind: z.literal('image-intent'),
       intentJson: text,

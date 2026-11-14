@@ -6,6 +6,7 @@ import type { Actor } from '../auth/identity.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
+import type { FsStore } from '../lib/store.js';
 import {
   EMPTY_POLICY_DOCUMENT,
   policyDigest,
@@ -13,7 +14,16 @@ import {
   validatePolicyDocument,
 } from '../policy/statements.js';
 import { publishCoreJournal } from '../runtime/core-journal-owner.js';
-import { decodeExecutionJournalInvocation } from '../runtime/execution-journal.js';
+import {
+  acceptSchedulerExecutionObservation,
+  requireSchedulerExecutionAttempt,
+  schedulerExecutionCorrelation,
+} from '../runtime/execution-attempt-records.js';
+import {
+  createExecutionStepJournalReader,
+  decodeExecutionJournalInvocation,
+} from '../runtime/execution-journal.js';
+import type { TurnExecutor } from '../runtime/types.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { SECURITY_CONTAINMENT_LIMITS } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
@@ -237,6 +247,72 @@ export class SecurityTriggerStore {
       execution: ref.execution,
       policyRevision: policyDigest(actual),
     };
+  }
+
+  /** Advances the later control phase from the existing maintenance pass, never the sensor response. */
+  async advanceContainment(manager: RuntimeConfigManager, store: FsStore, executor: TurnExecutor) {
+    if (!executor.interruptTurn || !executor.executionBackend)
+      throw new TypeError('Containment requires the original executor.');
+    const policy = validatePolicyDocument(
+      manager.current().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
+    );
+    const quarantines = policy.statements.filter(
+      (statement) => statement.lifetime.anchor.kind === 'quarantine'
+    );
+    if (quarantines.length > SECURITY_CONTAINMENT_LIMITS.currentServer)
+      throw new TypeError('Containment control inventory exceeds its static bound.');
+    const journal = createExecutionStepJournalReader(this.db, { kind: 'server' });
+    for (const statement of quarantines) {
+      const execution = { owner: { kind: 'server' as const }, executionId: statement.id };
+      let original: Awaited<ReturnType<typeof journal.readInvocation>>;
+      try {
+        original = await journal.readInvocation({ execution, stepId: 'quarantine' });
+      } catch {
+        continue;
+      } // An unrelated human quarantine grants no consumer effects.
+      if (original.control.definitionVersion !== 'containment') continue;
+      await publishCoreJournal(this.db, {
+        kind: 'containment-settle',
+        policy,
+        ref: { execution, stepId: 'quarantine' },
+      });
+      const ref = { execution, stepId: 'cancel' };
+      const admitted = await publishCoreJournal(this.db, {
+        kind: 'containment-cancel',
+        policy,
+        ref,
+      });
+      if (admitted !== null) {
+        const cancel = decodeExecutionJournalInvocation(admitted);
+        if ((await this.checkContainment(policy, ref)) === null) continue;
+        const references = cancel.control.inputRefs.filter((value) => value.startsWith('lineage:'));
+        if (references.length !== 1)
+          throw new TypeError('Containment cancellation lost its lineage.');
+        const lineage = WorkerLineageSchema.parse(JSON.parse(references[0]!.slice(8)));
+        try {
+          await executor.interruptTurn(store, lineage.turnId, { requestId: null });
+        } finally {
+          await publishCoreJournal(this.db, { kind: 'containment-outcome', policy, ref });
+        }
+      } else {
+        let cancel: Awaited<ReturnType<typeof journal.readInvocation>>;
+        try {
+          cancel = await journal.readInvocation(ref);
+        } catch {
+          continue;
+        }
+        if (!cancel.control.attemptId)
+          throw new TypeError('Containment cancellation lost its attempt.');
+        const attempt = requireSchedulerExecutionAttempt(this.db, cancel.control.attemptId);
+        // Inspect the original even after monitoring or action authority ends. Never call cancel again.
+        if (attempt.phase !== 'closed')
+          await acceptSchedulerExecutionObservation(
+            this.db,
+            await executor.executionBackend.inspect(schedulerExecutionCorrelation(attempt))
+          );
+        await publishCoreJournal(this.db, { kind: 'containment-outcome', policy, ref });
+      }
+    }
   }
 
   /** The caller supplies its original authenticated Actor; native admission rechecks current rows. */

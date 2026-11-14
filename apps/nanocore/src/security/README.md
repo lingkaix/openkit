@@ -71,3 +71,5 @@ This stage applies quarantine only. Credential revocation, Turn interruption, Sa
 ## Checks
 
 Run the inventory and feeds owner suites with NanoCore's Vitest configuration and zero retries. Run `server.security.test.ts` in Config Schema for authored feed choices. Tests use fixture SBOMs, checksum bytes and injected recorded/hostile feed streams, not third-party endpoints.
+
+The existing scheduler maintenance pass advances the later cancellation phase. Its native owner rechecks the exact committed quarantine, original action clock, current grant, live sensor lineage and impact bounds before committing a cancellation intent with the original scheduler operation identity. A redacted Server EvidenceBundle precedes interruption. The existing executor closes the original attempt and calls its original backend cancellation; route credentials lose live authority. Interrupt acceptance remains an unknown stop outcome. Repeated maintenance inspects the original operation and does not repeat cancellation. Ordinary recovery still runs when containment fails; physical release keeps all existing cleanup barriers.

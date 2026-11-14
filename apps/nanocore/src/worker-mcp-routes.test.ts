@@ -3307,13 +3307,15 @@ describe('worker MCP routes', () => {
     'containment-check',
     'containment-intent-before-restriction',
     'containment-cap-flood-recovery',
+    'containment-controls',
   ] as const)(
     'observes only authenticated current exact native canary route calls: %s',
     { timeout: 60_000 },
     async (scenario) => {
       const consumer =
         scenario === 'containment-intent-before-restriction' ||
-        scenario === 'containment-cap-flood-recovery';
+        scenario === 'containment-cap-flood-recovery' ||
+        scenario === 'containment-controls';
       const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-native-canary-route-'));
       const coreDb = openCopiedMcpCore(dataRoot);
       const userId = await ensureCanonicalLocalUser(coreDb);
@@ -3923,6 +3925,7 @@ describe('worker MCP routes', () => {
           'containment-check',
           'containment-intent-before-restriction',
           'containment-cap-flood-recovery',
+          'containment-controls',
         ].includes(scenario);
         if (shouldTrip) {
           const facts = rows();
@@ -4077,6 +4080,66 @@ describe('worker MCP routes', () => {
             expect(sibling.body.error, JSON.stringify(sibling.body)).toBeUndefined();
             expect(sibling.body.result?.isError).not.toBe(true);
             expect(sibling.body).toHaveProperty('result.content');
+          }
+          if (scenario === 'containment-controls') {
+            const interrupt = native.executor.interruptTurn.bind(native.executor);
+            const cancelled = vi
+              .spyOn(native.executor, 'interruptTurn')
+              .mockImplementation(async (...args) => {
+                const admitted = await journal.readInvocation({
+                  ...containmentRef(original),
+                  stepId: 'cancel',
+                });
+                expect(admitted).toMatchObject({
+                  state: 'intent',
+                  control: { kind: 'cancel' },
+                  carriage: { operation: 'turn.interrupt' },
+                });
+                expect(admitted.control.operationId).toBe(admitted.carriage.requestId);
+                expect(admitted.control.attemptId).toBeTruthy();
+                expect(admitted.control.inputRefs.some((ref) => ref.startsWith('evidence:'))).toBe(
+                  true
+                );
+                expect(store.getTurnById(turn.id).status).toBe('running');
+                expect(
+                  native.workerControlGateway.authenticatePackageToken(
+                    `Bearer ${capabilityToken}`,
+                    { tokenFamily: 'capability' }
+                  ).snapshotId
+                ).toBe(original.snapshotId);
+                const denied = await rpc(
+                  'openkit-work',
+                  'tools/call',
+                  { name: 'work_peer_list', arguments: {} },
+                  430
+                );
+                expect(denied.body).toMatchObject({ error: { data: { code: 'mcp-denied' } } });
+                return interrupt(...args);
+              });
+            await trigger.advanceContainment(runtimeManager, store, native.executor);
+            expect(cancelled).toHaveBeenCalledTimes(1);
+            await execution.execution;
+            expect(() =>
+              native.workerControlGateway.authenticatePackageToken(`Bearer ${capabilityToken}`, {
+                tokenFamily: 'capability',
+              })
+            ).toThrow();
+            const outcome = await journal.readInvocation({
+              ...containmentRef(original),
+              stepId: 'cancel',
+            });
+            expect(outcome.state).toBe('unknown'); // Native interrupt acceptance alone never proves stop.
+            expect(
+              outcome.control.outputRefs.some((ref) => ref.startsWith('scheduler-attempt:'))
+            ).toBe(true);
+            await trigger.advanceContainment(runtimeManager, store, native.executor);
+            expect(cancelled).toHaveBeenCalledTimes(1);
+            expect(
+              policyNow().statements.some(
+                (statement) => statement.id === containmentRef(original).execution.executionId
+              )
+            ).toBe(true);
+            cancelled.mockRestore();
           }
           if (scenario === 'containment-cap-flood-recovery') {
             for (let n = 0; n < 2; n++) {
