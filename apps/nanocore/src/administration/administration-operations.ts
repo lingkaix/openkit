@@ -5,7 +5,12 @@ import {
 } from '@openkit/app-api-schemas';
 import { ASSISTANT_RUN_DEADLINE_MS, type OpenKitNanoHostConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
-import { deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
+import {
+  allocateEntityId,
+  deriveEntityId,
+  responsibleUserIdForActor,
+  workspaceIdForOwner,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
@@ -59,11 +64,15 @@ import {
   type AdministrationEnvironmentTools,
   createAdministrationTools,
 } from './administration-tools.js';
+import {
+  readAdministrationPolicyContext,
+  recordAdministrationAuthorityDecision,
+  SECURITY_INVESTIGATION_AGENT_ID,
+} from './authority-decision.js';
 import { createAdministrationConfigurationTools } from './configuration-tools.js';
 import { createAdministrationNanoHostRuntimeTargetTool } from './nanohost-runtime-target-tool.js';
 import { renderOperatorReportDraft } from './operator-report-draft.js';
 import { preparePrivateReportDraft } from './private-report-draft.js';
-import { SECURITY_INVESTIGATION_AGENT_ID } from './security-investigation-authority.js';
 
 const ADMINISTRATION_AGENT_ID = 'assistant';
 const ADMINISTRATION_TARGET_REF = 'internal-role:administration';
@@ -577,8 +586,63 @@ export function createAdministrationOperationImplementations(input: Administrati
                       }),
                   }
                 ),
-                requireCurrentAdministrator: () => {
+                requireCurrentAdministrator: async (operation) => {
                   requireAdministratorOperation(input.coreDb!, actor, 'turn.run');
+                  const execution = store.getTurn(workspaceId, thread.id, turn.id);
+                  if (execution.agentId !== SECURITY_INVESTIGATION_AGENT_ID) return;
+                  const current = input.runtimeConfig();
+                  const now = new Date();
+                  const context = readAdministrationPolicyContext(
+                    input.coreDb!,
+                    {
+                      principal: { kind: 'agent', id: SECURITY_INVESTIGATION_AGENT_ID },
+                      onBehalfOf: actor.userId,
+                      responsibleHumanId: actor.userId,
+                      credentialKind: actor.kind,
+                      actor: {
+                        kind: 'agent',
+                        id: SECURITY_INVESTIGATION_AGENT_ID,
+                        responsibleUserId: responsibleUserIdForActor(execution.triggerActor),
+                      },
+                      process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
+                    },
+                    operation,
+                    current.openKitConfig.policy?.mediation,
+                    now.getTime()
+                  );
+                  const decision = context.decision;
+                  await recordAdministrationAuthorityDecision(
+                    {
+                      coreDb: input.coreDb!,
+                      decisionId: allocateEntityId('pd'),
+                      ownerScope: 'server',
+                      policyEngineVersion: 'nanocore-policy:v1',
+                      policySnapshotId: current.contentHash,
+                      subjectSummary: context.subject,
+                      action: operation,
+                      resourceSummary: context.resource,
+                      contextSummary: {
+                        threadId: thread.id,
+                        turnId: turn.id,
+                        requestId: request.requestId,
+                      },
+                      enforcementPoint: operation,
+                      auditActor: context.subject.actor,
+                      now,
+                    },
+                    decision,
+                    true
+                  );
+                  requireAdministratorOperation(input.coreDb!, actor, 'turn.run');
+                  if (
+                    decision.effect !== 'allow' ||
+                    current.contentHash !== input.runtimeConfig().contentHash
+                  )
+                    throw new OperationError(
+                      'not_granted',
+                      'Current agent Policy does not grant this operation.',
+                      403
+                    );
                 },
                 environmentTools: input.environmentToolsForTurn({
                   actor,

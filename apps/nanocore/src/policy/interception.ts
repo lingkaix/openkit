@@ -1103,7 +1103,12 @@ export class PolicyInterception {
     // Only active gates decide; shadow failures remain evidence without a veto.
     for (const binding of used.filter((value) => value.participant.kind === 'agent')) {
       try {
-        readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
+        readPolicyAgentPrincipal({
+          ...input,
+          participant: binding.participant,
+          operation: policyOperationDefinition(input.proposal.operation).policyOperation,
+          now: Date.now(),
+        });
         if (!input.participantAuthorized(binding))
           throw new Error('Agent disclosure authority changed.');
       } catch {
@@ -1288,7 +1293,12 @@ export class PolicyInterception {
       if (binding.participant.kind === 'agent') {
         if (binding.author.kind !== 'human' || !input.authorCurrent(binding.author.id))
           throw new Error('Current agent activation authority is unavailable.');
-        agent = readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
+        agent = readPolicyAgentPrincipal({
+          ...input,
+          participant: binding.participant,
+          operation: policyOperationDefinition(input.proposal.operation).policyOperation,
+          now: Date.now(),
+        });
       }
       current = input.stillCurrent();
       if (current)
@@ -1376,7 +1386,12 @@ export class PolicyInterception {
         else {
           if (binding.participant.kind === 'agent') {
             try {
-              agent = readPolicyAgentPrincipal({ ...input, binding, now: Date.now() });
+              agent = readPolicyAgentPrincipal({
+                ...input,
+                participant: binding.participant,
+                operation: policyOperationDefinition(input.proposal.operation).policyOperation,
+                now: Date.now(),
+              });
               if (!input.participantAuthorized(binding))
                 throw new Error('Agent disclosure authority changed.');
             } catch {

@@ -121,6 +121,51 @@ export function preparePolicyConfiguration(input: {
       409
     );
   const proposed = PolicyDocumentV1Schema.parse(input.request.changes.proposed);
+  // A working default is reviewed in the first human's exact candidate, never written at boot.
+  // A prior native human policy-write admission also prevents backfill after explicit removal.
+  const reviewed = listServerPermissionDecisions(input.coreDb).some(
+    (decision) =>
+      decision.action === 'workspace.configure' &&
+      decision.result === 'allow' &&
+      (decision.contextSummary as { operation?: unknown } | null)?.operation === 'policy.write'
+  );
+  if (
+    !reviewed &&
+    !proposed.statements.some(
+      (statement) =>
+        statement.kind === 'agent-principal' && statement.agentId === 'security-investigation'
+    )
+  )
+    proposed.statements.push({
+      id: 'security-investigation',
+      kind: 'agent-principal',
+      state: 'active',
+      author: { kind: 'human', id: input.actor.userId },
+      authoredAt: new Date().toISOString(),
+      authority: { kind: 'human', userId: input.actor.userId },
+      lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+      agentId: 'security-investigation',
+      creator: { kind: 'human', id: input.actor.userId },
+      responsibleHumanId: input.actor.userId,
+      responsibility: { kind: 'human', id: input.actor.userId },
+      scope: {
+        subjects: [{ kind: 'agent', id: 'security-investigation' }],
+        actions: [
+          'administration.configuration.read',
+          'administration.schema.read',
+          'administration.configuration.propose',
+          'worker-environment.list',
+          'worker-environment.status',
+          'nanohost.runtime-target',
+        ],
+        resources: [
+          {
+            kind: 'container',
+            container: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+          },
+        ],
+      },
+    });
   const changed = proposed.statements.find((statement) => {
     const previous = currentDocument.statements.find(({ id }) => id === statement.id);
     return !previous || policyDigest(previous) !== policyDigest(statement);

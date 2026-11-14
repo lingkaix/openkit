@@ -111,7 +111,7 @@ export function evaluatePolicyKernel(
         readonly operation: string;
         readonly resource: z.infer<typeof PolicyResourceV1Schema>;
         /** Already current agent declaration; this scope grants no initiating-human authority. */
-        readonly domain: { readonly id: string; readonly scope: PolicyBindingV1['scope'] };
+        readonly domain: { readonly id: string; readonly scope: PolicyBindingV1['scope'] } | null;
         readonly policy?: Omit<NonNullable<ProductPolicyInput['policy']>, 'subject'>;
       }
     | {
@@ -556,6 +556,7 @@ export function compilePolicyGraph(
   if ('domain' in input) {
     const { domain } = input;
     if (
+      domain &&
       domain.scope.subjects.some(
         (selector) => canonicalIdentifierName(selector) === canonicalIdentifierName(principal)
       )

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
+import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { quickChatWorkspaceIdForUser } from '../lib/store.js';
@@ -73,7 +74,12 @@ function answer(): ModelResponse {
 
 /** Real private admission, authored configuration, candidate publication and public interruption. */
 async function fixture(
-  options: { blockedCall?: 1 | 2; deadlineMs?: number; defaultProfile?: boolean } = {}
+  options: {
+    blockedCall?: 1 | 2;
+    deadlineMs?: number;
+    defaultProfile?: boolean;
+    seedInvestigation?: boolean;
+  } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'administration-lifetime-'));
   const coreDb = openCoreDb(dataRoot);
@@ -184,6 +190,57 @@ async function fixture(
     runtimeConfigManager: manager,
     readRuntimeConfigStatus: () => manager.status(),
   });
+  if (options.seedInvestigation) {
+    const humanTurn = await store.createTurn(
+      workspaceId,
+      thread.id,
+      'Review the investigation default before its first request.',
+      { kind: 'user', id: userId },
+      null
+    );
+    const homeDb = openWorkspaceDb(dataRoot, workspaceId);
+    applyScopedMigrations(homeDb);
+    cleanup.unshift(() => homeDb.sqlite.close());
+    const service = createAdministrationConfiguration({
+      actor,
+      coreDb,
+      store,
+      files,
+      runtimeConfig: () => manager.current(),
+      reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+      repositoryWorkspaceDb: (id) => {
+        if (id === workspaceId) return homeDb;
+        throw new Error('No fixture configuration authority for another Workspace.');
+      },
+      inflightCommands: new WeakMap(),
+    });
+    const candidate = await service.propose(
+      {
+        targetFamily: 'policy',
+        targetId: 'server',
+        expectedRevision: files.readFile('server.jsonc').file.revision!,
+        changes: {
+          proposed: manager.current().openKitConfig.policy?.mediation ?? {
+            schemaVersion: 1,
+            statements: [],
+          },
+          rationale: 'Human review of the editable E7 default before actual investigation entry.',
+        },
+      },
+      { threadId: thread.id, turnId: humanTurn.id, requestId: randomUUID() }
+    );
+    expect(
+      await service.apply({
+        requestId: randomUUID(),
+        candidate: candidate.candidate,
+        confirmation: candidate.confirmation,
+      })
+    ).toMatchObject({ persisted: true, reload: 'applied' });
+    await store.updateTurn(humanTurn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+  }
   const original = readFileSync(serverPath, 'utf8');
   const principal = { kind: 'human', id: userId };
   // An existing inactive native Policy form needs no external MCP schema or new Policy capability.
@@ -457,21 +514,74 @@ describe('Administration admitted Turn lifetime', () => {
       expect(artifact.contentDigest).toBe(
         `sha256:${createHash('sha256').update(artifact.content.body).digest('hex')}`
       );
-      expect(JSON.parse(artifact.content.body)).toMatchObject({
+      const candidateBody = JSON.parse(artifact.content.body);
+      expect(candidateBody).toMatchObject({
         kind: 'administration-configuration-candidate',
         targetFamily: 'policy',
         targetId: 'server',
         expectedRevision: f.proposal.expectedRevision,
         before: { schemaVersion: 1, statements: [] },
-        after: {
-          schemaVersion: 1,
-          statements: [{ id: 'review-only-tool-rule', state: 'inactive' }],
-        },
+        after: { schemaVersion: 1 },
         policyProposal: {
           proposer: { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' },
           validation: 'valid',
         },
       });
+      const human = { kind: 'human', id: 'usr_00000000-0000-7000-8000-000000000001' };
+      expect(candidateBody.after.statements).toEqual([
+        { ...f.proposal.changes.proposed.statements[0]!, authoredAt: expect.any(String) },
+        expect.objectContaining({
+          kind: 'agent-principal',
+          state: 'active',
+          agentId: 'security-investigation',
+          creator: human,
+          author: human,
+          authority: { kind: 'human', userId: human.id },
+          responsibleHumanId: human.id,
+          responsibility: human,
+          lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+          scope: {
+            subjects: [{ kind: 'agent', id: 'security-investigation' }],
+            actions: [
+              'administration.configuration.read',
+              'administration.schema.read',
+              'administration.configuration.propose',
+              'worker-environment.list',
+              'worker-environment.status',
+              'nanohost.runtime-target',
+            ],
+            resources: [
+              {
+                kind: 'container',
+                container: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+              },
+            ],
+          },
+        }),
+        ...['owner-direct', 'workspace-members', 'agent-initiated'].map((id) =>
+          expect.objectContaining({
+            kind: 'permission',
+            state: 'active',
+            effect: 'allow',
+            grant: { kind: 'ordinary' },
+            author: human,
+            authority: { kind: 'human', userId: human.id },
+            lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+            scope: {
+              subjects: [human],
+              actions: ['workspace.configure'],
+              resources: [
+                {
+                  kind: 'container',
+                  container: { owner: { kind: 'server' }, kind: 'context-preset', id },
+                },
+              ],
+            },
+          })
+        ),
+      ]);
+      expect(candidateBody.changes.proposed).toEqual(candidateBody.after);
+      expect(candidateBody.policyProposal.proposed).toEqual(candidateBody.after);
       expect(readFileSync(f.serverPath, 'utf8')).toBe(f.original);
       expect(f.createResponses).toHaveBeenCalledTimes(2);
       expect(f.retained().items.filter((item) => item.type === 'assistant-message')).toHaveLength(
@@ -599,7 +709,7 @@ describe('E7 actual Administration entry classification', () => {
       const { prepareSecurityThread, selectSecurityThread } = await import(
         '../security/threads.js'
       );
-      const f = await fixture();
+      const f = await fixture({ seedInvestigation: kind === 'registered' });
       const trigger = new SecurityTriggerStore(f.coreDb);
       await trigger.enable(f.actor);
       await trigger.stop(f.actor);

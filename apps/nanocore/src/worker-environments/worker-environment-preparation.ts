@@ -22,6 +22,7 @@ import {
 } from '@openkit/config-schema';
 import {
   allocateEntityId,
+  canonicalIdentifierName,
   compareCodeUnits,
   deriveEntityId,
   isSealedTurnTerminal,
@@ -30,11 +31,11 @@ import {
 } from '@openkit/protocol';
 import { type ParseError, parse } from 'jsonc-parser';
 import type { z } from 'zod';
-import { recordAdministrationAuthorityDecision } from '../administration/authority-decision.js';
 import {
-  evaluateSecurityInvestigationGrant,
+  readAdministrationPolicyContext,
+  recordAdministrationAuthorityDecision,
   SECURITY_INVESTIGATION_AGENT_ID,
-} from '../administration/security-investigation-authority.js';
+} from '../administration/authority-decision.js';
 import type { Actor } from '../auth/identity.js';
 import type { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
@@ -94,6 +95,8 @@ export interface CreateWorkerEnvironmentPreparationInput {
   ) => readonly { readonly expectedRevision: number; readonly storageRef: string }[];
   /** Supplies the existing current-user configuration service. */
   readonly configFilesForActor: (actor: Actor) => ConfigFiles;
+  /** Actual loaded Policy collection; saved candidate bytes alone supply no agent authority. */
+  readonly readPolicy: () => unknown;
   /** Derives the built-in private personal Workspace from the authenticated user. */
   readonly privateWorkspaceIdForUser: (userId: string) => string;
   /** Existing image preparation and result-only recovery effects. */
@@ -262,53 +265,76 @@ export function createWorkerEnvironmentPreparation(
     };
   };
 
+  /** Reads only the actual invocation and loaded declaration, including at physical dispatch. */
+  function readInvestigationPolicy(
+    context: WorkerEnvironmentPreparationContext,
+    threadId: string,
+    workspaceId: string,
+    mode: 'prepare' | 'recover'
+  ) {
+    if (!context.administrationTurnId) return;
+    const execution = dependencies.store.getTurn(
+      workspaceId,
+      threadId,
+      context.administrationTurnId
+    );
+    if (execution.agentId !== SECURITY_INVESTIGATION_AGENT_ID) return;
+    return readAdministrationPolicyContext(
+      dependencies.coreDb,
+      {
+        principal: { kind: 'agent', id: SECURITY_INVESTIGATION_AGENT_ID },
+        onBehalfOf: context.actor.userId,
+        responsibleHumanId: context.actor.userId,
+        credentialKind: context.actor.kind,
+        actor: {
+          kind: 'agent',
+          id: SECURITY_INVESTIGATION_AGENT_ID,
+          responsibleUserId: responsibleUserIdForActor(execution.triggerActor),
+        },
+        process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
+      },
+      `worker-environment.${mode}`,
+      dependencies.readPolicy(),
+      Date.parse(now())
+    );
+  }
+
   /** Applies E7 at the effect owner using the actual private invocation, never report text. */
   function requireInvestigationGrant(
     context: WorkerEnvironmentPreparationContext,
     request: PrepareWorkerEnvironmentRequest,
     workspaceId: string
   ): Promise<never> | undefined {
-    if (!context.administrationTurnId) return;
-    const execution = dependencies.store.getTurn(
-      workspaceId,
+    const policyContext = readInvestigationPolicy(
+      context,
       request.administrationThreadId,
-      context.administrationTurnId
+      workspaceId,
+      request.mode
     );
-    if (execution.agentId !== SECURITY_INVESTIGATION_AGENT_ID) return;
-    const subject = {
-      principal: { kind: 'agent', id: SECURITY_INVESTIGATION_AGENT_ID },
-      onBehalfOf: context.actor.userId,
-      actor: {
-        kind: 'agent',
-        id: SECURITY_INVESTIGATION_AGENT_ID,
-        responsibleUserId: responsibleUserIdForActor(execution.triggerActor),
-      },
-      responsibleHumanId: context.actor.userId,
-      credentialKind: context.actor.kind,
-      process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
-    } as const;
-    const action = `worker-environment.${request.mode}`;
-    const decision = evaluateSecurityInvestigationGrant(action, subject);
+    if (!policyContext) return;
+    const decision = policyContext.decision;
     if (decision.effect === 'allow') return;
+    const process = policyContext.subject.process!;
+    const action = policyContext.operation;
     return recordAdministrationAuthorityDecision(
       {
         coreDb: dependencies.coreDb,
         decisionId: allocateEntityId('pd'),
         ownerScope: 'server',
-        policyEngineVersion: 'nanocore-security-investigation:v1',
-        policySnapshotId: 'security-investigation-fixed-grant:v1',
-        subjectSummary: subject,
+        policyEngineVersion: 'nanocore-policy:v1',
+        policySnapshotId: `sha256:${createHash('sha256').update(canonicalIdentifierName(policyContext.policy.document)).digest('hex')}`,
+        subjectSummary: policyContext.subject,
         action,
-        resourceSummary: { workspaceId, administrationThreadId: execution.threadId },
+        resourceSummary: { workspaceId, administrationThreadId: process.threadId },
         contextSummary: {
-          threadId: execution.threadId,
-          turnId: execution.id,
+          threadId: process.threadId,
+          turnId: process.turnId,
           requestId: request.requestId,
           entry: 'administration',
           effectScope: 'private',
         },
         enforcementPoint: action,
-        auditActor: subject.actor,
+        auditActor: policyContext.subject.actor,
         now: new Date(now()),
       },
       decision,
@@ -539,6 +565,8 @@ export function createWorkerEnvironmentPreparation(
       workspaceId,
     });
     return runWithPublicationTurn(context, turn, async () => {
+      const refusal = requireInvestigationGrant(context, request, workspaceId);
+      if (refusal) await refusal;
       const runtimeImage = materializeRuntimeImage(authored.declaration);
       try {
         await dependencies.runtimeEffects.recoverImageEffect({
@@ -587,6 +615,13 @@ export function createWorkerEnvironmentPreparation(
         authorize: () => {
           try {
             dependencies.requireCurrentAdministrator(context.actor);
+            const policy = readInvestigationPolicy(
+              context,
+              publicationTurn.threadId,
+              workspaceId,
+              'prepare'
+            );
+            if (policy && policy.decision.effect !== 'allow') return false;
             requirePrivateHome(context.actor, workspaceId, authoredArtifact);
             requirePrivateTurn(
               context.actor,

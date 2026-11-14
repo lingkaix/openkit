@@ -48,7 +48,6 @@ import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
-import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import {
   requireSchedulerExecutionAttemptAdmissionContext,
   type SchedulerWorkerStorageChoice,
@@ -9626,7 +9625,10 @@ function currentWorkerStorageAudienceAuthorizer(
         return readCurrentWorkspacePolicy({
           coreDb,
           workspaceId,
-          policy: loaded.config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT,
+          policy: loaded.config.workspace.policy?.mediation ?? {
+            schemaVersion: 1 as const,
+            statements: [],
+          },
         });
       },
     };

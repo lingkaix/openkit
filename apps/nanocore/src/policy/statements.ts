@@ -252,23 +252,37 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
         statement.lifetime.uses !== undefined ||
         statement.scope.subjects.length !== 1 ||
         statement.scope.subjects[0]?.kind !== 'agent' ||
-        statement.scope.subjects[0].id !== statement.agentId ||
-        statement.scope.actions.some((action) => action !== 'tool.use')
+        statement.scope.subjects[0].id !== statement.agentId
       )
         throw new Error(
           'Agent identity requires an explicit human root and its own finite native domain.'
         );
       const anchor = statement.lifetime.anchor;
       const workspaceId = anchor.owner.kind === 'workspace' ? anchor.owner.workspaceId : null;
+      const server =
+        anchor.owner.kind === 'server' && anchor.kind === 'server' && anchor.id === 'server';
+      const workspace =
+        anchor.owner.kind === 'workspace' &&
+        ['workspace', 'turn'].includes(anchor.kind) &&
+        (anchor.kind !== 'workspace' || anchor.id === workspaceId) &&
+        statement.scope.actions.every((action) => action === 'tool.use') &&
+        statement.scope.resources.every(
+          (resource) => resource.kind === 'mcp-tool' && resource.workspaceId === workspaceId
+        );
       if (
-        anchor.owner.kind !== 'workspace' ||
-        !['workspace', 'turn'].includes(anchor.kind) ||
-        (anchor.kind === 'workspace' && anchor.id !== anchor.owner.workspaceId) ||
-        statement.scope.resources.some(
-          (resource) => resource.kind !== 'mcp-tool' || resource.workspaceId !== workspaceId
+        !workspace &&
+        !(
+          server &&
+          statement.scope.resources.every(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.owner.kind === 'server' &&
+              resource.container.kind === 'server' &&
+              resource.container.id === 'server'
+          )
         )
       )
-        throw new Error('Agent domain requires one exact native Workspace scope.');
+        throw new Error('Agent domain requires one exact native scope.');
       continue;
     }
     // Goal activation is admitted separately against its jointly approved request.
@@ -743,19 +757,21 @@ export function policyScopeContains(
 /** Resolves the current accountable agent and its explicit domain through the existing Kernel. */
 export function readPolicyAgentPrincipal(input: {
   document: PolicyDocumentV1;
-  binding: PolicyBindingV1;
-  proposal: PolicyProposal;
+  participant: PolicyBindingV1['participant'];
+  proposal: Pick<PolicyProposal, 'subject' | 'workspaceId' | 'resource'>;
+  /** Semantic operation supplied by its native metadata/effect owner. */
+  operation: string;
   authorCurrent: (userId: string) => boolean;
   anchorCurrent: (anchor: PolicyBindingV1['lifetime']['anchor']) => boolean;
   now: number;
 }): PolicyAgentPrincipalV1 {
-  const { binding, proposal } = input;
-  if (binding.participant.kind !== 'agent') throw new Error('An agent binding is required.');
+  const { participant, proposal } = input;
+  if (participant.kind !== 'agent') throw new Error('An agent declaration is required.');
   const agents = input.document.statements.filter(
     (s): s is PolicyAgentPrincipalV1 => s.kind === 'agent-principal'
   );
-  const root = agents.find((s) => s.agentId === binding.participant.id);
-  if (!root || policyDigest(root) !== binding.participant.version)
+  const root = agents.find((s) => s.agentId === participant.id);
+  if (!root || policyDigest(root) !== participant.version)
     throw new Error('The pinned agent declaration is unavailable.');
   const seen = new Set<string>();
   let current = root;
@@ -773,18 +789,21 @@ export function readPolicyAgentPrincipal(input: {
       !input.authorCurrent(root.responsibleHumanId) ||
       current.lifetime.uses !== undefined ||
       (current.lifetime.notAfter && Date.parse(current.lifetime.notAfter) <= input.now) ||
-      anchor.owner.kind !== 'workspace' ||
-      anchor.owner.workspaceId !== proposal.workspaceId ||
-      !['workspace', 'turn'].includes(anchor.kind) ||
-      (anchor.kind === 'workspace' && anchor.id !== proposal.workspaceId) ||
-      (anchor.kind === 'turn' && anchor.id !== proposal.subject.process?.turnId) ||
+      !(
+        (anchor.owner.kind === 'server' && anchor.kind === 'server' && anchor.id === 'server') ||
+        (anchor.owner.kind === 'workspace' &&
+          anchor.owner.workspaceId === proposal.workspaceId &&
+          ['workspace', 'turn'].includes(anchor.kind) &&
+          (anchor.kind !== 'workspace' || anchor.id === proposal.workspaceId) &&
+          (anchor.kind !== 'turn' || anchor.id === proposal.subject.process?.turnId))
+      ) ||
       !input.anchorCurrent(anchor)
     )
       throw new Error('Current agent accountability is unavailable.');
     seen.add(current.agentId);
     const decision = evaluatePolicyKernel({
       subject: { principal: { kind: 'agent', id: current.agentId }, process: null },
-      operation: policyOperationDefinition(proposal.operation).policyOperation,
+      operation: input.operation,
       resource: proposal.resource,
       domain: { id: current.id, scope: current.scope },
       policy: {

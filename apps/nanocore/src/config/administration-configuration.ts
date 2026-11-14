@@ -29,11 +29,11 @@ import {
   writeRetainedV1,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import { recordAdministrationAuthorityDecision } from '../administration/authority-decision.js';
 import {
-  evaluateSecurityInvestigationOperation,
+  readAdministrationPolicyContext,
+  recordAdministrationAuthorityDecision,
   SECURITY_INVESTIGATION_AGENT_ID,
-} from '../administration/security-investigation-authority.js';
+} from '../administration/authority-decision.js';
 import { prepareServerAuditEvent } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -403,15 +403,19 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
                     (anchor.kind === 'server' && anchor.id === 'server')),
               },
             });
-            // A valid ordinary maintenance delegation cannot enlarge E7's fixed agent grant.
-            const decision = subject
-              ? evaluateSecurityInvestigationOperation(
-                  'administration.configuration.dispatch',
+            // Both the current human maintenance grant and the declared agent domain must allow.
+            const agentContext = subject
+              ? readAdministrationPolicyContext(
+                  coreDb,
                   subject,
-                  delegated
+                  'administration.configuration.dispatch',
+                  document,
+                  now.getTime()
                 )
-              : delegated;
-            return { snapshot, now, decision, subject };
+              : null;
+            const decision =
+              agentContext && delegated.effect === 'allow' ? agentContext.decision : delegated;
+            return { snapshot, now, decision, subject: agentContext?.subject ?? null };
           };
           const { snapshot, now, decision, subject } = currentMaintenance();
           permissionDecisionId = allocateEntityId('pd');
@@ -419,9 +423,7 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
             coreDb,
             decisionId: permissionDecisionId,
             ownerScope: 'server' as const,
-            policyEngineVersion: subject
-              ? 'nanocore-security-investigation:v1'
-              : 'nanocore-policy:v1',
+            policyEngineVersion: 'nanocore-policy:v1',
             policySnapshotId: snapshot.contentHash,
             subjectSummary: subject ?? { userId: actor.userId },
             action: body.command,
@@ -684,6 +686,58 @@ export function createAdministrationConfiguration(options: AdministrationConfigu
     ) {
       requireHome(home.threadId, home.turnId);
       let request = ProposeAdministrationConfigurationRequestSchema.parse(unsafeRequest);
+      const execution = store.getTurn(workspaceId, home.threadId, home.turnId);
+      if (execution.agentId === SECURITY_INVESTIGATION_AGENT_ID) {
+        const snapshot = options.runtimeConfig();
+        const now = new Date();
+        const context = readAdministrationPolicyContext(
+          coreDb,
+          {
+            principal: { kind: 'agent', id: SECURITY_INVESTIGATION_AGENT_ID },
+            onBehalfOf: actor.userId,
+            responsibleHumanId: actor.userId,
+            credentialKind: actor.kind,
+            actor: {
+              kind: 'agent',
+              id: SECURITY_INVESTIGATION_AGENT_ID,
+              responsibleUserId: responsibleUserIdForActor(execution.triggerActor),
+            },
+            process: { workspaceId, threadId: execution.threadId, turnId: execution.id },
+          },
+          'administration.configuration.propose',
+          snapshot.openKitConfig.policy?.mediation,
+          now.getTime()
+        );
+        const decision = context.decision;
+        await recordAdministrationAuthorityDecision(
+          {
+            coreDb,
+            decisionId: allocateEntityId('pd'),
+            ownerScope: 'server',
+            policyEngineVersion: 'nanocore-policy:v1',
+            policySnapshotId: snapshot.contentHash,
+            subjectSummary: context.subject,
+            action: context.operation,
+            resourceSummary: { targetFamily: request.targetFamily, targetId: request.targetId },
+            contextSummary: {
+              threadId: execution.threadId,
+              turnId: execution.id,
+              requestId: home.requestId,
+            },
+            enforcementPoint: 'administration.configuration.propose',
+            auditActor: context.subject.actor,
+            now,
+          },
+          decision,
+          true
+        );
+        if (
+          decision.effect !== 'allow' ||
+          snapshot.contentHash !== options.runtimeConfig().contentHash
+        )
+          fail('not_granted');
+        requireHome(home.threadId, home.turnId);
+      }
       if (request.targetFamily === 'policy') {
         const loaded = options.runtimeConfig().openKitConfig.policy?.mediation ?? {
           schemaVersion: 1 as const,

@@ -20,7 +20,7 @@ export type AdministrationEnvironmentTools = readonly [AgentTool, AgentTool, Age
 /** Dependencies used to assemble the fixed private administration Tool set. */
 export interface AdministrationToolAssemblyOptions {
   /** Rechecks the initiating user's current usable deployment-administrator authority. */
-  readonly requireCurrentAdministrator: () => void;
+  readonly requireCurrentAdministrator: (operation: string) => void | Promise<void>;
   /** Exact read, schema, and proposal closures from the configuration adapter. */
   readonly configurationTools: AdministrationConfigurationTools;
   /** Exact list, status, prepare, and recover closures from the Worker environment owner. */
@@ -60,7 +60,7 @@ export function createAdministrationTools(
   ].map((tool) => ({
     ...tool,
     execute: async (input: unknown, context): Promise<AgentToolResult> => {
-      options.requireCurrentAdministrator();
+      await options.requireCurrentAdministrator(tool.name);
       return tool.execute(input, context);
     },
   }));

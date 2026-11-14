@@ -994,10 +994,93 @@ describe('E7 delegated configuration effect boundary', () => {
   );
 });
 
+it('refuses actual E7 proposal preparation without an admitted investigation grant and creates no candidate', async () => {
+  const f = await fixture();
+  expect(
+    f.manager
+      .current()
+      .openKitConfig.policy?.mediation?.statements.some((statement) =>
+        statement.scope.subjects.some(
+          (subject) => subject.kind === 'agent' && subject.id === 'security-investigation'
+        )
+      ) ?? false
+  ).toBe(false);
+  await f.store.updateTurn(f.home.turnId, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
+  const investigation = await f.store.createTurn(
+    f.workspaceId,
+    f.home.threadId,
+    'Request a review without an investigation grant.',
+    { kind: 'user', id: f.actor.userId },
+    null,
+    { agentId: 'security-investigation' }
+  );
+  const before = f.files.readFile('agents/registered.agent.jsonc');
+  const artifacts = f.store.listArtifacts(f.workspaceId);
+  const result = await f.service
+    .propose(f.request, {
+      threadId: f.home.threadId,
+      turnId: investigation.id,
+      requestId: randomUUID(),
+    })
+    .then(
+      () => ({ kind: 'proposed' as const }),
+      (error: unknown) => ({ kind: 'refused' as const, error })
+    );
+  expect(result.kind).toBe('refused');
+  expect(f.store.listArtifacts(f.workspaceId)).toEqual(artifacts);
+  expect(f.files.readFile('agents/registered.agent.jsonc').content).toBe(before.content);
+  expect(listServerPermissionDecisions(f.coreDb)).toContainEqual(
+    expect.objectContaining({
+      result: 'deny',
+      reasonCode: 'not_granted',
+      contextSummary: expect.objectContaining({
+        threadId: f.home.threadId,
+        turnId: investigation.id,
+      }),
+    })
+  );
+});
+
 // Append to the existing delegated-worker-git-read.test.ts; E7 reserves proposal application to a person.
 it('E7 keeps explicit human confirmation of a security-origin proposal available', async () => {
   const f = await fixture();
   await f.store.updateTurn(f.home.turnId, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
+  const humanTurn = await f.store.createTurn(
+    f.workspaceId,
+    f.home.threadId,
+    'Review the editable investigation default.',
+    { kind: 'user', id: f.actor.userId },
+    null
+  );
+  const defaultCandidate = await f.service.propose(
+    {
+      targetFamily: 'policy',
+      targetId: 'server',
+      expectedRevision: f.files.readFile('server.jsonc').file.revision!,
+      changes: {
+        proposed: f.manager.current().openKitConfig.policy?.mediation ?? {
+          schemaVersion: 1,
+          statements: [],
+        },
+        rationale: 'Human review before enabling this investigation proposal fixture.',
+      },
+    },
+    { threadId: f.home.threadId, turnId: humanTurn.id, requestId: randomUUID() }
+  );
+  expect(
+    await f.service.apply({
+      requestId: randomUUID(),
+      candidate: defaultCandidate.candidate,
+      confirmation: defaultCandidate.confirmation,
+    })
+  ).toMatchObject({ persisted: true, reload: 'applied' });
+  await f.store.updateTurn(humanTurn.id, {
     status: 'completed',
     completedAt: new Date().toISOString(),
   });

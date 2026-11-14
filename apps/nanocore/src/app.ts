@@ -19,6 +19,7 @@ import {
 import type { ActorRef, Item, TurnSchema } from '@openkit/protocol';
 import {
   allocateEntityId,
+  canonicalIdentifierName,
   compareCodeUnits,
   isEntityId,
   isSealedTurnTerminal,
@@ -156,7 +157,6 @@ import {
   isResourcePolicyRequest,
   isResourcePolicyRequesterCurrent,
 } from './policy/resource-policy-requests.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from './policy/statements.js';
 import type { ProviderDiagnosticsSnapshot } from './providers/diagnostics.js';
 import { resolveProviderProfileToLLMConfig } from './providers/llm-config.js';
 import { isProviderProfileDispatchable } from './providers/profile-capabilities.js';
@@ -860,7 +860,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       .current()
       .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId);
     if (!loaded) return null;
-    const policy = loaded.config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT;
+    const policy = loaded.config.workspace.policy?.mediation ?? {
+      schemaVersion: 1 as const,
+      statements: [],
+    };
     if (!policy.statements.length) return policy;
     if (!options.coreDb) throw new Error('Current Workspace Policy authority is unavailable.');
     return readCurrentWorkspacePolicy({ coreDb: options.coreDb, workspaceId, policy });
@@ -961,6 +964,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workerEnvironmentPreparation = options.coreDb
     ? createWorkerEnvironmentPreparation({
         coreDb: options.coreDb,
+        readPolicy: () => runtimeConfigManager.current().openKitConfig.policy?.mediation,
         store: sharedStore,
         inflightCommands,
         runtimeEffects: workerEnvironmentRuntimeEffects,
@@ -2217,9 +2221,16 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       ? {
           goalDomain: {
             currentRevision: () =>
-              policyDigest(
-                runtimeConfig().openKitConfig.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
-              ),
+              `sha256:${createHash('sha256')
+                .update(
+                  canonicalIdentifierName(
+                    runtimeConfig().openKitConfig.policy?.mediation ?? {
+                      schemaVersion: 1,
+                      statements: [],
+                    }
+                  )
+                )
+                .digest('hex')}`,
             forActor: (actor: Actor, db: WorkspaceDb) =>
               createGoalDomainPolicyService({
                 coreDb: options.coreDb!,

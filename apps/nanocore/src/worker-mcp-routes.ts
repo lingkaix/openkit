@@ -2678,7 +2678,8 @@ function mcpInterceptionInput(
         readPolicyAgentPrincipal({
           document,
           proposal,
-          binding,
+          participant: binding.participant,
+          operation: 'tool.use',
           authorCurrent,
           anchorCurrent,
           now: Date.now(),

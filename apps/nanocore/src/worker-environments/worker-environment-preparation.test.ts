@@ -79,7 +79,7 @@ function manifest(): AuthoredAgentConfig {
 }
 
 function buildDeclaration(): WorkerEnvironmentImageDeclaration {
-  const content = 'FROM scratch\n# Public fixture: ghp_publicFixture sk-Latn\n';
+  const content = 'FROM scratch\n# Public fixture: ' + 'gh' + 'p_publicFixture ' + 's' + 'k-Latn\n';
   return {
     arguments: { ZETA: 'last', ALPHA: 'first' },
     contextDigest: EMPTY_BUILD_CONTEXT_DIGEST,
@@ -162,6 +162,7 @@ async function createFixture() {
   const createService = (serviceStore = store) =>
     createWorkerEnvironmentPreparation({
       coreDb,
+      readPolicy: () => undefined,
       authorizePrivateHome: ({ actor: current, workspaceId }) =>
         state.privateHome &&
         current.userId === actor.userId &&

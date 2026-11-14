@@ -16,6 +16,7 @@ import {
 import {
   allocateEntityId,
   type CapabilityCall,
+  canonicalIdentifierName,
   deriveEntityId,
   type Item,
   ItemSchema,
@@ -40,7 +41,6 @@ import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
-import { policyDigest } from '../policy/statements.js';
 import { evaluateThreadAuthorization } from '../policy/workspace-resource-access.js';
 import {
   mapCommandRequestRow,
@@ -771,7 +771,10 @@ function captureGoalDomain(
       approvalRequestId: version.pendingRequestId,
     },
   });
-  return { statement, digest: policyDigest(statement) };
+  return {
+    statement,
+    digest: `sha256:${createHash('sha256').update(canonicalIdentifierName(statement)).digest('hex')}`,
+  };
 }
 
 /** Re-evaluates exact authority synchronously before CAS, with no Task effect. */

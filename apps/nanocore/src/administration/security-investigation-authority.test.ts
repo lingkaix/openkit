@@ -2,11 +2,10 @@ import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/
 import { PolicySubjectV1Schema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import type { PolicyProposal } from '../policy/statements.js';
-import { evaluateSecurityInvestigationOperation } from './security-investigation-authority.js';
+import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 
-// NEW-only unit oracle. The imported adapter does not exist on the frozen OLD SHA.
-// Intended placement: apps/nanocore/src/administration/security-investigation-authority.test.ts.
-// Runtime Security E7 fixes this grant; Tool supply and native entry need separate proof.
+// Existing expectation inventory now exercises the shared compiler with declared-domain facts.
+// Native owners separately prove current human authoring, admission and unchanged Tool supply.
 const allowed = [
   'administration.configuration.read',
   'administration.schema.read',
@@ -34,6 +33,42 @@ const subject: PolicyProposal['subject'] = PolicySubjectV1Schema.parse({
   credentialKind: 'session',
   responsibleHumanId: userId,
 });
+
+/** Fixture-only input projection for the existing expectation inventory, not a production adapter. */
+function evaluateSecurityInvestigationOperation(
+  operation: string,
+  current: PolicyProposal['subject'],
+  human: PolicyDecision
+): PolicyDecision {
+  if (human.effect !== 'allow') return human;
+  const initiated =
+    current.principal.kind === 'agent' &&
+    current.principal.id === 'security-investigation' &&
+    current.actor.kind === 'agent' &&
+    current.actor.id === 'security-investigation' &&
+    current.onBehalfOf !== null &&
+    current.responsibleHumanId === current.onBehalfOf &&
+    current.actor.responsibleUserId === current.onBehalfOf;
+  const resource = {
+    kind: 'container',
+    container: { owner: { kind: 'server' }, kind: 'server', id: 'server' },
+  } as const;
+  return evaluatePolicyKernel({
+    subject: current,
+    operation,
+    resource,
+    domain: initiated
+      ? {
+          id: 'fixture-investigation-domain',
+          scope: {
+            subjects: [{ kind: 'agent', id: 'security-investigation' }],
+            actions: [...allowed],
+            resources: [resource],
+          },
+        }
+      : null,
+  });
+}
 
 /** Real broad human Kernel grant; it cannot replace the investigation ceiling. */
 function humanPolicy(): PolicyState {
