@@ -196,44 +196,27 @@ describe('E10 full-diff Policy mutation ceiling', () => {
     expect(() => f.prepare([])).toThrow();
   });
 
-  it('refuses extending an allow lifetime outside current resource authority', async () => {
-    const source = gate(unavailableWorkspaceId);
-    const container = source.lifetime.anchor;
-    const before: PolicyDocumentV1['statements'][number] = {
-      kind: 'permission',
-      id: 'finite-read',
-      state: 'active',
-      effect: 'allow',
-      author: source.author,
-      authority: source.authority,
-      authoredAt: source.authoredAt,
-      scope: {
-        subjects: source.scope.subjects,
-        actions: ['knowledge.read'],
-        resources: [{ kind: 'container', container }],
-      },
-      lifetime: { anchor: container, notAfter: '2098-12-31T00:00:00.000Z' },
-      grant: {
-        kind: 'storage-lease',
-        knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001',
-        mount: 'documents',
-        pathPrefix: 'shared',
-        mode: 'read-only',
-      },
-    };
-    const f = await fixture({ schemaVersion: 1, statements: [before] });
+  it('refuses shortening a prohibition lifetime outside current resource authority', async () => {
+    // E10 still requires the old restriction's authority when earlier expiry restores access.
+    const before = prohibition(unavailableWorkspaceId);
+    const current: PolicyDocumentV1 = { schemaVersion: 1, statements: [before] };
+    const f = await fixture(current);
     expect(f.authority(unavailableWorkspaceId)).toBeNull();
-    expect(() =>
-      f.prepare([
-        {
-          ...before,
-          lifetime: {
-            ...before.lifetime,
-            notAfter: '2099-12-31T00:00:00.000Z',
-          },
-        },
-      ])
-    ).toThrow();
+    const after = [
+      {
+        ...before,
+        lifetime: { ...before.lifetime, notAfter: '2098-12-31T00:00:00.000Z' },
+      },
+    ];
+    expect(
+      preparePolicyDocument({
+        current,
+        proposed: { schemaVersion: 1, statements: after },
+        userId,
+        now: '2026-11-13T00:00:00.000Z',
+      }).classification
+    ).toBe('widening');
+    expect(() => f.prepare(after)).toThrow('Policy mutation exceeds current resource authority.');
   });
 
   it('refuses an author removing a prohibition over their own authority', async () => {

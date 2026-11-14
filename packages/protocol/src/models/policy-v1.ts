@@ -5,7 +5,6 @@ import {
   AuditEventIdSchema,
   AutomationIdSchema,
   CapabilityCallIdSchema,
-  KnowledgeBaseIdSchema,
   PermissionDecisionIdSchema,
   ThreadIdSchema,
   TurnIdSchema,
@@ -243,28 +242,6 @@ export const PolicyGrantV1Schema = z.discriminatedUnion('kind', [
       validFrom: z.iso.datetime({ precision: 3 }),
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal('storage-lease'),
-      knowledgeBaseId: KnowledgeBaseIdSchema,
-      mount: z.string().min(1),
-      pathPrefix: z
-        .string()
-        .max(4096)
-        .describe(
-          'Normalized relative path; empty means mount root. Canonical Zod validation rejects traversal and invalid separators.'
-        )
-        .refine(
-          (path) =>
-            path === '' ||
-            (!path.includes('\\') &&
-              !path.includes('\0') &&
-              path.split('/').every((part) => part !== '' && part !== '.' && part !== '..')),
-          'Storage prefix must be a normalized relative path.'
-        ),
-      mode: z.enum(['read-only', 'staged-write']),
-    })
-    .strict(),
 ]);
 /** Permission conditions include the existing approval-required Tool rule. */
 export const PolicyPermissionV1Schema = z
@@ -277,10 +254,7 @@ export const PolicyPermissionV1Schema = z
   })
   .strict()
   .superRefine((statement, context) => {
-    if (
-      ['storage-lease', 'worker-git-read-maintenance'].includes(statement.grant.kind) &&
-      !statement.lifetime.notAfter
-    )
+    if (statement.grant.kind === 'worker-git-read-maintenance' && !statement.lifetime.notAfter)
       context.addIssue({
         code: 'custom',
         path: ['lifetime', 'notAfter'],
@@ -298,7 +272,7 @@ export const PolicyPermissionV1Schema = z
       });
   })
   .describe(
-    'Storage-lease and finite maintenance permissions require lifetime.notAfter; maintenance validFrom precedes it. Use canonical Zod validation for cross-field rules.'
+    'Finite maintenance permissions require lifetime.notAfter; validFrom precedes it. Use canonical Zod validation for cross-field rules.'
   );
 /** A managed boundary adds a required Policy class without granting any subject a right. */
 export const PolicyManagedBoundaryV1Schema = z

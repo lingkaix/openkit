@@ -256,7 +256,7 @@ Permission decision records should be immutable. A later policy check should cre
 
 [Mediation](mediation.md#enforcement-points) owns mediation points.
 
-Permissions, participant bindings, and envelopes or delegations MUST share one versioned Policy authority and snapshot. One revision pins all three statement kinds for evaluation. A binding is a Policy statement, not a separate hook configuration or grant store. Gateway tool rules and storage leases remain permission statements or grants in that same owner.
+Permissions, participant bindings, and envelopes or delegations MUST share one versioned Policy authority and snapshot. One revision pins all three statement kinds for evaluation. A binding is a Policy statement, not a separate hook configuration or grant store. Gateway tool rules remain permission statements in that same owner.
 
 A binding MUST name its point selector, scope, lifetime, mode, participant, order, failure behavior, shadow or active state, input disclosure scope, version, author, and delegation. Creating or changing it uses the governed `policy.write` administration operation. Input disclosure authority MUST be decided when the binding is written. Invocation rechecks current authority with the Kernel only and minimizes disclosed inputs. Instructions and authorization sources MUST remain distinct from untrusted evidence.
 

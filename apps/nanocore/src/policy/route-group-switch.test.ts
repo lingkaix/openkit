@@ -104,13 +104,7 @@ const invalid: readonly [string, (s: Control) => unknown][] = [
     'wrong grant',
     (s) => ({
       ...s,
-      grant: {
-        kind: 'storage-lease',
-        knowledgeBaseId: 'kb_00000000-0000-7000-8000-000000000001',
-        mount: 'content',
-        pathPrefix: '/',
-        mode: 'read-only',
-      },
+      grant: { kind: 'agent-process', agentId: 'registered-worker' },
     }),
   ],
   ['agent author', (s) => ({ ...s, author: { kind: 'agent', id: 'e13-agent' } })],
