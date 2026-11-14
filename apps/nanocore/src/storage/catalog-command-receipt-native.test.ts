@@ -649,7 +649,7 @@ it('preserves concurrent deduplication, current Catalog replay, mismatch, CAS an
   expect({ bytes: f.bytes(), records: f.records() }).toEqual(before);
 }, 30000);
 
-it('preserves exact receipt TTL and both real pruning partitions without making expiry replay authority', async () => {
+it('preserves exact receipt TTL and native-only maintenance without making expiry replay authority', async () => {
   const f = await fixture();
   const past = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000);
   // Keep the genuine shared-MCP producer as a moved native peer.
@@ -719,9 +719,9 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   expect(getCommandRequestRecordFromDb(f.db, record.key, lastEligible)).toEqual(record);
   expect(getCommandRequestRecordFromDb(f.db, record.key, record.expiresAt)).toBeNull();
   expect(f.records()).toEqual(before);
-  // This real Main lookup prunes the retained partition; it must not delete native rows.
+  // Main observation performs no expiry writes; the actual native owner prunes later.
   expect(f.store.getCommandRequest('goal.start', randomUUID(), mainScope)).toBeNull();
-  expect(f.records().find((row) => row.requestId === mainRequestId)).toBeUndefined();
+  expect(f.records()).toEqual(before);
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toEqual(nativeShared);
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toEqual(nativeOther);
   expect(f.record(), 'Main expiry maintenance deleted the moved Catalog receipt.').toEqual(record);
@@ -774,11 +774,11 @@ it('preserves exact receipt TTL and both real pruning partitions without making 
   expect(f.records().find((row) => row.requestId === threadInput.requestId)).toBeUndefined();
   expect(
     f.record(),
-    'Existing native maintenance did not prune its activated Catalog partition.'
+    'The physical native owner must prune every ordinary expired command.'
   ).toBeUndefined();
   expect(f.records().find((row) => row.requestId === legacyInput.requestId)).toBeUndefined();
   expect(f.records().find((row) => row.requestId === anotherLegacyInput.requestId)).toBeUndefined();
-  expect(f.records().find((row) => row.requestId === otherMainRequestId)).toEqual(mainOther);
+  expect(f.records().find((row) => row.requestId === otherMainRequestId)).toBeUndefined();
   const retained = { bytes: f.bytes(), events: f.events(), records: f.records() };
   const replay = await f.call();
   expect(replay.status).toBe(409);

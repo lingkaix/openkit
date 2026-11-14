@@ -569,7 +569,8 @@ it('keeps product receipt insertion and pruning off the main writable connection
     f.db.sqlite
       .prepare('SELECT * FROM idempotency_requests WHERE request_key=?')
       .get(expired[1]!.key)
-  ).toEqual(mainOwned);
+  ).toBeUndefined();
+  expect(mainOwned, 'The ordinary expired row existed before native maintenance.').toBeDefined();
   expect(f.db.sqlite.prepare('SELECT id FROM control_threads WHERE id=?').get(created.id)).toEqual({
     id: created.id,
   });

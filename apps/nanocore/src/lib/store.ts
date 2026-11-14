@@ -456,6 +456,7 @@ export interface TerminalTurnPublication {
  */
 export type CommandRequestName =
   | 'task.steer'
+  | 'scheduler.external-trigger.admit'
   | 'knowledge.tell'
   | 'knowledge.maintain'
   | 'knowledge.server.maintain'
@@ -577,6 +578,7 @@ export type CommandRequestName =
  * Resource kind returned by an idempotent command.
  */
 export type CommandRequestResponseKind =
+  | 'scheduler_entry'
   | 'catalog_mcp'
   | 'vault_reference'
   | 'vault_grant'
@@ -687,8 +689,8 @@ export interface CommandRequestRecord {
   response: CommandRequestResponse;
   /** Timestamp when the record was created. */
   createdAt: string;
-  /** Timestamp when the record should be pruned. */
-  expiresAt: string;
+  /** Ordinary expiry, or null for a permanent Core external-event join. */
+  expiresAt: string | null;
 }
 
 /**
@@ -1056,7 +1058,10 @@ function contentDigest(content: string): string {
  * @returns True when the record is expired.
  */
 function isCommandRequestExpired(record: CommandRequestRecord, referenceTime: string): boolean {
-  return new Date(record.expiresAt).getTime() <= new Date(referenceTime).getTime();
+  return (
+    record.expiresAt !== null &&
+    new Date(record.expiresAt).getTime() <= new Date(referenceTime).getTime()
+  );
 }
 
 /**

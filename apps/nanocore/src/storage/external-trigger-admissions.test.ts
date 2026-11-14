@@ -166,7 +166,11 @@ describe('ExternalTriggerAdmission Core joins', () => {
       });
     })();
     expect(findExternalTriggerAdmission(db, schedule.id, record.eventKey)).toEqual(record);
-    db.sqlite.prepare('UPDATE external_trigger_admissions SET source_turn_id = ?').run('invalid');
+    db.sqlite
+      .prepare(
+        "UPDATE idempotency_requests SET scope_json = json_set(scope_json,'$.sourceTurnId',?) WHERE command_name = 'scheduler.external-trigger.admit'"
+      )
+      .run('invalid');
     expect(() => findExternalTriggerAdmission(db, schedule.id, record.eventKey)).toThrow();
     expect(() => listWorkspaceExternalTriggerAdmissions(db, workspaceId)).toThrow();
   });

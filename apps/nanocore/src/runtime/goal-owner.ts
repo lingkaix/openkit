@@ -1454,7 +1454,7 @@ export function applyControlGoalCommand(
         'SELECT schema_version AS schemaVersion,request_key AS key,command_name AS command,request_id AS requestId,scope_json AS scopeJson,input_hash AS inputHash,response_kind AS responseKind,response_id AS responseId,response_json AS responseJson,created_at AS createdAt,expires_at AS expiresAt FROM idempotency_requests WHERE request_key=?'
       )
       .get(receipt.key) as Parameters<typeof mapCommandRequestRow>[0] | undefined;
-    if (row && row.expiresAt > receipt.createdAt) {
+    if (row && (row.expiresAt === null || row.expiresAt > receipt.createdAt)) {
       const prior = mapCommandRequestRow(row);
       if (
         prior.inputHash !== receipt.inputHash ||

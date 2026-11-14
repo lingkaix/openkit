@@ -17,7 +17,6 @@ export type {
 } from './evidence-bundles.js';
 export { evidenceBundles } from './evidence-bundles.js';
 export { controlExecutionSteps, controlExecutions } from './execution-journal.js';
-export { externalTriggerAdmissions } from './external-trigger-admissions.js';
 export { generativePresentations } from './generative-presentations.js';
 export * from './goals.js';
 export { knowledgeNotebookHeads, knowledgeNotebookProposals } from './knowledge.js';
