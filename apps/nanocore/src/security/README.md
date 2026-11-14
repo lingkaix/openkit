@@ -1,6 +1,6 @@
 # Runtime security
 
-This directory implements the bounded detection parts of [Runtime Security](../../../../docs/specs/20261109-runtime_security.md). It does not own authorization, credentials, native storage, scheduling, or delivery.
+This directory implements the bounded detection parts of [Runtime Security](../../../../docs/specs/20261109-runtime_security.md). Authorization, credentials, physical storage connections, scheduling and delivery retain their existing owners. The closed Server security record family uses the existing native Core control worker.
 
 ## Inventory
 
@@ -25,6 +25,14 @@ These are bounded transient module boundaries. They do not enable monitoring, pe
 `securityRequestId`, `securityThreadId` and `securityPublicationIds` implement the exact E4 UUID names from already assigned inputs. They never allocate an occurrence, advance a generation, publish a tuple or repair partial state. Native counters, receipts and recovery remain required.
 
 `createSecurityCanaryMcpSupply` constructs the fixed inert `openkit-security` source declaration in the existing AEP supply shape. `classifySecurityCanaryRequest` recognizes an exact selected call from borrowed authenticated lineage, independently of a Tool grant. It projects observation eligibility only while the existing trigger is on; exact calls remain inert while off/stopping. This module is not an authenticator, route integration or Audit writer. Real route admission must prove current token/run/schema lineage and refuse before credentials or upstream. No package is automatically supplied a canary, no sensor is activated and no containment grant is introduced by these helpers. Native sensor evidence and the zero-grant credential issuer remain separate prerequisites.
+
+## Native trigger preparation (N1)
+
+`SecurityTriggerStore` is an internal typed facade for default-off state, current enabling-administrator delegation, enable/stop, original pending R1/R8 alarm identities and bounded original Server Audit pages. It uses only the existing Core worker/client. Current authority comes from canonical User and actual usable administrator credential records, never a caller privilege flag. Actor authentication and public human-only/full-diff authorization remain with their existing owners; this cut exposes no public activation operation.
+
+Stopping and all original alarm recipient rows are one native transaction. Authority loss detected by an Audit read commits stopping/R8 before the facade refuses the read. Repeated stop/check and reopen reuse exact IDs. No eligible administrator is an explicit native failed outcome. Original counts, markers and derived identifiers are checked; missing or partial tuples require recovery rather than reseeding. Independent alarm run identities use UUIDv7; request identities use the accepted E4 derivation. Core0026 adds only this family to the existing Core home and its whole-database backup.
+
+Audit pages are bounded at 128 and keep original Core facts, including opaque Workspace links, without joining a Workspace database or content. Pending alarm pages are bounded at 128. N1 does not raise an alarm, mark it published, complete stopping, create a scheduler, call a Provider/feed, issue a credential or activate a canary/containment consumer. N2 detection/cursor and N3 Pending/Attention/drain remain required.
 
 ## Checks
 

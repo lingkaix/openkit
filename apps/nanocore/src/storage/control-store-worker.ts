@@ -294,6 +294,8 @@ import {
 } from './scheduler-admission-codecs.js';
 import { applyControlSchedulerAdmission } from './scheduler-admission-native.js';
 import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
+import { SECURITY_TRIGGER_REFUSALS, SecurityTriggerRefusal } from './security-trigger-codecs.js';
+import { applySecurityTriggerInDb } from './security-trigger-native.js';
 import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
@@ -399,6 +401,7 @@ type WriteCommand = Extract<
       | 'worker-storage-binding'
       | 'workspace-apply-plan'
       | 'automation-scanner'
+      | 'security-trigger'
       | 'workspace-review-decision'
       | 'private-workspace'
       | 'workspace-review-finish'
@@ -884,6 +887,10 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: 'Unsupported retained record format.',
       status: 409,
     };
+  if (operation === 'security-trigger' && error instanceof SecurityTriggerRefusal) {
+    const fixed = SECURITY_TRIGGER_REFUSALS[error.code];
+    return { operation, code: error.code, message: fixed.message, status: fixed.status };
+  }
   if (
     operation === 'automation-scanner' &&
     error instanceof TypeError &&
@@ -2958,6 +2965,16 @@ function flush(owner: OwnedDatabase): void {
               operation: 'workspace-review-decision',
               result,
             };
+          } else if (request.operation === 'security-trigger') {
+            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
+            const result = applySecurityTriggerInDb(owner.scopeDb, request.input);
+            outcome = {
+              version: CONTROL_WORKER_VERSION,
+              id: request.id,
+              status: 'ok',
+              operation: 'security-trigger',
+              result,
+            };
           } else if (request.operation === 'automation-scanner') {
             if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
             const result = applyAutomationScannerInDb(owner.scopeDb, request.input);
@@ -4398,6 +4415,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-storage-binding' ||
       value.operation === 'workspace-apply-plan' ||
       value.operation === 'automation-scanner' ||
+      value.operation === 'security-trigger' ||
       value.operation === 'workspace-review-decision' ||
       value.operation === 'private-workspace' ||
       value.operation === 'workspace-review-finish' ||

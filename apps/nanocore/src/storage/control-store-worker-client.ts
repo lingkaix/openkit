@@ -74,6 +74,12 @@ import {
 } from './runtime-policy-publication.js';
 import type { ControlScopedNotebookSqlInput } from './scoped-notebook-sql-codecs.js';
 import {
+  type ControlSecurityTrigger,
+  type ControlSecurityTriggerResult,
+  ControlSecurityTriggerSchema,
+  SecurityTriggerRefusal,
+} from './security-trigger-codecs.js';
+import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
 } from './standalone-audit-codecs.js';
@@ -3221,6 +3227,60 @@ class ControlStoreWorkerClient {
     )
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
     return value;
+  }
+
+  /** Executes the closed Server security family on the existing exact Core FULL owner. */
+  async securityTrigger(
+    db: CoreDb,
+    input: ControlSecurityTrigger
+  ): Promise<ControlSecurityTriggerResult> {
+    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+    if (
+      db.scope !== 'core' ||
+      db.sqlite.name !== scope.path ||
+      !ControlSecurityTriggerSchema.safeParse(input).success
+    )
+      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+    const database = `core:${scope.path}`;
+    const admitted = this.openings.get(database);
+    try {
+      let reply: Success;
+      if (!admitted) {
+        reply = (
+          await Promise.all([
+            this.open({
+              database,
+              path: scope.path,
+              dataRoot: db.dataRoot,
+              create: false,
+              initialize: 'core',
+              productOwner: scope.owner,
+              contentMount: scope.contentMount,
+            }),
+            this.request({ operation: 'security-trigger', database, input }),
+          ])
+        )[1];
+      } else {
+        if (
+          admitted.command.path !== scope.path ||
+          admitted.command.dataRoot !== db.dataRoot ||
+          !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        reply = await this.request({ operation: 'security-trigger', database, input });
+      }
+      if (reply.operation !== 'security-trigger')
+        throw new ControlStoreWorkerError('invalid-request', 'unknown');
+      return reply.result;
+    } catch (error) {
+      if (
+        error instanceof ControlStoreWorkerError &&
+        error.commit === 'not-committed' &&
+        error.domain?.operation === 'security-trigger'
+      )
+        throw new SecurityTriggerRefusal(error.domain.code);
+      throw error;
+    }
   }
 
   /** Sets only this admitted owner's personal default through the existing Core FULL writer. */

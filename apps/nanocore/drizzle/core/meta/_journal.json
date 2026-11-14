@@ -183,6 +183,13 @@
       "when": 1794261561483,
       "tag": "0025_harness_login_observations",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1794612849552,
+      "tag": "0026_security_trigger",
+      "breakpoints": true
     }
   ]
 }

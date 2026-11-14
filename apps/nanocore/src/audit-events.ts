@@ -546,7 +546,7 @@ export function prepareAuditEventStatement(
 }
 
 /** Projects the frozen retained Audit core after validating its independent format marker. */
-function auditEventFromRow(row: unknown): AuditEvent {
+export function auditEventFromRow(row: unknown): AuditEvent {
   return readAuditEventRowV1(row);
 }
 

@@ -288,6 +288,13 @@ import {
   ControlScopedNotebookSqlRefusalSchema,
 } from './scoped-notebook-sql-codecs.js';
 import {
+  type ControlSecurityTrigger,
+  ControlSecurityTriggerRefusalSchema,
+  type ControlSecurityTriggerResult,
+  ControlSecurityTriggerResultSchema,
+  ControlSecurityTriggerSchema,
+} from './security-trigger-codecs.js';
+import {
   type ControlServerAdminTokenDefault,
   ControlServerAdminTokenDefaultSchema,
 } from './server-admin-token-default-codecs.js';
@@ -888,6 +895,7 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'workspace-apply-plan'; readonly input: ControlWorkspaceApplyPlan }
       | { readonly operation: 'automation-scanner'; readonly input: ControlAutomationScanner }
+      | { readonly operation: 'security-trigger'; readonly input: ControlSecurityTrigger }
       | {
           readonly operation: 'workspace-review-finish';
           readonly input: ControlWorkspaceReviewFinish;
@@ -1147,6 +1155,7 @@ interface OrdinaryControlWorkerDomainRefusal {
 
 /** Existing native refusals plus the sharing family's exact current-record projection. */
 export type ControlWorkerDomainRefusal =
+  | z.infer<typeof ControlSecurityTriggerRefusalSchema>
   | z.infer<typeof ControlPrivateWorkspaceRefusalSchema>
   | OrdinaryControlWorkerDomainRefusal
   | z.infer<typeof ControlWorkspaceBaselineRefusalSchema>
@@ -1345,6 +1354,11 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'automation-scanner';
       readonly result: ControlAutomationScannerResult;
+    }
+  | {
+      readonly status: 'ok';
+      readonly operation: 'security-trigger';
+      readonly result: ControlSecurityTriggerResult;
     }
   | {
       readonly status: 'ok';
@@ -1598,6 +1612,8 @@ function isSqlResult(value: unknown): boolean {
 
 /** Validates only a trusted, bounded domain refusal, never an arbitrary native exception or SQL message. */
 function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
+  if (isRecord(value) && value.operation === 'security-trigger')
+    return ControlSecurityTriggerRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'automation-scanner')
     return (
       value.code === 'unsupported_retained_format' &&
@@ -1965,6 +1981,8 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'workspace-review-finish') return reply.result === null;
   if (reply.operation === 'workspace-review-decision')
     return ControlWorkspaceReviewDecisionResultSchema.safeParse(reply.result).success;
+  if (reply.operation === 'security-trigger')
+    return ControlSecurityTriggerResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'automation-scanner')
     return ControlAutomationScannerResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'workspace-apply-plan')
@@ -2632,6 +2650,12 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     return (
       exactFields(value, [...scoped, 'input']) &&
       ControlWorkspaceReviewDecisionSchema.safeParse(value.input).success
+    );
+  if (value.operation === 'security-trigger')
+    return (
+      exactFields(value, [...scoped, 'input']) &&
+      ControlSecurityTriggerSchema.safeParse(value.input).success &&
+      Buffer.byteLength(JSON.stringify(value.input)) <= CONTROL_PRODUCT_LIMITS.payloadBytes
     );
   if (value.operation === 'automation-scanner')
     return (
