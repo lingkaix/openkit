@@ -21,7 +21,7 @@ import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from './config/runtime-config.js';
 import type { KnowledgeNotebook } from './knowledge/notebook.js';
-import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './knowledge/notebook-workspace-owner.js';
 import { parseOkfDocument } from './knowledge/okf.js';
 import { parseSourcePointer } from './knowledge/source-pointers.js';
 import { publishCapturedSource } from './knowledge/source-publication.js';
@@ -102,7 +102,7 @@ async function importedStore(
           commandInput: source,
           captureChannel: 'knowledge.source.register',
           revalidatePublication: () => {
-            readWorkspaceNotebookAdmission({
+            readWorkspaceNotebookPublicationFacts({
               store,
               coreDb,
               workspaceDb,
@@ -281,7 +281,7 @@ describe('Knowledge proposal decision lineage', () => {
             commandInput: sourceInput,
             captureChannel: 'knowledge.source.register',
             revalidatePublication: () => {
-              readWorkspaceNotebookAdmission({
+              readWorkspaceNotebookPublicationFacts({
                 store,
                 coreDb,
                 workspaceDb,

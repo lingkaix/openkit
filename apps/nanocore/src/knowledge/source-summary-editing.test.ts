@@ -36,7 +36,7 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareKnowledgeMaintenance } from './knowledge-agent-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { type NotebookUpdate, publishWorkspaceNotebook } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import { parseOkfDocument, updateOkfFrontmatter } from './okf.js';
 import { parseSourcePointer } from './source-pointers.js';
 
@@ -282,7 +282,7 @@ describe('ordinary SourceSummary editing through native owners', () => {
             confirmedRemovals: { 'unrelated.md': f.page },
             inflightCommands: new WeakMap(),
             revalidate: () =>
-              readWorkspaceNotebookAdmission({
+              readWorkspaceNotebookPublicationFacts({
                 store: f.store,
                 coreDb: f.coreDb,
                 workspaceDb: f.workspaceDb,
@@ -686,7 +686,7 @@ async function runMaintenance(
       throw new OperationError('workspace_access_denied', 'Current native admission denied.', 403);
   };
   const currentAdmission = (request: NotebookUpdate) =>
-    readWorkspaceNotebookAdmission({
+    readWorkspaceNotebookPublicationFacts({
       store: f.store,
       coreDb: f.coreDb,
       workspaceDb: f.workspaceDb,

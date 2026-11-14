@@ -19,7 +19,7 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import { humanPageBytes, publishWorkspaceNotebook } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import type { WorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseSourcePointer } from './source-pointers.js';
 
@@ -336,7 +336,7 @@ export function createNotebookHistoryOperations(
                 revalidate: () => {
                   // Current source access applies to removed old bytes as well as restored target bytes.
                   history.diff(input, true);
-                  return readWorkspaceNotebookAdmission({
+                  return readWorkspaceNotebookPublicationFacts({
                     store,
                     coreDb,
                     workspaceDb,

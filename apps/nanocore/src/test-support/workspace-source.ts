@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
-import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { publishCapturedSource } from '../knowledge/source-publication.js';
@@ -51,7 +51,7 @@ export async function captureWorkspaceSourceFixture(input: {
         commandInput: source,
         captureChannel: 'knowledge.source.register',
         revalidatePublication: () => {
-          readWorkspaceNotebookAdmission({
+          readWorkspaceNotebookPublicationFacts({
             store,
             coreDb,
             workspaceDb,

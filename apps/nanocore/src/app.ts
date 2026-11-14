@@ -112,7 +112,7 @@ import { prepareKnowledgeMaintenance } from './knowledge/knowledge-agent-mainten
 import { runKnowledgeMaintenanceCommand } from './knowledge/knowledge-maintenance-command.js';
 import { scanDailyKnowledgeMaintenance } from './knowledge/knowledge-maintenance-schedule.js';
 import { checkMemoryForgetIntent } from './knowledge/memory-forget.js';
-import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './knowledge/notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from './knowledge/notebook-workspace-selection.js';
 import {
   currentServerMaintenanceActor,
@@ -1717,7 +1717,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                       scope: { kind: 'workspace', workspaceId },
                     }),
                   });
-                  return readWorkspaceNotebookAdmission({
+                  return readWorkspaceNotebookPublicationFacts({
                     store: sharedStore,
                     coreDb,
                     workspaceDb: db,

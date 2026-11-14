@@ -35,11 +35,11 @@ import {
   readUserKnowledgeSource,
   registerUserKnowledgeSource,
 } from './scoped-knowledge-sources.js';
-import { initializeScopedNotebook } from './scoped-notebook-owner.js';
 import {
-  readUserMemoryNotebookAdmission,
-  runUserMemoryMaintenanceCommand,
-} from './user-memory-agent-maintenance.js';
+  initializeScopedNotebook,
+  readScopedNotebookPublicationFacts,
+} from './scoped-notebook-owner.js';
+import { runUserMemoryMaintenanceCommand } from './user-memory-agent-maintenance.js';
 import {
   decideUserMemoryProposal,
   readUserMemoryProposal,
@@ -191,7 +191,7 @@ async function fixture() {
   const proposalContext = {
     ...writer,
     revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-      readUserMemoryNotebookAdmission(writer, files, paths),
+      readScopedNotebookPublicationFacts('user', writer, files, paths),
   };
   onTestFinished(async () => {
     await closeRetrievalServices();

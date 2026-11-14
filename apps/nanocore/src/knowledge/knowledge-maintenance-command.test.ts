@@ -30,7 +30,7 @@ import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 
 type Request = Parameters<LLMGatewayProviderDispatcher['createResponses']>[1];
 type DispatchContext = Parameters<LLMGatewayProviderDispatcher['createResponses']>[2];
@@ -95,7 +95,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
       producer: actor,
       inflightCommands: new WeakMap(),
       revalidate: () =>
-        readWorkspaceNotebookAdmission({
+        readWorkspaceNotebookPublicationFacts({
           store,
           coreDb,
           workspaceDb,

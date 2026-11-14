@@ -14,7 +14,7 @@ import { readKnowledgeMounts } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { deriveManagedSourceAccess } from '../knowledge/managed-source-access.js';
 import type { NotebookUpdate } from '../knowledge/notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { parseOkfDocument } from '../knowledge/okf.js';
 import { readSourceByteRange } from '../knowledge/source-bytes.js';
@@ -106,7 +106,7 @@ async function capturedSource() {
     updatedAt: now,
   };
   const admission = (request: NotebookUpdate) =>
-    readWorkspaceNotebookAdmission({
+    readWorkspaceNotebookPublicationFacts({
       ...f,
       workspaceDb,
       notebook: selection().notebook,

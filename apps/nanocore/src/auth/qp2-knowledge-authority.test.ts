@@ -10,13 +10,13 @@ import { KnowledgeNotebook } from '../knowledge/notebook.js';
 import {
   initializeScopedNotebook,
   pinScopedNotebook,
+  readScopedNotebookPublicationFacts,
   resolveScopedNotebookOwner,
 } from '../knowledge/scoped-notebook-owner.js';
 import {
   listServerKnowledgeSources,
   registerServerKnowledgeSource,
 } from '../knowledge/server-knowledge-owner.js';
-import { readUserMemoryNotebookAdmission } from '../knowledge/user-memory-agent-maintenance.js';
 import {
   createUserMemoryProposal,
   decideUserMemoryProposal,
@@ -186,7 +186,7 @@ describe('QP-2c Knowledge operation authority', () => {
         ...f,
         runtimeConfigManager,
         revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-          readUserMemoryNotebookAdmission({ ...f, runtimeConfigManager }, files, paths),
+          readScopedNotebookPublicationFacts('user', { ...f, runtimeConfigManager }, files, paths),
       };
       const proposal = await createUserMemoryProposal(
         context,

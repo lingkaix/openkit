@@ -76,18 +76,6 @@ export interface NotebookPublication<
   };
 }
 
-/** Current admission facts supplied only by the native scope/source/policy owners. */
-export interface NotebookPublicationAdmission {
-  /** Exact retained local base admitted by the native owner, never a page-supplied scope. */
-  readonly pageScopeId?: string;
-  readonly reviewRequiredPageIds: readonly string[];
-  readonly scopeSchemaText: string;
-  readonly registeredSources: ReadonlyMap<string, string | null>;
-  readonly resolvedReferences: ReadonlyMap<string, ReadonlySet<string>>;
-  /** Existing User suppression makes these references unavailable without requiring prose repair. */
-  readonly suppressedPageIds?: readonly string[];
-}
-
 /** Native dependencies; revalidation must throw on revoked scope, source disclosure or required human authority. */
 export interface NotebookPublicationDependencies {
   /** Server-bound original command input; native convenience projections must not create a nested receipt. */
@@ -124,9 +112,16 @@ export interface NotebookPublicationDependencies {
   ) => Promise<KnowledgeNotebook>;
   /** Refreshes operation-local disclosure bytes when projection selects a new Workspace head. */
   readonly prepareWorkspaceProjection?: (selection: WorkspaceNotebookSelection) => Promise<void>;
-  readonly revalidate: (
-    preparedSelection?: WorkspaceNotebookSelection
-  ) => NotebookPublicationAdmission;
+  readonly revalidate: (preparedSelection?: WorkspaceNotebookSelection) => {
+    /** Exact retained local base admitted by the native owner, never a page-supplied scope. */
+    readonly pageScopeId?: string;
+    readonly reviewRequiredPageIds: readonly string[];
+    readonly scopeSchemaText: string;
+    readonly registeredSources: ReadonlyMap<string, string | null>;
+    readonly resolvedReferences: ReadonlyMap<string, ReadonlySet<string>>;
+    /** Existing User suppression makes these references unavailable without requiring prose repair. */
+    readonly suppressedPageIds?: readonly string[];
+  };
 }
 
 /** Trusted database owner; no page metadata or request path selects this value. */
@@ -185,7 +180,7 @@ export async function prepareNotebookProposalChanges(input: {
   readonly revalidate: (
     files: Readonly<Record<string, string>>,
     changedPaths: readonly string[]
-  ) => NotebookPublicationAdmission;
+  ) => ReturnType<NotebookPublicationDependencies['revalidate']>;
 }) {
   const { edit, ownerScope } = input;
   const current = await input.notebook.publishedRevisionAsync();
@@ -775,7 +770,7 @@ async function publishAdmittedNotebook(
       let validatePrepared:
         | Awaited<ReturnType<typeof prepareNotebookCandidateValidation>>
         | undefined;
-      const check = (facts: NotebookPublicationAdmission) => {
+      const check = (facts: ReturnType<NotebookPublicationDependencies['revalidate']>) => {
         if (dependencies.sourcePointers) {
           if (operation !== 'knowledge.package.import') throw new NotebookError('invalid_request');
           const pageScope = parseReferenceScope(facts.pageScopeId ?? '');

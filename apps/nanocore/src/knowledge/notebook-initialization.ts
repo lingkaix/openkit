@@ -24,10 +24,7 @@ import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 
 import { DEFAULT_NOTEBOOK_INDEX, KnowledgeNotebook, NotebookError } from './notebook.js';
-import type {
-  NotebookPublicationAdmission,
-  NotebookPublicationDependencies,
-} from './notebook-publication.js';
+import type { NotebookPublicationDependencies } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { parseOkfDocument } from './okf.js';
 import { decodeSourcePointer } from './source-pointers.js';
@@ -91,7 +88,7 @@ export async function initializeWorkspaceNotebook(input: {
   readonly initialization: NotebookInitialization;
   readonly files?: Readonly<Record<string, string>>;
   readonly sourcePointers?: Readonly<Record<string, string>>;
-  readonly revalidate: () => NotebookPublicationAdmission;
+  readonly revalidate: () => ReturnType<NotebookPublicationDependencies['revalidate']>;
   readonly fileWriteAdmission?: FileStorageAdmission;
 }): Promise<string> {
   if (input.workspaceDb.workspaceId !== input.workspaceId)
@@ -217,7 +214,7 @@ function prepareNotebookInitialization(input: {
   readonly initialization: NotebookInitialization;
   readonly files?: Readonly<Record<string, string>>;
   readonly sourcePointers?: Readonly<Record<string, string>>;
-  readonly revalidate: () => NotebookPublicationAdmission;
+  readonly revalidate: () => ReturnType<NotebookPublicationDependencies['revalidate']>;
 }) {
   const ownerScope =
     input.owner.kind === 'workspace'

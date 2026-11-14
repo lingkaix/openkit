@@ -54,8 +54,8 @@ import { nativeProductScope, readNativeProductPages } from '../storage/workspace
 import { NotebookError } from './notebook-error.js';
 import {
   assertWorkspaceNotebookWrite,
-  readWorkspaceNotebookAdmissionSteps,
-} from './notebook-workspace-admission.js';
+  readWorkspaceNotebookPublicationSteps,
+} from './notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { previewWorkspaceSchemaSteps } from './schema-dependency-preview.js';
 
@@ -468,7 +468,7 @@ function* nativeSchemaApplicationSteps(
       changes: readonly { path: string; content: string | null }[] = [],
       sourceRequestId = request.requestId
     ) =>
-      readWorkspaceNotebookAdmissionSteps({
+      readWorkspaceNotebookPublicationSteps({
         store,
         coreDb,
         workspaceDb,

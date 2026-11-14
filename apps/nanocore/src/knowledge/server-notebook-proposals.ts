@@ -27,7 +27,7 @@ import { projectSelectedKnowledgeProposalPreview } from './notebook-proposal-pre
 import {
   assertNotebookProposalDecisionEvidence,
   type NotebookEdit,
-  type NotebookPublicationAdmission,
+  type NotebookPublicationDependencies,
   prepareNotebookProposalChanges,
   prepareNotebookProposalReview,
   publishNotebook,
@@ -63,7 +63,9 @@ export interface ServerNotebookProposalContext {
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   /** Native callers supply exact retained candidate or preview-side bytes for current disclosure checks. */
-  readonly revalidate: (files?: Readonly<Record<string, string>>) => NotebookPublicationAdmission;
+  readonly revalidate: (
+    files?: Readonly<Record<string, string>>
+  ) => ReturnType<NotebookPublicationDependencies['revalidate']>;
 }
 /** Same Proposal identity and retained Markdown format, now at its actual Server owner. */
 function proposalPath(coreDb: CoreDb, id: string): string {

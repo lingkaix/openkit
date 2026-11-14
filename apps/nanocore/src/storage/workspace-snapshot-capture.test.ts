@@ -48,7 +48,7 @@ import {
 } from '../generative-kernel/commands.js';
 import { readAssistantTaskHandoffSource } from '../internal-agents/assistant-handoff-source.js';
 import { publishWorkspaceNotebook } from '../knowledge/notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
@@ -5272,7 +5272,7 @@ describe('C-a independent sealed generations', () => {
       actor,
       inflightCommands: new WeakMap(),
       revalidate: () =>
-        readWorkspaceNotebookAdmission({
+        readWorkspaceNotebookPublicationFacts({
           store: f.store,
           coreDb: f.coreDb,
           workspaceDb: db,

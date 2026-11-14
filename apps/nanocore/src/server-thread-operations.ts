@@ -5,10 +5,8 @@ import {
 } from './auth/operation-authorizer.js';
 import { interruptKnowledgeManagerTurn } from './internal-agents/knowledge-manager-agent.js';
 import { NotebookError } from './knowledge/notebook.js';
-import {
-  runServerKnowledgeMaintenanceCommand,
-  serverNotebookAdmission,
-} from './knowledge/server-knowledge-maintenance.js';
+import { readScopedNotebookPublicationFacts } from './knowledge/scoped-notebook-owner.js';
+import { runServerKnowledgeMaintenanceCommand } from './knowledge/server-knowledge-maintenance.js';
 import {
   decideServerNotebookProposal,
   readServerNotebookProposalPreview,
@@ -147,7 +145,7 @@ export function createServerThreadOperations(
             ...native,
             actor,
             revalidate: (files?: Readonly<Record<string, string>>) =>
-              serverNotebookAdmission(native, actor, files),
+              readScopedNotebookPublicationFacts('server', native, actor, files),
           },
           input
         );
@@ -168,7 +166,7 @@ export function createServerThreadOperations(
             ...native,
             actor,
             revalidate: (files?: Readonly<Record<string, string>>) =>
-              serverNotebookAdmission(native, actor, files),
+              readScopedNotebookPublicationFacts('server', native, actor, files),
           },
           input
         );

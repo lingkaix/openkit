@@ -716,7 +716,9 @@ it('publishes and replays through public memory.create while every Main User ope
 it('publishes and replays exact human Server Review through the public operation with Main Core query-only', async () => {
   const f = await fixture('server');
   const { createOperationInvocation } = await import('../operation-composition.js');
-  const { serverNotebookAdmission } = await import('../knowledge/server-knowledge-maintenance.js');
+  const { readScopedNotebookPublicationFacts } = await import(
+    '../knowledge/scoped-notebook-owner.js'
+  );
   const { createServerNotebookProposal, readServerNotebookProposal } = await import(
     '../knowledge/server-notebook-proposals.js'
   );
@@ -732,7 +734,7 @@ it('publishes and replays exact human Server Review through the public operation
   const context = {
     ...dependencies,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(dependencies, f.input.actor, files),
+      readScopedNotebookPublicationFacts('server', dependencies, f.input.actor, files),
   };
   const proposal = await createServerNotebookProposal(
     context,

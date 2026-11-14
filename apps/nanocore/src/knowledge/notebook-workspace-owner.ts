@@ -18,7 +18,7 @@ import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 
 import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
-import type { NotebookPublicationAdmission, NotebookUpdate } from './notebook-publication.js';
+import type { NotebookPublicationDependencies, NotebookUpdate } from './notebook-publication.js';
 import {
   type NotebookReferenceClosure,
   type NotebookReferencePage,
@@ -84,7 +84,7 @@ export function assertWorkspaceNotebookWrite(
 }
 
 /** Rechecks the original authorization and disclosure owners; native callers carry Main's current non-retained Review facts. */
-export function readWorkspaceNotebookAdmission(
+export function readWorkspaceNotebookPublicationFacts(
   input: WorkspacePublicationAuthority &
     (
       | {
@@ -93,16 +93,16 @@ export function readWorkspaceNotebookAdmission(
         }
       | { readonly reviewRequiredPageIds: readonly string[] }
     )
-): NotebookPublicationAdmission {
-  const steps = readWorkspaceNotebookAdmissionWithOwners(input, true);
+): ReturnType<NotebookPublicationDependencies['revalidate']> {
+  const steps = readWorkspaceNotebookPublicationSteps(input, true);
   for (;;) {
     const step = steps.next();
     if (step.done) return step.value;
   }
 }
 
-/** Runs the same complete owner predicate in released contributions for native preparation. */
-export function* readWorkspaceNotebookAdmissionSteps(
+/** Ordinary publications retain nested work-history cuts; native preparation remains released. */
+export function* readWorkspaceNotebookPublicationSteps(
   input: WorkspacePublicationAuthority &
     (
       | {
@@ -110,16 +110,9 @@ export function* readWorkspaceNotebookAdmissionSteps(
           readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
         }
       | { readonly reviewRequiredPageIds: readonly string[] }
-    )
-): Generator<void, NotebookPublicationAdmission, void> {
-  return yield* readWorkspaceNotebookAdmissionWithOwners(input, false);
-}
-
-/** Ordinary publications retain nested work-history cuts; native preparation remains released. */
-function* readWorkspaceNotebookAdmissionWithOwners(
-  input: Parameters<typeof readWorkspaceNotebookAdmission>[0],
-  synchronousLeafReads: boolean
-): Generator<void, NotebookPublicationAdmission, void> {
+    ),
+  synchronousLeafReads = false
+): Generator<void, ReturnType<NotebookPublicationDependencies['revalidate']>, void> {
   const { workspaceId } = input.request;
   assertWorkspaceNotebookWrite(input);
   const workspace = input.store.getWorkspace(workspaceId);

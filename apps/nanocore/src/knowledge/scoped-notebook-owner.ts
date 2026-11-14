@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { setImmediate as yieldToMain } from 'node:timers/promises';
@@ -6,21 +7,40 @@ import type { Actor } from '../auth/identity.js';
 import {
   DeploymentAdminRequiredError,
   evaluateProductAuthorization,
+  requireAdministratorOperation,
 } from '../auth/operation-authorizer.js';
 import {
   initializeDefaultKnowledgeBaseId,
   readDefaultKnowledgeBaseId,
 } from '../config/knowledge-base.js';
+import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { CoreDb, UserDb } from '../storage/db.js';
 import { serverKnowledgeRoot, userMemoryRoot } from '../storage/fs-layout.js';
+import { admitMemoryContext, type MemoryContext } from './memory-lifecycle.js';
+import { readMemorySuppressions } from './memory-maintenance.js';
 import { KnowledgeNotebook, NotebookError, type NotebookRevision } from './notebook.js';
 import { initializeNotebook, initializeNotebookNative } from './notebook-initialization.js';
+import type { NotebookPublicationDependencies } from './notebook-publication.js';
+import {
+  type NotebookReferenceClosure,
+  type NotebookReferencePage,
+  validateNotebookReferenceClosure,
+} from './notebook-validation.js';
 import {
   createDefaultScopeKnowledgeSchemaText,
+  parseKnowledgePageSourceReference,
   parseOkfDocument,
   parseScopeKnowledgeSchema,
+  resolveRegisteredKnowledgeSourceReference,
+  stringFrontmatterField,
+  stringListFrontmatterField,
   validateScopeKnowledgeSchema,
 } from './okf.js';
+import { readUserKnowledgeSourceMetadata } from './scoped-knowledge-sources.js';
+import {
+  listServerKnowledgeSources,
+  readServerKnowledgeSourceMetadata,
+} from './server-knowledge-owner.js';
 
 /** Native target selection: self never accepts another User; administrative inspection is a separate explicit request. */
 export type ScopedNotebookTarget =
@@ -277,5 +297,269 @@ function prepareScopedNotebookInitialization(
         resolvedReferences: new Map(),
       };
     },
+  };
+}
+
+/** Reads current owner, Source closure, schema, Review and suppression facts for one exact native publication tree. */
+export function readScopedNotebookPublicationFacts(
+  ...input:
+    | readonly [
+        target: 'user',
+        context: MemoryContext & {
+          readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
+        },
+        files: Readonly<Record<string, string>>,
+        changedPaths?: readonly string[] | undefined,
+      ]
+    | readonly [
+        target: 'server',
+        dependencies: {
+          readonly coreDb: CoreDb;
+          readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
+        },
+        actor: Actor,
+        selectedFiles?: Readonly<Record<string, string>> | undefined,
+      ]
+): ReturnType<NotebookPublicationDependencies['revalidate']> {
+  if (input[0] === 'server') {
+    const [, dependencies, actor, selectedFiles] = input;
+    requireAdministratorOperation(
+      dependencies.coreDb,
+      actor,
+      'knowledge.read',
+      undefined,
+      'knowledge'
+    );
+    const notebook = pinScopedNotebook({
+      coreDb: dependencies.coreDb,
+      actor,
+      target: { kind: 'server' },
+    });
+    const currentFiles = notebook.read().files;
+    const files = selectedFiles ?? currentFiles;
+    const pageScopeId = `page/server/${notebook.knowledgeBaseId}`;
+    const scopeSchemaText = readFileSync(
+      join(dependencies.coreDb.dataRoot, 'server', 'knowledge', 'schema', 'scope-schema.yaml'),
+      'utf8'
+    );
+    const scopeSchema = parseScopeKnowledgeSchema(scopeSchemaText);
+    if (!scopeSchema.ok) throw new NotebookError('recovery_required');
+    const registeredSources = new Map(
+      listServerKnowledgeSources({ coreDb: dependencies.coreDb, actor }).map((source) => [
+        source.id,
+        source.contentDigest,
+      ])
+    );
+    const checked: NotebookReferenceClosure = new Map();
+    const active = new Set<string>();
+    const inspectPage = function* ({
+      path,
+      content,
+      tree,
+    }: NotebookReferencePage): Generator<
+      void | NotebookReferencePage,
+      ReadonlySet<string> | null,
+      void
+    > {
+      const selected = tree === 'candidate' ? files : currentFiles;
+      if (content === undefined) throw new NotebookError('invalid_request');
+      const parsed = parseOkfDocument({ path, content });
+      if (!parsed.ok) throw new NotebookError('recovery_required');
+      if (
+        !parsed.document.reserved &&
+        validateScopeKnowledgeSchema(parsed.document, scopeSchema.schema, { kind: 'server' }).errors
+          .length
+      )
+        throw new NotebookError('invalid_request');
+      const refs = stringListFrontmatterField(parsed.document, 'source_refs') ?? [];
+      const resolved = new Set<string>();
+      for (const ref of refs) {
+        if (ref.startsWith('openkit:')) {
+          const reference = parseKnowledgePageSourceReference(ref, pageScopeId);
+          if (!reference) throw new NotebookError('invalid_request');
+          const targetPath = `${reference.reference.objectId}.md`;
+          // An older selected target cannot bypass a later current restriction.
+          const targetTrees =
+            selected !== currentFiles && currentFiles[targetPath] !== undefined
+              ? [selected, currentFiles]
+              : [selected];
+          for (const targetTree of targetTrees) {
+            const target = targetTree[targetPath];
+            if (
+              target === undefined ||
+              (targetTree === selected &&
+                reference.contentDigest !== undefined &&
+                reference.contentDigest !==
+                  `sha256:${createHash('sha256').update(target).digest('hex')}`)
+            )
+              throw new NotebookError('invalid_request');
+            const document = parseOkfDocument({ path: targetPath, content: target });
+            if (
+              !document.ok ||
+              ['restricted', 'confidential'].includes(
+                stringFrontmatterField(document.document, 'sensitivity') ?? ''
+              )
+            )
+              throw new NotebookError('invalid_request');
+            yield {
+              path: targetPath,
+              content: target,
+              tree: targetTree === files ? 'candidate' : 'current',
+            };
+          }
+        } else {
+          const selected = resolveRegisteredKnowledgeSourceReference(ref, registeredSources);
+          if (
+            !selected.resolved ||
+            !selected.targetId ||
+            !readServerKnowledgeSourceMetadata(
+              { coreDb: dependencies.coreDb, actor },
+              selected.targetId
+            )
+          )
+            throw new NotebookError('recovery_required');
+        }
+        resolved.add(ref);
+      }
+      return resolved;
+    };
+    for (const path of Object.keys(files)) {
+      const validation = validateNotebookReferenceClosure(
+        { path, content: files[path]!, tree: 'candidate' },
+        inspectPage,
+        checked,
+        active
+      );
+      for (;;) if (validation.next().done) break;
+    }
+    const resolvedReferences = new Map(
+      [...checked.values()]
+        .filter(({ page }) => page.tree === 'candidate')
+        .map(({ page, references }) => [page.path.slice(0, -3), references])
+    );
+    return {
+      pageScopeId,
+      scopeSchemaText,
+      reviewRequiredPageIds:
+        dependencies.runtimeConfigManager.current().openKitConfig.knowledgeMaintenance
+          ?.reviewRequiredPageIds ?? [],
+      registeredSources,
+      resolvedReferences,
+    };
+  }
+  const [, context, files, changedPaths = []] = input;
+  const owner = admitMemoryContext(context);
+  const knowledgeBaseId = readDefaultKnowledgeBaseId({
+    dataRoot: context.coreDb.dataRoot,
+    scope: owner.ownerScope,
+  });
+  const pageScopeId = `page/user/${context.userDb.userId}/${knowledgeBaseId}`;
+  const suppressions = readMemorySuppressions(owner.notebookRoot, context.userDb.userId);
+  const suppressedPageIds = suppressions.map(({ payload }) => payload.pageId);
+  if (changedPaths.some((path) => suppressedPageIds.includes(path.slice(0, -3))))
+    throw new NotebookError('invalid_request');
+  let scopeSchemaText: string;
+  try {
+    scopeSchemaText = readFileSync(join(owner.notebookRoot, 'schema', 'scope-schema.yaml'), 'utf8');
+  } catch {
+    throw new NotebookError('recovery_required');
+  }
+  const scopeSchema = parseScopeKnowledgeSchema(scopeSchemaText);
+  if (!scopeSchema.ok) throw new NotebookError('recovery_required');
+  const registeredSources = new Map<string, string | null>();
+  const checked: NotebookReferenceClosure = new Map();
+  const active = new Set<string>();
+  const inspectPage = function* ({
+    path,
+    content,
+  }: NotebookReferencePage): Generator<
+    void | NotebookReferencePage,
+    ReadonlySet<string> | null,
+    void
+  > {
+    const pageId = path.slice(0, -3);
+    // A failed forget cleanup must not disclose retained bytes or fence unrelated edits.
+    if (suppressedPageIds.includes(pageId)) return null;
+    if (content === undefined) throw new NotebookError('invalid_request');
+    const parsed = parseOkfDocument({ path, content });
+    if (!parsed.ok) throw new NotebookError('recovery_required');
+    const refs = stringListFrontmatterField(parsed.document, 'source_refs');
+    if (
+      !parsed.document.reserved &&
+      validateScopeKnowledgeSchema(parsed.document, scopeSchema.schema, owner.ownerScope).errors
+        .length
+    )
+      throw new NotebookError('invalid_request');
+    if (parsed.document.reserved) {
+      if (
+        refs?.length ||
+        (refs === null && Object.hasOwn(parsed.document.frontmatter, 'source_refs'))
+      )
+        throw new NotebookError('invalid_request');
+      return new Set<string>();
+    }
+    if (
+      !['public', 'normal', 'internal', 'confidential'].includes(
+        stringFrontmatterField(parsed.document, 'sensitivity') ?? ''
+      ) ||
+      !refs
+    )
+      throw new NotebookError('invalid_request');
+    const resolved = new Set<string>();
+    for (const reference of refs) {
+      if (reference.startsWith('openkit:')) {
+        const selected = parseKnowledgePageSourceReference(reference, pageScopeId);
+        if (!selected || suppressedPageIds.includes(selected.reference.objectId))
+          throw new NotebookError('invalid_request');
+        const targetPath = `${selected.reference.objectId}.md`;
+        const target = files[targetPath];
+        if (
+          target === undefined ||
+          (selected.contentDigest !== undefined &&
+            selected.contentDigest !==
+              `sha256:${createHash('sha256').update(target).digest('hex')}`)
+        )
+          throw new NotebookError('invalid_request');
+        yield { path: targetPath, content: target, tree: 'candidate' };
+        resolved.add(reference);
+        continue;
+      }
+      const { targetId } = resolveRegisteredKnowledgeSourceReference(reference, registeredSources);
+      if (!targetId) throw new NotebookError('invalid_request');
+      if (!registeredSources.has(targetId)) {
+        const source = readUserKnowledgeSourceMetadata(context, targetId, 'model');
+        if (!source) throw new NotebookError('invalid_request');
+        registeredSources.set(targetId, source.contentDigest);
+      }
+      if (!resolveRegisteredKnowledgeSourceReference(reference, registeredSources).resolved)
+        throw new NotebookError('invalid_request');
+      resolved.add(reference);
+    }
+    return resolved;
+  };
+  for (const path of Object.keys(files)) {
+    const validation = validateNotebookReferenceClosure(
+      { path, content: files[path]!, tree: 'candidate' },
+      inspectPage,
+      checked,
+      active
+    );
+    for (;;) if (validation.next().done) break;
+  }
+  admitMemoryContext(context);
+  const resolvedReferences = new Map(
+    [...checked.values()].map(({ page, references }) => [page.path.slice(0, -3), references])
+  );
+  return {
+    pageScopeId,
+    scopeSchemaText,
+    reviewRequiredPageIds:
+      context.runtimeConfigManager
+        .current()
+        .userConfigs.find(({ userId }) => userId === context.userDb.userId)?.config
+        .knowledgeMaintenance?.reviewRequiredPageIds ?? [],
+    registeredSources,
+    resolvedReferences,
+    suppressedPageIds,
   };
 }

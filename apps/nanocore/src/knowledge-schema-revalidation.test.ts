@@ -16,7 +16,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
-import * as notebookAdmission from './knowledge/notebook-workspace-admission.js';
+import * as notebookAdmission from './knowledge/notebook-workspace-owner.js';
 import * as retrieval from './retrieval-knowledge-adapter.js';
 import * as knowledgePreparation from './storage/control-store-knowledge.js';
 import {
@@ -410,12 +410,14 @@ it('checks the complete schema closure once per synchronous preview and apply in
   completeProof.mockClear();
 
   const events: string[] = [];
-  const originalAdmission = notebookAdmission.readWorkspaceNotebookAdmission;
-  vi.spyOn(notebookAdmission, 'readWorkspaceNotebookAdmission').mockImplementation((...args) => {
-    const result = originalAdmission(...args);
-    events.push('admission');
-    return result;
-  });
+  const originalAdmission = notebookAdmission.readWorkspaceNotebookPublicationFacts;
+  vi.spyOn(notebookAdmission, 'readWorkspaceNotebookPublicationFacts').mockImplementation(
+    (...args) => {
+      const result = originalAdmission(...args);
+      events.push('admission');
+      return result;
+    }
+  );
   const originalSelection = knowledgePreparation.prepareWorkspaceKnowledgeSelection;
   vi.spyOn(knowledgePreparation, 'prepareWorkspaceKnowledgeSelection').mockImplementation(
     async (...args) => {

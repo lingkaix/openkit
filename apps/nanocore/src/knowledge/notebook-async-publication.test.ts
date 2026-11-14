@@ -20,7 +20,7 @@ import {
 } from '../test-support/store.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import {
   prepareWorkspaceNotebookReads,
   readWorkspaceNotebookSelection,
@@ -56,7 +56,7 @@ async function fixture() {
   const denied = new Error('Current publication authority revoked');
   const revalidate = (prepared?: WorkspaceNotebookSelection) => {
     if (prepared) selection = prepared;
-    return readWorkspaceNotebookAdmission({
+    return readWorkspaceNotebookPublicationFacts({
       store,
       coreDb,
       workspaceDb,

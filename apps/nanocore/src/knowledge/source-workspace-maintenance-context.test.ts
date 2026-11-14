@@ -33,7 +33,7 @@ import {
   prepareKnowledgeMaintenance,
 } from './knowledge-agent-maintenance.js';
 import type { NotebookUpdate } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 import { parseOkfDocument, stringListFrontmatterField } from './okf.js';
 
@@ -117,7 +117,7 @@ it('captures native Workspace tell during execution and publishes from the exact
       throw new OperationError('workspace_access_denied', 'Current native admission denied.', 403);
   };
   const currentAdmission = (request: NotebookUpdate) =>
-    readWorkspaceNotebookAdmission({
+    readWorkspaceNotebookPublicationFacts({
       store,
       coreDb,
       workspaceDb,

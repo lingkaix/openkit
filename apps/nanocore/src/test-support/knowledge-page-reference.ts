@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { onTestFinished } from 'vitest';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
-import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-source-authority.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -159,7 +159,7 @@ export async function createPageReferenceFixture(
       pageIds: ['a'],
     });
   const admit = (changes = [{ path: 'a.md', content: referencePage(references) }]) =>
-    readWorkspaceNotebookAdmission({
+    readWorkspaceNotebookPublicationFacts({
       store,
       coreDb,
       workspaceDb: workspaceDb!,

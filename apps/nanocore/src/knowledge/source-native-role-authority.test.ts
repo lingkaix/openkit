@@ -26,7 +26,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
 import { deriveManagedSourceAccess } from './managed-source-access.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import { readSourceByteRange } from './source-bytes.js';
 import { publishCapturedSource } from './source-publication.js';
 import { readManagedSourceText } from './source-reading.js';
@@ -69,7 +69,7 @@ async function fixture() {
   };
   const revalidatePublication = (subject: ActorRef) => {
     currentAuthority(subject);
-    readWorkspaceNotebookAdmission({
+    readWorkspaceNotebookPublicationFacts({
       store,
       coreDb,
       workspaceDb,

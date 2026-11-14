@@ -12,7 +12,7 @@ import { type OperationImplementations, publicOperationActor } from '../operatio
 import { OperationError } from '../operation-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { NotebookError } from './notebook.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.js';
 
 /** Current publication/source owners reused only for a read; this feature retains no state. */
@@ -91,7 +91,7 @@ export function createKnowledgeProposalPreviewOperationImplementations(
         const after = notebook.readContent(saved.candidateRevision);
         // Admit both complete versions before disclosing even an inventory or a single selected path.
         for (const files of [before, after])
-          readWorkspaceNotebookAdmission({
+          readWorkspaceNotebookPublicationFacts({
             store,
             coreDb,
             workspaceDb,

@@ -23,7 +23,7 @@ import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT, updateOkfFrontmatter } from './okf.js';
 
 const NOW = '2026-10-19T00:00:00.000Z';
@@ -138,8 +138,8 @@ async function fixture() {
     },
     producer: actor,
     inflightCommands: new WeakMap(),
-    admission: (request: Parameters<typeof readWorkspaceNotebookAdmission>[0]['request']) =>
-      readWorkspaceNotebookAdmission({
+    admission: (request: Parameters<typeof readWorkspaceNotebookPublicationFacts>[0]['request']) =>
+      readWorkspaceNotebookPublicationFacts({
         store,
         coreDb,
         workspaceDb,

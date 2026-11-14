@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { publishWorkspaceNotebook } from '../knowledge/notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from '../knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-workspace-owner.js';
 import type { FsStore } from '../lib/store.js';
 import type { CoreDb } from '../storage/db.js';
 import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
@@ -56,7 +56,7 @@ export async function publishTestWorkspaceNotebook(input: {
         producer: actor,
         inflightCommands: new WeakMap(),
         confirmedRemovals,
-        revalidate: () => readWorkspaceNotebookAdmission(authority),
+        revalidate: () => readWorkspaceNotebookPublicationFacts(authority),
       },
       request
     );

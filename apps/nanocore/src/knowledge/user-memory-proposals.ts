@@ -28,7 +28,7 @@ import { projectSelectedKnowledgeProposalPreview } from './notebook-proposal-pre
 import {
   assertNotebookProposalDecisionEvidence,
   type NotebookEdit,
-  type NotebookPublicationAdmission,
+  type NotebookPublicationDependencies,
   prepareNotebookProposalChanges,
   prepareNotebookProposalReview,
   publishNotebook,
@@ -84,7 +84,7 @@ export interface UserMemoryProposalContext {
   readonly revalidate: (
     files: Readonly<Record<string, string>>,
     changedPaths?: readonly string[]
-  ) => NotebookPublicationAdmission;
+  ) => ReturnType<NotebookPublicationDependencies['revalidate']>;
 }
 /** Same Proposal identity and retained Markdown format, now at its actual User Memory owner. */
 function proposalPath(context: UserMemoryProposalContext, id: string): string {

@@ -50,7 +50,7 @@ import {
   type NotebookUpdate,
   publishWorkspaceNotebook,
 } from './knowledge/notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './knowledge/notebook-workspace-owner.js';
 import {
   prepareWorkspaceNotebookReads,
   readWorkspaceNotebookSelection,
@@ -439,7 +439,7 @@ export function createKnowledgeOperationImplementations(
         inflightCommands,
         revalidate: (preparedSelection) => {
           if (preparedSelection) prepared = preparedSelection;
-          return readWorkspaceNotebookAdmission({
+          return readWorkspaceNotebookPublicationFacts({
             store,
             coreDb,
             workspaceDb,
@@ -558,7 +558,7 @@ export function createKnowledgeOperationImplementations(
         );
         const paths = [...new Set(trees.flatMap((files) => Object.keys(files)))];
         for (const files of trees)
-          readWorkspaceNotebookAdmission({
+          readWorkspaceNotebookPublicationFacts({
             store,
             coreDb: coreDb!,
             workspaceDb: owner.workspaceDb,
@@ -732,7 +732,7 @@ export function createKnowledgeOperationImplementations(
             inflightCommands,
             revalidate: (preparedSelection) => {
               if (preparedSelection) prepared = preparedSelection;
-              return readWorkspaceNotebookAdmission({
+              return readWorkspaceNotebookPublicationFacts({
                 store,
                 coreDb,
                 workspaceDb,

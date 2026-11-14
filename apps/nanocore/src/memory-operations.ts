@@ -46,10 +46,10 @@ import {
 import {
   initializeScopedNotebookNative,
   pinScopedNotebook,
+  readScopedNotebookPublicationFacts,
   resolveScopedNotebookOwner,
   ScopedNotebookAccessError,
 } from './knowledge/scoped-notebook-owner.js';
-import { readUserMemoryNotebookAdmission } from './knowledge/user-memory-agent-maintenance.js';
 import {
   decideUserMemoryProposal,
   readUserMemoryProposal,
@@ -337,7 +337,7 @@ export function createMemoryOperationImplementations(
     ...writer,
     actor: writer.actor!,
     revalidate: (files: Readonly<Record<string, string>>, changedPaths: readonly string[] = []) =>
-      readUserMemoryNotebookAdmission(writer, files, changedPaths),
+      readScopedNotebookPublicationFacts('user', writer, files, changedPaths),
   });
   const maintain = (
     input: OperationInput<'memory.maintain'> | OperationInput<'memory.tell'>,

@@ -54,7 +54,7 @@ import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import { readDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import type { RuntimeConfigManager, RuntimeConfigSnapshot } from './config/runtime-config.js';
 import { redactInternalAgentDiagnosticValue } from './internal-agents/redaction.js';
-import { readWorkspaceNotebookAdmission } from './knowledge/notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './knowledge/notebook-workspace-owner.js';
 import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
@@ -839,7 +839,7 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                               },
                             }),
                           });
-                          return readWorkspaceNotebookAdmission({
+                          return readWorkspaceNotebookPublicationFacts({
                             store: input.store,
                             coreDb: input.coreDb!,
                             workspaceDb: workspaceDb!,

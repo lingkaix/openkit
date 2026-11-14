@@ -53,12 +53,12 @@ import {
   type WorkspaceNotebookRead,
 } from './notebook-index-source.js';
 import {
-  type NotebookPublicationAdmission,
+  type NotebookPublicationDependencies,
   type NotebookUpdate,
   publishWorkspaceNotebook,
 } from './notebook-publication.js';
 import { prepareNotebookCandidateValidation } from './notebook-validation.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import {
   prepareWorkspaceNotebookReads,
   readWorkspaceNotebookSelection,
@@ -123,7 +123,7 @@ export interface KnowledgeMaintenanceInput {
     | ((
         request: NotebookUpdate,
         preparedSelection?: WorkspaceNotebookSelection
-      ) => NotebookPublicationAdmission)
+      ) => ReturnType<NotebookPublicationDependencies['revalidate']>)
     | undefined;
 }
 
@@ -290,7 +290,7 @@ export async function prepareKnowledgeMaintenance(
     workspaceSelection = preparedSelection;
     return input.currentAdmission
       ? input.currentAdmission(request, preparedSources ? preparedSelection : undefined)
-      : readWorkspaceNotebookAdmission({
+      : readWorkspaceNotebookPublicationFacts({
           ...dependencies,
           workspaceDb,
           requestActor: input.requestActor!,

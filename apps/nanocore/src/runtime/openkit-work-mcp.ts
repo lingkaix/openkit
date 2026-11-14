@@ -31,7 +31,7 @@ import {
 import { viewWorkerSourceSnapshot } from '../context/worker-source-vision.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import type {
-  NotebookPublicationAdmission,
+  NotebookPublicationDependencies,
   NotebookUpdate,
 } from '../knowledge/notebook-publication.js';
 import { commandRequestExpiresAt, commandRequestKey, type FsStore } from '../lib/store.js';
@@ -129,7 +129,7 @@ export async function dispatchOpenkitWorkTool(
     readonly knowledgeCallId?: string;
     readonly knowledgePublicationAdmission?: (
       request: NotebookUpdate
-    ) => NotebookPublicationAdmission;
+    ) => ReturnType<NotebookPublicationDependencies['revalidate']>;
   },
   toolName: string,
   args: Record<string, unknown>

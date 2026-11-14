@@ -24,12 +24,15 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { attributedNotebookPageBytes } from './okf.js';
-import { initializeScopedNotebook, pinScopedNotebook } from './scoped-notebook-owner.js';
+import {
+  initializeScopedNotebook,
+  pinScopedNotebook,
+  readScopedNotebookPublicationFacts,
+} from './scoped-notebook-owner.js';
 import {
   prepareServerKnowledgeMaintenance,
   runServerKnowledgeMaintenanceCommand,
   type ServerKnowledgeMaintenanceDependencies,
-  serverNotebookAdmission,
 } from './server-knowledge-maintenance.js';
 import { registerServerKnowledgeSource } from './server-knowledge-owner.js';
 import {
@@ -342,7 +345,7 @@ it.each([
         ...f.dependencies,
         actor: f.requestActor,
         revalidate: (files?: Readonly<Record<string, string>>) =>
-          serverNotebookAdmission(f.dependencies, f.requestActor, files),
+          readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
       };
       const saved = await readServerNotebookProposal(proposalContext, result.proposalId!);
       const accepted = await decideServerNotebookProposal(proposalContext, {
@@ -359,7 +362,11 @@ it.each([
     if (allowed) {
       expect(f.notebook.readRevision(publishedRevision).files['citing.md']).toContain(reference);
       expect(f.notebook.readRevision(publishedRevision).files['target.md']).toBe(selectedTarget);
-      const admission = serverNotebookAdmission(f.dependencies, f.requestActor);
+      const admission = readScopedNotebookPublicationFacts(
+        'server',
+        f.dependencies,
+        f.requestActor
+      );
       expect(admission.pageScopeId).toBe(`page/server/${pin.knowledgeBaseId}`);
       expect(admission.resolvedReferences.get('citing')?.has(reference)).toBe(true);
     } else {
@@ -467,7 +474,7 @@ it.each([true, false])(
         ...f.dependencies,
         actor: f.requestActor,
         revalidate: (files?: Readonly<Record<string, string>>) =>
-          serverNotebookAdmission(f.dependencies, f.requestActor, files),
+          readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
       };
       const candidate = await readServerNotebookProposal(context, result.proposalId!);
       expect(candidate.diff[0]!.after).toContain('Preserve this human correction.');
@@ -494,7 +501,7 @@ it('recalls the exact Server candidate only after its human Review publishes the
     ...f.dependencies,
     actor: f.requestActor,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
   };
   const source = await registerServerKnowledgeSource(context, {
     requestId: randomUUID(),
@@ -678,7 +685,7 @@ it('previews and reviews a valid candidate larger than the display limit using t
     ...f.dependencies,
     actor: f.requestActor,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
   };
   const content = `---\nokf_version: "0.2"\n---\n# Large candidate\n${'Large retained content. '.repeat(3600)}`;
   const proposal = await createServerNotebookProposal(
@@ -724,7 +731,7 @@ it('reads retained Proposal/Review annotations and preserves them on the next hu
     ...f.dependencies,
     actor: f.requestActor,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
   };
   const path = join(
     f.coreDb.dataRoot,
@@ -799,7 +806,7 @@ it.each([
     ...f.dependencies,
     actor: f.requestActor,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
   };
   const producer = {
     kind: 'agent' as const,
@@ -961,7 +968,7 @@ it('keeps the producing human and another current Server administrator distinct 
     ...f.dependencies,
     actor: f.requestActor,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
   };
   const producer = {
     kind: 'agent' as const,
@@ -987,7 +994,7 @@ it('keeps the producing human and another current Server administrator distinct 
     ...f.dependencies,
     actor: administrator,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, administrator, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, administrator, files),
   };
   const selected = await readServerNotebookProposal(reviewer, proposal.id);
   const preview = await readServerNotebookProposalPreview(reviewer, {
@@ -1021,7 +1028,7 @@ it('retains the exact human Server Proposal command receipt and Audit on accepte
     ...f.dependencies,
     actor: f.requestActor,
     revalidate: (files?: Readonly<Record<string, string>>) =>
-      serverNotebookAdmission(f.dependencies, f.requestActor, files),
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
   };
   const baseRevision = f.notebook.publishedRevision();
   const proposal = await createServerNotebookProposal(
@@ -1117,7 +1124,7 @@ it.each(['rejected', 'deferred'] as const)(
       ...f.dependencies,
       actor: f.requestActor,
       revalidate: (files?: Readonly<Record<string, string>>) =>
-        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+        readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
     };
     const baseRevision = f.notebook.publishedRevision();
     const proposal = await createServerNotebookProposal(
@@ -1185,7 +1192,7 @@ it.each(['rejected', 'deferred'] as const)(
       ...f.dependencies,
       actor: f.requestActor,
       revalidate: (files?: Readonly<Record<string, string>>) =>
-        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+        readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
     };
     const baseRevision = f.notebook.publishedRevision();
     const proposal = await createServerNotebookProposal(
@@ -1289,7 +1296,7 @@ it.each(['rejected', 'deferred'] as const)(
       ...f.dependencies,
       actor: f.requestActor,
       revalidate: (files?: Readonly<Record<string, string>>) =>
-        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+        readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
     };
     const baseRevision = f.notebook.publishedRevision();
     const proposal = await createServerNotebookProposal(
@@ -1406,7 +1413,7 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       ...f.dependencies,
       actor: f.requestActor,
       revalidate: (files?: Readonly<Record<string, string>>) =>
-        serverNotebookAdmission(f.dependencies, f.requestActor, files),
+        readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
     };
     const selected = await readServerNotebookProposal(context, pending.proposalId!);
     const proposal = selected.proposal;

@@ -25,7 +25,7 @@ import {
 } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import { updateOkfFrontmatter } from './okf.js';
 
 /** Actual owners and virtual Tools surround a fake role runner; no provider or retrieval process is needed. */
@@ -255,7 +255,7 @@ async function publishHumanEdit(
         inflightCommands: new WeakMap(),
         revalidate: () => {
           const current = readTestWorkspaceNotebookSelection(dataRoot, f.workspace.id);
-          return readWorkspaceNotebookAdmission({
+          return readWorkspaceNotebookPublicationFacts({
             store: f.store,
             coreDb: f.dependencies.coreDb,
             workspaceDb,

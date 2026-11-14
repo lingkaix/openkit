@@ -59,7 +59,7 @@ import { saveMemoryPage } from './memory-lifecycle.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
-import { readWorkspaceNotebookAdmission } from './notebook-workspace-admission.js';
+import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
 import {
   readUserKnowledgeSource,
   registerUserKnowledgeSource,
@@ -129,7 +129,7 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
       changes: ReadonlyArray<{ path: string; content: string }>;
     }
   ) =>
-    readWorkspaceNotebookAdmission({
+    readWorkspaceNotebookPublicationFacts({
       store,
       coreDb,
       workspaceDb,
@@ -1564,7 +1564,7 @@ it('exposes and forwards exact narrowing type/applicability arguments through th
       producer: f.actor,
       inflightCommands: new WeakMap(),
       revalidate: () =>
-        readWorkspaceNotebookAdmission({
+        readWorkspaceNotebookPublicationFacts({
           store: f.store,
           coreDb: f.coreDb,
           workspaceDb: f.workspaceDb,
@@ -1700,7 +1700,7 @@ it.each(['trace-revision', 'index.md', 'log.md'] as const)(
         producer: f.actor,
         inflightCommands: new WeakMap(),
         revalidate: () =>
-          readWorkspaceNotebookAdmission({
+          readWorkspaceNotebookPublicationFacts({
             store: f.store,
             coreDb: f.coreDb,
             workspaceDb: f.workspaceDb,

@@ -30,7 +30,6 @@ import {
 } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
-
 import { appendMemorySuppression } from './memory-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import {
@@ -38,10 +37,13 @@ import {
   parseOkfDocument,
   stringListFrontmatterField,
 } from './okf.js';
-import { pinScopedNotebook, resolveScopedNotebookOwner } from './scoped-notebook-owner.js';
+import {
+  pinScopedNotebook,
+  readScopedNotebookPublicationFacts,
+  resolveScopedNotebookOwner,
+} from './scoped-notebook-owner.js';
 import {
   prepareUserMemoryMaintenance,
-  readUserMemoryNotebookAdmission,
   runUserMemoryMaintenanceCommand,
 } from './user-memory-agent-maintenance.js';
 import {
@@ -446,7 +448,7 @@ describe('User-private bounded Memory maintenance', () => {
         const files = f.notebook().readRevision(result.notebookRevision).files;
         expect(files['citing.md']).toContain(reference);
         expect(files['labels.md']).toBe(selectedTarget);
-        const admission = readUserMemoryNotebookAdmission(context, files);
+        const admission = readScopedNotebookPublicationFacts('user', context, files);
         expect(admission.pageScopeId).toBe(`page/user/${userId}/${pin.knowledgeBaseId}`);
         expect(admission.resolvedReferences.get('citing')?.has(reference)).toBe(true);
         f.run.mockImplementationOnce(async (run) => {
@@ -601,7 +603,8 @@ describe('User-private bounded Memory maintenance', () => {
       ...f.dependencies,
       actor: f.input.requestActor,
       revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-        readUserMemoryNotebookAdmission(
+        readScopedNotebookPublicationFacts(
+          'user',
           { ...f.dependencies, actor: f.input.requestActor },
           files,
           paths
@@ -698,7 +701,8 @@ describe('User-private bounded Memory maintenance', () => {
       ...f.dependencies,
       actor: f.input.requestActor,
       revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-        readUserMemoryNotebookAdmission(
+        readScopedNotebookPublicationFacts(
+          'user',
           { ...f.dependencies, actor: f.input.requestActor },
           files,
           paths
@@ -880,7 +884,8 @@ it.each(['rejected', 'deferred'] as const)(
       ...f.dependencies,
       actor: f.input.requestActor,
       revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-        readUserMemoryNotebookAdmission(
+        readScopedNotebookPublicationFacts(
+          'user',
           { ...f.dependencies, actor: f.input.requestActor },
           files,
           paths
@@ -1001,7 +1006,8 @@ it.each(['rejected', 'deferred'] as const)(
       ...f.dependencies,
       actor: f.input.requestActor,
       revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-        readUserMemoryNotebookAdmission(
+        readScopedNotebookPublicationFacts(
+          'user',
           { ...f.dependencies, actor: f.input.requestActor },
           files,
           paths
@@ -1100,7 +1106,8 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
       ...f.dependencies,
       actor: f.input.requestActor,
       revalidate: (files: Readonly<Record<string, string>>, paths?: readonly string[]) =>
-        readUserMemoryNotebookAdmission(
+        readScopedNotebookPublicationFacts(
+          'user',
           { ...f.dependencies, actor: f.input.requestActor },
           files,
           paths
