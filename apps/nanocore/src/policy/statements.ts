@@ -40,6 +40,17 @@ export function policyOperationDefinition(operation: string): {
     'stages' | 'modes' | 'participantKinds' | 'gateResults' | 'gateFailures'
   >;
 } {
+  if (operation === 'mcp.definition.approve')
+    return {
+      policyOperation: OPERATION_REGISTRY['approval.respond'].policyOperation,
+      points: {
+        ...policyOperationDefinition('mcp.call-tool').points,
+        stages: ['decide'],
+        modes: ['gate'],
+        participantKinds: ['agent'],
+        gateFailures: ['escalate-to-human'],
+      },
+    };
   if (!Object.hasOwn(OPERATION_REGISTRY, operation))
     throw new Error('Policy operation is unavailable.');
   const definition = (
@@ -276,9 +287,12 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
           statement.scope.resources.every(
             (resource) =>
               resource.kind === 'container' &&
-              resource.container.owner.kind === 'server' &&
-              resource.container.kind === 'server' &&
-              resource.container.id === 'server'
+              ((resource.container.owner.kind === 'server' &&
+                resource.container.kind === 'server' &&
+                resource.container.id === 'server') ||
+                (statement.agentId === 'security-review' &&
+                  (policyResourceWorkspace(resource) !== null ||
+                    policyResourceUser(resource) !== null)))
           )
         )
       )

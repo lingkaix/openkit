@@ -16,6 +16,7 @@ import {
   runInternalAgentLoop,
 } from '../internal-agents/internal-agent-loop.js';
 import type { FsStore } from '../lib/store.js';
+import type { GatewayDecisionAction, GatewayDecisionResult } from '../llm/gateway-decision.js';
 import { resolveLogicalModel } from '../llm/logical-models.js';
 import { withTurnModelCapture } from '../llm/model-capture.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
@@ -39,14 +40,18 @@ export function createAgentPolicyParticipant(deps: {
   ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
+  /** Trusted Core decision service, not Provider transport or a route qualification claim. */
+  readonly requestSecurityReviewDecision?: (input: {
+    readonly binding: PolicyBindingV1;
+    readonly proposal: PolicyProposal;
+    readonly action: GatewayDecisionAction;
+    readonly signal: AbortSignal;
+    readonly deadline: number;
+  }) => Promise<GatewayDecisionResult>;
 }): AgentPolicyParticipant {
   return {
     invoke: async (input) => {
       if (!deps.coreDb) throw new Error('Agent Policy storage is unavailable.');
-      const process = input.proposal.subject.process;
-      if (!process) throw new Error('The agent gate has no admitted native process.');
-      const turn = deps.store.getTurn(process.workspaceId, process.threadId, process.turnId);
-      const workspaceId = workspaceIdForOwner(turn.owner);
       const snapshot = deps.runtimeConfig();
       const declaration = readAdmittedPolicyDocument(
         deps.coreDb,
@@ -58,8 +63,31 @@ export function createAgentPolicyParticipant(deps: {
         throw new Error('Agent declaration is unavailable.');
       // E9 requires a qualified decision route, never the Turn's ordinary default model.
       // Until that route is admitted, the existing interception owner escalates to a person.
-      if (declaration.agentId === 'security-review')
-        throw new Error('Security Review decision route is unavailable.');
+      if (declaration.agentId === 'security-review') {
+        if (!deps.requestSecurityReviewDecision)
+          throw new Error('Security Review decision route is unavailable.');
+        if (
+          input.binding.mode !== 'gate' ||
+          input.binding.stage !== 'decide' ||
+          !input.action ||
+          input.deadline === undefined ||
+          !Number.isFinite(input.deadline) ||
+          input.deadline <= Date.now()
+        )
+          throw new Error('Security Review decision facts or original deadline are unavailable.');
+        input.signal.throwIfAborted();
+        return deps.requestSecurityReviewDecision({
+          binding: input.binding,
+          proposal: input.proposal,
+          action: input.action,
+          signal: input.signal,
+          deadline: input.deadline,
+        });
+      }
+      const process = input.proposal.subject.process;
+      if (!process) throw new Error('The agent gate has no admitted native process.');
+      const turn = deps.store.getTurn(process.workspaceId, process.threadId, process.turnId);
+      const workspaceId = workspaceIdForOwner(turn.owner);
       const logicalModel = resolveLogicalModel(
         snapshot.gatewayConfig,
         snapshot.providerRegistry,

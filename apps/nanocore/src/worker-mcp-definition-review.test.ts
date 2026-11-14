@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/client';
@@ -8,13 +8,14 @@ import {
   ListToolsResultSchema,
   TextContentSchema,
 } from '@modelcontextprotocol/core';
-import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
+import { OPERATION_REGISTRY, StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { UserConfigSchema, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import {
   type ActorRef,
   ApiErrorSchema,
   ApprovalRequestSchema,
   allocateEntityId,
+  type PolicyBindingV1,
 } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -22,12 +23,21 @@ import {
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
 import { listWorkspaceCapabilityCalls } from './capability/usage-ledger.js';
+import { replaceWorkspaceEffectiveMcpCatalog } from './catalog/resource-catalog.js';
+import { createAdministrationConfiguration } from './config/administration-configuration.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from './config/runtime-config.js';
+import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { FsStore } from './lib/store.js';
+import type { GatewayDecisionAction, GatewayDecisionResult } from './llm/gateway-decision.js';
+import type { LLMGatewayProviderDispatcher } from './llm/provider-dispatcher.js';
+import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
+import { readAdmittedPolicyDocument } from './policy/configuration.js';
+import { PolicyInterception } from './policy/interception.js';
+import { type PolicyProposal, policyDigest } from './policy/statements.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
   listExportableMcpToolSchemaSnapshots,
@@ -100,7 +110,7 @@ const stable: Tools[number] = {
 afterEach(() => vi.restoreAllMocks());
 
 describe('MCP definition review through real Pending and native admission', () => {
-  it('admits only exact current administrator review, retains it on reopen and holds the next change', async () => {
+  async function definitionReviewFlow(processlessReview = false) {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-definition-review-'));
     const upstream = await createMcpHttpStub({ serverVersion: 'primary-fixture' });
     const foreignUpstream = await createMcpHttpStub({ serverVersion: 'foreign-fixture' });
@@ -158,7 +168,7 @@ describe('MCP definition review through real Pending and native admission', () =
       mcpIds: ['echo', 'foreign'],
       requiredCapabilities: ['trusted-worker-inference-relay'],
     });
-    const configuration = createInMemoryRuntimeConfigSnapshot({
+    let configuration = createInMemoryRuntimeConfigSnapshot({
       dataRoot,
       gatewayConfig: createTestGatewayConfig(),
       userConfigs: [
@@ -183,6 +193,93 @@ describe('MCP definition review through real Pending and native admission', () =
       agentManifests: [setup.manifest],
       workspaceMcpServerCatalogs: [{ catalog, path: join(dataRoot, 'catalog.json'), workspaceId }],
     });
+    let reviewManager: ReturnType<typeof createRuntimeConfigManager> | undefined;
+    if (processlessReview) {
+      const config = join(dataRoot, 'config');
+      mkdirSync(join(config, 'agents'), { recursive: true });
+      mkdirSync(join(config, 'providers'), { recursive: true });
+      writeFileSync(
+        join(config, 'server.jsonc'),
+        JSON.stringify({
+          schemaVersion: 1,
+          policy: { mediation: { schemaVersion: 1, statements: [] } },
+        })
+      );
+      writeFileSync(
+        join(config, 'agents', `${setup.manifest.id}.agent.jsonc`),
+        JSON.stringify(setup.manifest)
+      );
+      writeFileSync(join(config, 'gateway.jsonc'), JSON.stringify(createTestGatewayConfig()));
+      writeFileSync(
+        join(config, 'providers', 'fixture.provider.jsonc'),
+        JSON.stringify({
+          schemaVersion: 1,
+          id: 'agent-openrouter',
+          displayName: 'Uncalled local fixture route',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+          modelMetadata: {
+            'openai/gpt-5.2': { tool_call: true, limit: { context: 64_000, output: 8_000 } },
+          },
+        })
+      );
+      const userPath = join(dataRoot, 'users', actor.id, 'config');
+      mkdirSync(userPath, { recursive: true });
+      writeFileSync(
+        join(userPath, 'user.jsonc'),
+        JSON.stringify(
+          UserConfigSchema.parse({
+            schemaVersion: 1,
+            knowledgeMaintenance: { enabled: false, reviewRequiredPageIds: [] },
+          })
+        )
+      );
+      replaceWorkspaceEffectiveMcpCatalog({ dataRoot, workspaceId, catalog });
+      reviewManager = createRuntimeConfigManager({ dataRoot });
+      configuration = reviewManager.current();
+    }
+    const ordinaryGeneration = vi.fn(async () => {
+      throw new Error('C4 must not use ordinary generation.');
+    });
+    const dispatcher = {
+      createResponses: ordinaryGeneration,
+      createChatCompletion: ordinaryGeneration,
+    } as unknown as LLMGatewayProviderDispatcher;
+    const requestSecurityReviewDecision = vi.fn(
+      async (_input: {
+        binding: PolicyBindingV1;
+        proposal: PolicyProposal;
+        signal: AbortSignal;
+        deadline: number;
+        action?: GatewayDecisionAction;
+      }): Promise<GatewayDecisionResult> => ({
+        decision: 'escalate',
+        reasonCode: 'review_failed',
+        metric: { kind: 'failure', code: 'invalid_input' },
+        usageRecordIds: [],
+        capabilityCallId: allocateEntityId('cap'),
+        route: {
+          logicalModelId: 'unqualified-fixture',
+          routeId: 'unqualified-fixture',
+          mode: 'native',
+        },
+      })
+    );
+    const policyInterception = processlessReview
+      ? new PolicyInterception(
+          undefined,
+          createAgentPolicyParticipant({
+            coreDb: initialCore,
+            store: initialStore,
+            runtimeConfig: () => reviewManager!.current(),
+            dispatcher,
+            resolveGatewayProvider: () => {
+              throw new Error('No Provider route is qualified by this fixture.');
+            },
+            ...{ requestSecurityReviewDecision },
+          })
+        )
+      : undefined;
     let supplied: Tools = structuredClone([toolA, stable]);
     const observations: Array<{ server: string; tools: Tools }> = [];
     vi.spyOn(Client.prototype, 'listTools').mockImplementation(async function (this: Client) {
@@ -220,10 +317,13 @@ describe('MCP definition review through real Pending and native admission', () =
         workerLifecycleRuntime: native.runtime,
         workerControlGateway: native.workerControlGateway,
         workerMcpGateway: gateway,
-        runtimeConfigManager: createRuntimeConfigManager({
-          dataRoot: null,
-          initialSnapshot: configuration,
-        }),
+        ...(policyInterception ? { policyInterception } : {}),
+        runtimeConfigManager:
+          reviewManager ??
+          createRuntimeConfigManager({
+            dataRoot: null,
+            initialSnapshot: configuration,
+          }),
       });
       const pendingRequests = createPendingRequestFixture({ coreDb, store, workspaceId });
       return { coreDb, store, native, gateway, app, pendingRequests };
@@ -505,6 +605,185 @@ describe('MCP definition review through real Pending and native admission', () =
           .items.find((item) => item.id === original.requestItemId)
       ).toMatchObject({ type: 'approval-request', approvalRequestId: original.requestId });
 
+      if (processlessReview) {
+        if (!reviewManager) throw new Error('The real Policy configuration owner is unavailable.');
+        const home = await controller.store.ensureQuickChatWorkspace(actor.id);
+        const homeDb = createTestWorkspaceDb(dataRoot, home.id);
+        try {
+          const homeThread = await controller.store.createThread(
+            home.id,
+            'Human C4 Policy review',
+            allocateEntityId('th'),
+            'administration',
+            { visibility: 'private', privateOwnerUserId: actor.id }
+          );
+          const homeTurn = await controller.store.createTurn(
+            home.id,
+            homeThread.id,
+            'Review this exact C4 binding.',
+            actor,
+            null
+          );
+          const files = new RuntimeConfigFileService({
+            dataRoot,
+            userId: actor.id,
+            workspaceIds: [home.id, workspaceId],
+            runtimeConfigManager: reviewManager,
+            readRuntimeConfigStatus: () => reviewManager!.status(),
+          });
+          const service = createAdministrationConfiguration({
+            coreDb: controller.coreDb,
+            store: controller.store,
+            files,
+            actor: {
+              kind: 'token',
+              userId: actor.id,
+              tokenId: administrator.tokenId,
+              tokenScope: 'server-admin',
+              tokenWorkspaceIds: [],
+            },
+            runtimeConfig: () => reviewManager!.current(),
+            reload: () => reviewManager!.reload({ mode: 'safe', dryRun: false }),
+            repositoryWorkspaceDb: (id) => {
+              if (id === home.id) return homeDb;
+              throw new Error('No configuration repository authority for another Workspace.');
+            },
+            inflightCommands: new WeakMap(),
+          });
+          const loaded = () =>
+            readAdmittedPolicyDocument(
+              controller.coreDb,
+              reviewManager!.current().openKitConfig.policy?.mediation
+            );
+          const publish = async (statements: unknown[]) => {
+            const candidate = await service.propose(
+              {
+                targetFamily: 'policy',
+                targetId: 'server',
+                expectedRevision: files.readFile('server.jsonc').file.revision!,
+                changes: {
+                  proposed: { schemaVersion: 1, statements },
+                  rationale: 'Human review of the private C4 decision binding.',
+                },
+              },
+              { threadId: homeThread.id, turnId: homeTurn.id, requestId: randomUUID() }
+            );
+            expect(
+              await service.apply({
+                requestId: randomUUID(),
+                candidate: candidate.candidate,
+                confirmation: candidate.confirmation,
+              })
+            ).toMatchObject({ persisted: true, reload: 'applied' });
+          };
+          const human = { kind: 'human' as const, id: actor.id };
+          const target = {
+            kind: 'container' as const,
+            container: {
+              owner: { kind: 'workspace' as const, workspaceId },
+              kind: 'workspace',
+              id: workspaceId,
+            },
+          };
+          const right = OPERATION_REGISTRY['approval.respond'].policyOperation;
+          const scope = { subjects: [human], actions: [right], resources: [target] };
+          const common = {
+            author: human,
+            authority: { kind: 'human', userId: actor.id },
+            authoredAt: new Date().toISOString(),
+            state: 'active',
+            lifetime: { anchor: { owner: { kind: 'server' }, kind: 'server', id: 'server' } },
+          };
+          await publish([
+            {
+              ...common,
+              kind: 'agent-principal',
+              id: 'c4-reviewer',
+              agentId: 'security-review',
+              creator: human,
+              responsibleHumanId: actor.id,
+              responsibility: human,
+              scope: { ...scope, subjects: [{ kind: 'agent', id: 'security-review' }] },
+            },
+          ]);
+          const declaration = loaded().statements.find(
+            (statement) =>
+              statement.kind === 'agent-principal' && statement.agentId === 'security-review'
+          );
+          if (!declaration)
+            throw new Error('The real human did not activate the reviewer declaration.');
+          await publish([
+            ...loaded().statements,
+            {
+              ...common,
+              kind: 'binding',
+              id: 'processless-c4-review',
+              scope,
+              operation: 'mcp.definition.approve',
+              stage: 'decide',
+              mode: 'gate',
+              participant: {
+                kind: 'agent',
+                id: 'security-review',
+                version: policyDigest(declaration),
+              },
+              inputDisclosure: scope,
+              order: 0,
+              timeoutMs: 2_000,
+              failure: 'escalate-to-human',
+              circuit: { failures: 1, recoveryAfterMs: 60_000 },
+            },
+          ]);
+          const responseRequestId = randomUUID();
+          const response = await respond(original, administrator.secret, responseRequestId);
+          expect(response.status, await response.clone().text()).toBe(409);
+          expect(await response.json()).toMatchObject({ code: 'approval_preview_unavailable' });
+          expect(requestSecurityReviewDecision).toHaveBeenCalledTimes(1);
+          const input = requestSecurityReviewDecision.mock.calls[0]![0];
+          expect(input.proposal.subject).toMatchObject({
+            principal: human,
+            onBehalfOf: null,
+            process: null,
+          });
+          expect(input.action).toMatchObject({
+            principal: human,
+            onBehalfOf: null,
+            operation: 'mcp.definition.approve',
+            target,
+            destinationAudience: null,
+            definitionChange: {
+              oldDigest: capturedA.contentDigest,
+              newDigest: capturedB.contentDigest,
+            },
+          });
+          expect(input.action?.influenceSources.join('\n')).toContain(capturedB.schemaSnapshotId);
+          const text = input.action?.definitionChange?.newText;
+          expect(typeof text).toBe('string');
+          expect(text).toContain(toolB.name);
+          expect(text).toContain(toolB.description!);
+          expect(text).toContain('message');
+          expect(text).toContain(stable.name);
+          expect(text).toContain(stable.description!);
+          expect(Buffer.byteLength(text!, 'utf8')).toBeLessThanOrEqual(8192);
+          expect(ordinaryGeneration).not.toHaveBeenCalled();
+          expect(
+            controller.store.getCommandRequest('approval.respond', responseRequestId, {
+              workspaceId,
+              threadId,
+              turnId: original.raisingTurnId,
+            })
+          ).toBeFalsy();
+          expect(pending().find((record) => record.requestId === original.requestId)).toMatchObject(
+            { state: 'pending', resolution: null, disposition: null }
+          );
+          expect((await discover('direct')).tools.map((tool) => tool.name)).not.toContain(
+            toolB.name
+          );
+          return;
+        } finally {
+          closeTestCoreDb(homeDb);
+        }
+      }
       const unobservedDigest = mcpToolSchemaContentDigest([neverObservedTool, stable]);
       expect([
         capturedA.contentDigest,
@@ -746,5 +1025,15 @@ describe('MCP definition review through real Pending and native admission', () =
       await upstream.close();
       await foreignUpstream.close();
     }
-  }, 60_000);
+  }
+  it(
+    'admits only exact current administrator review, retains it on reopen and holds the next change',
+    () => definitionReviewFlow(),
+    60_000
+  );
+  it(
+    'keeps the original held-definition Pending after processless C4 receives complete native metadata but no audience',
+    () => definitionReviewFlow(true),
+    60_000
+  );
 });

@@ -2272,13 +2272,176 @@ async function currentMcpEscalationSnapshot(input: WorkerMcpToolCallInput) {
 /** Re-evaluates one exact human response through the pilot before credential preparation. */
 export async function reviewCapturedMcpPolicy(input: {
   readonly record: PendingRequestRecord;
-  readonly actor: Pick<import('./auth/identity.js').Actor, 'userId'>;
+  readonly actor: Actor;
   readonly workspaceDb: WorkspaceDb;
   readonly routes: RegisterWorkerMcpRoutesInput;
   readonly catalog: WorkspaceMcpServerCatalog | null;
   readonly interception: PolicyInterception;
 }): Promise<NonNullable<PreparedCapturedPendingCall['mediation']> | null> {
   const { record, workspaceDb } = input;
+  if (record.governedIntent?.operation === 'mcp.definition.approve') {
+    const coreDb = input.routes.coreDb;
+    if (!coreDb)
+      throw new PendingRequestCommandError(
+        'approval_preview_unavailable',
+        'Security Review authority is unavailable.',
+        409
+      );
+    const subject: InterceptionInput['proposal']['subject'] = {
+      principal: { kind: 'human', id: input.actor.userId },
+      actor: { kind: 'user', id: input.actor.userId },
+      credentialKind: input.actor.kind,
+      responsibleHumanId: input.actor.userId,
+      onBehalfOf: null,
+      process: null,
+    };
+    const authorCurrent: InterceptionInput['authorCurrent'] = (userId) =>
+      isCurrentServerPolicyAuthor(coreDb, userId);
+    const anchorCurrent: InterceptionInput['anchorCurrent'] = (anchor) =>
+      (anchor.owner.kind === 'server' && anchor.kind === 'server' && anchor.id === 'server') ||
+      (anchor.owner.kind === 'workspace' &&
+        anchor.owner.workspaceId === record.workspaceId &&
+        anchor.kind === 'workspace' &&
+        anchor.id === record.workspaceId);
+    const current = () => {
+      const local = input.routes
+        .runtimeConfig()
+        .workspaceMcpServerCatalogs.find(
+          (entry) => entry.workspaceId === record.workspaceId
+        )?.catalog;
+      const catalog = composeWorkspaceMcpCatalog({
+        dataRoot: coreDb.dataRoot,
+        workspaceId: record.workspaceId,
+        workspaceCatalog: local ?? { schemaVersion: 1, servers: [] },
+      });
+      const source = checkMcpDefinitionReviewIntent(
+        { coreDb, sqlite: workspaceDb.sqlite, catalog },
+        record,
+        input.actor
+      );
+      const document = readAdmittedPolicyDocument(
+        coreDb,
+        input.routes.runtimeConfig().openKitConfig.policy?.mediation
+      );
+      const capture: { value?: { decision: PolicyDecision; facts: unknown } } = {};
+      currentWorkspaceAuthority(
+        coreDb,
+        record.workspaceId,
+        { kind: 'user', id: input.actor.userId },
+        OPERATION_REGISTRY['approval.respond'].policyOperation,
+        true,
+        input.actor,
+        {
+          dependencyFailure: 'throw',
+          policy: { document, subject, now: Date.now(), authorCurrent, anchorCurrent },
+          onEvaluation: (event) => {
+            capture.value = event;
+          },
+        }
+      );
+      if (!capture.value)
+        throw new PendingRequestCommandError(
+          'approval_preview_unavailable',
+          'Current Security Review permission is unavailable.',
+          409
+        );
+      return { ...capture.value, source, document };
+    };
+    const initial = current();
+    const { intent, admission } = initial.source;
+    const text = JSON.stringify(admission.tools);
+    if (Buffer.byteLength(text, 'utf8') > 8192)
+      throw new PendingRequestCommandError(
+        'approval_preview_unavailable',
+        'Complete definition text exceeds the review bound.',
+        409
+      );
+    const proposal: InterceptionInput['proposal'] = {
+      operation: 'mcp.definition.approve',
+      workspaceId: record.workspaceId,
+      resource: {
+        kind: 'container',
+        container: {
+          kind: 'workspace',
+          id: record.workspaceId,
+          owner: { kind: 'workspace', workspaceId: record.workspaceId },
+        },
+      },
+      subject,
+      capabilityCallId: null,
+      inputReferences: {
+        approvalRequestId: record.requestId,
+        catalogEntryId: intent.catalogEntryId,
+        catalogDigest: intent.catalogDigest,
+        schemaSnapshotId: admission.schemaSnapshotId,
+        oldDigest: admission.approvedSchemaDigest,
+        newDigest: admission.contentDigest,
+      },
+      inputAttributes: {},
+    };
+    const authorizationRevision = policyDigest(initial.facts);
+    const stillCurrent = () => {
+      const next = current();
+      return (
+        policyDigest(next.document) === policyDigest(initial.document) &&
+        policyDigest(next.facts) === authorizationRevision &&
+        next.source.admission.approvedSchemaDigest === admission.approvedSchemaDigest
+      );
+    };
+    const facts: InterceptionInput = {
+      workspaceDb,
+      document: initial.document,
+      proposal,
+      authorizationRevision,
+      securityReviewAction: {
+        principal: subject.principal,
+        onBehalfOf: null,
+        operation: proposal.operation,
+        target: proposal.resource,
+        destinationAudience: null,
+        influenceSources: [admission.schemaSnapshotId],
+        definitionChange: {
+          oldDigest: admission.approvedSchemaDigest,
+          newDigest: admission.contentDigest,
+          newText: text,
+        },
+      },
+      authorCurrent,
+      anchorCurrent,
+      stillCurrent,
+      participantAuthorized: (binding) => {
+        if (binding.participant.kind !== 'agent' || current().decision.effect !== 'allow')
+          return false;
+        const principal = readPolicyAgentPrincipal({
+          document: initial.document,
+          proposal: {
+            subject: proposal.subject,
+            workspaceId: proposal.workspaceId,
+            resource: proposal.resource,
+          },
+          participant: binding.participant,
+          operation: OPERATION_REGISTRY['approval.respond'].policyOperation,
+          authorCurrent,
+          anchorCurrent,
+          now: Date.now(),
+        });
+        return authorCurrent(principal.responsibleHumanId);
+      },
+      finalKernel: () => current().decision,
+    };
+    const decision = await input.interception.decide(facts);
+    if (decision.result !== 'allow' || !stillCurrent())
+      throw new PendingRequestCommandError(
+        'approval_preview_unavailable',
+        'Security Review is unavailable or requires a human decision.',
+        409
+      );
+    return {
+      decisionId: decision.decisionId,
+      current: stillCurrent,
+      observe: () => input.interception.observe(facts),
+    };
+  }
   if (!workerMcpExposureAvailable(input.routes)) return null;
   if (
     !record.policyDecisionId ||
@@ -3172,18 +3335,19 @@ export function checkMcpDefinitionReviewIntent(
   },
   record: PendingRequestRecord,
   actor: Actor
-): void {
+) {
   if (!isCurrentDeploymentAdministrator(input.coreDb, actor))
     throw new PendingRequestCommandError(
       'forbidden',
       'Current administrator authority is required.',
       403
     );
-  const { intent } = requireMcpDefinitionApprovalSource(
+  const source = requireMcpDefinitionApprovalSource(
     input.sqlite,
     record.workspaceId,
     record.governedIntent
   );
+  const { intent } = source;
   if (
     !input.catalog?.servers.some(
       (server) => server.id === intent.catalogEntryId && server.enabled
@@ -3196,6 +3360,7 @@ export function checkMcpDefinitionReviewIntent(
       'The current MCP binding has changed.',
       409
     );
+  return source;
 }
 
 /** Rechecks every credential binding immediately before Gateway registration or tool contact. */

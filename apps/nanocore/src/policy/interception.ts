@@ -37,7 +37,7 @@ import {
 } from '../auth/thread-visibility.js';
 import { parseJsoncObject } from '../config/jsonc.js';
 import { RuntimeConfigFileServiceError } from '../config/runtime-config-files.js';
-import type { GatewayDecisionResult } from '../llm/gateway-decision.js';
+import type { GatewayDecisionAction, GatewayDecisionResult } from '../llm/gateway-decision.js';
 import type { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
 import { requireNativeCoordinatorGoal } from '../runtime/goal-owner.js';
@@ -169,6 +169,8 @@ export interface DeterministicPolicyParticipant {
     readonly proposal: PolicyProposal;
     readonly advice: readonly unknown[];
     readonly signal: AbortSignal;
+    readonly action?: GatewayDecisionAction;
+    readonly deadline?: number;
   }): Promise<unknown>;
 }
 
@@ -183,6 +185,8 @@ export interface AgentPolicyParticipant {
 interface InterceptionFacts {
   readonly document: PolicyDocumentV1;
   readonly proposal: PolicyProposal;
+  /** Transient, native-source action only; never a retained summary or public operation input. */
+  readonly securityReviewAction?: GatewayDecisionAction;
   readonly authorizationRevision: string;
   /** Current conditions selected by the operation's existing resource owner. */
   readonly permissions?: readonly z.infer<typeof PolicyPermissionV1Schema>[];
@@ -1068,7 +1072,9 @@ export class PolicyInterception {
       if (binding.state === 'shadow') continue;
       used.push(binding);
       results.push(
-        evaluated.result === 'require_escalation' && humanApproved ? 'allow' : evaluated.result
+        evaluated.result === 'require_escalation' && humanApproved
+          ? 'not_applicable'
+          : evaluated.result
       );
     }
     const preparedDecision = this.prepareFinalDecision(input, prepared);
@@ -1326,21 +1332,30 @@ export class PolicyInterception {
       (participant.id === undefined || participant.id === binding.participant.id) &&
       (participant.version === undefined || participant.version === binding.participant.version)
     ) {
+      const securityReview =
+        binding.mode === 'gate' &&
+        binding.participant.kind === 'agent' &&
+        binding.participant.id === 'security-review';
       const controller = new AbortController();
       // E9's invocation budget is independent of a generic binding's longer requested timeout.
       const timeoutMs =
         binding.participant.kind === 'agent' && binding.participant.id === 'security-review'
           ? Math.min(binding.timeoutMs, 2_000)
           : binding.timeoutMs;
+      const deadline = Date.parse(startedAt) + timeoutMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
       circuit.probing = circuit.retryAt > 0;
       this.circuits.set(key, circuit);
       try {
+        if (securityReview && Date.now() >= deadline) throw new ParticipantTimeout();
         const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => {
-            controller.abort();
-            reject(new ParticipantTimeout());
-          }, timeoutMs);
+          timer = setTimeout(
+            () => {
+              controller.abort();
+              reject(new ParticipantTimeout());
+            },
+            securityReview ? Math.max(0, deadline - Date.now()) : timeoutMs
+          );
         });
         output = await Promise.race([
           participant.invoke({
@@ -1348,13 +1363,18 @@ export class PolicyInterception {
             proposal: structuredClone(input.proposal),
             advice: structuredClone(advice),
             signal: controller.signal,
+            ...(securityReview
+              ? {
+                  deadline,
+                  ...(input.securityReviewAction
+                    ? { action: structuredClone(input.securityReviewAction) }
+                    : {}),
+                }
+              : {}),
           }),
           timeout,
         ]);
-        const securityReview =
-          binding.mode === 'gate' &&
-          binding.participant.kind === 'agent' &&
-          binding.participant.id === 'security-review';
+        if (securityReview && Date.now() >= deadline) throw new ParticipantTimeout();
         const parsed =
           binding.mode === 'gate'
             ? (securityReview

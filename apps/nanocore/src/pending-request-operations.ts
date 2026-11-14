@@ -95,7 +95,7 @@ export function createPendingRequestOperationImplementations({
     record: PendingRequestRecord,
     workspaceDb: WorkspaceDb,
     actor: Actor
-  ) => Promise<PreparedCapturedPendingCall>;
+  ) => Promise<PreparedCapturedPendingCall | undefined>;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly store: FsStore;

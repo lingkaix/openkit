@@ -752,6 +752,11 @@ export async function respondRecordedApproval(input: {
   const actor: PendingRequestActor = { kind: 'user', id: input.actorId };
   const now = new Date().toISOString();
   if (isCommandIntentApproval(current)) {
+    if (
+      input.decision === 'granted' &&
+      current.governedIntent?.operation === 'mcp.definition.approve'
+    )
+      await input.prepare?.();
     const record = await resolveCommandIntentApproval({
       store: input.store,
       sqlite: input.sqlite,

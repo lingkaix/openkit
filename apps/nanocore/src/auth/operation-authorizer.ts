@@ -123,6 +123,11 @@ export interface WorkspaceAuthorityOptions {
   readonly mutating?: boolean;
   /** Propagates resolver and callback failures; omission keeps the existing transient refusal. */
   readonly dependencyFailure?: 'throw';
+  /** Admitted human Policy on these exact presented native facts, never another Subject. */
+  readonly policy?: Extract<
+    Parameters<typeof evaluatePolicyKernel>[0],
+    { readonly facts: unknown }
+  >['policy'];
   /** Receives a real Kernel result and safe current facts; missing eligibility emits no event. */
   readonly onEvaluation?: (event: WorkspaceAuthorityEvaluation) => void;
 }
@@ -419,6 +424,7 @@ export function currentWorkspaceAuthority(
     if (!effectAuthority) {
       return null;
     }
+    const presentedActor = requestActor;
     // Preserve only the credential explicitly projected by session authentication, never infer one from a User.
     if (requestActor?.kind === 'session' && requestActor.adminTokenId !== undefined)
       requestActor = {
@@ -430,6 +436,20 @@ export function currentWorkspaceAuthority(
     const responsibleUserId = responsibleUserIdForActor(actor);
     if (!responsibleUserId) return null;
     if (requestActor && requestActor.userId !== responsibleUserId) return null;
+    if (
+      options?.policy &&
+      (!presentedActor ||
+        actor.kind !== 'user' ||
+        options.policy.subject.principal.kind !== 'human' ||
+        options.policy.subject.principal.id !== presentedActor.userId ||
+        options.policy.subject.actor.kind !== 'user' ||
+        options.policy.subject.actor.id !== presentedActor.userId ||
+        options.policy.subject.responsibleHumanId !== presentedActor.userId ||
+        options.policy.subject.credentialKind !== presentedActor.kind ||
+        options.policy.subject.onBehalfOf !== null ||
+        options.policy.subject.process !== null)
+    )
+      return null;
     if (
       requestActor?.kind === 'token' &&
       requestActor.tokenScope === 'server-admin' &&
@@ -473,6 +493,7 @@ export function currentWorkspaceAuthority(
       operation,
       // Effect paths cannot obtain a mutation association from a read-only credential.
       mutating: options?.mutating ?? true,
+      ...(options?.policy ? { policy: options.policy } : {}),
     });
     // Missing eligibility facts publish no capture event; the Kernel still decides every complete request.
     if (

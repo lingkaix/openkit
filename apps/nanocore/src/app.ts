@@ -2516,17 +2516,28 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     agentAuthority: (record) =>
       runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
     coreDb: options.coreDb,
-    prepareCapturedCall: (record, workspaceDb, actor) =>
-      prepareCapturedPendingCall({
+    prepareCapturedCall: async (record, workspaceDb, actor) => {
+      if (record.governedIntent?.operation === 'mcp.definition.approve') {
+        await reviewCapturedMcpPolicy({
+          record,
+          actor,
+          workspaceDb,
+          routes: workerMcpRouteInput,
+          catalog: capturedMcpCatalog(record.workspaceId),
+          interception: policyInterception,
+        });
+        return undefined;
+      }
+      return prepareCapturedPendingCall({
         actor,
         record,
         workspaceDb,
-        reviewPolicy: async (captured, reviewer) => {
+        reviewPolicy: async (captured) => {
           const facts = pendingRequestServices.evaluateCapturedCall?.(captured, workspaceDb.sqlite);
           if (!facts?.agentAuthority || !facts.toolInSupply || !facts.schemaCurrent) return null;
           return reviewCapturedMcpPolicy({
             record: captured,
-            actor: reviewer,
+            actor,
             workspaceDb,
             routes: workerMcpRouteInput,
             catalog: capturedMcpCatalog(captured.workspaceId),
@@ -2537,7 +2548,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         catalog: capturedMcpCatalog(record.workspaceId),
         vaultBackend: vaultUnlockState ? () => vaultUnlockState.backend() : undefined,
         workerMcpGateway,
-      }),
+      });
+    },
     evaluateCapturedCall: (record, sqlite, prepared) => {
       const snapshot = runtimeConfig();
       const manifest = snapshot.agentManifests.find((candidate) => candidate.id === record.agentId);
