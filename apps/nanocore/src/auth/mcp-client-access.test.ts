@@ -2,11 +2,13 @@ import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { evaluateAccess, type PolicyDecision, type PolicyState } from '@openkit/policy-kernel';
 import { describe, expect, it } from 'vitest';
-import {
-  evaluateMcpClientAccess,
-  type IntegrationPrincipal,
-  type McpClientAccessInput,
-} from './mcp-client-access.js';
+import { compilePolicyGraph, evaluatePolicyKernel } from '../policy/workspace-access.js';
+
+type McpClientAccessInput = Extract<
+  Parameters<typeof evaluatePolicyKernel>[0],
+  { readonly issuerChain: unknown }
+>;
+type IntegrationPrincipal = NonNullable<McpClientAccessInput['binding']>['principal'];
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const otherUserId = 'usr_00000000-0000-7000-8000-000000000002';
@@ -72,7 +74,7 @@ function fixture(
         workspaceIds: [workspaceId],
       },
     },
-    operationId,
+    operation: operationId,
     target: {
       kind: 'workspace' as const,
       workspaceId: targetWorkspaceId,
@@ -105,8 +107,8 @@ function expectRefusal(
   onBehalfOfUserId: string | null = userId,
   principal: IntegrationPrincipal | null = client
 ) {
-  const result = evaluateMcpClientAccess(input);
-  expect(result.kernel.effect).toBe('deny');
+  const result = compilePolicyGraph(input);
+  expect(evaluatePolicyKernel(input).effect).toBe('deny');
   expect(result.principal).toEqual(principal);
   expect(result.onBehalfOfUserId).toBe(onBehalfOfUserId);
 }
@@ -117,11 +119,12 @@ describe('E11 dormant MCP-client scope and attenuation', () => {
   it('grants an exact own Workspace read under each existing client scope without relabeling the client', () => {
     for (const scope of ['workspace', 'workspace-readonly'] as const) {
       const input = fixture();
-      const result = evaluateMcpClientAccess({
+      const selected = {
         ...input,
         binding: { ...input.binding, token: { ...input.binding.token, scope } },
-      });
-      expect(result.kernel.effect).toBe('allow');
+      };
+      const result = compilePolicyGraph(selected);
+      expect(evaluatePolicyKernel(selected).effect).toBe('allow');
       expect(result.principal).toEqual(client);
       expect(result.onBehalfOfUserId).toBe(userId);
     }
@@ -201,6 +204,6 @@ describe('E11 dormant MCP-client scope and attenuation', () => {
 
   it('does not infer a registered operation from a matching name prefix', () => {
     // Unknown input cannot borrow the known read operation's metadata or allowing Kernel facts.
-    expectRefusal({ ...fixture(), operationId: 'workspace.read.unregistered' });
+    expectRefusal({ ...fixture(), operation: 'workspace.read.unregistered' });
   });
 });

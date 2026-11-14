@@ -1,4 +1,4 @@
-import type { OperationTarget } from '@openkit/app-api-schemas';
+import { OPERATION_DEFINITIONS, type OperationTarget } from '@openkit/app-api-schemas';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS, type ProductOperation } from '@openkit/config-schema';
 import {
   type AccessRequest,
@@ -7,6 +7,7 @@ import {
   type PolicyState,
 } from '@openkit/policy-kernel';
 import {
+  type ActorRef,
   canonicalIdentifierName,
   type PolicyBindingV1,
   type PolicyDocumentV1,
@@ -15,6 +16,7 @@ import {
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import type { OpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 
 /** Ordinary membership never supplies Server, delegated-maintenance or Workspace export authority. */
 export const WORKSPACE_MEMBER_OPERATIONS = [
@@ -96,6 +98,26 @@ export function evaluatePolicyKernel(
   input:
     | ProductPolicyInput
     | {
+        readonly binding: {
+          readonly principal: ActorRef & { readonly kind: 'integration' };
+          readonly principalOwnerUserId: string;
+          readonly token: Readonly<
+            Pick<OpenKitAccessTokenRecord, 'tokenId' | 'ownerUserId' | 'scope' | 'workspaceIds'>
+          >;
+        } | null;
+        readonly operation: string;
+        readonly target: ProductAccessTarget;
+        readonly userKernel: PolicyDecision;
+        /** Complete verified credential sequence, immediate issuer through its terminal human. */
+        readonly issuerChain:
+          | readonly {
+              readonly principal: ActorRef;
+              readonly active: boolean;
+              readonly kernel: PolicyDecision;
+            }[]
+          | null;
+      }
+    | {
         readonly operation: string;
         /** Current native scope classifications; neither flag grants an effect. */
         readonly goal: {
@@ -138,12 +160,17 @@ export function compilePolicyGraph(input: ExposureGraphFacts): { policy: PolicyS
 export function compilePolicyGraph(input: Parameters<typeof evaluatePolicyKernel>[0]): {
   policy: PolicyState;
   request: AccessRequest;
+  /** Current verified credential attribution; never a native grant or lifecycle receipt. */
+  principal?: (ActorRef & { readonly kind: 'integration' }) | null;
+  onBehalfOfUserId?: string | null;
 };
 export function compilePolicyGraph(
   input: Parameters<typeof evaluatePolicyKernel>[0] | ExposureGraphFacts
 ): {
   policy: PolicyState;
   request?: AccessRequest;
+  principal?: (ActorRef & { readonly kind: 'integration' }) | null;
+  onBehalfOfUserId?: string | null;
 } {
   if ('exposure' in input) {
     const { group, document } = input.exposure;
@@ -236,6 +263,85 @@ export function compilePolicyGraph(
         user,
         ...(goal.process ? { process: goal.process } : {}),
       },
+    };
+  }
+  if ('issuerChain' in input) {
+    const binding = input.binding;
+    const matchingOwner =
+      !!binding &&
+      binding.principal.kind === 'integration' &&
+      binding.principal.id.length > 0 &&
+      binding.token.tokenId.length > 0 &&
+      binding.principalOwnerUserId.length > 0 &&
+      binding.principalOwnerUserId === binding.token.ownerUserId;
+    const definition = Object.hasOwn(OPERATION_DEFINITIONS, input.operation)
+      ? OPERATION_DEFINITIONS[input.operation as keyof typeof OPERATION_DEFINITIONS]
+      : null;
+    const right = definition ? PRODUCT_OPERATION_ACCESS_RIGHTS[definition.policyOperation] : null;
+    const workspaceScoped =
+      definition?.scope.kind === 'body-workspace' ||
+      definition?.scope.kind === 'opaque-child-workspace' ||
+      definition?.scope.kind === 'actor-quick-chat-workspace';
+    const chain = input.issuerChain;
+    const terminal = chain?.at(-1);
+    const facts: readonly (readonly [string, boolean])[] = [
+      ['binding', matchingOwner],
+      ['registered-operation', definition !== null && right !== null],
+      ['current-user', input.userKernel.effect === 'allow'],
+      [
+        'scope',
+        !!binding &&
+          workspaceScoped &&
+          input.target.kind === 'workspace' &&
+          binding.token.workspaceIds.includes(input.target.workspaceId) &&
+          (binding.token.scope === 'workspace' ||
+            (binding.token.scope === 'workspace-readonly' && definition?.mutating === false)),
+      ],
+      // The credential owner and its terminal issuer are distinct identities; both remain bounded.
+      ['complete-issuers', !!chain?.length && terminal?.principal.kind === 'user'],
+      ...(chain ?? []).map(
+        (issuer, index) =>
+          [`issuer:${index}`, issuer.active && issuer.kernel.effect === 'allow'] as const
+      ),
+    ];
+    // Opaque transient NGAC nodes do not create Protocol principals or retained grants.
+    const user = 'mcp-credential-subject';
+    const target = 'mcp-requested-target';
+    const state: PolicyState = {
+      elements: [
+        { id: user, kind: 'user' },
+        { id: target, kind: 'object' },
+        ...facts.flatMap(([name]) => [
+          { id: `${name}:subject`, kind: 'userAttribute' as const },
+          { id: `${name}:target`, kind: 'objectAttribute' as const },
+          { id: `${name}:required`, kind: 'policyClass' as const },
+        ]),
+      ],
+      assignments: facts.flatMap(([name]) => [
+        { child: user, parent: `${name}:subject` },
+        { child: `${name}:subject`, parent: `${name}:required` },
+        { child: target, parent: `${name}:target` },
+        { child: `${name}:target`, parent: `${name}:required` },
+      ]),
+      operations: right ? [{ id: input.operation, accessRights: [right] }] : [],
+      associations: facts.flatMap(([name, admitted]) =>
+        admitted && right
+          ? [
+              {
+                id: `${name}:current`,
+                userAttribute: `${name}:subject`,
+                targetAttribute: `${name}:target`,
+                accessRights: [right],
+              },
+            ]
+          : []
+      ),
+    };
+    return {
+      policy: state,
+      request: { user, target, operation: input.operation },
+      principal: binding?.principal ?? null,
+      onBehalfOfUserId: matchingOwner ? binding!.principalOwnerUserId : null,
     };
   }
   const primary = 'facts' in input ? input : null;
