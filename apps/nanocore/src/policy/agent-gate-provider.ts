@@ -56,6 +56,10 @@ export function createAgentPolicyParticipant(deps: {
       );
       if (declaration?.kind !== 'agent-principal')
         throw new Error('Agent declaration is unavailable.');
+      // E9 requires a qualified decision route, never the Turn's ordinary default model.
+      // Until that route is admitted, the existing interception owner escalates to a person.
+      if (declaration.agentId === 'security-review')
+        throw new Error('Security Review decision route is unavailable.');
       const logicalModel = resolveLogicalModel(
         snapshot.gatewayConfig,
         snapshot.providerRegistry,

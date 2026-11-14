@@ -334,6 +334,15 @@ export function preparePolicyConfiguration(input: {
       binding.state !== 'active'
     )
       continue;
+    // E9 Security Review only restricts the final Kernel result; it is not an agent approver.
+    // Its unavailable decision route escalates instead of using the ordinary agent loop.
+    if (
+      binding.participant.id === 'security-review' &&
+      binding.mode === 'gate' &&
+      binding.stage === 'decide' &&
+      binding.failure === 'escalate-to-human'
+    )
+      continue;
     const previous = currentDocument.statements.find((s) => s.id === binding.id);
     if (previous && policyDigest(previous) === policyDigest(binding)) continue;
     const content = (value: typeof binding) => {

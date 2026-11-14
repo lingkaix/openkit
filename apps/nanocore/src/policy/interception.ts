@@ -1189,6 +1189,11 @@ export class PolicyInterception {
       (participant.version === undefined || participant.version === binding.participant.version)
     ) {
       const controller = new AbortController();
+      // E9's invocation budget is independent of a generic binding's longer requested timeout.
+      const timeoutMs =
+        binding.participant.kind === 'agent' && binding.participant.id === 'security-review'
+          ? Math.min(binding.timeoutMs, 2_000)
+          : binding.timeoutMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
       circuit.probing = circuit.retryAt > 0;
       this.circuits.set(key, circuit);
@@ -1197,7 +1202,7 @@ export class PolicyInterception {
           timer = setTimeout(() => {
             controller.abort();
             reject(new ParticipantTimeout());
-          }, binding.timeoutMs);
+          }, timeoutMs);
         });
         output = await Promise.race([
           participant.invoke({
