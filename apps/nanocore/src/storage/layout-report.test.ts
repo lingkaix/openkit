@@ -62,7 +62,7 @@ describe('storage layout report', () => {
         'workspace_0017_knowledge_heads',
         'workspace_0018_knowledge_proposals',
       ]);
-      expect(report.serverDb.appliedMigrations.slice(-14)).toEqual([
+      expect(report.serverDb.appliedMigrations.slice(-15)).toEqual([
         'core_0014_execution_journal',
         'core_0015_work_observations',
         'core_0016_workspace_recovery_admissions',
@@ -77,6 +77,7 @@ describe('storage layout report', () => {
         'core_0025_harness_login_observations',
         'core_0026_security_trigger',
         'core_0027_security_thread_destinations',
+        'core_0028_access_token_issuer_ref',
       ]);
       expect(report.serverDb.appliedMigrations).not.toContain('workspace_0012_execution_journal');
       expect(workspace.sqlite.serialize().equals(before)).toBe(true);
@@ -130,6 +131,7 @@ describe('storage layout report', () => {
         'core_0025_harness_login_observations',
         'core_0026_security_trigger',
         'core_0027_security_thread_destinations',
+        'core_0028_access_token_issuer_ref',
       ]);
       expect(report.users).toEqual(
         expect.arrayContaining([

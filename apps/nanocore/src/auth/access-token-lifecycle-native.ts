@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { ControlAccessTokenIssuerRefSchema } from '../storage/access-token-verification-codecs.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
 import type { CoreDb } from '../storage/db.js';
@@ -58,6 +59,11 @@ export function applyControlAccessTokenLifecycle(
       record: insertOpenKitAccessTokenRecord(coreDb, {
         ...input.token,
         ownerUserId: input.ownerUserId,
+        issuerRef: ControlAccessTokenIssuerRefSchema.parse(
+          input.actor.kind === 'token'
+            ? { kind: 'token', id: input.actor.tokenId }
+            : { kind: 'user', id: input.actor.userId }
+        ),
         scope: input.scope,
         workspaceIds: input.workspaceIds,
         issuedAt: new Date().toISOString(),

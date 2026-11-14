@@ -1,5 +1,11 @@
 import { z } from 'zod';
 
+/** Private canonical issuance link, never a caller-supplied grant or a session lifetime. */
+export const ControlAccessTokenIssuerRefSchema = z
+  .object({ kind: z.enum(['user', 'token']), id: z.string().min(1) })
+  .strict();
+export type ControlAccessTokenIssuerRef = z.infer<typeof ControlAccessTokenIssuerRefSchema>;
+
 /** Exact existing token identity/hash proof; no bearer or authorization decision crosses the wire. */
 export const ControlAccessTokenVerificationSchema = z
   .object({
@@ -17,6 +23,7 @@ export const ControlAccessTokenVerificationResultSchema = z
   .object({
     tokenId: z.string(),
     ownerUserId: z.string(),
+    issuerRef: ControlAccessTokenIssuerRefSchema.nullable(),
     scope: z.enum(['server-admin', 'workspace', 'workspace-readonly']),
     workspaceIds: z.array(z.string()),
     status: z.enum(['active', 'expired', 'revoked', 'rotated']),

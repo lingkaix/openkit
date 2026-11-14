@@ -1,5 +1,9 @@
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
+import {
+  type ControlAccessTokenIssuerRef,
+  ControlAccessTokenIssuerRefSchema,
+} from '../storage/access-token-verification-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   createOpenKitAccessTokenSecret,
@@ -22,6 +26,8 @@ const DefaultServerAdminTokenV1Schema = z.object({ tokenId: z.string().min(1) })
 export interface CreateOpenKitAccessTokenRecordInput {
   /** User id that owns the token. */
   ownerUserId: string;
+  /** Actual issuance principal when the owning producer has proved it; never inferred from owner. */
+  issuerRef?: ControlAccessTokenIssuerRef | null;
   /** Token scope. */
   scope: OpenKitAccessTokenScope;
   /** Workspace ids bound to workspace-scoped tokens. */
@@ -77,12 +83,14 @@ export interface OpenKitAccessTokenRotationResult extends OpenKitAccessTokenIssu
   rotatedRecord: OpenKitAccessTokenRecord;
 }
 
-/** Redacted durable OpenKit access-token record. */
+/** Private redacted durable OpenKit access-token record; public projections omit issuerRef. */
 export interface OpenKitAccessTokenRecord {
   /** Durable token id. */
   tokenId: string;
   /** User id that owns the token. */
   ownerUserId: string;
+  /** Actual issuance principal, or no verified lineage for a legacy/unsupported link. */
+  issuerRef: ControlAccessTokenIssuerRef | null;
   /** Token scope. */
   scope: OpenKitAccessTokenScope;
   /** Workspace ids bound to workspace-scoped tokens. */
@@ -115,6 +123,7 @@ interface OpenKitAccessTokenRow {
   token_id: string;
   token_hash: string;
   owner_user_id: string;
+  issuer_ref_json: string | null;
   scope: OpenKitAccessTokenScope;
   workspace_ids_json: string;
   status: OpenKitAccessTokenStatus;
@@ -179,6 +188,7 @@ export interface InsertOpenKitAccessTokenRecordInput {
   readonly issuedAt: string;
   readonly expiresAt: string;
   readonly predecessorTokenId?: string | null;
+  readonly issuerRef?: ControlAccessTokenIssuerRef | null;
 }
 
 /** Inserts and reads back one record without generating or transporting its plaintext material. */
@@ -187,6 +197,8 @@ export function insertOpenKitAccessTokenRecord(
   input: InsertOpenKitAccessTokenRecordInput
 ): OpenKitAccessTokenRecord {
   const binding = normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
+  const issuerRef =
+    input.issuerRef == null ? null : ControlAccessTokenIssuerRefSchema.parse(input.issuerRef);
   coreDb.sqlite
     .prepare(
       `INSERT INTO openkit_access_tokens (
@@ -199,8 +211,9 @@ export function insertOpenKitAccessTokenRecord(
         status,
         issued_at,
         expires_at,
-        predecessor_token_id
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+        predecessor_token_id,
+        issuer_ref_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
     )
     .run(
       input.tokenId,
@@ -211,7 +224,8 @@ export function insertOpenKitAccessTokenRecord(
       JSON.stringify(binding.workspaceIds),
       input.issuedAt,
       input.expiresAt,
-      input.predecessorTokenId ?? null
+      input.predecessorTokenId ?? null,
+      issuerRef === null ? null : JSON.stringify(issuerRef)
     );
   const record = getOpenKitAccessTokenRecord(coreDb, input.tokenId);
   if (!record) {
@@ -364,6 +378,7 @@ export function rotateOpenKitAccessTokenRecord(
               expiresAt: current.expiresAt,
               ownerUserId: current.ownerUserId,
               predecessorTokenId: current.tokenId,
+              issuerRef: current.issuerRef,
               scope: current.scope,
               workspaceIds: current.workspaceIds,
             }),
@@ -373,6 +388,7 @@ export function rotateOpenKitAccessTokenRecord(
             now,
             ownerUserId: current.ownerUserId,
             predecessorTokenId: current.tokenId,
+            issuerRef: current.issuerRef,
             scope: current.scope,
             workspaceIds: current.workspaceIds,
           });
@@ -594,6 +610,7 @@ function readOpenKitAccessTokenRecord(row: OpenKitAccessTokenRow): OpenKitAccess
     lastUsedChannel: row.last_used_channel,
     lastUsedSource: row.last_used_source,
     ownerUserId: row.owner_user_id,
+    issuerRef: parseIssuerRef(row.issuer_ref_json),
     predecessorTokenId: row.predecessor_token_id,
     revokedAt: row.revoked_at,
     rotatedGraceExpiresAt: row.rotated_grace_expires_at,
@@ -602,6 +619,17 @@ function readOpenKitAccessTokenRecord(row: OpenKitAccessTokenRow): OpenKitAccess
     tokenId: row.token_id,
     workspaceIds: parseWorkspaceIdsV1(row.workspace_ids_json),
   }));
+}
+
+/** Missing or unsupported lineage stays unknown; ordinary legacy Token usability is unchanged. */
+function parseIssuerRef(value: string | null | undefined): ControlAccessTokenIssuerRef | null {
+  if (value == null) return null;
+  try {
+    const parsed = ControlAccessTokenIssuerRefSchema.safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }
 
 /**

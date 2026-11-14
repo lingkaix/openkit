@@ -384,6 +384,7 @@ describe('database setup', () => {
         '0025_harness_login_observations.sql',
         '0026_security_trigger.sql',
         '0027_security_thread_destinations.sql',
+        '0028_access_token_issuer_ref.sql',
       ]);
       expect(
         ['app', 'core', 'user', 'workspace'].every((scope) =>
@@ -420,6 +421,7 @@ describe('database setup', () => {
         'core_0025_harness_login_observations',
         'core_0026_security_trigger',
         'core_0027_security_thread_destinations',
+        'core_0028_access_token_issuer_ref',
       ]);
       expect(listTableNames(coreDb)).toEqual(beforeTables);
       for (const table of ['capability_calls', 'usage_records', 'evidence_bundles']) {
@@ -555,6 +557,7 @@ describe('database setup', () => {
         'last_used_channel',
         'last_used_source',
         'schema_version',
+        'issuer_ref_json',
       ]);
       /**
        * S-2b-1 Unit 2: durable NanoHost transport Token metadata projection.

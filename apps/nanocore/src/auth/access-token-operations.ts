@@ -1,4 +1,7 @@
-import type { ACCESS_TOKEN_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import type {
+  ACCESS_TOKEN_OPERATION_DEFINITIONS,
+  OpenKitAccessTokenRecord as PublicOpenKitAccessTokenRecord,
+} from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { prepareServerAuditEvent } from '../audit-events.js';
 import type { CoreMode } from '../config/mode.js';
@@ -116,6 +119,31 @@ function requireTokenLifecycleResult(
   throw new OperationError(result.code, denied.message, denied.status);
 }
 
+/** Keep the new native issuance link private; the existing closed public record stays unchanged. */
+function publicTokenRecord(record: OpenKitAccessTokenRecord): PublicOpenKitAccessTokenRecord {
+  return {
+    tokenId: record.tokenId,
+    ownerUserId: record.ownerUserId,
+    scope: record.scope,
+    workspaceIds: record.workspaceIds,
+    status: record.status,
+    issuedAt: record.issuedAt,
+    expiresAt: record.expiresAt,
+    revokedAt: record.revokedAt,
+    predecessorTokenId: record.predecessorTokenId,
+    rotatedGraceExpiresAt: record.rotatedGraceExpiresAt,
+    lastUsedAt: record.lastUsedAt,
+    lastUsedChannel: record.lastUsedChannel,
+    lastUsedSource: record.lastUsedSource,
+  };
+}
+
+/** Preserve the existing owned-list projection without exposing private issuer references. */
+function publicOwnedAdminTokens(coreDb: CoreDb, userId: string) {
+  const listed = listOwnedServerAdminAccessTokens(coreDb, userId);
+  return { defaultTokenId: listed.defaultTokenId, items: listed.items.map(publicTokenRecord) };
+}
+
 /** Joins the human credential family to the existing token, bootstrap, membership and audit owners. */
 export function createAccessTokenOperationImplementations({
   coreDb,
@@ -187,9 +215,11 @@ export function createAccessTokenOperationImplementations({
           summary: `Bootstrap token consumed for owner ${record.ownerUserId}.${actorSuffix}`,
         }),
       });
-      return { record: consumed.record, token: consumed.secret };
+      return { record: publicTokenRecord(consumed.record), token: consumed.secret };
     },
-    'token.list': () => ({ items: listOpenKitAccessTokenRecords(administratorStorage()) }),
+    'token.list': () => ({
+      items: listOpenKitAccessTokenRecords(administratorStorage()).map(publicTokenRecord),
+    }),
     'token.create': async (input, context) => {
       const db = administratorStorage();
       const actor = publicOperationActor(context);
@@ -239,7 +269,7 @@ export function createAccessTokenOperationImplementations({
         throw error;
       }
       await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.issue', record, actor);
-      return { record, token: secret };
+      return { record: publicTokenRecord(record), token: secret };
     },
     'token.revoke': async (input, context) => {
       const db = administratorStorage();
@@ -257,7 +287,7 @@ export function createAccessTokenOperationImplementations({
       if (!record)
         throw new OperationError('access_token_not_found', 'Access token not found.', 404);
       await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.revoke', record, actor);
-      return { record };
+      return { record: publicTokenRecord(record) };
     },
     'token.rotate': async (input, context) => {
       const db = administratorStorage();
@@ -286,13 +316,13 @@ export function createAccessTokenOperationImplementations({
         );
       await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.rotate', rotated.record, actor);
       return {
-        record: rotated.record,
-        rotatedRecord: rotated.rotatedRecord,
+        record: publicTokenRecord(rotated.record),
+        rotatedRecord: publicTokenRecord(rotated.rotatedRecord),
         token: secret,
       };
     },
     'token.my-admin-list': (_input, context) =>
-      listOwnedServerAdminAccessTokens(storage(), publicOperationActor(context).userId),
+      publicOwnedAdminTokens(storage(), publicOperationActor(context).userId),
     'token.my-admin-default': async (input, context) => {
       const db = storage();
       const actor = publicOperationActor(context);
@@ -307,7 +337,7 @@ export function createAccessTokenOperationImplementations({
           'Default token must be an owned usable server-admin token.',
           400
         );
-      return listOwnedServerAdminAccessTokens(db, actor.userId);
+      return publicOwnedAdminTokens(db, actor.userId);
     },
   } satisfies FamilyImplementations<typeof ACCESS_TOKEN_OPERATION_DEFINITIONS>;
 }
