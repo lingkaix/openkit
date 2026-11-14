@@ -1,6 +1,10 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as schemas from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
+import { bindMcpCaptureAdmission, enterMcpCaptureCall } from './runtime/worker-mcp-capture.js';
 import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const workspaceId = allocateEntityId('ws');
@@ -354,5 +358,114 @@ describe('Workspace freeze public contract', () => {
       // Descriptive additions may be rejected or ignored; neither may enter the public projection.
       if (parsed.success) expect(parsed.data.blockers).toEqual([unavailable]);
     }
+  });
+});
+
+// ORACLE-STORE S7 K2: preparation admits only original Worker closeout, while
+// the real MCP capture participant and ordinary publishers share the same exclusion.
+describe('ORACLE S7 preparation cut and unknown exclusion', () => {
+  it('drains admitted Worker closeout before the cut while refusing actual MCP publication', async () => {
+    const gate = new WorkspaceMutationAdmission();
+    const root = mkdtempSync(join(tmpdir(), 'oracle-s7-publishers-'));
+    onTestFinished(() => rmSync(root, { recursive: true, force: true }));
+    bindMcpCaptureAdmission(root, gate);
+    const entered = Promise.withResolvers<void>();
+    const prepared = Promise.withResolvers<void>();
+    const mayFinish = Promise.withResolvers<void>();
+    let releaseCloseout: () => void = () => {
+      throw new Error('Original closeout was not admitted.');
+    };
+    const inspect = vi.fn(() => []);
+    let settled = false;
+    const capture = gate
+      .tryFreezeAfterDrain(
+        workspaceId,
+        async () => {
+          expect(gate.enter(workspaceId)).toBeNull();
+          expect(enterMcpCaptureCall(root, workspaceId)).toBeNull();
+          const closeout = gate.enterLatePublisher(workspaceId, 'worker-turn-closeout');
+          expect(closeout).toBeTypeOf('function');
+          if (!closeout) throw new Error('Original closeout was refused during preparation.');
+          releaseCloseout = closeout;
+          entered.resolve();
+          await mayFinish.promise;
+          prepared.resolve();
+        },
+        inspect
+      )
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await entered.promise;
+    const sibling = enterMcpCaptureCall(root, siblingId);
+    expect(sibling).toBeTypeOf('function');
+    sibling?.();
+    mayFinish.resolve();
+    await prepared.promise;
+    expect(settled).toBe(false);
+    expect(inspect).not.toHaveBeenCalled();
+    releaseCloseout();
+    const frozen = await capture;
+    expect(frozen.status).toBe('frozen');
+    expect(inspect).toHaveBeenCalledOnce();
+    expect(gate.enter(workspaceId)).toBeNull();
+    expect(enterMcpCaptureCall(root, workspaceId)).toBeNull();
+    expect(gate.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    if (frozen.status === 'frozen') frozen.release();
+    const admitted = enterMcpCaptureCall(root, workspaceId);
+    expect(admitted).toBeTypeOf('function');
+    admitted?.();
+  });
+
+  it('retains unknown preparation exclusion and refuses a guessed recovery origin', async () => {
+    const gate = new WorkspaceMutationAdmission();
+    const inspect = vi.fn(() => []);
+    const result = await gate.tryFreezeAfterDrain(
+      workspaceId,
+      async () => {
+        const closeout = gate.enterLatePublisher(workspaceId, 'worker-turn-closeout');
+        expect(closeout).toBeTypeOf('function');
+        closeout?.();
+        throw new Error('Original external close outcome is unknown.');
+      },
+      inspect
+    );
+    expect(result).toEqual({ status: 'blocked', blockers: [unavailable] });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gate.isClosed(workspaceId)).toBe(true);
+    expect(gate.enter(workspaceId)).toBeNull();
+    expect(gate.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(gate.enterLatePublisher(workspaceId, 'mcp-workspace-data')).toBeNull();
+    expect(gate.tryResumeRecovery(workspaceId, { captureId: 'guessed' }, inspect)).toEqual({
+      status: 'busy',
+    });
+    expect(gate.tryFreeze(workspaceId, inspect)).toEqual({ status: 'busy' });
+    const sibling = gate.enter(siblingId);
+    expect(sibling).toBeTypeOf('function');
+    sibling?.();
+  });
+
+  it('cannot reopen an independent lifecycle close when preparation returns', async () => {
+    const gate = new WorkspaceMutationAdmission();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const inspect = vi.fn(() => []);
+    const capture = gate.tryFreezeAfterDrain(
+      workspaceId,
+      async () => {
+        entered.resolve();
+        await release.promise;
+      },
+      inspect
+    );
+    await entered.promise;
+    await gate.close(workspaceId);
+    expect(gate.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    release.resolve();
+    expect(await capture).toEqual({ status: 'busy' });
+    expect(inspect).not.toHaveBeenCalled();
+    expect(gate.isLifecycleClosed(workspaceId)).toBe(true);
+    expect(gate.enter(workspaceId)).toBeNull();
   });
 });
