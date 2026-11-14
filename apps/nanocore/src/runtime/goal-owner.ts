@@ -36,13 +36,13 @@ import {
   isCurrentDeploymentAdministrator,
   requireCurrentDeploymentAdmin,
 } from '../auth/operation-authorizer.js';
-import { readThreadPolicyAncestors } from '../auth/thread-visibility.js';
+import { readThreadPolicyAncestors, readThreadPolicyFacts } from '../auth/thread-visibility.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
 import { listWorkspaceEvidenceBundles } from '../evidence-bundles.js';
 import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
-import { evaluateThreadAuthorization } from '../policy/workspace-resource-access.js';
+import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import {
   mapCommandRequestRow,
   readCommandRequestRecordsFromSqlite,
@@ -577,25 +577,27 @@ function nativeThreadVisible(
   const workspace = readProduct(db.sqlite, owner, 'workspace', db.workspaceId);
   if (!thread || !workspace) return false;
   return (
-    evaluateThreadAuthorization({
-      thread: ThreadSchema.parse(thread.record),
-      ancestorThreadIds: readThreadPolicyAncestors(
-        {
-          getThread: (_workspaceId, id) =>
-            ThreadSchema.parse(readProduct(db.sqlite, owner, 'thread', id)?.record),
-        },
-        ThreadSchema.parse(thread.record)
-      ),
-      workspaceId: db.workspaceId,
-      userId: actor.userId,
-      administrator: input.administrator?.userId === actor.userId,
-      personalWorkspaceId:
-        workspace.record.kind === 'personal'
-          ? quickChatWorkspaceIdForUser(actor.userId, db.dataRoot)
-          : undefined,
-      operation: 'thread.read',
-      policy: input.resourcePolicy,
-    }).effect === 'allow'
+    evaluatePolicyKernel(
+      readThreadPolicyFacts({
+        thread: ThreadSchema.parse(thread.record),
+        ancestorThreadIds: readThreadPolicyAncestors(
+          {
+            getThread: (_workspaceId, id) =>
+              ThreadSchema.parse(readProduct(db.sqlite, owner, 'thread', id)?.record),
+          },
+          ThreadSchema.parse(thread.record)
+        ),
+        workspaceId: db.workspaceId,
+        userId: actor.userId,
+        administrator: input.administrator?.userId === actor.userId,
+        personalWorkspaceId:
+          workspace.record.kind === 'personal'
+            ? quickChatWorkspaceIdForUser(actor.userId, db.dataRoot)
+            : undefined,
+        operation: 'thread.read',
+        policy: input.resourcePolicy,
+      })
+    ).effect === 'allow'
   );
 }
 /** Captures the Pending Request and its already-synchronized immutable Item in the same native tuple. */

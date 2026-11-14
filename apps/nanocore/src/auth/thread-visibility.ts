@@ -1,3 +1,4 @@
+import { parseWorkspacePolicyDocument, workspacePolicyRecipient } from '@openkit/config-schema';
 import {
   type ArtifactSchema,
   canonicalIdentifierName,
@@ -5,14 +6,10 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import {
-  evaluateThreadAuthorization,
-  parseWorkspacePolicy,
-  type ResourcePolicyActor,
-  workspacePolicySubject,
-} from '../policy/workspace-resource-access.js';
+import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
+import type { ThreadPolicyActor } from './identity.js';
 
 type Artifact = import('zod').infer<typeof ArtifactSchema>;
 type Thread = import('zod').infer<typeof ThreadSchema>;
@@ -27,6 +24,49 @@ export type ThreadVisibilityReadPort = Pick<
   /** Native readers borrow the actual Core instead of opening it inside their deciding SQL. */
   readonly personalWorkspaceCore?: Pick<CoreDb, 'sqlite'>;
 };
+
+/** Collects validated native Thread facts; the shared Kernel alone evaluates them. */
+export function readThreadPolicyFacts(input: {
+  readonly thread: Thread;
+  readonly workspaceId: string;
+  readonly userId: string;
+  readonly administrator: boolean;
+  readonly personalWorkspaceId?: string | undefined;
+  readonly policy: unknown;
+  readonly operation: string;
+  readonly actor?: ThreadPolicyActor | undefined;
+  /** Same-Workspace ancestors restored by the native Thread reader, nearest first. */
+  readonly ancestorThreadIds?: readonly string[];
+}): Extract<Parameters<typeof evaluatePolicyKernel>[0], { readonly thread: unknown }> {
+  if (
+    !input.userId ||
+    !ThreadSchema.safeParse(input.thread).success ||
+    input.thread.visibility === 'server' ||
+    input.thread.owner.kind !== 'workspace' ||
+    workspaceIdForOwner(input.thread.owner) !== input.workspaceId ||
+    (input.actor && input.actor.userId !== input.userId)
+  )
+    throw new Error('Thread authorization requires exact current audience and actor facts.');
+  const ancestors = input.ancestorThreadIds ?? [];
+  if (
+    (input.thread.parentThreadId ?? undefined) !== ancestors[0] ||
+    new Set([input.thread.id, ...ancestors]).size !== ancestors.length + 1
+  )
+    throw new Error('Thread Policy lineage is unavailable.');
+  return {
+    thread: {
+      workspaceId: input.workspaceId,
+      actor: input.actor ?? { kind: 'user', userId: input.userId },
+      administrator: input.administrator,
+      visibility: input.thread.visibility,
+      privateOwnerUserId: input.thread.privateOwnerUserId,
+      personalWorkspaceId: input.personalWorkspaceId,
+      policy: input.policy,
+      resource: { family: 'thread', id: input.thread.id, ancestors },
+      operation: input.operation,
+    },
+  };
+}
 
 /** Restores only native containment; malformed, missing, cyclic and cross-owner parents never widen scope. */
 export function readThreadPolicyAncestors(
@@ -64,7 +104,7 @@ export function isThreadVisible(
   userId: string | undefined,
   administratorEligible = false,
   operation: string = 'thread.read',
-  policyActor?: ResourcePolicyActor
+  policyActor?: ThreadPolicyActor
 ): boolean {
   if (!userId) return false;
   try {
@@ -72,22 +112,24 @@ export function isThreadVisible(
     const workspaceId = workspaceIdForOwner(thread.owner);
     const workspace = store.getWorkspace(workspaceId);
     return (
-      evaluateThreadAuthorization({
-        thread,
-        ancestorThreadIds: readThreadPolicyAncestors(store, thread),
-        workspaceId,
-        userId,
-        administrator: administratorEligible,
-        personalWorkspaceId:
-          workspace.kind === 'personal'
-            ? store.personalWorkspaceCore
-              ? resolvePersonalWorkspaceIdInDb(store.personalWorkspaceCore, userId)
-              : quickChatWorkspaceIdForUser(userId, store.getDataRoot())
-            : undefined,
-        operation,
-        policy: store.getWorkspaceResourceAccess(workspaceId),
-        actor: policyActor,
-      }).effect === 'allow'
+      evaluatePolicyKernel(
+        readThreadPolicyFacts({
+          thread,
+          ancestorThreadIds: readThreadPolicyAncestors(store, thread),
+          workspaceId,
+          userId,
+          administrator: administratorEligible,
+          personalWorkspaceId:
+            workspace.kind === 'personal'
+              ? store.personalWorkspaceCore
+                ? resolvePersonalWorkspaceIdInDb(store.personalWorkspaceCore, userId)
+                : quickChatWorkspaceIdForUser(userId, store.getDataRoot())
+              : undefined,
+          operation,
+          policy: store.getWorkspaceResourceAccess(workspaceId),
+          actor: policyActor,
+        })
+      ).effect === 'allow'
     );
   } catch {
     return false;
@@ -113,7 +155,7 @@ export function isThreadIdVisible(
   userId: string | undefined,
   administratorEligible = false,
   operation: string = 'thread.read',
-  policyActor?: ResourcePolicyActor
+  policyActor?: ThreadPolicyActor
 ): boolean {
   try {
     return isThreadVisible(
@@ -135,7 +177,7 @@ export function isArtifactVisible(
   artifact: Artifact,
   userId: string | undefined,
   administratorEligible = false,
-  policyActor?: ResourcePolicyActor
+  policyActor?: ThreadPolicyActor
 ): boolean {
   if (!userId) return false;
   if (artifact.origin.kind === 'imported')
@@ -171,7 +213,7 @@ export function canDiscloseThreadToAudience(
     );
   try {
     const workspaceId = workspaceIdForOwner(source.owner);
-    const document = parseWorkspacePolicy(
+    const document = parseWorkspacePolicyDocument(
       workspaceId,
       store.getWorkspaceResourceAccess(workspaceId)
     );
@@ -198,11 +240,11 @@ export function canDiscloseThreadToAudience(
     // Managed recipients are finite: an unlisted User or Agent has no positive allocation,
     // including administrators. Probe every destination allocation/right through the Kernel;
     // splitting statements or adding a prohibition cannot manufacture a wider audience.
-    const actors = new Map<string, ResourcePolicyActor>();
+    const actors = new Map<string, ThreadPolicyActor>();
     const operations = new Set<string>();
     for (const statement of destinationStatements) {
       if (statement.kind !== 'permission' || statement.effect !== 'allow') continue;
-      const recipient = workspacePolicySubject(statement);
+      const recipient = workspacePolicyRecipient(statement);
       if (!recipient) return false;
       actors.set(
         canonicalIdentifierName(recipient),
@@ -219,16 +261,18 @@ export function canDiscloseThreadToAudience(
     for (const actor of actors.values()) {
       for (const operation of operations) {
         const evaluate = (thread: Thread, ids: string[]) =>
-          evaluateThreadAuthorization({
-            actor,
-            userId: actor.userId,
-            administrator: false,
-            thread,
-            ancestorThreadIds: ids.slice(1),
-            workspaceId,
-            policy: document,
-            operation,
-          });
+          evaluatePolicyKernel(
+            readThreadPolicyFacts({
+              actor,
+              userId: actor.userId,
+              administrator: false,
+              thread,
+              ancestorThreadIds: ids.slice(1),
+              workspaceId,
+              policy: document,
+              operation,
+            })
+          );
         const recipient = evaluate(destination, destinationIds);
         if (
           recipient.reasons.some(

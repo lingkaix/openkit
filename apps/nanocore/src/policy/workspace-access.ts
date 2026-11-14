@@ -1,5 +1,11 @@
 import { OPERATION_DEFINITIONS, type OperationTarget } from '@openkit/app-api-schemas';
-import { PRODUCT_OPERATION_ACCESS_RIGHTS, type ProductOperation } from '@openkit/config-schema';
+import {
+  PRODUCT_OPERATION_ACCESS_RIGHTS,
+  type ProductOperation,
+  parseWorkspacePolicyDocument,
+  type WorkspacePolicySubject,
+  workspacePolicyRecipient,
+} from '@openkit/config-schema';
 import {
   type AccessRequest,
   evaluateAccess,
@@ -17,6 +23,7 @@ import {
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { OpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import type { ThreadPolicyActor } from '../auth/identity.js';
 
 /** Ordinary membership never supplies Server, delegated-maintenance or Workspace export authority. */
 export const WORKSPACE_MEMBER_OPERATIONS = [
@@ -93,10 +100,41 @@ export interface WorkerGitReadMaintenanceFacts {
   readonly now: Date;
 }
 
+type ThreadGraphFacts = {
+  readonly thread: {
+    readonly actor: ThreadPolicyActor;
+    readonly administrator: boolean;
+    readonly visibility: 'workspace' | 'private';
+    readonly privateOwnerUserId?: string | undefined;
+    readonly personalWorkspaceId?: string | undefined;
+    readonly workspaceId: string;
+    readonly policy: unknown;
+    readonly resource: {
+      readonly family: 'thread';
+      readonly id: string;
+      /** Current native parent chain, nearest first; never supplied by a request payload. */
+      readonly ancestors?: readonly string[];
+    };
+    readonly operation: string;
+  };
+};
+
+function matchesThreadPolicySubject(
+  subject: WorkspacePolicySubject,
+  actor: ThreadPolicyActor
+): boolean {
+  return (
+    subject.kind === actor.kind &&
+    subject.userId === actor.userId &&
+    (subject.kind !== 'agent' || (actor.kind === 'agent' && subject.agentId === actor.agentId))
+  );
+}
+
 /** Evaluates the shared projection once; native callers retain admission and fact ownership. */
 export function evaluatePolicyKernel(
   input:
     | ProductPolicyInput
+    | ThreadGraphFacts
     | {
         readonly binding: {
           readonly principal: ActorRef & { readonly kind: 'integration' };
@@ -174,6 +212,223 @@ export function compilePolicyGraph(
   principal?: (ActorRef & { readonly kind: 'integration' }) | null;
   onBehalfOfUserId?: string | null;
 } {
+  if ('thread' in input) {
+    const facts = input.thread;
+
+    // Reparse at the bridge boundary: corrupt or unsupported mandatory facts cannot become unmanaged.
+    const document = parseWorkspacePolicyDocument(facts.workspaceId, facts.policy);
+    const ancestors = facts.resource.ancestors ?? [];
+    const boundaries = [facts.resource.id, ...ancestors].map((id) => ({
+      id,
+      statements: document.statements.filter(
+        (statement) =>
+          statement.state === 'active' &&
+          statement.scope.resources.some(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.kind === 'thread' &&
+              resource.container.id === id
+          )
+      ),
+    }));
+    const user = `user:${facts.actor.userId}`;
+    const target = `object:${JSON.stringify(facts.resource)}`;
+    const subject = 'ua:thread-subject';
+    const baseline = 'ua:thread-shared';
+    const privateOwner = 'ua:thread-private-owner';
+    const administrator = 'ua:thread-administrator';
+    const objects = 'oa:workspace-resource';
+    const baselineClass = 'pc:thread-audience';
+    const operations = WORKSPACE_MEMBER_OPERATIONS.map(
+      (operation) => [operation, PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] as const
+    );
+    const policy: PolicyState = {
+      elements: [
+        { id: user, kind: 'user' },
+        { id: subject, kind: 'userAttribute' },
+        { id: baseline, kind: 'userAttribute' },
+        { id: privateOwner, kind: 'userAttribute' },
+        { id: administrator, kind: 'userAttribute' },
+        { id: target, kind: 'object' },
+        { id: objects, kind: 'objectAttribute' },
+        { id: baselineClass, kind: 'policyClass' },
+      ],
+      assignments: [
+        { child: user, parent: subject },
+        { child: subject, parent: baselineClass },
+        ...(facts.visibility === 'workspace' ? [{ child: user, parent: baseline }] : []),
+        ...(facts.visibility === 'private' && facts.privateOwnerUserId === facts.actor.userId
+          ? [{ child: user, parent: privateOwner }]
+          : []),
+        ...(facts.administrator ? [{ child: user, parent: administrator }] : []),
+        { child: privateOwner, parent: baselineClass },
+        { child: administrator, parent: baselineClass },
+        { child: baseline, parent: baselineClass },
+        { child: target, parent: objects },
+        { child: objects, parent: baselineClass },
+      ],
+      associations: [baseline, privateOwner, administrator].map((attribute) => ({
+        id: `assoc:${attribute}`,
+        userAttribute: attribute,
+        targetAttribute: objects,
+        accessRights: operations.map(([, right]) => right),
+      })),
+      operations: operations.map(([id, right]) => ({ id, accessRights: [right] })),
+      ...(facts.actor.kind === 'agent'
+        ? { processUsers: [{ process: facts.actor.processId, user }] }
+        : {}),
+    };
+    if (facts.personalWorkspaceId !== undefined) {
+      const personalClass = 'pc:personal-workspace-audience';
+      const personalObjects = 'oa:personal-workspace';
+      const personalOwner = 'ua:personal-workspace-owner';
+      const personalAdministrator = 'ua:personal-workspace-administrator';
+      policy.elements = [
+        ...policy.elements,
+        { id: personalClass, kind: 'policyClass' },
+        { id: personalObjects, kind: 'objectAttribute' },
+        { id: personalOwner, kind: 'userAttribute' },
+        { id: personalAdministrator, kind: 'userAttribute' },
+      ];
+      policy.assignments = [
+        ...policy.assignments,
+        { child: subject, parent: personalClass },
+        { child: target, parent: personalObjects },
+        { child: personalObjects, parent: personalClass },
+        { child: personalOwner, parent: personalClass },
+        { child: personalAdministrator, parent: personalClass },
+        ...(facts.workspaceId === facts.personalWorkspaceId
+          ? [{ child: user, parent: personalOwner }]
+          : []),
+        ...(facts.administrator ? [{ child: user, parent: personalAdministrator }] : []),
+      ];
+      policy.associations = [
+        ...policy.associations,
+        ...[personalOwner, personalAdministrator].map((attribute) => ({
+          id: `assoc:${attribute}`,
+          userAttribute: attribute,
+          targetAttribute: personalObjects,
+          accessRights: operations.map(([, right]) => right),
+        })),
+      ];
+    }
+    const ancestorAttribute = (id: string) => `oa:thread:${id}`;
+    policy.elements = [
+      ...policy.elements,
+      ...ancestors.map((id) => ({ id: ancestorAttribute(id), kind: 'objectAttribute' as const })),
+    ];
+    policy.assignments = [
+      ...policy.assignments,
+      ...ancestors.map((id, index) => ({
+        child: index === 0 ? target : ancestorAttribute(ancestors[index - 1]!),
+        parent: ancestorAttribute(id),
+      })),
+      ...(ancestors.length
+        ? [{ child: ancestorAttribute(ancestors.at(-1)!), parent: objects }]
+        : []),
+    ];
+    for (const [boundaryIndex, boundary] of boundaries.entries()) {
+      if (!boundary.statements.some((statement) => statement.kind === 'managed-boundary')) continue;
+      const suffix = boundaryIndex === 0 ? '' : `:${boundary.id}`;
+      const managed = {
+        grants: boundary.statements.flatMap((statement) =>
+          statement.kind === 'permission' && statement.effect === 'allow'
+            ? [
+                {
+                  subject: workspacePolicyRecipient(statement)!,
+                  operations: statement.scope.actions,
+                },
+              ]
+            : []
+        ),
+        prohibitions: boundary.statements.flatMap((statement) =>
+          statement.kind === 'permission' && statement.effect === 'prohibit'
+            ? [
+                {
+                  subject: workspacePolicyRecipient(statement)!,
+                  operations: statement.scope.actions,
+                },
+              ]
+            : []
+        ),
+      };
+      const resourceClass = `pc:managed-resource${suffix}`;
+      const resourceObjects = `oa:managed-resource${suffix}`;
+      const elements = [
+        ...policy.elements,
+        { id: resourceClass, kind: 'policyClass' as const },
+        { id: resourceObjects, kind: 'objectAttribute' as const },
+      ];
+      const assignments = [
+        ...policy.assignments,
+        {
+          child: boundaryIndex === 0 ? target : ancestorAttribute(boundary.id),
+          parent: resourceObjects,
+        },
+        { child: resourceObjects, parent: resourceClass },
+      ];
+      const associations = [...policy.associations];
+      for (const [index, grant] of managed.grants.entries()) {
+        const attribute = `ua:resource-allocation${suffix}:${index}`;
+        elements.push({ id: attribute, kind: 'userAttribute' });
+        assignments.push({ child: attribute, parent: resourceClass });
+        if (matchesThreadPolicySubject(grant.subject, facts.actor))
+          assignments.push({ child: user, parent: attribute });
+        associations.push({
+          id: `assoc:resource-allocation${suffix}:${index}`,
+          userAttribute: attribute,
+          targetAttribute: resourceObjects,
+          accessRights: grant.operations.map(
+            (operation) =>
+              PRODUCT_OPERATION_ACCESS_RIGHTS[
+                operation as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS
+              ]
+          ),
+        });
+      }
+      policy.elements = elements;
+      policy.assignments = assignments;
+      policy.associations = associations;
+      policy.prohibitions = [
+        ...(policy.prohibitions ?? []),
+        ...managed.prohibitions.flatMap((prohibition, index) => {
+          // A User restriction follows that User's mapped processes; an Agent restriction stays exact.
+          const restrictUser =
+            prohibition.subject.kind === 'user' &&
+            prohibition.subject.userId === facts.actor.userId;
+          if (!restrictUser && !matchesThreadPolicySubject(prohibition.subject, facts.actor))
+            return [];
+          return [
+            {
+              id: `prohibition:resource${suffix}:${index}`,
+              kind: restrictUser ? ('user' as const) : ('process' as const),
+              subject: restrictUser
+                ? user
+                : facts.actor.kind === 'agent'
+                  ? facts.actor.processId
+                  : user,
+              accessRights: prohibition.operations.map(
+                (operation) =>
+                  PRODUCT_OPERATION_ACCESS_RIGHTS[
+                    operation as keyof typeof PRODUCT_OPERATION_ACCESS_RIGHTS
+                  ]
+              ),
+              range: { type: 'disjunctive' as const, include: [resourceObjects] },
+            },
+          ];
+        }),
+      ];
+    }
+    return {
+      policy,
+      request: {
+        user,
+        ...(facts.actor.kind === 'agent' ? { process: facts.actor.processId } : {}),
+        target,
+        operation: facts.operation,
+      },
+    };
+  }
   if ('exposure' in input) {
     const { group, document } = input.exposure;
     if (!group.trim()) throw new Error('Operation exposure group is unavailable.');

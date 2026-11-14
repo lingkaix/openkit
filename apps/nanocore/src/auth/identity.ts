@@ -27,6 +27,16 @@ export interface Actor {
   adminTokenId?: string;
 }
 
+/** Authenticated current responsibility; a runtime process is mapped to a User, never an NGAC element. */
+export type ThreadPolicyActor =
+  | { readonly kind: 'user'; readonly userId: string }
+  | {
+      readonly kind: 'agent';
+      readonly userId: string;
+      readonly agentId: string;
+      readonly processId: string;
+    };
+
 /**
  * Checks whether one actor may administer deployment-wide state.
  *

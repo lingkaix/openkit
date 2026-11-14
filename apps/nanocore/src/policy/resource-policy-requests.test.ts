@@ -30,7 +30,7 @@ import {
   checkResourcePolicyCommandIntent,
   raiseResourcePolicyRequest,
 } from './resource-policy-requests.js';
-import { evaluateWorkspaceResourceAccess } from './workspace-resource-access.js';
+import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Creates real configuration and Pending Request storage; no model, provider or external effect is used. */
 async function fixture() {
@@ -489,14 +489,16 @@ describe('resource Policy Pending Request commands', () => {
         return loaded!;
       };
       const decide = () =>
-        evaluateWorkspaceResourceAccess({
-          workspaceId: f.workspace.id,
-          policy: loadedPolicy(),
-          actor: { kind: 'user', userId: f.actor.userId },
-          administrator: false,
-          visibility: 'workspace',
-          resource: f.resource,
-          operation: 'thread.read',
+        evaluatePolicyKernel({
+          thread: {
+            workspaceId: f.workspace.id,
+            policy: loadedPolicy(),
+            actor: { kind: 'user', userId: f.actor.userId },
+            administrator: false,
+            visibility: 'workspace',
+            resource: f.resource,
+            operation: 'thread.read',
+          },
         });
       expect(
         f.manager.current().workspaceConfigs.find((entry) => entry.workspaceId === f.workspace.id)

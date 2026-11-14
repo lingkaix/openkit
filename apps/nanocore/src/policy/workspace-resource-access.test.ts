@@ -1,11 +1,8 @@
 import type { PolicyDocumentV1 } from '@openkit/protocol';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
+import type { ThreadPolicyActor } from '../auth/identity.js';
 import { evaluatePolicyKernel } from './workspace-access.js';
-import {
-  evaluateWorkspaceResourceAccess,
-  type ResourcePolicyActor,
-} from './workspace-resource-access.js';
 
 const workspaceId = allocateEntityId('ws');
 const userId = allocateEntityId('usr');
@@ -45,23 +42,25 @@ const permission = {
 const decide = (
   statements: PolicyDocumentV1['statements'],
   operation = 'thread.read',
-  current: ResourcePolicyActor = actor,
+  current: ThreadPolicyActor = actor,
   audience: Partial<
     Pick<
-      Parameters<typeof evaluateWorkspaceResourceAccess>[0],
+      Extract<Parameters<typeof evaluatePolicyKernel>[0], { readonly thread: unknown }>['thread'],
       'administrator' | 'visibility' | 'privateOwnerUserId' | 'personalWorkspaceId'
     >
   > = {}
 ) =>
-  evaluateWorkspaceResourceAccess({
-    workspaceId,
-    policy: { schemaVersion: 1, statements },
-    actor: current,
-    administrator: false,
-    visibility: 'workspace',
-    ...audience,
-    resource,
-    operation,
+  evaluatePolicyKernel({
+    thread: {
+      workspaceId,
+      policy: { schemaVersion: 1, statements },
+      actor: current,
+      administrator: false,
+      visibility: 'workspace',
+      ...audience,
+      resource,
+      operation,
+    },
   });
 
 describe('named Workspace resource Kernel projection', () => {

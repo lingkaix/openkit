@@ -39,7 +39,11 @@ import {
   isCurrentServerPolicyAuthor,
   readCurrentWorkspacePolicy,
 } from './auth/operation-authorizer.js';
-import { isThreadVisible, readThreadPolicyAncestors } from './auth/thread-visibility.js';
+import {
+  isThreadVisible,
+  readThreadPolicyAncestors,
+  readThreadPolicyFacts,
+} from './auth/thread-visibility.js';
 import { assertScopeAdmitted } from './bootstrap/readiness.js';
 import {
   type FinishCapabilityCallInput,
@@ -91,7 +95,7 @@ import {
   readPolicyAgentPrincipal,
   selectPolicyBindings,
 } from './policy/statements.js';
-import { evaluateThreadAuthorization } from './policy/workspace-resource-access.js';
+import { evaluatePolicyKernel } from './policy/workspace-access.js';
 import { findNamedAgentEnvironmentPackageSnapshot } from './runtime/aep-snapshot-ledger.js';
 import type { PreparedCapturedPendingCall } from './runtime/captured-pending-call.js';
 import { readGoalTaskPolicyContext } from './runtime/goal-task-policy-context.js';
@@ -2698,21 +2702,23 @@ function currentMcpPolicyAuthority(
     workspaceId: scope.workspaceId,
     policy: input.input.store.getWorkspaceResourceAccess(scope.workspaceId),
   });
-  const resourceKernel = evaluateThreadAuthorization({
-    workspaceId: scope.workspaceId,
-    thread,
-    ancestorThreadIds,
-    userId: responsibleHumanId,
-    administrator: false,
-    policy: resourcePolicy,
-    operation: 'tool.use',
-    actor: {
-      kind: 'agent',
+  const resourceKernel = evaluatePolicyKernel(
+    readThreadPolicyFacts({
+      workspaceId: scope.workspaceId,
+      thread,
+      ancestorThreadIds,
       userId: responsibleHumanId,
-      agentId: input.environmentPackage.agent.agentId,
-      processId: scope.agentSessionId,
-    },
-  });
+      administrator: false,
+      policy: resourcePolicy,
+      operation: 'tool.use',
+      actor: {
+        kind: 'agent',
+        userId: responsibleHumanId,
+        agentId: input.environmentPackage.agent.agentId,
+        processId: scope.agentSessionId,
+      },
+    })
+  );
   const kernel = captured.decision.effect === 'deny' ? captured.decision : resourceKernel;
   const subject = {
     principal: context

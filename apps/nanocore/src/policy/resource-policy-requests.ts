@@ -4,7 +4,12 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 
 export { WorkspaceResourcePolicyChangeSchema as ResourcePolicyChangeSchema } from '@openkit/app-api-schemas';
 
-import { WORKSPACE_RESOURCE_POLICY_FEATURE, WorkspaceConfigSchema } from '@openkit/config-schema';
+import {
+  parseWorkspacePolicyDocument,
+  WORKSPACE_RESOURCE_POLICY_FEATURE,
+  WorkspaceConfigSchema,
+  workspacePolicyRecipient,
+} from '@openkit/config-schema';
 import {
   AccessTokenIdSchema,
   AgentSessionIdSchema,
@@ -40,7 +45,6 @@ import {
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import { EMPTY_POLICY_DOCUMENT } from './statements.js';
-import { parseWorkspacePolicy, workspacePolicySubject } from './workspace-resource-access.js';
 
 /** Captured non-secret credential or Worker lineage, rechecked by its existing current authority owners. */
 const ResourcePolicyRequestOriginSchema = z.discriminatedUnion('kind', [
@@ -275,9 +279,9 @@ export function checkResourcePolicyCommandIntent(
       403
     );
   }
-  if (change.replacement) parseWorkspacePolicy(record.workspaceId, change.replacement);
+  if (change.replacement) parseWorkspacePolicyDocument(record.workspaceId, change.replacement);
   for (const statement of change.replacement?.statements ?? []) {
-    const subject = workspacePolicySubject(statement);
+    const subject = workspacePolicyRecipient(statement);
     if (!subject) continue;
     if (
       !resolveWorkspaceMembershipRelation(
@@ -345,7 +349,7 @@ export async function applyResourcePolicyRequest(
   const id = `workspaces/${record.workspaceId}/workspace.jsonc`;
   const file = dependencies.files.readFile(id);
   const config = WorkspaceConfigSchema.parse(parse(file.content));
-  const current = parseWorkspacePolicy(
+  const current = parseWorkspacePolicyDocument(
     record.workspaceId,
     config.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
   );
@@ -366,7 +370,10 @@ export async function applyResourcePolicyRequest(
       authority: { kind: 'human', userId: input.actor.userId },
       authoredAt,
     });
-  const document = parseWorkspacePolicy(record.workspaceId, { schemaVersion: 1, statements });
+  const document = parseWorkspacePolicyDocument(record.workspaceId, {
+    schemaVersion: 1,
+    statements,
+  });
   let content = applyEdits(
     file.content,
     modify(file.content, ['workspace', 'policy', 'mediation'], document, {})

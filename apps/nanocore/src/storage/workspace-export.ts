@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import {
   parseWorkspaceDataSourceCatalog,
   parseWorkspaceExportManifest,
+  parseWorkspacePolicyDocument,
   type RequiredFeatureId,
   WORKSPACE_EXPORT_FORMAT_VERSION,
   WORKSPACE_RESOURCE_POLICY_FEATURE,
@@ -38,7 +39,6 @@ import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { assertPortableResourcePolicy } from '../policy/resource-policy-portability.js';
 import { retainPermissionDecision } from '../policy/retained-records-v1.js';
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
-import { parseWorkspacePolicy } from '../policy/workspace-resource-access.js';
 import {
   assertWorkspaceDeletionRecoveryExportAuthority,
   type WorkspaceDeletionRecoveryExportContext,
@@ -389,7 +389,7 @@ export function writeWorkspaceExportTree(
     parseJsoncObject(portableFileState.workspaceConfig, 'config/workspace.jsonc'),
     (record) => WorkspaceConfigSchema.parse(record)
   );
-  const resourcePolicy = parseWorkspacePolicy(
+  const resourcePolicy = parseWorkspacePolicyDocument(
     history.workspace.id,
     workspaceConfig.workspace.policy?.mediation ?? EMPTY_POLICY_DOCUMENT
   );

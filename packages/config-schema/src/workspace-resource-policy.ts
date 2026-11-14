@@ -1,4 +1,4 @@
-import { PolicyDocumentV1Schema, ThreadIdSchema } from '@openkit/protocol';
+import { type PolicyDocumentV1, PolicyDocumentV1Schema, ThreadIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
 import { ProductOperationSchema } from './product-policy.js';
 
@@ -76,3 +76,31 @@ export const WorkspacePolicyDocumentSchema = PolicyDocumentV1Schema.superRefine(
         message: 'An active permission requires its managed boundary.',
       });
 });
+
+/** Validates the activated Workspace subset without introducing another authored grammar. */
+export function parseWorkspacePolicyDocument(
+  workspaceId: string,
+  value: unknown
+): PolicyDocumentV1 {
+  const document = WorkspacePolicyDocumentSchema.parse(value);
+  for (const statement of document.statements) {
+    const anchor = statement.lifetime.anchor;
+    if (anchor.owner.kind !== 'workspace' || anchor.owner.workspaceId !== workspaceId)
+      throw new Error('Workspace Policy belongs to a different owner.');
+  }
+  return document;
+}
+
+/** Projects the exact permission recipient for native membership and portable binding checks. */
+export function workspacePolicyRecipient(
+  statement: PolicyDocumentV1['statements'][number]
+): WorkspacePolicySubject | null {
+  if (statement.kind !== 'permission') return null;
+  const principal = statement.scope.subjects[0];
+  if (principal?.kind !== 'human')
+    throw new Error('Workspace Policy recipient must be human-rooted.');
+  if (statement.grant.kind === 'ordinary') return { kind: 'user', userId: principal.id };
+  if (statement.grant.kind === 'agent-process')
+    return { kind: 'agent', userId: principal.id, agentId: statement.grant.agentId };
+  throw new Error('Unsupported Workspace Policy grant.');
+}

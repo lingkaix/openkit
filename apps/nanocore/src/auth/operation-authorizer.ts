@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import type { ProductOperation } from '@openkit/config-schema';
+import { parseWorkspacePolicyDocument } from '@openkit/config-schema';
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import { type ActorRef, responsibleUserIdForActor, WorkspaceIdSchema } from '@openkit/protocol';
 import type { Context, Hono } from 'hono';
@@ -20,11 +21,6 @@ import {
   type ProductAccessTarget,
   type ProductPolicyInput,
 } from '../policy/workspace-access.js';
-import {
-  evaluateThreadAuthorization,
-  parseWorkspacePolicy,
-  type ResourcePolicyActor,
-} from '../policy/workspace-resource-access.js';
 import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import {
   findSchedulerAdmissionForTurn,
@@ -46,7 +42,8 @@ import {
   resolveWorkspaceMembershipRelation,
 } from '../workspace-sharing.js';
 import { evaluateOpenKitAccessTokenUsability } from './access-token.js';
-import { readThreadPolicyAncestors } from './thread-visibility.js';
+import type { ThreadPolicyActor } from './identity.js';
+import { readThreadPolicyAncestors, readThreadPolicyFacts } from './thread-visibility.js';
 
 /** Canonical target of the existing product-authorization entry, also used by credential adapters. */
 export type { ProductAccessTarget } from '../policy/workspace-access.js';
@@ -385,7 +382,7 @@ export function readCurrentWorkspacePolicy(input: {
   readonly workspaceId: string;
   readonly policy: unknown;
 }) {
-  const document = parseWorkspacePolicy(input.workspaceId, input.policy);
+  const document = parseWorkspacePolicyDocument(input.workspaceId, input.policy);
   for (const statement of document.statements) {
     if (statement.state !== 'active') continue;
     if (
@@ -1428,7 +1425,7 @@ export function requireThreadAudience(
     entry.kind === 'worker' ? responsibleUserIdForActor(entry.actor) : entry.actor.userId;
   try {
     const retainedWorkspace = retained ? store.getWorkspace(workspaceId) : undefined;
-    let actor: ResourcePolicyActor = { kind: 'user', userId: userId! };
+    let actor: ThreadPolicyActor = { kind: 'user', userId: userId! };
     if (entry.kind === 'worker') {
       const turn = store.getTurnById(entry.lineage.turnId);
       if (!turn.agentId || turn.agentSessionId !== entry.lineage.agentSessionId)
@@ -1442,24 +1439,26 @@ export function requireThreadAudience(
     }
     const thread = store.getThread(workspaceId, threadId);
     if (
-      evaluateThreadAuthorization({
-        workspaceId,
-        thread,
-        ancestorThreadIds: readThreadPolicyAncestors(store, thread),
-        userId: userId!,
-        administrator:
-          entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
-        personalWorkspaceId: retained
-          ? retainedWorkspace!.kind === 'personal'
-            ? retained.quickChatWorkspaceIdForUser(userId!)
-            : undefined
-          : store.getWorkspace(workspaceId).kind === 'personal'
-            ? quickChatWorkspaceIdForUser(userId!, store.getDataRoot())
-            : undefined,
-        actor,
-        operation,
-        policy: store.getWorkspaceResourceAccess(workspaceId),
-      }).effect !== 'allow'
+      evaluatePolicyKernel(
+        readThreadPolicyFacts({
+          workspaceId,
+          thread,
+          ancestorThreadIds: readThreadPolicyAncestors(store, thread),
+          userId: userId!,
+          administrator:
+            entry.kind !== 'worker' && isCurrentDeploymentAdministrator(coreDb, entry.actor),
+          personalWorkspaceId: retained
+            ? retainedWorkspace!.kind === 'personal'
+              ? retained.quickChatWorkspaceIdForUser(userId!)
+              : undefined
+            : store.getWorkspace(workspaceId).kind === 'personal'
+              ? quickChatWorkspaceIdForUser(userId!, store.getDataRoot())
+              : undefined,
+          actor,
+          operation,
+          policy: store.getWorkspaceResourceAccess(workspaceId),
+        })
+      ).effect !== 'allow'
     )
       throw new Error('Thread access denied.');
   } catch {
