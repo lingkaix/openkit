@@ -324,6 +324,57 @@ afterAll(() => {
   }
 });
 
+/** Reads the exact closed Core consumption proof without using the production projection. */
+function requireFixtureHarnessConsumption(
+  coreDb: ReturnType<typeof openCoreDb>,
+  result: {
+    harnessInstanceId: string;
+    operationId: string;
+    sequence: number;
+  }
+) {
+  const rows = coreDb.sqlite
+    .prepare(`SELECT s.state, s.control_json, s.invocation_json, e.phase,
+    h.harness_binding_ref, h.result_json, h.result_fingerprint
+    FROM control_execution_steps s JOIN control_executions e ON e.id = s.execution_id
+    JOIN harness_instance_records h ON h.harness_instance_id = ?
+    WHERE json_extract(s.control_json, '$.definitionVersion') = 'core-harness-consume/v1'
+      AND json_extract(s.invocation_json, '$.carriage.bindingRef') = h.harness_binding_ref
+      AND json_extract(s.invocation_json, '$.carriage.requestId') = ?
+      AND json_extract(s.invocation_json, '$.carriage.sequence') = ?`)
+    .all(result.harnessInstanceId, result.operationId, result.sequence) as {
+    state: string;
+    control_json: string;
+    invocation_json: string;
+    phase: string;
+    harness_binding_ref: string;
+    result_json: string;
+    result_fingerprint: string;
+  }[];
+  expect(rows).toHaveLength(1);
+  const row = rows[0]!;
+  expect(row).toMatchObject({ state: 'completed', phase: 'closed' });
+  expect(createHash('sha256').update(row.result_json).digest('hex')).toBe(row.result_fingerprint);
+  const { consumerContext: _context, ...original } = JSON.parse(row.result_json);
+  const fingerprint = commandInputHash(original).slice(7);
+  const control = JSON.parse(row.control_json);
+  expect(control.kind).toBe('consume-receipt');
+  expect(control.inputRefs).toEqual([fingerprint]);
+  expect(control.outputRefs).toEqual([fingerprint]);
+  expect(control.authorityRefs).toHaveLength(1);
+  expect(JSON.parse(row.invocation_json).carriage).toEqual({
+    operation: 'harness.consume',
+    requestId: result.operationId,
+    sequence: result.sequence,
+    bindingRef: row.harness_binding_ref,
+  });
+  return {
+    operationId: result.operationId,
+    sequence: result.sequence,
+    consumerReceipt: control.authorityRefs[0] as string,
+  };
+}
+
 /** Creates the durable deployment identity required by real executor construction. */
 function createFactoryCoreDb() {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-turn-executor-factory-'));
@@ -6431,6 +6482,34 @@ describe('createConfiguredTurnExecutor', () => {
     let concurrentSibling: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     let idleCollection = false;
     let arrivedStage: string | undefined;
+    const candidateResults: { requestId: string; result: Record<string, unknown> }[] = [];
+    const assertCandidateJournal = (database: typeof coreDb | NonNullable<typeof db>) => {
+      expect(candidateResults).toHaveLength(1);
+      const candidate = candidateResults[0]!;
+      const fingerprint = commandInputHash(candidate.result);
+      const rows = database.sqlite
+        .prepare(`SELECT state, control_json FROM control_execution_steps
+        WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
+          AND json_extract(invocation_json, '$.carriage.operation') = 'workspace.collect'`)
+        .all(candidate.requestId) as { state: string; control_json: string }[];
+      const original = rows.filter(
+        (row) => JSON.parse(row.control_json).kind !== 'consume-receipt'
+      );
+      const consumed = rows.filter(
+        (row) => JSON.parse(row.control_json).kind === 'consume-receipt'
+      );
+      expect(original).toHaveLength(1);
+      expect(original[0]!.state).toBe('completed');
+      expect(JSON.parse(original[0]!.control_json).outputRefs).toEqual([
+        fingerprint,
+        candidate.result.sha256,
+      ]);
+      expect(consumed).toHaveLength(1);
+      expect(consumed[0]!.state).toBe('completed');
+      expect(JSON.parse(consumed[0]!.control_json).inputRefs).toEqual([fingerprint]);
+      expect(JSON.parse(consumed[0]!.control_json).outputRefs).toEqual([fingerprint]);
+    };
+
     const a = Buffer.from(
       'diff --git a/file.txt b/file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+A\n'
     );
@@ -6485,7 +6564,7 @@ describe('createConfiguredTurnExecutor', () => {
         const stagingPath = join(mkdtempSync(join(dataRoot, 'arrived-capture-')), 'complete');
         writeFileSync(stagingPath, bytes);
         arrivedStage = stagingPath;
-        return {
+        const result = {
           outcome: 'candidate',
           head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
           previousHead: request.input.previousHead,
@@ -6495,6 +6574,9 @@ describe('createConfiguredTurnExecutor', () => {
           sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
           stagingPath,
         };
+        const { stagingPath: _temporary, ...retained } = result;
+        candidateResults.push({ requestId: request.requestId!, result: retained });
+        return result;
       });
     onTestFinished(() => injected.mockRestore());
     const attemptId = testEntityId('attempt', 'capture_insert_rollback');
@@ -6695,6 +6777,7 @@ describe('createConfiguredTurnExecutor', () => {
         refusal.mockRestore();
       }
       durableCore.sqlite.close();
+      assertCandidateJournal(coreDb);
       expect(reserveRefused).toBe(true);
       expect(
         native.effects.slice(beforeIdle).filter((effect) => effect.kind === 'workspace.collect')
@@ -6807,6 +6890,7 @@ describe('createConfiguredTurnExecutor', () => {
         });
         expect(native.effects.slice(afterReopen)).toEqual([]);
       }
+      assertCandidateJournal(coreDb);
       const coldReader = createExecutionStepJournalReader(db, closedRef.owner);
       expect(await coldReader.readExecution(closedRef)).toStrictEqual(closed);
       expect(await coldReader.readEndedSteps(closedRef)).toStrictEqual(ended);
@@ -6845,6 +6929,7 @@ describe('createConfiguredTurnExecutor', () => {
       if (fault === 'body') db.sqlite.exec('DROP TRIGGER refuse_capture_insert');
     }
     captureFault.mockRestore();
+    assertCandidateJournal(db);
     if (!journalRef) throw new Error('Native admission did not acknowledge its real journal.');
     const ended = await createExecutionStepJournalReader(db, journalRef.owner).readEndedSteps(
       journalRef
@@ -15563,7 +15648,7 @@ describe('createConfiguredTurnExecutor', () => {
             throw new Error('Ordinary close receiver receipt is unavailable.');
           const receipt = JSON.parse(retained.resultJson);
           expect(receipt.consumerContext).toEqual({ workspaceId, threadId: original.threadId });
-          expect(receipt.consumption).toMatchObject({
+          expect(requireFixtureHarnessConsumption(coreDb, result)).toMatchObject({
             operationId: close.operationId,
             sequence: close.sequence,
           });
@@ -26546,7 +26631,7 @@ describe('inert initial private Login exchange through the concrete backend sess
                 )
             ).toBe(true);
             expect(listVaultInjectionReceipts(coreDb)).toEqual(afterReceipts);
-            expect(native.runtime.readCompletedHarnessLoginReceipt(context)).toEqual({
+            expect(native.runtime.readCompletedHarnessLoginSupply(context)).toEqual({
               receiptId: next.receiptId,
               materialGeneration: next.materialGeneration,
             });
@@ -26663,15 +26748,9 @@ describe('inert initial private Login exchange through the concrete backend sess
               throw new Error('Actual first close settlement evidence is unavailable.');
             const consumed = harnessRecords.readConsumedNanoHostHarnessResult(coreDb, closeResult);
             expect(consumed).not.toBeNull();
-            const row = coreDb.sqlite
-              .prepare(
-                'SELECT result_json AS resultJson FROM harness_instance_records WHERE harness_instance_id = ?'
-              )
-              .get(closeResult.harnessInstanceId);
-            if (!isRecord(row) || typeof row.resultJson !== 'string')
-              throw new Error('Actual close consumer receipt is unavailable.');
-            const receipt = JSON.parse(row.resultJson);
-            const consumer = JSON.parse(receipt.consumption.consumerReceipt);
+            const consumer = JSON.parse(
+              requireFixtureHarnessConsumption(coreDb, closeResult).consumerReceipt
+            );
             expect(Object.keys(consumer).sort()).toEqual(
               ending === 'departure-ordinary'
                 ? ['executionId', 'stepId', 'turnId', 'workspaceId']

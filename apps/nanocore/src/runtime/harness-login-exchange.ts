@@ -121,7 +121,7 @@ export function createHarnessLoginExchange(input: {
         const recheckObservation = () => {
           request.signal.throwIfAborted();
           authenticated.recheck();
-          const completed = input.runtime.readCompletedHarnessLoginReceipt(context);
+          const completed = input.runtime.readCompletedHarnessLoginSupply(context);
           if (
             completed.receiptId !== command.receiptId ||
             completed.materialGeneration !== command.materialGeneration ||
@@ -163,7 +163,7 @@ export function createHarnessLoginExchange(input: {
         : `receipt_${environmentPackage.snapshotId}_${declaration.id}`;
       const refresh = refreshing
         ? Object.freeze({
-            previousReceiptId: input.runtime.readCompletedHarnessLoginReceipt(context).receiptId,
+            previousReceiptId: input.runtime.readCompletedHarnessLoginSupply(context).receiptId,
             receiptId,
             context,
           })

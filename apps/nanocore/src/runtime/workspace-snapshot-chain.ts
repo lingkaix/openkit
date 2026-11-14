@@ -61,7 +61,7 @@ export interface WorkspaceSnapshotCursor {
   acceptedCommit: string | null;
 }
 /** Immutable scan receipt, including observations and cumulative candidate bytes. */
-export interface WorkspaceCollectionReceipt {
+export interface WorkspaceCollectionOutcome {
   identity: WorkspaceCollectionIdentity;
   result: Record<string, unknown>;
   candidate: Buffer | null;
@@ -154,7 +154,7 @@ export function readWorkspaceSnapshotCursor(
 export function readWorkspaceCollection(
   db: WorkspaceDb,
   identity: WorkspaceCollectionIdentity
-): WorkspaceCollectionReceipt | null {
+): WorkspaceCollectionOutcome | null {
   const row = db.sqlite
     .prepare(
       'SELECT schema_version AS schemaVersion, identity_json, result_json, candidate, is_link FROM workspace_snapshot_collections WHERE workspace_id = ? AND storage_ref = ? AND work_slot = ? AND collection_id = ?'
@@ -435,7 +435,7 @@ export function acceptWorkspaceCapture(
   result: Record<string, unknown>,
   candidate: Buffer | null,
   preserved?: RawWorkspaceCapture
-): WorkspaceCollectionReceipt {
+): WorkspaceCollectionOutcome {
   if (
     preserved &&
     (!isDeepStrictEqual(preserved.identity, identity) ||
@@ -643,7 +643,7 @@ function workspaceReviewCollection(
   db: WorkspaceDb,
   workspaceId: string,
   changeSetId: string
-): WorkspaceCollectionReceipt | null {
+): WorkspaceCollectionOutcome | null {
   const row = db.sqlite
     .prepare(
       'SELECT schema_version AS schemaVersion, identity_json FROM workspace_snapshot_collections WHERE workspace_id = ? AND change_set_id = ?'

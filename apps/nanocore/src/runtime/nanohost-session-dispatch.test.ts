@@ -37,7 +37,7 @@ import {
   type NanoHostHarnessResultSettlement,
   openNanoHostAgentSessionBinding,
   readConsumedNanoHostHarnessResult,
-  readNanoHostIdleCloseConsumerReceipt,
+  readNanoHostIdleCloseAuthority,
 } from './nanohost-harness.js';
 import { allocateNanoHostRuntimeTargetConnectionGeneration } from './nanohost-runtime-target.js';
 import {
@@ -3498,7 +3498,8 @@ it('forwards the original Core close settlement clock once and no replacement cl
       workspaceId: testEntityId('ws', 'departure-clock-workspace'),
       timestamp: new Date().toISOString(),
     });
-    consumerReceipt = readNanoHostIdleCloseConsumerReceipt(f.coreDb, receiver);
+    const authority = readNanoHostIdleCloseAuthority(f.coreDb, receiver);
+    consumerReceipt = authority === null ? null : JSON.stringify(authority);
     expect(consumerReceipt).not.toBeNull();
     await queueTestPreparedHarnessOperation(f.coreDb, {
       harnessInstanceId,

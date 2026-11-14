@@ -32,7 +32,19 @@ export function applyControlCoreJournal(db: CoreDb, input: ControlCoreJournalInp
       throw new CoreJournalRefusal(
         'Core idle cleanup result does not match its admitted invocation.'
       );
-    settleCoreIdleJournal(db, intent, input.state, input.resultFingerprint, input.processWitness);
+    if (
+      input.candidateDigest !== undefined &&
+      (intent.carriage.operation !== 'workspace.collect' || input.resultFingerprint === undefined)
+    )
+      throw new CoreJournalRefusal('Core capture outcome has no original collection result.');
+    settleCoreIdleJournal(
+      db,
+      intent,
+      input.state,
+      input.resultFingerprint,
+      input.processWitness,
+      input.candidateDigest
+    );
     return null;
   }
   if (input.kind === 'image-intent') {
