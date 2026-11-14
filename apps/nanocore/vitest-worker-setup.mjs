@@ -13,7 +13,7 @@ export default async function setup() {
   execFileSync(
     'pnpm',
     ['exec', 'turbo', 'run', 'build', '--filter=@openkit/worker-shim', '--output-logs=errors-only'],
-    { cwd: join(appRoot, '../..'), stdio: 'inherit' }
+    { cwd: join(appRoot, '../..'), stdio: ['ignore', 2, 2] }
   );
   const root = join(tmpdir(), 'nanocore-worker');
   mkdirSync(root);
