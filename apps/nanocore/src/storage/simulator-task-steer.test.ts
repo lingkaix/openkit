@@ -187,7 +187,11 @@ describe('Real simulator Task live steer through the public operation', () => {
       text: f.input.input,
       status: 'completed',
     });
-    expect(instructions[0]).toMatchObject({
+    expect(
+      f.store.readThreadTimelineSnapshot(f.input.workspaceId, f.thread.id, (snapshot) =>
+        snapshot.item(result.inputItemId)
+      )
+    ).toMatchObject({
       turnId: f.turn.id,
       id: result.inputItemId,
       steerDisposition: { disposition: 'accepted' },
