@@ -1478,20 +1478,37 @@ class ControlStoreWorkerClient {
               ? (this.openings.get(command.database)?.command.productOwner ??
                 this.openings.get(command.database)?.command.physicalScope)
               : undefined));
-      if (
-        (owner?.kind === 'workspace' || owner?.kind === 'app') &&
-        this.workspaceMutationAdmission?.isClosed(owner.workspaceId, 'capture')
-      )
+      // These closed inputs admit new work, not an already-owned Worker closeout.
+      const logical =
+        command.operation === 'private-workspace'
+          ? [
+              ...('workspaceId' in command.input ? [command.input.workspaceId] : []),
+              ...('expectedWorkspaceId' in command.input
+                ? [command.input.expectedWorkspaceId]
+                : []),
+            ]
+          : [];
+      const ordinary = command.operation === 'capability' && command.input.kind === 'admit';
+      const workspaceId =
+        logical.find((id) => this.workspaceMutationAdmission?.isClosed(id)) ??
+        ((owner?.kind === 'workspace' || owner?.kind === 'app') &&
+        this.workspaceMutationAdmission?.isClosed(
+          owner.workspaceId,
+          ordinary ? 'ordinary' : 'capture'
+        )
+          ? owner.workspaceId
+          : undefined);
+      if (workspaceId)
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
           details: {
-            workspaceId: owner.workspaceId,
+            workspaceId,
             operation: 'capture',
             retryable: true,
             blockers: [
               {
                 kind: 'publication',
                 reason: 'frozen',
-                reference: { workspaceId: owner.workspaceId },
+                reference: { workspaceId },
                 actions: [],
               },
             ],

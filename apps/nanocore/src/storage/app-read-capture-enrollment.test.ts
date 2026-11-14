@@ -704,6 +704,22 @@ async function exercise(mode: Mode) {
       ]);
     await beforeCaptureEnds(control.coreReached.promise, 'core-pin');
     active();
+    if (mode === 'core-pin') {
+      // ORACLE S7 K2: the existing capture reader exception grants no writer opening.
+      // Call the actual FsStore producer with no caller-side gate acquisition.
+      const before = store.listThreads(workspaceId).map((thread) => thread.id);
+      const refusal: unknown = await start(() =>
+        store.createThread(workspaceId, 'Competing frozen publisher')
+      ).then(
+        () => undefined,
+        (error: unknown) => error
+      );
+      check(() => {
+        expect(refusal).toMatchObject({ code: 'workspace_frozen' });
+        expect(store.listThreads(workspaceId).map((thread) => thread.id)).toEqual(before);
+      });
+    }
+
     const captureWorker = control.coreHeld!.worker;
     const phases = () =>
       observation.wires.filter(
