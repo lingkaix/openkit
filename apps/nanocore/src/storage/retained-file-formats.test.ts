@@ -518,7 +518,14 @@ describe('native retained file formats', () => {
         const mutator = new Database(scope.path, { fileMustExist: true });
         try {
           mutator.pragma('ignore_check_constraints = ON');
-          if (surface.kind === 'metadata')
+          // Turn expression indexes require valid JSON; corrupt the required actor instead.
+          if (surface.kind === 'metadata' && family === 'Turn' && json === '{invalid-json')
+            mutator
+              .prepare(
+                `UPDATE ${surface.table} SET schema_version=?,record_json=json_set(record_json,'$.triggerActor',NULL) WHERE id=?`
+              )
+              .run(version, surface.id);
+          else if (surface.kind === 'metadata')
             mutator
               .prepare(`UPDATE ${surface.table} SET schema_version=?,record_json=? WHERE id=?`)
               .run(version, json, surface.id);
