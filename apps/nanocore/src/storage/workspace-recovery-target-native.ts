@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
-import { lstatSync, realpathSync } from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { assertCanonicalDirectory, readCanonicalFile } from '@openkit/storage';
+import { assertCanonicalDirectory } from '@openkit/storage';
 import { recordServerAuditEvent } from '../audit-events.js';
 import {
   DeploymentAdminRequiredError,
@@ -22,10 +21,7 @@ import { ControlProductPreconditionError } from './control-store-product-records
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
-import {
-  WORKSPACE_BACKUP_MAX_FILE_BYTES,
-  type WorkspaceBackupManifest,
-} from './workspace-backup-bundle.js';
+import type { WorkspaceBackupManifest } from './workspace-backup-bundle.js';
 import { validateWorkspaceMoveMapping } from './workspace-move-mapping.js';
 import { recordWorkspaceOwnerMembership } from './workspace-owner-records.js';
 import type {
@@ -240,7 +236,7 @@ function assertTargetAuthority(
   } else if (value.deletedRecovery) refuseRecovery('request-conflict');
 }
 
-/** Reads only the exact immutable proof selected inside this opening's original restore container. */
+/** Reads Core-owned immutable proof bound to this opening's exact original recovery scope. */
 export function prepareControlRecoveryTargetPreparation(
   core: CoreDb,
   input: ControlRecoveryTargetPreparationInput
@@ -349,7 +345,12 @@ function applySourcePreparation(
     authority: { mode: 'live', actor: input.authority.actor },
     deletedRecovery: undefined,
   });
-  const candidate = join(resolve(core.dataRoot), 'server/backups/workspaces', input.workspaceId, input.admissionId);
+  const candidate = join(
+    resolve(core.dataRoot),
+    'server/backups/workspaces',
+    input.workspaceId,
+    input.admissionId
+  );
   validateRecoveryProof(input.admissionId, candidate, proof);
   if (
     proof.manifest.workspaceId !== input.workspaceId ||

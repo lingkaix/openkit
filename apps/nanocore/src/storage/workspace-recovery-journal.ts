@@ -62,7 +62,7 @@ import {
   type WorkspaceRecoveryErrorCode,
 } from './workspace-recovery-error.js';
 
-/** Closed proof retained by the offline admission owner, not the command receipt ledger. */
+/** Original recovery proof; current lifecycle authority belongs to the Core execution journal. */
 export interface RecoveryProof {
   readonly input:
     | WorkspaceRecoveryCliArgs
@@ -185,13 +185,18 @@ export function listRecoveryExecutions(
   const ids = core.sqlite
     .prepare(`SELECT DISTINCT json_extract(s.invocation_json,'$.carriage.requestId') AS id
     FROM control_executions e JOIN control_execution_steps s ON s.execution_id=e.id
-    WHERE e.definition_version='core-workspace-recovery/v1'
+    WHERE (e.definition_version GLOB 'core-workspace-recovery/*'
+      OR json_extract(s.control_json,'$.definitionVersion') GLOB 'core-workspace-recovery/*')
     ${workspaceId === undefined ? '' : 'AND e.work_id=?'}`)
     .all(...(workspaceId === undefined ? [] : [workspaceId])) as { id: string }[];
   // Validate the complete owner census before applying a lifecycle predicate.
-  return ids.map(({ id }) => readRecoveryExecution(core, id)!).filter(
-    (row) => state === undefined || (state === 'prepared' ? row.state === 'prepared' : row.state !== 'prepared')
-  );
+  return ids
+    .map(({ id }) => readRecoveryExecution(core, id)!)
+    .filter(
+      (row) =>
+        state === undefined ||
+        (state === 'prepared' ? row.state === 'prepared' : row.state !== 'prepared')
+    );
 }
 
 /** Selects the unique finished original recovery; this grants no serving or replacement authority. */
@@ -641,10 +646,12 @@ export function validateRecoveryProof(id: string, candidate: string, proof: Reco
 /** Reads one addressed stage; journal sequence and original admission revision are distinct. */
 function recoveryStage(core: CoreDb, id: string) {
   const row = core.sqlite
-    .prepare(`SELECT execution_id, step_id, span_json FROM control_execution_steps
-    WHERE json_extract(control_json,'$.definitionVersion')='core-workspace-recovery/v1'
-      AND json_extract(invocation_json,'$.carriage.requestId')=?
-    ORDER BY json_extract(invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
+    .prepare(`SELECT s.execution_id, s.step_id, s.span_json
+    FROM control_execution_steps s JOIN control_executions e ON e.id=s.execution_id
+    WHERE (e.definition_version GLOB 'core-workspace-recovery/*'
+      OR json_extract(s.control_json,'$.definitionVersion') GLOB 'core-workspace-recovery/*')
+      AND json_extract(s.invocation_json,'$.carriage.requestId')=?
+    ORDER BY json_extract(s.invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
     .get(id) as { execution_id: string; step_id: string; span_json: string } | undefined;
   if (!row) return undefined;
   try {
@@ -673,6 +680,8 @@ function recoveryStage(core: CoreDb, id: string) {
           ? 'abandoned'
           : 'finished';
     if (
+      root.definitionVersion !== CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
+      control.definitionVersion !== CORE_WORKSPACE_RECOVERY_EXECUTION_DEFINITION ||
       root.phase === 'closing' ||
       root.workId !== proof.manifest.workspaceId ||
       carriage.operation !== 'workspace.recovery' ||
@@ -725,8 +734,7 @@ export function readWorkspaceRecoveryProof(core: CoreDb, id: string): RecoveryPr
   return recoveryStage(core, id)?.originalProof;
 }
 
-/** Publishes immutable Core content before SQL; an uncommitted orphan grants no recovery authority. */
-/** One canonical Core content binding for both async preparation and native decisions. */
+/** One Core content binding for async preparation and native decisions; an orphan grants no authority. */
 function recoveryProofFile(
   dataRoot: string,
   proof: RecoveryProof,

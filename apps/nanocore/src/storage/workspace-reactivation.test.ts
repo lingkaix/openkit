@@ -418,6 +418,97 @@ async function inspectRetryReplay(
 }
 
 describe('Stopped source reactivation ownership and durable prefixes', () => {
+  it('refuses an unsupported latest recovery definition instead of replaying an older closed root', async () => {
+    const f = await fixture();
+    const original = rows(coreDbPath(f.dataRoot), 'control_executions');
+    expect(original.every((root) => root.phase === 'closed')).toBe(true);
+    await expect(reactivateWorkspace(f.input)).resolves.toMatchObject({
+      disposition: 'reactivated',
+    });
+    await shutdownControlStoreWorkerClient();
+    const core = databases.openCoreDb(f.dataRoot);
+    try {
+      const current = admissions.readRecoveryExecution(core, f.backupId)!;
+      expect(current).toMatchObject({
+        state: 'abandoned',
+        proof: { result: { disposition: 'reactivated' } },
+      });
+      const latest = core.sqlite
+        .prepare(`SELECT s.* FROM control_execution_steps s
+        WHERE json_extract(s.invocation_json,'$.carriage.requestId')=?
+        ORDER BY json_extract(s.invocation_json,'$.carriage.sequence') DESC LIMIT 1`)
+        .get(f.backupId) as { execution_id: string; step_id: string; control_json: string };
+      expect(original.some((root) => root.id === latest.execution_id)).toBe(false);
+      const root = core.sqlite
+        .prepare('SELECT * FROM control_executions WHERE id=?')
+        .get(latest.execution_id) as Record<string, unknown>;
+      expect(root.phase).toBe('closed');
+      const control = JSON.parse(latest.control_json);
+      const descriptor = JSON.parse(control.inputRefs[0]);
+      const proofPath = join(
+        f.dataRoot,
+        'server/evidence/backend',
+        descriptor.reference.locator.path
+      );
+      const proofBytes = readFileSync(proofPath);
+      // Only the latest current marker changes. This is retained corruption,
+      // not an upgrade corpus or a caller-produced recovery admission.
+      core.sqlite.transaction(() => {
+        const triggers = [
+          'control_executions_identity_immutable',
+          'control_execution_steps_settle_once',
+        ].map((name) => {
+          const row = core.sqlite
+            .prepare('SELECT sql FROM sqlite_schema WHERE name=?')
+            .get(name) as { sql: string };
+          core.sqlite.exec(`DROP TRIGGER ${name}`);
+          return row.sql;
+        });
+        try {
+          core.sqlite
+            .prepare('UPDATE control_executions SET definition_version=? WHERE id=?')
+            .run('core-workspace-recovery/v99', latest.execution_id);
+          core.sqlite
+            .prepare(
+              'UPDATE control_execution_steps SET control_json=? WHERE execution_id=? AND step_id=?'
+            )
+            .run(
+              JSON.stringify({ ...control, definitionVersion: 'core-workspace-recovery/v99' }),
+              latest.execution_id,
+              latest.step_id
+            );
+        } finally {
+          for (const sql of triggers) core.sqlite.exec(sql);
+        }
+      })();
+      const changedRoot = core.sqlite
+        .prepare('SELECT * FROM control_executions WHERE id=?')
+        .get(latest.execution_id);
+      const changedStep = core.sqlite
+        .prepare('SELECT * FROM control_execution_steps WHERE execution_id=? AND step_id=?')
+        .get(latest.execution_id, latest.step_id);
+      expect(changedRoot).toEqual({ ...root, definition_version: 'core-workspace-recovery/v99' });
+      expect(changedStep).toEqual({
+        ...latest,
+        control_json: JSON.stringify({
+          ...control,
+          definitionVersion: 'core-workspace-recovery/v99',
+        }),
+      });
+      expect(readFileSync(proofPath)).toEqual(proofBytes);
+      expect(
+        core.sqlite
+          .prepare(`SELECT name FROM sqlite_schema WHERE type='trigger' AND name IN (?,?)`)
+          .all('control_executions_identity_immutable', 'control_execution_steps_settle_once')
+      ).toHaveLength(2);
+      expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError(
+        expect.objectContaining({ code: 'recovery-required' })
+      );
+    } finally {
+      core.sqlite.close();
+    }
+  }, 120_000);
+
   it('reactivates the real moved-out source while every Main Core and Workspace connection is query-only', async () => {
     const f = await fixture();
     const corePath = coreDbPath(f.dataRoot);
