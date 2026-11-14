@@ -6431,6 +6431,34 @@ describe('createConfiguredTurnExecutor', () => {
     let concurrentSibling: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
     let idleCollection = false;
     let arrivedStage: string | undefined;
+    const candidateResults: { requestId: string; result: Record<string, unknown> }[] = [];
+    const assertCandidateJournal = (database: typeof coreDb | NonNullable<typeof db>) => {
+      expect(candidateResults).toHaveLength(1);
+      const candidate = candidateResults[0]!;
+      const fingerprint = commandInputHash(candidate.result);
+      const rows = database.sqlite
+        .prepare(`SELECT state, control_json FROM control_execution_steps
+        WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
+          AND json_extract(invocation_json, '$.carriage.operation') = 'workspace.collect'`)
+        .all(candidate.requestId) as { state: string; control_json: string }[];
+      const original = rows.filter(
+        (row) => JSON.parse(row.control_json).kind !== 'consume-receipt'
+      );
+      const consumed = rows.filter(
+        (row) => JSON.parse(row.control_json).kind === 'consume-receipt'
+      );
+      expect(original).toHaveLength(1);
+      expect(original[0]!.state).toBe('completed');
+      expect(JSON.parse(original[0]!.control_json).outputRefs).toEqual([
+        fingerprint,
+        candidate.result.sha256,
+      ]);
+      expect(consumed).toHaveLength(1);
+      expect(consumed[0]!.state).toBe('completed');
+      expect(JSON.parse(consumed[0]!.control_json).inputRefs).toEqual([fingerprint]);
+      expect(JSON.parse(consumed[0]!.control_json).outputRefs).toEqual([fingerprint]);
+    };
+
     const a = Buffer.from(
       'diff --git a/file.txt b/file.txt\nnew file mode 100644\n--- /dev/null\n+++ b/file.txt\n@@ -0,0 +1 @@\n+A\n'
     );
@@ -6485,7 +6513,7 @@ describe('createConfiguredTurnExecutor', () => {
         const stagingPath = join(mkdtempSync(join(dataRoot, 'arrived-capture-')), 'complete');
         writeFileSync(stagingPath, bytes);
         arrivedStage = stagingPath;
-        return {
+        const result = {
           outcome: 'candidate',
           head: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
           previousHead: request.input.previousHead,
@@ -6495,6 +6523,9 @@ describe('createConfiguredTurnExecutor', () => {
           sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
           stagingPath,
         };
+        const { stagingPath: _temporary, ...retained } = result;
+        candidateResults.push({ requestId: request.requestId!, result: retained });
+        return result;
       });
     onTestFinished(() => injected.mockRestore());
     const attemptId = testEntityId('attempt', 'capture_insert_rollback');
@@ -6695,6 +6726,7 @@ describe('createConfiguredTurnExecutor', () => {
         refusal.mockRestore();
       }
       durableCore.sqlite.close();
+      assertCandidateJournal(coreDb);
       expect(reserveRefused).toBe(true);
       expect(
         native.effects.slice(beforeIdle).filter((effect) => effect.kind === 'workspace.collect')
@@ -6807,6 +6839,7 @@ describe('createConfiguredTurnExecutor', () => {
         });
         expect(native.effects.slice(afterReopen)).toEqual([]);
       }
+      assertCandidateJournal(coreDb);
       const coldReader = createExecutionStepJournalReader(db, closedRef.owner);
       expect(await coldReader.readExecution(closedRef)).toStrictEqual(closed);
       expect(await coldReader.readEndedSteps(closedRef)).toStrictEqual(ended);
@@ -6845,6 +6878,7 @@ describe('createConfiguredTurnExecutor', () => {
       if (fault === 'body') db.sqlite.exec('DROP TRIGGER refuse_capture_insert');
     }
     captureFault.mockRestore();
+    assertCandidateJournal(db);
     if (!journalRef) throw new Error('Native admission did not acknowledge its real journal.');
     const ended = await createExecutionStepJournalReader(db, journalRef.owner).readEndedSteps(
       journalRef

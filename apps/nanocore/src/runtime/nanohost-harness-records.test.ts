@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { commandInputHash } from '../storage/control-store-input.js';
 import {
   ControlStoreWorkerError,
   shutdownControlStoreWorkerClient,
@@ -2354,7 +2355,7 @@ describe('private NanoHost Harness records', () => {
           .prepare('SELECT result_json, result_fingerprint FROM harness_instance_records')
           .get() as { result_json: string; result_fingerprint: string };
         const retained = JSON.parse(stored.result_json) as Record<string, unknown>;
-        const { consumerContext, consumption, ...retainedResult } = retained;
+        const { consumerContext, ...retainedResult } = retained;
         // DX Physical Receipt Consumption retains the removed binding's namespace and Core idle proof.
         expect(retainedResult).toEqual(result);
         expect(consumerContext).toEqual({
@@ -2362,7 +2363,25 @@ describe('private NanoHost Harness records', () => {
           threadId: testEntityId('th', `thread-${closedSession}`),
         });
         // Session 1 still owns Turn occupancy; session 2 is idle and consumes in the Core transaction.
-        expect(consumption !== undefined).toBe(closedSession === 2);
+        const acknowledgements = coreDb.sqlite
+          .prepare(`SELECT s.state, s.control_json, e.phase
+            FROM control_execution_steps s JOIN control_executions e ON e.id = s.execution_id
+            WHERE json_extract(s.control_json, '$.definitionVersion') = 'core-harness-consume/v1'
+              AND json_extract(s.invocation_json, '$.carriage.requestId') = ?`)
+          .all(result.operationId);
+        expect(acknowledgements).toHaveLength(closedSession === 2 ? 1 : 0);
+        if (closedSession === 2) {
+          expect(acknowledgements[0]).toMatchObject({ state: 'completed', phase: 'closed' });
+          const control = JSON.parse(
+            (acknowledgements[0] as { control_json: string }).control_json
+          );
+          expect(control.inputRefs).toEqual([commandInputHash(result).slice(7)]);
+          expect(control.outputRefs).toEqual([commandInputHash(result).slice(7)]);
+          expect(JSON.parse(control.authorityRefs[0])).toMatchObject({
+            workspaceId: testEntityId('ws', 'workspace-1'),
+            threadId: testEntityId('th', `thread-${closedSession}`),
+          });
+        }
         expect(readConsumedNanoHostHarnessResult(coreDb, result) !== null).toBe(
           closedSession === 2
         );
@@ -4060,14 +4079,53 @@ function observeExecutionAttempts(
     : [];
 }
 
-/** Reads actual retained Core consumer proof for owner-module replay assertions. */
+/** Reads the exact native journal tuple independently of the production projection reader. */
 function readFixtureWorkspaceConsumption(coreDb: ReturnType<typeof openCoreDb>) {
-  const row = coreDb.sqlite
-    .prepare(
-      "SELECT result_json AS bytes FROM harness_instance_records WHERE harness_instance_id = 'harness-1'"
-    )
-    .get() as { bytes: string };
-  return (JSON.parse(row.bytes) as { consumption: Record<string, unknown> }).consumption;
+  const harness = coreDb.sqlite
+    .prepare(`SELECT harness_binding_ref, result_json, result_fingerprint
+      FROM harness_instance_records WHERE harness_instance_id = 'harness-1'`)
+    .get() as { harness_binding_ref: string; result_json: string; result_fingerprint: string };
+  const result = JSON.parse(harness.result_json) as {
+    operationId: string;
+    sequence: number;
+    consumerContext?: unknown;
+  };
+  const rows = coreDb.sqlite
+    .prepare(`SELECT s.state, s.control_json, s.invocation_json, e.phase
+    FROM control_execution_steps s JOIN control_executions e ON e.id = s.execution_id
+    WHERE json_extract(s.control_json, '$.definitionVersion') = 'core-harness-consume/v1'
+      AND json_extract(s.invocation_json, '$.carriage.requestId') = ?
+      AND json_extract(s.invocation_json, '$.carriage.bindingRef') = ?
+      AND json_extract(s.invocation_json, '$.carriage.sequence') = ?`)
+    .all(result.operationId, harness.harness_binding_ref, result.sequence) as {
+    state: string;
+    control_json: string;
+    invocation_json: string;
+    phase: string;
+  }[];
+  expect(rows).toHaveLength(1);
+  const row = rows[0]!;
+  expect(row).toMatchObject({ state: 'completed', phase: 'closed' });
+  const control = JSON.parse(row.control_json);
+  const { consumerContext: _context, ...original } = result;
+  const fingerprint = commandInputHash(original).slice(7);
+  expect(control.kind).toBe('consume-receipt');
+  expect(control.inputRefs).toEqual([fingerprint]);
+  expect(control.outputRefs).toEqual([fingerprint]);
+  expect(control.authorityRefs).toHaveLength(1);
+  const carriage = JSON.parse(row.invocation_json).carriage;
+  expect(carriage).toEqual({
+    operation: 'harness.consume',
+    requestId: result.operationId,
+    sequence: result.sequence,
+    bindingRef: harness.harness_binding_ref,
+  });
+  return {
+    harnessBindingRef: carriage.bindingRef,
+    operationId: carriage.requestId,
+    sequence: carriage.sequence,
+    consumerReceipt: control.authorityRefs[0],
+  };
 }
 
 /** Explicit external consumer double for the known Core fixture namespace only. */
