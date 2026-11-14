@@ -12,7 +12,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { parseWorkspaceMcpServerCatalog } from '@openkit/config-schema';
+import { parseWorkspaceMcpServerCatalog, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, deriveEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -22,6 +22,7 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { Actor } from '../auth/identity.js';
 import type { AuthVariables } from '../auth/middleware.js';
 import { listWorkspaceCapabilityCalls } from '../capability/usage-ledger.js';
+import { parseJsoncObject } from '../config/jsonc.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -76,6 +77,7 @@ import {
   resolveAgentEnvironmentPackage,
   resolveAgentEnvironmentPackageMetadata,
 } from '../test-support/prepared-agent-environment.js';
+import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
@@ -283,6 +285,10 @@ async function fixture(
     activation?: 'pending' | 'granted';
     /** Adds a real reference-only file plan to the existing linked Task AEP. */
     credentialFile?: boolean;
+    /** Real parent lineage and authored physical access for the two P7 gap cases. */
+    parentLineage?: boolean;
+    physicalAccess?: boolean;
+    physicalProhibition?: boolean;
   } = {}
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'goal-consumer-'));
@@ -544,7 +550,11 @@ async function fixture(
       'Issue Task',
       deriveEntityId('th', ['task', requestId]),
       'conversation',
-      { visibility: 'workspace', threadSource: 'worker' }
+      {
+        visibility: 'workspace',
+        threadSource: 'worker',
+        ...(options.parentLineage ? { parentThreadId: goal.threadId } : {}),
+      }
     );
     db.sqlite.transaction(() =>
       reserveGoalTask(store, db, { ...dispatchInput, goalId: goal.goalId }, thread.id)
@@ -595,6 +605,13 @@ async function fixture(
       completedAt: turn.startedAt!,
     });
 
+    if (options.physicalProhibition) {
+      await prohibitFixtureThread({ dataRoot, scope, actor, agentId, manager }, thread.id, [
+        'network.egress',
+        'vault.use',
+        'workspace.write',
+      ]);
+    }
     const catalog = parseWorkspaceMcpServerCatalog({
       schemaVersion: 1 as const,
       servers: [
@@ -616,6 +633,20 @@ async function fixture(
       agentSetup: createTestAgentSetup({
         agentId,
         mcpIds: ['issues'],
+        ...(options.physicalAccess
+          ? {
+              network: [
+                {
+                  id: 'p7-egress',
+                  host: 'issues.invalid',
+                  port: 443,
+                  protocol: 'rest' as const,
+                  access: 'read-write' as const,
+                  binaries: ['/usr/local/bin/node'],
+                },
+              ],
+            }
+          : {}),
         ...(fileVault
           ? {
               credentialDeclarations: [
@@ -643,9 +674,15 @@ async function fixture(
       requestId,
       triggerActor: turn.triggerActor,
       turn,
-      workspaceCwd: '/workspace',
+      workspaceCwd: options.physicalAccess ? '/workspace/repo' : '/workspace',
       workspaceRoots: [],
       workspaceMcpServerCatalog: catalog,
+      ...(options.parentLineage || options.physicalAccess
+        ? {
+            coreDb,
+            readRuntimeConfig: () => manager.current(),
+          }
+        : {}),
     };
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
@@ -982,6 +1019,113 @@ async function fixture(
     fileVault,
   };
 }
+
+/** Authors current Workspace restrictions through its existing configuration grammar, not native rows. */
+async function prohibitFixtureThread(
+  f: {
+    dataRoot: string;
+    scope: { workspaceId: string };
+    actor: { userId: string };
+    agentId: string;
+    manager: ReturnType<typeof createRuntimeConfigManager>;
+  },
+  threadId: string,
+  actions: string[]
+) {
+  writeManagedThreadPolicyFixture({
+    dataRoot: f.dataRoot,
+    workspaceId: f.scope.workspaceId,
+    threadId,
+    userId: f.actor.userId,
+    agentId: f.agentId,
+    operations: ['workspace.read', 'tool.use', ...actions],
+  });
+  const path = join(f.dataRoot, 'workspaces', f.scope.workspaceId, 'config/workspace.jsonc');
+  const config = WorkspaceConfigSchema.parse(parseJsoncObject(readFileSync(path, 'utf8'), path));
+  const document = config.workspace.policy!.mediation!;
+  const permission = document.statements.find(
+    (statement) => statement.kind === 'permission' && statement.id === `permission-${threadId}`
+  );
+  if (!permission || permission.kind !== 'permission')
+    throw new Error('Expected the native Thread permission fixture.');
+  document.statements.push({
+    ...permission,
+    id: `p7-prohibit-${threadId}`,
+    kind: 'permission',
+    effect: 'prohibit',
+    grant: { kind: 'agent-process', agentId: f.agentId },
+    scope: { ...permission.scope, subjects: [{ kind: 'human', id: f.actor.userId }], actions },
+  });
+  writeFileSync(path, JSON.stringify(WorkspaceConfigSchema.parse(config)));
+  await f.manager.reload({ mode: 'safe', dryRun: false });
+}
+
+describe('P7 Task lineage and physical access through production consumers', () => {
+  it('inherits an ancestor Thread prohibition in the actual Task and its continuation but not an unrelated Thread restriction', async () => {
+    for (const continuation of [false, true]) {
+      const f = await fixture({ parentLineage: true });
+      const mcp = await f.setupMcp(continuation);
+      expect(f.store.getThread(f.scope.workspaceId, mcp.turn.threadId)?.parentThreadId).toBe(
+        f.goal.threadId
+      );
+      const unrelated = await f.store.createThread(f.scope.workspaceId, 'Unrelated restriction');
+      await prohibitFixtureThread(f, unrelated.id, ['tool.use']);
+      expect((await mcp.call()).isError).not.toBe(true);
+      vi.mocked(mcp.gateway.callTool).mockClear();
+      await prohibitFixtureThread(f, f.goal.threadId, ['tool.use']);
+      const blocked = await mcp.call().then(
+        (result) => result.isError === true,
+        () => true
+      );
+      expect(blocked).toBe(true);
+      expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+      expect(mcp.decisions().at(-1)?.result).toBe('deny');
+      expect(
+        mcp
+          .decisions()
+          .at(-1)
+          ?.mediation?.kernel?.reasons.some((reason) => reason.code === 'prohibited')
+      ).toBe(true);
+    }
+  });
+
+  it('projects current physical prohibitions into the actual AEP network, Vault and every filesystem rule including CWD', async () => {
+    const f = await fixture({ credentialFile: true, physicalAccess: true });
+    const mcp = await f.setupMcp();
+    const before = mcp.environmentPackage;
+    expect(before.policy.network?.rules.length).toBeGreaterThan(0);
+    expect(before.vault.grants.length).toBeGreaterThan(0);
+    expect(before.policy.filesystem?.rules).toContainEqual(
+      expect.objectContaining({
+        id: 'openkit-working-directory',
+        access: 'read-write',
+      })
+    );
+    const bounded = await fixture({
+      credentialFile: true,
+      physicalAccess: true,
+      physicalProhibition: true,
+    });
+    const restricted = (await bounded.setupMcp()).environmentPackage;
+    expect(restricted.policy.network?.rules).toEqual([]);
+    expect(restricted.vault.grants).toEqual([]);
+    expect(restricted.policy.filesystem?.rules).toContainEqual(
+      expect.objectContaining({
+        id: 'openkit-working-directory',
+        access: 'read-only',
+      })
+    );
+    expect(
+      restricted.policy.filesystem?.rules.every(
+        (rule) =>
+          rule !== null &&
+          typeof rule === 'object' &&
+          'access' in rule &&
+          rule.access === 'read-only'
+      )
+    ).toBe(true);
+  });
+});
 
 describe('Goal Coordinator missing Task grant routing', () => {
   it('preserves the actual Coordinator destination without a human request, effect or finite use', async () => {
