@@ -553,12 +553,14 @@ it('closes mutation inputs and returns only original non-secret record snapshots
     { ...input, sql: 'unexpected' },
   ])
     expect(ControlAccessTokenLifecycleSchema.safeParse(bad).success).toBe(false);
+  expect(Object.hasOwn(f.target.record, 'issuerRef')).toBe(false);
+  const privateRecord = getOpenKitAccessTokenRecord(f.coreDb, f.target.record.tokenId);
   const result = {
     kind: 'rotate',
     value: {
       tokenId: f.target.record.tokenId,
-      record: f.target.record,
-      rotatedRecord: f.target.record,
+      record: privateRecord,
+      rotatedRecord: privateRecord,
     },
   };
   expect(ControlAccessTokenLifecycleResultSchema.safeParse(result).success).toBe(true);
@@ -610,7 +612,9 @@ it('admits the closed issue tuple with actual caller facts and rejects missing o
     { ...issue, sql: 'unexpected' },
   ])
     expect(ControlAccessTokenLifecycleSchema.safeParse(bad).success).toBe(false);
-  const result = { kind: 'issue', record: f.target.record };
+  expect(Object.hasOwn(f.target.record, 'issuerRef')).toBe(false);
+  const privateRecord = getOpenKitAccessTokenRecord(f.coreDb, f.target.record.tokenId);
+  const result = { kind: 'issue', record: privateRecord };
   expect(ControlAccessTokenLifecycleResultSchema.safeParse(result).success).toBe(true);
   for (const bad of [
     { ...result, secret: f.target.token },

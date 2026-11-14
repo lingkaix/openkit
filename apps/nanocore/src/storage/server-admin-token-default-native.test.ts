@@ -133,7 +133,7 @@ async function fixture() {
     { scope: 'server-admin', workspaceIds: [], expiresAt: '2099-12-31T00:00:00.000Z' },
     context
   );
-  const before = listOwnedServerAdminAccessTokens(coreDb, userId);
+  const before = await operations['token.my-admin-list']({}, context);
   const target = before.items.find((item) => item.tokenId !== before.defaultTokenId);
   if (!target) throw new Error('Expected a usable non-fallback selection.');
   const selection = { ownerUserId: userId, tokenId: target.tokenId };
@@ -210,6 +210,7 @@ it('commits the native default with Main read-only and waits for its covering AC
   expect(result.ok).toBe(true);
   if (!result.ok) throw new Error('Expected acknowledged selection.');
   expect(result.value).toEqual({ ...f.before, defaultTokenId: f.target.tokenId });
+  expect(result.value.items.every((item) => !Object.hasOwn(item, 'issuerRef'))).toBe(true);
   expect(Object.keys(result.value.items[0] ?? {}).includes('secretHash')).toBe(false);
   expect(fault.requests.length).toBe(1);
 });
