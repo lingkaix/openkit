@@ -34,6 +34,7 @@ import {
 import { prepareAuditEventStatement, recordServerAuditEvent } from '../audit-events.js';
 import { applyControlAccessTokenLifecycle } from '../auth/access-token-lifecycle-native.js';
 import {
+  getOpenKitAccessTokenRecord,
   recordVerifiedOpenKitAccessTokenUse,
   setDefaultServerAdminTokenId,
 } from '../auth/access-token-store.js';
@@ -2779,9 +2780,18 @@ function flush(owner: OwnedDatabase): void {
               requestId,
               outcome: requestOutcome,
             } = request.input;
+            const token = tokenId ? getOpenKitAccessTokenRecord(owner.scopeDb, tokenId) : null;
+            if (tokenId && (!token || token.ownerUserId !== userId))
+              throw new ControlProductPreconditionError();
             recordServerAuditEvent({
               coreDb: owner.scopeDb,
-              actor: { kind: 'user', id: userId },
+              actor: token?.principalRef
+                ? {
+                    kind: 'integration',
+                    id: token.principalRef.id,
+                    responsibleUserId: token.ownerUserId,
+                  }
+                : { kind: 'user', id: userId },
               action: 'remote-mcp.request',
               authentication,
               resource: operationId ? `operation:${operationId}` : '/mcp',

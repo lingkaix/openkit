@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   type ControlAccessTokenIssuerRef,
   ControlAccessTokenIssuerRefSchema,
+  type ControlAccessTokenPrincipalRef,
+  ControlAccessTokenPrincipalRefSchema,
 } from '../storage/access-token-verification-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -28,6 +30,8 @@ export interface CreateOpenKitAccessTokenRecordInput {
   ownerUserId: string;
   /** Actual issuance principal when the owning producer has proved it; never inferred from owner. */
   issuerRef?: ControlAccessTokenIssuerRef | null;
+  /** Existing-record native client selection, never a public caller field. */
+  principalRef?: ControlAccessTokenPrincipalRef | null;
   /** Token scope. */
   scope: OpenKitAccessTokenScope;
   /** Workspace ids bound to workspace-scoped tokens. */
@@ -91,6 +95,8 @@ export interface OpenKitAccessTokenRecord {
   ownerUserId: string;
   /** Actual issuance principal, or no verified lineage for a legacy/unsupported link. */
   issuerRef: ControlAccessTokenIssuerRef | null;
+  /** Actual native Integration selection; only NULL means an ordinary User token. */
+  principalRef: ControlAccessTokenPrincipalRef | null;
   /** Token scope. */
   scope: OpenKitAccessTokenScope;
   /** Workspace ids bound to workspace-scoped tokens. */
@@ -124,6 +130,7 @@ interface OpenKitAccessTokenRow {
   token_hash: string;
   owner_user_id: string;
   issuer_ref_json: string | null;
+  principal_ref_json: string | null;
   scope: OpenKitAccessTokenScope;
   workspace_ids_json: string;
   status: OpenKitAccessTokenStatus;
@@ -189,6 +196,7 @@ export interface InsertOpenKitAccessTokenRecordInput {
   readonly expiresAt: string;
   readonly predecessorTokenId?: string | null;
   readonly issuerRef?: ControlAccessTokenIssuerRef | null;
+  readonly principalRef?: ControlAccessTokenPrincipalRef | null;
 }
 
 /** Inserts and reads back one record without generating or transporting its plaintext material. */
@@ -199,6 +207,12 @@ export function insertOpenKitAccessTokenRecord(
   const binding = normalizeOpenKitAccessTokenScope(input.scope, input.workspaceIds);
   const issuerRef =
     input.issuerRef == null ? null : ControlAccessTokenIssuerRefSchema.parse(input.issuerRef);
+  const principalRef =
+    input.principalRef == null
+      ? null
+      : ControlAccessTokenPrincipalRefSchema.parse(input.principalRef);
+  if (principalRef && binding.scope === 'server-admin')
+    throw new Error('MCP clients cannot administer the Server.');
   coreDb.sqlite
     .prepare(
       `INSERT INTO openkit_access_tokens (
@@ -212,8 +226,9 @@ export function insertOpenKitAccessTokenRecord(
         issued_at,
         expires_at,
         predecessor_token_id,
-        issuer_ref_json
-      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)`
+        issuer_ref_json,
+        principal_ref_json
+      ) VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
     )
     .run(
       input.tokenId,
@@ -225,7 +240,8 @@ export function insertOpenKitAccessTokenRecord(
       input.issuedAt,
       input.expiresAt,
       input.predecessorTokenId ?? null,
-      issuerRef === null ? null : JSON.stringify(issuerRef)
+      issuerRef === null ? null : JSON.stringify(issuerRef),
+      principalRef === null ? null : JSON.stringify(principalRef)
     );
   const record = getOpenKitAccessTokenRecord(coreDb, input.tokenId);
   if (!record) {
@@ -258,6 +274,8 @@ export function recordVerifiedOpenKitAccessTokenUse(
         now
       ).usable
     )
+      return null;
+    if (!readCurrentOpenKitAccessTokenLineage(coreDb, readOpenKitAccessTokenRecord(row), now))
       return null;
     coreDb.sqlite
       .prepare(`UPDATE openkit_access_tokens
@@ -379,6 +397,7 @@ export function rotateOpenKitAccessTokenRecord(
               ownerUserId: current.ownerUserId,
               predecessorTokenId: current.tokenId,
               issuerRef: current.issuerRef,
+              principalRef: current.principalRef,
               scope: current.scope,
               workspaceIds: current.workspaceIds,
             }),
@@ -389,6 +408,7 @@ export function rotateOpenKitAccessTokenRecord(
             ownerUserId: current.ownerUserId,
             predecessorTokenId: current.tokenId,
             issuerRef: current.issuerRef,
+            principalRef: current.principalRef,
             scope: current.scope,
             workspaceIds: current.workspaceIds,
           });
@@ -422,6 +442,47 @@ export function getOpenKitAccessTokenRecord(
     .get(tokenId) as OpenKitAccessTokenRow | undefined;
 
   return row ? readOpenKitAccessTokenRecord(row) : null;
+}
+
+/** Current native lifecycle facts, not Kernel grants. NULL lineage never invents a human issuer. */
+export function readCurrentOpenKitAccessTokenLineage(
+  coreDb: CoreDb,
+  token: OpenKitAccessTokenRecord,
+  now = new Date()
+): { issuers: OpenKitAccessTokenRecord[]; terminalUserId: string | null } | null {
+  if (token.principalRef) {
+    const root = getOpenKitAccessTokenRecord(coreDb, token.principalRef.id);
+    if (
+      token.scope === 'server-admin' ||
+      !root ||
+      root.principalRef?.id !== token.principalRef.id ||
+      root.ownerUserId !== token.ownerUserId
+    )
+      return null;
+  }
+  const issuers: OpenKitAccessTokenRecord[] = [];
+  const visited = new Set<string>();
+  let current = token;
+  for (let depth = 0; depth < 64; depth++) {
+    if (
+      visited.has(current.tokenId) ||
+      !isCanonicalUserActive(coreDb, current.ownerUserId) ||
+      !evaluateOpenKitAccessTokenUsability(current, now).usable
+    )
+      return null;
+    visited.add(current.tokenId);
+    const issuer = current.issuerRef;
+    if (!issuer) return token.principalRef ? null : { issuers, terminalUserId: null };
+    if (issuer.kind === 'user')
+      return isCanonicalUserActive(coreDb, issuer.id)
+        ? { issuers, terminalUserId: issuer.id }
+        : null;
+    const next = getOpenKitAccessTokenRecord(coreDb, issuer.id);
+    if (!next) return null;
+    issuers.push(next);
+    current = next;
+  }
+  return null;
 }
 
 /**
@@ -487,7 +548,8 @@ export function setDefaultServerAdminTokenId(
     !token ||
     token.ownerUserId !== ownerUserId ||
     token.scope !== 'server-admin' ||
-    !evaluateOpenKitAccessTokenUsability(token, now).usable
+    !evaluateOpenKitAccessTokenUsability(token, now).usable ||
+    !readCurrentOpenKitAccessTokenLineage(coreDb, token, now)
   ) {
     return false;
   }
@@ -542,7 +604,9 @@ function listOwnedUsableServerAdminTokens(
   now: Date
 ): OpenKitAccessTokenRecord[] {
   return listOwnedServerAdminTokenRecords(coreDb, ownerUserId).filter(
-    (token) => evaluateOpenKitAccessTokenUsability(token, now).usable
+    (token) =>
+      evaluateOpenKitAccessTokenUsability(token, now).usable &&
+      readCurrentOpenKitAccessTokenLineage(coreDb, token, now) !== null
   );
 }
 
@@ -611,6 +675,10 @@ function readOpenKitAccessTokenRecord(row: OpenKitAccessTokenRow): OpenKitAccess
     lastUsedSource: row.last_used_source,
     ownerUserId: row.owner_user_id,
     issuerRef: parseIssuerRef(row.issuer_ref_json),
+    principalRef:
+      row.principal_ref_json === null
+        ? null
+        : ControlAccessTokenPrincipalRefSchema.parse(JSON.parse(row.principal_ref_json)),
     predecessorTokenId: row.predecessor_token_id,
     revokedAt: row.revoked_at,
     rotatedGraceExpiresAt: row.rotated_grace_expires_at,
@@ -696,7 +764,8 @@ export function requireCurrentDeploymentAdmin(
     token?.ownerUserId === actor.userId &&
     token.scope === 'server-admin' &&
     actor.tokenScope === 'server-admin' &&
-    evaluateOpenKitAccessTokenUsability(token, now).usable
+    evaluateOpenKitAccessTokenUsability(token, now).usable &&
+    readCurrentOpenKitAccessTokenLineage(coreDb, token, now) !== null
   ) {
     return { tokenId: token.tokenId, userId: actor.userId };
   }

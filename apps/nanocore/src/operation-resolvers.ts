@@ -8,6 +8,7 @@ import { OPERATION_DEFINITIONS, operationUsesBootstrapSecret } from '@openkit/ap
 import { responsibleUserIdForActor } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { HTTPException } from 'hono/http-exception';
+import { getOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import {
   authorizedWorkspaceSet,
   authorizeWorkspace,
@@ -212,9 +213,28 @@ export async function admitOperation(
       );
     throw denied();
   }
-  const actorRef =
-    entry.kind === 'worker' ? entry.actor : { kind: 'user' as const, id: entry.actor.userId };
   const { coreDb, store, workspaceMutationAdmission: admission } = dependencies;
+  const token =
+    coreDb && entry.kind !== 'worker' && entry.actor.kind === 'token' && entry.actor.tokenId
+      ? getOpenKitAccessTokenRecord(coreDb, entry.actor.tokenId)
+      : null;
+  if (
+    coreDb &&
+    entry.kind !== 'worker' &&
+    entry.actor.kind === 'token' &&
+    (!token || token.ownerUserId !== entry.actor.userId)
+  )
+    throw denied();
+  const actorRef =
+    entry.kind === 'worker'
+      ? entry.actor
+      : token?.principalRef
+        ? {
+            kind: 'integration' as const,
+            id: token.principalRef.id,
+            responsibleUserId: token.ownerUserId,
+          }
+        : { kind: 'user' as const, id: entry.actor.userId };
   const assertExposureAvailable = () => {
     if (
       !PolicyInterception.isExposureAvailable({

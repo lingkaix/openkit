@@ -179659,6 +179659,9 @@
           "ownerUserId": {
             "type": "string",
             "pattern": "^usr_[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+          },
+          "forMcpClient": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -183542,5 +183545,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:6535a15220099266487e1d9f8d3a08c6630bb2657c9bd8e22811439df2b565e7"
+  "x-openkit-source-digest": "sha256:bcea25a73ab6298b66b188619241f6c927af788ab3ac4f8bad698191fdddbcfd"
 }

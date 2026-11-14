@@ -224,6 +224,12 @@ export function createAccessTokenOperationImplementations({
       const db = administratorStorage();
       const actor = publicOperationActor(context);
       const ownerUserId = input.ownerUserId ?? actor.userId;
+      if (input.forMcpClient && input.scope === 'server-admin')
+        throw new OperationError(
+          'core.auth.scope_forbidden',
+          'MCP clients cannot administer the Server.',
+          400
+        );
       if (!isCanonicalUserActive(db, ownerUserId))
         throw new OperationError(
           'access_token_owner_invalid',
@@ -255,6 +261,7 @@ export function createAccessTokenOperationImplementations({
             scope: binding.scope,
             workspaceIds: binding.workspaceIds,
             expiresAt: input.expiresAt,
+            ...(input.forMcpClient === undefined ? {} : { forMcpClient: input.forMcpClient }),
             token: { tokenId, tokenHash: hashOpenKitAccessTokenSecret(secret) },
           })
         );

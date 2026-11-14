@@ -24,6 +24,7 @@ export const ControlAccessTokenLifecycleSchema = z.discriminatedUnion('kind', [
       scope: CreateOpenKitAccessTokenRequestSchema.shape.scope,
       workspaceIds: CreateOpenKitAccessTokenRequestSchema.shape.workspaceIds,
       expiresAt: CreateOpenKitAccessTokenRequestSchema.shape.expiresAt,
+      forMcpClient: z.boolean().optional(),
       token: preparedToken,
     })
     .strict(),

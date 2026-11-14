@@ -106,6 +106,8 @@ export function evaluatePolicyKernel(
           >;
         } | null;
         readonly operation: string;
+        /** Verified effect-owner classifications; public discovery keeps its canonical definition. */
+        readonly native?: { readonly workspaceScoped: boolean; readonly mutating: boolean };
         readonly target: ProductAccessTarget;
         readonly userKernel: PolicyDecision;
         /** Complete verified credential sequence, immediate issuer through its terminal human. */
@@ -277,16 +279,26 @@ export function compilePolicyGraph(
     const definition = Object.hasOwn(OPERATION_DEFINITIONS, input.operation)
       ? OPERATION_DEFINITIONS[input.operation as keyof typeof OPERATION_DEFINITIONS]
       : null;
-    const right = definition ? PRODUCT_OPERATION_ACCESS_RIGHTS[definition.policyOperation] : null;
+    const right = input.native
+      ? Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, input.operation)
+        ? PRODUCT_OPERATION_ACCESS_RIGHTS[input.operation as ProductOperation]
+        : null
+      : definition
+        ? PRODUCT_OPERATION_ACCESS_RIGHTS[definition.policyOperation]
+        : null;
     const workspaceScoped =
-      definition?.scope.kind === 'body-workspace' ||
-      definition?.scope.kind === 'opaque-child-workspace' ||
-      definition?.scope.kind === 'actor-quick-chat-workspace';
+      input.native?.workspaceScoped ??
+      (definition?.scope.kind === 'body-workspace' ||
+        definition?.scope.kind === 'opaque-child-workspace' ||
+        definition?.scope.kind === 'actor-quick-chat-workspace');
     const chain = input.issuerChain;
     const terminal = chain?.at(-1);
     const facts: readonly (readonly [string, boolean])[] = [
       ['binding', matchingOwner],
-      ['registered-operation', definition !== null && right !== null],
+      [
+        'registered-operation',
+        (input.native !== undefined || definition !== null) && right !== null,
+      ],
       ['current-user', input.userKernel.effect === 'allow'],
       [
         'scope',
@@ -295,7 +307,8 @@ export function compilePolicyGraph(
           input.target.kind === 'workspace' &&
           binding.token.workspaceIds.includes(input.target.workspaceId) &&
           (binding.token.scope === 'workspace' ||
-            (binding.token.scope === 'workspace-readonly' && definition?.mutating === false)),
+            (binding.token.scope === 'workspace-readonly' &&
+              (input.native?.mutating ?? definition?.mutating) === false)),
       ],
       // The credential owner and its terminal issuer are distinct identities; both remain bounded.
       ['complete-issuers', !!chain?.length && terminal?.principal.kind === 'user'],
@@ -304,12 +317,12 @@ export function compilePolicyGraph(
           [`issuer:${index}`, issuer.active && issuer.kernel.effect === 'allow'] as const
       ),
     ];
-    // Opaque transient NGAC nodes do not create Protocol principals or retained grants.
-    const user = 'mcp-credential-subject';
+    // NGAC user-kind is the actual Integration, never a substituted human principal.
+    const user = `integration:${binding?.principal.id ?? ''}`;
     const target = 'mcp-requested-target';
     const state: PolicyState = {
       elements: [
-        { id: user, kind: 'user' },
+        ...(matchingOwner ? [{ id: user, kind: 'user' as const }] : []),
         { id: target, kind: 'object' },
         ...facts.flatMap(([name]) => [
           { id: `${name}:subject`, kind: 'userAttribute' as const },
@@ -318,7 +331,7 @@ export function compilePolicyGraph(
         ]),
       ],
       assignments: facts.flatMap(([name]) => [
-        { child: user, parent: `${name}:subject` },
+        ...(matchingOwner ? [{ child: user, parent: `${name}:subject` }] : []),
         { child: `${name}:subject`, parent: `${name}:required` },
         { child: target, parent: `${name}:target` },
         { child: `${name}:target`, parent: `${name}:required` },

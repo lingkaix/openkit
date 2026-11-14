@@ -72,6 +72,7 @@ export const CreateOpenKitAccessTokenRequestSchema = z
       .datetime()
       .max(64, 'Token expiration must contain at most 64 ISO-text characters.'),
     ownerUserId: UserIdSchema.optional(),
+    forMcpClient: z.boolean().optional(),
   })
   .strict();
 

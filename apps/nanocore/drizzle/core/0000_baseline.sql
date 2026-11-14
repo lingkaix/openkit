@@ -373,7 +373,7 @@ CREATE TABLE `openkit_access_tokens` (
 	`rotated_grace_expires_at` text,
 	`last_used_at` text,
 	`last_used_channel` text,
-	`last_used_source` text, `schema_version` integer DEFAULT 1 NOT NULL, `issuer_ref_json` text,
+	`last_used_source` text, `schema_version` integer DEFAULT 1 NOT NULL, `issuer_ref_json` text, `principal_ref_json` text,
 	FOREIGN KEY (`owner_user_id`) REFERENCES `users`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint

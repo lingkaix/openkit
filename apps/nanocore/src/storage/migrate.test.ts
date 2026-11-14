@@ -450,6 +450,7 @@ describe('database setup', () => {
         'last_used_source',
         'schema_version',
         'issuer_ref_json',
+        'principal_ref_json',
       ]);
       /**
        * S-2b-1 Unit 2: durable NanoHost transport Token metadata projection.

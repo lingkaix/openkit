@@ -50,6 +50,7 @@ import {
   DeploymentAdminRequiredError,
   getOpenKitAccessTokenRecord,
   type OpenKitAccessTokenRecord,
+  readCurrentOpenKitAccessTokenLineage,
   requireCurrentDeploymentAdmin,
   resolveSessionDeploymentAdminTokenId,
 } from './access-token-store.js';
@@ -492,7 +493,7 @@ export function currentWorkspaceAuthority(
     const credentialCurrent = !requestActor || isUsablePresentedAccessToken(coreDb, requestActor);
     const credentialBound =
       !requestActor || tokenIncludesWorkspace(requestActor, workspaceId, undefined);
-    const decision = evaluatePolicyKernel({
+    let decision = evaluatePolicyKernel({
       facts: {
         userId: responsibleUserId,
         activeUser,
@@ -516,6 +517,16 @@ export function currentWorkspaceAuthority(
       mutating: options?.mutating ?? true,
       ...(options?.policy ? { policy: options.policy } : {}),
     });
+    if (requestActor)
+      decision = evaluateCurrentClientAuthority(
+        coreDb,
+        requestActor,
+        { kind: 'workspace', workspaceId },
+        operation,
+        options?.mutating ?? true,
+        decision,
+        new Date()
+      );
     // Missing eligibility facts publish no capture event; the Kernel still decides every complete request.
     if (
       !activeUser ||
@@ -795,6 +806,21 @@ export function evaluateProductAuthorization(
   let decision: PolicyDecision;
   try {
     decision = evaluatePolicyKernel({ ...input, ...(context ? { context } : {}) });
+    // /mcp transport admission is not a product grant. Its concrete operation is
+    // narrowed below at the original resolved target and repeated native effect owner.
+    if (
+      coreDb &&
+      !(target.kind === 'server' && target.family === 'mcp' && operation === 'api.call')
+    )
+      decision = evaluateCurrentClientAuthority(
+        coreDb,
+        actor,
+        target,
+        operation,
+        mutating,
+        decision,
+        now
+      );
   } catch (error) {
     if (target.kind !== 'server') throw error;
     throw new HTTPException(403, { res: workspaceAccessDenied(), cause: error });
@@ -802,6 +828,107 @@ export function evaluateProductAuthorization(
   if (target.kind === 'server' && decision.effect !== 'allow' && !input.facts.administrator)
     throw new DeploymentAdminRequiredError();
   return decision;
+}
+
+/** Current native binding/issuer facts constrain the actual Integration, never relabel it as its human. */
+function evaluateCurrentClientAuthority(
+  coreDb: CoreDb,
+  actor: Actor,
+  target: Parameters<typeof evaluateProductAuthorization>[2],
+  operation: string,
+  mutating: boolean,
+  userKernel: PolicyDecision,
+  now: Date
+): PolicyDecision {
+  const token =
+    actor.kind === 'token' && actor.tokenId
+      ? getOpenKitAccessTokenRecord(coreDb, actor.tokenId)
+      : null;
+  if (!token?.principalRef) return userKernel;
+  const lineage = readCurrentOpenKitAccessTokenLineage(coreDb, token, now);
+  const issuerChain = lineage?.terminalUserId
+    ? [
+        ...lineage.issuers.map((issuer) => ({
+          principal: issuer.principalRef
+            ? {
+                kind: 'integration' as const,
+                id: issuer.principalRef.id,
+                responsibleUserId: issuer.ownerUserId,
+              }
+            : { kind: 'user' as const, id: issuer.ownerUserId },
+          active:
+            isCanonicalUserActive(coreDb, issuer.ownerUserId) &&
+            evaluateOpenKitAccessTokenUsability(issuer, now).usable,
+          kernel: evaluatePolicyKernel(
+            readProductAuthorizationInput(
+              coreDb,
+              {
+                kind: 'token',
+                userId: issuer.ownerUserId,
+                tokenId: issuer.tokenId,
+                tokenScope: issuer.scope,
+                tokenWorkspaceIds: issuer.workspaceIds,
+              },
+              target,
+              operation,
+              mutating,
+              now
+            )
+          ),
+        })),
+        (() => {
+          const issuerUserId = lineage.terminalUserId!;
+          const current = readProductAuthorizationInput(
+            coreDb,
+            { kind: 'session', userId: issuerUserId },
+            target,
+            operation,
+            mutating,
+            now
+          );
+          return {
+            principal: { kind: 'user' as const, id: issuerUserId },
+            active: isCanonicalUserActive(coreDb, issuerUserId),
+            // Retained actual issuer authority is not the caller's presented credential;
+            // the caller's independent current User/Token Kernel remains mandatory.
+            kernel: evaluatePolicyKernel({
+              ...current,
+              facts: {
+                ...current.facts,
+                administrator: currentServerPolicyAuthorEligibility(
+                  coreDb,
+                  issuerUserId,
+                  now.getTime()
+                ),
+                credential: {
+                  kind: 'retained-author',
+                  current: isCanonicalUserActive(coreDb, issuerUserId),
+                  workspaceBound: true,
+                  readOnly: false,
+                },
+              },
+            }),
+          };
+        })(),
+      ]
+    : null;
+  const current = readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now);
+  return evaluatePolicyKernel({
+    binding: {
+      principal: {
+        kind: 'integration',
+        id: token.principalRef.id,
+        responsibleUserId: token.ownerUserId,
+      },
+      principalOwnerUserId: token.ownerUserId,
+      token,
+    },
+    operation,
+    target: current.target,
+    native: { workspaceScoped: target.kind === 'workspace', mutating },
+    userKernel,
+    issuerChain,
+  });
 }
 
 /** Keeps current authority-read failures outside the caller's evaluator-only refusal boundary. */
@@ -1379,7 +1506,8 @@ function isUsablePresentedAccessToken(coreDb: CoreDb, actor: Actor, now = new Da
   return (
     token?.ownerUserId === actor.userId &&
     token.scope === actor.tokenScope &&
-    evaluateOpenKitAccessTokenUsability(token, now).usable
+    evaluateOpenKitAccessTokenUsability(token, now).usable &&
+    readCurrentOpenKitAccessTokenLineage(coreDb, token, now) !== null
   );
 }
 

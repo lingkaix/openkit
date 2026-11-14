@@ -6,6 +6,15 @@ export const ControlAccessTokenIssuerRefSchema = z
   .strict();
 export type ControlAccessTokenIssuerRef = z.infer<typeof ControlAccessTokenIssuerRefSchema>;
 
+/** Actual native client selection; NULL alone retains an ordinary User credential. */
+export const ControlAccessTokenPrincipalRefSchema = z
+  .object({
+    kind: z.literal('integration'),
+    id: z.string().min(1),
+  })
+  .strict();
+export type ControlAccessTokenPrincipalRef = z.infer<typeof ControlAccessTokenPrincipalRefSchema>;
+
 /** Exact existing token identity/hash proof; no bearer or authorization decision crosses the wire. */
 export const ControlAccessTokenVerificationSchema = z
   .object({
@@ -24,6 +33,7 @@ export const ControlAccessTokenVerificationResultSchema = z
     tokenId: z.string(),
     ownerUserId: z.string(),
     issuerRef: ControlAccessTokenIssuerRefSchema.nullable(),
+    principalRef: ControlAccessTokenPrincipalRefSchema.nullable(),
     scope: z.enum(['server-admin', 'workspace', 'workspace-readonly']),
     workspaceIds: z.array(z.string()),
     status: z.enum(['active', 'expired', 'revoked', 'rotated']),

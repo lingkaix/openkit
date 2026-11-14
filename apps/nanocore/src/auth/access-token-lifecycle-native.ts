@@ -45,6 +45,8 @@ export function applyControlAccessTokenLifecycle(
     throw error;
   }
   if (input.kind === 'issue') {
+    if (input.forMcpClient && input.scope === 'server-admin')
+      return { kind: 'denied', code: 'core.auth.scope_forbidden' };
     if (!isCanonicalUserActive(coreDb, input.ownerUserId))
       return { kind: 'denied', code: 'access_token_owner_invalid' };
     if (
@@ -59,6 +61,7 @@ export function applyControlAccessTokenLifecycle(
       record: insertOpenKitAccessTokenRecord(coreDb, {
         ...input.token,
         ownerUserId: input.ownerUserId,
+        principalRef: input.forMcpClient ? { kind: 'integration', id: input.token.tokenId } : null,
         issuerRef: ControlAccessTokenIssuerRefSchema.parse(
           input.actor.kind === 'token'
             ? { kind: 'token', id: input.actor.tokenId }
