@@ -55,6 +55,8 @@ const runtimeImage = {
   pullPolicy: 'if-not-present',
   ref: 'openkit/worker-codex:dev',
 };
+// The fixture image and shim report the running Core build, read once from public Diagnostics.
+let workerReleaseIdentity: unknown = null;
 
 interface PublicApp {
   baseUrl: string;
@@ -266,6 +268,11 @@ async function runPublicWorkerMcpLifecycle() {
       { 'content-type': 'application/json' }
     );
     assert.equal(readiness.status, 204, responseFailure('NanoHost readiness', readiness));
+    ({ build: workerReleaseIdentity } = await publicOperation<{ build: unknown }>(
+      app,
+      'diagnostics.app',
+      {}
+    ));
     await prepareAndActivateEnvironment(app, h2, administrationThreadId);
     let taskFailure: unknown = null;
     const taskInput = {
@@ -306,6 +313,7 @@ async function runPublicWorkerMcpLifecycle() {
       digest: inspection.command.imageDigest,
       environmentDefaults: smokeImageDefaults,
       platform: { architecture: 'arm64', os: 'linux' },
+      releaseIdentity: workerReleaseIdentity,
       storageLayout: {
         family: 'openkit-worker',
         gid: 1000,
@@ -798,6 +806,7 @@ async function settlePendingImage<T>(
     digest: smokeImageDigest,
     environmentDefaults: smokeImageDefaults,
     platform: { architecture: 'arm64', os: 'linux' },
+    releaseIdentity: workerReleaseIdentity,
     storageLayout: {
       family: 'openkit-worker',
       gid: 1000,
@@ -1122,10 +1131,13 @@ async function settleEmptyWorkspaceCollection(client: ClientHttp2Session, respon
 
 /** Polls the private Harness without presenting a bearer token. */
 function pollHarness(client: ClientHttp2Session, binding: string) {
-  return requestHttp2(client, 'POST', '/worker-control/harness/poll', '{"schemaVersion":2}', {
-    'content-type': 'application/json',
-    [integrationHeader]: binding,
-  });
+  return requestHttp2(
+    client,
+    'POST',
+    '/worker-control/harness/poll',
+    JSON.stringify({ releaseIdentity: workerReleaseIdentity, schemaVersion: 2 }),
+    { 'content-type': 'application/json', [integrationHeader]: binding }
+  );
 }
 
 /** Settles one private Harness command. */
