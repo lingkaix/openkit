@@ -275,6 +275,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261030-independent_doc_audit_review_part4.md` — Independent Documentation Audit: Team Review Of Part 4
 - `docs/audits/20261030-independent_doc_audit_review_part5.md` — Independent Documentation Audit: Team Review Of Part 5
 - `docs/audits/20261112-frozen_archive_navigation.md` — Frozen Archive Navigation
+- `docs/audits/20261115-independent_doc_audit_archive.md` — Independent Documentation Audit: Archive Check
 - `docs/audits/20261115-independent_doc_audit_evidence.md` — Independent Documentation Audit: Evidence Group
 - `docs/audits/20261115-independent_doc_audit_fault_tolerance.md` — Independent Documentation Audit: Fault-Tolerance Group
 - `docs/audits/20261115-independent_doc_audit_runtime_model.md` — Independent Documentation Audit: Runtime-Model Group
