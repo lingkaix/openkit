@@ -158,7 +158,7 @@ Workspace synchronization uses the fifteen definition-derived `client.operations
 
 Goal client operations are create Goal, revise intent, card create, card edit, card cancel, Plan propose, Plan approval through a Pending Request, Goal cancel, completion acceptance through a Pending Request, and reads. This specification does not define their transport, catalog shape, or wire names. The legacy summary, start, plan, approval, step, steering, and Goal Review client methods are absent.
 
-The current implementation's deterministic test supervise-step route remains outside the public product client surface until the Goal implementation removes it.
+The Goal implementation removed the former deterministic test supervise-step route.
 
 ## Alias Cleanup Policy
 

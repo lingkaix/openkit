@@ -1,6 +1,6 @@
 # Test Execution Image
 
-`containers/test-env` is the authoritative environment for ordinary deterministic repository checks. CI runs every gate inside it. A developer host is the primary path, and a Worker Agent sandbox is also permitted. This page is the recipe for building the image, taking an explicit second opinion, and matching CI. Docker-driving and explicitly opted-in real-runtime or provider gates remain host-placed. The owning decision is Test Execution Environment in `docs/toolchain.md`.
+`containers/test-env` is the authoritative environment for ordinary deterministic repository checks. CI runs every `any` gate inside it. A developer host is the primary path, and a Worker Agent sandbox is also permitted. This page is the recipe for building the image, taking an explicit second opinion, and matching CI. Docker-driving and explicitly opted-in real-runtime or provider gates remain host-placed. The owning decision is Test Execution Environment in `docs/toolchain.md`.
 
 **WARNING: this is not a deployment artifact.** It is never published on a release tag and carries no product version. The app image has a separate contract in `docs/cookbooks/docker-app.md`.
 
@@ -22,13 +22,13 @@ This produces the `openkit/test-env:dev` local tag from the manifest. Gates do n
 node scripts/docker/test-image-tag.mjs
 ```
 
-The printed tag is a digest of the manifest-selected Dockerfile, smoke script, build context and platforms, plus `apps/web/package.json`, the locked browser package, the security-tool installer and pin manifest, `scripts/retrieval-dictionary.py`, the vendored IPADIC archive and its COPYING notice. A change to any input yields a new tag, so a tree can never be tested against an image built from different image, Playwright package or retrieval dictionary inputs. Main and tag CI resolve the same tag with `--owner` and publish it to GHCR when it is absent. Pull-request checks instead build and load a job-local image and publish nothing; their token is read-only. Adding or bumping the image Rust pin changes that digest and requires `scripts/docker/build-image.sh test-env` (local) plus CI republish of the new digest tag.
+The printed tag is a digest of the manifest-selected Dockerfile, smoke script, build context and platforms, plus `apps/web/package.json`, the locked browser package, the security-tool installer and pin manifest, the native-client tool downloader and its pin manifest (`scripts/download-native-client-tools.mjs`, `scripts/native-client-tools.json`), `scripts/retrieval-dictionary.py`, the vendored IPADIC archive and its COPYING notice. A change to any input yields a new tag, so a tree can never be tested against an image built from different image, Playwright package or retrieval dictionary inputs. Main and tag CI resolve the same tag with `--owner` and publish it to GHCR when it is absent. Pull-request checks instead build and load a job-local image and publish nothing; their token is read-only. Adding or bumping the image Rust pin changes that digest and requires `scripts/docker/build-image.sh test-env` (local) plus CI republish of the new digest tag.
 
 The image embeds that full build-input digest. When `scripts/test-env.sh any` is already running inside the image, it compares the embedded value with the digest of the current mounted tree and exits before dependency installation or the requested command if they differ.
 
 ## Contents
 
-Node 26.13.0 from `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68`, the same digest as the worker-common stage, pnpm 10.33.3 through Corepack, Git, jq for deployment OCI index parsing, Python 3 for the supervisor release-metadata lookup, the exact NanoHost-scoped Rust toolchain (`ENV RUST_VERSION`, mirrored from `apps/nanohost/mise.toml` via rustup minimal profile with cargo, rustc, clippy, and rustfmt on `PATH`), the C/C++ build tools NanoHost Cargo compilation requires (`gcc`, `g++`, `make`, `cmake`, `pkg-config`, `libc6-dev`), and a Playwright Chromium install at `PLAYWRIGHT_BROWSERS_PATH` are the image contents. Xvfb is not installed because no gate uses it. Rust is present so ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` (each `turbo run …` inside this image) can execute `@openkit/nanohost` Cargo scripts without a parallel command surface.
+Node 26.13.0 from `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68`, the same digest as the worker-common stage, pnpm 10.33.3 through Corepack, Git, jq for deployment OCI index parsing, Python 3 for the supervisor release-metadata lookup, the exact NanoHost-scoped Rust toolchain (`ENV RUST_VERSION`, mirrored from `apps/nanohost/mise.toml` via rustup minimal profile with cargo, rustc, clippy, and rustfmt on `PATH`), the C/C++ build tools NanoHost Cargo compilation requires (`gcc`, `g++`, `make`, `cmake`, `pkg-config`, `libc6-dev`), the checksum-pinned security tools (zizmor, osv-scanner and cargo-auditable), the pinned native clients (Docker CLI, OpenSSH client, AWS CLI and kubectl), and a Playwright Chromium install at `PLAYWRIGHT_BROWSERS_PATH` are the image contents. Xvfb is not installed because no gate uses it. Rust is present so ordinary root `pnpm build`, `pnpm test`, `pnpm lint`, and `pnpm fmt` (each `turbo run …` inside this image) can execute `@openkit/nanohost` Cargo scripts without a parallel command surface.
 
 This image is an internal sibling of `worker-common` and is not built `FROM worker-common`. There is no publication dependency. A Node digest that does not equal the worker common stage is a mirror failure: update this `FROM` line in the same change as the worker baseline, which changes `OPENKIT_TEST_IMAGE_BUILD_INPUT_DIGEST` and forces a rebuild.
 
@@ -57,7 +57,7 @@ This is the supported way in: it resolves the tag, builds if needed, and applies
 scripts/docker/smoke-image.sh test-env
 ```
 
-It reports Node, pnpm, zizmor, Git, jq, Python 3, rustc, cargo, clippy, rustfmt, and the installed Chromium. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
+It reports Node, pnpm, zizmor, osv-scanner, Git, the Docker CLI, the AWS CLI, kubectl, ssh, OpenSSL, jq, Python 3, rustc, cargo, cargo-auditable, clippy, rustfmt, and the installed Chromium, checks that `ssh-add` and `ssh-agent` exist, and fails if Xvfb is installed. Every entry is required; there are no optional tools, because a tool no gate executes does not belong in the image.
 
 ## Reclaim Disk
 
@@ -71,4 +71,4 @@ Volumes are keyed per checkout, so two working copies never share an installed d
 
 ## What Runs On The Host Instead
 
-`scripts/test-env.sh host` guards the checks that drive Docker or a real worker runtime themselves: `test:e2e:real-codex`, `test:e2e:real-provider`, `test:e2e:real-subscription`, `test:e2e:real-task-mode`, `app:run`, and `init`. They refuse to start inside the image. The image receives no Docker socket, and handing it one would make the containment it provides decorative.
+`scripts/test-env.sh host` guards the checks that drive Docker or a real worker runtime themselves: `test:e2e:real-codex`, `test:e2e:real-provider`, `test:e2e:real-subscription`, `test:e2e:real-task-mode`, `test:nanohost-installer-live`, `test:nanohost-maintenance-live`, `test:app-image-admin-recovery`, `app:run`, and `init`. They refuse to start inside the image. The image receives no Docker socket, and handing it one would make the containment it provides decorative.

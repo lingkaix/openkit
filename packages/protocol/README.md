@@ -26,7 +26,7 @@ The TypeScript and Zod schemas in this package are the machine-readable source o
 - `pnpm --filter @openkit/protocol typecheck`
 - `pnpm --filter @openkit/protocol build`
 
-Thread visibility is explicit and immutable. Private Threads require `privateOwnerUserId`; shared Threads omit it. Public creation defaults to private and binds ownership to the requesting user; formal Task/Goal callers request `visibility: workspace` at creation. Quick Chat and administration stay private.
+Thread visibility is explicit and immutable. Private Threads require `privateOwnerUserId`; shared Threads omit it. Public creation defaults to private and binds ownership to the requesting user; formal Task/Goal callers request `visibility: workspace` at creation. Personal Workspace conversations and administration stay private.
 
 Approval-decision Items permit human decisions and narrowly identified `nanocore-repo-push-policy` system grants. The system actor is retained only to validate historical completed Items; no host-push grant producer or executor remains. Canonical Zod validation enforces that system actor’s permitted decision.
 

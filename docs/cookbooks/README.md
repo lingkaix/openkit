@@ -12,7 +12,7 @@ Use this index to find the repository's reusable setup and operational guides be
 - [Solid SPA setup](./spa-solid-vite.md): **Retired.** Stub that points at the React + Spectrum stack and design→code loop above; do not use it to scaffold `apps/web`.
 - [Release](./release.md): cut a semantic version tag from `main`, run the release gate, publish GHCR images, and verify GitHub Release notes
 - [Docker app image](./docker-app.md): build and run the single-container app image with Caddy, NanoCore, and web assets
-- [Test execution image](./docker-test-env.md): build, run, and troubleshoot the `test-env` image that every repository check executes inside
+- [Test execution image](./docker-test-env.md): build, run, and troubleshoot the `test-env` image in which CI runs every `any` repository check
 - [NanoHost real-use host](./nanohost-real-use-host.md): use `pnpm host:provision a1`, `pnpm host:assert a1`, `pnpm host:nanohost:bring-up a1`, and `pnpm host:teardown a1` for the exact A1 host workflow, then retain the redacted result at `temp/state/nanohost/host-manifest/a1/result.json`
 - [OpenShell upgrade](./openshell-upgrade.md): update the one supported matched OpenShell release, run the fast NanoHost integration foundation, perform the opt-in real-stock qualification when its host and runner are admitted, and diagnose candidate regressions without weakening accepted bounds
 - [Python setup](./python-setup.md): add a Python app or package with `uv`, `ruff`, `mypy`, and `pytest`

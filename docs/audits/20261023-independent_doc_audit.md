@@ -58,12 +58,12 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/agent-session.md` | agent-session | audited | [agent-session](20261025-independent_doc_audit_agent_session.md) |
 | `docs/core/knowledge.md` | knowledge | audited | [knowledge](20261025-independent_doc_audit_knowledge.md) |
 | `docs/core/generative-apps.md` | generative-apps | audited | [generative-apps](20261025-independent_doc_audit_generative_apps.md) |
-| `docs/core/storage.md` | storage | open, pending (#440 released) | — |
-| `docs/core/runtime-model.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/core/fault-tolerance.md` | fault-tolerance | open, pending (#440 released) | — |
-| `docs/core/evidence.md` | evidence | open, pending (#440 released) | — |
-| `docs/core/work-model.md` | work-model | open, pending (#440 released) | — |
-| `docs/core/security.md` | security | open, pending (added after the base) | — |
+| `docs/core/storage.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/core/runtime-model.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/core/fault-tolerance.md` | fault-tolerance | audited (round 2) | [fault-tolerance](20261115-independent_doc_audit_fault_tolerance.md) |
+| `docs/core/evidence.md` | evidence | audited (round 2) | [evidence](20261115-independent_doc_audit_evidence.md) |
+| `docs/core/work-model.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/core/security.md` | security | audited (round 2) | [security](20261115-independent_doc_audit_security.md) |
 
 ### Active Specifications
 
@@ -151,34 +151,34 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260711-evaluation_harness_design.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/README.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/AGENTS.md` | process | audited (proposals only) | [process](20261025-independent_doc_audit_process.md) |
-| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | open, pending (#440 released) | — |
-| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | open, pending (#440 released) | — |
-| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | open, pending (#440 released) | — |
-| `docs/specs/20260921-work_data_retention_format.md` | storage | open, pending (#440 released, named) | — |
-| `docs/specs/20260704-workspace_backup_export_import.md` | storage | open, pending (#440 released, named) | — |
-| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | open, pending (#440 released, named) | — |
-| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | open, pending (#440 released) | — |
-| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | open, pending (#440 released, named) | — |
-| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | open, pending (#440 released) | — |
-| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | open, pending (#440 released) | — |
-| `docs/specs/20260704-chat_mode_assistant.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20261017-evaluation_foundation.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20261002-goal.md` | work-model | open, pending (#440 released, named) | — |
-| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20260831-unified_conversation_composer.md` | work-model | open, pending (#440 released) | — |
-| `docs/specs/20261108-conversation_timeline.md` | work-model | open, pending (added after the base) | — |
-| `docs/specs/20261109-development_security.md` | security | open, pending (added after the base) | — |
-| `docs/specs/20261109-runtime_security.md` | security | open, pending (added after the base) | — |
+| `docs/specs/20260703-storage_layout_record_ownership.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20261018-file_storage_and_knowledge_packages.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260801-nanohost_workspace_data_boundary.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260921-work_data_retention_format.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260704-workspace_backup_export_import.md` | storage | audited (round 2) | [storage](20261115-independent_doc_audit_storage.md) |
+| `docs/specs/20260802-nanohost_runtime_and_transport.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260703-durable_scheduler_design.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260703-runtime_scheduling_scale.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260531-worker_turn_reliability_envelope.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20260711-worker_runtime_subagent_provenance.md` | runtime-model | audited (round 2) | [runtime-model](20261115-independent_doc_audit_runtime_model.md) |
+| `docs/specs/20261019-durable_execution_and_control_store.md` | fault-tolerance | audited (round 2) | [fault-tolerance](20261115-independent_doc_audit_fault_tolerance.md) |
+| `docs/specs/20260703-audit_usage_evidence_records.md` | evidence | audited (round 2) | [evidence](20261115-independent_doc_audit_evidence.md) |
+| `docs/specs/20260731-operational_telemetry_standardization.md` | evidence | audited (round 2) | [evidence](20261115-independent_doc_audit_evidence.md) |
+| `docs/specs/20260704-chat_mode_assistant.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260704-task_mode_worker_delegation.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260531-human_attention_intervention_model.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260713-work_resource_interaction_model.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261017-evaluation_foundation.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261002-goal.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20260831-unified_conversation_composer.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261108-conversation_timeline.md` | work-model | audited (round 2) | [work-model](20261115-independent_doc_audit_work_model.md) |
+| `docs/specs/20261109-development_security.md` | security | audited (round 2) | [security](20261115-independent_doc_audit_security.md) |
+| `docs/specs/20261109-runtime_security.md` | security | audited (round 2) | [security](20261115-independent_doc_audit_security.md) |
 
 ### Archive Check
 
-The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: not completed. The engineer ended the audit after the open groups; a preliminary read-only result is under Remaining Work.
+The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive the archive check only: lifecycle metadata, `current-guidance` targets, and inbound links. State: completed in round 2 with no finding ([archive check](20261115-independent_doc_audit_archive.md)).
 
 ## Phase 0 Grouping
 
