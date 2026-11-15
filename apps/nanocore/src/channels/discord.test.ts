@@ -7,6 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '../auth/identity.js';
 import { OperationError } from '../operation-error.js';
 import { applyNativeScopeMigrations } from '../storage/migrate.js';
+import {
+  DISCORD_INBOUND_ROWS,
+  DISCORD_ORIGIN_STAMP,
+  DISCORD_STATE_CHANGE,
+} from '../test-support/discord-inbound-rows.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   createDiscordChannel,
@@ -173,7 +178,7 @@ describe('Discord original durable stage boundaries', () => {
     const bindings = () =>
       f.sqlite.prepare('SELECT * FROM discord_account_bindings ORDER BY discord_user_id').all();
     const receipts = () =>
-      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts ORDER BY event_id').all();
+      f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} ORDER BY event_id`).all();
     const first = await f.channel.beginPairing(actor);
     const initialChallenges = challenges();
     f.sqlite.exec(`CREATE TRIGGER fail_challenge_insert BEFORE INSERT ON discord_pairing_challenges
@@ -202,8 +207,8 @@ describe('Discord original durable stage boundaries', () => {
     expect(content(await f.send('pair', { challenge: next.challenge }))).toContain('paired');
 
     // A committed disclosure followed by a refused, separate settlement leaves a real unfinished event.
-    f.sqlite.exec(`CREATE TRIGGER fail_settlement BEFORE UPDATE OF state ON discord_inbound_receipts
-      BEGIN SELECT RAISE(ABORT, 'settlement refused'); END`);
+    f.sqlite.exec(`CREATE TRIGGER fail_settlement BEFORE UPDATE OF response_json ON idempotency_requests
+      WHEN ${DISCORD_STATE_CHANGE} BEGIN SELECT RAISE(ABORT, 'settlement refused'); END`);
     await expect(f.send('inspect', f.target)).rejects.toThrow();
     await expect(f.send('inspect', f.target)).rejects.toThrow();
     f.sqlite.exec('DROP TRIGGER fail_settlement');
@@ -213,8 +218,9 @@ describe('Discord original durable stage boundaries', () => {
     );
     expect(unfinished).toHaveLength(2);
     const last = unfinished.at(-1) as { event_id: string };
-    f.sqlite.exec(`CREATE TRIGGER fail_restart BEFORE UPDATE OF state ON discord_inbound_receipts
-      WHEN OLD.event_id = '${last.event_id}' AND NEW.state = 'response-unknown'
+    f.sqlite.exec(`CREATE TRIGGER fail_restart BEFORE UPDATE OF response_json ON idempotency_requests
+      WHEN ${DISCORD_STATE_CHANGE} AND OLD.request_id = '${last.event_id}'
+        AND json_extract(NEW.response_json,'$.state') = 'response-unknown'
       BEGIN SELECT RAISE(ABORT, 'restart reconciliation refused'); END`);
     await expect(Promise.resolve().then(() => f.restart())).rejects.toThrow();
     expect(receipts()).toEqual(beforeRestart);
@@ -239,7 +245,7 @@ describe('Discord original durable stage boundaries', () => {
       reopened.sqlite.prepare('SELECT * FROM discord_disclosures ORDER BY token_digest').all()
     ).toEqual(disclosures);
     expect(
-      reopened.sqlite.prepare('SELECT * FROM discord_inbound_receipts ORDER BY event_id').all()
+      reopened.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} ORDER BY event_id`).all()
     ).toEqual(
       beforeRestart.map((row) => ({
         ...(row as object),
@@ -303,9 +309,9 @@ describe('Discord signed transport and account binding', () => {
       now: Date.parse('2026-10-16T10:00:00Z'),
     });
     await expect(f.channel.handleVerified(verified)).rejects.toThrow();
-    expect(
-      f.sqlite.prepare('SELECT count(*) AS count FROM discord_inbound_receipts').get()
-    ).toEqual({ count: 0 });
+    expect(f.sqlite.prepare(`SELECT count(*) AS count FROM ${DISCORD_INBOUND_ROWS}`).get()).toEqual(
+      { count: 0 }
+    );
   });
 
   it('consumes digest-only challenges once, preserves bindings after restart, and revokes them', async () => {
@@ -512,7 +518,7 @@ describe('Discord exact Pending Request projection', () => {
     expect(f.invoke).toHaveBeenCalledTimes(1);
     expect(
       f.sqlite
-        .prepare('SELECT state FROM discord_inbound_receipts WHERE event_id = ?')
+        .prepare(`SELECT state FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`)
         .get(JSON.parse(input.body.toString()).id)
     ).toEqual({ state: 'dispatching' });
     await f.restart();
@@ -529,7 +535,7 @@ describe('Discord exact Pending Request projection', () => {
     f.invoke.mockRejectedValueOnce(new Error('Transport lost after native dispatch.'));
     expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain('unknown');
     expect(
-      JSON.stringify(f.sqlite.prepare('SELECT * FROM discord_inbound_receipts').all())
+      JSON.stringify(f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS}`).all())
     ).not.toContain('publish the approved page');
     f.view({ content: 'x'.repeat(2_001) });
     expect(content(await f.send('inspect', f.target))).toContain('OpenKit');
@@ -548,7 +554,7 @@ describe('Discord trusted capture origin', () => {
     );
     await f.channel.handleSignedInteraction(f.signed(input));
     expect(
-      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+      f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`).get(input.id)
     ).toMatchObject({
       discord_user_id: discordUserId,
       core_user_id: null,
@@ -563,9 +569,9 @@ describe('Discord trusted capture origin', () => {
     expect(() =>
       f.channel.handleSignedInteraction({ ...f.signed(input), signature: '00'.repeat(64) })
     ).toThrow('Discord authentication failed.');
-    expect(
-      f.sqlite.prepare('SELECT count(*) AS count FROM discord_inbound_receipts').get()
-    ).toEqual({ count: 1 });
+    expect(f.sqlite.prepare(`SELECT count(*) AS count FROM ${DISCORD_INBOUND_ROWS}`).get()).toEqual(
+      { count: 1 }
+    );
   });
 
   it.each(['approval', 'user-input'] as const)(
@@ -588,7 +594,7 @@ describe('Discord trusted capture origin', () => {
       let retained: Record<string, unknown> | undefined;
       f.invoke.mockImplementationOnce(async (_operation, command, responder) => {
         retained = f.sqlite
-          .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+          .prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`)
           .get(input.id) as Record<string, unknown>;
         expect(retained).toMatchObject({
           event_id: input.id,
@@ -613,14 +619,14 @@ describe('Discord trusted capture origin', () => {
       expect(JSON.stringify(retained)).not.toContain('blue');
       expect(f.invoke).toHaveBeenCalledTimes(1);
       const settled = f.sqlite
-        .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+        .prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`)
         .get(input.id);
       await f.restart();
       expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain(
         'already handled'
       );
       expect(
-        f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+        f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`).get(input.id)
       ).toEqual(settled);
       expect(f.invoke).toHaveBeenCalledTimes(1);
     }
@@ -635,7 +641,7 @@ describe('Discord trusted capture origin', () => {
     f.invoke.mockRejectedValueOnce(new Error('uncertain native response'));
     expect(content(await f.channel.handleSignedInteraction(input))).toContain('unknown');
     const retained = f.sqlite
-      .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?')
+      .prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`)
       .get(eventId);
     expect(retained).toMatchObject({
       core_user_id: actor.userId,
@@ -650,7 +656,7 @@ describe('Discord trusted capture origin', () => {
     await f.restart();
     expect(content(await f.channel.handleSignedInteraction(input))).toContain('unknown');
     expect(
-      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(eventId)
+      f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`).get(eventId)
     ).toEqual(retained);
     expect(f.invoke).toHaveBeenCalledTimes(1);
   });
@@ -666,15 +672,24 @@ describe('Discord trusted capture origin', () => {
       applicationId,
       now: Date.parse('2026-10-16T10:00:00Z'),
     });
+    // A historical event predates the signed external account identity.
     f.sqlite
       .prepare(
-        "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at) VALUES(?,?,?,'settled',?)"
+        `INSERT INTO idempotency_requests(request_key,command_name,request_id,scope_json,input_hash,
+          response_kind,response_id,response_json,created_at,expires_at)
+          VALUES(?,'channel.discord.inbound',?,'{"coreId":"server"}',?,'discord_inbound',?,'{"state":"settled"}',?,NULL)`
       )
-      .run(eventId, verified.payloadDigest, randomUUID(), 1);
+      .run(
+        `channel.discord.inbound|${eventId}|coreId=server`,
+        eventId,
+        `sha256:${verified.payloadDigest}`,
+        randomUUID(),
+        new Date(1).toISOString()
+      );
     await f.restart();
     expect(content(await f.channel.handleSignedInteraction(input))).toContain('already handled');
     expect(
-      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(eventId)
+      f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`).get(eventId)
     ).toMatchObject({ discord_user_id: null, core_user_id: null, operation_id: null });
     expect(f.inspectPending).not.toHaveBeenCalled();
     expect(f.invoke).not.toHaveBeenCalled();
@@ -684,8 +699,8 @@ describe('Discord trusted capture origin', () => {
     const f = await fixture();
     await f.pair();
     const disclosure = await f.disclose();
-    f.sqlite.exec(`CREATE TRIGGER discard_origin BEFORE UPDATE OF core_user_id ON discord_inbound_receipts
-      BEGIN SELECT RAISE(IGNORE); END`);
+    f.sqlite.exec(`CREATE TRIGGER discard_origin BEFORE UPDATE OF response_json ON idempotency_requests
+      WHEN ${DISCORD_ORIGIN_STAMP} BEGIN SELECT RAISE(IGNORE); END`);
     expect(content(await f.send('deny', { ...f.target, disclosure }))).toContain(
       'channel_origin_unavailable'
     );
@@ -700,7 +715,7 @@ describe('Discord trusted capture origin', () => {
     const failure = vi.spyOn(f.sqlite, 'prepare');
     // Fail only the origin write; the existing receipt fence and settlement remain writable.
     failure.mockImplementation((sql: string) => {
-      if (/UPDATE discord_inbound_receipts SET core_user_id/.test(sql))
+      if (/json_set\(response_json,'\$\.origin'/.test(sql))
         throw new Error('origin write unavailable');
       return prepare(sql);
     });
@@ -708,7 +723,7 @@ describe('Discord trusted capture origin', () => {
     expect(content(await f.channel.handleSignedInteraction(f.signed(input)))).toContain('refused');
     expect(f.invoke).not.toHaveBeenCalled();
     expect(
-      f.sqlite.prepare('SELECT * FROM discord_inbound_receipts WHERE event_id = ?').get(input.id)
+      f.sqlite.prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id = ?`).get(input.id)
     ).toMatchObject({
       discord_user_id: discordUserId,
       core_user_id: null,

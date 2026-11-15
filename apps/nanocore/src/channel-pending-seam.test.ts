@@ -28,6 +28,7 @@ import {
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import { DISCORD_STATE_CHANGE } from './test-support/discord-inbound-rows.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-user.js';
 import {
@@ -907,8 +908,8 @@ describe('Discord to native Pending Request seam', () => {
     const event = f.envelope('deny', { ...f.target, disclosure });
     const signed = f.signed(event);
     // Keep the origin prerequisite writable; fail only the receipt publication after native dispatch.
-    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE OF state ON discord_inbound_receipts
-      WHEN OLD.event_id = '${event.id}' BEGIN SELECT RAISE(ABORT, 'simulated receipt publication failure'); END`);
+    f.coreDb.sqlite.exec(`CREATE TRIGGER refuse_channel_receipt BEFORE UPDATE OF response_json ON idempotency_requests
+      WHEN ${DISCORD_STATE_CHANGE} AND OLD.request_id = '${event.id}' BEGIN SELECT RAISE(ABORT, 'simulated receipt publication failure'); END`);
     const failed = f.services.discord!.handleSignedInteraction(signed);
     // Native diagnostics redact SQLite text; only this separate settlement was rolled back.
     await expect(failed).rejects.toBeInstanceOf(ControlStoreWorkerError);
