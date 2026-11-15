@@ -48,6 +48,7 @@ import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createAgentPolicyParticipant } from './agent-gate-provider.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
+import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
 import { listExportableWorkspacePermissionDecisions } from './permission-decisions.js';
 import { policyDigest, preparePolicyDocument } from './statements.js';
@@ -481,6 +482,7 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
     });
     mcpApp = new Hono();
     registerWorkerMcpRoutes({
+      goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
       app: mcpApp,
       coreDb,
       store,

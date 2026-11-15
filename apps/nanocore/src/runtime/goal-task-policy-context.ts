@@ -26,6 +26,7 @@ import {
 } from '../storage/command-request-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { goalPlanDigest, readNativeGoalView } from './goal-owner.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
@@ -51,6 +52,8 @@ export interface GoalTaskPolicyContext {
   readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
   /** Scheduler's immutable hash of the complete original request and provenance. */
   readonly requestInputHash: string;
+  /** Original prepared environment manifest revision; never a current catalog or new grant. */
+  readonly environmentRevision?: string;
 }
 
 /** Canonical Turn content remains required; a metadata-only projection cannot establish Task authority. */
@@ -317,33 +320,72 @@ export function readGoalTaskPolicyContext(input: {
       : !isSealedTurnTerminal(source.turn.status))
   )
     throw unavailable();
-  const resources = request.resources.flatMap((value) =>
+  const selected = request.resources.flatMap((value) =>
     value.kind === 'policy' ? [value.resource] : []
   );
+  const structuredInputHash = commandInputHash({ input: source.admission.turnInput });
+  const originalCommand =
+    !link && selected.length === 0 && source.checkpoint?.requestInputHash !== structuredInputHash
+      ? getCommandRequestRecordFromDb(
+          db,
+          commandRequestKey('task.start', source.admission.requestId!, {
+            actorId: source.admission.triggerActor.id,
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+          }),
+          new Date().toISOString()
+        )
+      : null;
   if (
-    !link &&
-    resources.length === 0 &&
-    source.checkpoint &&
-    source.checkpoint.requestInputHash !== commandInputHash({ input: source.admission.turnInput })
-  ) {
-    // Only the original direct Task command can select its prepared credential supply.
-    // An explicitly structured empty selection stays empty, even with a credential manifest.
-    const receipt = getCommandRequestRecordFromDb(
-      db,
-      commandRequestKey('task.start', source.admission.requestId!, {
-        actorId: source.admission.triggerActor.id,
+    (!link &&
+      selected.length === 0 &&
+      source.checkpoint &&
+      source.checkpoint.requestInputHash !== structuredInputHash &&
+      !originalCommand) ||
+    (originalCommand &&
+      (originalCommand.response.kind !== 'turn' ||
+        originalCommand.response.id !== original.turnId ||
+        (source.checkpoint && originalCommand.inputHash !== source.checkpoint.requestInputHash)))
+  )
+    throw unavailable();
+  // A closed Task can lose its live checkpoint, not its exact native command/manifest selection.
+  const naturalSelection =
+    originalCommand !== null && originalCommand.inputHash !== structuredInputHash;
+  const environmentRecord =
+    naturalSelection || selected.some((resource) => resource.kind === 'mcp-tool')
+      ? requireAgentEnvironmentPackageSnapshot(db, lineage.workspaceId, originalAttempt.inputRef)
+      : null;
+  const environment = environmentRecord?.snapshot;
+  if (
+    environment &&
+    (environment.scope.workspaceId !== lineage.workspaceId ||
+      environment.scope.threadId !== lineage.threadId ||
+      environment.scope.turnId !== original.turnId ||
+      environment.scope.agentSessionId !== originalAttempt.agentSessionId ||
+      environment.agent.agentId !== source.admission.requestedAgentId)
+  )
+    throw unavailable();
+  // Native preparation already records this finite manifest and its environment revision.
+  // It is a Task ceiling only: no caller, credential, approval or Thread authority comes from supply.
+  const declaredTools = (environment?.supply.mcpServers ?? []).flatMap((server) =>
+    server.allowedTools
+      .filter((toolName) => toolName !== '*')
+      .map((toolName) => ({
+        kind: 'mcp-tool' as const,
         workspaceId: lineage.workspaceId,
-        threadId: lineage.threadId,
-      }),
-      new Date().toISOString()
-    );
-    if (
-      !receipt ||
-      receipt.inputHash !== source.checkpoint.requestInputHash ||
-      receipt.response.kind !== 'turn' ||
-      receipt.response.id !== original.turnId
-    )
-      throw unavailable();
+        serverId: server.id,
+        toolName,
+      }))
+  );
+  const resources = selected.filter(
+    (resource) =>
+      resource.kind !== 'mcp-tool' ||
+      declaredTools.some((declared) => commandInputHash(declared) === commandInputHash(resource))
+  );
+  if (naturalSelection) {
+    // Only the original direct Task command selects this native prepared supply.
+    // Explicit structured empty selections do not enter this branch.
+    resources.push(...declaredTools);
     // The existing Vault owner still checks the exact declaration, target grant and version.
     const prepared = JSON.parse(originalAttempt.preparationInputJson) as { manifest?: unknown };
     if (prepared.manifest !== undefined) {
@@ -370,5 +412,6 @@ export function readGoalTaskPolicyContext(input: {
     responsibleUserId,
     resources,
     requestInputHash: source.admission.inputHash,
+    ...(environmentRecord ? { environmentRevision: environmentRecord.contentDigest } : {}),
   };
 }
