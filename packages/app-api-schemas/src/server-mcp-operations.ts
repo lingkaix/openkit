@@ -6,7 +6,7 @@ import {
   WorkspaceIdSchema,
 } from '@openkit/protocol';
 import { z } from 'zod';
-import type { OperationDefinition } from './operation-contract.js';
+import type { OperationDefinition, OperationStability } from './operation-contract.js';
 import { addRawSecretIssues } from './raw-secrets.js';
 import {
   CatalogMutationResponseSchema,
@@ -81,10 +81,11 @@ function serverOperation<const I extends z.ZodObject, const O extends z.ZodType>
   inputSchema: I,
   outputSchema: O,
   mutating: boolean,
-  sensitive = false
+  sensitive = false,
+  stability: OperationStability = 'release-coupled'
 ) {
   return {
-    stability: 'release-coupled',
+    stability,
     description,
     inputSchema,
     outputSchema,
@@ -138,13 +139,17 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
         ),
       })
       .strip(),
-    false
+    false,
+    false,
+    'settled'
   ),
   'administration.server-mcp-list': serverOperation(
     'List redacted Server MCP supply.',
     z.object({}).strict(),
     entries,
-    false
+    false,
+    false,
+    'settled'
   ),
   'administration.server-mcp-read': serverOperation(
     'Read one Server MCP binding and non-secret immutable configurations.',
@@ -167,13 +172,17 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
         ),
       })
       .strict(),
-    false
+    false,
+    false,
+    'settled'
   ),
   'administration.server-mcp-create': serverOperation(
     'Create disabled Server MCP supply.',
     CreateMcpConfigRequestSchema,
     CreateMcpConfigResponseSchema,
-    true
+    true,
+    false,
+    'settled'
   ),
   'administration.server-mcp-stage-version': serverOperation(
     'Stage an immutable Server MCP version without selecting it.',
@@ -194,7 +203,9 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
       pinnedSchemaSnapshotId: pinnedSchemaSnapshotId.optional(),
     }),
     CatalogMutationResponseSchema,
-    true
+    true,
+    false,
+    'settled'
   ),
   'administration.server-mcp-remove': serverOperation(
     'Remove Server MCP supply while retaining its history.',
@@ -207,14 +218,16 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
     request.safeExtend({ material }),
     reference,
     true,
-    true
+    true,
+    'settled'
   ),
   'vault.server-mcp-secret-rotate': serverOperation(
     'Rotate a Server MCP credential.',
     referenceRequest.safeExtend({ material }),
     reference,
     true,
-    true
+    true,
+    'settled'
   ),
   'vault.server-mcp-secret-revoke': serverOperation(
     'Revoke a Server MCP credential.',
@@ -226,7 +239,9 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
     'List Server MCP credential metadata.',
     z.object({}).strict(),
     z.object({ items: z.array(reference) }).strict(),
-    false
+    false,
+    false,
+    'settled'
   ),
   'vault.server-mcp-grant-create': serverOperation(
     'Authorize Gateway-only Server MCP credential use.',
@@ -235,7 +250,9 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
       referenceId: VaultReferenceIdSchema,
     }),
     grant,
-    true
+    true,
+    false,
+    'settled'
   ),
   'vault.server-mcp-grant-list': serverOperation(
     'List Server MCP grants.',
@@ -255,10 +272,12 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
       constraints: NarrowWorkspaceVaultGrantRequestSchema.shape.constraints,
     }),
     z.object({ revokedGrant: grant, grant }).strict(),
-    true
+    true,
+    false,
+    'settled'
   ),
   'catalog.shared-mcp-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'List redacted shared MCP supply and local collisions.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -279,7 +298,7 @@ export const SERVER_MCP_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.shared-mcp-set-disabled': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Disable or restore shared MCP supply in the selected Workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,

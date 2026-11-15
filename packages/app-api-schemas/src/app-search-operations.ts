@@ -13,7 +13,7 @@ const publicCredentials = [
 /** Complete logical inputs and retained redacted outputs for the app-search reads. */
 export const APP_SEARCH_OPERATION_DEFINITIONS = {
   'app.search': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description:
       'Search authorized Workspaces and visible Threads, Items, Knowledge and Artifacts.',
     binding: 'json',

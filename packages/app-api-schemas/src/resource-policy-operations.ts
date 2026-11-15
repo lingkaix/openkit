@@ -56,7 +56,7 @@ export const WorkspaceResourcePolicyRequestSchema = ApprovalRequestSchema.extend
 /** Workspace-scoped Policy administration through the canonical operation table. */
 export const RESOURCE_POLICY_OPERATION_DEFINITIONS = {
   'workspace.resource-access-request': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -83,7 +83,7 @@ export const RESOURCE_POLICY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.resource-access-apply': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

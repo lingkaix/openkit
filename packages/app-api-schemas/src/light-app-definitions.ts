@@ -113,7 +113,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.light-app-import': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -166,7 +166,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.light-app-select': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -183,7 +183,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.light-app-pin': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -204,7 +204,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.apps.instantiate': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -220,7 +220,7 @@ export const LIGHT_APP_DEFINITION_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'kernel.schema.activate': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

@@ -17,7 +17,7 @@ const publicCredentials = [
 /** Complete logical inputs and retained redacted outputs for the environment reads. */
 export const ENVIRONMENT_OPERATION_DEFINITIONS = {
   'environment.snapshot-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'List durable Agent Environment Package snapshots.',
     binding: 'json',
     returnsOneTimeSecret: false,

@@ -7,21 +7,21 @@
   },
   "x-openkit-protocol-version": "0.7.0",
   "x-openkit-operation-stability": {
-    "caller.read": "release-coupled",
+    "caller.read": "settled",
     "channel.discord.status": "release-coupled",
     "channel.discord.pair": "release-coupled",
     "notification.list": "release-coupled",
     "notification.send": "release-coupled",
     "runtime.agent-environment-read": "release-coupled",
     "runtime.agent-environment-update": "release-coupled",
-    "runtime.reload": "release-coupled",
-    "runtime.file-list": "release-coupled",
-    "runtime.file-read": "release-coupled",
+    "runtime.reload": "settled",
+    "runtime.file-list": "settled",
+    "runtime.file-read": "settled",
     "runtime.file-create": "release-coupled",
-    "runtime.file-update": "release-coupled",
+    "runtime.file-update": "settled",
     "runtime.file-delete": "release-coupled",
     "runtime.schemas": "release-coupled",
-    "runtime.validate": "release-coupled",
+    "runtime.validate": "settled",
     "provider-subscription.provider-list": "release-coupled",
     "provider-subscription.account-list": "release-coupled",
     "provider-subscription.account-create": "release-coupled",
@@ -33,8 +33,8 @@
     "provider-subscription.login-start": "release-coupled",
     "provider-subscription.login-cancel": "release-coupled",
     "provider-subscription.account-logout": "release-coupled",
-    "provider-subscription.account-quota": "release-coupled",
-    "provider-subscription.account-auto-topup": "release-coupled",
+    "provider-subscription.account-quota": "settled",
+    "provider-subscription.account-auto-topup": "settled",
     "local-ai.status": "release-coupled",
     "local-ai.enable": "release-coupled",
     "local-ai.disable": "release-coupled",
@@ -46,43 +46,43 @@
     "vault.binding-revoke": "release-coupled",
     "vault.server-mcp-injection-plan-list": "release-coupled",
     "vault.server-mcp-injection-receipt-list": "release-coupled",
-    "vault.grant-request": "release-coupled",
-    "vault.grant-request-list": "release-coupled",
-    "vault.grant-issue": "release-coupled",
-    "vault.status": "release-coupled",
+    "vault.grant-request": "settled",
+    "vault.grant-request-list": "settled",
+    "vault.grant-issue": "settled",
+    "vault.status": "settled",
     "vault.unlock": "release-coupled",
     "vault.lock": "release-coupled",
-    "vault.bootstrap-codex-auth": "release-coupled",
+    "vault.bootstrap-codex-auth": "settled",
     "vault.provider-api-key-set": "release-coupled",
     "vault.secret-create": "release-coupled",
     "vault.secret-rotate": "release-coupled",
     "vault.secret-revoke": "release-coupled",
     "vault.grant-create": "release-coupled",
-    "vault.grant-narrow": "release-coupled",
+    "vault.grant-narrow": "settled",
     "vault.grant-withdraw": "release-coupled",
-    "vault.grant-revoke": "release-coupled",
+    "vault.grant-revoke": "settled",
     "vault.reference-rebind": "release-coupled",
     "vault.reference-list": "release-coupled",
-    "vault.grant-list": "release-coupled",
+    "vault.grant-list": "settled",
     "vault.injection-plan-list": "release-coupled",
     "vault.injection-receipt-list": "release-coupled",
     "vault.use-list": "release-coupled",
     "vault.server-use-list": "release-coupled",
-    "app.search": "release-coupled",
-    "environment.snapshot-list": "release-coupled",
+    "app.search": "settled",
+    "environment.snapshot-list": "settled",
     "environment.snapshot-read": "release-coupled",
     "automation.list": "release-coupled",
     "automation.history": "release-coupled",
     "automation.create": "release-coupled",
     "automation.update": "release-coupled",
     "automation.delete": "release-coupled",
-    "automation.event-admit": "release-coupled",
+    "automation.event-admit": "settled",
     "scheduler.list": "release-coupled",
     "scheduler.retry": "release-coupled",
-    "scheduler.cancel": "release-coupled",
+    "scheduler.cancel": "settled",
     "recovery.worker-list": "release-coupled",
     "recovery.checkpoint-retry": "release-coupled",
-    "kernel.apps.get": "release-coupled",
+    "kernel.apps.get": "settled",
     "kernel.records.create": "release-coupled",
     "kernel.apps.list": "release-coupled",
     "kernel.apps.create": "release-coupled",
@@ -100,16 +100,16 @@
     "workspace.create": "release-coupled",
     "workspace.read": "release-coupled",
     "workspace.update": "release-coupled",
-    "workspace.dashboard": "release-coupled",
-    "workspace.list": "release-coupled",
-    "workspace.resources": "release-coupled",
-    "workspace.resource-access-request": "release-coupled",
-    "workspace.resource-access-apply": "release-coupled",
+    "workspace.dashboard": "settled",
+    "workspace.list": "settled",
+    "workspace.resources": "settled",
+    "workspace.resource-access-request": "settled",
+    "workspace.resource-access-apply": "settled",
     "workspace.export": "release-coupled",
-    "workspace.archive-download": "release-coupled",
+    "workspace.archive-download": "settled",
     "workspace.member-list": "release-coupled",
     "workspace.invitation-list": "release-coupled",
-    "workspace.invitation-create": "release-coupled",
+    "workspace.invitation-create": "settled",
     "workspace.my-invitation-list": "release-coupled",
     "workspace.my-invitation-accept": "release-coupled",
     "workspace.my-invitation-decline": "release-coupled",
@@ -120,27 +120,27 @@
     "workspace.access-recovery-read": "release-coupled",
     "workspace.access-recover": "release-coupled",
     "user.disable": "release-coupled",
-    "workspace.retire-quarantined": "release-coupled",
-    "workspace.delete": "release-coupled",
-    "workspace.deleted-recover": "release-coupled",
+    "workspace.retire-quarantined": "settled",
+    "workspace.delete": "settled",
+    "workspace.deleted-recover": "settled",
     "thread.list": "release-coupled",
     "thread.update": "release-coupled",
     "thread.archive": "release-coupled",
-    "thread.create": "release-coupled",
+    "thread.create": "settled",
     "thread.read": "release-coupled",
     "thread.timeline": "release-coupled",
     "thread.item-body": "release-coupled",
     "thread.items": "release-coupled",
     "thread.read-state": "release-coupled",
     "thread.mark-read": "release-coupled",
-    "thread.dashboard": "release-coupled",
+    "thread.dashboard": "settled",
     "turn.start": "release-coupled",
-    "turn.interrupt": "release-coupled",
+    "turn.interrupt": "settled",
     "turn.feedback": "release-coupled",
     "turn.read": "release-coupled",
-    "knowledge.ask": "release-coupled",
-    "knowledge.tell": "release-coupled",
-    "knowledge.maintain": "release-coupled",
+    "knowledge.ask": "settled",
+    "knowledge.tell": "settled",
+    "knowledge.maintain": "settled",
     "knowledge.answer": "release-coupled",
     "knowledge.source.list": "release-coupled",
     "knowledge.source.register": "release-coupled",
@@ -148,21 +148,21 @@
     "knowledge.indexes": "release-coupled",
     "knowledge.retrieval": "release-coupled",
     "knowledge.context.prepare": "release-coupled",
-    "knowledge.proposal.draft": "release-coupled",
+    "knowledge.proposal.draft": "settled",
     "knowledge.repair.suggest": "release-coupled",
     "knowledge.health.check": "release-coupled",
-    "knowledge.proposal.read": "release-coupled",
-    "knowledge.proposal.decide": "release-coupled",
+    "knowledge.proposal.read": "settled",
+    "knowledge.proposal.decide": "settled",
     "knowledge.proposal.reverse": "release-coupled",
     "knowledge.schema.apply": "release-coupled",
     "knowledge.schema.preview": "release-coupled",
-    "knowledge.notebook.history": "release-coupled",
-    "knowledge.notebook.diff": "release-coupled",
-    "knowledge.notebook.restore": "release-coupled",
-    "knowledge.notebook.update": "release-coupled",
-    "knowledge.notebook.list": "release-coupled",
-    "knowledge.notebook.create": "release-coupled",
-    "knowledge.notebook.delete": "release-coupled",
+    "knowledge.notebook.history": "settled",
+    "knowledge.notebook.diff": "settled",
+    "knowledge.notebook.restore": "settled",
+    "knowledge.notebook.update": "settled",
+    "knowledge.notebook.list": "settled",
+    "knowledge.notebook.create": "settled",
+    "knowledge.notebook.delete": "settled",
     "knowledge.package.export": "release-coupled",
     "knowledge.package.import": "release-coupled",
     "memory.ask": "release-coupled",
@@ -170,10 +170,10 @@
     "memory.maintain": "release-coupled",
     "memory.proposal.read": "release-coupled",
     "memory.proposal.decide": "release-coupled",
-    "memory.search": "release-coupled",
-    "memory.source.register": "release-coupled",
-    "memory.source.list": "release-coupled",
-    "memory.source.read": "release-coupled",
+    "memory.search": "settled",
+    "memory.source.register": "settled",
+    "memory.source.list": "settled",
+    "memory.source.read": "settled",
     "memory.list": "release-coupled",
     "memory.read": "release-coupled",
     "memory.create": "release-coupled",
@@ -183,38 +183,38 @@
     "memory.notebook.restore": "release-coupled",
     "memory.forget.prepare": "release-coupled",
     "memory.forget": "release-coupled",
-    "artifact.version-list": "release-coupled",
-    "artifact.version-read": "release-coupled",
-    "artifact.version-commit": "release-coupled",
-    "artifact.version-file-commit": "release-coupled",
+    "artifact.version-list": "settled",
+    "artifact.version-read": "settled",
+    "artifact.version-commit": "settled",
+    "artifact.version-file-commit": "settled",
     "artifact.list": "release-coupled",
-    "artifact.read": "release-coupled",
-    "artifact.import": "release-coupled",
-    "artifact.download": "release-coupled",
+    "artifact.read": "settled",
+    "artifact.import": "settled",
+    "artifact.download": "settled",
     "artifact.folder-read": "release-coupled",
     "artifact.folder-extract": "release-coupled",
-    "artifact.introduce": "release-coupled",
+    "artifact.introduce": "settled",
     "artifact.review-list": "release-coupled",
-    "artifact.review.select": "release-coupled",
+    "artifact.review.select": "settled",
     "artifact.review.decide": "release-coupled",
-    "goal.create": "release-coupled",
+    "goal.create": "settled",
     "goal.intent.revise": "release-coupled",
     "goal.card.create": "release-coupled",
     "goal.card.edit": "release-coupled",
     "goal.card.cancel": "release-coupled",
     "goal.plan.propose": "release-coupled",
-    "goal.plan.approve": "release-coupled",
+    "goal.plan.approve": "settled",
     "goal.cancel": "release-coupled",
-    "goal.completion.accept": "release-coupled",
-    "goal.read": "release-coupled",
-    "sync.review-list": "release-coupled",
+    "goal.completion.accept": "settled",
+    "goal.read": "settled",
+    "sync.review-list": "settled",
     "sync.review-read": "release-coupled",
     "sync.review-decide": "release-coupled",
     "sync.input-snapshot-list": "release-coupled",
     "sync.materialization-list": "release-coupled",
     "sync.backend-handle-list": "release-coupled",
     "sync.output-manifest-list": "release-coupled",
-    "sync.change-set-list": "release-coupled",
+    "sync.change-set-list": "settled",
     "sync.staged-review-list": "release-coupled",
     "sync.apply-result-list": "release-coupled",
     "sync.apply-plan-list": "release-coupled",
@@ -222,93 +222,93 @@
     "sync.recovery-decide": "release-coupled",
     "sync.quarantine-list": "release-coupled",
     "sync.apply-result-read": "release-coupled",
-    "conversation.targets": "release-coupled",
-    "conversation.navigation": "release-coupled",
-    "conversation.submit": "release-coupled",
+    "conversation.targets": "settled",
+    "conversation.navigation": "settled",
+    "conversation.submit": "settled",
     "composer.transcribe": "release-coupled",
-    "task.steer": "release-coupled",
-    "task.start": "release-coupled",
+    "task.steer": "settled",
+    "task.start": "settled",
     "attention.list": "release-coupled",
-    "approval.respond": "release-coupled",
+    "approval.respond": "settled",
     "question.answer": "release-coupled",
     "pending-request.withdraw": "release-coupled",
     "agent.health-refresh": "release-coupled",
-    "agent.list": "release-coupled",
-    "agent.read": "release-coupled",
-    "catalog.read": "release-coupled",
+    "agent.list": "settled",
+    "agent.read": "settled",
+    "catalog.read": "settled",
     "catalog.skill-list": "release-coupled",
-    "catalog.skill-import": "release-coupled",
-    "catalog.skill-version-list": "release-coupled",
+    "catalog.skill-import": "settled",
+    "catalog.skill-version-list": "settled",
     "catalog.skill-update-check": "release-coupled",
     "catalog.skill-version-read": "release-coupled",
-    "catalog.skill-content-read": "release-coupled",
-    "catalog.skill-diff": "release-coupled",
+    "catalog.skill-content-read": "settled",
+    "catalog.skill-diff": "settled",
     "catalog.skill-remove": "release-coupled",
     "catalog.skill-purge": "release-coupled",
-    "catalog.skill-candidate-submit": "release-coupled",
-    "catalog.skill-candidate-decide": "release-coupled",
+    "catalog.skill-candidate-submit": "settled",
+    "catalog.skill-candidate-decide": "settled",
     "catalog.skill-candidate-withdraw": "release-coupled",
     "catalog.skill-select": "release-coupled",
-    "catalog.skill-pin": "release-coupled",
+    "catalog.skill-pin": "settled",
     "catalog.mcp-list": "release-coupled",
-    "catalog.mcp-create": "release-coupled",
+    "catalog.mcp-create": "settled",
     "catalog.mcp-stage-version": "release-coupled",
     "catalog.mcp-remove": "release-coupled",
-    "catalog.mcp-select": "release-coupled",
-    "catalog.mcp-binding": "release-coupled",
+    "catalog.mcp-select": "settled",
+    "catalog.mcp-binding": "settled",
     "catalog.plugin-list": "release-coupled",
     "catalog.plugin-import": "release-coupled",
-    "administration.mcp-discovery-preview": "release-coupled",
-    "administration.server-mcp-list": "release-coupled",
-    "administration.server-mcp-read": "release-coupled",
-    "administration.server-mcp-create": "release-coupled",
+    "administration.mcp-discovery-preview": "settled",
+    "administration.server-mcp-list": "settled",
+    "administration.server-mcp-read": "settled",
+    "administration.server-mcp-create": "settled",
     "administration.server-mcp-stage-version": "release-coupled",
     "administration.server-mcp-select-version": "release-coupled",
-    "administration.server-mcp-update-binding": "release-coupled",
+    "administration.server-mcp-update-binding": "settled",
     "administration.server-mcp-remove": "release-coupled",
-    "vault.server-mcp-secret-create": "release-coupled",
-    "vault.server-mcp-secret-rotate": "release-coupled",
+    "vault.server-mcp-secret-create": "settled",
+    "vault.server-mcp-secret-rotate": "settled",
     "vault.server-mcp-secret-revoke": "release-coupled",
-    "vault.server-mcp-reference-list": "release-coupled",
-    "vault.server-mcp-grant-create": "release-coupled",
+    "vault.server-mcp-reference-list": "settled",
+    "vault.server-mcp-grant-create": "settled",
     "vault.server-mcp-grant-list": "release-coupled",
     "vault.server-mcp-grant-revoke": "release-coupled",
-    "vault.server-mcp-grant-narrow": "release-coupled",
-    "catalog.shared-mcp-list": "release-coupled",
-    "catalog.shared-mcp-set-disabled": "release-coupled",
-    "knowledge.server.maintain": "release-coupled",
-    "knowledge.server.tell": "release-coupled",
-    "thread.server.list": "release-coupled",
-    "thread.server.read": "release-coupled",
-    "turn.server.interrupt": "release-coupled",
-    "knowledge.server.proposal.read": "release-coupled",
-    "knowledge.server.proposal.decide": "release-coupled",
+    "vault.server-mcp-grant-narrow": "settled",
+    "catalog.shared-mcp-list": "settled",
+    "catalog.shared-mcp-set-disabled": "settled",
+    "knowledge.server.maintain": "settled",
+    "knowledge.server.tell": "settled",
+    "thread.server.list": "settled",
+    "thread.server.read": "settled",
+    "turn.server.interrupt": "settled",
+    "knowledge.server.proposal.read": "settled",
+    "knowledge.server.proposal.decide": "settled",
     "catalog.light-app-list": "release-coupled",
     "catalog.light-app-read": "release-coupled",
-    "catalog.light-app-import": "release-coupled",
+    "catalog.light-app-import": "settled",
     "catalog.light-app-history-import": "release-coupled",
     "catalog.light-app-export": "release-coupled",
-    "catalog.light-app-select": "release-coupled",
-    "catalog.light-app-pin": "release-coupled",
-    "kernel.apps.instantiate": "release-coupled",
-    "kernel.schema.activate": "release-coupled",
+    "catalog.light-app-select": "settled",
+    "catalog.light-app-pin": "settled",
+    "kernel.apps.instantiate": "settled",
+    "kernel.schema.activate": "settled",
     "kernel.snapshots.list": "release-coupled",
     "kernel.snapshots.rollback": "release-coupled",
     "kernel.format.upgrade": "release-coupled",
-    "worker.list": "release-coupled",
-    "usage.read": "release-coupled",
-    "audit.workspace-list": "release-coupled",
-    "audit.server-list": "release-coupled",
+    "worker.list": "settled",
+    "usage.read": "settled",
+    "audit.workspace-list": "settled",
+    "audit.server-list": "settled",
     "evidence.bundle-list": "release-coupled",
     "evidence.runtime-list": "release-coupled",
-    "permission.workspace-list": "release-coupled",
+    "permission.workspace-list": "settled",
     "permission.server-list": "release-coupled",
     "material.list": "release-coupled",
-    "material.create": "release-coupled",
-    "material.read": "release-coupled",
+    "material.create": "settled",
+    "material.read": "settled",
     "material.revision-list": "release-coupled",
-    "material.revision-save": "release-coupled",
-    "material.revision-read": "release-coupled",
+    "material.revision-save": "settled",
+    "material.revision-read": "settled",
     "material.thread-read": "release-coupled",
     "material.bind": "release-coupled",
     "material.unbind": "release-coupled",
@@ -320,31 +320,31 @@
     "evaluation.candidate-set-select": "release-coupled",
     "evaluation.judgement-add": "release-coupled",
     "material.range-correct": "release-coupled",
-    "worker-environment.list": "release-coupled",
-    "worker-environment.select": "release-coupled",
-    "worker-environment.status": "release-coupled",
+    "worker-environment.list": "settled",
+    "worker-environment.select": "settled",
+    "worker-environment.status": "settled",
     "worker-environment.purge": "release-coupled",
-    "worker-environment.prepare": "release-coupled",
-    "worker-environment.recover": "release-coupled",
-    "worker-environment.activate": "release-coupled",
+    "worker-environment.prepare": "settled",
+    "worker-environment.recover": "settled",
+    "worker-environment.activate": "settled",
     "administration.report-prepare": "release-coupled",
-    "administration.configuration-apply": "release-coupled",
+    "administration.configuration-apply": "settled",
     "administration.conversation-submit": "release-coupled",
-    "administration.cleanup-read": "release-coupled",
-    "app-update.preflight": "release-coupled",
-    "app-update.prepare": "release-coupled",
-    "app-update.start": "release-coupled",
-    "app-update.status": "release-coupled",
-    "diagnostics.app": "release-coupled",
+    "administration.cleanup-read": "settled",
+    "app-update.preflight": "settled",
+    "app-update.prepare": "settled",
+    "app-update.start": "settled",
+    "app-update.status": "settled",
+    "diagnostics.app": "settled",
     "diagnostics.setup": "release-coupled",
-    "nanohost.enroll": "release-coupled",
-    "nanohost.runtime-target": "release-coupled",
+    "nanohost.enroll": "settled",
+    "nanohost.runtime-target": "settled",
     "nanohost.token-issue": "release-coupled",
     "nanohost.token-rotate": "release-coupled",
     "nanohost.token-rotation-abort": "release-coupled",
     "nanohost.decommission": "release-coupled",
-    "backup.create": "release-coupled",
-    "backup.verify": "release-coupled",
+    "backup.create": "settled",
+    "backup.verify": "settled",
     "storage.layout-report": "release-coupled",
     "workspace.backup-capture": "release-coupled",
     "workspace.backup-verify": "release-coupled",
@@ -352,12 +352,12 @@
     "workspace.recovery-inspect": "release-coupled",
     "workspace.recovery-finish": "release-coupled",
     "workspace.recovery-abandon": "release-coupled",
-    "workspace.backup-download": "release-coupled",
+    "workspace.backup-download": "settled",
     "token.my-admin-list": "release-coupled",
     "token.my-admin-default": "release-coupled",
-    "token.create": "release-coupled",
-    "token.rotate": "release-coupled",
-    "bootstrap.consume": "release-coupled",
+    "token.create": "settled",
+    "token.rotate": "settled",
+    "bootstrap.consume": "settled",
     "credential.list": "release-coupled",
     "credential.revoke": "release-coupled",
     "policy.write": "release-coupled",
@@ -509,7 +509,7 @@
     "/api/app/operations/caller.read": {
       "post": {
         "operationId": "caller.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "caller"
         ],
@@ -859,7 +859,7 @@
     "/api/app/operations/runtime.reload": {
       "post": {
         "operationId": "runtime.reload",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "runtime"
         ],
@@ -909,7 +909,7 @@
     "/api/app/operations/runtime.file-list": {
       "post": {
         "operationId": "runtime.file-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "runtime"
         ],
@@ -959,7 +959,7 @@
     "/api/app/operations/runtime.file-read": {
       "post": {
         "operationId": "runtime.file-read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "runtime"
         ],
@@ -1059,7 +1059,7 @@
     "/api/app/operations/runtime.file-update": {
       "post": {
         "operationId": "runtime.file-update",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "runtime"
         ],
@@ -1202,7 +1202,7 @@
     "/api/app/operations/runtime.validate": {
       "post": {
         "operationId": "runtime.validate",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "runtime"
         ],
@@ -1795,7 +1795,7 @@
     "/api/app/operations/provider-subscription.account-quota": {
       "post": {
         "operationId": "provider-subscription.account-quota",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "provider-subscription"
         ],
@@ -1845,7 +1845,7 @@
     "/api/app/operations/provider-subscription.account-auto-topup": {
       "post": {
         "operationId": "provider-subscription.account-auto-topup",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "provider-subscription"
         ],
@@ -2478,7 +2478,7 @@
     "/api/app/operations/vault.grant-request": {
       "post": {
         "operationId": "vault.grant-request",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -2539,7 +2539,7 @@
     "/api/app/operations/vault.grant-request-list": {
       "post": {
         "operationId": "vault.grant-request-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -2589,7 +2589,7 @@
     "/api/app/operations/vault.grant-issue": {
       "post": {
         "operationId": "vault.grant-issue",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -2639,7 +2639,7 @@
     "/api/app/operations/vault.status": {
       "post": {
         "operationId": "vault.status",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -2789,7 +2789,7 @@
     "/api/app/operations/vault.bootstrap-codex-auth": {
       "post": {
         "operationId": "vault.bootstrap-codex-auth",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -3089,7 +3089,7 @@
     "/api/app/operations/vault.grant-narrow": {
       "post": {
         "operationId": "vault.grant-narrow",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -3189,7 +3189,7 @@
     "/api/app/operations/vault.grant-revoke": {
       "post": {
         "operationId": "vault.grant-revoke",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -3339,7 +3339,7 @@
     "/api/app/operations/vault.grant-list": {
       "post": {
         "operationId": "vault.grant-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -3589,7 +3589,7 @@
     "/api/app/operations/app.search": {
       "post": {
         "operationId": "app.search",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "app"
         ],
@@ -3639,7 +3639,7 @@
     "/api/app/operations/environment.snapshot-list": {
       "post": {
         "operationId": "environment.snapshot-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "environment"
         ],
@@ -3982,7 +3982,7 @@
     "/api/app/operations/automation.event-admit": {
       "post": {
         "operationId": "automation.event-admit",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "automation"
         ],
@@ -4132,7 +4132,7 @@
     "/api/app/operations/scheduler.cancel": {
       "post": {
         "operationId": "scheduler.cancel",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "scheduler"
         ],
@@ -4293,7 +4293,7 @@
     "/api/app/operations/kernel.apps.get": {
       "post": {
         "operationId": "kernel.apps.get",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "kernel"
         ],
@@ -5303,7 +5303,7 @@
     "/api/app/operations/workspace.dashboard": {
       "post": {
         "operationId": "workspace.dashboard",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -5353,7 +5353,7 @@
     "/api/app/operations/workspace.list": {
       "post": {
         "operationId": "workspace.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -5403,7 +5403,7 @@
     "/api/app/operations/workspace.resources": {
       "post": {
         "operationId": "workspace.resources",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -5453,7 +5453,7 @@
     "/api/app/operations/workspace.resource-access-request": {
       "post": {
         "operationId": "workspace.resource-access-request",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -5514,7 +5514,7 @@
     "/api/app/operations/workspace.resource-access-apply": {
       "post": {
         "operationId": "workspace.resource-access-apply",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -5714,7 +5714,7 @@
     "/api/app/operations/workspace.invitation-create": {
       "post": {
         "operationId": "workspace.invitation-create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -6363,7 +6363,7 @@
     "/api/app/operations/workspace.retire-quarantined": {
       "post": {
         "operationId": "workspace.retire-quarantined",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -6424,7 +6424,7 @@
     "/api/app/operations/workspace.delete": {
       "post": {
         "operationId": "workspace.delete",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -6485,7 +6485,7 @@
     "/api/app/operations/workspace.deleted-recover": {
       "post": {
         "operationId": "workspace.deleted-recover",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "workspace"
         ],
@@ -6718,7 +6718,7 @@
     "/api/app/operations/thread.create": {
       "post": {
         "operationId": "thread.create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "thread"
         ],
@@ -7079,7 +7079,7 @@
     "/api/app/operations/thread.dashboard": {
       "post": {
         "operationId": "thread.dashboard",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "thread"
         ],
@@ -7190,7 +7190,7 @@
     "/api/app/operations/turn.interrupt": {
       "post": {
         "operationId": "turn.interrupt",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "turn"
         ],
@@ -7351,7 +7351,7 @@
     "/api/app/operations/knowledge.ask": {
       "post": {
         "operationId": "knowledge.ask",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -7401,7 +7401,7 @@
     "/api/app/operations/knowledge.tell": {
       "post": {
         "operationId": "knowledge.tell",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -7462,7 +7462,7 @@
     "/api/app/operations/knowledge.maintain": {
       "post": {
         "operationId": "knowledge.maintain",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -7884,7 +7884,7 @@
     "/api/app/operations/knowledge.proposal.draft": {
       "post": {
         "operationId": "knowledge.proposal.draft",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8045,7 +8045,7 @@
     "/api/app/operations/knowledge.proposal.read": {
       "post": {
         "operationId": "knowledge.proposal.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8095,7 +8095,7 @@
     "/api/app/operations/knowledge.proposal.decide": {
       "post": {
         "operationId": "knowledge.proposal.decide",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8328,7 +8328,7 @@
     "/api/app/operations/knowledge.notebook.history": {
       "post": {
         "operationId": "knowledge.notebook.history",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8378,7 +8378,7 @@
     "/api/app/operations/knowledge.notebook.diff": {
       "post": {
         "operationId": "knowledge.notebook.diff",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8428,7 +8428,7 @@
     "/api/app/operations/knowledge.notebook.restore": {
       "post": {
         "operationId": "knowledge.notebook.restore",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8489,7 +8489,7 @@
     "/api/app/operations/knowledge.notebook.update": {
       "post": {
         "operationId": "knowledge.notebook.update",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8550,7 +8550,7 @@
     "/api/app/operations/knowledge.notebook.list": {
       "post": {
         "operationId": "knowledge.notebook.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8600,7 +8600,7 @@
     "/api/app/operations/knowledge.notebook.create": {
       "post": {
         "operationId": "knowledge.notebook.create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -8661,7 +8661,7 @@
     "/api/app/operations/knowledge.notebook.delete": {
       "post": {
         "operationId": "knowledge.notebook.delete",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -9005,7 +9005,7 @@
     "/api/app/operations/memory.search": {
       "post": {
         "operationId": "memory.search",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "memory"
         ],
@@ -9055,7 +9055,7 @@
     "/api/app/operations/memory.source.register": {
       "post": {
         "operationId": "memory.source.register",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "memory"
         ],
@@ -9116,7 +9116,7 @@
     "/api/app/operations/memory.source.list": {
       "post": {
         "operationId": "memory.source.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "memory"
         ],
@@ -9166,7 +9166,7 @@
     "/api/app/operations/memory.source.read": {
       "post": {
         "operationId": "memory.source.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "memory"
         ],
@@ -9721,7 +9721,7 @@
     "/api/app/operations/artifact.version-list": {
       "post": {
         "operationId": "artifact.version-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "artifact"
         ],
@@ -9771,7 +9771,7 @@
     "/api/app/operations/artifact.version-read": {
       "post": {
         "operationId": "artifact.version-read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "artifact"
         ],
@@ -9821,7 +9821,7 @@
     "/api/app/operations/artifact.version-commit": {
       "post": {
         "operationId": "artifact.version-commit",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "artifact"
         ],
@@ -9932,7 +9932,7 @@
     "/api/app/operations/artifact.read": {
       "post": {
         "operationId": "artifact.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "artifact"
         ],
@@ -10082,7 +10082,7 @@
     "/api/app/operations/artifact.introduce": {
       "post": {
         "operationId": "artifact.introduce",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "artifact"
         ],
@@ -10193,7 +10193,7 @@
     "/api/app/operations/artifact.review.select": {
       "post": {
         "operationId": "artifact.review.select",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "artifact"
         ],
@@ -10315,7 +10315,7 @@
     "/api/app/operations/goal.create": {
       "post": {
         "operationId": "goal.create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "goal"
         ],
@@ -10681,7 +10681,7 @@
     "/api/app/operations/goal.plan.approve": {
       "post": {
         "operationId": "goal.plan.approve",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "goal"
         ],
@@ -10803,7 +10803,7 @@
     "/api/app/operations/goal.completion.accept": {
       "post": {
         "operationId": "goal.completion.accept",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "goal"
         ],
@@ -10864,7 +10864,7 @@
     "/api/app/operations/goal.read": {
       "post": {
         "operationId": "goal.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "goal"
         ],
@@ -10914,7 +10914,7 @@
     "/api/app/operations/sync.review-list": {
       "post": {
         "operationId": "sync.review-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "sync"
         ],
@@ -11275,7 +11275,7 @@
     "/api/app/operations/sync.change-set-list": {
       "post": {
         "operationId": "sync.change-set-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "sync"
         ],
@@ -11686,7 +11686,7 @@
     "/api/app/operations/conversation.targets": {
       "post": {
         "operationId": "conversation.targets",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "conversation"
         ],
@@ -11736,7 +11736,7 @@
     "/api/app/operations/conversation.navigation": {
       "post": {
         "operationId": "conversation.navigation",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "conversation"
         ],
@@ -11786,7 +11786,7 @@
     "/api/app/operations/conversation.submit": {
       "post": {
         "operationId": "conversation.submit",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "conversation"
         ],
@@ -11914,7 +11914,7 @@
     "/api/app/operations/task.steer": {
       "post": {
         "operationId": "task.steer",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "task"
         ],
@@ -11975,7 +11975,7 @@
     "/api/app/operations/task.start": {
       "post": {
         "operationId": "task.start",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "task"
         ],
@@ -12086,7 +12086,7 @@
     "/api/app/operations/approval.respond": {
       "post": {
         "operationId": "approval.respond",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "approval"
         ],
@@ -12319,7 +12319,7 @@
     "/api/app/operations/agent.list": {
       "post": {
         "operationId": "agent.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "agent"
         ],
@@ -12369,7 +12369,7 @@
     "/api/app/operations/agent.read": {
       "post": {
         "operationId": "agent.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "agent"
         ],
@@ -12419,7 +12419,7 @@
     "/api/app/operations/catalog.read": {
       "post": {
         "operationId": "catalog.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -12519,7 +12519,7 @@
     "/api/app/operations/catalog.skill-import": {
       "post": {
         "operationId": "catalog.skill-import",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -12580,7 +12580,7 @@
     "/api/app/operations/catalog.skill-version-list": {
       "post": {
         "operationId": "catalog.skill-version-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -12730,7 +12730,7 @@
     "/api/app/operations/catalog.skill-content-read": {
       "post": {
         "operationId": "catalog.skill-content-read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -12780,7 +12780,7 @@
     "/api/app/operations/catalog.skill-diff": {
       "post": {
         "operationId": "catalog.skill-diff",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -12952,7 +12952,7 @@
     "/api/app/operations/catalog.skill-candidate-submit": {
       "post": {
         "operationId": "catalog.skill-candidate-submit",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -13013,7 +13013,7 @@
     "/api/app/operations/catalog.skill-candidate-decide": {
       "post": {
         "operationId": "catalog.skill-candidate-decide",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -13196,7 +13196,7 @@
     "/api/app/operations/catalog.skill-pin": {
       "post": {
         "operationId": "catalog.skill-pin",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -13307,7 +13307,7 @@
     "/api/app/operations/catalog.mcp-create": {
       "post": {
         "operationId": "catalog.mcp-create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -13490,7 +13490,7 @@
     "/api/app/operations/catalog.mcp-select": {
       "post": {
         "operationId": "catalog.mcp-select",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -13551,7 +13551,7 @@
     "/api/app/operations/catalog.mcp-binding": {
       "post": {
         "operationId": "catalog.mcp-binding",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -13723,7 +13723,7 @@
     "/api/app/operations/administration.mcp-discovery-preview": {
       "post": {
         "operationId": "administration.mcp-discovery-preview",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -13773,7 +13773,7 @@
     "/api/app/operations/administration.server-mcp-list": {
       "post": {
         "operationId": "administration.server-mcp-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -13823,7 +13823,7 @@
     "/api/app/operations/administration.server-mcp-read": {
       "post": {
         "operationId": "administration.server-mcp-read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -13873,7 +13873,7 @@
     "/api/app/operations/administration.server-mcp-create": {
       "post": {
         "operationId": "administration.server-mcp-create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -14056,7 +14056,7 @@
     "/api/app/operations/administration.server-mcp-update-binding": {
       "post": {
         "operationId": "administration.server-mcp-update-binding",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -14178,7 +14178,7 @@
     "/api/app/operations/vault.server-mcp-secret-create": {
       "post": {
         "operationId": "vault.server-mcp-secret-create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -14239,7 +14239,7 @@
     "/api/app/operations/vault.server-mcp-secret-rotate": {
       "post": {
         "operationId": "vault.server-mcp-secret-rotate",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -14361,7 +14361,7 @@
     "/api/app/operations/vault.server-mcp-reference-list": {
       "post": {
         "operationId": "vault.server-mcp-reference-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -14411,7 +14411,7 @@
     "/api/app/operations/vault.server-mcp-grant-create": {
       "post": {
         "operationId": "vault.server-mcp-grant-create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -14583,7 +14583,7 @@
     "/api/app/operations/vault.server-mcp-grant-narrow": {
       "post": {
         "operationId": "vault.server-mcp-grant-narrow",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "vault"
         ],
@@ -14644,7 +14644,7 @@
     "/api/app/operations/catalog.shared-mcp-list": {
       "post": {
         "operationId": "catalog.shared-mcp-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -14694,7 +14694,7 @@
     "/api/app/operations/catalog.shared-mcp-set-disabled": {
       "post": {
         "operationId": "catalog.shared-mcp-set-disabled",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -14755,7 +14755,7 @@
     "/api/app/operations/knowledge.server.maintain": {
       "post": {
         "operationId": "knowledge.server.maintain",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -14816,7 +14816,7 @@
     "/api/app/operations/knowledge.server.tell": {
       "post": {
         "operationId": "knowledge.server.tell",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -14877,7 +14877,7 @@
     "/api/app/operations/thread.server.list": {
       "post": {
         "operationId": "thread.server.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "thread"
         ],
@@ -14927,7 +14927,7 @@
     "/api/app/operations/thread.server.read": {
       "post": {
         "operationId": "thread.server.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "thread"
         ],
@@ -14977,7 +14977,7 @@
     "/api/app/operations/turn.server.interrupt": {
       "post": {
         "operationId": "turn.server.interrupt",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "turn"
         ],
@@ -15027,7 +15027,7 @@
     "/api/app/operations/knowledge.server.proposal.read": {
       "post": {
         "operationId": "knowledge.server.proposal.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -15077,7 +15077,7 @@
     "/api/app/operations/knowledge.server.proposal.decide": {
       "post": {
         "operationId": "knowledge.server.proposal.decide",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "knowledge"
         ],
@@ -15238,7 +15238,7 @@
     "/api/app/operations/catalog.light-app-import": {
       "post": {
         "operationId": "catalog.light-app-import",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -15410,7 +15410,7 @@
     "/api/app/operations/catalog.light-app-select": {
       "post": {
         "operationId": "catalog.light-app-select",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -15471,7 +15471,7 @@
     "/api/app/operations/catalog.light-app-pin": {
       "post": {
         "operationId": "catalog.light-app-pin",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "catalog"
         ],
@@ -15532,7 +15532,7 @@
     "/api/app/operations/kernel.apps.instantiate": {
       "post": {
         "operationId": "kernel.apps.instantiate",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "kernel"
         ],
@@ -15593,7 +15593,7 @@
     "/api/app/operations/kernel.schema.activate": {
       "post": {
         "operationId": "kernel.schema.activate",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "kernel"
         ],
@@ -15826,7 +15826,7 @@
     "/api/app/operations/worker.list": {
       "post": {
         "operationId": "worker.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker"
         ],
@@ -15876,7 +15876,7 @@
     "/api/app/operations/usage.read": {
       "post": {
         "operationId": "usage.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "usage"
         ],
@@ -15926,7 +15926,7 @@
     "/api/app/operations/audit.workspace-list": {
       "post": {
         "operationId": "audit.workspace-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "audit"
         ],
@@ -15976,7 +15976,7 @@
     "/api/app/operations/audit.server-list": {
       "post": {
         "operationId": "audit.server-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "audit"
         ],
@@ -16126,7 +16126,7 @@
     "/api/app/operations/permission.workspace-list": {
       "post": {
         "operationId": "permission.workspace-list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "permission"
         ],
@@ -16276,7 +16276,7 @@
     "/api/app/operations/material.create": {
       "post": {
         "operationId": "material.create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "material"
         ],
@@ -16337,7 +16337,7 @@
     "/api/app/operations/material.read": {
       "post": {
         "operationId": "material.read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "material"
         ],
@@ -16437,7 +16437,7 @@
     "/api/app/operations/material.revision-save": {
       "post": {
         "operationId": "material.revision-save",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "material"
         ],
@@ -16498,7 +16498,7 @@
     "/api/app/operations/material.revision-read": {
       "post": {
         "operationId": "material.revision-read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "material"
         ],
@@ -17186,7 +17186,7 @@
     "/api/app/operations/worker-environment.list": {
       "post": {
         "operationId": "worker-environment.list",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker-environment"
         ],
@@ -17236,7 +17236,7 @@
     "/api/app/operations/worker-environment.select": {
       "post": {
         "operationId": "worker-environment.select",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker-environment"
         ],
@@ -17286,7 +17286,7 @@
     "/api/app/operations/worker-environment.status": {
       "post": {
         "operationId": "worker-environment.status",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker-environment"
         ],
@@ -17397,7 +17397,7 @@
     "/api/app/operations/worker-environment.prepare": {
       "post": {
         "operationId": "worker-environment.prepare",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker-environment"
         ],
@@ -17458,7 +17458,7 @@
     "/api/app/operations/worker-environment.recover": {
       "post": {
         "operationId": "worker-environment.recover",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker-environment"
         ],
@@ -17519,7 +17519,7 @@
     "/api/app/operations/worker-environment.activate": {
       "post": {
         "operationId": "worker-environment.activate",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "worker-environment"
         ],
@@ -17641,7 +17641,7 @@
     "/api/app/operations/administration.configuration-apply": {
       "post": {
         "operationId": "administration.configuration-apply",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -17763,7 +17763,7 @@
     "/api/app/operations/administration.cleanup-read": {
       "post": {
         "operationId": "administration.cleanup-read",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "administration"
         ],
@@ -17813,7 +17813,7 @@
     "/api/app/operations/app-update.preflight": {
       "post": {
         "operationId": "app-update.preflight",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "app-update"
         ],
@@ -17863,7 +17863,7 @@
     "/api/app/operations/app-update.prepare": {
       "post": {
         "operationId": "app-update.prepare",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "app-update"
         ],
@@ -17913,7 +17913,7 @@
     "/api/app/operations/app-update.start": {
       "post": {
         "operationId": "app-update.start",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "app-update"
         ],
@@ -17974,7 +17974,7 @@
     "/api/app/operations/app-update.status": {
       "post": {
         "operationId": "app-update.status",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "app-update"
         ],
@@ -18024,7 +18024,7 @@
     "/api/app/operations/diagnostics.app": {
       "post": {
         "operationId": "diagnostics.app",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "diagnostics"
         ],
@@ -18124,7 +18124,7 @@
     "/api/app/operations/nanohost.enroll": {
       "post": {
         "operationId": "nanohost.enroll",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "nanohost"
         ],
@@ -18174,7 +18174,7 @@
     "/api/app/operations/nanohost.runtime-target": {
       "post": {
         "operationId": "nanohost.runtime-target",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "nanohost"
         ],
@@ -18424,7 +18424,7 @@
     "/api/app/operations/backup.create": {
       "post": {
         "operationId": "backup.create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "backup"
         ],
@@ -18474,7 +18474,7 @@
     "/api/app/operations/backup.verify": {
       "post": {
         "operationId": "backup.verify",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "backup"
         ],
@@ -18985,7 +18985,7 @@
     "/api/app/operations/token.create": {
       "post": {
         "operationId": "token.create",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "token"
         ],
@@ -19035,7 +19035,7 @@
     "/api/app/operations/token.rotate": {
       "post": {
         "operationId": "token.rotate",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "token"
         ],
@@ -19085,7 +19085,7 @@
     "/api/app/operations/bootstrap.consume": {
       "post": {
         "operationId": "bootstrap.consume",
-        "x-openkit-stability": "release-coupled",
+        "x-openkit-stability": "settled",
         "tags": [
           "bootstrap"
         ],
@@ -183277,5 +183277,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:5539022966f628b74cfbaa10962e9db0427a467167b6b187e1b10db872648eb6"
+  "x-openkit-source-digest": "sha256:bb4d2d89d9d5218f6c1373a911a80df2ad9c0ba0d049ac28b522b7bd6888c7ee"
 }

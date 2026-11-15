@@ -49,7 +49,7 @@ export const SCHEDULER_OPERATION_DEFINITIONS = {
     outputSchema: RetrySchedulerAdmissionResponseSchema,
   },
   'scheduler.cancel': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

@@ -16,7 +16,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Release-authored nanohost contracts; execution and current administrator authority stay in NanoCore. */
 export const NANOHOST_OPERATION_DEFINITIONS = {
   'nanohost.enroll': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Enroll the configured NanoHost through an exclusive named-slot credential write.',
@@ -30,7 +30,7 @@ export const NANOHOST_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'nanohost.runtime-target': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

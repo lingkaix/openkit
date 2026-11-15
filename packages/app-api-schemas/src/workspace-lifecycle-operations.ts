@@ -57,7 +57,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.invitation-create': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Invite an existing canonical user to the Workspace.',
@@ -230,7 +230,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.retire-quarantined': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -245,7 +245,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.delete': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -259,7 +259,7 @@ export const WORKSPACE_LIFECYCLE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.deleted-recover': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

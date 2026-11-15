@@ -51,7 +51,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.create': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -65,7 +65,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -93,7 +93,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'material.revision-save': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -110,7 +110,7 @@ export const MATERIAL_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'material.revision-read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

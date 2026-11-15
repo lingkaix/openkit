@@ -1206,7 +1206,7 @@ describe('remote MCP App endpoint', () => {
         const result = await f.call('openkit_describe', { operation: id }, token.secret);
         const data = JSON.parse(result.content[0].text);
         expect(data.id).toBe(id);
-        expect(data.stability).toBe('release-coupled');
+        expect(data.stability).toBe(definition.stability);
         expect(data.annotations.readOnlyHint).toBe(!definition.mutating);
         expect(data.inputSchema.type).toBe('object');
       }
@@ -1221,7 +1221,10 @@ describe('remote MCP App endpoint', () => {
       expect(a).toEqual(b);
       expect(a.items[0].id).toBe('kernel.records.create');
       expect(
-        a.items.every((item: { stability: string }) => item.stability === 'release-coupled')
+        a.items.every(
+          (item: { id: keyof typeof OPERATION_DEFINITIONS; stability: string }) =>
+            item.stability === OPERATION_DEFINITIONS[item.id].stability
+        )
       ).toBe(true);
       const additions = Object.fromEntries(
         Array.from({ length: 30 }, (_, i) => [

@@ -261,7 +261,7 @@ const write = {
 /** Sole declarative contract for the ten Goal operations; all executable behavior stays with NanoCore. */
 export const GOAL_OPERATION_DEFINITIONS = {
   'goal.create': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -343,7 +343,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.plan.approve': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -365,7 +365,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
     inputSchema: z.object({ ...command, expectedRevision: revision, reason: text }).strict(),
   },
   'goal.completion.accept': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -382,7 +382,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
       .strict(),
   },
   'goal.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

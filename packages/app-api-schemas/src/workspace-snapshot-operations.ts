@@ -152,7 +152,7 @@ export const WORKSPACE_SNAPSHOT_OPERATION_DEFINITIONS = {
     outputSchema: WorkspaceSnapshotReportSchema,
   },
   'workspace.backup-download': {
-    stability: 'release-coupled',
+    stability: 'settled',
     ...administration,
     binding: 'streaming',
     mutating: false,

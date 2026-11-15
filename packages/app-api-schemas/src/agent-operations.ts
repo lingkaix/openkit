@@ -29,7 +29,7 @@ export const AGENT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'agent.list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -43,7 +43,7 @@ export const AGENT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'agent.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

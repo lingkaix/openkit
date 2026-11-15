@@ -89,7 +89,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.create': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -214,7 +214,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'thread.dashboard': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

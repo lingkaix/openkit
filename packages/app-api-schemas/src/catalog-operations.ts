@@ -58,7 +58,7 @@ const candidateInput = SubmitSkillCandidateRequestSchema.omit({ tree: true })
 /** Catalog declarations reuse native payloads and closed admission strategies. */
 export const CATALOG_OPERATION_DEFINITIONS = {
   'catalog.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -86,7 +86,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-import': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -100,7 +100,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-version-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -166,7 +166,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-content-read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -187,7 +187,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.skill-diff': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -243,7 +243,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-candidate-submit': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -257,7 +257,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-candidate-decide': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -309,7 +309,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.skill-pin': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -340,7 +340,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'catalog.mcp-create': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -392,7 +392,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-select': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -409,7 +409,7 @@ export const CATALOG_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'catalog.mcp-binding': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

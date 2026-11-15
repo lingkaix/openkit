@@ -21,7 +21,7 @@ const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 /** Release-authored family facts; authority, replay and effects remain with their native owners. */
 export const WORKER_ENVIRONMENT_OPERATION_DEFINITIONS = {
   'worker-environment.list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -35,7 +35,7 @@ export const WORKER_ENVIRONMENT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'worker-environment.select': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -49,7 +49,7 @@ export const WORKER_ENVIRONMENT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'worker-environment.status': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -79,7 +79,7 @@ export const WORKER_ENVIRONMENT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'worker-environment.prepare': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -93,7 +93,7 @@ export const WORKER_ENVIRONMENT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'worker-environment.recover': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -108,7 +108,7 @@ export const WORKER_ENVIRONMENT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'worker-environment.activate': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
