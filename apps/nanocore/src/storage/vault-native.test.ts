@@ -214,6 +214,7 @@ async function fixture(unbound = false) {
     productOwner: scope.owner,
     contentMount: scope.contentMount,
   });
+  const coreWorker = interception.workers.at(-1);
   const prepare = db.sqlite.prepare.bind(db.sqlite);
   const exec = db.sqlite.exec.bind(db.sqlite);
   const deny = (sql: string) => {
@@ -236,6 +237,7 @@ async function fixture(unbound = false) {
   return {
     db,
     gate,
+    coreWorker,
     commits: () => Atomics.load(gate, 3),
     submissions: () => Atomics.load(gate, 5),
     // Only the Storage-owned fixture changes the retained row while BEGIN has not executed.
@@ -3370,7 +3372,7 @@ describe('credential writer oracle', () => {
       expect(writer(p.f)).toEqual(retained);
       const sent = p.f.submissions();
       if (acknowledgement === 'lost') {
-        const worker = interception.workers.at(-1);
+        const worker = p.f.coreWorker;
         expect(worker).toBeDefined();
         await worker!.terminate();
         expect(await operation.result).toMatchObject({
