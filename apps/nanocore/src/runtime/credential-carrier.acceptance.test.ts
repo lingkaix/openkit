@@ -177,7 +177,7 @@ async function fixture(
     });
     if (!entry.requestId) throw new Error('Canonical admission omitted its original request id.');
     const createdAt = new Date().toISOString();
-    const scope = { workspaceId: entry.workspaceId, threadId: entry.threadId, actorId: userId };
+    const scope = { workspaceId: entry.workspaceId, threadId: entry.threadId };
     turn = await store.createTurn(
       entry.workspaceId,
       entry.threadId,
@@ -195,8 +195,9 @@ async function fixture(
           requestId: entry.requestId,
           scope,
           inputHash: commandInputHash({
-            queueEntryId: entry.queueEntryId,
-            turnInput: entry.turnInput,
+            ...scope,
+            requestId: entry.requestId,
+            input: entry.turnInput,
           }),
           responseKind: 'turn',
           createdAt,
@@ -205,9 +206,27 @@ async function fixture(
       }
     );
   } else {
-    turn = await store.createTurn(DEMO_WORKSPACE_ID, DEMO_THREAD_ID, 'Use synthetic file', {
-      kind: 'user',
-      id: userId,
+    const requestId = randomUUID();
+    const scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID };
+    turn = await runIdempotentCommand({
+      store,
+      inflightCommands: new WeakMap(),
+      command: 'turn.start',
+      requestId,
+      scope,
+      input: { ...scope, requestId, input: 'Use synthetic file' },
+      responseKind: 'turn',
+      replay: (record) => store.getTurn(scope.workspaceId, scope.threadId, record.response.id),
+      responseId: (created) => created.id,
+      execute: async (commandReceipt) =>
+        await store.createTurn(
+          DEMO_WORKSPACE_ID,
+          DEMO_THREAD_ID,
+          'Use synthetic file',
+          { kind: 'user', id: userId },
+          undefined,
+          { commandReceipt }
+        ),
     });
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });
     entry = createSchedulerAdmissionEntry(coreDb, {
@@ -219,7 +238,7 @@ async function fixture(
       turnId: turn.id,
       turnInput: 'Use synthetic file',
       triggerActor: turn.triggerActor,
-      requestId: randomUUID(),
+      requestId,
     });
   }
   const attemptId = testEntityId('attempt', randomUUID());

@@ -262,7 +262,7 @@ import * as nativeExecutionAttempts from './execution-attempts.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionJournalRef } from './execution-step-journal.js';
 import { executeGoalOperation, readGoalView, requireNativeCoordinatorGoal } from './goal-owner.js';
-import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
+import { readGoalTaskPolicyContext, requiredTaskTurn } from './goal-task-policy-context.js';
 import {
   commandInputHash,
   conversationTaskThreadId,
@@ -658,7 +658,7 @@ function expectedTaskModeTurnId(
   const receivingThreadId = conversationTaskThreadId(actor, workspaceId, threadId, requestId);
   return conversationTaskTurnId(actor, workspaceId, threadId, receivingThreadId, requestId);
 }
-/** Creates ordinary Task checkpoint, Material and governed Knowledge state for S39 checks. */
+/** Publishes ordinary Worker input with its native command cause, context checkpoint and Knowledge. */
 async function createWorkerContextExecutorFixture(
   name: string,
   options: {
@@ -758,7 +758,19 @@ async function createWorkerContextExecutorFixture(
             profileId: options.turnStartReceipt.profileId,
           })
         )
-      : undefined
+      : !options.turnId && !options.originatingThreadId
+        ? turnStartFixtureReceipt(
+            requestId,
+            { workspaceId: 'ws_00000000-0000-7000-8000-000000000001', threadId },
+            commandInputHash({
+              workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+              threadId,
+              requestId,
+              input: 'Prepare worker context',
+              profileId: 'profile_worker',
+            })
+          )
+        : undefined
   );
   const contextItemId = testEntityId('it', `it_context_${name}`);
   const maxContextTokens = options.maxContextTokens ?? 12000;
@@ -914,6 +926,56 @@ async function createWorkerContextExecutorFixture(
     workerRequest,
   };
 }
+
+it.each(['ordinary', 'task', 'unresolved', 'contradictory'] as const)(
+  'classifies Worker context from its native Turn cause (%s)',
+  async (cause) => {
+    const turnId =
+      cause === 'ordinary'
+        ? undefined
+        : cause === 'task' || cause === 'contradictory'
+          ? expectedTaskModeTurnId(
+              'task.start',
+              LOCAL_USER_ID,
+              'ws_00000000-0000-7000-8000-000000000001',
+              'th_00000000-0000-7000-8000-000000000001',
+              '00000000-0000-4000-8000-000000000270'
+            )
+          : allocateEntityId('tu');
+    const fixture = await createWorkerContextExecutorFixture(`native-cause-${cause}`, {
+      ...(turnId ? { turnId } : {}),
+      ...(cause === 'contradictory'
+        ? { turnStartReceipt: { input: 'Prepare worker context', profileId: 'profile_worker' } }
+        : {}),
+    });
+    const db = openTestWorkspaceDb(fixture.coreDb);
+    const lineage = {
+      workspaceId: workspaceIdForOwner(fixture.turn.owner),
+      threadId: fixture.turn.threadId,
+      turnId: fixture.turn.id,
+      agentSessionId: fixture.agentSessionId,
+      packageSnapshotId: `aepsnap_${fixture.turn.id}_${fixture.agentSessionId}`,
+    };
+    try {
+      const input = { coreDb: fixture.coreDb, db, lineage };
+      if (cause === 'ordinary') {
+        expect(
+          getWorkerCheckpoint(db, lineage.workspaceId, lineage.threadId, lineage.turnId)
+        ).not.toBeNull();
+        expect(readGoalTaskPolicyContext({ ...input, store: fixture.store })).toBeNull();
+      } else {
+        if (cause === 'task') expect(requiredTaskTurn(input)?.turnId).toBe(lineage.turnId);
+        if (cause === 'contradictory') expect(() => requiredTaskTurn(input)).toThrow();
+        expect(() => readGoalTaskPolicyContext({ ...input, store: fixture.store })).toThrow(
+          'Goal Task Policy context requires current exact owner facts.'
+        );
+      }
+    } finally {
+      db.sqlite.close();
+      fixture.coreDb.sqlite.close();
+    }
+  }
+);
 
 /**
  * Prepares one direct-Task-shaped S39 checkpoint under an explicit Turn identity.

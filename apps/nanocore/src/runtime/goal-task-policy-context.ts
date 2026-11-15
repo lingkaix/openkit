@@ -91,6 +91,34 @@ export function requiredTaskTurn(input: {
     }).filter((entry) => entry.threadId === lineage.threadId);
     const current = entries.find((entry) => entry.turnId === lineage.turnId);
     if (!current || schedulerAdmissionInputHash(current) !== current.inputHash) throw unavailable();
+    // The initiating command is a positive cause witness on this same read view.
+    // A checkpoint also serves ordinary Worker context preparation; its presence is not a Task cause.
+    const ordinaryReceipt = current.requestId
+      ? getCommandRequestRecordFromDb(
+          db,
+          commandRequestKey('turn.start', current.requestId, {
+            workspaceId: lineage.workspaceId,
+            threadId: lineage.threadId,
+          }),
+          new Date().toISOString()
+        )
+      : null;
+    // Different command names can reuse a request UUID; only this Turn's response is a cause.
+    const ordinaryCommand =
+      ordinaryReceipt?.response.id === lineage.turnId ? ordinaryReceipt : null;
+    if (
+      ordinaryCommand &&
+      (ordinaryCommand.command !== 'turn.start' ||
+        ordinaryCommand.requestId !== current.requestId ||
+        ordinaryCommand.key !==
+          commandRequestKey(
+            ordinaryCommand.command,
+            ordinaryCommand.requestId,
+            ordinaryCommand.scope
+          ) ||
+        ordinaryCommand.response.kind !== 'turn')
+    )
+      throw unavailable();
     const originals = entries.filter((entry) => {
       const checkpoint = getWorkerCheckpoint(db, entry.workspaceId, entry.threadId, entry.turnId);
       if (checkpoint?.goalId || checkpoint?.taskId) throw unavailable();
@@ -108,7 +136,10 @@ export function requiredTaskTurn(input: {
       );
     });
     const exact = originals.find((entry) => entry.turnId === lineage.turnId);
-    if (exact) return exact;
+    if (exact) {
+      if (ordinaryCommand) throw unavailable();
+      return exact;
+    }
     // Pending supplies an original source position, never a new selection or authority.
     const pending = listThreadPendingRequests(db.sqlite, lineage.workspaceId, lineage.threadId);
     let sourceTurnId = lineage.turnId;
@@ -133,9 +164,8 @@ export function requiredTaskTurn(input: {
     // Several independent Tasks on a reused Thread require an exact source cause.
     if (originals.length > 1) throw unavailable();
     if (originals.length === 1) return originals[0]!;
-    if (getWorkerCheckpoint(db, lineage.workspaceId, lineage.threadId, lineage.turnId))
-      throw unavailable();
-    return null;
+    if (ordinaryCommand) return null;
+    throw unavailable();
   }
   const goal = readNativeGoalView(db, link.goalId).goal;
   if (!goal || goal.workspaceId !== lineage.workspaceId) throw unavailable();
