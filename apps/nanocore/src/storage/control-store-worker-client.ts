@@ -922,7 +922,19 @@ export class WorkspaceMutationAdmission {
 
   /** Restores exclusion provenance only; this never recovers a live permission. */
   public restoreRecoveryClosed(workspaceId: string, origin: WorkspaceRecoveryFreezeOrigin): void {
-    this.state(workspaceId).captureClosed = { owner: null, origin: Object.freeze({ ...origin }) };
+    const state = this.state(workspaceId);
+    const current = state.captureClosed;
+    // Retain the live Core closeout owner; provenance never creates a new owner.
+    if (
+      'admissionId' in origin &&
+      current?.owner &&
+      !state.closed &&
+      (!current.origin || isDeepStrictEqual(current.origin, origin))
+    ) {
+      current.origin = Object.freeze({ ...origin });
+      return;
+    }
+    state.captureClosed = { owner: null, origin: Object.freeze({ ...origin }) };
   }
 
   /** Both entry paths preserve the original closed, typed inspection failure. */
@@ -980,10 +992,37 @@ export class WorkspaceMutationAdmission {
   public bindRecovery(
     workspaceId: string,
     owner: WorkspaceFrozenAdmission,
-    bindings: NonNullable<CaptureClosure['recovery']>
+    bindings:
+      | {
+          readonly canonical: ControlRecoveryNativeBinding;
+          readonly candidate?: ControlRecoveryNativeBinding;
+        }
+      | {
+          readonly canonical?: ControlRecoveryNativeBinding;
+          readonly candidate: ControlRecoveryNativeBinding;
+        }
   ): void {
     if (!this.ownsFreeze(workspaceId, owner))
       throw new Error('Workspace recovery freeze is not current.');
+    // A proven staging database belongs to the original logical owner, not an independent gate.
+    for (const binding of [...workspaceMutationOwners.values()].includes(this)
+      ? [bindings.canonical, bindings.candidate]
+      : []) {
+      if (!binding) continue;
+      if (workspaceMutationOwners.get(resolve(binding.sourceDataRoot)) !== this)
+        throw new Error('Recovery binding must use its original native scope owner.');
+      const root = resolve(binding.command.dataRoot!);
+      const previous = workspaceMutationOwners.get(root);
+      if (
+        previous &&
+        previous !== this &&
+        [...previous.gates.values()].some(
+          (state) => state.admitted !== 0 || state.closed || state.captureClosed !== null
+        )
+      )
+        throw new Error('Recovery candidate already has an active native scope owner.');
+      workspaceMutationOwners.set(root, this);
+    }
     this.gates.get(workspaceId)!.captureClosed!.recovery = { ...bindings };
   }
 
@@ -2091,6 +2130,8 @@ class ControlStoreWorkerClient {
     }
     try {
       const { binding, freeze } = recovery;
+      // A private candidate has a different physical root, but belongs to the original Core owner.
+      const boundAdmission = this.workspaceMutations(binding.sourceDataRoot);
       const owner = binding.command.productOwner;
       const physical =
         opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
@@ -2112,7 +2153,7 @@ class ControlStoreWorkerClient {
         if (
           owner?.kind !== 'workspace' ||
           app.workspaceId !== owner.workspaceId ||
-          !admission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
+          !boundAdmission.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
           binding.command.create !== false ||
           binding.command.initialize !== 'workspace' ||
           !original ||
@@ -2133,7 +2174,7 @@ class ControlStoreWorkerClient {
       }
       if (
         owner?.kind !== 'workspace' ||
-        !admission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
+        !boundAdmission.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
         !('database' in command) ||
         command.database !== binding.command.database ||
         binding.command.create !== false ||

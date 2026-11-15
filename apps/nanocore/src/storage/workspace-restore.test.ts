@@ -72,6 +72,7 @@ import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
 } from './control-store-worker-client.js';
 import {
   inventoryRegularFiles,
@@ -1786,7 +1787,7 @@ describe('D0-2 same-deployment restore', () => {
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: randomUUID() })
     ).toThrow(WorkspaceRecoveryError);
-    const foreignGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
+    const foreignGate = new WorkspaceMutationAdmission();
     const foreign = foreignGate.tryFreeze(workspaceId, () => []);
     if (foreign.status !== 'frozen') throw new Error('Expected the independent foreign freeze.');
     try {
@@ -2055,8 +2056,17 @@ describe('D0-2 same-deployment restore', () => {
     const owned = readRecoveryExecution(core, f.requestId)!;
     expect(owned.state).toBe('prepared');
     const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-    const otherGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-    const frozen = gate.tryFreeze(workspaceId, () => []);
+    const otherGate = new WorkspaceMutationAdmission();
+    restoreWorkspaceRecoveryAdmission(core, gate);
+    const frozen = gate.tryResumeRecovery(
+      workspaceId,
+      {
+        admissionId: owned.admission_id,
+        revision: owned.revision,
+        candidateRef: owned.candidate_ref,
+      },
+      () => []
+    );
     const other = otherGate.tryFreeze(workspaceId, () => []);
     if (frozen.status !== 'frozen' || other.status !== 'frozen')
       throw new Error('Expected independent admitted freezes.');
@@ -2151,7 +2161,7 @@ describe('D0-2 same-deployment restore', () => {
       await expect(client.open(candidateCommand, replacement.candidate)).rejects.toBeInstanceOf(
         Error
       );
-      await client.close(candidateCommand.database);
+      await shutdownControlStoreWorkerClient();
       expect(rows(candidateScope.path, 'control_workspaces')).toEqual(candidateBefore);
       expect(rows(canonicalScope.path, 'control_workspaces')).toEqual(canonicalBefore);
       expect(rows(canonicalScope.path, 'control_threads')).toEqual(threadsBefore);
