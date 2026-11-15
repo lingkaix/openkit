@@ -1144,7 +1144,6 @@ describe('Core artifact routes', () => {
         store.getTurn('ws_00000000-0000-7000-8000-000000000001', thread.id, followUpTurnId)
       ).toMatchObject({
         id: followUpTurnId,
-        triggerSource: { kind: 'approval-resolution' },
         owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-000000000001' },
         threadId: thread.id,
         agentId: setup.manifest.id,

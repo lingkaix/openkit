@@ -201,8 +201,6 @@ export interface OperationInvocationDependencies {
   readonly startModeWorkerTurn?: (input: {
     readonly store: FsStore;
     readonly triggerActor: ActorRef;
-    /** Native initiating cause supplied by its existing producer. */
-    readonly triggerSource?: ReturnType<FsStore['getTurnById']>['triggerSource'];
     readonly requestActor?: import('./auth/identity.js').Actor;
     readonly workspaceId: string;
     readonly threadId: string;

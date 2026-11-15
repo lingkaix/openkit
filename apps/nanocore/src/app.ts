@@ -21,7 +21,6 @@ import {
   allocateEntityId,
   canonicalIdentifierName,
   compareCodeUnits,
-  deriveEntityId,
   isEntityId,
   isSealedTurnTerminal,
   workspaceIdForOwner,
@@ -1113,17 +1112,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               void startModeWorkerTurn({
                 store: sharedStore,
                 triggerActor: { kind: 'user', id: actor.userId },
-                triggerSource: {
-                  kind: 'user-input',
-                  summary: 'Worker environment activation input.',
-                },
-                reservedTurnId: deriveEntityId('tu', {
-                  command: 'worker_environment.activate',
-                  actorId: actor.userId,
-                  workspaceId: replaceNow.workspaceId,
-                  threadId: replaceNow.threadId,
-                  requestId,
-                }),
                 requestActor: actor,
                 workspaceId: replaceNow.workspaceId,
                 threadId: replaceNow.threadId,
@@ -1336,7 +1324,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     /** Exact selected Worker conversation response, including its original routing metadata. */
     readonly commandReceiptResponse?: CommandRequestRecord['response'];
     readonly triggerActor: ActorRef;
-    /** Native initiating cause supplied by the Turn-creating owner. */
+    /** Native admission cause; unrelated Worker restarts and follow-ups leave it absent. */
     readonly triggerSource?: z.infer<typeof TurnSchema>['triggerSource'];
     readonly requestActor?: Actor;
     readonly workspaceId: string;

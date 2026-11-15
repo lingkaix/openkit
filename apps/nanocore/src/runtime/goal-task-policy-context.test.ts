@@ -1,26 +1,14 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import {
   AgentEnvironmentCredentialDeclarationSchema,
   AuthoredAgentCredentialDeclarationSchema,
   parseWorkspaceMcpServerCatalog,
 } from '@openkit/config-schema';
-import {
-  allocateEntityId,
-  deriveEntityId,
-  PROTOCOL_VERSION,
-  workspaceIdForOwner,
-} from '@openkit/protocol';
+import { deriveEntityId, PROTOCOL_VERSION, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
-import {
-  deriveArtifactReviewFollowUpTurnId,
-  deriveArtifactReviewWorkerRequestId,
-  executeControlReviewCommand,
-  getArtifactReview,
-} from '../artifact-reviews.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import {
@@ -32,8 +20,6 @@ import { FsStore } from '../lib/store.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { stageArtifactPayload } from '../storage/artifacts/file-payload.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -62,7 +48,7 @@ import {
 } from './execution-attempt-records.js';
 import { executeGoalOperation } from './goal-owner.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
-import { commandInputHash, runIdempotentCommand } from './idempotent-command.js';
+import { commandInputHash } from './idempotent-command.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
 import { raiseRecordedPendingRequest } from './pending-request-flow.js';
 import {
@@ -104,7 +90,6 @@ async function retainCompletedTaskFixture(
     'goal_plan_versions',
     'goal_card_tasks',
     'task_turn_terminal_facts',
-    'artifact_reviews',
     // Retained Git/schema bytes must keep their exact native SQL selection and Proposal lineage.
     'knowledge_notebook_heads',
     'knowledge_notebook_proposals',
@@ -130,8 +115,7 @@ async function retainCompletedTaskFixture(
   closeWorkspaceProductReadHandles(dataRoot);
   renameSync(workspaceRoot, retainedRoot);
   try {
-    // A fresh import owner cannot retain live Artifact cache identities from the old root.
-    await new FsStore({ dataRoot }).importWorkspaceSnapshot({
+    await store.importWorkspaceSnapshot({
       ...records,
       defaultKnowledgeBaseId,
       turns: records.turns.map((turn) => (turn.id === turnId ? historical : turn)),
@@ -387,7 +371,6 @@ async function fixture(typed = true, linked = true) {
     undefined,
     {
       startedAt: sessionStartedAt,
-      triggerSource: { kind: 'handoff', summary: 'Task Worker handoff.' },
       agentId,
       agentSessionId,
       executorKind: 'worker',
@@ -769,281 +752,83 @@ it.each([false, true])(
   }
 );
 
-it.each(['turn.start', 'worker_environment.activate'] as const)(
-  'retains original Task bounds for an ordinary checkpoint-free user follow-up (%s)',
-  async (command) => {
-    const f = await fixture();
-    const original = f.read()!;
-    await f.closeSource();
-    const agentId = 'followup-worker';
-    const agentSessionId = testEntityId('as', 'ordinary-followup');
-    const input = 'Review the next result.';
-    const requestId = randomUUID();
-    const sessionStartedAt = new Date().toISOString();
-    await f.store.createAgentSession({
-      id: agentSessionId,
-      agentId: agentId,
-      workspaceId: f.lineage.workspaceId,
-      threadId: f.lineage.threadId,
-      status: 'busy',
-      message: null,
-      createdAt: sessionStartedAt,
-      updatedAt: sessionStartedAt,
-    });
-    const turn = await f.store.createTurn(
-      f.lineage.workspaceId,
-      f.lineage.threadId,
-      input,
-      { kind: 'user', id: f.actor.userId },
-      null,
-      {
-        startedAt: sessionStartedAt,
-        ...(command === 'worker_environment.activate'
-          ? {
-              turnId: deriveEntityId('tu', {
-                command,
-                actorId: f.actor.userId,
-                workspaceId: f.lineage.workspaceId,
-                threadId: f.lineage.threadId,
-                requestId,
-              }),
-            }
-          : {}),
-        agentId,
-        agentSessionId,
-        executorKind: 'worker',
-        triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
-      }
-    );
-    const item = await f.store.createItem({
-      id: deriveEntityId('it', ['task-user', turn.id]),
-      owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
-      threadId: turn.threadId,
-      turnId: turn.id,
-      type: 'user-message',
-      status: 'completed',
-      actor: turn.triggerActor,
-      text: input,
-      createdAt: turn.startedAt!,
-      completedAt: turn.startedAt!,
-    });
-    const admission = createSchedulerAdmissionEntry(f.coreDb, {
-      backendId: 'nanohost',
-      queueEntryId: `queue_${turn.id}`,
-      requestId,
-      triggerActor: turn.triggerActor,
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId: turn.id,
-      turnInput: input,
-      requestedAgentId: agentId,
-    });
-    recordTestExecutionAttempt(f.coreDb, {
-      entry: admission,
-      attemptId: testEntityId('attempt', 'ordinary-followup'),
-      agentSessionId,
-      inputRef: 'followup-package',
-      bindingRef: 'followup-binding',
-      sessionCompatibilityKey: 'task-context',
-      now: () => new Date().toISOString(),
-    });
-    const lineage = {
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId: turn.id,
-      agentSessionId,
-      packageSnapshotId: 'followup-package',
-    };
-    await f.reopen();
-    const read = () =>
-      readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage });
-    expect(read()).toEqual({ ...original, turnId: turn.id, agentId });
-    await f.store.updateItem(item.id, { text: 'Contradictory follow-up input.' });
-    expect(read).toThrow();
-  }
-);
-
-it('inherits a standalone Task ceiling through its exact native Artifact Review source', async () => {
-  const f = await fixture(true, false);
+it('retains original Task bounds for an ordinary checkpoint-free user follow-up', async () => {
+  const f = await fixture();
   const original = f.read()!;
-  const source = f.lineage;
-  const artifactId = allocateEntityId('ar');
-  const submitId = randomUUID();
-  const body = 'The actual Task output is ready for review.';
-  const contentDigest = `sha256:${createHash('sha256').update(body).digest('hex')}`;
-  const scope = {
-    workspaceId: source.workspaceId,
-    threadId: source.threadId,
-    turnId: source.turnId,
-    agentSessionId: source.agentSessionId,
-  };
-  const fileAdmission = new FileStorageAdmission(f.coreDb.dataRoot, () => 0n);
-  const byteLength = Buffer.byteLength(body);
-  const reservation = fileAdmission.reserve({
-    stagingBytes: BigInt(byteLength),
-    extractionBytes: 0n,
-    derivativeBytes: 0n,
-    publicationBytes: BigInt(byteLength) + 65_536n,
-  });
-  const staged = await stageArtifactPayload({
-    workspaceRoot: join(f.coreDb.dataRoot, 'workspaces', source.workspaceId),
-    source: Readable.from([Buffer.from(body)]),
-    expectedByteLength: byteLength,
-    expectedDigest: contentDigest,
-    reservation,
-  });
-  try {
-    await runIdempotentCommand({
-      store: f.store,
-      inflightCommands: new WeakMap(),
-      command: 'artifact.submit',
-      requestId: submitId,
-      scope,
-      input: { artifactId, body },
-      responseKind: 'artifact',
-      replay: () => f.store.getArtifact(source.workspaceId, artifactId),
-      responseId: (artifact) => artifact.id,
-      execute: (receipt) =>
-        f.store.createArtifact(
-          {
-            id: artifactId,
-            workspaceId: source.workspaceId,
-            threadId: source.threadId,
-            turnId: source.turnId,
-            kind: 'summary',
-            title: 'Task review output',
-            status: 'ready',
-            summary: null,
-            version: 1,
-            content: { format: 'file', mediaType: 'text/plain', byteLength },
-            contentDigest,
-            lastMutationRequestId: submitId,
-            origin: {
-              kind: 'turn-output',
-              threadId: source.threadId,
-              turnId: source.turnId,
-              requestId: submitId,
-            },
-            createdAt: receipt.createdAt,
-            updatedAt: receipt.createdAt,
-          },
-          staged,
-          {
-            review: {
-              artifactId,
-              artifactVersion: 1,
-              contentDigest,
-              sourceThreadId: source.threadId,
-              sourceTurnId: source.turnId,
-              sourceAgentId: f.agentId,
-              materialProposal: null,
-              createdAt: receipt.createdAt,
-            },
-            receipt: { ...receipt, command: 'artifact.submit', responseKind: 'artifact', scope },
-            fileAdmission,
-          }
-        ),
-    });
-  } finally {
-    await staged.remove();
-    reservation.release();
-  }
   await f.closeSource();
-  const decisionId = randomUUID();
-  await executeControlReviewCommand(f.db, {
-    mode: 'decide',
-    receipt: null,
-    input: {
-      actorId: f.actor.userId,
-      actor: { kind: 'user', id: f.actor.userId },
-      artifactId,
-      artifactVersion: 1,
-      decision: 'redo',
-      feedback: 'Review this exact output again.',
-      requestId: decisionId,
-      decidedAt: new Date().toISOString(),
-      artifactContent: body,
-      artifactMediaType: 'text/plain',
-    },
-  });
-  const review = getArtifactReview(f.db, artifactId, 1);
-  const turnId = deriveArtifactReviewFollowUpTurnId(source.workspaceId, artifactId, 1, decisionId);
-  expect(review.followUpTurnId).toBe(turnId);
-  const requestId = deriveArtifactReviewWorkerRequestId(decisionId);
-  const agentSessionId = allocateEntityId('as');
-  const timestamp = new Date().toISOString();
+  const agentId = 'followup-worker';
+  const agentSessionId = testEntityId('as', 'ordinary-followup');
+  const input = 'Review the next result.';
+  const sessionStartedAt = new Date().toISOString();
   await f.store.createAgentSession({
     id: agentSessionId,
-    agentId: f.agentId,
-    workspaceId: source.workspaceId,
-    threadId: source.threadId,
+    agentId: agentId,
+    workspaceId: f.lineage.workspaceId,
+    threadId: f.lineage.threadId,
     status: 'busy',
     message: null,
-    createdAt: timestamp,
-    updatedAt: timestamp,
+    createdAt: sessionStartedAt,
+    updatedAt: sessionStartedAt,
   });
-  const input = 'Review the exact native Artifact decision.';
   const turn = await f.store.createTurn(
-    source.workspaceId,
-    source.threadId,
+    f.lineage.workspaceId,
+    f.lineage.threadId,
     input,
     { kind: 'user', id: f.actor.userId },
     null,
     {
-      turnId,
-      agentId: f.agentId,
+      startedAt: sessionStartedAt,
+      agentId,
       agentSessionId,
       executorKind: 'worker',
-      triggerSource: { kind: 'approval-resolution', summary: 'Artifact Review follow-up.' },
+      triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
     }
   );
-  await f.store.createItem({
-    id: deriveEntityId('it', ['task-user', turnId]),
-    owner: turn.owner,
-    threadId: source.threadId,
-    turnId,
+  const item = await f.store.createItem({
+    id: deriveEntityId('it', ['task-user', turn.id]),
+    owner: { kind: 'workspace', workspaceId: workspaceIdForOwner(turn.owner) },
+    threadId: turn.threadId,
+    turnId: turn.id,
     type: 'user-message',
     status: 'completed',
     actor: turn.triggerActor,
     text: input,
-    createdAt: timestamp,
-    completedAt: timestamp,
+    createdAt: turn.startedAt!,
+    completedAt: turn.startedAt!,
   });
-  const entry = createSchedulerAdmissionEntry(f.coreDb, {
+  const admission = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
-    queueEntryId: `queue_${turnId}`,
-    requestId,
+    queueEntryId: `queue_${turn.id}`,
+    requestId: randomUUID(),
     triggerActor: turn.triggerActor,
-    workspaceId: source.workspaceId,
-    threadId: source.threadId,
-    turnId,
+    workspaceId: workspaceIdForOwner(turn.owner),
+    threadId: turn.threadId,
+    turnId: turn.id,
     turnInput: input,
-    requestedAgentId: f.agentId,
+    requestedAgentId: agentId,
   });
   recordTestExecutionAttempt(f.coreDb, {
-    entry,
-    attemptId: allocateEntityId('attempt'),
+    entry: admission,
+    attemptId: testEntityId('attempt', 'ordinary-followup'),
     agentSessionId,
-    inputRef: 'review-followup-package',
-    bindingRef: `review-followup:${turnId}`,
+    inputRef: 'followup-package',
+    bindingRef: 'followup-binding',
     sessionCompatibilityKey: 'task-context',
-    now: () => timestamp,
+    now: () => new Date().toISOString(),
   });
   const lineage = {
-    workspaceId: source.workspaceId,
-    threadId: source.threadId,
-    turnId,
+    workspaceId: workspaceIdForOwner(turn.owner),
+    threadId: turn.threadId,
+    turnId: turn.id,
     agentSessionId,
-    packageSnapshotId: 'review-followup-package',
+    packageSnapshotId: 'followup-package',
   };
+  await f.reopen();
   const read = () =>
     readGoalTaskPolicyContext({ coreDb: f.coreDb, store: f.store, db: f.db, lineage });
-  expect(read()).toEqual({ ...original, turnId, agentId: f.agentId });
-  // A valid review row cannot be relabelled as ordinary input to escape its Task source.
-  await f.store.updateTurn(turnId, {
-    triggerSource: { kind: 'user-input', summary: 'Contradictory source.' },
-  });
-  expect(read).toThrow('Goal Task Policy context requires current exact owner facts.');
+  expect(read()).toEqual({ ...original, turnId: turn.id, agentId });
+  await f.store.updateItem(item.id, { text: 'Contradictory follow-up input.' });
+  expect(read).toThrow();
 });
 
 it.each([

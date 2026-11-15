@@ -163,14 +163,7 @@ async function fixture(
   let turn: Awaited<ReturnType<typeof store.createTurn>>;
   let entry: ReturnType<typeof createSchedulerAdmissionEntry>;
   if (options.helper) {
-    const requestId = randomUUID();
-    const turnId = deriveEntityId('tu', [
-      JSON.stringify({ kind: 'user', id: userId }),
-      DEMO_WORKSPACE_ID,
-      DEMO_THREAD_ID,
-      requestId,
-      null,
-    ]);
+    const turnId = testEntityId('tu', randomUUID());
     entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `queue:${turnId}`,
@@ -180,7 +173,7 @@ async function fixture(
       turnId,
       turnInput: 'Use synthetic file',
       triggerActor: { kind: 'user', id: userId },
-      requestId,
+      requestId: randomUUID(),
     });
     if (!entry.requestId) throw new Error('Canonical admission omitted its original request id.');
     const createdAt = new Date().toISOString();
@@ -196,7 +189,6 @@ async function fixture(
         status: 'pending',
         agentId: entry.requestedAgentId,
         executorKind: 'worker',
-        triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
         commandReceipt: {
           key: commandRequestKey('turn.start', entry.requestId, scope),
           command: 'turn.start',
@@ -233,17 +225,7 @@ async function fixture(
           'Use synthetic file',
           { kind: 'user', id: userId },
           undefined,
-          {
-            commandReceipt,
-            turnId: deriveEntityId('tu', [
-              JSON.stringify({ kind: 'user', id: userId }),
-              DEMO_WORKSPACE_ID,
-              DEMO_THREAD_ID,
-              requestId,
-              null,
-            ]),
-            triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
-          }
+          { commandReceipt }
         ),
     });
     await store.updateTurn(turn.id, { agentId: 'agent_codex_host' });

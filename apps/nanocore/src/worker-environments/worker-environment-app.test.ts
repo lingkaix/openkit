@@ -7,7 +7,6 @@ import type {
   PrepareWorkerEnvironmentResponse,
 } from '@openkit/app-api-schemas';
 import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
-import { deriveEntityId } from '@openkit/protocol';
 import { parse } from 'jsonc-parser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -20,7 +19,6 @@ import {
   listSchedulerExecutionAttemptsForTurn,
   requireSchedulerExecutionAttempt,
 } from '../runtime/execution-attempt-records.js';
-import { readGoalTaskPolicyContext } from '../runtime/goal-task-policy-context.js';
 import type {
   NanoHostSessionDispatch,
   NanoHostSessionEffectRequest,
@@ -32,7 +30,7 @@ import { writeWorkerImageSettlement } from '../runtime/worker-image-settlements.
 import { getWorkerStorageBindingForSandbox } from '../runtime/worker-storage-bindings.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from '../scheduler-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
-import { type CoreDb, openCoreDb, openWorkspaceReadDb } from '../storage/db.js';
+import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
   createTestAgentSetup,
@@ -934,42 +932,6 @@ describe('Worker environment App composition', () => {
         statuses: ['admitted'],
         workspaceId: productWorkspace.id,
       }).find((entry) => entry.turnId === successor.id);
-      expect(store.getTurnById(successor.id).triggerSource?.kind).toBe('user-input');
-      expect(successor.id).toBe(
-        deriveEntityId('tu', {
-          command: 'worker_environment.activate',
-          actorId: USER_ID,
-          workspaceId: productWorkspace.id,
-          threadId: productThread.id,
-          requestId: activation.requestId,
-        })
-      );
-      const successorAttempts = listSchedulerExecutionAttemptsForTurn(coreDb, {
-        workspaceId: productWorkspace.id,
-        threadId: productThread.id,
-        turnId: successor.id,
-      });
-      expect(successorAttempts).toHaveLength(1);
-      const successorAttempt = successorAttempts[0]!;
-      const policyDb = openWorkspaceReadDb(dataRoot, productWorkspace.id);
-      try {
-        expect(
-          readGoalTaskPolicyContext({
-            coreDb,
-            store,
-            db: policyDb,
-            lineage: {
-              workspaceId: productWorkspace.id,
-              threadId: productThread.id,
-              turnId: successor.id,
-              agentSessionId: successorAttempt.agentSessionId!,
-              packageSnapshotId: successorAttempt.inputRef!,
-            },
-          })
-        ).toBeNull();
-      } finally {
-        policyDb.sqlite.close();
-      }
       expect(successorAdmission?.workerStorageChoice).toMatchObject({
         expectedRevision: attached.revision,
         kind: 'selected',

@@ -14,7 +14,6 @@ import {
 import { createCoreClient } from '@openkit/core-client';
 import {
   ApiErrorSchema,
-  deriveEntityId,
   PROTOCOL_VERSION,
   TimestampSchema,
   workspaceIdForOwner,
@@ -50,7 +49,6 @@ import { createInternalOperationEngine, createOperationEngine } from './operatio
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import type { OperationAdmissionDependencies } from './operation-resolvers.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
-import { runIdempotentCommand } from './runtime/idempotent-command.js';
 import {
   dispatchOpenkitGenerativeTool,
   OPENKIT_GENERATIVE_TOOL_OPERATIONS,
@@ -493,41 +491,12 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     baseUrl: 'http://nanocore.test',
     fetch: createLoopbackAppFetch(f.app),
   });
-  const requestId = randomUUID();
-  const scope = {
-    workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-    threadId: 'th_00000000-0000-7000-8000-000000000001',
-  };
-  const turn = await runIdempotentCommand({
-    store: f.store,
-    inflightCommands: new WeakMap(),
-    command: 'turn.start',
-    requestId,
-    scope,
-    input: { ...scope, requestId, input: 'Operation invariant' },
-    responseKind: 'turn',
-    replay: (record) => f.store.getTurn(scope.workspaceId, scope.threadId, record.response.id),
-    responseId: (created) => created.id,
-    execute: (commandReceipt) =>
-      f.store.createTurn(
-        scope.workspaceId,
-        scope.threadId,
-        'Operation invariant',
-        f.command.actor,
-        undefined,
-        {
-          commandReceipt,
-          turnId: deriveEntityId('tu', [
-            JSON.stringify(f.command.actor),
-            scope.workspaceId,
-            scope.threadId,
-            requestId,
-            null,
-          ]),
-          triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
-        }
-      ),
-  });
+  const turn = await f.store.createTurn(
+    'ws_00000000-0000-7000-8000-000000000001',
+    'th_00000000-0000-7000-8000-000000000001',
+    'Operation invariant',
+    f.command.actor
+  );
   await f.store.createAgentSession({
     id: 'as_00000000-0000-7dd2-9c72-030c3ef6118f',
     agentId: 'agent_codex_host',
@@ -548,7 +517,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     agentSetup: createTestAgentSetup(),
     backend: { kind: 'openshell' },
     createdAt: new Date().toISOString(),
-    requestId,
+    requestId: 'operation-package',
     triggerActor: turn.triggerActor,
     turn,
     workspaceCwd: '/workspace',
@@ -563,7 +532,7 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
     queueEntryId: 'queue_operation',
-    requestId,
+    requestId: 'request_operation',
     triggerActor: turn.triggerActor,
     serverAdminTokenId: workerAuthority.record.tokenId,
     workspaceId: workspaceIdForOwner(turn.owner),
