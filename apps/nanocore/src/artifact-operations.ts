@@ -760,6 +760,10 @@ export function createArtifactOperationImplementations(
                 void startModeWorkerTurn({
                   store,
                   triggerActor: actor,
+                  triggerSource: {
+                    kind: 'approval-resolution',
+                    summary: 'Artifact Review follow-up.',
+                  },
                   ...(context.kind === 'public' ? { requestActor: context.actor } : {}),
                   workspaceId,
                   threadId: sourceThreadId,
