@@ -1251,7 +1251,10 @@ export async function classifyDirectTaskCheckpointAfterSchedulerRecovery(input: 
   } catch {
     throw directTaskModeRecoveryError('The boot Task checkpoint has no scheduler admission owner.');
   }
-  if (admission.requestId !== checkpoint.requestId || admission.triggerActor.kind !== 'user') {
+  if (
+    admission.requestId !== checkpoint.requestId ||
+    !['user', 'integration'].includes(admission.triggerActor.kind)
+  ) {
     throw directTaskModeRecoveryError(
       'The boot Task scheduler admission contradicts its human command identity.'
     );
@@ -1612,8 +1615,8 @@ async function recoverSessionlessTaskAdmission(input: {
     admission.turnId !== input.turnId ||
     admission.requestId !== input.requestId ||
     admission.inputHash !== schedulerAdmissionInputHash(admission) ||
-    admission.triggerActor.kind !== 'user' ||
-    turn.triggerActor.kind !== 'user' ||
+    !['user', 'integration'].includes(admission.triggerActor.kind) ||
+    !isDeepStrictEqual(admission.triggerActor, turn.triggerActor) ||
     admission.triggerActor.id !== turn.triggerActor.id ||
     admission.requestedAgentId !== turn.agentId ||
     (attempt &&
@@ -5141,13 +5144,19 @@ export function createTaskStartOperation({
       workspaceId: string;
       threadId: string;
     },
-    actor: Actor
+    actor: Actor,
+    triggerActor: ActorRef
   ): Promise<StartTaskModeResponse> => {
     const { workspaceId, threadId } = taskInput;
-    const triggerActor = {
-      kind: 'user',
-      id: actor.userId,
-    } as const satisfies ActorRef;
+    if (
+      (triggerActor.kind !== 'user' && triggerActor.kind !== 'integration') ||
+      responsibleUserIdForActor(triggerActor) !== actor.userId
+    )
+      throw new TurnStartValidationError(
+        'workspace_access_denied',
+        'Workspace access denied.',
+        403
+      );
     const actorId = triggerActor.id;
     // An omitted selector retains the original command input and replay hash.
     const requestInput = {
@@ -5288,7 +5297,7 @@ export function createTaskStartOperation({
 
       const delegation = createTaskModeDelegation({
         entryIntent: 'explicit_task',
-        userId: actorId,
+        userId: actor.userId,
         store,
         workspaceId,
         threadId,

@@ -26,6 +26,8 @@ export const schedulerAdmissionEntries = sqliteTable(
     triggerActorJson: text('trigger_actor_json').notNull(),
     /** Non-secret id of the presented server-admin token, revalidated at each effect. */
     serverAdminTokenId: text('server_admin_token_id'),
+    /** Exact Token/AuthSession reference; no credential material or cached grant. */
+    credentialRefJson: text('credential_ref_json'),
     /** Host-local working directory captured for delayed preparation. */
     workspaceCwd: text('workspace_cwd'),
     /** Materialized roots captured with the exact accepted input. */

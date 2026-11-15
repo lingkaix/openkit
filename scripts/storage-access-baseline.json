@@ -320,7 +320,7 @@
       "crossDirectoryImports": 65
     },
     "scheduler-recurring": {
-      "exports": 85,
+      "exports": 86,
       "crossDirectoryImports": 26
     },
     "worker-runtime": {

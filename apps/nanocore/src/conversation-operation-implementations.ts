@@ -133,7 +133,12 @@ export function createTaskConversationOperationImplementations(
     },
     'task.start': async (input, context) => {
       try {
-        return await dependencies.taskStart!(store, input, publicOperationActor(context));
+        return await dependencies.taskStart!(
+          store,
+          input,
+          publicOperationActor(context),
+          context.actorRef
+        );
       } catch (error) {
         if (
           error instanceof HumanAttentionReadError ||

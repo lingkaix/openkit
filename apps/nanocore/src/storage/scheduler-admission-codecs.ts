@@ -5,7 +5,12 @@ import {
   MaterializedWorkspaceRootSchema,
   UpdateAutomationRequestSchema,
 } from '@openkit/app-api-schemas';
-import { ActorRefSchema, ReasoningEffortSchema } from '@openkit/protocol';
+import {
+  AccessTokenIdSchema,
+  ActorRefSchema,
+  AuthenticationSessionIdSchema,
+  ReasoningEffortSchema,
+} from '@openkit/protocol';
 import { z } from 'zod';
 import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
 import type { RecurringOccurrence } from './recurring-records.js';
@@ -15,6 +20,11 @@ import {
 } from './recurring-retained-v1.js';
 import type { SchedulerAdmissionDenialReason } from './schema/index.js';
 
+/** Exact original authentication credential, never a replacement principal or secret. */
+export const SchedulerCredentialRefSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('token'), id: AccessTokenIdSchema }).strict(),
+  z.object({ kind: z.literal('session'), id: AuthenticationSessionIdSchema }).strict(),
+]);
 /** Original scheduler transition failure, shared without importing a publisher. */
 export class SchedulerAdmissionTransitionError extends Error {
   /** Preserves the original definite admission refusal reason. */
@@ -80,6 +90,7 @@ const SchedulerCreateSchema = z
     requestId: z.string().nullable().optional(),
     triggerActor: ActorRefSchema,
     serverAdminTokenId: z.string().nullable().optional(),
+    credentialRef: SchedulerCredentialRefSchema.nullable().optional(),
     workspaceCwd: z.string().nullable().optional(),
     workspaceRoots: z.array(MaterializedWorkspaceRootSchema).optional(),
     workspaceId: z.string().min(1),
@@ -224,6 +235,7 @@ export type SchedulerAdmissionDraft =
 const entry = SchedulerCreateSchema.omit({ timestamp: true }).extend({
   requestId: z.string().nullable(),
   serverAdminTokenId: z.string().nullable(),
+  credentialRef: SchedulerCredentialRefSchema.nullable(),
   workspaceCwd: z.string().nullable(),
   workspaceRoots: z.array(MaterializedWorkspaceRootSchema),
   workerStorageChoice: storageChoice.nullable(),

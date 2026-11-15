@@ -2453,7 +2453,7 @@ describe('scheduler dispatch loop', () => {
         expiresAt: '2099-01-01T00:00:00.000Z',
         ownerUserId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
         scope: 'server-admin',
-        tokenId: 'token_admin_dispatch',
+        tokenId: 'tok_00000000-0000-7778-8adf-f988f1ec739e',
         workspaceIds: [],
       });
       if (earlierDeniedQueue) {
@@ -2493,7 +2493,7 @@ describe('scheduler dispatch loop', () => {
           providerCredentialResolver: () => null,
           requestActor: {
             kind: 'token',
-            tokenId: 'token_admin_dispatch',
+            tokenId: 'tok_00000000-0000-7778-8adf-f988f1ec739e',
             tokenScope: 'server-admin',
             tokenWorkspaceIds: [],
             userId: 'usr_00000000-0000-7778-8adf-f988f1ec739e',
@@ -2514,7 +2514,7 @@ describe('scheduler dispatch loop', () => {
           workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         });
         expect(entries.find((entry) => entry.requestId === requestId)).toMatchObject({
-          serverAdminTokenId: 'token_admin_dispatch',
+          serverAdminTokenId: 'tok_00000000-0000-7778-8adf-f988f1ec739e',
           status: earlierDeniedQueue ? 'queued' : 'admitted',
         });
         if (earlierDeniedQueue) {

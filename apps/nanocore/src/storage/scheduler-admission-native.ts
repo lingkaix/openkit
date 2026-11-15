@@ -101,7 +101,11 @@ export function applyControlSchedulerAdmission(
     } else if (
       !currentSchedulerAdmissionWorkspaceAuthority(
         db,
-        { ...input.entry, serverAdminTokenId: input.entry.serverAdminTokenId ?? null },
+        {
+          ...input.entry,
+          serverAdminTokenId: input.entry.serverAdminTokenId ?? null,
+          credentialRef: input.entry.credentialRef ?? null,
+        },
         'runtime.launch',
         true
       )

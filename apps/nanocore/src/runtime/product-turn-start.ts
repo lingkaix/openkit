@@ -282,6 +282,12 @@ export async function startProductTurn(input: StartProductTurnInput) {
           ...(input.workerStorageChoice ? { workerStorageChoice: input.workerStorageChoice } : {}),
           triggerActor: canonicalTriggerActor,
           serverAdminTokenId: presentedServerAdminTokenId,
+          credentialRef:
+            input.requestActor?.kind === 'token' && input.requestActor.tokenId
+              ? { kind: 'token', id: input.requestActor.tokenId }
+              : input.requestActor?.kind === 'session' && input.requestActor.sessionId
+                ? { kind: 'session', id: input.requestActor.sessionId }
+                : null,
           workspaceCwd,
           workspaceId: input.input.workspaceId,
           workspaceRoots,
@@ -563,7 +569,7 @@ export function verifyAcceptedTurnLineage(input: {
     admission = requireSchedulerAdmissionEntry(input.coreDb, row.queueEntryId, input);
     if (
       !['pending', 'running'].includes(turn.status) ||
-      turn.triggerActor.kind !== 'user' ||
+      !['user', 'integration'].includes(turn.triggerActor.kind) ||
       turn.triggerActor.id !== input.actorId ||
       held.length > 1 ||
       (attempt &&
@@ -575,7 +581,8 @@ export function verifyAcceptedTurnLineage(input: {
       admission.turnId !== input.turnId ||
       admission.requestId !== input.requestId ||
       !['queued', 'admitted'].includes(admission.status) ||
-      admission.triggerActor.kind !== 'user' ||
+      !['user', 'integration'].includes(admission.triggerActor.kind) ||
+      !isDeepStrictEqual(admission.triggerActor, turn.triggerActor) ||
       admission.triggerActor.id !== input.actorId ||
       admission.requestedAgentId !== turn.agentId ||
       (!attempt && admission.status !== 'queued')

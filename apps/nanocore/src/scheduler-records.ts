@@ -61,7 +61,10 @@ const StoredSchedulerWorkspaceRootV1Schema = z.discriminatedUnion('sourceKind', 
 
 export { SchedulerAdmissionTransitionError } from './storage/scheduler-admission-codecs.js';
 
-import { SchedulerAdmissionTransitionError } from './storage/scheduler-admission-codecs.js';
+import {
+  SchedulerAdmissionTransitionError,
+  SchedulerCredentialRefSchema,
+} from './storage/scheduler-admission-codecs.js';
 
 /** Explicit retained-storage choice captured with one scheduler admission request. */
 export type SchedulerWorkerStorageChoice =
@@ -81,6 +84,8 @@ export type SchedulerWorkerStorageChoice =
       readonly taskId: string | null;
     };
 
+type SchedulerCredentialRef = z.infer<typeof SchedulerCredentialRefSchema>;
+
 /** Durable checked FIFO admission bound to one configured backend. */
 export interface SchedulerAdmissionEntryRecord {
   /** Stable queue entry id. */
@@ -95,6 +100,8 @@ export interface SchedulerAdmissionEntryRecord {
   readonly triggerActor: ActorRef;
   /** Non-secret id of the presented server-admin token, checked again at each effect. */
   readonly serverAdminTokenId: string | null;
+  /** Authenticating credential captured before asynchronous acceptance. */
+  readonly credentialRef: SchedulerCredentialRef | null;
   /** Host-local working directory captured for delayed worker startup. */
   readonly workspaceCwd: string | null;
   /** Materialized workspace roots captured for delayed worker startup. */
@@ -134,6 +141,7 @@ interface SchedulerAdmissionEntryRow {
   readonly request_id: string | null;
   readonly trigger_actor_json: string;
   readonly server_admin_token_id: string | null;
+  readonly credential_ref_json: string | null;
   readonly workspace_cwd: string | null;
   readonly workspace_roots_json: string;
   readonly workspace_id: string;
@@ -162,6 +170,8 @@ export interface CreateSchedulerAdmissionEntryInput {
   readonly triggerActor: ActorRef;
   /** Non-secret id of a presented server-admin bearer bound to the triggering user. */
   readonly serverAdminTokenId?: string | null;
+  /** Exact authentication retained for current native checks; trusted autonomous work has none. */
+  readonly credentialRef?: SchedulerCredentialRef | null;
   /** Host-local working directory captured for delayed worker startup. */
   readonly workspaceCwd?: string | null;
   /** Materialized workspace roots captured for delayed worker startup. */
@@ -247,6 +257,7 @@ export function schedulerAdmissionInputHash(input: CreateSchedulerAdmissionEntry
         : null,
     triggerActor: ActorRefSchema.parse(input.triggerActor),
     serverAdminTokenId: input.serverAdminTokenId ?? null,
+    credentialRef: input.credentialRef ?? null,
     workspaceCwd: input.workspaceCwd ?? null,
     workspaceRoots: input.workspaceRoots ?? [],
   });
@@ -306,8 +317,8 @@ export function createSchedulerAdmissionEntry(
       queue_entry_id, backend_id, input_hash, request_id, workspace_id, thread_id, turn_id, turn_input,
       worker_storage_choice_json, requested_agent_id, profile_ref, model_id, reasoning_effort,
       enqueued_at, status, denial_reason, trigger_actor_json,
-      server_admin_token_id, workspace_cwd, workspace_roots_json, schema_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      server_admin_token_id, credential_ref_json, workspace_cwd, workspace_roots_json, schema_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(
           input.queueEntryId,
           input.backendId,
@@ -329,6 +340,9 @@ export function createSchedulerAdmissionEntry(
           null,
           JSON.stringify(triggerActor),
           input.serverAdminTokenId ?? null,
+          input.credentialRef
+            ? JSON.stringify(SchedulerCredentialRefSchema.parse(input.credentialRef))
+            : null,
           input.workspaceCwd ?? null,
           JSON.stringify(input.workspaceRoots ?? []),
           writeRetainedV1({}).schemaVersion
@@ -582,6 +596,7 @@ function schedulerAdmissionSelectSql(): string {
     request_id,
     trigger_actor_json,
     server_admin_token_id,
+    credential_ref_json,
     workspace_cwd,
     workspace_roots_json,
     workspace_id,
@@ -615,6 +630,10 @@ function mapSchedulerAdmissionEntryRow(
     requestId: row.request_id,
     triggerActor: StoredSchedulerActorV1Schema.parse(JSON.parse(row.trigger_actor_json)),
     serverAdminTokenId: row.server_admin_token_id,
+    credentialRef:
+      row.credential_ref_json === null
+        ? null
+        : SchedulerCredentialRefSchema.parse(JSON.parse(row.credential_ref_json)),
     workspaceCwd: row.workspace_cwd,
     workspaceRoots: z
       .array(StoredSchedulerWorkspaceRootV1Schema)

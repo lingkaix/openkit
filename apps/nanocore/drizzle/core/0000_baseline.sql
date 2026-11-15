@@ -459,6 +459,7 @@ CREATE TABLE `scheduler_admission_entries` (
 	`request_id` text,
 	`trigger_actor_json` text NOT NULL,
 	`server_admin_token_id` text,
+	`credential_ref_json` text,
 	`workspace_cwd` text,
 	`workspace_roots_json` text NOT NULL,
 	`workspace_id` text NOT NULL,

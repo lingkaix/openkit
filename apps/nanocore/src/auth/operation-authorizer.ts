@@ -445,7 +445,7 @@ export function currentWorkspaceAuthority(
 }
 
 /**
- * Rechecks one durable admission's presented administrator token before a scheduler or Worker effect.
+ * Rechecks one durable admission's exact initiating credential before a scheduler or Worker effect.
  *
  * @param coreDb Core Workspace and Token authority.
  * @param admission Exact originating admission context.
@@ -459,12 +459,62 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
   coreDb: CoreDb,
   admission: Pick<
     SchedulerAdmissionEntryRecord,
-    'workspaceId' | 'triggerActor' | 'serverAdminTokenId'
+    'workspaceId' | 'triggerActor' | 'serverAdminTokenId' | 'credentialRef'
   >,
   operation: string,
   effectAuthority: boolean,
   options?: WorkspaceAuthorityOptions
 ): WorkspaceAuthority | null {
+  if (admission.credentialRef) {
+    const userId = responsibleUserIdForActor(admission.triggerActor);
+    if (!userId) return null;
+    let requestActor: Actor;
+    if (admission.credentialRef.kind === 'token') {
+      const token = getOpenKitAccessTokenRecord(coreDb, admission.credentialRef.id);
+      const principal: ActorRef | null = !token
+        ? null
+        : token.principalRef
+          ? { kind: 'integration', id: token.principalRef.id, responsibleUserId: token.ownerUserId }
+          : { kind: 'user', id: token.ownerUserId };
+      if (
+        !token ||
+        token.ownerUserId !== userId ||
+        !principal ||
+        !sameActorRef(principal, admission.triggerActor)
+      )
+        return null;
+      requestActor = {
+        kind: 'token',
+        userId,
+        tokenId: token.tokenId,
+        tokenScope: token.scope,
+        tokenWorkspaceIds: token.workspaceIds,
+      };
+    } else {
+      if (admission.triggerActor.kind !== 'user') return null;
+      const session = coreDb.sqlite
+        .prepare('SELECT user_id AS userId, expires_at AS expiresAt FROM session WHERE id = ?')
+        .get(admission.credentialRef.id) as { userId: string; expiresAt: number } | undefined;
+      if (session?.userId !== userId || session.expiresAt <= Date.now()) return null;
+      requestActor = {
+        kind: 'session',
+        userId,
+        sessionId: admission.credentialRef.id,
+        ...(admission.serverAdminTokenId ? { adminTokenId: admission.serverAdminTokenId } : {}),
+      };
+    }
+    return currentWorkspaceAuthority(
+      coreDb,
+      admission.workspaceId,
+      admission.triggerActor,
+      operation,
+      effectAuthority,
+      requestActor,
+      options
+    );
+  }
+  // An Integration admission cannot reconstruct a different Token from its stable principal.
+  if (admission.triggerActor.kind === 'integration') return null;
   if (admission.serverAdminTokenId === null) {
     return currentWorkspaceAuthority(
       coreDb,
