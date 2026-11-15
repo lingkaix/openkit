@@ -278,6 +278,7 @@ This specification keeps this registry. That one primary product operation is th
 | `workspace.leave` | `ar:workspace-leave` | Active non-owner self-removal. |
 | `deployment.recover` | `ar:deployment-recover` | Explicit deployment-administrator recovery only; never ordinary content access. |
 | `vault.use` | `ar:vault-use` | Target-issued Vault grant use. |
+| `vault.delegate-refresh` | `ar:vault-delegate-refresh` | Additional deeper effect check when a `backend-provider` binding delivery would hand refresh-family material to a Gateway placement. Ordinary Workspace membership never supplies it; deployment administrators hold it as root authority and may extend it only through authored Policy. It is evaluated beside `vault.use`, never instead of it. |
 | `vault.admin` | `ar:vault-admin` | Workspace Vault reference list/rebind and non-secret grant, injection-plan, and injection-receipt listing. It does not authorize a grant issue/revoke surface. |
 | `tool.use` | `ar:tool-use` | Governed tool invocation. |
 | `tool.grant` | `ar:tool-grant` | Tool or capability grant administration. |

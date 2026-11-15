@@ -25,6 +25,7 @@ const EXPECTED_PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'tool.use': 'ar:tool-use',
   'turn.run': 'ar:turn-run',
   'vault.admin': 'ar:vault-admin',
+  'vault.delegate-refresh': 'ar:vault-delegate-refresh',
   'vault.use': 'ar:vault-use',
   'workspace.configure': 'ar:workspace-configure',
   'workspace.export': 'ar:workspace-export',
@@ -60,6 +61,7 @@ describe('Workspace current-fact Policy projection', () => {
           'deployment.recover',
           'invitation.respond',
           'administration.configuration.apply',
+          'vault.delegate-refresh',
           'workspace.export',
         ].includes(value)
     )) {
@@ -79,12 +81,48 @@ describe('Workspace current-fact Policy projection', () => {
     'deployment.recover',
     'invitation.respond',
     'administration.configuration.apply',
+    'vault.delegate-refresh',
     'workspace.export',
     'repo.push',
     'unknown.operation',
   ])('does not grant nonmember rights or unknown operation %s', (operation) => {
     expect(evaluatePolicyKernel({ facts, target, operation, mutating: false }).effect).toBe('deny');
   });
+
+  // Gateway refresh delegation is default-deny for membership; administrators are the root
+  // authority that may extend it only through authored Policy.
+  it.each(['owner', 'member'] as const)(
+    'keeps vault.delegate-refresh out of the %s baseline while vault.use stays granted',
+    (membership) => {
+      const currentTarget = { ...target, membership };
+      expect(
+        evaluatePolicyKernel({
+          facts,
+          target: currentTarget,
+          operation: 'vault.use',
+          mutating: true,
+        }).effect
+      ).toBe('allow');
+      const delegated = evaluatePolicyKernel({
+        facts,
+        target: currentTarget,
+        operation: 'vault.delegate-refresh',
+        mutating: true,
+      });
+      expect(delegated.effect).toBe('deny');
+      expect(delegated.reasons).toContainEqual(
+        expect.objectContaining({ code: 'missing-privilege' })
+      );
+      expect(
+        evaluatePolicyKernel({
+          facts: { ...facts, administrator: true },
+          target: currentTarget,
+          operation: 'vault.delegate-refresh',
+          mutating: true,
+        }).effect
+      ).toBe('allow');
+    }
+  );
 
   it('treats membership and current administrator as alternatives without an owner privilege tier', () => {
     for (const membership of ['owner', 'member', null] as const) {

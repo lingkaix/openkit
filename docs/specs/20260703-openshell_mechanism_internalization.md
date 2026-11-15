@@ -123,6 +123,23 @@ This scope adds no subscription token responder. Codex uses its host-managed tok
 
 For a profile's required token endpoint, the selected official OpenShell must support endpoint override or a qualified interception facility. If neither exists, stop that profile and obtain the engineer's disposition. Do not fork OpenShell or silently weaken endpoint or policy checks.
 
+#### Delegated Refresh Authority (#604)
+
+A configured access shape may carry an optional, secret-free `refresh` intent: a strategy, an exact HTTPS token URL without credentials, query or fragment, and bounded scopes. The configuration names material keys only. Vault material for a delegated family is one JSON object whose keys match the strategy exactly:
+- `oauth2_client_credentials`: `client_id`, `client_secret`;
+- `google_service_account_jwt`: `client_email`, `private_key`, optional `subject`, at least one scope;
+- `oauth2_refresh_token`: parsed, but delegation refuses with `credential_delegation_blocked` before Policy evaluation or any effect. Its token endpoint may rotate a root member that Core cannot recover; whole-family recovery is unproved.
+
+The two delegatable strategies never change their root, so Core's current material version remains the recoverable family and no Gateway holder writes material back.
+
+`vault.binding-deliver` for such a `backend-provider` plan additionally requires the default-deny product right `vault.delegate-refresh` beside `vault.use`. Ordinary Workspace membership never supplies it. Deployment administrators hold it as root authority and may extend it only through authored Policy; Goal domains cannot delegate it. The PermissionDecision proposal binds `accessShapeDigest`, and the delegation authority is part of the rechecked facts, so its withdrawal fails the operation.
+
+The reference's retained `credentialWriter` decides ownership:
+- delegation requires Core to be the writer; otherwise it refuses `credential_family_busy`;
+- a Core-side rotation refuses `credential_family_busy` while a Gateway writer is pending or active. A fenced holder accepts a new root version. These caller pre-checks precede backend writes; the native version and writer CAS remain authoritative.
+
+Delegated replacement is refused; revoke, then deliver anew. Runtime projection and NanoHost refresh activation remain pending, and until they land a refresh shape is refused by the static Provider path.
+
 ### Dormant Slice And Remaining Integration Obligations
 
 The dormant NanoHost cut has no production command, route, capability advertisement, timer, automatic SDK invocation or native log poller. It does not change the pinned OpenShell release. Its comparison covers the complete typed policy, including the base and all Provider layers; an unsupported nondefault native authority field refuses before normalization. The existing strict native parser continues to own malformed or unknown authored policy fields. Native evidence summaries retain only allowlisted status, strategy, bounded times and counts; native identifiers, account data, material and arbitrary error text are never accepted as ordinary evidence. Missing native observations remain incomplete.

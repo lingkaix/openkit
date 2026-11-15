@@ -23,6 +23,7 @@ export const PRODUCT_OPERATION_ACCESS_RIGHTS = {
   'tool.use': 'ar:tool-use',
   'turn.run': 'ar:turn-run',
   'vault.admin': 'ar:vault-admin',
+  'vault.delegate-refresh': 'ar:vault-delegate-refresh',
   'vault.use': 'ar:vault-use',
   'workspace.configure': 'ar:workspace-configure',
   'workspace.export': 'ar:workspace-export',

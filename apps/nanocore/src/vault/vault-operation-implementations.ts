@@ -89,6 +89,12 @@ import {
   credentialHelperRequestFacts,
   type GovernedCredentialHelperUse,
 } from './credential-helper-use.js';
+import {
+  assertCoreMayDelegateCredentialFamily,
+  assertCoreMayRotateCredentialFamily,
+  assertDelegatedRefreshStrategyAvailable,
+  readDelegatedRefreshShape,
+} from './credential-writer.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
 import {
   prepareVaultAdminAudit,
@@ -597,6 +603,56 @@ export function createVaultOperationImplementations(
           'Credential binding not found.',
           404
         );
+      // Gateway refresh delegation is a deeper default-deny right beside vault.use. A blocked
+      // strategy and a busy family refuse before Policy evaluation or any placement effect.
+      const providerDeclaration =
+        plan.injectionVisibility === 'backend-provider' && action === 'deliver'
+          ? original.credentials.declarations.find(
+              (value) =>
+                value.visibility === 'sandbox-provider' &&
+                value.vaultGrantId === plan.grantId &&
+                plan.planId === `plan_${original.snapshotId}_${value.id}`
+            )
+          : undefined;
+      const delegation =
+        providerDeclaration?.visibility === 'sandbox-provider'
+          ? readDelegatedRefreshShape(
+              dependencies.runtimeConfigManager?.current().gatewayConfig,
+              providerDeclaration.provider.profileId
+            )
+          : undefined;
+      let readDelegateRefreshAuthority: (() => string) | undefined;
+      if (delegation) {
+        assertDelegatedRefreshStrategyAvailable(delegation.refresh);
+        const delegatedGrant = getVaultGrant(coreDb, plan.grantId);
+        const delegatedReference = delegatedGrant
+          ? getVaultReference(coreDb, delegatedGrant.vaultReferenceId)
+          : null;
+        if (!delegatedReference || delegatedReference.login)
+          throw new OperationError(
+            'credential_binding_unavailable',
+            'Delegated refresh is unavailable for this credential.',
+            409
+          );
+        assertCoreMayDelegateCredentialFamily(delegatedReference);
+        readDelegateRefreshAuthority = () => {
+          let evaluated: ReturnType<typeof readVaultRequesterAuthority>;
+          try {
+            evaluated = readVaultRequesterAuthority(
+              coreDb,
+              input.workspaceId,
+              vaultRequesterForContext(context),
+              'vault.delegate-refresh',
+              true
+            );
+          } catch {
+            vaultWorkspaceAccessDenied();
+          }
+          if (evaluated.decision.effect !== 'allow') vaultWorkspaceAccessDenied();
+          return policyDigest(evaluated);
+        };
+        readDelegateRefreshAuthority();
+      }
       const helperDeclaration = original.credentials.declarations.find(
         (value) =>
           ((value.visibility === 'runtime-token' && value.consumer === 'credential-helper') ||
@@ -778,6 +834,9 @@ export function createVaultOperationImplementations(
               ? selectedReference
               : reference,
           receipt: receiptId ? getVaultInjectionReceipt(coreDb, receiptId) : null,
+          ...(readDelegateRefreshAuthority
+            ? { delegateRefreshAuthority: readDelegateRefreshAuthority() }
+            : {}),
           ...(refresh || replacement
             ? {
                 previousReceipt: getVaultInjectionReceipt(
@@ -812,6 +871,7 @@ export function createVaultOperationImplementations(
             : {}),
           requestId: input.requestId,
           packageSnapshotId: plan.packageSnapshotId,
+          ...(delegation ? { accessShapeDigest: policyDigest(delegation.shape) } : {}),
           targetDigest:
             plan.injectionVisibility === 'runtime-file' ? policyDigest(plan.targetPath) : null,
         },
@@ -1980,6 +2040,7 @@ export function createVaultOperationImplementations(
         await audit('succeeded');
         return grant as WorkspaceVaultGrant;
       }
+      assertCoreMayRotateCredentialFamily(reference);
       const rotated = backend.rotate({ referenceId, material: input.material! });
       const result = await publicMutation(
         'reference-advance',
@@ -2286,6 +2347,7 @@ export function createVaultOperationImplementations(
           }
 
           await c.recheckAdmission?.();
+          assertCoreMayRotateCredentialFamily(reference);
           const rotated = backend.rotate({ material: input.apiKey, referenceId });
           reference = await publicMutation(
             'reference-advance',

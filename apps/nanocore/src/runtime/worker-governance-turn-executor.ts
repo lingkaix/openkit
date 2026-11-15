@@ -104,10 +104,11 @@ import {
 } from '../storage/workspace-file-records.js';
 import { withLifecycleStageTelemetry } from '../telemetry.js';
 import { refreshWorkerCodexLogin } from '../vault/codex-login-refresh.js';
+import { assertCoreMayRotateCredentialFamily } from '../vault/credential-writer.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { createVaultOperationImplementations } from '../vault/vault-operation-implementations.js';
-import type { VaultReferenceRecord } from '../vault/vault-references.js';
+import { getVaultReference, type VaultReferenceRecord } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { getVaultInjectionPlan } from '../vault-injection-plans.js';
 import {
@@ -2625,6 +2626,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                   });
                   await check(expectedReference.currentVersion, true);
                   if (!supplyOpen) throw new Error('Login supply is closed.');
+                  const writerReference = getVaultReference(coreDb, expectedReference.referenceId);
+                  if (!writerReference) throw new Error('Login reference is unavailable.');
+                  assertCoreMayRotateCredentialFamily(writerReference);
                   const rotated = backend.rotate({
                     referenceId: expectedReference.referenceId,
                     material: refreshed.material,
