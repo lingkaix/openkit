@@ -17,7 +17,7 @@ import {
   type WorkerCredentialReceipt,
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
-import { isRecord } from '@openkit/protocol';
+import { deriveEntityId, isRecord } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { resolveAgentSetup } from '../agents/setup-resolver.js';
@@ -34,6 +34,11 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
+import {
+  createStructuredWorkerDelegationRequest,
+  serializeStructuredWorkerDelegationRequest,
+} from '../internal-agents/delegation.js';
+import { createTaskKnowledgePreparation } from '../knowledge-operations.js';
 import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import * as operationRoutes from '../operation-json-routes.js';
 import { PolicyInterception } from '../policy/interception.js';
@@ -85,11 +90,15 @@ import {
 } from './agent-environment.js';
 import { requireSchedulerExecutionAttempt } from './execution-attempt-records.js';
 import { requireExecutionCredentialReceipts } from './execution-backend.js';
-import { commandInputHash } from './idempotent-command.js';
+import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
+import { commandInputHash, runIdempotentCommand } from './idempotent-command.js';
 import type { NanoHostSessionEffectRequest } from './nanohost-session-dispatch.js';
+import { startProductTurn } from './product-turn-start.js';
+import * as dispatch from './scheduler-dispatch-loop.js';
 import { getWorkerBackendSession } from './worker-backend-sessions.js';
 import { WorkerGovernanceCapacityUnavailableError } from './worker-governance-backend.js';
 import { getWorkerStorageBindingForSandbox } from './worker-storage-bindings.js';
+import { runWorkerTurnLoop } from './worker-turn-loop.js';
 
 // Authority: credential-design/ruling.md, accepted Step 1 and change 1; Worker Credential
 // Access Declarations / Shared Resolution Rules, Runtime File Visibility, Public Surface Rules;
@@ -1600,3 +1609,323 @@ describe('typed native helper admission owner boundaries', () => {
     expect(listVaultUseRecords(f.coreDb).length).toBe(0);
   }, 30_000);
 });
+
+it.each(['other', 'empty', 'vault'] as const)(
+  'checks the native standalone Task Vault selection before helper materialization (%s)',
+  { timeout: 60_000 },
+  async (selection) => {
+    const selected = selection === 'vault';
+    const root = mkdtempSync(join(tmpdir(), 'openkit-task-vault-'));
+    const coreDb = createTestCoreDb(root);
+    const userId = ensureLocalUser(coreDb);
+    const store = await createDemoStore({ dataRoot: root });
+    const mutation = getControlStoreWorkerClient().workspaceMutations(root);
+    store.setWorkspaceMutationAdmission(mutation);
+    recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
+    const agentSessionId = testEntityId('as', randomUUID());
+    const referenceId = testEntityId('vault', randomUUID());
+    const grantId = testEntityId('grant', randomUUID());
+    const vault = createVaultUnlockState({
+      backendKind: 'encrypted-file',
+      storeDir: join(root, 'vault'),
+    });
+    vault.unlock({ masterKey: randomBytes(32) });
+    let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+    let loop: ReturnType<typeof runWorkerTurnLoop> | undefined;
+    let execution: ReturnType<NonNullable<typeof native>['executionFor']> | undefined;
+    try {
+      const material = randomBytes(32).toString('base64url');
+      vault.backend().store({
+        referenceId,
+        material: JSON.stringify({ username: 'synthetic', password: material }),
+        metadata: { ownerScope: 'server' },
+      });
+      await createVaultReference(coreDb, {
+        referenceId,
+        ownerScope: 'server',
+        displayName: 'Synthetic Task helper',
+        secretKind: 'opaque',
+        backendKind: 'encrypted-file',
+        backendLocator: `encrypted-file://server/vault/${referenceId}`,
+      });
+      const setup = createTestAgentSetup({
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+        credentialDeclarations: [
+          {
+            id: 'task_helper',
+            vaultGrantId: grantId,
+            visibility: 'runtime-token',
+            consumer: 'credential-helper',
+            helper: { protocol: 'git', scheme: 'https', host: 'fixture.invalid', path: 'scope' },
+          },
+        ],
+      });
+      await createVaultGrant(coreDb, {
+        grantId,
+        vaultReferenceId: referenceId,
+        ownerScope: 'server',
+        targetAgentId: setup.manifest.id,
+        targetAgentSessionId: agentSessionId,
+        lifetime: 'agent-session',
+        allowedInjectionPaths: ['runtime-token'],
+      });
+      const readRuntimeConfig = () =>
+        createInMemoryRuntimeConfigSnapshot({
+          dataRoot: root,
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Synthetic Task',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+          agentManifests: [setup.manifest],
+          workspaceConfigs: loadRuntimeConfig(root).workspaceConfigs,
+        });
+      const interception = new PolicyInterception();
+      native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig,
+        policyInterception: () => interception,
+        vaultBackend: () => vault.backend(),
+        workspaceMutationAdmission: mutation,
+      });
+      admitTestNativeEnvironment(coreDb, setup.manifest);
+      const run = dispatch.runSchedulerDispatchLoop;
+      vi.spyOn(dispatch, 'runSchedulerDispatchLoop').mockImplementation((input) =>
+        run({ ...input, createAgentSessionId: () => agentSessionId })
+      );
+      const manager = createRuntimeConfigManager({
+        dataRoot: root,
+        initialSnapshot: readRuntimeConfig(),
+      });
+      const app = createApp({
+        coreDb,
+        store,
+        fileAdmission: native.fileAdmission,
+        turnExecutor: native.executor,
+        workerControlGateway: native.workerControlGateway,
+        workerLifecycleRuntime: native.runtime,
+        workspaceMutationAdmission: mutation,
+        runtimeConfigManager: manager,
+        policyInterception: interception,
+        vaultUnlockState: vault,
+      });
+      const requestId = randomUUID();
+      const turnId = deriveEntityId('tu', {
+        command: 'task.start',
+        actorId: userId,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: DEMO_THREAD_ID,
+        requestId,
+      });
+      const resource = selected
+        ? {
+            kind: 'container' as const,
+            container: {
+              kind: 'workspace',
+              id: DEMO_WORKSPACE_ID,
+              owner: { kind: 'workspace' as const, workspaceId: DEMO_WORKSPACE_ID },
+            },
+          }
+        : {
+            kind: 'mcp-tool' as const,
+            workspaceId: DEMO_WORKSPACE_ID,
+            serverId: 'issues',
+            toolName: 'read',
+          };
+      const request = createStructuredWorkerDelegationRequest({
+        objective: 'Use only the selected synthetic resource.',
+        acceptanceCriteria: ['Stay inside selection'],
+        contextRefs: [
+          { kind: 'workspace', id: DEMO_WORKSPACE_ID },
+          { kind: 'thread', id: DEMO_THREAD_ID },
+        ],
+        resources:
+          selection === 'empty'
+            ? []
+            : [{ kind: 'policy', resource, reason: 'Exact native Task selection' }],
+        expectedArtifacts: [],
+        constraints: { maxContextTokens: 12_000, maxWorkerIterations: 1 },
+        verification: [{ kind: 'manual', description: 'Inspect bounded result' }],
+        reviewPolicy: { required: false, reviewers: ['human'], instructions: 'Inspect result' },
+        escalationConditions: [],
+        reviewContext: null,
+      });
+      const prompt = serializeStructuredWorkerDelegationRequest(request);
+      const accepted = Promise.withResolvers<ReturnType<typeof store.getTurnById>>();
+      // Existing Task, command, scheduler and Worker owners publish every durable fact.
+      // Only the outside peer and scheduler identity factory are supplied by the fixture.
+      await runIdempotentCommand({
+        store,
+        inflightCommands: new WeakMap(),
+        command: 'task.start',
+        requestId,
+        scope: { actorId: userId, workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID },
+        input: { input: prompt },
+        responseKind: 'turn',
+        responseId: (turn) => turn.id,
+        replay: () => {
+          throw new Error('A fresh Task cannot replay.');
+        },
+        execute: async (commandReceipt) => {
+          loop = runWorkerTurnLoop({
+            store,
+            coreDb,
+            triggerActor: { kind: 'user', id: userId },
+            requestActor: { kind: 'local', userId },
+            workspaceDb: { dataRoot: root, workspaceId: DEMO_WORKSPACE_ID },
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: DEMO_THREAD_ID,
+            reservedTurnId: turnId,
+            requestId,
+            requestInputHash: commandInputHash({ input: prompt }),
+            reviewRequired: false,
+            prepare: async () => ({
+              delegationRequest: request,
+              contextPackageDigest: commandInputHash(request),
+              knowledgeSelectionInput: await createTaskKnowledgePreparation({
+                coreDb,
+                store,
+                repositoryWorkspaceDb: (id) => createTestWorkspaceDb(root, id),
+                workspaceMutationAdmission: mutation,
+              })(
+                { workspaceId: DEMO_WORKSPACE_ID, query: request.objective },
+                {
+                  actor: { kind: 'local', userId },
+                  traceId: deriveEntityId('krt', requestId),
+                  threadId: DEMO_THREAD_ID,
+                }
+              ),
+            }),
+            reserveTurn: () => ({ turnId }),
+            startWorker: async ({ onAdmitted }) => {
+              await startProductTurn({
+                coreDb,
+                store,
+                commandReceipt,
+                snapshot: readRuntimeConfig(),
+                turnExecutor: native!.executor,
+                triggerActor: { kind: 'user', id: userId },
+                requestActor: { kind: 'local', userId },
+                providerCredentialResolver: () => null,
+                workerPlacement: 'local',
+                reservedTurnId: turnId,
+                input: {
+                  workspaceId: DEMO_WORKSPACE_ID,
+                  threadId: DEMO_THREAD_ID,
+                  requestId,
+                  input: prompt,
+                  agentId: setup.manifest.id,
+                },
+                onTurnCreated: async (turn, sessionId) => {
+                  await onAdmitted(turn, sessionId);
+                  accepted.resolve(turn);
+                },
+              });
+              execution = native!.executionFor(turnId);
+              await execution.execution;
+              return { workerSessionId: agentSessionId };
+            },
+            awaitWorker: () => ({ stopReason: 'completed' }),
+          });
+          void loop.catch(accepted.reject);
+          return accepted.promise;
+        },
+      });
+      execution = native.executionFor(turnId);
+      await execution.launched.promise;
+      await native.waitForStartup(turnId);
+      const pkg = native.workerControlGateway.authenticatePackageToken(
+        `Bearer ${native.executor.capabilityToken}`,
+        { tokenFamily: 'capability' }
+      );
+      expect(pkg.scope).toMatchObject({ turnId, threadId: DEMO_THREAD_ID, agentSessionId });
+      const plan = listVaultInjectionPlans(coreDb).find(
+        (value) => value.packageSnapshotId === pkg.snapshotId && value.grantId === grantId
+      );
+      expect(plan).toBeDefined();
+      expect(receipts.listVaultInjectionReceipts(coreDb)).toEqual([]);
+      const contextDb = createTestWorkspaceDb(root, DEMO_WORKSPACE_ID);
+      try {
+        expect(
+          readGoalTaskPolicyContext({
+            coreDb,
+            store,
+            db: contextDb,
+            lineage: { ...pkg.scope, packageSnapshotId: pkg.snapshotId },
+          })
+        ).toMatchObject({
+          goalId: null,
+          resources: request.resources.flatMap((value) =>
+            value.kind === 'policy' ? [value.resource] : []
+          ),
+        });
+      } finally {
+        closeTestCoreDb(contextDb);
+      }
+      const resolve = vi.spyOn(vault.backend(), 'resolve');
+      const usesBefore = listVaultUseRecords(coreDb).length;
+      const effectsBefore = native.effects.length;
+      const response = await app.request('/api/worker-control/credential-helper', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${native.executionFor(turnId).workerControlToken}`,
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify({
+          lineage: native.executor.nativeLineage,
+          declarationId: 'task_helper',
+          request: {
+            protocol: 'git',
+            operation: 'get',
+            attributes: { protocol: 'https', host: 'fixture.invalid', path: 'scope' },
+          },
+        }),
+      });
+      if (selected) {
+        expect(response.status).toBe(200);
+        const reply = (await response.json()) as { credential?: { password?: string } };
+        expect(reply.credential?.password === material).toBe(true);
+        expect(resolve).toHaveBeenCalledTimes(1);
+        expect(listVaultUseRecords(coreDb).length).toBe(usesBefore + 1);
+        expect(receipts.listVaultInjectionReceipts(coreDb)).toEqual([
+          expect.objectContaining({ planId: plan!.planId, grantId, agentSessionId }),
+        ]);
+      } else {
+        expect(response.status).toBe(403);
+        expect((await response.text()).includes(material)).toBe(false);
+        const db = createTestWorkspaceDb(root, DEMO_WORKSPACE_ID);
+        try {
+          expect(listExportableWorkspacePermissionDecisions(db, DEMO_WORKSPACE_ID)).toContainEqual(
+            expect.objectContaining({
+              enforcementPoint: 'vault.binding-deliver@decide',
+              action: 'vault.use',
+              result: 'deny',
+              mediation: expect.objectContaining({
+                role: 'final',
+                kernel: expect.objectContaining({ effect: 'deny' }),
+              }),
+            })
+          );
+        } finally {
+          closeTestCoreDb(db);
+        }
+        expect(resolve).not.toHaveBeenCalled();
+        expect(listVaultUseRecords(coreDb).length).toBe(usesBefore);
+        expect(receipts.listVaultInjectionReceipts(coreDb)).toEqual([]);
+        expect(native.effects.length).toBe(effectsBefore);
+      }
+    } finally {
+      execution?.completion.resolve();
+      await execution?.execution.catch(() => undefined);
+      await loop?.catch(() => undefined);
+      await native?.restore();
+      vault.lock();
+      await shutdownControlStoreWorkerClient();
+      closeTestCoreDb(coreDb);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+);

@@ -313,6 +313,7 @@ export class PolicyInterception {
   /** Repeats the actual caller, Coordinator and optional Task composition for all governed Vault operations. */
   static readVaultAuthority(input: {
     readonly coreDb: CoreDb;
+    readonly store: GoalTaskPolicyReadPort;
     readonly workspaceDb: WorkspaceDb;
     readonly workspaceId: string;
     readonly requester: VaultBindingRequester;
@@ -358,18 +359,26 @@ export class PolicyInterception {
           humanKernel: evaluated.decision,
         }
       : null;
+    const taskPolicy =
+      input.worker && !input.worker.goalLinked && input.subject.principal.kind === 'agent'
+        ? createGoalTaskPolicyService({ coreDb: input.coreDb, store: input.store })
+        : input.taskPolicy;
     let goal: GoalTaskAccessResult | null = null;
     let authorizationUses: InterceptionInput['authorizationUses'] = [];
-    if (input.taskPolicy && goalInput) {
+    if (taskPolicy && goalInput) {
       if (input.decision)
-        goal = input.taskPolicy.readTaskDecision({ ...goalInput, decision: input.decision });
+        goal = taskPolicy.readTaskDecision({ ...goalInput, decision: input.decision });
       else {
-        const evaluatedTask = input.taskPolicy.evaluateTask(goalInput);
+        const evaluatedTask = taskPolicy.evaluateTask(goalInput);
         goal = evaluatedTask;
         authorizationUses = evaluatedTask?.authorizationUses ?? [];
       }
     }
-    if (input.worker?.goalLinked && !goal)
+    if (
+      input.worker &&
+      (input.worker.goalLinked || input.subject.principal.kind === 'agent') &&
+      !goal
+    )
       throw new Error('Current Goal Task authority is unavailable.');
     return {
       kernel: goal?.kernel ?? evaluated.decision,
@@ -664,7 +673,7 @@ export class PolicyInterception {
             lineage: caller.lineage,
           })
         : null;
-    if (caller.kind === 'worker' && caller.goalLinked !== (context !== null))
+    if (caller.kind === 'worker' && caller.goalLinked !== (context?.goalId != null))
       throw new ControlProductPreconditionError();
     const responsibleHumanId =
       context?.responsibleUserId ??
@@ -677,7 +686,7 @@ export class PolicyInterception {
       principal: context
         ? { kind: 'agent', id: agentId }
         : { kind: 'human', id: responsibleHumanId },
-      onBehalfOf: null,
+      onBehalfOf: context && context.goalId === null ? responsibleHumanId : null,
       actor: agentId
         ? { kind: 'agent', id: agentId, responsibleUserId: responsibleHumanId }
         : caller.kind === 'worker'
@@ -702,7 +711,7 @@ export class PolicyInterception {
     });
     if (!isDeepStrictEqual(subject, proof.proposal.subject))
       throw new ControlProductPreconditionError();
-    const domains = context
+    const domains = context?.goalId
       ? createGoalDomainPolicyService({
           mode: 'read',
           coreDb: actualCore,
@@ -752,6 +761,7 @@ export class PolicyInterception {
     try {
       authority = PolicyInterception.readVaultAuthority({
         coreDb: actualCore,
+        store,
         workspaceDb,
         workspaceId,
         requester,

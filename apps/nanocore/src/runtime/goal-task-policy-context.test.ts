@@ -12,6 +12,8 @@ import {
   serializeStructuredWorkerDelegationRequest,
 } from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
+import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
+import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
@@ -926,9 +928,108 @@ it('gives descriptive references and context selection no Policy authority', asy
   expect(f.read()?.resources).toEqual([]);
 });
 
-it('returns null for an ordinary Task with no Goal link', async () => {
+it('retains exact standalone Task bounds without borrowing a Goal', async () => {
   const f = await fixture(true, false);
-  expect(f.read()).toBeNull();
+  expect(f.read()).toMatchObject({
+    goalId: null,
+    planVersionId: null,
+    taskThreadId: f.lineage.threadId,
+    turnId: f.lineage.turnId,
+    agentId: f.agentId,
+    responsibleUserId: f.actor.userId,
+    resources: [f.resource],
+    requestInputHash: f.admission.inputHash,
+  });
+});
+
+it('keeps an unselected standalone Task empty instead of using human authority as its scope', async () => {
+  const f = await fixture(false, false);
+  expect(f.read()).toMatchObject({ goalId: null, planVersionId: null, resources: [] });
+});
+
+it('intersects standalone Task selection with the current human Kernel without Goal authority', async () => {
+  const f = await fixture(true, false);
+  const noGoal = () => {
+    throw new Error('Standalone Task must not read Goal authority.');
+  };
+  const service = createGoalTaskPolicyService({
+    coreDb: f.coreDb,
+    store: f.store,
+    domains: { read: noGoal, readForDecision: noGoal, readPermissions: noGoal },
+  });
+  const humanKernel = evaluatePolicyKernel({
+    facts: {
+      userId: f.actor.userId,
+      activeUser: true,
+      administrator: false,
+      credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+    },
+    target: {
+      kind: 'workspace',
+      workspaceId: f.lineage.workspaceId,
+      active: true,
+      membership: 'member',
+    },
+    operation: 'tool.use',
+    mutating: false,
+  });
+  const input = {
+    workspaceDb: f.db,
+    lineage: f.lineage,
+    operation: 'tool.use',
+    resource: f.resource,
+    humanKernel,
+    subject: {
+      principal: { kind: 'agent' as const, id: f.agentId },
+      actor: { kind: 'agent' as const, id: f.agentId, responsibleUserId: f.actor.userId },
+      onBehalfOf: f.actor.userId,
+      responsibleHumanId: f.actor.userId,
+      credentialKind: 'worker-package',
+      process: {
+        workspaceId: f.lineage.workspaceId,
+        threadId: f.lineage.threadId,
+        turnId: f.lineage.turnId,
+      },
+    },
+  };
+  const allowed = service.evaluateTask(input)!;
+  expect(allowed.kernel.effect).toBe('allow');
+  expect(
+    createGoalTaskPolicyService({ coreDb: f.coreDb, store: f.store }).evaluateTask(input)
+  ).toEqual(allowed);
+  expect(allowed.inGoalEnvelope).toBe(false);
+  expect(allowed.escalation).toBeUndefined();
+  expect(allowed.authorizationUses).toEqual([]);
+  expect(allowed.kernel.trace.matchedAssociations).toEqual(['goal-task']);
+  const missing = service.evaluateTask({
+    ...input,
+    resource: { ...f.resource, toolName: 'unselected' },
+  })!;
+  expect(missing.kernel.effect).toBe('deny');
+  expect(missing.escalation).toBeUndefined();
+  expect(missing.authorizationRevision).not.toBe(allowed.authorizationRevision);
+  expect(
+    service.evaluateTask({ ...input, subject: { ...input.subject, onBehalfOf: null } })?.kernel
+      .effect
+  ).toBe('deny');
+  const humanDeny = evaluatePolicyKernel({
+    facts: {
+      userId: f.actor.userId,
+      activeUser: true,
+      administrator: false,
+      credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+    },
+    target: {
+      kind: 'workspace',
+      workspaceId: f.lineage.workspaceId,
+      active: true,
+      membership: 'member',
+    },
+    operation: 'deployment.recover',
+    mutating: false,
+  });
+  expect(humanDeny.effect).toBe('deny');
+  expect(service.evaluateTask({ ...input, humanKernel: humanDeny })?.kernel).toEqual(humanDeny);
 });
 
 it('keeps a running Task eligible after ordinary card edits', async () => {

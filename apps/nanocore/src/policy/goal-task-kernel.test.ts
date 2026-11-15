@@ -122,6 +122,25 @@ describe('Goal Task native Kernel projection', () => {
         evaluatePolicyKernel({ operation: 'turn.run', goal: { ...prepared, ...change } }).effect
       ).toBe('deny');
   });
+  it('requires a standalone Task selection, its original human, and no contradictory Goal', () => {
+    const standalone = input({
+      goalRequired: false,
+      domain: null,
+      subject: { ...subject, onBehalfOf: humanId },
+    });
+    const allowed = evaluateGoalTaskAccess(standalone);
+    expect(allowed.kernel.effect).toBe('allow');
+    expect(allowed.inGoalEnvelope).toBe(false);
+    expect(allowed.escalation).toBeUndefined();
+    expect(allowed.kernel.trace.matchedAssociations).toEqual(['goal-task']);
+    for (const change of [
+      { resources: [] },
+      { domain },
+      { subject },
+      { subject: { ...standalone.subject, onBehalfOf: testEntityId('usr', 'other-task-human') } },
+    ])
+      expect(evaluateGoalTaskAccess({ ...standalone, ...change }).kernel.effect).toBe('deny');
+  });
   it('requires both Goal and exact Task associations in the existing Kernel', () => {
     const result = evaluateGoalTaskAccess(input());
     expect(result.kernel.effect).toBe('allow');

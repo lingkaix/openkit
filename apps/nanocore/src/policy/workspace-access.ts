@@ -34,6 +34,8 @@ import { policyDigest, policyScopeContains } from './statements.js';
 export interface GoalTaskAccessInput {
   /** Must come from GoalDomainPolicyService.read for this attempt, never cached/model input. */
   readonly domain: GoalDomainStatement | null;
+  /** Existing Goal class stays mandatory unless the native Task owner proves no Goal. */
+  readonly goalRequired?: boolean;
   /** Current native delegated allows; they can extend only the Task association. */
   readonly permissions?: readonly z.infer<typeof PolicyPermissionV1Schema>[];
   /** Actual agent principal, actor and process restored by the Worker lineage owner. */
@@ -67,8 +69,8 @@ export interface GoalTaskAccessResult {
 }
 
 /**
- * Projects the explicit Goal and Task selectors into two NGAC policy classes.
- * Both associations are mandatory in the existing Kernel; no local scope check returns allow.
+ * Projects native Task selectors and their optional Goal envelope into existing NGAC classes.
+ * Linked Tasks require both associations; standalone Tasks retain their Task class and human Kernel.
  * Current domain/credential/lifecycle and Task identity reads stay with their existing owners.
  * Current delegated allows extend only the Task class; the approved Goal and human Kernel stay mandatory.
  */
@@ -79,8 +81,10 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
   const domain = input.domain;
   const responsibleHumanId = UserIdSchema.parse(input.responsibleHumanId);
   const resourceDigest = policyDigest(resource);
+  const goalRequired = input.goalRequired !== false;
   const inGoalEnvelope = Boolean(
-    domain?.state === 'active' &&
+    goalRequired &&
+      domain?.state === 'active' &&
       domain.author.kind === 'human' &&
       subject.principal.kind === 'agent' &&
       subject.onBehalfOf === null &&
@@ -94,9 +98,20 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
       domain.scope.actions.includes(input.operation) &&
       domain.scope.resources.some((value) => policyDigest(value) === resourceDigest)
   );
-  const selectedByTask = resources.some((value) => policyDigest(value) === resourceDigest);
+  const standaloneSubject =
+    !goalRequired &&
+    domain === null &&
+    subject.principal.kind === 'agent' &&
+    subject.actor.kind === 'agent' &&
+    subject.actor.id === subject.principal.id &&
+    subject.responsibleHumanId === responsibleHumanId &&
+    subject.onBehalfOf === responsibleHumanId &&
+    subject.process !== null;
+  const selectedByTask =
+    (goalRequired || standaloneSubject) &&
+    resources.some((value) => policyDigest(value) === resourceDigest);
   const permission =
-    selectedByTask || !domain
+    selectedByTask || !domain || !goalRequired
       ? undefined
       : input.permissions?.find((value) => {
           const candidate = PolicyPermissionV1Schema.parse(value);
@@ -123,6 +138,7 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
       user: `${subject.principal.kind}:${subject.principal.id}`,
       ...(subject.process ? { process: subject.process.turnId } : {}),
       inGoalEnvelope,
+      goalRequired,
       selectedByTask: selectedByTask || Boolean(permission),
       humanKernel: input.humanKernel,
     },
@@ -152,6 +168,7 @@ export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAcce
       domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
       subject,
       responsibleHumanId,
+      goalRequired,
       resources,
       permission: permission ? { id: permission.id, digest: policyDigest(permission) } : null,
       operation: input.operation,
@@ -303,6 +320,8 @@ export function evaluatePolicyKernel(
               readonly user: string;
               readonly process?: string;
               readonly inGoalEnvelope: boolean;
+              /** False only for a canonically classified standalone Task. */
+              readonly goalRequired?: boolean;
               readonly selectedByTask: boolean;
               readonly humanKernel: PolicyDecision;
             }
@@ -649,6 +668,7 @@ export function compilePolicyGraph(
         : {
             user: `agent:${agentId}`,
             process: undefined,
+            goalRequired: true,
             inGoalEnvelope: Boolean(
               domain?.state === 'active' &&
                 domain.source.workspaceId === native.workspaceId &&
@@ -672,7 +692,10 @@ export function compilePolicyGraph(
       : null;
     const accessRights = operation ? [PRODUCT_OPERATION_ACCESS_RIGHTS[operation]] : [];
     const user = goal.user;
-    const classes = ['goal-envelope', 'goal-task'] as const;
+    const classes =
+      goal.goalRequired === false
+        ? (['goal-task'] as const)
+        : (['goal-envelope', 'goal-task'] as const);
     const policy: PolicyState = {
       elements: [
         { id: user, kind: 'user' },

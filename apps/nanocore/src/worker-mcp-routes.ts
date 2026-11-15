@@ -2693,7 +2693,7 @@ function currentMcpPolicyAuthority(
     policy: input.input.store.getWorkspaceResourceAccess(scope.workspaceId),
   });
   const subject = {
-    principal: context
+    principal: context?.goalId
       ? { kind: 'agent' as const, id: context.agentId }
       : { kind: 'human' as const, id: responsibleHumanId },
     onBehalfOf: null,
@@ -2761,10 +2761,10 @@ function currentMcpPolicyAuthority(
   );
   const kernel = captured.decision.effect === 'deny' ? captured.decision : resourceKernel;
 
-  const taskPolicy = context
+  const taskPolicy = context?.goalId
     ? input.input.goalTaskPolicy?.(input.workspaceDb, responsibleHumanId)
     : null;
-  if (context && !taskPolicy) throw mcpDeniedError();
+  if (context?.goalId && !taskPolicy) throw mcpDeniedError();
   const taskInput = {
     workspaceDb: input.workspaceDb,
     lineage,
@@ -2788,7 +2788,7 @@ function currentMcpPolicyAuthority(
       authorizationUses = evaluatedTask?.authorizationUses ?? [];
     }
   }
-  if (context && !task) throw mcpDeniedError();
+  if (context?.goalId && !task) throw mcpDeniedError();
   return {
     subject,
     restrictingPrincipals,

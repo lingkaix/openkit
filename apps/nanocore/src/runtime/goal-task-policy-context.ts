@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
 import { GoalTaskLinkSchema } from '@openkit/app-api-schemas';
+import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import {
   deriveEntityId,
   isSealedTurnTerminal,
@@ -19,6 +20,10 @@ import {
   type SchedulerExecutionLineage,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import {
+  commandRequestKey,
+  getCommandRequestRecordFromDb,
+} from '../storage/command-request-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
@@ -26,23 +31,23 @@ import { goalPlanDigest, readNativeGoalView } from './goal-owner.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
 
-/** Retained Task facts with current Goal bounds; descriptive references grant no rights. */
+/** Retained native Task selection with optional current Goal bounds; references grant no rights. */
 export interface GoalTaskPolicyContext {
-  /** Workspace that owns the Goal and exact Task. */
+  /** Workspace that owns the exact Task. */
   readonly workspaceId: string;
-  /** Goal linked by the existing Task owner. */
-  readonly goalId: string;
+  /** Exact linked Goal, or null for a standalone Task. */
+  readonly goalId: string | null;
   /** Ordinary Task Thread identity. */
   readonly taskThreadId: string;
   /** Actual effect Turn, which can follow the original Task request. */
   readonly turnId: string;
-  /** Exact active Plan cited at Task reservation. */
-  readonly planVersionId: string;
+  /** Exact active Plan cited at Task reservation, or null without a Goal. */
+  readonly planVersionId: string | null;
   /** Actual selected Worker from the effect Turn and scheduler request. */
   readonly agentId: string;
-  /** Human responsible for the Goal and original Task request. */
+  /** Human responsible for the original Task request. */
   readonly responsibleUserId: string;
-  /** Explicit typed Task bounds only; an empty set matches nothing. */
+  /** Finite native request/manifest selection; an empty set matches nothing. */
   readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
   /** Scheduler's immutable hash of the complete original request and provenance. */
   readonly requestInputHash: string;
@@ -76,7 +81,59 @@ export function requiredTaskTurn(input: {
     new Error('Goal Task Policy context requires current exact owner facts.');
   if (db.workspaceId !== lineage.workspaceId) throw unavailable();
   const link = readTaskLink(db, lineage.threadId);
-  if (!link) return null;
+  if (!link) {
+    const entries = listSchedulerAdmissionEntriesForWorkspace(coreDb, {
+      workspaceId: lineage.workspaceId,
+      statuses: ['admitted'],
+    }).filter((entry) => entry.threadId === lineage.threadId);
+    const current = entries.find((entry) => entry.turnId === lineage.turnId);
+    if (!current || schedulerAdmissionInputHash(current) !== current.inputHash) throw unavailable();
+    const originals = entries.filter((entry) => {
+      const checkpoint = getWorkerCheckpoint(db, entry.workspaceId, entry.threadId, entry.turnId);
+      if (checkpoint?.goalId || checkpoint?.taskId) throw unavailable();
+      return (
+        entry.requestId &&
+        responsibleUserIdForActor(entry.triggerActor) &&
+        ((checkpoint?.requestId === entry.requestId && checkpoint.contextDigest !== null) ||
+          deriveEntityId('tu', {
+            command: 'task.start',
+            actorId: entry.triggerActor.id,
+            workspaceId: entry.workspaceId,
+            threadId: entry.threadId,
+            requestId: entry.requestId,
+          }) === entry.turnId)
+      );
+    });
+    const exact = originals.find((entry) => entry.turnId === lineage.turnId);
+    if (exact) return exact;
+    // Pending supplies an original source position, never a new selection or authority.
+    const pending = listThreadPendingRequests(db.sqlite, lineage.workspaceId, lineage.threadId);
+    let sourceTurnId = lineage.turnId;
+    const visited = new Set<string>();
+    while (!visited.has(sourceTurnId)) {
+      visited.add(sourceTurnId);
+      const causes = pending.filter(
+        (record) =>
+          record.deliveryTurnId === sourceTurnId &&
+          record.deliveryCause === 'outcome' &&
+          record.requesterKind === 'worker'
+      );
+      if (!causes.length) break;
+      const sources = new Set(causes.map((record) => record.raisingTurnId));
+      if (sources.size !== 1) throw unavailable();
+      sourceTurnId = causes[0]!.raisingTurnId;
+      const original = originals.find((entry) => entry.turnId === sourceTurnId);
+      if (original) return original;
+    }
+    if (sourceTurnId !== lineage.turnId) throw unavailable();
+    // An ordinary follow-up can inherit one unambiguous native Task on its Thread.
+    // Several independent Tasks on a reused Thread require an exact source cause.
+    if (originals.length > 1) throw unavailable();
+    if (originals.length === 1) return originals[0]!;
+    if (getWorkerCheckpoint(db, lineage.workspaceId, lineage.threadId, lineage.turnId))
+      throw unavailable();
+    return null;
+  }
   const goal = readNativeGoalView(db, link.goalId).goal;
   if (!goal || goal.workspaceId !== lineage.workspaceId) throw unavailable();
   const responsibleUserId = goal.responsibleUserId;
@@ -104,10 +161,10 @@ export function requiredTaskTurn(input: {
 }
 
 /**
- * Reads retained Goal-linked Task bounds; live and captured-call entry owners check their own liveness.
+ * Reads retained native Task bounds; live and captured-call entry owners check their own liveness.
  * @param input Exact authenticated Worker package lineage and its existing stores.
- * @returns Current typed Task context, or null for an ordinary Task with no Goal link.
- * @throws Error when a linked Task has missing, changed or contradictory facts, or its Goal scope ended.
+ * @returns Current finite Task context, or null for an admitted non-Task execution.
+ * @throws Error when Task source facts contradict or required Task/Goal authority is unavailable.
  */
 export function readGoalTaskPolicyContext(input: {
   readonly coreDb: CoreDb;
@@ -130,27 +187,32 @@ export function readGoalTaskPolicyContext(input: {
   )
     throw unavailable();
   const link = readTaskLink(db, lineage.threadId);
-  if (!link) return null;
-  const view = readNativeGoalView(db, link.goalId);
-  const goal = view.goal;
-  const card = view.cards.find((value) => value.cardId === link.cardId);
-  const plan = view.versions.find((value) => value.planVersionId === link.planVersionId);
+  const original = requiredTaskTurn({ coreDb, db, lineage });
+  if (!original) return null;
+  const view = link ? readNativeGoalView(db, link.goalId) : null;
+  const goal = view?.goal ?? null;
+  const card = view?.cards.find((value) => value.cardId === link?.cardId);
+  const plan = view?.versions.find((value) => value.planVersionId === link?.planVersionId);
   if (
-    !goal ||
-    goal.goalId !== link.goalId ||
-    goal.workspaceId !== lineage.workspaceId ||
-    goal.disposition ||
-    !card ||
-    card.goalId !== goal.goalId ||
-    card.cancelled ||
-    !plan ||
-    plan.goalId !== goal.goalId ||
-    goal.activePlanVersionId !== plan.planVersionId ||
-    goalPlanDigest(plan.bytes) !== plan.digest ||
-    JSON.stringify(plan.commitment) !== plan.bytes ||
-    store.getThread(lineage.workspaceId, lineage.threadId).visibility !== 'workspace'
+    link &&
+    (!goal ||
+      goal.goalId !== link.goalId ||
+      goal.workspaceId !== lineage.workspaceId ||
+      goal.disposition ||
+      !card ||
+      card.goalId !== goal.goalId ||
+      card.cancelled ||
+      !plan ||
+      plan.goalId !== goal.goalId ||
+      goal.activePlanVersionId !== plan.planVersionId ||
+      goalPlanDigest(plan.bytes) !== plan.digest ||
+      JSON.stringify(plan.commitment) !== plan.bytes ||
+      store.getThread(lineage.workspaceId, lineage.threadId).visibility !== 'workspace')
   )
     throw unavailable();
+  const responsibleUserId =
+    goal?.responsibleUserId ?? responsibleUserIdForActor(original.triggerActor);
+  if (!responsibleUserId) throw unavailable();
   // Card edits do not steer a running Task. Cancellation and active Plan replacement do end use.
   // Later Turns have their own Worker/package and can have a different human trigger.
   // Native Pending cause identifies system-authored frozen input; it supplies no Task scope.
@@ -180,6 +242,8 @@ export function readGoalTaskPolicyContext(input: {
         record.requesterKind === 'worker' &&
         record.agentId === admission.requestedAgentId
     );
+    // Direct Task checkpoints hash the original entry request before its structured expansion.
+    // Exact structured bytes and their canonical context digest are checked below.
     const initiatingItem = turn.items.find(
       (item) => item.id === deriveEntityId('it', ['task-user', turn.id])
     );
@@ -207,7 +271,8 @@ export function readGoalTaskPolicyContext(input: {
       (!outcomeInitiated && initiatingItem.text !== admission.turnInput) ||
       (checkpoint
         ? checkpoint.requestId !== admission.requestId ||
-          checkpoint.requestInputHash !== commandInputHash({ input: admission.turnInput }) ||
+          (link &&
+            checkpoint.requestInputHash !== commandInputHash({ input: admission.turnInput })) ||
           (checkpoint.workerSessionId !== null &&
             checkpoint.workerSessionId !== scope.agentSessionId)
         : isSealedTurnTerminal(turn.status) &&
@@ -219,8 +284,6 @@ export function readGoalTaskPolicyContext(input: {
   const current = readWorkerSource(lineage);
   // The Task owner declares these exact Thread and Turn names. Match that native source,
   // never the first parseable JSON or a later request that resembles a delegation.
-  const original = requiredTaskTurn({ coreDb, db, lineage });
-  if (!original) throw unavailable();
   const originalTurn = store.getTurn(lineage.workspaceId, lineage.threadId, original.turnId);
   const originalAttempts = listSchedulerExecutionAttemptsForTurn(coreDb, original).filter(
     (attempt) =>
@@ -254,17 +317,58 @@ export function readGoalTaskPolicyContext(input: {
       : !isSealedTurnTerminal(source.turn.status))
   )
     throw unavailable();
+  const resources = request.resources.flatMap((value) =>
+    value.kind === 'policy' ? [value.resource] : []
+  );
+  if (
+    !link &&
+    resources.length === 0 &&
+    source.checkpoint &&
+    source.checkpoint.requestInputHash !== commandInputHash({ input: source.admission.turnInput })
+  ) {
+    // Only the original direct Task command can select its prepared credential supply.
+    // An explicitly structured empty selection stays empty, even with a credential manifest.
+    const receipt = getCommandRequestRecordFromDb(
+      db,
+      commandRequestKey('task.start', source.admission.requestId!, {
+        actorId: source.admission.triggerActor.id,
+        workspaceId: lineage.workspaceId,
+        threadId: lineage.threadId,
+      }),
+      new Date().toISOString()
+    );
+    if (
+      !receipt ||
+      receipt.inputHash !== source.checkpoint.requestInputHash ||
+      receipt.response.kind !== 'turn' ||
+      receipt.response.id !== original.turnId
+    )
+      throw unavailable();
+    // The existing Vault owner still checks the exact declaration, target grant and version.
+    const prepared = JSON.parse(originalAttempt.preparationInputJson) as { manifest?: unknown };
+    if (prepared.manifest !== undefined) {
+      const manifest = AuthoredAgentConfigSchema.parse(prepared.manifest);
+      if (manifest.id !== source.admission.requestedAgentId) throw unavailable();
+      if ((manifest.sandbox?.credentialDeclarations.length ?? 0) > 0)
+        resources.push({
+          kind: 'container',
+          container: {
+            owner: { kind: 'workspace', workspaceId: lineage.workspaceId },
+            kind: 'workspace',
+            id: lineage.workspaceId,
+          },
+        });
+    }
+  }
   return {
     workspaceId: lineage.workspaceId,
-    goalId: goal.goalId,
+    goalId: goal?.goalId ?? null,
     taskThreadId: lineage.threadId,
     turnId: lineage.turnId,
-    planVersionId: plan.planVersionId,
+    planVersionId: plan?.planVersionId ?? null,
     agentId: current.admission.requestedAgentId,
-    responsibleUserId: goal.responsibleUserId,
-    resources: request.resources.flatMap((value) =>
-      value.kind === 'policy' ? [value.resource] : []
-    ),
+    responsibleUserId,
+    resources,
     requestInputHash: source.admission.inputHash,
   };
 }

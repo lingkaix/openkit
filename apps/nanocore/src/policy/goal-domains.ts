@@ -361,6 +361,7 @@ function createGoalDomainPolicyReadOwner(deps: GoalDomainPolicyDependencies) {
     readonly decision?: PolicyUseDecision;
   }): z.infer<typeof PolicyPermissionV1Schema>[] {
     const { context, decision } = input;
+    if (context.goalId === null || context.planVersionId === null) return [];
     const key = { workspaceId: context.workspaceId, goalId: context.goalId };
     const current = loaded();
     const domain = readCurrent(key, decision);
