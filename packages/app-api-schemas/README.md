@@ -198,7 +198,7 @@ Direct `task.start` accepts optional exact `agentId`. The selector narrows exist
 
 `InjectionVisibilitySchema` in `src/vault-injection.ts` defines the closed visibility set shared by public injection-plan responses, NanoCore storage typing, and Workspace archive validation. Workspace plan lists include runtime-env plans without exposing credential values.
 
-The ordinary Workspace, Thread and Turn command operations belong to `src/workspace-operations.ts`, `src/thread-operations.ts`, `src/turn-operations.ts` and the existing Conversation table. They preserve complete existing schemas and each schema's unknown-field policy, while the CLI retains its separate strict input projection; no parallel core-command table exists. Its static composition in `operation-definitions.ts` derives the JSON, client, OpenAPI, MCP and CLI surfaces; SSE remains separate.
+The ordinary Workspace, Thread and Turn command operations belong to `src/workspace-operations.ts`, `src/thread-operations.ts`, `src/turn-operations.ts`. They preserve complete existing schemas and each schema's unknown-field policy, while the CLI retains its separate strict input projection; no parallel core-command table exists. Its static composition in `operation-definitions.ts` derives the JSON, client, OpenAPI, MCP and CLI surfaces; SSE remains separate.
 
 Addressed ordinary Turn targets declare the closed `not-found` or `interrupt-failed` missing policy. Recovery checkpoint targets retain their distinct strategy and cannot declare the interrupt policy; opaque feedback derives its Workspace from the existing minimum Turn-map lineage. These facts preserve the native refusal without transport or operation-name dispatch.
 

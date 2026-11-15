@@ -6,7 +6,7 @@ This directory owns the private administration conversation entry and its fixed 
 
 ## Boundaries
 
-- Admit only the current user's `administration` Thread in that user's owner-only Quick Chat Workspace.
+- Admit only the current user's `administration` Thread in that user's owner-only personal Workspace.
 - Exact admission and partial-state probes use current scoped Thread and Turn reads rather than listing unrelated history. Turn probes still validate the current parent and selected retained history; only definite selected absence is normalized, while the outer recovery classifier remains best effort.
 - Recheck current deployment-administrator authority at entry and before every Tool closure. The model never receives token material.
 - Keep the exact Tool order in `administration-tools.ts`. Configuration read and schema Tools expose the registered Server Agent family and editable Provider/Gateway catalog fields. Agent discovery returns exact file identities and revisions for image preparation. Catalog discovery returns target identities and source revisions; proposals publish an immutable, non-secret before/after Artifact through `../config/administration-configuration.ts`.
