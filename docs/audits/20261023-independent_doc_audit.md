@@ -14,6 +14,7 @@ This non-authorizing record summarizes the independent documentation audit that 
 - Goals: G1 product vision to design, G2 Core against specifications, G3 specifications against implementation, G4 specification organization, and G5 writing rules under [Documentation Writing](../writing.md).
 - Branch: the session's designated branch is `audit/independent-docs-ag29v9`. The engineer's instruction named `audit/independent-docs-<yyyymmdd>`; the session harness fixed the branch name, so the date form was not used.
 - Supplement: a second audit session ran the same instruction from its own base and stopped when it found this audit. On the engineer's direction it added its unique findings: the [supplement record](20261025-independent_doc_audit_supplement.md) and the [G1 probe record](20261023-independent_doc_audit_g1_probe.md).
+- Round 2: on 2026-11-15 the engineer directed the audit of every remaining document. Round 2 covers the five released groups, the documents added after the base SHA, the periphery group, the archive check, and the root `AGENTS.md`. Its base SHA is `3cd345759782795e388abd73974a8f2aa8ea7ec0` (`main` on 2026-11-15), and each group record states its own group base. Its branch is `audit/independent-docs-20261115`, created from `main`, because the round-1 records had already landed on `main`.
 
 ## Inventory At The Base SHA
 
@@ -23,6 +24,14 @@ This non-authorizing record summarizes the independent documentation audit that 
 - `docs/specs/` root: 101 dated specifications, `README.md`, and `AGENTS.md`.
 - `docs/specs/retired/` and `docs/specs/superseded/`: 67 files for the archive check.
 - Evidence only: 235 files under `docs/decisions/`, 176 files under `docs/changes/`, the files under `docs/audits/`, and the two OKF snapshots.
+
+At the round-2 base SHA, `git ls-files` lists:
+
+- `docs/core/`: 23 files. The new aspect document is `security.md`.
+- `docs/specs/` root: 104 dated specifications. The new ones are `20261108-conversation_timeline.md`, `20261109-development_security.md`, and `20261109-runtime_security.md`. No active specification was removed.
+- `docs/specs/retired/` and `docs/specs/superseded/`: the same 67 files.
+- Periphery: one new package guide, `packages/knowledge-ui/README.md`.
+- Evidence only: 254 files under `docs/decisions/`, 177 files under `docs/changes/`, and 39 files under `docs/audits/`.
 
 ## Coverage Ledger
 
@@ -54,6 +63,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/core/fault-tolerance.md` | fault-tolerance | open, pending (#440 released) | — |
 | `docs/core/evidence.md` | evidence | open, pending (#440 released) | — |
 | `docs/core/work-model.md` | work-model | open, pending (#440 released) | — |
+| `docs/core/security.md` | security | open, pending (added after the base) | — |
 
 ### Active Specifications
 
@@ -162,6 +172,9 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20261002-goal.md` | work-model | open, pending (#440 released, named) | — |
 | `docs/specs/20260902-agent_runtime_context_compaction.md` | work-model | open, pending (#440 released) | — |
 | `docs/specs/20260831-unified_conversation_composer.md` | work-model | open, pending (#440 released) | — |
+| `docs/specs/20261108-conversation_timeline.md` | work-model | open, pending (added after the base) | — |
+| `docs/specs/20261109-development_security.md` | security | open, pending (added after the base) | — |
+| `docs/specs/20261109-runtime_security.md` | security | open, pending (added after the base) | — |
 
 ### Archive Check
 
@@ -172,6 +185,8 @@ The 67 files under `docs/specs/retired/` and `docs/specs/superseded/` receive th
 ### Group Order
 
 Open groups run first in dependency order, then the held groups after a release in #440, then the periphery group: foundation, contract-evolution, architecture, protocol, communication, identity, policy, vault, mediation, agent-supply, sandbox, agent-session, knowledge, generative-apps, process; held: storage, runtime-model, fault-tolerance, evidence, work-model; last: periphery.
+
+Round 2 order: storage, runtime-model, fault-tolerance, evidence, work-model, and the new security group; then the periphery group, the archive check, and the root `AGENTS.md` reading. Inspectors of later groups may read while an earlier group is open, but only one group is open for writing at a time.
 
 The `process` group has no Core home. Its eight specifications own engineering, verification, release, and documentation methods, and `docs/core/` owns product semantics only. This is recorded as finding P0-G2-01 below.
 
@@ -194,6 +209,12 @@ The `process` group has no Core home. Its eight specifications own engineering, 
 | knowledge | `apps/nanocore/src/knowledge/`, `apps/nanocore/src/knowledge-*.ts`, `apps/nanocore/src/memory-operations.ts`, `apps/nanocore/src/retrieval-*.ts`, `packages/retrieval-kernel`, `apps/nanocore/src/context/` |
 | generative-apps | `apps/nanocore/src/generative-kernel/`, `apps/nanocore/src/generative-ui/`, `apps/web/src/generative/` |
 | process | `tests/`, `stories/`, `scripts/`, `.github/workflows/` |
+| storage (round 2) | `apps/nanocore/src/storage/`, `apps/nanocore/src/lib/store.ts`, `apps/nanocore/drizzle/`, `packages/storage`, `apps/nanocore/src/workspace-*.ts`, `apps/nanohost/src/workspace_collect.rs`, `apps/nanohost/src/persistent_volume.rs` |
+| runtime-model (round 2) | `apps/nanohost/src/`, `apps/nanocore/src/runtime/`, `apps/nanocore/src/boot/`, `apps/nanocore/src/scheduler-records.ts`, `packages/worker-shim`, `packages/worker-protocol` |
+| fault-tolerance (round 2) | `apps/nanocore/src/storage/`, `apps/nanocore/src/runtime/`, `apps/nanocore/src/boot/` |
+| evidence (round 2) | `apps/nanocore/src/audit-events.ts`, `apps/nanocore/src/capability/`, `apps/nanocore/src/telemetry*.ts`, `apps/nanocore/src/diagnostics/`, `apps/nanocore/src/evidence-bundles.ts`, `apps/nanohost/src/telemetry.rs` |
+| work-model (round 2) | `apps/nanocore/src/thread-*.ts`, `apps/nanocore/src/turn-*.ts`, `apps/nanocore/src/goal-*.ts`, `apps/nanocore/src/action-center.ts`, `apps/nanocore/src/evaluation-*.ts`, `apps/nanocore/src/artifact-*.ts`, `apps/nanocore/src/internal-agents/`, `apps/nanocore/src/context/`, `apps/web/src/` |
+| security (round 2) | `apps/nanocore/src/security/`, `.github/workflows/security.yml`, `.github/workflows/release-promotion.yml`, `scripts/`, `SECURITY.md` |
 
 Inspectors locate exact files at each group base SHA; the map above is a starting point, not a claim of completeness.
 
@@ -218,6 +239,8 @@ Each row is finding P0-G4-NN. The chosen home decides only the audit group; it c
 | P0-G4-13 | `20260711-scheduler_recurring_event_triggers.md` | `core-concepts.md` (`TriggerSource`), `runtime-model.md` | foundation: the schedules are trigger sources of Turn admission. |
 | P0-G4-14 | `20260831-unified_conversation_composer.md` | `work-model.md`, `communication.md` | work-model (held): the targets are product work modes. |
 | P0-G4-15 | `20261020-compute_neutrality_target.md` | `architecture.md`, `sandbox.md` | architecture: `architecture.md` owns Compute And Harness Neutrality. |
+| P0-G4-16 | `20261108-conversation_timeline.md` (round 2) | `work-model.md` (Thread, Turn, Task, Goal, and conversation semantics), `architecture.md` (the Web product surface) | work-model: the timeline presents work-model objects, and its Does Not Own section defers publication to the Web projection. |
+| P0-G4-17 | `20261109-development_security.md` (round 2) | `security.md` (finding classes and response), the `process` family (`kind: process`) | security: the Security charter names its finding concepts and response classes. |
 
 ### Phase 0 Finding
 
