@@ -16,6 +16,7 @@ import tarfile
 import tempfile
 import threading
 import unittest
+import urllib.parse
 import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -36,7 +37,34 @@ if (!parsed.success) {
   process.exit(1);
 }
 """
+# Runs the helper's request and a simulated response through the real operation definition.
+OPERATION_CONTRACT_PARSE = """
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
+import { readFileSync } from 'node:fs';
+const { operationId, input, output, retired } = JSON.parse(readFileSync(0, 'utf8'));
+const fail = (message) => {
+  process.stderr.write(message + '\\n');
+  process.exit(1);
+};
+for (const id of retired) if (Object.hasOwn(OPERATION_DEFINITIONS, id)) fail(`${id} is still an operation`);
+if (!Object.hasOwn(OPERATION_DEFINITIONS, operationId)) fail(`${operationId} is not an operation`);
+const definition = OPERATION_DEFINITIONS[operationId];
+if (definition.binding !== 'json') fail(`${operationId} is not a JSON operation`);
+for (const [label, schema, value] of [['input', definition.inputSchema, input], ['output', definition.outputSchema, output]]) {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) fail(`${operationId} ${label}: ${JSON.stringify(parsed.error.issues)}`);
+}
+"""
+OPERATIONS_PATH = "/api/app/operations/"
+_CHECKED_CONTRACTS: Set[str] = set()
 _SCHEMA_BUILT = False
+# Canonical entity ids; the operation schemas refuse anything else.
+TOKEN_ADMIN = "tok_00000000-0000-7000-8000-000000000001"
+TOKEN_A = "tok_00000000-0000-7000-8000-00000000000a"
+TOKEN_B = "tok_00000000-0000-7000-8000-00000000000b"
+USER_ADMIN = "usr_00000000-0000-7000-8000-000000000001"
+USER_OTHER = "usr_00000000-0000-7000-8000-000000000002"
+SESSION_ADMIN = "auth_00000000-0000-7000-8000-000000000001"
 DIGEST = "sha256:" + ("b" * 64)
 OTHER_DIGEST = "sha256:" + ("d" * 64)
 OTHER_COMMIT = "e" * 40
@@ -60,20 +88,39 @@ def token_record(**overrides) -> dict:
         "lastUsedAt": None,
         "lastUsedChannel": None,
         "lastUsedSource": None,
-        "ownerUserId": "user_admin",
+        "ownerUserId": USER_ADMIN,
         "predecessorTokenId": None,
         "revokedAt": None,
         "rotatedGraceExpiresAt": None,
         "scope": "server-admin",
         "status": "active",
-        "tokenId": "tok_admin",
+        "tokenId": TOKEN_ADMIN,
         "workspaceIds": [],
     }
     record.update(overrides)
     return record
 
 
-RETAINED_TOKENS = {"items": [token_record(tokenId="tok_b"), token_record(tokenId="tok_a")]}
+def credential_inventory(*records, administrator: bool = True) -> dict:
+    """credential.list response: access-token rows plus non-token rows the helper must skip."""
+    items = [
+        {"kind": "access-token", "id": record.get("tokenId"), "record": record, "integrationId": None}
+        for record in records
+    ]
+    items.append(
+        {
+            "kind": "auth-session",
+            "id": SESSION_ADMIN,
+            "issuedAt": "2026-09-10T00:00:00.000Z",
+            "expiresAt": "2026-09-11T00:00:00.000Z",
+            "status": "active",
+            "current": False,
+        }
+    )
+    return {"items": items, "canManageServerCredentials": administrator}
+
+
+RETAINED_TOKENS = credential_inventory(token_record(tokenId=TOKEN_B), token_record(tokenId=TOKEN_A))
 BOOT_SUBSYSTEM_NAMES = (
     "config",
     "knowledgeIndex",
@@ -186,6 +233,8 @@ class RecordingEffects:
         self.fail_restore_stop = False
         self.diagnostics_payloads: List[dict] = []
         self.tokens_after: Optional[dict] = None
+        # Set only by cases that serve a deliberately malformed inventory.
+        self.tokens_contract_invalid = False
         self.log_config: Optional[dict] = None
 
     def bind(self, root: Path) -> None:
@@ -431,11 +480,14 @@ class RecordingEffects:
         if url.endswith("/api/app/operations/workspace.list"):
             return 403, None
         if url.endswith("/api/app/operations/token.list"):
+            raise AssertionError("token.list was retired; the helper must read credential.list.")
+        if url.endswith("/api/app/operations/credential.list"):
             if method != "POST" or body != {}:
-                raise AssertionError("Token inventory must use its canonical JSON binding.")
-            if self.replaced and self.tokens_after is not None:
-                return 200, self.tokens_after
-            return 200, self.tokens
+                raise AssertionError("Credential inventory must use its canonical JSON binding.")
+            inventory = self.tokens_after if self.replaced and self.tokens_after is not None else self.tokens
+            if not self.tokens_contract_invalid:
+                assert_operation_contract(url, body, inventory)
+            return 200, inventory
         if url.endswith("/api/app/operations/nanohost.runtime-target"):
             if method != "POST" or body != {}:
                 raise AssertionError("RuntimeTarget must use its canonical JSON binding.")
@@ -584,6 +636,34 @@ def _ensure_fresh_app_api_schemas() -> None:
             % ((completed.stderr or completed.stdout).strip(),)
         )
     _SCHEMA_BUILT = True
+
+
+def assert_operation_contract(url: str, request_body: Any, response_body: Any) -> None:
+    """Validate a helper request and its simulated response against the named NanoCore operation."""
+    path = urllib.parse.urlsplit(url).path
+    if not path.startswith(OPERATIONS_PATH):
+        raise AssertionError("not an App operation path: %s" % path)
+    payload = {
+        "operationId": path[len(OPERATIONS_PATH):],
+        "input": request_body,
+        "output": response_body,
+        "retired": ["token.list", "token.revoke"],
+    }
+    key = json.dumps(payload, sort_keys=True)
+    if key in _CHECKED_CONTRACTS:
+        return
+    _ensure_fresh_app_api_schemas()
+    completed = subprocess.run(
+        ["node", "--input-type=module", "-e", OPERATION_CONTRACT_PARSE],
+        input=json.dumps(payload),
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise AssertionError("operation contract mismatch: %s" % (completed.stderr.strip() or completed.stdout.strip()))
+    _CHECKED_CONTRACTS.add(key)
 
 
 def assert_closed_host_output(module, body: dict) -> None:
@@ -746,9 +826,9 @@ class ReleaseOnlyRegressionTests(unittest.TestCase):
                     return original(helper, receipt, exclusive)
                 code = "app_update_invalid_request" if cause == "apply" else "app_update_unavailable"
                 def fail(*args):
-                    raise module.HelperError(code, "Original %s failure okt_do_not_leak" % cause)
+                    raise module.HelperError(code, "Original %s failure okt_FAKE_noleak" % cause)
                 if cause == "pull":
-                    effects.pull_error = "Original pull failure okt_do_not_leak"
+                    effects.pull_error = "Original pull failure okt_FAKE_noleak"
                 target = "_replacement_argv"
                 replacement = fail if cause == "apply" else module.AppUpdateHelper._replacement_argv
                 with patch.object(module.AppUpdateHelper, "_write_receipt", write), patch.object(module.AppUpdateHelper, target, replacement):
@@ -1030,11 +1110,11 @@ class RC6RegressionTests(unittest.TestCase):
             path, effects, _code, prepared = _prepare(module, root)
             receipt_path = root / "receipts" / (prepared["requestId"] + ".json")
             receipt = json.loads(receipt_path.read_text())
-            receipt["approvalSummary"]["recoveryLimitations"].append("Corrupt record contains okt_must_not_leak")
+            receipt["approvalSummary"]["recoveryLimitations"].append("Corrupt record contains okt_FAKE_corrupt")
             receipt_path.write_text(json.dumps(receipt))
             _code, body = invoke(module, {"op": "status", "requestId": prepared["requestId"]}, path, effects=effects)
             self.assertEqual(body["error"]["code"], "app_update_recovery_required")
-            self.assertNotIn("okt_must_not_leak", json.dumps(body))
+            self.assertNotIn("okt_FAKE_corrupt", json.dumps(body))
 
     def test_malformed_or_contradictory_preflight_does_not_create_a_receipt(self) -> None:
         module = load_helper()
@@ -1202,7 +1282,7 @@ class DoctorReadinessTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            env = dict(os.environ, OPENKIT_NANOCORE_URL="http://127.0.0.1:%s" % server.server_port, OPENKIT_NANOCORE_TOKEN="okt_fixture_doctor")
+            env = dict(os.environ, OPENKIT_NANOCORE_URL="http://127.0.0.1:%s" % server.server_port, OPENKIT_NANOCORE_TOKEN="okt_FAKE_doctor")
             result = subprocess.run(["node", str(REPO_ROOT / "skills/openkit-ops/scripts/openkit"), "doctor"], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             body = json.loads(result.stdout)
@@ -1214,7 +1294,7 @@ class DoctorReadinessTests(unittest.TestCase):
             self.assertEqual(state["executionHost"]["observationAgeMs"], 259200000)
             self.assertFalse(state["executionHost"]["liveProbe"])
             self.assertNotIn("ready", state)
-            self.assertNotIn("okt_fixture_doctor", result.stdout + result.stderr)
+            self.assertNotIn("okt_FAKE_doctor", result.stdout + result.stderr)
             Handler.reject_reads = True
             denied = subprocess.run(["node", str(REPO_ROOT / "skills/openkit-ops/scripts/openkit"), "doctor"], env=env, capture_output=True, text=True, timeout=30)
             self.assertEqual(denied.returncode, 0)
@@ -1223,7 +1303,7 @@ class DoctorReadinessTests(unittest.TestCase):
             self.assertEqual(unknown["productWorkReadiness"], "unknown")
             self.assertEqual(unknown["maintenanceSafety"], {"state": "unknown", "observation": None})
             self.assertEqual(unknown["executionHost"]["state"], "unknown")
-            self.assertNotIn("okt_fixture_doctor", denied.stdout + denied.stderr)
+            self.assertNotIn("okt_FAKE_doctor", denied.stdout + denied.stderr)
         finally:
             server.shutdown()
             thread.join(timeout=5)
@@ -1849,9 +1929,10 @@ class ApplyJobTests(unittest.TestCase):
             )
             self.assertIn(HTTPS_SAMPLE, config_before)
             self.assertEqual(start["jobId"], body["jobId"])
-            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/credential.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertTrue(body["predicates"]["retainedAuthRead"])
+            self.assertFalse(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
 
     def test_app_update_ssh_rw_or_missing_refuses_before_stop(self) -> None:
         module = load_helper()
@@ -2419,7 +2500,7 @@ class ApplyJobTests(unittest.TestCase):
                 config_path,
                 effects=effects,
             )
-            effects.pull_error = "registry denied okt_should_not_leak"
+            effects.pull_error = "registry denied okt_FAKE_registry"
             body = invoke(
                 module,
                 {},
@@ -2594,49 +2675,45 @@ class ContractCorrectionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.tokens_after = {
-                "items": [
-                    token_record(tokenId="tok_b", ownerUserId="user_other"),
-                    token_record(tokenId="tok_a"),
-                ]
-            }
+            effects.tokens_after = credential_inventory(
+                token_record(tokenId=TOKEN_B, ownerUserId=USER_OTHER),
+                token_record(tokenId=TOKEN_A),
+            )
             _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
             self.assertEqual(body["stage"], "failed")
             self.assertRegex(body["error"] or "", r"retained")
             self.assertIn("retainedAuthRead", (body.get("predicates") or {}))
             self.assertIs(body["predicates"]["retainedAuthRead"], False)
-            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/credential.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.tokens_after = {
-                "items": [
-                    token_record(
-                        lastUsedAt="2026-09-10T01:00:00.000Z",
-                        lastUsedChannel="app-api",
-                        lastUsedSource="127.0.0.1",
-                        tokenId="tok_b",
-                    ),
-                    token_record(
-                        lastUsedAt="2026-09-10T01:02:00.000Z",
-                        lastUsedChannel="app-api",
-                        lastUsedSource="127.0.0.1",
-                        tokenId="tok_a",
-                    ),
-                ]
-            }
+            effects.tokens_after = credential_inventory(
+                token_record(
+                    lastUsedAt="2026-09-10T01:00:00.000Z",
+                    lastUsedChannel="app-api",
+                    lastUsedSource="127.0.0.1",
+                    tokenId=TOKEN_B,
+                ),
+                token_record(
+                    lastUsedAt="2026-09-10T01:02:00.000Z",
+                    lastUsedChannel="app-api",
+                    lastUsedSource="127.0.0.1",
+                    tokenId=TOKEN_A,
+                ),
+            )
             _config_path, effects, _prepared, body = _start_apply(module, root, effects=effects)
             self.assertEqual(body["stage"], "succeeded", body)
             self.assertTrue(body["predicates"]["retainedAuthRead"])
-            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/credential.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            effects.tokens = {"items": []}
+            effects.tokens = credential_inventory()
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
             invoke(
                 module,
@@ -2658,16 +2735,17 @@ class ContractCorrectionTests(unittest.TestCase):
             )[1]
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"empty")
-            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/credential.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
 
         with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
             root = Path(tmp)
             effects = RecordingEffects()
-            malformed = token_record(tokenId="tok_a")
+            malformed = token_record(tokenId=TOKEN_A)
             del malformed["ownerUserId"]
-            effects.tokens = {"items": [malformed, token_record(tokenId="tok_b")]}
+            effects.tokens_contract_invalid = True
+            effects.tokens = credential_inventory(malformed, token_record(tokenId=TOKEN_B))
             config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
             invoke(
                 module,
@@ -2689,9 +2767,50 @@ class ContractCorrectionTests(unittest.TestCase):
             )[1]
             self.assertEqual(body["stage"], "failed", body)
             self.assertRegex(body["error"] or "", r"public Token")
-            self.assertTrue(any(url.endswith("/api/app/operations/token.list") for url in effects.http_calls))
+            self.assertTrue(any(url.endswith("/api/app/operations/credential.list") for url in effects.http_calls))
             self.assertFalse(any(url.endswith("/api/app/operations/workspace.list") for url in effects.http_calls))
             self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            root = Path(tmp)
+            effects = RecordingEffects()
+            effects.tokens = credential_inventory(token_record(tokenId=TOKEN_A), administrator=False)
+            config_path, effects, _code, prepared = _prepare(module, root, effects=effects)
+            invoke(
+                module,
+                {
+                    "maintenanceConsent": True,
+                    "op": "start",
+                    "requestId": prepared["requestId"],
+                },
+                config_path,
+                effects=effects,
+            )
+            body = invoke(
+                module,
+                {},
+                config_path,
+                effects=effects,
+                extra_argv=["--apply", prepared["requestId"]],
+                stdin_bytes=b"",
+            )[1]
+            self.assertEqual(body["stage"], "failed", body)
+            self.assertRegex(body["error"] or "", r"administrator credential inventory")
+            self.assertFalse(any(call[:2] == ["docker", "stop"] for call in effects.calls))
+
+    def test_retained_auth_request_matches_credential_operation_contract(self) -> None:
+        module = load_helper()
+        with tempfile.TemporaryDirectory(prefix="openkit-app-update-") as tmp:
+            effects = RecordingEffects()
+            _config_path, effects, _prepared, body = _start_apply(module, Path(tmp), effects=effects)
+            self.assertEqual(body["stage"], "succeeded", body)
+        requested = [url for url in effects.http_calls if url.endswith(module.CREDENTIAL_LIST_PATH)]
+        self.assertTrue(requested)
+        assert_operation_contract(requested[0], {}, RETAINED_TOKENS)
+        # Negative control: the bridge refuses ids the real schema would refuse.
+        stale = credential_inventory(token_record(tokenId="tok_admin", ownerUserId="user_admin"))
+        with self.assertRaisesRegex(AssertionError, "operation contract mismatch"):
+            assert_operation_contract(requested[0], {}, stale)
 
     def test_annotated_tag_peels_to_commit_and_refuses_mismatch(self) -> None:
         module = load_helper()
