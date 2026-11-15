@@ -134,7 +134,7 @@ const INTERRUPT_SCHEDULING_MARGIN_MS = 2_000;
 /** Two bounded 2 s signals plus exit delivery; measured fault-to-stop completion exceeded 2 s. */
 const NATIVE_STOP_MS = 5_000;
 const CAUSE_CANARIES = [
-  'sk-reviewerSyntheticToken123',
+  'sk-FAKE_40e1',
   '/private/customer/project/payroll.txt',
   'CONFIDENTIAL_PROMPT_CANARY',
 ];

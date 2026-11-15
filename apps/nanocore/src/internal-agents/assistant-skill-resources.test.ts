@@ -1117,8 +1117,8 @@ describe('Assistant Skill sanitization through the shared loop', () => {
       label: 'credential-shaped admitted supporting path',
       source: '# Supporting guidance',
       expectsRefusal: true,
-      path: 'references/SK-guidance.md',
-      refusalCanary: 'SK-guidance.md',
+      path: 'references/SK-FAKE_91e5.md',
+      refusalCanary: 'SK-FAKE_91e5.md',
     },
   ])(
     'keeps the final model observation valid, bounded, and safe for $label',

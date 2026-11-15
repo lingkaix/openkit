@@ -88,7 +88,7 @@ describe('resource catalog request and configuration schemas', () => {
 
     for (const invalidDeclaration of [
       { kind: 'http' },
-      { kind: 'http', endpoint: 'https://user:pass@example.com/v1' },
+      { kind: 'http', endpoint: 'https://FAKE_user:FAKE_pass@example.com/v1' },
       { kind: 'http', endpoint: 'ftp://example.com/v1' },
       { kind: 'http', endpoint: 'not-a-url' },
     ]) {

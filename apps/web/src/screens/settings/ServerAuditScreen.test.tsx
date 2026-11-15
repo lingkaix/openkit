@@ -8,7 +8,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { SURFACE_ELEMENTS } from '../../app/routes';
 import { surfaceById, surfacesInGroup } from '../../app/surfaces';
 
-const SECRET = 'okt_server_audit_poison';
+const SECRET = 'okt_FAKE_20a4';
 const PRIVATE = 'private-payload-must-not-escape';
 const OCCURRED_AT = '2026-09-17T04:00:00.000Z';
 const CREATED_AT = '2026-01-02T00:00:00.000Z';

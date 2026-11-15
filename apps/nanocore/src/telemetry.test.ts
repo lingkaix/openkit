@@ -78,7 +78,7 @@ describe('process.telemetry configuration', () => {
     for (const endpoint of [
       undefined,
       'not-a-url',
-      'http://user:pass@127.0.0.1:4318',
+      'http://FAKE_user:FAKE_pass@127.0.0.1:4318',
       'http://127.0.0.1:4318?q=1',
       'http://127.0.0.1:4318#frag',
     ]) {

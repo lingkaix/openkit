@@ -7,7 +7,7 @@ import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_l
 import { postJson } from './_lib/http.js';
 
 const rawUserInfo = 'user:pass';
-const rawSecret = 'sk-openkit-e2e-secret-value';
+const rawSecret = 'sk-FAKE_3e63';
 
 let harness: NanoCoreHarness | null = null;
 

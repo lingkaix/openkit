@@ -35,7 +35,7 @@ describe('NanoHost transport named safe-sink delivery', () => {
       secretPath: join(root, 'A.token'),
       companionPath: join(root, 'A.meta'),
     };
-    const secret = 'okt_sinkdeliverysecretaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const secret = 'okt_FAKE_3fa0';
 
     const result = deliverNanoHostTransportTokenToNamedSlot({
       deploymentId: 'deploy_primary',
@@ -125,12 +125,12 @@ describe('NanoHost transport named safe-sink delivery', () => {
   it('exclusive-create leaves an occupied foreign-token slot untouched', () => {
     const { companion, secret, sink } = occupiedSlot({
       companion: companionBytes('tok_00000000-0000-7655-8cd1-7eb19d1529c7'),
-      secret: 'okt_foreign_owner_secret_aaaaaaaaaaaaaaaaaaaaaaaaaa',
+      secret: 'okt_FAKE_35c9',
     });
 
     expect(() =>
       deliverExclusive({
-        secret: 'okt_loser_secret_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        secret: 'okt_FAKE_80cb',
         sink,
         tokenId: 'tok_00000000-0000-780a-8522-e11da4a955a9',
       })
@@ -143,12 +143,12 @@ describe('NanoHost transport named safe-sink delivery', () => {
   it('exclusive-create never cleans a pre-existing slot that already names the attempted Token', () => {
     const { companion, secret, sink } = occupiedSlot({
       companion: companionBytes('tok_00000000-0000-701b-b437-92e908614b58'),
-      secret: 'okt_same_token_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      secret: 'okt_FAKE_0dac',
     });
 
     expect(() =>
       deliverExclusive({
-        secret: 'okt_retry_same_token_bbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        secret: 'okt_FAKE_df3f',
         sink,
         tokenId: 'tok_00000000-0000-701b-b437-92e908614b58',
       })
@@ -170,46 +170,42 @@ describe('NanoHost transport named safe-sink delivery', () => {
       companionPath: join(root, 'malformed.meta'),
       secretPath: join(root, 'malformed.token'),
     };
-    writeFileSync(missingCompanion.secretPath, 'okt_partial_secret_aaaaaaaaaaaaaaaaaaaaaaaaaa', {
+    writeFileSync(missingCompanion.secretPath, 'okt_FAKE_8cb2', {
       mode: 0o600,
     });
-    writeFileSync(malformed.secretPath, 'okt_malformed_secret_aaaaaaaaaaaaaaaaaaaaaaaa', {
+    writeFileSync(malformed.secretPath, 'okt_FAKE_998f', {
       mode: 0o600,
     });
     writeFileSync(malformed.companionPath, 'not-a-token-companion\n', { mode: 0o600 });
 
     expect(() =>
       deliverExclusive({
-        secret: 'okt_loser_secret_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        secret: 'okt_FAKE_80cb',
         sink: missingCompanion,
         tokenId: 'tok_00000000-0000-780a-8522-e11da4a955a9',
       })
     ).toThrow();
     expect(existsSync(missingCompanion.secretPath)).toBe(true);
     expect(existsSync(missingCompanion.companionPath)).toBe(false);
-    expect(readFileSync(missingCompanion.secretPath, 'utf8')).toBe(
-      'okt_partial_secret_aaaaaaaaaaaaaaaaaaaaaaaaaa'
-    );
+    expect(readFileSync(missingCompanion.secretPath, 'utf8')).toBe('okt_FAKE_8cb2');
 
     expect(() =>
       deliverExclusive({
-        secret: 'okt_loser_secret_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        secret: 'okt_FAKE_80cb',
         sink: malformed,
         tokenId: 'tok_00000000-0000-780a-8522-e11da4a955a9',
       })
     ).toThrow();
-    expect(readFileSync(malformed.secretPath, 'utf8')).toBe(
-      'okt_malformed_secret_aaaaaaaaaaaaaaaaaaaaaaaa'
-    );
+    expect(readFileSync(malformed.secretPath, 'utf8')).toBe('okt_FAKE_998f');
     expect(readFileSync(malformed.companionPath, 'utf8')).toBe('not-a-token-companion\n');
   });
 
   it('replace overwrites an occupied slot used by issue and rotation', () => {
     const { sink } = occupiedSlot({
       companion: companionBytes('tok_00000000-0000-7dac-b3c3-75dfb2fb4c18'),
-      secret: 'okt_old_slot_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      secret: 'okt_FAKE_cff4',
     });
-    const replacement = 'okt_replaced_slot_secret_bbbbbbbbbbbbbbbbbbbbbbbb';
+    const replacement = 'okt_FAKE_626d';
 
     const result = deliverNanoHostTransportTokenToNamedSlot({
       deploymentId: 'deploy_primary',
@@ -241,7 +237,7 @@ describe('NanoHost transport named safe-sink delivery', () => {
         deploymentId: 'deploy_primary',
         identityId: 'integration_nanohost_primary',
         issuanceGeneration: 1,
-        secret: 'okt_missing_disposition_aaaaaaaaaaaaaaaaaaaaaaaa',
+        secret: 'okt_FAKE_81a3',
         sink,
         slot: 'A',
         tokenId: 'tok_00000000-0000-7497-9e7b-7d920342ffdc',

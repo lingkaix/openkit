@@ -416,7 +416,7 @@ describe('agent.list and agent.read operations', () => {
   });
 
   it('projects current server manifests into Workspace resources, catalog, and health refresh', async () => {
-    const secretEnv = 'sk-test-catalog-must-not-leak';
+    const secretEnv = 'sk-FAKE_da27';
     const configured = createTestAgentSetup({
       agentId: 'agent_configured',
       displayName: 'Configured Worker',

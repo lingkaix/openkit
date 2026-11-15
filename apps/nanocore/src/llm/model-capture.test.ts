@@ -1091,7 +1091,7 @@ describe('Gateway model retention', () => {
     ).toEqual(request);
   });
 
-  it.each(['resolved-private-credential', 'Bearer opaque-credential', 'sk-privatecanary123'])(
+  it.each(['resolved-private-credential', 'Bearer opaque-credential', 'sk-FAKE_28fe'])(
     'excludes whole bodies containing %s rather than claiming redacted losslessness',
     async (secret) => {
       const f = await fixture();

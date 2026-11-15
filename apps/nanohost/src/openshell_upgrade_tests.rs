@@ -1257,7 +1257,7 @@ fn dormant_provider_pinned_refresh_projection_preserves_endpoint_and_secrecy() {
         &instance,
         &mut projection.profile,
         ProviderCredentialRefreshStrategy::Oauth2ClientCredentials as i32,
-        "https://user:password@tokens.example.invalid/oauth/token",
+        "https://FAKE_user:FAKE_password@tokens.example.invalid/oauth/token",
         vec!["read".into()],
         request.material.clone(),
         &facilities,

@@ -74,7 +74,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
 
   it('redacts provider profile secrets from diagnostics snapshots', () => {
     const previousKey = process.env.CORE_OPENROUTER_API_KEY;
-    process.env.CORE_OPENROUTER_API_KEY = 'sk-server-config-secret';
+    process.env.CORE_OPENROUTER_API_KEY = 'sk-FAKE_315f';
 
     try {
       const { dataRoot, providersRoot } = createProviderRoot();
@@ -107,7 +107,7 @@ describe('loadProviderRegistryFromDataRoot', () => {
         }),
       ]);
       expect(serialized).not.toContain('CORE_OPENROUTER_API_KEY');
-      expect(serialized).not.toContain('sk-server-config-secret');
+      expect(serialized).not.toContain('sk-FAKE_315f');
     } finally {
       if (previousKey === undefined) {
         delete process.env.CORE_OPENROUTER_API_KEY;

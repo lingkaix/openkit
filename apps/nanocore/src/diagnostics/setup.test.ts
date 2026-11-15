@@ -11,7 +11,7 @@ describe('createSetupDiagnostics', () => {
   it('keeps Provider secret references redacted without making them Agent readiness inputs', () => {
     const registry = new ProviderRegistry([
       {
-        baseUrl: 'https://user:sk-secret@example.com/v1',
+        baseUrl: 'https://FAKE_user:FAKE_sk-secret@example.com/v1',
         displayName: 'Hosted',
         id: 'agent-openrouter',
         kind: 'custom',

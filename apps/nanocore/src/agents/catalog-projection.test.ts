@@ -42,7 +42,7 @@ describe('projectAgentCatalogEntry', () => {
         displayName: 'Unavailable Worker',
       }).manifest,
       readiness: { message: secretMessage, status: 'blocked' as const },
-      workspace: { env: { OPENAI_API_KEY: 'sk-test-catalog-must-not-leak' } },
+      workspace: { env: { OPENAI_API_KEY: 'sk-FAKE_da27' } },
     };
     const disabled = {
       ...createTestAgentSetup({
@@ -66,7 +66,7 @@ describe('projectAgentCatalogEntry', () => {
       status: 'disabled',
     });
     expect(publicJson).not.toContain(secretMessage);
-    expect(publicJson).not.toContain('sk-test-catalog-must-not-leak');
+    expect(publicJson).not.toContain('sk-FAKE_da27');
     expect(publicJson).not.toContain('/usr/local/bin');
     expect(publicJson).not.toContain('opencode');
   });

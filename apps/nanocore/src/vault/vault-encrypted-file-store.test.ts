@@ -112,7 +112,7 @@ describe('encrypted-file vault store format', () => {
         join(storeDir, 'entries', 'vault_00000000-0000-7f73-bffa-d96a61ee4d70', '1.enc'),
         'utf8'
       )
-    ).not.toContain('ghp_live_secret');
+    ).not.toContain('ghp_FAKE_a572');
   });
 
   it('rejects unsafe reference ids before writing entry files', () => {
@@ -190,7 +190,7 @@ describe('encrypted-file vault store format', () => {
     const entry = sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T00:10:00.000Z',
       masterKey,
-      material: Buffer.from('ghp_live_secret'),
+      material: Buffer.from('ghp_FAKE_a572'),
       metadata: {
         ownerScope: 'workspace',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
@@ -210,9 +210,9 @@ describe('encrypted-file vault store format', () => {
       version: 1,
     });
 
-    expect(Buffer.from(opened).toString('utf8')).toBe('ghp_live_secret');
-    expect(entry.ciphertext).not.toContain('ghp_live_secret');
-    expect(entryFile).not.toContain('ghp_live_secret');
+    expect(Buffer.from(opened).toString('utf8')).toBe('ghp_FAKE_a572');
+    expect(entry.ciphertext).not.toContain('ghp_FAKE_a572');
+    expect(entryFile).not.toContain('ghp_FAKE_a572');
     expect(entry.algorithm).toBe('aes-256-gcm');
   });
 
@@ -412,7 +412,7 @@ describe('encrypted-file vault store format', () => {
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T00:10:00.000Z',
       masterKey: Buffer.alloc(32, 7),
-      material: Buffer.from('ghp_live_secret'),
+      material: Buffer.from('ghp_FAKE_a572'),
       metadata: {
         ownerScope: 'server',
       },
@@ -439,7 +439,7 @@ describe('encrypted-file vault store format', () => {
     sealEncryptedFileVaultEntry({
       createdAt: '2026-07-05T00:10:00.000Z',
       masterKey: Buffer.alloc(32, 7),
-      material: Buffer.from('ghp_live_secret'),
+      material: Buffer.from('ghp_FAKE_a572'),
       metadata: { ownerScope: 'server' },
       randomBytes: (size) => {
         successfulRandomCall += 1;
@@ -461,7 +461,7 @@ describe('encrypted-file vault store format', () => {
       sealEncryptedFileVaultEntry({
         createdAt: '2026-07-05T00:10:00.000Z',
         masterKey: Buffer.alloc(32, 7),
-        material: Buffer.from('ghp_live_secret'),
+        material: Buffer.from('ghp_FAKE_a572'),
         metadata: { ownerScope: 'server' },
         randomBytes: () => {
           failedRandomCall += 1;

@@ -291,7 +291,7 @@ describe('vault admin app API', () => {
     expect(workspaceResponse.status).toBe(201);
     const workspace = await workspaceResponse.json();
     const workspaceId = workspace.id;
-    const secret = 'ghp_synthetic_canary_no_real_credential';
+    const secret = 'ghp_FAKE_24c0';
     const request = (id: OperationId, input: Record<string, unknown>) =>
       app.request(
         ...operationRequest(

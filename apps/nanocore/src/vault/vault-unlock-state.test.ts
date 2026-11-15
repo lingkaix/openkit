@@ -34,7 +34,7 @@ describe('vault unlock state', () => {
     });
 
     unlocked.store({
-      material: 'ghp_live_secret',
+      material: 'ghp_FAKE_a572',
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
@@ -42,7 +42,7 @@ describe('vault unlock state', () => {
       Buffer.from(
         state.backend().resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
       ).toString('utf8')
-    ).toBe('ghp_live_secret');
+    ).toBe('ghp_FAKE_a572');
 
     const locked = state.lock();
 
@@ -78,7 +78,7 @@ describe('vault unlock state', () => {
     expect(String(retainedBackendFailure)).not.toContain(storeDir);
     expect(String(retainedBackendFailure)).not.toContain(masterKey.toString('base64'));
     expect(String(retainedBackendFailure)).not.toContain(masterKey.toString('hex'));
-    expect(String(retainedBackendFailure)).not.toContain('ghp_live_secret');
+    expect(String(retainedBackendFailure)).not.toContain('ghp_FAKE_a572');
   });
 
   it('keeps the current backend usable when a replacement unlock fails', () => {
@@ -89,7 +89,7 @@ describe('vault unlock state', () => {
     const currentBackend = state.unlock({ masterKey });
 
     currentBackend.store({
-      material: 'ghp_live_secret',
+      material: 'ghp_FAKE_a572',
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
@@ -110,11 +110,11 @@ describe('vault unlock state', () => {
       Buffer.from(
         state.backend().resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
       ).toString('utf8')
-    ).toBe('ghp_live_secret');
+    ).toBe('ghp_FAKE_a572');
     expect(String(failure)).not.toContain(storeDir);
     expect(String(failure)).not.toContain(wrongKey.toString('base64'));
     expect(String(failure)).not.toContain(wrongKey.toString('hex'));
-    expect(String(failure)).not.toContain('ghp_live_secret');
+    expect(String(failure)).not.toContain('ghp_FAKE_a572');
   });
 
   it('rejects invalid encrypted-file unlock keys without keeping an available backend', () => {

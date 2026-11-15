@@ -15,7 +15,7 @@ describe('resolveProviderProfileToLLMConfig', () => {
         secretRef: 'env:OPENROUTER_API_KEY',
         vendor: 'openrouter',
       },
-      () => 'sk-openrouter'
+      () => 'sk-FAKE_a951'
     );
 
     expect(provider).toMatchObject({

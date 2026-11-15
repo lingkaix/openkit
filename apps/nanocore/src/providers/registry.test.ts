@@ -45,7 +45,7 @@ describe('ProviderRegistry', () => {
   it('summarizes providers without secret refs or URL auth components', () => {
     const registry = new ProviderRegistry([
       {
-        baseUrl: 'https://user:password@example.com/v1',
+        baseUrl: 'https://FAKE_user:FAKE_password@example.com/v1',
         defaultModel: 'gpt-5.1',
         displayName: 'Redacted Provider',
         gatewayCapabilities: { chatCompletions: 'native', responses: 'bridged' },
@@ -109,7 +109,7 @@ describe('ProviderRegistry', () => {
       expect(provider).not.toHaveProperty('dispatchFamily');
     }
     expect(JSON.stringify(summary)).not.toContain('SECRET_VALUE');
-    expect(JSON.stringify(summary)).not.toContain('user:password');
+    expect(JSON.stringify(summary)).not.toContain('FAKE_user:FAKE_password');
   });
 
   it('checks whether a provider has resolvable required credentials', async () => {

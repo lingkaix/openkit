@@ -17,7 +17,7 @@ describe('OpenKit access token helpers', () => {
     expect(token.length).toBeGreaterThanOrEqual(47);
     expect(second).not.toBe(token);
     expect(isOpenKitAccessTokenSecret(token)).toBe(true);
-    expect(isOpenKitAccessTokenSecret('sk-openkit-secret')).toBe(false);
+    expect(isOpenKitAccessTokenSecret('sk-FAKE_b4df')).toBe(false);
   });
 
   it('hashes token secrets and verifies them without exposing the secret', () => {

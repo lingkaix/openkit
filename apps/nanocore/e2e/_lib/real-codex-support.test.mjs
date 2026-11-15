@@ -331,7 +331,10 @@ test('rejects credential material after exactly eight percent-decoding layers', 
   assert.throws(
     () =>
       assertNoPublicSecretLeak(
-        encodePercentLayers('https://operator:depth-eight-canary@example.invalid/private', 8)
+        encodePercentLayers(
+          'https://FAKE_operator:FAKE_depth-eight-canary@example.invalid/private',
+          8
+        )
       ),
     /exposed/
   );

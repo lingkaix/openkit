@@ -120,7 +120,9 @@ describe('shell cache keys', () => {
     expect(isShellCacheUrl(sameOrigin('/v1/responses'))).toBe(false);
     expect(isShellCacheUrl(`${sameOrigin('/assets/index-8fK2d9.js')}?token=abc`)).toBe(false);
     expect(isShellCacheUrl(`${sameOrigin('/index.html')}?authorization=Bearer%20abc`)).toBe(false);
-    expect(isShellCacheUrl('https://user:pass@openkit.example/assets/index-8fK2d9.js')).toBe(false);
+    expect(
+      isShellCacheUrl('https://FAKE_user:FAKE_pass@openkit.example/assets/index-8fK2d9.js')
+    ).toBe(false);
     expect(isShellCacheUrl('https://elsewhere.example/assets/index-8fK2d9.js')).toBe(false);
   });
 

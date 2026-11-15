@@ -241,7 +241,7 @@ mod tests {
         for endpoint in [
             "bad",
             "file:///tmp/collector",
-            "http://user:secret@localhost:4318",
+            "http://FAKE_user:FAKE_secret@localhost:4318",
             "http://localhost:4318?q=secret",
             "http://localhost:4318#secret",
         ] {

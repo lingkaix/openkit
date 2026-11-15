@@ -24,7 +24,7 @@ import { operationsKeys, pathForSearchHit } from './data';
 const TIMESTAMP = '2026-07-21T12:00:00.000Z';
 const HOST_PATH = '/Users/secret/openkit-runtime';
 const RAW_HANDLE = 'sandbox-pid-7777-gateway-xyz';
-const POISON_SECRET = 'sk-secret-should-never-render';
+const POISON_SECRET = 'sk-FAKE_f236';
 const SEARCH_QUERY = 'pricing';
 const WORKSPACE = {
   id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',

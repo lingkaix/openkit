@@ -342,7 +342,10 @@ const INTERMEDIATE_WORKER_IMAGE_CASES = [
   {
     encoding: 'six-layer',
     name: 'userinfo',
-    value: encodeWorkerImageLayers('https://operator:worker-image-six-canary@example.invalid', 6),
+    value: encodeWorkerImageLayers(
+      'https://FAKE_operator:FAKE_worker-image-six-canary@example.invalid',
+      6
+    ),
   },
   {
     encoding: 'seven-layer',
@@ -1198,7 +1201,7 @@ describe('real Task Mode worker L3 test policy', () => {
     {
       encoding: 'normal',
       name: 'userinfo',
-      value: 'https://operator:worker-image-normal-canary@example.invalid',
+      value: 'https://FAKE_operator:FAKE_worker-image-normal-canary@example.invalid',
     },
     {
       encoding: 'single',
@@ -1252,7 +1255,7 @@ describe('real Task Mode worker L3 test policy', () => {
       encoding: 'nine-layer',
       name: 'userinfo',
       value: encodeWorkerImageLayers(
-        'https://operator:worker-image-nine-canary@example.invalid',
+        'https://FAKE_operator:FAKE_worker-image-nine-canary@example.invalid',
         9
       ),
     },
@@ -1510,7 +1513,7 @@ describe('real Task Mode worker L3 test policy', () => {
     {
       encoding: 'normal',
       name: 'userinfo',
-      value: 'https://operator:worker-image-success-normal-canary@example.invalid',
+      value: 'https://FAKE_operator:FAKE_worker-image-success-normal-canary@example.invalid',
     },
     {
       encoding: 'single',
@@ -1554,7 +1557,7 @@ describe('real Task Mode worker L3 test policy', () => {
       encoding: 'nine-layer',
       name: 'userinfo',
       value: encodeWorkerImageLayers(
-        'https://operator:worker-image-success-nine-canary@example.invalid',
+        'https://FAKE_operator:FAKE_worker-image-success-nine-canary@example.invalid',
         9
       ),
     },

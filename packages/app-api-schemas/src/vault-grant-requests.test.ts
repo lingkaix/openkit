@@ -39,8 +39,8 @@ describe('supported secret-use request schema', () => {
     for (const changed of [
       { ...terms, material: 'synthetic-private-value' },
       { ...terms, reason: 'synthetic-private-value' },
-      { ...terms, targetAgentId: 'ghp_synthetic_private_value' },
-      { ...terms, mcpSource: { serverId: 'ghp_synthetic_private_value', slot: 'token' } },
+      { ...terms, targetAgentId: 'ghp_FAKE_8af1' },
+      { ...terms, mcpSource: { serverId: 'ghp_FAKE_8af1', slot: 'token' } },
     ])
       expect(VaultGrantRequestTermsSchema.safeParse(changed).success).toBe(false);
     const request = {
@@ -126,7 +126,7 @@ describe('descriptive grant request readers', () => {
       expect(
         VaultGrantRequestTermsSchema.safeParse({
           ...terms,
-          referenceId: 'ghp_synthetic_private_value',
+          referenceId: 'ghp_FAKE_8af1',
           ownerScope,
           lifetime: ownerScope,
         }).success

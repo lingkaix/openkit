@@ -724,8 +724,8 @@ mod tests {
 
     const IDENTITY: &str = "nanohost_test_identity";
     const DEPLOYMENT: &str = "deployment_test";
-    const SECRET_A: &str = "okt_testsecretaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const SECRET_B: &str = "okt_testsecretbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const SECRET_A: &str = "okt_FAKE_ca09";
+    const SECRET_B: &str = "okt_FAKE_b933";
     static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
     struct Fixture {

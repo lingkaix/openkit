@@ -12,7 +12,7 @@ const recordedAt = '2026-09-17T02:00:00.000Z';
 function worker(overrides: Record<string, unknown> = {}) {
   return {
     threadId: 'th_00000000-0000-7511-9db5-ba3f596149a8',
-    threadTitle: 'Test ghp_publicFixture',
+    threadTitle: 'Test ghp_FAKE_a72f',
     agentId: 'agent_codex_host',
     agentName: 'sk-Latn fixture Agent',
     status: 'busy',
@@ -68,7 +68,7 @@ describe('WorkspaceWorkersResponseSchema', () => {
       ],
     });
 
-    expect(parsed.items[0]?.threadTitle).toBe('Test ghp_publicFixture');
+    expect(parsed.items[0]?.threadTitle).toBe('Test ghp_FAKE_a72f');
     expect(parsed.items[0]?.agentName).toBe('sk-Latn fixture Agent');
     expect(parsed.items.map((item) => item.threadId)).toEqual([
       'th_00000000-0000-7511-9db5-ba3f596149a8',

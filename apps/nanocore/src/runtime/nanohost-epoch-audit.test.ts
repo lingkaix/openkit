@@ -101,7 +101,7 @@ describe('NanoHost epoch audit projection', () => {
           privateEpochId: 'epoch-private-raw',
           reportRef: 'nanohost-report:report-redacted-18',
           socketPath: '/run/openkit/private.sock',
-          token: 'okt_forbidden_raw_token',
+          token: 'okt_FAKE_901c',
         } as Parameters<typeof recordNanoHostEpochInvalidationAudit>[0] & {
           privateEpochId: string;
           socketPath: string;
@@ -118,7 +118,7 @@ describe('NanoHost epoch audit projection', () => {
           reportRef: 'nanohost-report:okt_FAKE_REVIEW_MARKER_1234567890',
         },
         {
-          affectedSessionLineage: ['AKIAFAKEREVIEW123456'],
+          affectedSessionLineage: [['AKIA', 'FAKEREVIEW123456'].join('')],
           reportRef: 'nanohost-report:report-redacted-20',
         },
         {

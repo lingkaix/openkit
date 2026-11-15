@@ -27,7 +27,7 @@ describe('createProviderDiagnostics', () => {
     writeFileSync(
       join(providersRoot, 'raw.provider.jsonc'),
       JSON.stringify({
-        apiKey: 'sk-raw-secret',
+        apiKey: 'sk-FAKE_43d0',
         displayName: 'Raw',
         id: 'raw',
         kind: 'direct',
@@ -70,6 +70,6 @@ describe('createProviderDiagnostics', () => {
         .map((profile) => profile.id)
         .filter((id) => !id.startsWith('openkit-local-'))
     ).toEqual(['required-extension']);
-    expect(JSON.stringify(diagnostics)).not.toContain('sk-raw-secret');
+    expect(JSON.stringify(diagnostics)).not.toContain('sk-FAKE_43d0');
   });
 });

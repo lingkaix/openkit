@@ -30,7 +30,7 @@ function createVaultProviderFixture() {
   applyMigrations(coreDb);
   vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 6) });
   vaultUnlockState.backend().store({
-    material: 'sk-vault-provider',
+    material: 'sk-FAKE_cc65',
     metadata: { ownerScope: 'server' },
     referenceId: 'vault_00000000-0000-74ac-b50a-3150f74675d0',
   });
@@ -41,7 +41,7 @@ function createVaultProviderFixture() {
 describe('vault provider credential resolver', () => {
   it('does not fall back to env references by default', async () => {
     const previousKey = process.env.OPENKIT_VAULT_RESOLVER_ENV_CANARY;
-    process.env.OPENKIT_VAULT_RESOLVER_ENV_CANARY = 'sk-env-canary';
+    process.env.OPENKIT_VAULT_RESOLVER_ENV_CANARY = 'sk-FAKE_cf95';
     const { coreDb, vaultUnlockState } = createVaultProviderFixture();
 
     try {
@@ -79,7 +79,7 @@ describe('vault provider credential resolver', () => {
         consumerWorkspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       } as const;
       expect(await resolver('vault://vault_00000000-0000-74ac-b50a-3150f74675d0', consumer)).toBe(
-        'sk-vault-provider'
+        'sk-FAKE_cc65'
       );
       expect(listServerAuditEvents(coreDb)).toEqual([
         expect.objectContaining({
@@ -100,8 +100,8 @@ describe('vault provider credential resolver', () => {
           vaultReferenceId: 'vault_00000000-0000-74ac-b50a-3150f74675d0',
         }),
       ]);
-      expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-vault-provider');
-      expect(JSON.stringify(listServerAuditEvents(coreDb))).not.toContain('sk-vault-provider');
+      expect(JSON.stringify(listVaultUseRecords(coreDb))).not.toContain('sk-FAKE_cc65');
+      expect(JSON.stringify(listServerAuditEvents(coreDb))).not.toContain('sk-FAKE_cc65');
     } finally {
       await shutdownControlStoreWorkerClient();
       coreDb.sqlite.close();

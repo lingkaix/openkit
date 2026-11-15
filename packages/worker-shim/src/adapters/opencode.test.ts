@@ -2460,7 +2460,7 @@ describe('OpenCode resident adapter', () => {
       const creds = loopback('transport-cause', 'http://127.0.0.1:9');
       const root = Object.assign(
         new Error(
-          `other side closed ${creds.capabilityCredential} https://user:password@example.test/private?token=unknown-secret#fragment`
+          `other side closed ${creds.capabilityCredential} https://FAKE_user:FAKE_password@example.test/private?token=unknown-secret#fragment`
         ),
         { code }
       );

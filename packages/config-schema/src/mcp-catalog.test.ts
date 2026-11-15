@@ -154,7 +154,7 @@ describe('workspace MCP server catalog', () => {
       endpoint
     );
     for (const invalid of [
-      'https://user:password@mcp.example.test/mcp',
+      'https://FAKE_user:FAKE_password@mcp.example.test/mcp',
       'https://mcp.example.test/mcp#fragment',
     ]) {
       expect(

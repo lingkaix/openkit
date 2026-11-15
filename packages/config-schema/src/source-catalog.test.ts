@@ -108,7 +108,7 @@ describe('workspace data source catalog schema', () => {
         id: 'credential-url',
         kind: 'git',
         displayName: 'Credential URL',
-        locator: { url: 'https://user:pass@example.com/acme/app.git' },
+        locator: { url: 'https://FAKE_user:FAKE_pass@example.com/acme/app.git' },
         access: 'read-only',
         sensitivity: 'internal',
         allowedSlotKinds: ['worktree'],

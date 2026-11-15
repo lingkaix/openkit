@@ -14,7 +14,7 @@ import { settingsKeys } from './data';
 
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
 const REFRESHED_AT = '2026-08-30T01:00:00.000Z';
-const API_KEY = 'sk-live-provider-key-never-store';
+const API_KEY = 'sk-FAKE_d537';
 const SERVER_JSONC = `{
   "schemaVersion": 1,
   "mode": "local",

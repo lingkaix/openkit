@@ -128,11 +128,7 @@ describe('NanoHost transport production admission', () => {
         };
       };
       for (const body of [null, [], 'invalid']) expect((await post(body)).status).toBe(400);
-      const unauthorized = await post(
-        {},
-        'unsupported',
-        'okt_not_a_real_nanohost_transport_token_aaaaaaaaaaaa'
-      );
+      const unauthorized = await post({}, 'unsupported', 'okt_FAKE_e430');
       expect(unauthorized.status).toBe(401);
       for (const revision of [
         null,
@@ -188,7 +184,7 @@ describe('NanoHost transport production admission', () => {
       const denied = await admitNanoHostTransportConnection(coreDb, authority, {
         transportRevision: String(transportRevision),
         physicalConnection: null as never,
-        secret: 'okt_not_a_real_nanohost_transport_token_aaaaaaaaaaaa',
+        secret: 'okt_FAKE_e430',
         targetId: 'runtime-target-primary',
         now: new Date('2026-08-08T00:00:00.000Z'),
       });

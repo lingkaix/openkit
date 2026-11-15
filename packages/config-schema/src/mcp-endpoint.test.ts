@@ -5,7 +5,7 @@ import { McpHttpDeclarationSchema } from './resource-catalog.js';
 
 describe('one credential-free MCP HTTP endpoint criterion', () => {
   it.each([
-    'https://ordinary-user:plain-password@example.invalid/mcp',
+    'https://FAKE_ordinary-user:FAKE_plain-password@example.invalid/mcp',
     'https://ordinary-user@example.invalid/mcp',
     'https://example.invalid/mcp#private',
     'file:///private/path',

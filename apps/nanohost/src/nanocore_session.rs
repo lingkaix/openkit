@@ -5681,7 +5681,7 @@ mod tests {
         let presentation = CredentialPresentationOutcome::Presented {
             slot: CredentialSlot::A,
             token_id: "token-a".to_string(),
-            secret: "okt_test_only".to_string(),
+            secret: "okt_FAKE_714a".to_string(),
         };
         (context, presentation)
     }
@@ -7367,7 +7367,7 @@ mod tests {
             slot: CredentialSlot::B,
             token_id: "tok_b".to_string(),
             issuance_generation: 2,
-            secret: "okt_selected_only_material_aaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            secret: "okt_FAKE_314a".to_string(),
         };
         let presented = present_selected_credential(&selected);
         assert_eq!(
@@ -7375,7 +7375,7 @@ mod tests {
             CredentialPresentationOutcome::Presented {
                 slot: CredentialSlot::B,
                 token_id: "tok_b".to_string(),
-                secret: "okt_selected_only_material_aaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                secret: "okt_FAKE_314a".to_string(),
             },
             "presentation must consume only the S-2b-2 selected usable slot"
         );
@@ -7391,13 +7391,13 @@ mod tests {
         let presented = CredentialPresentationOutcome::Presented {
             slot: CredentialSlot::A,
             token_id: "tok_a".to_string(),
-            secret: "okt_presented_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            secret: "okt_FAKE_bca1".to_string(),
         };
         let other = SelectedCredential::Usable {
             slot: CredentialSlot::B,
             token_id: "tok_b".to_string(),
             issuance_generation: 1,
-            secret: "okt_other_slot_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(),
+            secret: "okt_FAKE_666a".to_string(),
         };
 
         let outcome = after_authentication_rejection(&presented, Some(&other));

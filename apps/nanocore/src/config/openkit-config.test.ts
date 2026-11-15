@@ -203,7 +203,7 @@ describe('loadOpenKitConfig', () => {
         schemaVersion: RETAINED_FORMAT_VERSION,
         providers: [
           {
-            apiKey: 'sk-raw-secret',
+            apiKey: 'sk-FAKE_43d0',
             displayName: 'Raw OpenRouter',
             id: 'openrouter',
             kind: 'gateway',
@@ -217,7 +217,7 @@ describe('loadOpenKitConfig', () => {
     const loaded = loadOpenKitConfigWithDiagnostics(dataRoot);
     expect(loaded.config).toEqual({ schemaVersion: RETAINED_FORMAT_VERSION });
     expect(loaded.diagnostics[0]?.message).toContain('providers');
-    expect(JSON.stringify(loaded)).not.toContain('sk-raw-secret');
+    expect(JSON.stringify(loaded)).not.toContain('sk-FAKE_43d0');
   });
 
   it.each([

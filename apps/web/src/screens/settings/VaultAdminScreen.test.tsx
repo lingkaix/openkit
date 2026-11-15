@@ -8,7 +8,7 @@ import { SURFACE_ELEMENTS } from '../../app/routes';
 import { surfaceById, surfacesInGroup } from '../../app/surfaces';
 
 const KEY = 'dGVzdC1vbmx5LW1hc3Rlci1rZXktbXVzdC1ub3QtbGVhaw==';
-const POISON = 'okt_poison_secret_must_not_escape';
+const POISON = 'okt_FAKE_ce9b';
 const STATUS = {
   backendKind: 'encrypted-file' as const,
   state: 'locked' as const,

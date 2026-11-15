@@ -965,7 +965,7 @@ describe('agent environment package schema', () => {
     expect(() =>
       AgentEnvironmentCredentialDeclarationSchema.parse({
         id: 'inline_secret',
-        token: 'ghp_inline_secret',
+        token: 'ghp_FAKE_85b7',
         vaultGrantId: 'grant_00000000-0000-719c-b513-7cac61e31ec9',
         visibility: 'runtime-env',
         targetEnvVarName: 'INLINE_SECRET',

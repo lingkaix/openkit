@@ -163,7 +163,7 @@ it('shows actual current grant issue separately from approval and disables issue
 it('rejects secret-shaped request fields before operation or mutation-cache admission', async () => {
   const { operations, cache } = setup();
   await screen.findByRole('button', { name: 'Review exact effect apr_fixture' });
-  const canary = 'ghp_synthetic_private_request_canary';
+  const canary = 'ghp_FAKE_51e1';
   await userEvent.type(screen.getByLabelText('Requested reference ID'), REQUESTED_REFERENCE_ID);
   await userEvent.type(screen.getByLabelText('Requested Agent'), canary);
   const submit = screen.getByRole('button', { name: 'Request credential-use grant' });

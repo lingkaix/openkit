@@ -21,7 +21,7 @@ import { emitRuntimeFact } from './runtime-capture.js';
 import { runResidentTurn } from './turn.js';
 
 const CAUSE_CANARIES = [
-  'sk-reviewerSyntheticToken123',
+  'sk-FAKE_40e1',
   '/private/customer/project/payroll.txt',
   'CONFIDENTIAL_PROMPT_CANARY',
 ];

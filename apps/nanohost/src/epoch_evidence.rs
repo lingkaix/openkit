@@ -799,10 +799,12 @@ mod tests {
             0o700
         );
 
+        let aws_access_key = ["AKIA", "FAKEREVIEW123456"].concat();
         let dangerous_diagnostic = concat!(
-            "okt_forbidden_raw_token ",
+            "okt_FAKE_901c ",
             "nanohost_token_hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
-            "-----BEGIN PRIVATE KEY-----private-key-material ",
+            "-----BEGIN ",
+            "PRIVATE KEY-----private-key-material ",
             "prompt=worker prompt transcript=worker transcript ",
             "Workspace bytes Artifact bytes ",
             "/home/operator/unrestricted/private/path"
@@ -821,7 +823,7 @@ mod tests {
                         "operation",
                         "sk-FAKE_REVIEW_MARKER_1234567890 path=/run/openkit/private.sock",
                     ),
-                    ("created_at", "AKIAFAKEREVIEW123456"),
+                    ("created_at", aws_access_key.as_str()),
                     ("attempt", "xoxb-FAKE-REVIEW-MARKER-1234567890"),
                     ("members", "gateway=exited"),
                     ("backend", "docker=29.6.1"),
@@ -848,9 +850,9 @@ mod tests {
         );
         let report_contents = fs::read_to_string(&report.path).expect("redacted report");
         for prohibited in [
-            "okt_forbidden_raw_token",
+            "okt_FAKE_901c",
             "sk-FAKE_REVIEW_MARKER_1234567890",
-            "AKIAFAKEREVIEW123456",
+            aws_access_key.as_str(),
             "xoxb-FAKE-REVIEW-MARKER-1234567890",
             "nanohost_token_hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "path=/run/openkit/private.sock",

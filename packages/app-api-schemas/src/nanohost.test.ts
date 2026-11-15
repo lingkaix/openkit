@@ -70,7 +70,7 @@ describe('NanoHost transport token class schema', () => {
     expect(() =>
       NanoHostTransportTokenRecordSchema.parse({
         ...record,
-        lastUsedSource: 'okt_should_never_appear_in_redacted_record',
+        lastUsedSource: 'okt_FAKE_d741',
       })
     ).toThrow();
   });
@@ -267,7 +267,7 @@ describe('NanoHost safe-sink App API schemas', () => {
 
     expect(() =>
       IssueNanoHostTransportTokenResponseSchema.parse({
-        token: 'okt_must_not_appear_in_general_api_result_aaaaaaaaaaaaaaaa',
+        token: 'okt_FAKE_ce30',
         targetSlot: 'A',
         slotResult,
         record: redactedRecord,
@@ -276,7 +276,7 @@ describe('NanoHost safe-sink App API schemas', () => {
 
     expect(() =>
       RotateNanoHostTransportTokenResponseSchema.parse({
-        token: 'okt_must_not_appear_in_general_api_result_bbbbbbbbbbbbbbbb',
+        token: 'okt_FAKE_89a4',
         targetSlot: 'B',
         slotResult: { slot: 'B', status: 'written', issuanceGeneration: 2 },
         record: redactedRecord,

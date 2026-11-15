@@ -229,7 +229,7 @@ async function expectSourceUnavailable(f: Awaited<ReturnType<typeof fixture>>, c
   for (const text of [(error as Error).message, JSON.stringify(projection)]) {
     expect(text).not.toContain(f.dataRoot);
     expect(text).not.toContain(privateText);
-    expect(text).not.toContain('sk-test-secret-authority');
+    expect(text).not.toContain('sk-FAKE_c91a');
     expect(text).not.toContain(f.reference.objectId);
     expect(text).not.toContain('context capacity was exceeded');
   }
@@ -335,7 +335,7 @@ describe('Internal rolling context source failure classification', () => {
   it('redacts an early current-authority failure and keeps it distinct from capacity', async () => {
     const f = await fixture();
     f.request.assertCurrent = () => {
-      throw new Error(`${privateText} ${f.dataRoot} sk-test-secret-authority`);
+      throw new Error(`${privateText} ${f.dataRoot} sk-FAKE_c91a`);
     };
     await expectSourceUnavailable(f, 'assertCurrent');
   });

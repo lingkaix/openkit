@@ -474,7 +474,7 @@ describe('server config schema', () => {
           identityId: 'integration_nanohost_primary',
           rendezvousUrl: 'https://nanocore.example:8443',
           credentialRef: 'nanohost-transport:primary',
-          token: 'okt_raw_secret_must_not_be_config',
+          token: 'okt_FAKE_2da1',
         },
       })
     ).toThrow();

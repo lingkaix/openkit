@@ -100,7 +100,7 @@ const creation = {
 };
 
 describe('Server MCP administration owner and recovery', () => {
-  it.each(['https://ordinary-user:plain-password@example.invalid/mcp', 'not-a-url'])(
+  it.each(['https://FAKE_ordinary-user:FAKE_plain-password@example.invalid/mcp', 'not-a-url'])(
     'refuses invalid endpoints before catalog publication: %s',
     async (endpoint) => {
       const f = fixture();

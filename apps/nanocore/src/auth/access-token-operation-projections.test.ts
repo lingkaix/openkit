@@ -293,8 +293,7 @@ describe('B12 bootstrap credential admission', () => {
             'bootstrap.consume',
             {},
             {
-              headers:
-                credential === 'bearer' ? { authorization: 'Bearer okt_fixture_bearer' } : {},
+              headers: credential === 'bearer' ? { authorization: 'Bearer okt_FAKE_b2be' } : {},
               body: JSON.stringify(f.input),
             }
           )

@@ -9,7 +9,7 @@ import { ServerVaultSecretsPanel } from './ServerVaultSecretsPanel';
 
 const REFERENCE_ID = allocateEntityId('vault');
 const GRANT_ID = allocateEntityId('grant');
-const CANARY = 'ghp_synthetic_private_test_value';
+const CANARY = 'ghp_FAKE_f227';
 /** Observe secret input custody and the existing Server administration commands. */
 function setup() {
   const reference = {
@@ -161,7 +161,7 @@ it.each([`Create shared gateway grant ${REFERENCE_ID}`, `Narrow shared grant ${G
   async (name) => {
     const { operations, cache } = setup();
     await screen.findByText(GRANT_ID);
-    const canary = 'ghp_synthetic_private_grant_canary';
+    const canary = 'ghp_FAKE_2b92';
     await userEvent.type(screen.getByLabelText('Shared grant Agent'), canary);
     await userEvent.click(screen.getByRole('button', { name }));
     expect(await screen.findByRole('status')).toHaveTextContent(

@@ -60,7 +60,7 @@ describe('Settings diagnostics app API', () => {
   it('exposes provider registry summaries without raw provider config', async () => {
     const providerRegistry = new ProviderRegistry([
       {
-        baseUrl: 'https://user:password@example.com/v1',
+        baseUrl: 'https://FAKE_user:FAKE_password@example.com/v1',
         defaultModel: 'llama3.2',
         displayName: 'Ollama',
         id: 'ollama',
@@ -121,17 +121,17 @@ describe('Settings diagnostics app API', () => {
       },
     ]);
     expect(JSON.stringify(body)).not.toContain('OLLAMA_API_KEY');
-    expect(JSON.stringify(body)).not.toContain('user:password');
+    expect(JSON.stringify(body)).not.toContain('FAKE_user:FAKE_password');
   });
 
   it('keeps provider diagnostics redacted for URL credentials and secret refs', async () => {
     const previousKey = process.env.OPENROUTER_API_KEY;
-    process.env.OPENROUTER_API_KEY = 'sk-openrouter-secret';
+    process.env.OPENROUTER_API_KEY = 'sk-FAKE_4904';
 
     try {
       const providerRegistry = new ProviderRegistry([
         {
-          baseUrl: 'https://user:password@openrouter.ai/api/v1',
+          baseUrl: ['https://FAKE_user:FAKE_password', 'openrouter.ai/api/v1'].join('@'),
           displayName: 'OpenRouter',
           id: 'openrouter',
           kind: 'llm-gateway',
@@ -175,8 +175,8 @@ describe('Settings diagnostics app API', () => {
       ]);
       expect(body).not.toHaveProperty('oauth');
       expect(JSON.stringify(body)).not.toContain('OPENROUTER_API_KEY');
-      expect(JSON.stringify(body)).not.toContain('sk-openrouter-secret');
-      expect(JSON.stringify(body)).not.toContain('user:password');
+      expect(JSON.stringify(body)).not.toContain('sk-FAKE_4904');
+      expect(JSON.stringify(body)).not.toContain('FAKE_user:FAKE_password');
     } finally {
       if (previousKey === undefined) {
         delete process.env.OPENROUTER_API_KEY;
@@ -298,7 +298,7 @@ describe('Settings diagnostics app API', () => {
   it('exposes redacted setup diagnostics for server config, providers, and agent setup', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-diagnostics-'));
     initializeTestCore(dataRoot);
-    const rawSecrets = ['sk-openkit-secret', 'ghp_openkit_secret'];
+    const rawSecrets = ['sk-FAKE_b4df', 'ghp_FAKE_0dd8'];
     const providerRegistry = new ProviderRegistry([
       {
         baseUrl: `https://user:${rawSecrets[0]}@openrouter.ai/api/v1`,

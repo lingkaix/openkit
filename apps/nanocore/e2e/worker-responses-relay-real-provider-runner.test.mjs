@@ -819,9 +819,9 @@ describe('worker Responses relay real-provider L3 test policy', () => {
     for (const nanoCoreUrl of [
       'http://192.0.2.10:3000',
       'http://nanocore.example.test',
-      'http://user:token@127.0.0.1:3000',
+      'http://FAKE_user:FAKE_token@127.0.0.1:3000',
       'http://user@192.0.2.10:3000',
-      'https://user:token@nanocore.example.test',
+      'https://FAKE_user:FAKE_token@nanocore.example.test',
       'http://127.0.0.1:3000/inference',
       'http://127.0.0.1:3000?token=secret',
       'http://127.0.0.1:3000#fragment',

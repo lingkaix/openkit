@@ -1726,7 +1726,7 @@ mod tests {
                 issuance_generation: 1,
                 identity_id: selection_context.identity_id.clone(),
                 deployment_id: selection_context.deployment_id.clone(),
-                secret: "okt_admitfix".into(),
+                secret: "okt_FAKE_4930".into(),
             },
         )
         .unwrap();
@@ -1928,7 +1928,7 @@ mod tests {
                 issuance_generation: 1,
                 identity_id: selection_context.identity_id.clone(),
                 deployment_id: selection_context.deployment_id.clone(),
-                secret: "okt_synthetic_outage_fixture".into(),
+                secret: "okt_FAKE_be33".into(),
             },
         )
         .unwrap();
@@ -2573,7 +2573,7 @@ mod tests {
         let mut raw_token = valid_environment.clone();
         raw_token.insert(
             "OPENKIT_NANOHOST_TOKEN".to_string(),
-            "okt_forbidden_environment_material".to_string(),
+            "okt_FAKE_597c".to_string(),
         );
         assert!(parse_nanohost_session_inputs(&raw_token).is_err());
         let mut retired_required_images = valid_environment.clone();

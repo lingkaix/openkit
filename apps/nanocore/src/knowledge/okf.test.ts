@@ -256,11 +256,11 @@ describe('parseOkfDocument', () => {
   it('does not echo malformed YAML source content in diagnostics', () => {
     const parsed = parseOkfDocument({
       path: 'knowledge/pages/malformed-secret.md',
-      content: ['---', 'type: [sk-sensitive-canary', '---', 'Body'].join('\n'),
+      content: ['---', 'type: [sk-FAKE_c3e7', '---', 'Body'].join('\n'),
     });
 
     expect(parsed.ok).toBe(false);
-    expect(JSON.stringify(parsed.errors)).not.toContain('sk-sensitive-canary');
+    expect(JSON.stringify(parsed.errors)).not.toContain('sk-FAKE_c3e7');
     expect(parsed.errors).toContainEqual({
       code: 'okf.invalid_yaml',
       message: 'OKF YAML is invalid.',

@@ -7,7 +7,7 @@ import {
 const environment = {
   imageDigest: `sha256:${'a'.repeat(64)}`,
   defaultsDigest: `sha256:${'b'.repeat(64)}`,
-  values: { token: 'ghp_public-literal', PATH: '/Users/public/tools' },
+  values: { token: 'ghp_FAKE_bd61', PATH: '/Users/public/tools' },
 };
 const record = {
   snapshotId: 'snapshot',
@@ -46,13 +46,13 @@ describe('public native settings in AEP snapshots', () => {
 it('preserves matching ordinary strings everywhere in AEP record and list envelopes', () => {
   const ordinary = {
     ...record,
-    agentId: 'ghp_public-fixture-agent',
+    agentId: 'ghp_FAKE_4e6b',
     snapshot: {
       runtime: { environment },
       extensions: {
-        fixture: { note: 'ghp_public-test-fixture', nested: ['sk-public-test-fixture'] },
+        fixture: { note: 'ghp_FAKE_ca86', nested: ['sk-FAKE_dcb0'] },
       },
-      note: 'okt_public-test-fixture',
+      note: 'okt_FAKE_c603',
     },
   };
   expect(AgentEnvironmentPackageSnapshotRecordSchema.parse(ordinary)).toEqual(ordinary);

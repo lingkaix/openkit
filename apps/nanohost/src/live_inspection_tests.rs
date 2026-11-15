@@ -118,7 +118,7 @@ fn native_session(
         let presentation = CredentialPresentationOutcome::Presented {
             slot: CredentialSlot::A,
             token_id: "fixture-token".into(),
-            secret: "okt_test_only".into(),
+            secret: "okt_FAKE_714a".into(),
         };
         run_outer_session(
             client_io,

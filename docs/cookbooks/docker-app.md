@@ -113,7 +113,7 @@ OPENKIT_APP_IMAGE=openkit/app:dev \
 OPENKIT_APP_UI_E2E_PORT=18081 \
 OPENKIT_APP_UI_E2E_DATA_ROOT=/tmp/openkit-app-data \
 OPENKIT_APP_E2E_PROVIDER_ID=provider_app_redaction \
-OPENKIT_APP_E2E_SECRET=sk-openkit-app-e2e-secret \
+OPENKIT_APP_E2E_SECRET=sk-FAKE_5dc3 \
 scripts/docker/e2e-app.sh
 ```
 

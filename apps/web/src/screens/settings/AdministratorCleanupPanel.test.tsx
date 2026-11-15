@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { CoreClientProvider } from '../../app/core-client';
 import { AdministratorCleanupPanel } from './AdministratorCleanupPanel';
 
-const POISON = '/private/host/okt_cleanup_secret';
+const POISON = '/private/host/okt_FAKE_fedb';
 const OBSERVED = '2026-10-16T00:00:00.000Z';
 const UPDATED = '2026-10-15T12:00:00.000Z';
 const BRANCHES = [

@@ -196,7 +196,7 @@ impl LocalInventory {
     /// Uses the caller's private TMPDIR and no installed paths.
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "openkit-inventory-okt_inventory_fixture-{}-{}",
+            "openkit-inventory-okt_FAKE_dfd4-{}-{}",
             std::process::id(),
             NEXT_ROOT.fetch_add(1, Ordering::Relaxed)
         ));
@@ -362,7 +362,7 @@ fn assert_private(report: &Value, root: &Path) {
         "/bin/sleep",
         "/bin/sh",
         "read result",
-        "okt_inventory_fixture",
+        "okt_FAKE_dfd4",
     ] {
         assert!(
             !encoded.contains(forbidden),

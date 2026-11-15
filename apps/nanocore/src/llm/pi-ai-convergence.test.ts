@@ -69,7 +69,7 @@ it.each([
   const credential =
     stock.id === 'openai-codex'
       ? `synthetic.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: 'fixture' } })).toString('base64url')}.synthetic`
-      : 'sk-synthetic';
+      : 'sk-FAKE_419a';
   const provider = {
     id: 'stock-profile',
     adapterId: stock.id,

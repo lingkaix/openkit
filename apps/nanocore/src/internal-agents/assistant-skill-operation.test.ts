@@ -168,7 +168,7 @@ describe('definition-derived Skill model projection', () => {
     },
     {
       label: 'output the loop sanitizer would change',
-      value: { ...logicalOutput, path: 'references/SK-guidance.md' },
+      value: { ...logicalOutput, path: 'references/SK-FAKE_91e5.md' },
     },
   ])('refuses $label without forwarding private output', async ({ value, expectedCode }) => {
     const invoke = vi.fn().mockResolvedValue(value);

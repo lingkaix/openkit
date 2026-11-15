@@ -18,7 +18,7 @@ test('public redaction preserves standalone slash punctuation while replacing to
         windowsPath: 'C:\\Users\\demo\\private',
         windowsRoot: 'C:\\',
         uncPath: '\\\\server\\share',
-        token: 'okt_live_token',
+        token: 'okt_FAKE_8925',
         note: 'used extra-secret beside /tmp/workspace',
       },
       ['extra-secret']
@@ -52,7 +52,7 @@ test('public redaction retains authorized config quoting, executable and API pat
       {
         document,
         patch,
-        token: 'okt_live_token',
+        token: 'okt_FAKE_8925',
         note: 'used extra-secret beside /usr/bin/openkit',
       },
       ['extra-secret']
@@ -76,7 +76,7 @@ test('public redaction preserves nested zero and signed cents, false enabled, an
         onDemandUsedCents: -1,
       },
       enabled: false,
-      token: 'okt_live_token',
+      token: 'okt_FAKE_8925',
     },
   };
   assert.deepEqual(redactPublicValue(envelope), {

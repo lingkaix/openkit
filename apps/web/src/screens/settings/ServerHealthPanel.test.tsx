@@ -134,7 +134,7 @@ describe('Server health', () => {
 
   it('whitelists and redacts diagnostics before caching or rendering', async () => {
     const payload = diagnostics();
-    payload.boot.subsystems.policy.reasons[0]!.message = 'Failed okt_health_poison';
+    payload.boot.subsystems.policy.reasons[0]!.message = 'Failed okt_FAKE_9462';
     const { container, queryClient } = renderPanel(
       vi.fn().mockResolvedValue({ ...payload, extra: 'unowned-private-payload' })
     );
@@ -150,7 +150,7 @@ describe('Server health', () => {
       'private-provider-payload',
       'private-config-payload',
       'unowned-private-payload',
-      'okt_health_poison',
+      'okt_FAKE_9462',
     ]) {
       expect(bytes).not.toContain(forbidden);
       expect(container.textContent).not.toContain(forbidden);

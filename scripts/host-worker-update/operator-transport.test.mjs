@@ -119,7 +119,7 @@ test('operator inspection refuses missing or foreign bindings before SSH', () =>
     { record: { ...binding, origin: 'https://other.example' } },
     { target: 'http://stage.example' },
     { target: 'https://stage.example/path' },
-    { target: 'https://user:pass@stage.example' },
+    { target: 'https://FAKE_user:FAKE_pass@stage.example' },
     { record: { ...binding, reference: '' } },
   ]) {
     const { result, invocation } = attempt(args);

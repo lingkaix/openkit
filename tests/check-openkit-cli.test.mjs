@@ -181,7 +181,7 @@ test('CLI waits beyond 300 seconds only for long KM work and never retries eithe
             XDG_CONFIG_HOME: root,
             PATH: root,
             OPENKIT_NANOCORE_URL: endpoint,
-            OPENKIT_NANOCORE_TOKEN: 'okt_synthetic_budget_fixture',
+            OPENKIT_NANOCORE_TOKEN: 'okt_FAKE_08ee',
           },
           stdio: ['pipe', 'pipe', 'pipe'],
           timeout: 690_000,

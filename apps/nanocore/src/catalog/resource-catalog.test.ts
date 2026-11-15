@@ -909,7 +909,7 @@ describe('workspace resource catalog', () => {
       for (const coreChange of [
         { schemaVersion: 2 },
         { revision: -1 },
-        { futureAnnotation: 'Bearer sk-catalog-canary-not-a-real-secret' },
+        { futureAnnotation: 'Bearer sk-FAKE_c58d' },
       ]) {
         writeFileSync(path, JSON.stringify({ ...(extended as object), ...coreChange }));
         expect(() =>
@@ -2080,7 +2080,7 @@ describe('workspace resource catalog', () => {
           dataRoot,
           declaration: {
             endpoint: 'https://example.invalid/mcp',
-            headers: { Authorization: 'Bearer sk-audit-canary-not-a-real-secret' },
+            headers: { Authorization: 'Bearer sk-FAKE_1ce3' },
             kind: 'http',
           },
           displayName: 'Remote',

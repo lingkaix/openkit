@@ -28,7 +28,7 @@ import { useWorkspaceStore } from '../workspace-store';
 import { isAuthoritativeIntroduceItem } from './data';
 
 const TIMESTAMP = '2026-08-29T02:00:00.000Z';
-const POISON_SECRET = 'sk-secret-should-never-render';
+const POISON_SECRET = 'sk-FAKE_f236';
 const PREVIEW_BODY = 'Weekly competitor summary for the research workspace.';
 const PREVIEW_DIGEST = 'sha256:47b8ddf66206442a533377531bd1a877f9bf910a0d62b205e9bfd86b4b7e1707';
 const IMPORT_TITLE = 'Imported weekly summary';

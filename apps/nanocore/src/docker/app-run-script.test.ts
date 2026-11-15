@@ -249,7 +249,7 @@ describe('app run script', () => {
           displayName: 'OpenRouter',
           kind: 'custom',
           models: ['m'],
-          apiKey: 'sk-old-inline-secret',
+          apiKey: 'sk-FAKE_c0c3',
         },
         null,
         2

@@ -60,7 +60,7 @@ describe('encrypted-file vault backend', () => {
     expect(headerText).not.toContain(masterKey.toString('hex'));
 
     firstBackend.store({
-      material: 'ghp_live_secret',
+      material: 'ghp_FAKE_a572',
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
@@ -83,7 +83,7 @@ describe('encrypted-file vault backend', () => {
       Buffer.from(
         reopenedBackend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
       ).toString('utf8')
-    ).toBe('ghp_live_secret');
+    ).toBe('ghp_FAKE_a572');
     expect(readFileSync(headerPath, 'utf8')).toBe(headerText);
     expect(readFileSync(entryPath, 'utf8')).toBe(entryText);
 
@@ -122,7 +122,7 @@ describe('encrypted-file vault backend', () => {
         expect.soft(String(failure)).not.toContain(storeDir);
         expect.soft(String(failure)).not.toContain(masterKey.toString('base64'));
         expect.soft(String(failure)).not.toContain(masterKey.toString('hex'));
-        expect.soft(String(failure)).not.toContain('ghp_live_secret');
+        expect.soft(String(failure)).not.toContain('ghp_FAKE_a572');
         expect(readFileSync(path, 'utf8')).toBe(corruptedText);
         writeFileSync(path, originalText, { mode: 0o600 });
       }
@@ -141,7 +141,7 @@ describe('encrypted-file vault backend', () => {
     const backend = createEncryptedFileVaultBackend({ masterKey, storeDir });
 
     backend.store({
-      material: 'ghp_live_secret',
+      material: 'ghp_FAKE_a572',
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
@@ -165,12 +165,12 @@ describe('encrypted-file vault backend', () => {
     expect(String(failure)).not.toContain(wrongKeyBase64);
     expect(String(failure)).not.toContain(wrongKeyHex);
     expect(wrongKey).toEqual(Buffer.alloc(32));
-    expect(String(failure)).not.toContain('ghp_live_secret');
+    expect(String(failure)).not.toContain('ghp_FAKE_a572');
     expect(
       Buffer.from(
         backend.resolve({ referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70' })
       ).toString('utf8')
-    ).toBe('ghp_live_secret');
+    ).toBe('ghp_FAKE_a572');
   });
 
   it.each(['tampered-tag', 'tampered-created-at', 'unsupported-kdf', 'malformed-json'] as const)(
@@ -284,7 +284,7 @@ describe('encrypted-file vault backend', () => {
     });
 
     const inventory = backend.store({
-      material: Buffer.from('ghp_live_secret'),
+      material: Buffer.from('ghp_FAKE_a572'),
       metadata: {
         ownerScope: 'workspace',
         workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
@@ -309,8 +309,8 @@ describe('encrypted-file vault backend', () => {
       versionCount: 1,
       workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201',
     });
-    expect(Buffer.from(resolved).toString('utf8')).toBe('ghp_live_secret');
-    expect(readFileSync(entryPath, 'utf8')).not.toContain('ghp_live_secret');
+    expect(Buffer.from(resolved).toString('utf8')).toBe('ghp_FAKE_a572');
+    expect(readFileSync(entryPath, 'utf8')).not.toContain('ghp_FAKE_a572');
     expect(backend.listReferences()).toEqual([inventory]);
     expect(backend.listReferences({ ownerScope: 'server' })).toEqual([]);
     expect(backend.health()).toEqual({
@@ -427,7 +427,7 @@ describe('encrypted-file vault backend', () => {
     expect(existsSync(join(storeDir, 'entries'))).toBe(false);
 
     backend.store({
-      material: 'ghp_live_secret',
+      material: 'ghp_FAKE_a572',
       metadata: { ownerScope: 'server' },
       referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
     });
@@ -451,7 +451,7 @@ describe('encrypted-file vault backend', () => {
 
     expect(() =>
       backend.store({
-        material: 'ghp_live_secret',
+        material: 'ghp_FAKE_a572',
         metadata: { ownerScope: 'server', workspaceId: 'ws_00000000-0000-73c3-900f-8d310e4ba201' },
         referenceId: 'vault_00000000-0000-7f73-bffa-d96a61ee4d70',
       })

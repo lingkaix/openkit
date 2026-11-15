@@ -14,7 +14,7 @@ import { overlayConnectedAppQuota, projectConnectedApps } from './data';
 import { projectSafeValue, redactSecretShapedText, stripSecretFields } from './secret-safe';
 
 const TIMESTAMP = '2026-07-21T12:00:00.000Z';
-const POISON_SECRET = 'sk-secret-should-never-render';
+const POISON_SECRET = 'sk-FAKE_f236';
 
 const WORKSPACE = {
   id: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
@@ -938,7 +938,7 @@ describe('secret-safe projection helpers', () => {
     const safe = stripSecretFields({
       displayName: 'ChatGPT',
       apiKey: POISON_SECRET,
-      nested: { token: 'okt_should_go', status: 'logged_in' },
+      nested: { token: 'okt_FAKE_865e', status: 'logged_in' },
     }) as Record<string, unknown>;
     expect(safe.displayName).toBe('ChatGPT');
     expect(safe.apiKey).toBeUndefined();

@@ -197,7 +197,7 @@ describe('app update schemas', () => {
     expect(
       AppUpdateStatusResponseSchema.safeParse({
         ...status,
-        error: 'ssh failed with okt_should_not_leak',
+        error: 'ssh failed with okt_FAKE_1924',
       }).success
     ).toBe(false);
   });

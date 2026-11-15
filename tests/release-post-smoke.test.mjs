@@ -47,7 +47,7 @@ test('post-publication smoke refuses remote URLs and unbound or stopped containe
   for (const url of [
     'http://host.invalid',
     'http://localhost/path',
-    'http://user:secret@localhost',
+    'http://FAKE_user:FAKE_secret@localhost',
     'file:///tmp',
   ])
     assert.throws(() => localTarget(url));
