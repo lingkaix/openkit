@@ -71,4 +71,4 @@ Volumes are keyed per checkout, so two working copies never share an installed d
 
 ## What Runs On The Host Instead
 
-`scripts/test-env.sh host` guards the checks that drive Docker or a real worker runtime themselves: `test:e2e:real-codex`, `test:e2e:real-provider`, `test:e2e:real-subscription`, `test:e2e:real-task-mode`, `test:nanohost-installer-live`, `test:nanohost-maintenance-live`, `test:app-image-admin-recovery`, `app:run`, and `init`. They refuse to start inside the image. The image receives no Docker socket, and handing it one would make the containment it provides decorative.
+`scripts/test-env.sh host` guards these checks: `test:e2e:real-codex`, `test:e2e:real-provider`, `test:e2e:real-subscription`, `test:e2e:real-task-mode`, `test:nanohost-installer-live`, `test:nanohost-maintenance-live`, `test:app-image-admin-recovery`, `app:run`, and `init`. Most of them drive Docker or a real worker runtime themselves; the installer and maintenance gates need host namespaces or a private systemd manager. They refuse to start inside the image. The image receives no Docker socket, and handing it one would make the containment it provides decorative.

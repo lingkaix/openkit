@@ -1,6 +1,6 @@
 # Native Drizzle SQL
 
-This directory owns NanoCore's native Drizzle Kit journals. Each of `core`, `user`, `workspace`, and `app` has its own SQL files and `meta/_journal.json`. Startup applies those journals through `drizzle-orm/better-sqlite3` `migrate`. The TypeScript table exports under `src/storage/schema` mix scopes and must not generate every table into every database.
+This directory owns NanoCore's native Drizzle Kit journals. Each of `core`, `user`, `workspace`, and `app` has its own SQL files and `meta/_journal.json`. Startup reads those journals with `drizzle-orm/migrator` `readMigrationFiles` and applies them through the SQLite dialect migrator on a `drizzle-orm/better-sqlite3` session. The TypeScript table exports under `src/storage/schema` mix scopes and must not generate every table into every database.
 
 Before `v0.1.0`, Core and Workspace each keep one `0000_baseline.sql`, and pre-release schema changes edit it directly without a new journal entry ([Pre-Release SQL Baselines](../../../docs/decisions/20261114-pre_release_sql_baselines.md)); User and App keep their journals.
 

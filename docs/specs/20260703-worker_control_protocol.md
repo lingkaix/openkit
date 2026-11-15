@@ -69,7 +69,7 @@ The missing design is the concrete protocol boundary and message family.
 
 ## Current Implementation Projection
 
-The accepted seventh operation `turn.steer` is implemented in the Harness (`packages/worker-shim/src/harness.ts`), the Codex adapter and the NanoCore Task live steer path (`apps/nanocore/src/runtime/task-steer-receipt.ts`); the existing six-operation evidence below does not qualify it. Adapter qualification and public receipt retention must be proved before enabling it.
+The accepted seventh operation `turn.steer` is implemented in the Harness (`packages/worker-shim/src/harness.ts`), the Codex and Pi adapters and the NanoCore Task live steer path (`apps/nanocore/src/runtime/task-steer-receipt.ts`); the existing six-operation evidence below does not qualify it. Adapter qualification and public receipt retention must be proved before enabling it.
 
 NanoCore implements Artifact and Review exact-value rejection and transcript Item replacement through one shared byte matcher, requiring complete original-materialization evidence and exact-version restart reconstruction before canonical admission.
 

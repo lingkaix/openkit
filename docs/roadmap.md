@@ -131,7 +131,7 @@ OpenKit remains in internal developer preview with a small number of known users
 - [ ] R005 — Worker execution preserves a truthful outcome across restart, reconnect, interruption, timeout, and cleanup failure.
 - [ ] R006 — Repository work uses local Sandbox read, edit, test, and commit, plus Gateway branch, file, and pull-request writes.
 - [ ] R007 — Private repositories use gateway-only hosting credentials, and private source-read admission is separately owned: a user-injected read-only runtime-env token, with no platform source credential in the first release. Workers still must not see platform-managed write credentials or product-record secrets.
-- [x] R008 — A Workspace can be backed up, restored, exported, rebound, and moved across deployments or machines with integrity and authority preserved. Ordinary portable import was removed by the [online Workspace snapshots and recovery decision](decisions/20261027-online_workspace_snapshots_and_recovery.md).
+- [x] R008 — A Workspace can be backed up, exported, imported, rebound, and moved across deployments or machines with integrity and authority preserved. Ordinary portable import was later removed by the [online Workspace snapshots and recovery decision](decisions/20261027-online_workspace_snapshots_and_recovery.md).
 - [x] R009 — A locked-out server administrator can recover access through a bounded, audited, data-safe procedure.
 - [x] R010 — An authorized owner can delete or recover a damaged Workspace without silent data loss, authority drift, or unverifiable repair.
 - [ ] R109 — An Agent can install and configure a complete OpenKit deployment on a fresh host from repository guidance, and can state which host requirements the target does not meet.
