@@ -333,7 +333,7 @@ Round 2 read the root `AGENTS.md` at the round-2 base without editing it. It has
 ## Round 2 Deviations
 
 - More than one group was open for writing at a time. The runtime-model, fault-tolerance, evidence and work-model corrections were made in the working tree before the storage commit, and the periphery corrections before the security commit. Each commit staged only its own group's files, and each Reviewer read only its group's diff.
-- All groups used the fixed round-2 base SHA without a rebase per group. During the round, `main` advanced nine commits. Three of them change documentation: a new Vault writer paragraph and a deletion fence sentence in `apps/nanocore/src/storage/README.md`, a test secret literal in `docs/cookbooks/docker-app.md`, and one new row in the retained format register. They post-date the base and are not audited here; no audited claim depends on them, and the branch merges with `main` without a conflict.
+- All groups used the fixed round-2 base SHA without a rebase per group. During the round, `main` advanced ten commits. Four of them change documentation: a new Vault writer paragraph and a deletion fence sentence in `apps/nanocore/src/storage/README.md`, a test secret literal in `docs/cookbooks/docker-app.md`, one new row in the retained format register, and the `check-security.mjs` paragraph in `scripts/README.md`. They post-date the base and are not audited here; no audited claim depends on them, and the branch merges with `main` without a conflict.
 - The periphery corrections were committed once before their independent review (`4c8c9ab22`), because the session requires committed and pushed work at each stop. The next periphery commit carries the review results.
 
 ## Issues Opened
