@@ -17,7 +17,10 @@ import {
 import type { TurnExecutor } from '../src/runtime/types.js';
 import { prepareWorkerTurnJournalIntents } from '../src/runtime/worker-governance-turn-executor.js';
 import { requireSchedulerAdmissionEntry } from '../src/scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../src/storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../src/storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../src/storage/db.js';
 import { corruptExternalTriggerSourceTurn } from '../src/storage/external-trigger-fault.test-support.js';
 import { applyMigrations } from '../src/storage/migrate.js';
@@ -33,7 +36,6 @@ import { operationRequest } from '../src/test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../src/test-support/prepared-agent-environment.js';
 import { createTestStore } from '../src/test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../src/workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../src/workspace-mutation-admission.js';
 
 /** Produces real source-poll lineage; only post-admission execution is outside the S1 subject. */
 export async function externalTriggerFixture() {
@@ -48,7 +50,11 @@ export async function externalTriggerFixture() {
   const workspace = await store.createWorkspace('External event identity');
   let thread = await store.createThread(workspace.id, 'Scheduled source poll');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  let schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+  let schedules = new AutomationStore(
+    coreDb,
+    getControlStoreWorkerClient().workspaceMutations(root),
+    () => instant
+  );
   const agentSetup = createTestAgentSetup();
   const manifest = agentSetup.manifest;
   const created = await schedules.createAutomation(userId, {
@@ -251,7 +257,11 @@ export async function externalTriggerFixture() {
       coreDb.sqlite.close();
       coreDb = openCoreDb(root);
       store = new FsStore({ dataRoot: root });
-      schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+      schedules = new AutomationStore(
+        coreDb,
+        getControlStoreWorkerClient().workspaceMutations(root),
+        () => instant
+      );
     },
   };
 }

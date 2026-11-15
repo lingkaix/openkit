@@ -539,7 +539,7 @@ describe('N3 original owed-alarm Thread destination producer and trusted native 
           store: f.store,
           inflightCommands: new Map(),
           workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-            f.coreDb.dataRoot
+            f.db.dataRoot
           ),
         });
         const disabled = await operations['user.disable'](

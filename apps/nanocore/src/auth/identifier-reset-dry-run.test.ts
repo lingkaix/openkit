@@ -31,7 +31,7 @@ afterEach(async () => {
 /** Opens an isolated candidate with the real identity, membership and operation owners. */
 function deployment(
   root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-')),
-  admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot)
+  admission = getControlStoreWorkerClient().workspaceMutations(root)
 ) {
   if (!roots.includes(root)) roots.push(root);
   const coreDb = openCoreDb(root);
@@ -162,7 +162,7 @@ it('re-registers the protected synthetic account set on a clean candidate and re
   const oldArtifactBytes = sourceWork.map((work) =>
     JSON.stringify(source.store.getArtifact(work.workspaceId, work.artifactId))
   );
-  const candidate = deployment(undefined, source.admission);
+  const candidate = deployment();
   expect(candidate.root).not.toBe(source.root);
   // This variable models selected ingress only; it changes no host or service.
   let selectedIngress = source;

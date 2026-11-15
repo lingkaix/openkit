@@ -24,15 +24,13 @@ afterEach(async () => {
 });
 
 /** Creates a real server-mode archive owner with an ordinary canonical-user session. */
-async function archiveFixture(
-  fileAdmission?: FileStorageAdmission,
-  workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot)
-) {
+async function archiveFixture(fileAdmission?: FileStorageAdmission) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-archive-admission-'));
   const coreDb = openCoreDb(dataRoot);
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Archive admission');
   recordWorkspaceOwnerMembership({
