@@ -8761,8 +8761,11 @@ async function createMcpCommitFixture(
     } finally {
       service.stop();
     }
-    const occurrence = schedules.listHistory(created.id).items[0]?.record;
-    if (!occurrence?.turnId || !occurrence.queueEntryId)
+    const historyItem = schedules.listHistory(created.id).items[0];
+    if (historyItem?.kind !== 'occurrence')
+      throw new Error('Recurring witness requires native accepted publication.');
+    const occurrence = historyItem.record;
+    if (!occurrence.turnId || !occurrence.queueEntryId)
       throw new Error('Recurring witness requires native accepted publication.');
     turn = store.getTurn(workspaceId, threadId, occurrence.turnId);
     actor = turn.triggerActor;
