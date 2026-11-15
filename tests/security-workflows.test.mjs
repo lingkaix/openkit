@@ -98,7 +98,7 @@ test('PR job-local check and main source checks declare explicit comparison boun
   );
 });
 
-test('tag preflight performs all-lock and release-diff checks without writer authority', () => {
+test('tag preflight performs all-lock and exact-tree checks without writer authority', () => {
   const preflight = ci.jobs['release-preflight'];
   assert.ok(sourceCheck(preflight), 'Tag preflight must invoke source security');
   tagOnly(preflight);
@@ -108,8 +108,8 @@ test('tag preflight performs all-lock and release-diff checks without writer aut
     /--(?:release|all)(?:[\s-]|$)/u,
     'Tag source check must cover all lock files'
   );
-  assert.match(commands(preflight), /--base(?:[=\s])/u, 'Release diff must declare a base');
-  assert.match(commands(preflight), /--head(?:[=\s])/u, 'Release diff must declare a head');
+  assert.doesNotMatch(commands(preflight), /--base(?:[=\s])/u, 'Release scope is the head tree');
+  assert.match(commands(preflight), /--head(?:[=\s])/u, 'Release tree must declare a head');
 });
 
 test('candidate finding admission precedes both image publishers and binds admitted inputs', () => {

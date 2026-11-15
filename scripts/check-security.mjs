@@ -121,6 +121,14 @@ function reportFinding(finding) {
   console.log(`Dependency finding ${finding.class}: ${safe(finding.id)} ${safe(name)}`);
 }
 
+/**
+ * Release scope is every tracked file of the exact head tree. Earlier history is already public,
+ * a real leak needs rotation either way, and every landing scans its own added content.
+ */
+export function releaseSecretMatches({ repoRoot, head }) {
+  return scanSecrets({ repoRoot, snapshot: true, head });
+}
+
 /** Check the selected candidate without changing Git, installing dependencies or running package code. */
 export async function checkSecurity({
   repoRoot = process.cwd(),
@@ -132,18 +140,11 @@ export async function checkSecurity({
   now = Date.now(),
 } = {}) {
   if (staged && release) throw Error('A staged index is not a release commit');
-  if (release && !base)
-    throw Error(
-      'Release security check requires its previous tag or explicit EMPTY first-release base'
-    );
-  // EMPTY is the explicit first-release diff: scan its whole current tree, not removed history.
-  const matches = scanSecrets({
-    repoRoot,
-    staged,
-    snapshot: release && base === 'EMPTY',
-    base,
-    head,
-  });
+  if (release && base !== undefined)
+    throw Error('Release security check scans the exact head tree and takes no base');
+  const matches = release
+    ? releaseSecretMatches({ repoRoot, head })
+    : scanSecrets({ repoRoot, staged, base, head });
   for (const match of matches) console.error(secretDiagnostic(match));
   if (matches.length)
     throw Error('Known credential forms found; revoke or rotate leaked credentials first');

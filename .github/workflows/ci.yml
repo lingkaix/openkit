@@ -267,14 +267,11 @@ jobs:
       - name: Check release notes input
         run: node scripts/release-notes.mjs --check --repo-root . --tag "${GITHUB_REF_NAME}"
 
-      - name: Admit all lock files and the release diff
+      - name: Admit all lock files and the release tree
         env:
           OPENKIT_SECURITY_FINDINGS: ${{ secrets.OPENKIT_SECURITY_FINDINGS }}
         run: |
-          tags="$(git tag --merged "${GITHUB_SHA}^" --list 'v[0-9]*' --sort=-version:refname)"
-          base="${tags%%$'\n'*}"
-          if [ -z "${base}" ]; then base=EMPTY; fi
-          node scripts/check-security.mjs --release --base "${base}" --head "${GITHUB_SHA}" --public-record "${RUNNER_TEMP}/source.md"
+          node scripts/check-security.mjs --release --head "${GITHUB_SHA}" --public-record "${RUNNER_TEMP}/source.md"
       - name: Retain public source finding identifiers
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:

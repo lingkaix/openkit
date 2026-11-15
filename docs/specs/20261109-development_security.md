@@ -207,7 +207,7 @@ These rules apply to people and agents alike:
 
 | Check | Local gate | Pull request | `main` push | Scheduled | Release gate |
 | --- | --- | --- | --- | --- | --- |
-| Secret pattern | Pre-commit (staged) | Range | Range | — | Release diff |
+| Secret pattern | Pre-commit (staged) | Range | Range | — | Exact head tree |
 | Exposure owner/switch coverage | `check:repo` | All mounted projections | All mounted projections | — | Repository gate |
 | Lock-file scan | Lock file changed | Lock file changed | Lock file changed | Dependency alerts | All lock files |
 | Workflow lint | Workflow changed | Workflow changed | Workflow changed | — | Yes |
@@ -216,7 +216,7 @@ These rules apply to people and agents alike:
 | SBOM and attestation | — | — | — | — | Generate and verify |
 | Register due dates | — | — | — | Weekly maintainer review | Open K and C ids in the release record |
 
-The local gate carries the cheap checks, because trunk-mode pushes may skip CI. All tools run from the development image, so local and CI results match.
+The local gate carries the cheap checks, because trunk-mode pushes may skip CI. The release secret check scans every tracked file of the exact tagged tree, not each blob changed since the previous tag: that history is already public, a real leak needs rotation either way, and every landing already scans its own added content. All tools run from the development image, so local and CI results match.
 
 ### Upgrade Program Interface
 
