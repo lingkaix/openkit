@@ -34,7 +34,7 @@ import {
   type FamilyImplementations,
   publicOperationActor,
 } from '../operation-contract.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import {
   commandInputHash,
   IdempotencyKeyConflictError,
@@ -161,7 +161,11 @@ export function createServerMcpOperationImplementations(
               policyOperation: 'workspace.configure',
             })
           )
-            throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+            throw new OperationError(
+              WORKSPACE_ACCESS_DENIED.code,
+              WORKSPACE_ACCESS_DENIED.message,
+              WORKSPACE_ACCESS_DENIED.status
+            );
           if (listServerAuditEvents(coreDb!).some((event) => event.resource === marker))
             throw new OperationError(
               'recovery_required',
@@ -196,7 +200,11 @@ export function createServerMcpOperationImplementations(
                 policyOperation: 'workspace.configure',
               })
             )
-              throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+              throw new OperationError(
+                WORKSPACE_ACCESS_DENIED.code,
+                WORKSPACE_ACCESS_DENIED.message,
+                WORKSPACE_ACCESS_DENIED.status
+              );
             await context.recheckAdmission?.();
             if (!workspaceId)
               requireAdministratorOperation(coreDb!, actor, 'api.call', undefined, 'mcp');
@@ -206,7 +214,11 @@ export function createServerMcpOperationImplementations(
                 policyOperation: 'workspace.configure',
               })
             )
-              throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+              throw new OperationError(
+                WORKSPACE_ACCESS_DENIED.code,
+                WORKSPACE_ACCESS_DENIED.message,
+                WORKSPACE_ACCESS_DENIED.status
+              );
           }
           const result = await execute();
           const succeeded = {
@@ -266,7 +278,11 @@ export function createServerMcpOperationImplementations(
           policyOperation: 'workspace.configure',
         })
       )
-        throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+        throw new OperationError(
+          WORKSPACE_ACCESS_DENIED.code,
+          WORKSPACE_ACCESS_DENIED.message,
+          WORKSPACE_ACCESS_DENIED.status
+        );
       return result;
     } catch (error) {
       // Preserve the existing public authority refusal after the new standalone ACK boundary.

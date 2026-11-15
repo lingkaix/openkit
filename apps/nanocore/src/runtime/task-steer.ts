@@ -11,7 +11,7 @@ import { auditAuthenticationFromActor } from '../auth/audit-attribution.js';
 import type { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { publicOperationActor } from '../operation-contract.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import {
   StoredTaskSteerDispositionV1ReaderSchema,
   type TaskSteerDisposition,
@@ -108,9 +108,14 @@ export async function steerTask(
       metadata.data.disposition === 'refused' &&
       metadata.data.reason === 'workspace_access_denied'
     )
-      throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403, {
-        details: target,
-      });
+      throw new OperationError(
+        WORKSPACE_ACCESS_DENIED.code,
+        WORKSPACE_ACCESS_DENIED.message,
+        WORKSPACE_ACCESS_DENIED.status,
+        {
+          details: target,
+        }
+      );
     throw failure(
       metadata.data.disposition === 'unknown'
         ? 'steer_outcome_unknown'

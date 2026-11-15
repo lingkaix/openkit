@@ -1,4 +1,5 @@
 import { HTTPException } from 'hono/http-exception';
+import { WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { ControlAccessTokenIssuerRefSchema } from '../storage/access-token-verification-codecs.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
@@ -44,12 +45,12 @@ export function applyControlAccessTokenLifecycle(
         true
       ).effect !== 'allow'
     )
-      return { kind: 'denied', code: 'workspace_access_denied' };
+      return { kind: 'denied', code: WORKSPACE_ACCESS_DENIED.code };
   } catch (error) {
     if (error instanceof DeploymentAdminRequiredError)
       return { kind: 'denied', code: 'deployment_admin_required' };
     if (error instanceof HTTPException && error.status === 403)
-      return { kind: 'denied', code: 'workspace_access_denied' };
+      return { kind: 'denied', code: WORKSPACE_ACCESS_DENIED.code };
     throw error;
   }
   if (input.kind === 'issue') {

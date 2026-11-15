@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import type { Actor } from './identity.js';
 
 /** Binds a refused request to its authenticated principal and session without granting authority. */
@@ -9,11 +9,12 @@ export function captureRetryContext(actor: Actor | undefined): string | undefine
     (actor.kind === 'token' && !actor.tokenId)
   )
     return undefined;
-  return createHash('sha256')
-    .update(
-      JSON.stringify([actor.kind, actor.userId, actor.sessionId ?? null, actor.tokenId ?? null])
-    )
-    .digest('hex');
+  return sha256CanonicalJson([
+    actor.kind,
+    actor.userId,
+    actor.sessionId ?? null,
+    actor.tokenId ?? null,
+  ]);
 }
 
 /** Advertises only a definite authorized admission refusal with a stable authentication binding. */
