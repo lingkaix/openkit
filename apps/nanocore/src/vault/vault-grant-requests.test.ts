@@ -12,6 +12,7 @@ import {
   revokeOpenKitAccessTokenRecord,
   setDefaultServerAdminTokenId,
 } from '../auth/access-token-store.js';
+import { createBetterAuth } from '../auth/better-auth.js';
 import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import {
   composeWorkspaceMcpCatalog,
@@ -50,6 +51,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createApp } from '../test-support/app.js';
+import { confirmContextDefaults } from '../test-support/context-defaults.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
@@ -76,36 +78,51 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
   const app = createApp({ coreDb, dataRoot, vaultUnlockState, store, agentManifests });
   let server: ReturnType<typeof createApp> | undefined;
   let sessionServer: ReturnType<typeof createApp> | undefined;
-  const authenticationSessionId = allocateEntityId('auth');
+  let sessionCookie: string | undefined;
   return {
     coreDb,
     dataRoot,
     store,
-    sessionSend: (id: string, body: Record<string, unknown>) => {
-      sessionServer ??= createApp({
-        coreDb,
-        dataRoot,
-        vaultUnlockState,
-        store,
-        agentManifests,
-        mode: 'server',
-        auth: {
-          api: {
-            getSession: async () => ({
-              session: { id: authenticationSessionId },
-              user: { id: sessionUserId },
-            }),
-          },
-          handler: async () => Response.json({}),
-        },
-      });
+    sessionSend: async (id: string, body: Record<string, unknown>) => {
+      if (!sessionServer) {
+        // The retained canonical User signs in through the original SDK, including its native Session.
+        const auth = createBetterAuth(coreDb, { env: {} });
+        const context = await auth.$context;
+        const user = await context.internalAdapter.findUserById(sessionUserId);
+        expect(user).not.toBeNull();
+        const password = randomUUID();
+        await context.internalAdapter.linkAccount({
+          userId: sessionUserId,
+          accountId: sessionUserId,
+          providerId: 'credential',
+          password: await context.password.hash(password),
+        });
+        const signedIn = await auth.api.signInEmail({
+          body: { email: user!.email, password },
+          asResponse: true,
+        });
+        expect(signedIn.status).toBe(200);
+        sessionCookie = signedIn.headers
+          .getSetCookie()
+          .map((value) => value.split(';')[0])
+          .join('; ');
+        sessionServer = createApp({
+          coreDb,
+          dataRoot,
+          vaultUnlockState,
+          store,
+          agentManifests,
+          mode: 'server',
+          auth,
+        });
+      }
       return sessionServer.request(
         ...operationRequest(
           id as OperationId,
           {},
           {
             method: 'POST',
-            headers: { 'content-type': 'application/json' },
+            headers: { 'content-type': 'application/json', cookie: sessionCookie! },
             body: JSON.stringify(body),
           }
         )
@@ -1369,7 +1386,7 @@ it.each(['workspace', 'server'] as const)(
         .prepare(
           "INSERT INTO users (id, display_name, email, email_verified, kind, created_at, updated_at, status) VALUES (?, 'Synthetic reviewer', ?, 0, 'human', ?, ?, 'active')"
         )
-        .run(reviewerId, randomUUID(), Date.now(), Date.now());
+        .run(reviewerId, `${randomUUID()}@example.test`, Date.now(), Date.now());
       const reviewer = createOpenKitAccessTokenRecord(f.coreDb, {
         ownerUserId: reviewerId,
         scope: 'server-admin',
@@ -1877,21 +1894,30 @@ it.each(['workspace', 'server'] as const)(
 /** Establishes ordinary Users and a real active User Login before any request feature is called. */
 async function loginShareFixture(quarantined = false) {
   const f = fixture();
-  const { createBetterAuth } = await import('../auth/better-auth.js');
   const { mkdirSync, writeFileSync } = await import('node:fs');
   const { PolicyInterception } = await import('../policy/interception.js');
   const { createVaultReference, getVaultReference } = await import('./vault-references.js');
   const auth = createBetterAuth(f.coreDb, { env: {} });
   const humans = [];
+  const cookies = new Map<string, string>();
   for (const name of ['Login owner', 'Other member', 'Independent administrator']) {
-    const result = await auth.api.signUpEmail({
+    const response = await auth.api.signUpEmail({
       body: {
         name,
         email: `${randomUUID()}@example.invalid`,
         password: randomUUID(),
       },
+      asResponse: true,
     });
-    humans.push(result.user);
+    expect(response.status).toBe(200);
+    const cookie = response.headers
+      .getSetCookie()
+      .map((value) => value.split(';')[0])
+      .join('; ');
+    const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+    expect(session).not.toBeNull();
+    humans.push(session!.user);
+    cookies.set(session!.user.id, cookie);
   }
   const [owner, other, admin] = humans;
   const created = await f.send('workspace.create', {
@@ -1919,7 +1945,6 @@ async function loginShareFixture(quarantined = false) {
   const sendAs = (userId: string, id: string, body: Record<string, unknown>) => {
     let app = apps.get(userId);
     if (!app) {
-      const sessionId = allocateEntityId('auth');
       app = createApp({
         coreDb: f.coreDb,
         dataRoot: f.dataRoot,
@@ -1929,10 +1954,7 @@ async function loginShareFixture(quarantined = false) {
         runtimeConfigManager: manager,
         policyInterception: interception,
         mode: 'server',
-        auth: {
-          api: { getSession: async () => ({ session: { id: sessionId }, user: { id: userId } }) },
-          handler: async () => Response.json({}),
-        },
+        auth,
       });
       apps.set(userId, app);
     }
@@ -1942,7 +1964,7 @@ async function loginShareFixture(quarantined = false) {
         {},
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', cookie: cookies.get(userId)! },
           body: JSON.stringify(body),
         }
       )
@@ -2027,6 +2049,8 @@ async function loginShareFixture(quarantined = false) {
   const resolve = vi.spyOn(backend, 'resolve');
   return {
     ...f,
+    auth,
+    cookies,
     owner: owner!,
     other: other!,
     admin: admin!,
@@ -2615,12 +2639,13 @@ it.each(['live', 'revoked-agent'] as const)(
             .manifest,
         ],
       });
-      const runtimeConfigManager = createRuntimeConfigManager({
-        dataRoot: null,
+      let runtimeConfigManager = createRuntimeConfigManager({
+        dataRoot: f.dataRoot,
         initialSnapshot: snapshot,
       });
+      runtimeConfigManager = await confirmContextDefaults(f.coreDb, f.store, runtimeConfigManager);
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
-        readRuntimeConfig: () => snapshot,
+        readRuntimeConfig: () => runtimeConfigManager.current(),
       });
       const app = createApp({
         coreDb: f.coreDb,
@@ -2631,20 +2656,12 @@ it.each(['live', 'revoked-agent'] as const)(
         workerControlGateway: native.workerControlGateway,
         runtimeConfigManager,
         mode: 'server',
-        auth: {
-          api: {
-            getSession: async () => ({
-              session: { id: allocateEntityId('auth') },
-              user: { id: f.owner.id },
-            }),
-          },
-          handler: async () => Response.json({}),
-        },
+        auth: f.auth,
       });
       const started = await app.request(
         ...operationRequest('task.start', f.command, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: { 'content-type': 'application/json', cookie: f.cookies.get(f.owner.id)! },
           body: JSON.stringify({
             input: 'Request my own selected personal Login share',
             requestId: randomUUID(),

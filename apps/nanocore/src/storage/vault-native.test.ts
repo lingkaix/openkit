@@ -2109,13 +2109,23 @@ async function nativeLoginShareFixture(useAdminBearer = false) {
   const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
   const { FsStore } = await import('../lib/store.js');
   ensureLocalUser(f.db);
-  const { user } = await createBetterAuth(f.db, { env: {} }).api.signUpEmail({
+  const auth = createBetterAuth(f.db, { env: {} });
+  const response = await auth.api.signUpEmail({
     body: {
       name: 'Native share owner',
       email: `${randomUUID()}@example.invalid`,
       password: randomUUID(),
     },
+    asResponse: true,
   });
+  expect(response.status).toBe(200);
+  const cookie = response.headers
+    .getSetCookie()
+    .map((value) => value.split(';')[0])
+    .join('; ');
+  const authenticated = await auth.api.getSession({ headers: new Headers({ cookie }) });
+  expect(authenticated).not.toBeNull();
+  const user = authenticated!.user;
   const unlock = createVaultUnlockState({
     backendKind: 'encrypted-file',
     storeDir: join(f.db.dataRoot, 'vault-share'),
@@ -2128,17 +2138,13 @@ async function nativeLoginShareFixture(useAdminBearer = false) {
     store,
     vaultUnlockState: unlock,
   });
-  const sessionId = allocateEntityId('auth');
   const ownerApp = createApp({
     coreDb: f.db,
     dataRoot: f.db.dataRoot,
     store,
     vaultUnlockState: unlock,
     mode: 'server',
-    auth: {
-      api: { getSession: async () => ({ session: { id: sessionId }, user: { id: user.id } }) },
-      handler: async () => Response.json({}),
-    },
+    auth,
   });
   const send = (
     app: typeof localApp,
@@ -2154,6 +2160,7 @@ async function nativeLoginShareFixture(useAdminBearer = false) {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
+            ...(app === ownerApp ? { cookie } : {}),
             ...(secret ? { authorization: `Bearer ${secret}` } : {}),
           },
           body: JSON.stringify(body),
