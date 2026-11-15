@@ -327,7 +327,7 @@
     },
     "channel.discord.revoke": {
       "stability": "release-coupled",
-      "state": "active"
+      "state": "retired"
     },
     "channel.discord.status": {
       "stability": "release-coupled",
@@ -346,6 +346,14 @@
       "state": "active"
     },
     "conversation.targets": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "credential.list": {
+      "stability": "release-coupled",
+      "state": "active"
+    },
+    "credential.revoke": {
       "stability": "release-coupled",
       "state": "active"
     },
@@ -791,11 +799,11 @@
     },
     "nanohost.token-list": {
       "stability": "release-coupled",
-      "state": "active"
+      "state": "retired"
     },
     "nanohost.token-revoke": {
       "stability": "release-coupled",
-      "state": "active"
+      "state": "retired"
     },
     "nanohost.token-rotate": {
       "stability": "release-coupled",
@@ -1075,7 +1083,7 @@
     },
     "token.list": {
       "stability": "release-coupled",
-      "state": "active"
+      "state": "retired"
     },
     "token.my-admin-default": {
       "stability": "release-coupled",
@@ -1087,7 +1095,7 @@
     },
     "token.revoke": {
       "stability": "release-coupled",
-      "state": "active"
+      "state": "retired"
     },
     "token.rotate": {
       "stability": "release-coupled",
