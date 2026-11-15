@@ -685,7 +685,8 @@ export function evaluateProductAuthorization(
         issuerChain:
           clientAuthority.issuerChain?.map(({ input: issuerInput, ...issuer }) => ({
             ...issuer,
-            kernel: evaluatePolicyKernel(issuerInput),
+            // Every issuer is bounded by the same actual Thread audience, using its own User facts.
+            kernel: evaluatePolicyKernel({ ...issuerInput, ...(context ? { context } : {}) }),
           })) ?? null,
       });
   } catch (error) {

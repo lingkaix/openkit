@@ -5,7 +5,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
 import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { z } from 'zod';
 import { createApp } from '../app.js';
 import { listServerAuditEvents } from '../audit-events.js';
@@ -16,6 +16,8 @@ import {
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureLocalUser } from '../auth/identity.js';
+import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
+import { confirmContextDefaultsForApp } from '../test-support/context-defaults.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
 
@@ -32,7 +34,7 @@ type TokenIssue = {
   };
 };
 
-async function fixture() {
+async function fixture(contextDefaults = false) {
   const dataRoot = mkdtempSync(joinPath(tmpdir(), 'openkit-e11-native-client-'));
   const coreDb = createTestCoreDb(dataRoot);
   onTestFinished(async () => await disposeTestStore(dataRoot, coreDb));
@@ -73,7 +75,47 @@ async function fixture() {
   const owner = await signUp('owner');
   const otherIssuer = await signUp('other-issuer');
   const store = createTestStore({ dataRoot });
-  const app = createApp({ mode: 'server', coreDb, dataRoot, store, auth });
+  const createChatCompletion = vi.fn(async () => ({
+    id: 'fixture-response',
+    object: 'chat.completion',
+    choices: [
+      {
+        index: 0,
+        finish_reason: 'stop',
+        message: { role: 'assistant', content: 'Fixture reply.' },
+      },
+    ],
+    usage: { prompt_tokens: 5, completion_tokens: 2, total_tokens: 7 },
+  }));
+  const createResponses = vi.fn(async () => ({
+    id: 'fixture-response',
+    object: 'response',
+    status: 'completed',
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'Fixture reply.' }],
+      },
+    ],
+    usage: { input_tokens: 5, output_tokens: 2, total_tokens: 7 },
+  }));
+  const app = createApp(
+    contextDefaults
+      ? await confirmContextDefaultsForApp({
+          mode: 'server',
+          coreDb,
+          dataRoot,
+          store,
+          auth,
+          llmGatewayDispatcher: {
+            createChatCompletion,
+            createResponses,
+          } as unknown as LLMGatewayProviderDispatcher,
+        })
+      : { mode: 'server', coreDb, dataRoot, store, auth }
+  );
+
   const session = (user: typeof issuer) => ({ cookie: user.cookie });
   const bearer = (token: string) => ({ authorization: 'Bearer ' + token });
   const request = (id: OperationId, input: Record<string, unknown>, headers: HeadersInit) =>
@@ -251,6 +293,7 @@ async function fixture() {
     principal,
     message,
     nativeMcpEffect,
+    generations: () => createChatCompletion.mock.calls.length + createResponses.mock.calls.length,
   };
 }
 
@@ -498,4 +541,45 @@ describe('E11 original native MCP client binding and issuer-chain consumers', ()
     expect((await f.read(ordinary.token)).status).toBe(200);
     await f.nativeMcpEffect(ordinary, { kind: 'user', id: f.owner.userId });
   }, 30_000);
+});
+
+it('intersects the actual private Thread audience with every current MCP credential issuer', async () => {
+  const f = await fixture(true);
+  const thread = await f.store.createThread(
+    f.workspace.id,
+    'Exact private issuer context',
+    undefined,
+    'conversation',
+    {
+      visibility: 'private',
+      privateOwnerUserId: f.owner.userId,
+    }
+  );
+  const input = {
+    workspaceId: f.workspace.id,
+    threadId: thread.id,
+    requestId: randomUUID(),
+    input: 'Reply in this exact private context.',
+    targetRef: 'internal-role:assistant',
+    artifactRefs: [],
+  };
+  const direct = await f.request('conversation.submit', input, f.session(f.owner));
+  expect(direct.status, await direct.clone().text()).toBe(200);
+  expect(f.generations()).toBe(1);
+  const client = await f.issue({ forMcpClient: true });
+  const response = await f.message(client.token, 'tools/call', {
+    name: 'openkit_call',
+    arguments: {
+      operation: 'conversation.submit',
+      input: { ...input, requestId: randomUUID() },
+    },
+  });
+  expect(response.status, await response.clone().text()).toBe(200);
+  const reply = await response.json();
+  expect(reply.result.isError, JSON.stringify(reply)).toBe(true);
+  expect(JSON.parse(reply.result.content[0].text)).toMatchObject({
+    code: 'context_permission_denied',
+    status: 403,
+  });
+  expect(f.generations()).toBe(1);
 });
