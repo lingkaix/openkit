@@ -198,11 +198,27 @@ export function planStablePromotion({ repository, tag, sha, source, registry, au
     images: m.images,
     assets: promotionAssets(source.tag),
     body,
+    sourceFacts: {
+      assessment: transitionFacts(source.assessment),
+      assertions: transitionFacts(m.assertions),
+    },
   };
+}
+
+/** The four facts that decide stable-source eligibility, as admitted by the planner. */
+function transitionFacts(facts) {
+  const { migrationFree, configurationCompatible, retainedDataCompatible, recovery } = facts;
+  return { migrationFree, configurationCompatible, retainedDataCompatible, recovery };
 }
 
 /** Execute only tag assignment and release creation; a retry verifies every existing identity without rewriting it. */
 export async function applyStablePromotion(plan, io) {
+  // Stable promotion is irreversible: refuse any plan whose admitted source facts are absent or negative.
+  requireFact(
+    compatibleTransitionFacts(plan?.sourceFacts?.assessment) &&
+      compatibleTransitionFacts(plan.sourceFacts.assertions),
+    'stable source is not a pre-stable reset'
+  );
   if (plan.mode === 'fresh') {
     for (const image of plan.images) {
       await io.promote(image.image, image.digest, [plan.tag, plan.tag.slice(1), 'latest']);

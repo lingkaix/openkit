@@ -342,6 +342,24 @@ test('a pre-stable reset prerelease is refused as a stable source before any pla
   assert.throws(() => planStablePromotion(mixed), /not a pre-stable reset/);
 });
 
+test('applying a plan without admitted compatible source facts makes no effect', async () => {
+  const plan = planStablePromotion(observed());
+  const effects = [];
+  const io = {
+    promote: async () => effects.push('promote'),
+    resolve: async () => effects.push('resolve'),
+    publish: async () => effects.push('publish'),
+  };
+  const { sourceFacts: _facts, ...withoutFacts } = plan;
+  await assert.rejects(applyStablePromotion(withoutFacts, io), /not a pre-stable reset/);
+  for (const side of ['assessment', 'assertions']) {
+    const reset = structuredClone(plan);
+    reset.sourceFacts[side].recovery = 'pre-stable-reset';
+    await assert.rejects(applyStablePromotion(reset, io), /not a pre-stable reset/);
+  }
+  assert.deepEqual(effects, []);
+});
+
 test('post-assignment mismatch stops before GitHub Release creation', async () => {
   const plan = planStablePromotion(observed());
   let releases = 0;
