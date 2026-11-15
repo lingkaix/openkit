@@ -836,15 +836,24 @@ async function fixture(
       environmentPackage = await resolveAgentEnvironmentPackage({
         captureCoverage: { scope: 'server', value: 'off' },
         agentSessionId: followupSessionId,
-        agentSetup: createTestAgentSetup({ agentId, mcpIds: ['issues'] }),
+        agentSetup: createTestAgentSetup({
+          agentId,
+          mcpIds: ['issues'],
+          ...(options.physicalAccess
+            ? { network: environmentInput.agentSetup.manifest.sandbox?.network ?? [] }
+            : {}),
+        }),
         backend: { kind: 'openshell' },
         createdAt: now,
         requestId: followupRequestId,
         triggerActor: turn.triggerActor,
         turn,
-        workspaceCwd: '/workspace',
+        workspaceCwd: options.physicalAccess ? '/workspace/repo' : '/workspace',
         workspaceRoots: [],
         workspaceMcpServerCatalog: catalog,
+        ...(options.parentLineage || options.physicalAccess
+          ? { coreDb, readRuntimeConfig: () => manager.current() }
+          : {}),
       });
       const followupEntry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
@@ -1139,6 +1148,53 @@ describe('P7 Task lineage and physical access through production consumers', () 
         expect(mcp.decisions().at(-1)?.result).toBe('deny');
         expect(mcp.decisions().at(-1)?.mediation?.kernel?.reason).toBe('restriction');
       }
+    }
+  );
+
+  it.each([false, true])(
+    'preserves original Task accountability in actual continuation AEP preparation (standalone=%s)',
+    async (standalone) => {
+      const f = await fixture({ standalone, physicalAccess: true });
+      const continued = await f.setupMcp(true);
+      const context = readGoalTaskPolicyContext({
+        coreDb: f.coreDb,
+        store: f.store,
+        db: f.db,
+        lineage: {
+          ...continued.environmentPackage.scope,
+          packageSnapshotId: continued.environmentPackage.snapshotId,
+        },
+      });
+      expect(context).not.toBeNull();
+      expect(context?.responsibleUserId).toBe(f.actor.userId);
+      expect(continued.environmentPackage.scope.triggerActor).toEqual(continued.turn.triggerActor);
+      expect(continued.environmentPackage.scope.triggerActor).not.toEqual({
+        kind: 'user',
+        id: f.actor.userId,
+      });
+      expect(continued.environmentPackage.policy.network?.rules.length).toBeGreaterThan(0);
+      expect(continued.environmentPackage.policy.filesystem?.rules).toContainEqual(
+        expect.objectContaining({ id: 'openkit-working-directory', access: 'read-write' })
+      );
+      const bounded = await fixture({
+        standalone,
+        physicalAccess: true,
+        physicalProhibition: true,
+      });
+      const refused = (await bounded.setupMcp(true)).environmentPackage;
+      expect(refused.policy.network?.rules).toEqual([]);
+      expect(refused.policy.filesystem?.rules).toContainEqual(
+        expect.objectContaining({ id: 'openkit-working-directory', access: 'read-only' })
+      );
+      expect(
+        refused.policy.filesystem?.rules.every(
+          (rule) =>
+            rule !== null &&
+            typeof rule === 'object' &&
+            'access' in rule &&
+            rule.access === 'read-only'
+        )
+      ).toBe(true);
     }
   );
 
