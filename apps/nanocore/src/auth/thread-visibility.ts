@@ -6,7 +6,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { evaluatePolicyKernel } from '../policy/workspace-access.js';
+import { evaluatePolicyKernel, selectThreadBoundaries } from '../policy/workspace-access.js';
 import type { CoreDb } from '../storage/db.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import type { ThreadPolicyActor } from './identity.js';
@@ -223,23 +223,13 @@ export function canDiscloseThreadToAudience(
     const ancestry = (thread: Thread) => [thread.id, ...readThreadPolicyAncestors(store, thread)];
     const sourceIds = ancestry(source);
     const destinationIds = destination ? ancestry(destination) : [];
-    const statementsFor = (threadIds: string[]) =>
-      document.statements.filter(
-        (statement) =>
-          statement.state === 'active' &&
-          statement.scope.resources.some(
-            (resource) =>
-              resource.kind === 'container' &&
-              resource.container.kind === 'thread' &&
-              threadIds.includes(resource.container.id)
-          )
-      );
-    const sourceStatements = statementsFor(sourceIds);
-    if (!sourceStatements.some((statement) => statement.kind === 'managed-boundary')) return true;
+    // Scope selection is the Kernel's own; this only enumerates candidate recipients to probe.
+    const sourceBoundaries = selectThreadBoundaries(document, sourceIds);
+    if (!sourceBoundaries.some((boundary) => boundary.managed)) return true;
     if (destination?.visibility !== 'workspace') return false;
-    const destinationStatements = statementsFor(destinationIds);
-    if (!destinationStatements.some((statement) => statement.kind === 'managed-boundary'))
-      return false;
+    const destinationBoundaries = selectThreadBoundaries(document, destinationIds);
+    if (!destinationBoundaries.some((boundary) => boundary.managed)) return false;
+    const destinationStatements = destinationBoundaries.flatMap((boundary) => boundary.statements);
     // Managed recipients are finite: an unlisted User or Agent has no positive allocation,
     // including administrators. Probe every destination allocation/right through the Kernel;
     // splitting statements or adding a prohibition cannot manufacture a wider audience.
