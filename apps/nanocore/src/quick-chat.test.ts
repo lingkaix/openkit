@@ -46,6 +46,7 @@ import {
   createAppWithLocalIdentity,
   createAppWithWorkspaceAuthority,
 } from './test-support/app.js';
+import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
 import { createDemoStore } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
@@ -212,14 +213,16 @@ async function createTimelineFixture(options: Omit<CreateAppOptions, 'coreDb' | 
   const userId = ensureLocalUser(coreDb);
   const store = new FsStore({ dataRoot });
   await ensureUserQuickChatWorkspace({ coreDb, store, userId });
-  const app = createAppWithWorkspaceAuthority({
-    ...createQuickChatProviderOptions(),
-    turnExecutor: new ThrowingTurnExecutor(),
-    ...options,
-    coreDb,
-    dataRoot,
-    store,
-  });
+  const app = createAppWithWorkspaceAuthority(
+    await confirmContextDefaultsForApp({
+      ...createQuickChatProviderOptions(),
+      turnExecutor: new ThrowingTurnExecutor(),
+      ...options,
+      coreDb,
+      dataRoot,
+      store,
+    })
+  );
   const home = store.listWorkspaces().find((workspace) => workspace.kind === 'personal')!;
   expect(home).toBeDefined();
   const opened = await app.request(
@@ -318,7 +321,9 @@ async function stoppedChatReplayCopy(
   });
   // Admit the intact copy before the deliberate fault. Reopening corrupt history would test boot quarantine.
   const store = new FsStore({ dataRoot });
-  const app = createAppWithWorkspaceAuthority({ ...options, coreDb, dataRoot, store });
+  const app = createAppWithWorkspaceAuthority(
+    await confirmContextDefaultsForApp({ ...options, coreDb, dataRoot, store })
+  );
   await shutdownControlStoreWorkerClient();
   const scope = nativeProductScope(dataRoot, {
     kind: 'workspace',
@@ -435,7 +440,7 @@ describe('quick chat app API', () => {
           },
         }),
       };
-      const app = createAppWithWorkspaceAuthority(appOptions);
+      const app = createAppWithWorkspaceAuthority(await confirmContextDefaultsForApp(appOptions));
       const submit = (requestId: string) =>
         app.request(
           ...operationRequest(
@@ -534,10 +539,12 @@ describe('quick chat app API', () => {
         const submitReplay = await submit('00000000-0000-4000-8000-000000144000');
         expect(submitReplay.status).toBe(499);
         await expect(submitReplay.json()).resolves.toMatchObject({ code: 'provider_call_aborted' });
-        const coldReplay = await createAppWithWorkspaceAuthority({
-          ...appOptions,
-          store: new FsStore({ dataRoot }),
-        }).request(
+        const coldReplay = await createAppWithWorkspaceAuthority(
+          await confirmContextDefaultsForApp({
+            ...appOptions,
+            store: new FsStore({ dataRoot }),
+          })
+        ).request(
           ...operationRequest(
             'conversation.submit',
             {
@@ -557,10 +564,12 @@ describe('quick chat app API', () => {
           )
         );
         expect(coldReplay.status).toBe(499);
-        const coldInterrupt = await createAppWithWorkspaceAuthority({
-          ...appOptions,
-          store: new FsStore({ dataRoot }),
-        }).request(
+        const coldInterrupt = await createAppWithWorkspaceAuthority(
+          await confirmContextDefaultsForApp({
+            ...appOptions,
+            store: new FsStore({ dataRoot }),
+          })
+        ).request(
           ...operationRequest(
             'turn.interrupt',
             {
@@ -646,18 +655,20 @@ describe('quick chat app API', () => {
     const transport = new AbortController();
     const admitted = Promise.withResolvers<AbortSignal>();
     const provider = Promise.withResolvers<unknown>();
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async (_provider, _request, _onUsage, options) => {
-          admitted.resolve(options.signal!);
-          return provider.promise;
-        },
-      }),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async (_provider, _request, _onUsage, options) => {
+            admitted.resolve(options.signal!);
+            return provider.promise;
+          },
+        }),
+      })
+    );
     const pending = app.request(
       ...operationRequest(
         'conversation.submit',
@@ -734,13 +745,15 @@ describe('quick chat app API', () => {
           return provider.promise;
         }
       );
-      const app = createAppWithWorkspaceAuthority({
-        ...createQuickChatProviderOptions(),
-        coreDb,
-        store,
-        turnExecutor: new ThrowingTurnExecutor(),
-        llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
-      });
+      const app = createAppWithWorkspaceAuthority(
+        await confirmContextDefaultsForApp({
+          ...createQuickChatProviderOptions(),
+          coreDb,
+          store,
+          turnExecutor: new ThrowingTurnExecutor(),
+          llmPiAiClient: asPiAiGatewayClientDouble({ createResponses }),
+        })
+      );
       const submit = () =>
         app.request(
           ...operationRequest(
@@ -1001,12 +1014,14 @@ describe('quick chat app API', () => {
         return thread;
       })
     );
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      agentManifests: [workerSetup.manifest],
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        agentManifests: [workerSetup.manifest],
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+      })
+    );
 
     for (const [index, status] of states.entries()) {
       const response = await app.request(
@@ -1114,11 +1129,13 @@ describe('quick chat app API', () => {
       'administration',
       { visibility: 'private', privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001' }
     );
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+      })
+    );
 
     const response = await app.request(
       ...operationRequest(
@@ -1149,18 +1166,20 @@ describe('quick chat app API', () => {
       logicalModelId: 'quick-chat',
       privateRoute: { providerProfileId: 'ollama', providerModel: 'openai/gpt-5.2' },
     });
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      agentManifests: [workerSetup.manifest],
-      internalRoleProfiles: {
-        schemaVersion: 1,
-        defaultLogicalModelId: 'missing',
-        profiles: [],
-      },
-      openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
-      store: await createDemoStore({ dataRoot: storeRoot }),
-      turnExecutor: new ThrowingTurnExecutor(),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        agentManifests: [workerSetup.manifest],
+        internalRoleProfiles: {
+          schemaVersion: 1,
+          defaultLogicalModelId: 'missing',
+          profiles: [],
+        },
+        openKitConfig: { defaults: { defaultAgentId: workerSetup.manifest.id } },
+        store: await createDemoStore({ dataRoot: storeRoot }),
+        turnExecutor: new ThrowingTurnExecutor(),
+      })
+    );
 
     const response = await app.request(
       ...operationRequest(
@@ -1185,32 +1204,34 @@ describe('quick chat app API', () => {
       request: Parameters<PiAiGatewayClient['createResponses']>[1];
     }> = [];
     const store = await createDemoStore({ dataRoot });
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      dataRoot,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async (provider, request) => {
-          calls.push({ providerId: provider.id, request });
-          return {
-            id: 'chatcmpl_chat_answer',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                status: 'completed',
-                content: [{ type: 'output_text', text: 'Thread-scoped answer.' }],
-              },
-            ],
-          };
-        },
-      }),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async (provider, request) => {
+            calls.push({ providerId: provider.id, request });
+            return {
+              id: 'chatcmpl_chat_answer',
+              object: 'response',
+              status: 'completed',
+              model: request.model,
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'Thread-scoped answer.' }],
+                },
+              ],
+            };
+          },
+        }),
+      })
+    );
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1391,7 +1412,9 @@ describe('quick chat app API', () => {
         },
       }),
     };
-    const app = createAppWithWorkspaceAuthority({ ...appOptions, store });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({ ...appOptions, store })
+    );
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1479,7 +1502,9 @@ describe('quick chat app API', () => {
     expect(
       reloadedStore.listThreadItems('ws_00000000-0000-7000-8000-000000000001', otherThread.id)
     ).toEqual(store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', otherThread.id));
-    const reloadedApp = createAppWithWorkspaceAuthority({ ...appOptions, store: reloadedStore });
+    const reloadedApp = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({ ...appOptions, store: reloadedStore })
+    );
     const response = await reloadedApp.request(
       ...operationRequest(
         'conversation.submit',
@@ -1527,32 +1552,34 @@ describe('quick chat app API', () => {
     }> = [];
     const input =
       'Current handoff evidence includes the last review notes and the audit write. For this turn only, do not call tools, start workers, change configuration, approve anything, publish, or deploy. Summarize this handoff from the current input only.';
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      dataRoot,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async (_provider, request) => {
-          calls.push({ request });
-          return {
-            id: 'chatcmpl_handoff_summary',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                status: 'completed',
-                content: [{ type: 'output_text', text: 'Handoff summary from current input.' }],
-              },
-            ],
-          };
-        },
-      }),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async (_provider, request) => {
+            calls.push({ request });
+            return {
+              id: 'chatcmpl_handoff_summary',
+              object: 'response',
+              status: 'completed',
+              model: request.model,
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'Handoff summary from current input.' }],
+                },
+              ],
+            };
+          },
+        }),
+      })
+    );
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1618,29 +1645,31 @@ describe('quick chat app API', () => {
       const workspace = await store.createWorkspace('Chat usage lineage');
       const thread = await store.createThread(workspace.id, 'Chat usage lineage');
       const requestId = '11111111-1111-4111-8111-111111111111';
-      const app = createAppWithWorkspaceAuthority({
-        ...createQuickChatProviderOptions(),
-        coreDb,
-        store,
-        turnExecutor: new ThrowingTurnExecutor(),
-        llmPiAiClient: asPiAiGatewayClientDouble({
-          createResponses: async (_provider, request) => ({
-            id: 'chatcmpl_chat_mode_usage',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                status: 'completed',
-                content: [{ type: 'output_text', text: 'Lineaged answer.' }],
-              },
-            ],
-            usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+      const app = createAppWithWorkspaceAuthority(
+        await confirmContextDefaultsForApp({
+          ...createQuickChatProviderOptions(),
+          coreDb,
+          store,
+          turnExecutor: new ThrowingTurnExecutor(),
+          llmPiAiClient: asPiAiGatewayClientDouble({
+            createResponses: async (_provider, request) => ({
+              id: 'chatcmpl_chat_mode_usage',
+              object: 'response',
+              status: 'completed',
+              model: request.model,
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'Lineaged answer.' }],
+                },
+              ],
+              usage: { input_tokens: 3, output_tokens: 4, total_tokens: 7 },
+            }),
           }),
-        }),
-      });
+        })
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -1798,14 +1827,16 @@ describe('quick chat app API', () => {
         return { id: `knowledge-response-${step}`, object: 'response', output };
       }
     );
-    const app = createAppWithWorkspaceAuthority({
-      ...providerOptions,
-      coreDb,
-      dataRoot,
-      store: demoStore,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...providerOptions,
+        coreDb,
+        dataRoot,
+        store: demoStore,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmGatewayDispatcher: { createResponses } as unknown as LLMGatewayProviderDispatcher,
+      })
+    );
 
     const createRes = await app.request(
       ...knowledgeOperationRequest(
@@ -1948,32 +1979,34 @@ describe('quick chat app API', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     let providerCalls = 0;
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      dataRoot,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async (_provider, request) => {
-          providerCalls += 1;
-          return {
-            id: 'chatcmpl_catalog_ok_grok',
-            object: 'response',
-            status: 'completed',
-            model: request.model,
-            output: [
-              {
-                type: 'message',
-                role: 'assistant',
-                status: 'completed',
-                content: [{ type: 'output_text', text: 'CATALOG_OK_GROK' }],
-              },
-            ],
-          };
-        },
-      }),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async (_provider, request) => {
+            providerCalls += 1;
+            return {
+              id: 'chatcmpl_catalog_ok_grok',
+              object: 'response',
+              status: 'completed',
+              model: request.model,
+              output: [
+                {
+                  type: 'message',
+                  role: 'assistant',
+                  status: 'completed',
+                  content: [{ type: 'output_text', text: 'CATALOG_OK_GROK' }],
+                },
+              ],
+            };
+          },
+        }),
+      })
+    );
 
     const createRes = await app.request(
       ...knowledgeOperationRequest(
@@ -2059,35 +2092,37 @@ describe('quick chat app API', () => {
     ensureLocalUser(coreDb);
     try {
       const prompts: string[] = [];
-      const app = createAppWithWorkspaceAuthority({
-        ...createQuickChatProviderOptions(),
-        dataRoot,
-        coreDb,
-        store: await createDemoStore({ dataRoot }),
-        turnExecutor: new ThrowingTurnExecutor(),
-        llmPiAiClient: asPiAiGatewayClientDouble({
-          createResponses: async (_provider, request) => {
-            const user = request.input.filter((message) => message.role === 'user').at(-1);
-            prompts.push(user?.content.map((part) => part.text).join('') ?? '');
-            return {
-              id: 'chatcmpl_artifact_source',
-              object: 'response',
-              status: 'completed',
-              model: request.model,
-              output: [
-                {
-                  type: 'message',
-                  role: 'assistant',
-                  status: 'completed',
-                  content: [
-                    { type: 'output_text', text: 'artifact-roundtrip-c7f46a19; 62 passed.' },
-                  ],
-                },
-              ],
-            };
-          },
-        }),
-      });
+      const app = createAppWithWorkspaceAuthority(
+        await confirmContextDefaultsForApp({
+          ...createQuickChatProviderOptions(),
+          dataRoot,
+          coreDb,
+          store: await createDemoStore({ dataRoot }),
+          turnExecutor: new ThrowingTurnExecutor(),
+          llmPiAiClient: asPiAiGatewayClientDouble({
+            createResponses: async (_provider, request) => {
+              const user = request.input.filter((message) => message.role === 'user').at(-1);
+              prompts.push(user?.content.map((part) => part.text).join('') ?? '');
+              return {
+                id: 'chatcmpl_artifact_source',
+                object: 'response',
+                status: 'completed',
+                model: request.model,
+                output: [
+                  {
+                    type: 'message',
+                    role: 'assistant',
+                    status: 'completed',
+                    content: [
+                      { type: 'output_text', text: 'artifact-roundtrip-c7f46a19; 62 passed.' },
+                    ],
+                  },
+                ],
+              };
+            },
+          }),
+        })
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2236,7 +2271,7 @@ describe('quick chat app API', () => {
             : providerAnswer('The exact work awaits your selection.'),
       }),
     };
-    const app = createAppWithWorkspaceAuthority(appOptions);
+    const app = createAppWithWorkspaceAuthority(await confirmContextDefaultsForApp(appOptions));
     const requestId = randomUUID();
     const submit = () =>
       app.request(
@@ -2445,25 +2480,27 @@ describe('quick chat app API', () => {
     });
     onTestFinished(() => terminal.mockRestore());
     let modelCalls = 0;
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      coreDb,
-      dataRoot,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async () => {
-          modelCalls += 1;
-          const accepted = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
-          try {
-            expect(readPendingRequest(accepted.sqlite, pendingId)?.delivery).toBe('delivered');
-          } finally {
-            accepted.sqlite.close();
-          }
-          return providerAnswer('Four is the answer.');
-        },
-      }),
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async () => {
+            modelCalls += 1;
+            const accepted = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
+            try {
+              expect(readPendingRequest(accepted.sqlite, pendingId)?.delivery).toBe('delivered');
+            } finally {
+              accepted.sqlite.close();
+            }
+            return providerAnswer('Four is the answer.');
+          },
+        }),
+      })
+    );
     const actionCenter = await app.request(
       ...operationRequest('attention.list', {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2552,7 +2589,7 @@ describe('quick chat app API', () => {
       turnExecutor: new ThrowingTurnExecutor(),
       llmPiAiClient: asPiAiGatewayClientDouble({ createResponses: callProvider }),
     };
-    const app = createAppWithWorkspaceAuthority(appOptions);
+    const app = createAppWithWorkspaceAuthority(await confirmContextDefaultsForApp(appOptions));
     const requestId = randomUUID();
     const input = 'What is OpenKit?';
     const scope = {
@@ -2740,15 +2777,17 @@ describe('quick chat app API', () => {
     // Goal's existing request schema trims its intent before the human selects that exact payload.
     const intent = 'Prepare a release plan for NanoCore.\nKeep deployment pending human review.';
     const provider = goalProposalProvider(`  ${intent}  `);
-    const app = createAppWithWorkspaceAuthority({
-      ...createQuickChatProviderOptions(),
-      agentManifests: [createTestAgentSetup().manifest],
-      coreDb,
-      dataRoot,
-      store,
-      turnExecutor: new ThrowingTurnExecutor(),
-      llmPiAiClient: provider.client,
-    });
+    const app = createAppWithWorkspaceAuthority(
+      await confirmContextDefaultsForApp({
+        ...createQuickChatProviderOptions(),
+        agentManifests: [createTestAgentSetup().manifest],
+        coreDb,
+        dataRoot,
+        store,
+        turnExecutor: new ThrowingTurnExecutor(),
+        llmPiAiClient: provider.client,
+      })
+    );
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
@@ -2986,15 +3025,17 @@ describe('quick chat app API', () => {
       await store.updateTurn(old.id, { status: 'completed', completedAt: at });
       const intent = 'Prepare a public release documentation plan.';
       const provider = goalProposalProvider(intent);
-      const app = createAppWithWorkspaceAuthority({
-        ...createQuickChatProviderOptions(),
-        agentManifests: [createTestAgentSetup().manifest],
-        coreDb,
-        dataRoot,
-        store,
-        turnExecutor: new ThrowingTurnExecutor(),
-        llmPiAiClient: provider.client,
-      });
+      const app = createAppWithWorkspaceAuthority(
+        await confirmContextDefaultsForApp({
+          ...createQuickChatProviderOptions(),
+          agentManifests: [createTestAgentSetup().manifest],
+          coreDb,
+          dataRoot,
+          store,
+          turnExecutor: new ThrowingTurnExecutor(),
+          llmPiAiClient: provider.client,
+        })
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

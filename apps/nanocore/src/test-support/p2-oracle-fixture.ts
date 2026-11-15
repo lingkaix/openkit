@@ -31,6 +31,7 @@ import {
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { confirmContextDefaults } from './context-defaults.js';
 
 const TOKEN_EXPIRY = '2999-01-01T00:00:00.000Z';
 const AGENT_TEMPLATE = fileURLToPath(
@@ -408,7 +409,8 @@ async function bootTitle(
     workspaceId: workspace.id,
   });
   const thread = await store.createThread(workspace.id, 'Voice note');
-  const manager = createRuntimeConfigManager({ dataRoot });
+  let manager = createRuntimeConfigManager({ dataRoot });
+  if (input.wideAssistant) manager = await confirmContextDefaults(coreDb, store, manager);
   const app = createApp({
     auth: {
       api: { getSession: async () => null },

@@ -50,6 +50,7 @@ import {
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from '../test-support/app.js';
+import { confirmContextDefaultsForApp } from '../test-support/context-defaults.js';
 import {
   createDemoStore,
   createDemoWorkspaceForUser,
@@ -1817,25 +1818,27 @@ describe('terminal failed-start product recovery', () => {
           },
         ],
       });
-      const app = createApp({
-        coreDb: f.coreDb,
-        dataRoot: f.dataRoot,
-        store: f.store,
-        turnExecutor: executor,
-        agentManifests: [createTestAgentSetup().manifest],
-        gatewayConfig: createTestGatewayConfig(),
-        llmPiAiClient: asPiAiGatewayClientDouble({
-          createResponses,
-        }),
-        providerRegistry: new ProviderRegistry([
-          {
-            displayName: 'Fixture',
-            id: 'agent-openrouter',
-            kind: 'local',
-            models: ['openai/gpt-5.2'],
-          },
-        ]),
-      });
+      const app = createApp(
+        await confirmContextDefaultsForApp({
+          coreDb: f.coreDb,
+          dataRoot: f.dataRoot,
+          store: f.store,
+          turnExecutor: executor,
+          agentManifests: [createTestAgentSetup().manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          llmPiAiClient: asPiAiGatewayClientDouble({
+            createResponses,
+          }),
+          providerRegistry: new ProviderRegistry([
+            {
+              displayName: 'Fixture',
+              id: 'agent-openrouter',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+        })
+      );
       const response = await app.request(
         ...operationRequest(
           'conversation.submit',

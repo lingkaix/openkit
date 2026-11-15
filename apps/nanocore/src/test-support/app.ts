@@ -78,12 +78,12 @@ export function createAppWithLocalIdentity(
 }
 
 /**
- * Creates a NanoCore app with an explicit deterministic executor and shared file admission for unit tests.
+ * Prepares the explicit executor and file admission for App creation and human Policy consent.
  *
  * @param options Production app options, including an optional executor override.
  * @returns NanoCore app configured for deterministic unit tests.
  */
-export function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNanoCoreApp> {
+export function prepareTestAppOptions(options: CreateAppOptions = {}): CreateAppOptions {
   if (options.coreDb) {
     admitTestNativeEnvironment(options.coreDb, createTestAgentSetup().manifest);
     for (const manifest of options.agentManifests ??
@@ -117,7 +117,7 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
     );
   const turnExecutor =
     options.turnExecutor ?? new SimulatedTurnExecutor({ coreDb: options.coreDb, fileAdmission });
-  return createAppWithLocalIdentity({
+  return {
     ...(ownsRuntimeConfig && providerSupportsDefaultGateway
       ? { gatewayConfig: createTestGatewayConfig() }
       : {}),
@@ -127,7 +127,12 @@ export function createApp(options: CreateAppOptions = {}): ReturnType<typeof cre
     ...options,
     fileAdmission,
     turnExecutor,
-  });
+  };
+}
+
+/** Creates the deterministic App with its original fixture environment. */
+export function createApp(options: CreateAppOptions = {}): ReturnType<typeof createNanoCoreApp> {
+  return createAppWithLocalIdentity(prepareTestAppOptions(options));
 }
 
 /** Databases owned only by tests that exercise local HTTP through canonical Workspace authority. */
@@ -154,7 +159,12 @@ beforeEach(() => {
 export function createAppWithWorkspaceAuthority(
   options: CreateAppOptions = {}
 ): ReturnType<typeof createNanoCoreApp> {
-  if (options.coreDb || options.mode === 'server' || !options.store) return createApp(options);
+  return createApp(prepareWorkspaceAuthorityFixture(options));
+}
+
+/** Reuses the original owned identity, membership and cleanup setup before explicit human consent. */
+export function prepareWorkspaceAuthorityFixture(options: CreateAppOptions = {}): CreateAppOptions {
+  if (options.coreDb || options.mode === 'server' || !options.store) return options;
   // A file-backed Store already owns its prepared Workspace scopes. Keep Core relationships
   // in that exact root; a second empty root cannot stand in for native Knowledge authority.
   const storeRoot = options.store.getDataRoot();
@@ -170,5 +180,5 @@ export function createAppWithWorkspaceAuthority(
       workspaceId: workspace.id,
     });
   }
-  return createApp({ ...options, coreDb });
+  return { ...options, coreDb };
 }

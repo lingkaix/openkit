@@ -40,8 +40,8 @@ import { applyMigrations } from '../storage/migrate.js';
 import { readWorkObservations } from '../storage/work-observations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
-import { createApp, createAppWithWorkspaceAuthority } from './app.js';
-import { confirmContextDefaults } from './context-defaults.js';
+import { type CreateAppOptions, createApp, createAppWithWorkspaceAuthority } from './app.js';
+import { confirmContextDefaults, confirmContextDefaultsForApp } from './context-defaults.js';
 import { createDemoStore } from './demo-store.js';
 import { ensureLocalUser } from './local-user.js';
 import { createNativeTaskAdmissionFixture } from './native-task-admission.js';
@@ -419,7 +419,7 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
   });
   const brief = 'Implement a focused change and run its tests.';
   const provider = taskProposalProvider(brief, setup.manifest.id);
-  const app = createAppWithWorkspaceAuthority({
+  const appOptions: CreateAppOptions = {
     coreDb,
     dataRoot,
     store,
@@ -429,7 +429,10 @@ export const taskTerminalReplayCloseoutOwnership: (input: {
     agentManifests: [setup.manifest],
     openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
     ...(entry === 'assistant' ? { llmPiAiClient: provider.client } : {}),
-  });
+  };
+  const app = createAppWithWorkspaceAuthority(
+    entry === 'assistant' ? await confirmContextDefaultsForApp(appOptions) : appOptions
+  );
   const requestId = '0190f4c8-0000-7000-8000-000000000602';
   const scope = {
     actorId: 'usr_00000000-0000-7000-8000-000000000001',

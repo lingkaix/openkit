@@ -209,6 +209,7 @@ import {
   createAppWithWorkspaceAuthority,
   createApp as createDeterministicTestApp,
 } from './test-support/app.js';
+import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
 import { createDemoWorkspaceForUser } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from './test-support/execution-attempt.js';
@@ -670,7 +671,8 @@ function chatAnsweringProvider(
  */
 async function createApp(
   options: CreateAppOptions = {},
-  canonicalAuthority = false
+  canonicalAuthority = false,
+  humanContextConsent = false
 ): Promise<ReturnType<typeof createNanoCoreApp>> {
   if (options.turnExecutor instanceof FakeTurnExecutor && !options.coreDb) {
     const root = options.store ? demoStoreRoots.get(options.store) : undefined;
@@ -704,13 +706,16 @@ async function createApp(
       });
     }
   }
-  return (canonicalAuthority ? createAppWithWorkspaceAuthority : createDeterministicTestApp)({
+  const appOptions: CreateAppOptions = {
     agentManifests: [createTestAgentSetup().manifest],
     openKitConfig: { defaults: { defaultAgentId: 'agent_codex_host' } },
     providerRegistry: testProviderRegistry(),
     ...options,
     store,
-  });
+  };
+  return (canonicalAuthority ? createAppWithWorkspaceAuthority : createDeterministicTestApp)(
+    humanContextConsent ? await confirmContextDefaultsForApp(appOptions) : appOptions
+  );
 }
 
 /** Opens the actual published Git owner for one disk-backed server fixture. */
@@ -6831,48 +6836,52 @@ describe('nanocore server', () => {
     const gatewayConfig = createTestGatewayConfig();
     const intent = 'Prepare a reviewed release plan. Do not deploy anything.';
     let assistantCalls = 0;
-    const app = await createApp({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      gatewayConfig,
-      internalRoleProfiles: {
-        schemaVersion: 1,
-        defaultLogicalModelId: gatewayConfig.defaultLogicalModelId,
-        profiles: [],
-      },
-      llmPiAiClient: asPiAiGatewayClientDouble({
-        createResponses: async (_provider, request) => {
-          const ordinaryAssistant = request.tools?.some((tool) => tool.name === 'goal_create');
-          if (ordinaryAssistant) assistantCalls += 1;
-          return {
-            id: `goal-proposal-${assistantCalls}`,
-            object: 'response',
-            status: 'completed',
-            output:
-              ordinaryAssistant && assistantCalls === 1
-                ? [
-                    {
-                      type: 'function_call',
-                      name: 'goal_create',
-                      call_id: 'goal-proposal',
-                      arguments: JSON.stringify({ intent }),
-                    },
-                  ]
-                : [
-                    {
-                      type: 'message',
-                      role: 'assistant',
-                      status: 'completed',
-                      content: [
-                        { type: 'output_text', text: 'Please select the exact proposed work.' },
-                      ],
-                    },
-                  ],
-          };
+    const app = await createApp(
+      {
+        coreDb,
+        store,
+        turnExecutor: executor,
+        gatewayConfig,
+        internalRoleProfiles: {
+          schemaVersion: 1,
+          defaultLogicalModelId: gatewayConfig.defaultLogicalModelId,
+          profiles: [],
         },
-      }),
-    });
+        llmPiAiClient: asPiAiGatewayClientDouble({
+          createResponses: async (_provider, request) => {
+            const ordinaryAssistant = request.tools?.some((tool) => tool.name === 'goal_create');
+            if (ordinaryAssistant) assistantCalls += 1;
+            return {
+              id: `goal-proposal-${assistantCalls}`,
+              object: 'response',
+              status: 'completed',
+              output:
+                ordinaryAssistant && assistantCalls === 1
+                  ? [
+                      {
+                        type: 'function_call',
+                        name: 'goal_create',
+                        call_id: 'goal-proposal',
+                        arguments: JSON.stringify({ intent }),
+                      },
+                    ]
+                  : [
+                      {
+                        type: 'message',
+                        role: 'assistant',
+                        status: 'completed',
+                        content: [
+                          { type: 'output_text', text: 'Please select the exact proposed work.' },
+                        ],
+                      },
+                    ],
+            };
+          },
+        }),
+      },
+      false,
+      true
+    );
     const requestId = '0190f4c8-0000-7000-8000-000000000305';
     const submit = () =>
       app.request(
@@ -6988,12 +6997,16 @@ describe('nanocore server', () => {
       body: reportBody,
       requestId: 'artifact-import-live-goal-web-1',
     });
-    const app = await createApp({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      ...chatAnsweringProvider(prompts),
-    });
+    const app = await createApp(
+      {
+        coreDb,
+        store,
+        turnExecutor: executor,
+        ...chatAnsweringProvider(prompts),
+      },
+      false,
+      true
+    );
 
     try {
       const res = await app.request(
@@ -7062,12 +7075,16 @@ describe('nanocore server', () => {
           privateOwnerUserId: LOCAL_USER_ID,
         }
       );
-      const app = await createApp({
-        coreDb,
-        store,
-        turnExecutor: executor,
-        ...chatAnsweringProvider(prompts),
-      });
+      const app = await createApp(
+        {
+          coreDb,
+          store,
+          turnExecutor: executor,
+          ...chatAnsweringProvider(prompts),
+        },
+        false,
+        true
+      );
 
       try {
         expect(
@@ -7164,12 +7181,16 @@ describe('nanocore server', () => {
     });
     const executor = new FakeTurnExecutor();
     const prompts: string[] = [];
-    const app = await createApp({
-      coreDb,
-      store,
-      turnExecutor: executor,
-      ...chatAnsweringProvider(prompts),
-    });
+    const app = await createApp(
+      {
+        coreDb,
+        store,
+        turnExecutor: executor,
+        ...chatAnsweringProvider(prompts),
+      },
+      false,
+      true
+    );
     try {
       for (const [variantIndex, { input, clarifies }] of cases.entries()) {
         const label = `model interpretation "${input}"`;

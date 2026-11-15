@@ -26,6 +26,7 @@ import { verifyWorkspaceExportTree } from './storage/workspace-export.js';
 import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
+import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import {
@@ -100,15 +101,17 @@ async function fixture(availableBytes?: () => bigint) {
     visibility: 'workspace',
   });
   const provider = { createResponses: vi.fn(async () => assistantAnswer()) };
-  const app = createApp({
-    coreDb,
-    dataRoot,
-    store,
-    llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
-    ...(availableBytes
-      ? { fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n, availableBytes) }
-      : {}),
-  });
+  const app = createApp(
+    await confirmContextDefaultsForApp({
+      coreDb,
+      dataRoot,
+      store,
+      llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
+      ...(availableBytes
+        ? { fileAdmission: new FileStorageAdmission(dataRoot, () => 1_000_000n, availableBytes) }
+        : {}),
+    })
+  );
   return { dataRoot, coreDb, store, workspaceId, thread, app, provider };
 }
 
@@ -145,14 +148,16 @@ describe('Turn-owned conversation originals', () => {
     const prepare = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
-    const app = createApp({
-      coreDb: state.coreDb,
-      dataRoot: state.dataRoot,
-      store: state.store,
-      turnExecutor: executor,
-      agentManifests: [setup.manifest],
-      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
-    });
+    const app = createApp(
+      await confirmContextDefaultsForApp({
+        coreDb: state.coreDb,
+        dataRoot: state.dataRoot,
+        store: state.store,
+        turnExecutor: executor,
+        agentManifests: [setup.manifest],
+        openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      })
+    );
     const before = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
     const bytes = Buffer.from('Private original');
     const input = {
@@ -221,14 +226,16 @@ describe('Turn-owned conversation originals', () => {
     const setup = createTestAgentSetup();
     const executor = new SimulatedTurnExecutor({ coreDb: state.coreDb });
     const prepare = vi.spyOn(executor, 'prepareAgentSessionForTurn');
-    const app = createApp({
-      coreDb: state.coreDb,
-      dataRoot: state.dataRoot,
-      store: state.store,
-      turnExecutor: executor,
-      agentManifests: [setup.manifest],
-      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
-    });
+    const app = createApp(
+      await confirmContextDefaultsForApp({
+        coreDb: state.coreDb,
+        dataRoot: state.dataRoot,
+        store: state.store,
+        turnExecutor: executor,
+        agentManifests: [setup.manifest],
+        openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      })
+    );
     const before = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
     const bytes = new Uint8Array();
     const input = {
@@ -262,14 +269,16 @@ describe('Turn-owned conversation originals', () => {
     const start = vi
       .spyOn(executor, 'prepareAgentSessionForTurn')
       .mockRejectedValue(new WorkerGovernanceCapacityUnavailableError());
-    const app = createApp({
-      coreDb: state.coreDb,
-      dataRoot: state.dataRoot,
-      store: state.store,
-      turnExecutor: executor,
-      agentManifests: [setup.manifest],
-      openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
-    });
+    const app = createApp(
+      await confirmContextDefaultsForApp({
+        coreDb: state.coreDb,
+        dataRoot: state.dataRoot,
+        store: state.store,
+        turnExecutor: executor,
+        agentManifests: [setup.manifest],
+        openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+      })
+    );
     let reached!: () => void;
     const ready = new Promise<void>((resolve) => {
       reached = resolve;
@@ -559,15 +568,17 @@ describe('Turn-owned conversation originals', () => {
           });
           throw new WorkerGovernanceCapacityUnavailableError();
         });
-      const app = createApp({
-        coreDb: state.coreDb,
-        dataRoot: state.dataRoot,
-        store: state.store,
-        turnExecutor: executor,
-        llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
-        agentManifests: [setup.manifest],
-        openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
-      });
+      const app = createApp(
+        await confirmContextDefaultsForApp({
+          coreDb: state.coreDb,
+          dataRoot: state.dataRoot,
+          store: state.store,
+          turnExecutor: executor,
+          llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
+          agentManifests: [setup.manifest],
+          openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
+        })
+      );
       const bytes = [new Uint8Array([0xff, 0, 1]), new Uint8Array()];
       const input = {
         workspaceId: state.workspaceId,
@@ -718,12 +729,14 @@ describe('Turn-owned conversation originals', () => {
       fileInputs: [metadata(bytes)],
     };
     const provider = proposalProvider('goal_create', { intent: input.input });
-    const app = createApp({
-      coreDb: state.coreDb,
-      dataRoot: state.dataRoot,
-      store: state.store,
-      llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
-    });
+    const app = createApp(
+      await confirmContextDefaultsForApp({
+        coreDb: state.coreDb,
+        dataRoot: state.dataRoot,
+        store: state.store,
+        llmPiAiClient: asPiAiGatewayClientDouble(provider as Record<string, unknown>),
+      })
+    );
     const threadsBefore = state.store.listThreads(state.workspaceId).map((thread) => thread.id);
     const response = await app.request('/api/app/operations/conversation.submit', {
       method: 'POST',
@@ -917,12 +930,14 @@ describe('Turn-owned conversation originals', () => {
       expect(
         readFileSync(turnFilePayloadPath(root, state.thread.id, accepted.turn.id, ordinal))
       ).toEqual(Buffer.from(part));
-    const restartedApp = createApp({
-      coreDb: state.coreDb,
-      dataRoot: state.dataRoot,
-      store: restarted,
-      llmPiAiClient: asPiAiGatewayClientDouble(state.provider as Record<string, unknown>),
-    });
+    const restartedApp = createApp(
+      await confirmContextDefaultsForApp({
+        coreDb: state.coreDb,
+        dataRoot: state.dataRoot,
+        store: restarted,
+        llmPiAiClient: asPiAiGatewayClientDouble(state.provider as Record<string, unknown>),
+      })
+    );
     const restartedReplay = await restartedApp.request(
       ...operationRequest('conversation.submit', {}, { body: JSON.stringify(input) })
     );

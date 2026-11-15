@@ -11,8 +11,13 @@ import {
 } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
+import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
-import type { CreateAppOptions } from './app.js';
+import {
+  type CreateAppOptions,
+  prepareTestAppOptions,
+  prepareWorkspaceAuthorityFixture,
+} from './app.js';
 
 /** Explicit fixture-human review/confirm through the original Policy candidate, native writer and reload. */
 export async function confirmContextDefaults(
@@ -22,6 +27,38 @@ export async function confirmContextDefaults(
 ): Promise<RuntimeConfigManager> {
   const original = manager.current();
   const dataRoot = coreDb.dataRoot;
+  // A cold fixture reuses the already human-confirmed Policy, preserving its transport double.
+  const persisted = existsSync(join(dataRoot, 'config/server.jsonc'))
+    ? createRuntimeConfigManager({ dataRoot }).current().openKitConfig.policy?.mediation
+    : undefined;
+  if (
+    persisted &&
+    ['owner-direct', 'workspace-members', 'agent-initiated'].every((id) =>
+      persisted.statements.some(
+        (statement) =>
+          statement.state === 'active' &&
+          statement.scope.resources.some(
+            (resource) =>
+              resource.kind === 'container' &&
+              resource.container.kind === 'context-preset' &&
+              resource.container.id === id
+          )
+      )
+    )
+  ) {
+    readAdmittedPolicyDocument(coreDb, persisted);
+    return createRuntimeConfigManager({
+      dataRoot,
+      initialSnapshot: {
+        ...original,
+        openKitConfig: {
+          ...original.openKitConfig,
+          policy: { ...original.openKitConfig.policy, mediation: persisted },
+        },
+      },
+    });
+  }
+
   const actor = actorFromRequest(
     new Request('http://fixture.invalid/'),
     'local',
@@ -108,6 +145,7 @@ export async function confirmContextDefaults(
 export async function confirmContextDefaultsForApp(
   options: CreateAppOptions
 ): Promise<CreateAppOptions> {
+  options = prepareTestAppOptions(prepareWorkspaceAuthorityFixture(options));
   const { coreDb, store } = options;
   const dataRoot = options.dataRoot ?? coreDb?.dataRoot;
   if (!coreDb || !store || !dataRoot)
