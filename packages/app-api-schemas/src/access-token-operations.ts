@@ -44,7 +44,7 @@ export const ACCESS_TOKEN_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'token.create': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Create an OpenKit access token for one-time secret delivery.',
     inputSchema: CreateOpenKitAccessTokenRequestSchema,
     outputSchema: CreateOpenKitAccessTokenResponseSchema,
@@ -58,7 +58,7 @@ export const ACCESS_TOKEN_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'token.rotate': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Rotate an OpenKit access token for one-time secret delivery.',
     inputSchema: RotateOpenKitAccessTokenRequestSchema.safeExtend({ tokenId: AccessTokenIdSchema }),
     outputSchema: RotateOpenKitAccessTokenResponseSchema,
@@ -72,7 +72,7 @@ export const ACCESS_TOKEN_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'bootstrap.consume': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description:
       'Consume the bootstrap secret to create the login-capable owner and first administrator token.',
     inputSchema: ConsumeOpenKitBootstrapTokenRequestSchema,

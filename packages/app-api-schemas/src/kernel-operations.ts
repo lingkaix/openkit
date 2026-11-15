@@ -20,7 +20,7 @@ const selectors = { workspaceId: WorkspaceIdSchema, appId: z.string().uuid() };
 /** Sole declarative contract for the first Generative Kernel operation slice. */
 export const KERNEL_OPERATION_DEFINITIONS = {
   'kernel.apps.get': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

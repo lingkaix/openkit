@@ -18,7 +18,7 @@ const publicCredentials = [
 /** Decisions join the shared Pending Request owner; CLI semantic ids stay unchanged. */
 export const PENDING_REQUEST_OPERATION_DEFINITIONS = {
   'approval.respond': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

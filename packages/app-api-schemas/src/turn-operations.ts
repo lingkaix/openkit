@@ -41,7 +41,7 @@ export const TURN_OPERATION_DEFINITIONS = {
     successStatus: 202,
   },
   'turn.interrupt': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

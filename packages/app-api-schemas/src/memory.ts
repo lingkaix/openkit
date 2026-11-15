@@ -219,7 +219,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.search': {
-    stability: 'release-coupled',
+    stability: 'settled',
     ...self,
     description:
       'Search current self Memory with a separate budget in the existing private Timeline.',
@@ -228,7 +228,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.source.register': {
-    stability: 'release-coupled',
+    stability: 'settled',
     ...self,
     description: 'Capture one exact literal document in the authenticated User Source scope.',
     inputSchema: RegisterUserMemorySourceRequestSchema,
@@ -236,7 +236,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'memory.source.list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     ...self,
     description: 'List explicit User Source metadata under current self authority.',
     inputSchema: z.object({}).strict(),
@@ -244,7 +244,7 @@ export const MEMORY_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'memory.source.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     ...self,
     description: 'Read the exact captured bytes of one currently authorized User Source.',
     inputSchema: z.object({ sourceId: KnowledgeSourceIdSchema }).strict(),

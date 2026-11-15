@@ -47,7 +47,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.reload': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Reload supported runtime configuration.',
     inputSchema: RuntimeConfigReloadRequestSchema,
     outputSchema: RuntimeConfigReloadResponseSchema,
@@ -61,7 +61,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'List editable runtime configuration files.',
     inputSchema: z.object({}).strict(),
     outputSchema: RuntimeConfigFileListResponseSchema,
@@ -75,7 +75,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Read one runtime configuration file.',
     inputSchema: z.object({ id: z.string().min(1) }).strict(),
     outputSchema: RuntimeConfigFileReadResponseSchema,
@@ -104,7 +104,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.file-update': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Update one runtime configuration file with exact revision protection.',
     inputSchema: RuntimeConfigFileWriteRequestSchema,
     outputSchema: RuntimeConfigFileWriteResponseSchema,
@@ -146,7 +146,7 @@ export const RUNTIME_CONFIG_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'runtime.validate': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Validate runtime configuration without writing it.',
     inputSchema: RuntimeConfigValidationRequestSchema,
     outputSchema: RuntimeConfigValidationResponseSchema,

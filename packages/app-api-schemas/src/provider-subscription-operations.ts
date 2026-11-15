@@ -177,7 +177,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-quota': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Read bounded provider-subscription quota observations.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: ProviderSubscriptionQuotaSchema,
@@ -191,7 +191,7 @@ export const PROVIDER_SUBSCRIPTION_OPERATION_DEFINITIONS = {
     successStatus: 200,
   },
   'provider-subscription.account-auto-topup': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Read the supported provider-subscription auto-top-up observation.',
     inputSchema: z.object(pairSelector).strict(),
     outputSchema: ProviderSubscriptionAutoTopupSchema,

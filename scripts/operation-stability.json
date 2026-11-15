@@ -2,36 +2,42 @@
   "schemaVersion": 1,
   "operations": {
     "administration.cleanup-read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d4fab8d5f65c1d9f991e95b821b0a1f5f89606c03386e3d25999c9c4a6aab62c"
     },
     "administration.configuration-apply": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4f2c1830dd7ddc71db254f154ea18f3d5ad14cc028ec01767fbd92babb5a2348"
     },
     "administration.conversation-submit": {
       "stability": "release-coupled",
       "state": "active"
     },
     "administration.mcp-discovery-preview": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:29bf6d7fc9878d4dd9b871f5d6702c1f3e7235911f107d0016ae59fd39505fd4"
     },
     "administration.report-prepare": {
       "stability": "release-coupled",
       "state": "active"
     },
     "administration.server-mcp-create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:a6e673206ae190dd71c982fc8412a6a418b08b0038676a27283af0a5154f6f37"
     },
     "administration.server-mcp-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:2e62e288576618fad3b127d979f2ffa8c6fac20d9236c4d0141adedf0d8cd9fb"
     },
     "administration.server-mcp-read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:e880ce58ccb6a5a19a8493dcdec93ad4885089ffc7c73d15343c4474cf26d59e"
     },
     "administration.server-mcp-remove": {
       "stability": "release-coupled",
@@ -46,48 +52,58 @@
       "state": "active"
     },
     "administration.server-mcp-update-binding": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:7a934000a313739c75373368a49704b0d5adb9e62022825c6562b05cbde7cdc6"
     },
     "agent.health-refresh": {
       "stability": "release-coupled",
       "state": "active"
     },
     "agent.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:61837af30c39349218c5280fc8a968b91ac6ada86b94bdf1132d7aa3284a6c8d"
     },
     "agent.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:57c59e32c7ba894adcf16f6c5cfb8dde81b89154eec9da175b1042ff68f9a352"
     },
     "app-update.preflight": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:3ab44dd99af44d4efb3ee80349d53c7678e55fb58681ad4d8eb744e54d3bf231"
     },
     "app-update.prepare": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ca4feae69ec387be922a0303b7987639041985cb470d4a281651a0ac4da54586"
     },
     "app-update.start": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:30c2901ae5da0e9773f01eaf3da3b4c26b2226350b17c321fa1f18e571234fc3"
     },
     "app-update.status": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:29d9ff815a2f1b861194fb2f9744c40d77473bfb0be8decda4352855327705ff"
     },
     "app.search": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1d949144f18e02acc30c08663cd93eb9c67a92c91ae5fb5d92e52ed5fbee07e4"
     },
     "approval.respond": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:7ef9302b91cc15afbf80e580ad24fadced92cfe0de5f9e69df010ead64f4ddcc"
     },
     "artifact.download": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c45c5f0228ae663e73e2be79e4c84a28cf7cf71cc4a957ce19e8a9490241b701"
     },
     "artifact.folder-extract": {
       "stability": "release-coupled",
@@ -98,20 +114,23 @@
       "state": "active"
     },
     "artifact.import": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:9889d4110a22698430f535209759dd80c7174a94b4a7387460827669f2e54eb2"
     },
     "artifact.introduce": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1774149042260edd809dce96be452d1dec7418de66fb68bea282c5bc43e82ee3"
     },
     "artifact.list": {
       "stability": "release-coupled",
       "state": "active"
     },
     "artifact.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4dae9240a3f033056ce0c517f665482bf68788db7e10539af974ffdba9a99bb6"
     },
     "artifact.review-list": {
       "stability": "release-coupled",
@@ -122,36 +141,43 @@
       "state": "active"
     },
     "artifact.review.select": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:52eaf39a263b6cf21a8c0784b8a9f33a749a015baf996f905348c71540726ae6"
     },
     "artifact.version-commit": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:7d6fb08be49f3bb7f3cecf71dbf9442e9d0420869a69f7c20d731c194b6087e7"
     },
     "artifact.version-file-commit": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:fee23367dbb7cdb94be3fc9226b501440d5a06305acd189133ade7aa0546127d"
     },
     "artifact.version-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d4309bec43bd0bdfb13e2170b556f0b719339c7e1bba1b5cf93f2c78be67d219"
     },
     "artifact.version-read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:b6b7e4bd0ef212158244a383146f76bc07b1840da56d07c185f79820267eeb1a"
     },
     "attention.list": {
       "stability": "release-coupled",
       "state": "active"
     },
     "audit.server-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:218c6e4068a489bd94469f4506e00f0f38fa0ea13f740ac48e966fd42bd5d65b"
     },
     "audit.workspace-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:825368041c6b3aa8ede726e7b109223e3b41f05b90e9611b3afe7662bc3367a6"
     },
     "automation.create": {
       "stability": "release-coupled",
@@ -162,8 +188,9 @@
       "state": "active"
     },
     "automation.event-admit": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:57d04c4cd8ecf1abc8bba78afc8dd8d4bdc0f6f45c2c0758c8629cc66338fe2f"
     },
     "automation.history": {
       "stability": "release-coupled",
@@ -178,20 +205,24 @@
       "state": "active"
     },
     "backup.create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:77b6b11691c16ec236a6a13d7bd1e85cba97bc0bb1c63d884a00003d23158d81"
     },
     "backup.verify": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:be1ca52b9fa96e6122e0c1307b3d0fcbcc706ed6580cf5a7f2f9fe35c387cff2"
     },
     "bootstrap.consume": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:256b0b42aec93e2de532e5cdd27ab7ca5273ef9a8d647e627d7c6a5c7824ea81"
     },
     "caller.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:3a44b1c31086617e865655a03bd84ccaa2cc18a45d771a396bd59f652c41a23d"
     },
     "catalog.light-app-export": {
       "stability": "release-coupled",
@@ -202,32 +233,37 @@
       "state": "active"
     },
     "catalog.light-app-import": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:31677247f7c57dbb4ebb092c6047492189b3f1a4850fd72982f2df46b5b56b0d"
     },
     "catalog.light-app-list": {
       "stability": "release-coupled",
       "state": "active"
     },
     "catalog.light-app-pin": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:e15d8c95352ae80e66269c9f73edda577c7e7694b2c6c852055e24aee180dca7"
     },
     "catalog.light-app-read": {
       "stability": "release-coupled",
       "state": "active"
     },
     "catalog.light-app-select": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c57f6f7ec951fcab9e3d55fa737c092b7b187e244248c6eda14523fd493f7659"
     },
     "catalog.mcp-binding": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:caa6bf73d322fb66ff963f328d9586f390f82cabe6ed102fbc98d1e2d56837a9"
     },
     "catalog.mcp-create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:719621cba1ff08a533a5e6089ad161367fdbb58d63fcf5d8c5c322d0f1c000ca"
     },
     "catalog.mcp-list": {
       "stability": "release-coupled",
@@ -238,8 +274,9 @@
       "state": "active"
     },
     "catalog.mcp-select": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ca4f5480bc729bce8938df84142b9624a07fb195d5c5bc8b0db65b091bb05806"
     },
     "catalog.mcp-stage-version": {
       "stability": "release-coupled",
@@ -254,48 +291,57 @@
       "state": "active"
     },
     "catalog.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:f145c90b93f3388bb360b480a4bda13b0a93ab7c971e36ddd9f63e7c05955f46"
     },
     "catalog.shared-mcp-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:40a2752318997b2b1231cf74ed53b436248e3dc680e171728f6fd40d7b4a2357"
     },
     "catalog.shared-mcp-set-disabled": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:9d12ab453499585c811b6f48011221ab03bd545f0903f7f4ae6c58d5be72562c"
     },
     "catalog.skill-candidate-decide": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:7ec41eaf961f82aab3f7b56295077cef31b0894097895aa698429f94a9e4bc48"
     },
     "catalog.skill-candidate-submit": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:2d19601366056eb66a9ec4e56d7fd92348da28bbecf5c387d9c97744db2228c9"
     },
     "catalog.skill-candidate-withdraw": {
       "stability": "release-coupled",
       "state": "active"
     },
     "catalog.skill-content-read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:dc54f9e5e6235804a75f865ae7c18dd1d06c93e888549c2ac634d54f2c327641"
     },
     "catalog.skill-diff": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c910e9abf9df01122b4ce3193c4f102fb137b4a4b33a9ad0deb4af087c3b39ea"
     },
     "catalog.skill-import": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:9119139a76f3ca342f48ed017ce35fa8aacb91666555f27fe9b08448796140d2"
     },
     "catalog.skill-list": {
       "stability": "release-coupled",
       "state": "active"
     },
     "catalog.skill-pin": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d360de56f62837cc30ce33682d7b2503ce7442a83db24bf3851335008c9ff7c6"
     },
     "catalog.skill-purge": {
       "stability": "release-coupled",
@@ -314,8 +360,9 @@
       "state": "active"
     },
     "catalog.skill-version-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:9e8ce26eb7297c54e54e616ef15b6ac80c1d1526177891a22ae273454d30e481"
     },
     "catalog.skill-version-read": {
       "stability": "release-coupled",
@@ -338,16 +385,19 @@
       "state": "active"
     },
     "conversation.navigation": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:85c9db830ad9082d13ed3d2a6004acc4fa70fdab13a370f2dc34b53a088ef140"
     },
     "conversation.submit": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:8bba740d248a313fb411753a1d4d721ae874187b7597bc08fe35c668693d36b9"
     },
     "conversation.targets": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:54436d3ed00ff26eede319425a15a69ba9f2faf160ffe6fc6937f01ef9b79367"
     },
     "credential.list": {
       "stability": "release-coupled",
@@ -358,16 +408,18 @@
       "state": "active"
     },
     "diagnostics.app": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:08e56abd6ae78b72c445c015fd980a5cc7a49558ad0037aadf90034f3934d8bb"
     },
     "diagnostics.setup": {
       "stability": "release-coupled",
       "state": "active"
     },
     "environment.snapshot-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:78085907dcc2d690d961fa391d19c407e302ae7e35d09db0aba28f47dbdf2dd5"
     },
     "environment.snapshot-read": {
       "stability": "release-coupled",
@@ -438,40 +490,46 @@
       "state": "active"
     },
     "goal.completion.accept": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4ae34c2ece37be668357e8798ad7454c9ea8580ad140643b1873e0d6a707db0d"
     },
     "goal.create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d0cdd6f5fe4baee75e92a49ecf810d3b7a5becf3bc986a586b030976c1f8d0e0"
     },
     "goal.intent.revise": {
       "stability": "release-coupled",
       "state": "active"
     },
     "goal.plan.approve": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:f046d5a82eb69584d3e7424cf8f4b35bba3afa1ce2883d209f003f04010d17ef"
     },
     "goal.plan.propose": {
       "stability": "release-coupled",
       "state": "active"
     },
     "goal.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1776f4e91f2d2b670c5d1ccca54bd9aeb9bc0d51c7bfdf1cc902916947c9384d"
     },
     "kernel.apps.create": {
       "stability": "release-coupled",
       "state": "active"
     },
     "kernel.apps.get": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1e839fe2f0025bf9116978790c263a709ae13643a817fbe6c7ddce8d06db1bc5"
     },
     "kernel.apps.instantiate": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d66dd40a6052c23a1dc8129541ef7c46bee1028acb35af410cfee89f3b4586e6"
     },
     "kernel.apps.list": {
       "stability": "release-coupled",
@@ -506,8 +564,9 @@
       "state": "active"
     },
     "kernel.schema.activate": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4896be91fca40f4968fadaefbf8c1a2ddd05764f94ce2204a1eeebb1e3ce5051"
     },
     "kernel.schema.update": {
       "stability": "release-coupled",
@@ -526,8 +585,9 @@
       "state": "active"
     },
     "knowledge.ask": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:36f2200bcda94b4eacb0e940c4cd6e7508f2875b5549fe9d11483d233c0c7925"
     },
     "knowledge.context.prepare": {
       "stability": "release-coupled",
@@ -542,36 +602,44 @@
       "state": "active"
     },
     "knowledge.maintain": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:243c00afd32e13c707e58bc4d0f390676a75fc43801c7a724ab5f1da941c7de9"
     },
     "knowledge.notebook.create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:eaba5162b624f20c63f6edfc5d4b3dcd49fce410b03755de0fea679661708788"
     },
     "knowledge.notebook.delete": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:927e3349ede127d90fd4f33e826df1783fe33fe193e0a681afe04917c1e044f9"
     },
     "knowledge.notebook.diff": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1dac1abc33501e0cdf9564f7501ede667a8b8f07faab655827e265f46a4aef80"
     },
     "knowledge.notebook.history": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:fd21b032330aa9f6c36448cfb3f398a4b32b8cccd96744d9b813263c96797a48"
     },
     "knowledge.notebook.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:f9ce9e31866e096cde631c546bd85b828ee4403e05ba15cd40c2b992d99ef8c9"
     },
     "knowledge.notebook.restore": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:19560ca2cf03520a93d1e1ef155fe608fdfbeec931328c352063686ef16f52ad"
     },
     "knowledge.notebook.update": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:641bf259cf0e7eca7cabc2190fa082412124987885056bdac50dd9b563d3048c"
     },
     "knowledge.package.export": {
       "stability": "release-coupled",
@@ -582,16 +650,19 @@
       "state": "active"
     },
     "knowledge.proposal.decide": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c978ecca291f22a7d4adecfb606528d13b27e56cecf9f82d08879fecfea578c4"
     },
     "knowledge.proposal.draft": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:095795bcf1bb37b762724da1c0436668573fc8f4b9a2825140ba3e32bdc0b78a"
     },
     "knowledge.proposal.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d776ebb3ef00437fb4b12d60db00abe0feee0ea1f269217e8c3fbbb3e05e6190"
     },
     "knowledge.proposal.reverse": {
       "stability": "release-coupled",
@@ -614,20 +685,24 @@
       "state": "active"
     },
     "knowledge.server.maintain": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:3a90d5e273c63e77603982e1bf590bc6cb4463e6da29d732fddc7d6dfe2a90cf"
     },
     "knowledge.server.proposal.decide": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:cc6abff3d60af621d52f373775b50f74155f94c4e3fb33bddb45e36d17bb7235"
     },
     "knowledge.server.proposal.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4c80b50d4e62d535594652df4a82f5949b45d5fdba0ce2af030c1af01a1fcd72"
     },
     "knowledge.server.tell": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:a759ef736962023f577accd618bbe77f3d66d25345e20aa41cbc202fb2d8166b"
     },
     "knowledge.source.list": {
       "stability": "release-coupled",
@@ -642,8 +717,9 @@
       "state": "active"
     },
     "knowledge.tell": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:0c9f45349ed7d94b04e76de8e640f82d65154a56f9c5a31d92b7853946b5db2a"
     },
     "local-ai.disable": {
       "stability": "release-coupled",
@@ -662,8 +738,9 @@
       "state": "active"
     },
     "material.create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:cfef8560a78c965552581c17c82bd5fe2a9c57fd7bb816633d0858c1b9520cd7"
     },
     "material.exclude": {
       "stability": "release-coupled",
@@ -678,8 +755,9 @@
       "state": "active"
     },
     "material.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:82d2c6f950dfc77624bad4cf13aac8514f943fc9e6054706bb5776bc6818e80f"
     },
     "material.restore": {
       "stability": "release-coupled",
@@ -690,12 +768,14 @@
       "state": "active"
     },
     "material.revision-read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4364433117ddf8cc9f0cb4f292f0306d961932907b060c9beee44963d8405044"
     },
     "material.revision-save": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:faec1fe955b4949e68550e0d3c72ec65f3b39a381d47517e9167f0f3b3bc514f"
     },
     "material.thread-read": {
       "stability": "release-coupled",
@@ -758,20 +838,24 @@
       "state": "active"
     },
     "memory.search": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:87eb3c44d6ab96d9643e7802eaf7581c911e12793a5c6246c71652839924649d"
     },
     "memory.source.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:a8ef828e9ffcf73355e280090f982a38cf90af4d3cc23e5ca9877a38a74780c2"
     },
     "memory.source.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:3ccdbc8694f785917be2096baa73b27e90b687355a0ff010fcea68b7d1979d8c"
     },
     "memory.source.register": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c273e31af1c3249934efc2d2edc4408201069ee63e34f673c4a5e8666e753bec"
     },
     "memory.tell": {
       "stability": "release-coupled",
@@ -786,12 +870,14 @@
       "state": "active"
     },
     "nanohost.enroll": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1a8c3ff78dfc7015e1685201d3b9e9f9d056ce2e78e453fce2dd48fcef3479b7"
     },
     "nanohost.runtime-target": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:538ff5f1e60d81e991bd363a0a64aac1bbc7687ba6f0ec4f23a28eb5592ff9d2"
     },
     "nanohost.token-issue": {
       "stability": "release-coupled",
@@ -830,16 +916,18 @@
       "state": "active"
     },
     "permission.workspace-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:f49ae254af969f9806914ff262f19e9ca7f34f11fbe079d10b16bc79d532663c"
     },
     "policy.write": {
       "stability": "release-coupled",
       "state": "active"
     },
     "provider-subscription.account-auto-topup": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:9c54a6729ffd97d88d492b44aae31b9aa6ff50be1c480118411efa6b8f7960ec"
     },
     "provider-subscription.account-create": {
       "stability": "release-coupled",
@@ -858,8 +946,9 @@
       "state": "active"
     },
     "provider-subscription.account-quota": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:89b11b97cb0b21ab7c238d0d2aac7c61a91500356c94b9c156a9e36b1128218b"
     },
     "provider-subscription.account-status": {
       "stability": "release-coupled",
@@ -918,32 +1007,38 @@
       "state": "active"
     },
     "runtime.file-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c5d15e9087ec83dc1f32bc7d3f15562347e1bbed2dac8ae91de3a93f018f25f8"
     },
     "runtime.file-read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:6567d0d9cd7af01d25b94378881802e791782594257494d293eac3b9af2da7db"
     },
     "runtime.file-update": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ffcc088801916705cf6a820de00eb9e7118f983ad750e57a90d70ccdc09e2ddb"
     },
     "runtime.reload": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:e567b3e24852f954bed57b431fbdc5a628356a0dc0817695a0c573a9bdaa4857"
     },
     "runtime.schemas": {
       "stability": "release-coupled",
       "state": "active"
     },
     "runtime.validate": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d8adf458c4eddaa6c086a697293656569145da7507d609d049d14838c840e617"
     },
     "scheduler.cancel": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:217e5f79a99080bf01a80f5c3df5199549a406cb63008d4ce6774bd90c7038af"
     },
     "scheduler.list": {
       "stability": "release-coupled",
@@ -974,8 +1069,9 @@
       "state": "active"
     },
     "sync.change-set-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:b62f942683d14e8496f2a31e685860d3914048a1d0e8b5465c4980a20d3f7c1c"
     },
     "sync.input-snapshot-list": {
       "stability": "release-coupled",
@@ -1006,8 +1102,9 @@
       "state": "active"
     },
     "sync.review-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1e7dbea1fcc755a10ff01235db73f507b5f9573518c84e7700c6a2afbd31a49a"
     },
     "sync.review-read": {
       "stability": "release-coupled",
@@ -1018,24 +1115,28 @@
       "state": "active"
     },
     "task.start": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:60990ae48490d195e8478d038ca47b3f4cb443b302138c90fe84dd40ed5b1e49"
     },
     "task.steer": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:11f5945c9d2d7cfb38498bca15ff40e637b66c145beac37a5d4a46b5840ed979"
     },
     "thread.archive": {
       "stability": "release-coupled",
       "state": "active"
     },
     "thread.create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ad4360a4f5870ab33ca47f1a68dc687fd94580cb1f9c1e3717229b50e825d6bf"
     },
     "thread.dashboard": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ad03300185f1c755e777d07f5e5573b42424e7ac02a7c89e650276fceeaafe58"
     },
     "thread.item-body": {
       "stability": "release-coupled",
@@ -1062,12 +1163,14 @@
       "state": "active"
     },
     "thread.server.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4b1a4f5462755155216e1ca8460e7930c275f5b69e2b99a2a0efcbef0d383048"
     },
     "thread.server.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:851e04ccc6d91db2dc38f780ab6fd65381abe86d5d749a698fbb2a8e65fc82a0"
     },
     "thread.timeline": {
       "stability": "release-coupled",
@@ -1078,8 +1181,9 @@
       "state": "active"
     },
     "token.create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:e9568483fcfeb323082b621c62c007ac4f549d4dcf0453df57f4263ab8f2f19b"
     },
     "token.list": {
       "stability": "release-coupled",
@@ -1098,32 +1202,36 @@
       "state": "retired"
     },
     "token.rotate": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:2c60577b5afedcd62d17da392b972acb599b26167e036104adecb7c4ccf78d49"
     },
     "turn.feedback": {
       "stability": "release-coupled",
       "state": "active"
     },
     "turn.interrupt": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:31497ee428da81342a2411611c7e0e8c988943df93aa6282f8a265dac290bcd0"
     },
     "turn.read": {
       "stability": "release-coupled",
       "state": "active"
     },
     "turn.server.interrupt": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:b5af1bc272261e9b9f869fa7f76479472ffef3c20472f80e6b96fbb17eadd259"
     },
     "turn.start": {
       "stability": "release-coupled",
       "state": "active"
     },
     "usage.read": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:570d3e3c7ac433352cdbc8a7f0625dde2bf70ca629e95a8f91e6d598a0a9cb70"
     },
     "user.disable": {
       "stability": "release-coupled",
@@ -1142,36 +1250,43 @@
       "state": "active"
     },
     "vault.bootstrap-codex-auth": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:6bc02a0e9919e81357df86df967164e2af627cf30f1059b83d09d649aeceecb6"
     },
     "vault.grant-create": {
       "stability": "release-coupled",
       "state": "active"
     },
     "vault.grant-issue": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1688982250da96152f4811c98e24b5dc0937f27b3255b34436de977129bf7a7d"
     },
     "vault.grant-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1c5b5361440c3c036a33d65ec42a1776752c023ddabf6c602c0c38b85f881ef9"
     },
     "vault.grant-narrow": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:534a8c6624e4e0573de1755ad20c016620b8d9a5555f374ce6e79b97a39900ee"
     },
     "vault.grant-request": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:83bf0e13ed4c98c9f5d5d6fecf55ab102b5d6e0480980b3320c615d3b41a4ad3"
     },
     "vault.grant-request-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ae25c570a976f864564f756e9e9fd40616b97488b0df98ef22cd5dd35ef98985"
     },
     "vault.grant-revoke": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:b2e76ceb8dca0f2c6c00fc5b80add779cad2609e5985150740fea7f04e696933"
     },
     "vault.grant-withdraw": {
       "stability": "release-coupled",
@@ -1226,16 +1341,18 @@
       "state": "active"
     },
     "vault.server-mcp-grant-create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:5553b275cefa252ee69bc58adbaa219b68ef61e5048e44ea076e262621b22589"
     },
     "vault.server-mcp-grant-list": {
       "stability": "release-coupled",
       "state": "active"
     },
     "vault.server-mcp-grant-narrow": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:fb2757de16ffbab04ba506018fa7a151f61e2b4d9f62c57b4200547bce1db62f"
     },
     "vault.server-mcp-grant-revoke": {
       "stability": "release-coupled",
@@ -1250,28 +1367,32 @@
       "state": "active"
     },
     "vault.server-mcp-reference-list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:f4f531056ee80ff676aed5cf57e4943c3ee28023dbfb732a2696fe714dd4d072"
     },
     "vault.server-mcp-secret-create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:054cbcdb53dd1f95c8a5df3a8f5514b7276d427db576e3959f44f9c41bf23c5e"
     },
     "vault.server-mcp-secret-revoke": {
       "stability": "release-coupled",
       "state": "active"
     },
     "vault.server-mcp-secret-rotate": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ec22416ea450e0ed840037fa547a1801376aa340d0086a21ee0514c30002ed56"
     },
     "vault.server-use-list": {
       "stability": "release-coupled",
       "state": "active"
     },
     "vault.status": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:55822553b3dd825a3ee483b1d938c2d0900369ffdeff2ed9ac8099bcbc57af90"
     },
     "vault.unlock": {
       "stability": "release-coupled",
@@ -1282,36 +1403,43 @@
       "state": "active"
     },
     "worker-environment.activate": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:807a59a918f77c2c376c25fe824f7ba1ef2017afe39dbca22ea574a249c6b24f"
     },
     "worker-environment.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:298468b1433d77c4b4a4e35c2171e3236b0923dc8829b606c2e7b5a3823b8f10"
     },
     "worker-environment.prepare": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ce8d9da41d5316e4188a0aea9d343582184dcf943cd44446bcff6ddadc032ed3"
     },
     "worker-environment.purge": {
       "stability": "release-coupled",
       "state": "active"
     },
     "worker-environment.recover": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:cde5725b8cbe63c97016a3288f747a34ed932d9ff35c5ad3b85247ebe3a09d52"
     },
     "worker-environment.select": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:f55258d52f2840809a8baf2118b7cc33c68c869c7ae2d52f4a04e31858316679"
     },
     "worker-environment.status": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:da19e62a1171872c28cf049c8928b846e83a3d7f45b8c29547d6caa8d596ec4b"
     },
     "worker.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:ff80f465540c09fe01a3d2503e8075e7c9c85689e1d7ced2cd096ace6eb3e39d"
     },
     "workspace.access-recover": {
       "stability": "release-coupled",
@@ -1322,16 +1450,18 @@
       "state": "active"
     },
     "workspace.archive-download": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:660e97967e232959fa9c9dd08afc635b5001ea4f95374b9d67cec1085b8562c7"
     },
     "workspace.backup-capture": {
       "stability": "release-coupled",
       "state": "active"
     },
     "workspace.backup-download": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4fb7a6c27066e8eda160fb1be366927a3f6a828d899f175a606b9e36ab917689"
     },
     "workspace.backup-restore": {
       "stability": "release-coupled",
@@ -1346,24 +1476,28 @@
       "state": "active"
     },
     "workspace.dashboard": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:797cd97f5adf962cfb67b96b503f4188243d53dc9d0c57332c56a7cbdeab6960"
     },
     "workspace.delete": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:4b9ee8138f7e5059a26f7dde0ec96d3058823a70ca84e586725c66f5bd7a8eb3"
     },
     "workspace.deleted-recover": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:1076a0bb1cfc599030b62486d82d0b37b4ccbf3ffa574c4d88c262dad4a40ac3"
     },
     "workspace.export": {
       "stability": "release-coupled",
       "state": "active"
     },
     "workspace.invitation-create": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:c601a97e787020be0bc97dcdbae9d15d3c35535bcf122ea1fb64e0b4ac40cd58"
     },
     "workspace.invitation-list": {
       "stability": "release-coupled",
@@ -1378,8 +1512,9 @@
       "state": "active"
     },
     "workspace.list": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:41d5ad6614b41103cc9cad2859c16ba5b4002ebd14f2e0184953c0b89254b429"
     },
     "workspace.member-list": {
       "stability": "release-coupled",
@@ -1422,20 +1557,24 @@
       "state": "active"
     },
     "workspace.resource-access-apply": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:42b17fb977c5e7cc39fa8de3d67a42949c0c05dbe8bbc6aff906a6348f1f01bf"
     },
     "workspace.resource-access-request": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:d36305472d5da3594109277cd1bb6e7df02ebcf2cc5bd22cbbca3bfdf45517a5"
     },
     "workspace.resources": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:2491bb8cb22608cf0b0da8c46d9d653cdc0dd1c5284197a1b57a4027bfbd8708"
     },
     "workspace.retire-quarantined": {
-      "stability": "release-coupled",
-      "state": "active"
+      "stability": "settled",
+      "state": "active",
+      "digest": "sha256:2425c7926bd087c5e610f9dbccaa7894bf321af5b275b9400195583198072247"
     },
     "workspace.update": {
       "stability": "release-coupled",

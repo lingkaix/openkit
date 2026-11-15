@@ -4501,11 +4501,14 @@ test('automation deletion derives strict CLI input and maps the bodyless HTTP su
 test('API CLI catalog, search and describe carry the declared stability marker', async () => {
   const { operationCatalog, searchOperations, describeOperation } = await operations();
   for (const entry of operationCatalog.filter((entry) => entry.source === 'app-api')) {
-    assert.equal(entry.stability, 'release-coupled');
-    assert.equal(describeOperation(entry.id).stability, 'release-coupled');
+    assert.equal(entry.stability, appSchemas.OPERATION_DEFINITIONS[entry.id].stability);
+    assert.equal(
+      describeOperation(entry.id).stability,
+      appSchemas.OPERATION_DEFINITIONS[entry.id].stability
+    );
     assert.equal(
       searchOperations(entry.id).find((item) => item.id === entry.id).stability,
-      'release-coupled'
+      appSchemas.OPERATION_DEFINITIONS[entry.id].stability
     );
   }
 });

@@ -245,7 +245,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.grant-request': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Request exact supported credential-use authority without issuing a grant.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -265,7 +265,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.grant-request-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Review supported grant requests on one visible Thread.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -285,7 +285,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.grant-issue': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Issue one grant from an approved exact request after current-authority checks.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -307,7 +307,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.status': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Read redacted vault administration status.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -349,7 +349,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.bootstrap-codex-auth': {
-    stability: 'release-coupled',
+    stability: 'settled',
     ...personalLoginContract,
     description: 'Acquire a Codex harness Login owned by the actual human User.',
     inputSchema: VaultAdminBootstrapCodexAuthJsonRequestSchema,
@@ -446,7 +446,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'vault.grant-narrow': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description:
       'Revoke a workspace grant and issue a strictly narrower replacement; bindings require an explicit update.',
     binding: 'json',
@@ -488,7 +488,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     },
   },
   'vault.grant-revoke': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Revoke a Workspace grant and its dependent injection projections.',
     binding: 'json',
     returnsOneTimeSecret: false,
@@ -534,7 +534,7 @@ export const VAULT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'vault.grant-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'List non-secret vault grants for one workspace.',
     binding: 'json',
     returnsOneTimeSecret: false,

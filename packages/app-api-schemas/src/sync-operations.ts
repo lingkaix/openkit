@@ -31,7 +31,7 @@ const credentials = [
 /** Sole public contract for the existing non-Git synchronization operations. Decision identities keep the owner's nonempty string schema so retained non-UUID receipts remain replayable. */
 export const SYNC_OPERATION_DEFINITIONS = {
   'sync.review-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -133,7 +133,7 @@ export const SYNC_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'sync.change-set-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

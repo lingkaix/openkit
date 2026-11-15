@@ -26,7 +26,7 @@ export const ADMINISTRATION_ENTRY_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'administration.configuration-apply': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

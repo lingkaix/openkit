@@ -39,7 +39,7 @@ const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
 /** Sole public contracts for Artifact inventory, immutable content, import, introduction and version-owned Review decisions. */
 export const ARTIFACT_OPERATION_DEFINITIONS = {
   'artifact.version-list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -53,7 +53,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'artifact.version-read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -73,7 +73,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'artifact.version-commit': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -90,7 +90,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'artifact.version-file-commit': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'streaming',
     returnsOneTimeSecret: false,
     successStatus: 201,
@@ -121,7 +121,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'artifact.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -135,7 +135,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'artifact.import': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'streaming',
     returnsOneTimeSecret: false,
     description: 'Import one immutable Workspace Artifact version.',
@@ -149,7 +149,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     successStatus: 201,
   },
   'artifact.download': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'streaming',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -211,7 +211,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'artifact.introduce': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     description: 'Introduce one exact imported Artifact version into an idle Thread.',
@@ -242,7 +242,7 @@ export const ARTIFACT_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'artifact.review.select': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

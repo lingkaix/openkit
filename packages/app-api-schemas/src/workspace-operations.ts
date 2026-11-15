@@ -68,7 +68,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: true,
   },
   'workspace.dashboard': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -82,7 +82,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.list': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,
@@ -96,7 +96,7 @@ export const WORKSPACE_OPERATION_DEFINITIONS = {
     mutating: false,
   },
   'workspace.resources': {
-    stability: 'release-coupled',
+    stability: 'settled',
     binding: 'json',
     returnsOneTimeSecret: false,
     successStatus: 200,

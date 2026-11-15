@@ -4,7 +4,7 @@ import type { OperationDefinition } from './operation-contract.js';
 /** Current-caller read reuses canonical-user admission and current Workspace source audiences. */
 export const CALLER_OPERATION_DEFINITIONS = {
   'caller.read': {
-    stability: 'release-coupled',
+    stability: 'settled',
     description: 'Read current caller identity and optional owned Workspace retained-work counts.',
     inputSchema: ReadCallerRequestSchema,
     outputSchema: ReadCallerResponseSchema,

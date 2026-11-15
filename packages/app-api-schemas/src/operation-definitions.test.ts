@@ -364,8 +364,9 @@ it('publishes the named-resource request and distinct confirmed apply contracts'
   ).not.toHaveProperty('requestId');
 });
 
-// F5 is mechanism only: classification awaits the human-owned launch inventory.
-it('marks every API and native operation release-coupled until classification', () => {
+// Launch classification lives in scripts/operation-stability.json. This test only
+// checks the closed class; the snapshot validator checks each id and settled digest.
+it('marks every API and native operation with a closed stability class', () => {
   for (const [id, definition] of Object.entries(OPERATION_REGISTRY))
-    expect(definition.stability, id).toBe('release-coupled');
+    expect(['settled', 'release-coupled', 'experimental'], id).toContain(definition.stability);
 });
