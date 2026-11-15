@@ -14,13 +14,13 @@ import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { withHumanMcpApproval } from '../test-support/mcp-tool-policy.js';
-import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './goal-task-access.js';
 import { PolicyInterception } from './interception.js';
 import {
   listExportableWorkspacePermissionDecisions,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
 import { type PolicyProposal, policyDigest, selectHumanToolConditions } from './statements.js';
+import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './workspace-access.js';
 
 const workspaceId = testEntityId('ws', 'goal-classification');
 const humanId = testEntityId('usr', 'goal-classification');

@@ -67,7 +67,6 @@ import type {
 } from '../storage/vault-native-codecs.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
-import type { GoalTaskAccessResult } from './goal-task-access.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import {
   type PolicyUseDecision,
@@ -90,6 +89,7 @@ import {
   selectPolicyBindings,
   validatePolicyDocument,
 } from './statements.js';
+import type { GoalTaskAccessResult } from './workspace-access.js';
 import { compilePolicyGraph } from './workspace-access.js';
 
 const GateOutput = z.object({ decision: z.enum(['allow', 'deny', 'escalate']) }).strict();

@@ -23,12 +23,11 @@ import {
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService, type GoalDomainStatement } from './goal-domains.js';
-import { evaluateGoalTaskAccess } from './goal-task-access.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
-import { evaluatePolicyKernel } from './workspace-access.js';
+import { evaluateGoalTaskAccess, evaluatePolicyKernel } from './workspace-access.js';
 
 // Keep the actual native owner; hold only this family's exact acknowledged reply on Main.
 vi.mock('node:worker_threads', async (load) => {

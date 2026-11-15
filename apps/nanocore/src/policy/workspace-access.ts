@@ -14,16 +14,152 @@ import {
 } from '@openkit/policy-kernel';
 import {
   type ActorRef,
+  AgentIdSchema,
   canonicalIdentifierName,
   type PolicyBindingV1,
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
-  type PolicyResourceV1Schema,
-  type PolicySubjectV1Schema,
+  PolicyPermissionV1Schema,
+  PolicyResourceV1Schema,
+  PolicySubjectV1Schema,
+  UserIdSchema,
 } from '@openkit/protocol';
 import type { z } from 'zod';
 import type { OpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { ThreadPolicyActor } from '../auth/identity.js';
+import type { GoalDomainStatement } from './goal-domains.js';
+import { policyDigest, policyScopeContains } from './statements.js';
+
+/** Trusted native input after current Goal-domain read and exact scheduler admission readback. */
+export interface GoalTaskAccessInput {
+  /** Must come from GoalDomainPolicyService.read for this attempt, never cached/model input. */
+  readonly domain: GoalDomainStatement | null;
+  /** Current native delegated allows; they can extend only the Task association. */
+  readonly permissions?: readonly z.infer<typeof PolicyPermissionV1Schema>[];
+  /** Actual agent principal, actor and process restored by the Worker lineage owner. */
+  readonly subject: z.infer<typeof PolicySubjectV1Schema>;
+  /** Current Goal accountability owner; this can differ from the approving statement author. */
+  readonly responsibleHumanId: string;
+  /** Only explicit Policy resources from the exact retained Task request. */
+  readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
+  readonly operation: string;
+  readonly resource: z.infer<typeof PolicyResourceV1Schema>;
+  /** Existing current human/credential admission remains independently mandatory. */
+  readonly humanKernel: PolicyDecision;
+}
+
+/** Current Kernel result and non-retained scope/revision projections for the native caller. */
+export interface GoalTaskAccessResult {
+  readonly kernel: PolicyDecision;
+  /** Native refusal destination only; it supplies no authority or permission to dispatch. */
+  readonly escalation?: {
+    readonly kind: 'coordinator';
+    readonly workspaceId: string;
+    readonly goalId: string;
+    readonly agentId: string;
+  };
+  /** Scope membership only; this is not permission or evidence that no prohibition exists. */
+  readonly inGoalEnvelope: boolean;
+  /** Include in existing currentness checks; do not create another retained revision owner. */
+  readonly authorizationRevision: string;
+  /** The one selected exception, absent when original Task resources suffice. */
+  readonly permission?: z.infer<typeof PolicyPermissionV1Schema>;
+}
+
+/**
+ * Projects the explicit Goal and Task selectors into two NGAC policy classes.
+ * Both associations are mandatory in the existing Kernel; no local scope check returns allow.
+ * Current domain/credential/lifecycle and Task identity reads stay with their existing owners.
+ * Current delegated allows extend only the Task class; the approved Goal and human Kernel stay mandatory.
+ */
+export function evaluateGoalTaskAccess(input: GoalTaskAccessInput): GoalTaskAccessResult {
+  const subject = PolicySubjectV1Schema.parse(input.subject);
+  const resource = PolicyResourceV1Schema.parse(input.resource);
+  const resources = input.resources.map((value) => PolicyResourceV1Schema.parse(value));
+  const domain = input.domain;
+  const responsibleHumanId = UserIdSchema.parse(input.responsibleHumanId);
+  const resourceDigest = policyDigest(resource);
+  const inGoalEnvelope = Boolean(
+    domain?.state === 'active' &&
+      domain.author.kind === 'human' &&
+      subject.principal.kind === 'agent' &&
+      subject.onBehalfOf === null &&
+      subject.actor.kind === 'agent' &&
+      subject.actor.id === subject.principal.id &&
+      subject.responsibleHumanId === responsibleHumanId &&
+      subject.process?.workspaceId === domain.source.workspaceId &&
+      domain.scope.subjects.some(
+        (value) => value.kind === 'agent' && value.id === subject.principal.id
+      ) &&
+      domain.scope.actions.includes(input.operation) &&
+      domain.scope.resources.some((value) => policyDigest(value) === resourceDigest)
+  );
+  const selectedByTask = resources.some((value) => policyDigest(value) === resourceDigest);
+  const permission =
+    selectedByTask || !domain
+      ? undefined
+      : input.permissions?.find((value) => {
+          const candidate = PolicyPermissionV1Schema.parse(value);
+          return (
+            candidate.state === 'active' &&
+            candidate.effect === 'allow' &&
+            candidate.grant.kind === 'ordinary' &&
+            candidate.author.kind === 'agent' &&
+            candidate.author.id === domain.delegate.id &&
+            candidate.authority.kind === 'delegation' &&
+            candidate.authority.statement.id === domain.id &&
+            candidate.authority.statement.digest === policyDigest(domain) &&
+            policyScopeContains(domain.scope, candidate.scope) &&
+            candidate.scope.subjects.some(
+              (value) => policyDigest(value) === policyDigest(subject.principal)
+            ) &&
+            candidate.scope.actions.includes(input.operation) &&
+            candidate.scope.resources.some((value) => policyDigest(value) === resourceDigest)
+          );
+        });
+  const kernel = evaluatePolicyKernel({
+    operation: input.operation,
+    goal: {
+      user: `${subject.principal.kind}:${subject.principal.id}`,
+      ...(subject.process ? { process: subject.process.turnId } : {}),
+      inGoalEnvelope,
+      selectedByTask: selectedByTask || Boolean(permission),
+      humanKernel: input.humanKernel,
+    },
+  });
+  return {
+    kernel,
+    inGoalEnvelope,
+    ...(domain &&
+    inGoalEnvelope &&
+    !selectedByTask &&
+    !permission &&
+    input.humanKernel.effect === 'allow' &&
+    kernel.effect === 'deny' &&
+    kernel.reasons.length > 0 &&
+    kernel.reasons.every(({ code }) => code === 'missing-privilege')
+      ? {
+          escalation: {
+            kind: 'coordinator' as const,
+            workspaceId: domain.source.workspaceId,
+            goalId: domain.source.goalId,
+            agentId: domain.delegate.id,
+          },
+        }
+      : {}),
+    ...(permission ? { permission } : {}),
+    authorizationRevision: policyDigest({
+      domain: domain ? { id: domain.id, digest: policyDigest(domain) } : null,
+      subject,
+      responsibleHumanId,
+      resources,
+      permission: permission ? { id: permission.id, digest: policyDigest(permission) } : null,
+      operation: input.operation,
+      resource,
+      humanKernel: input.humanKernel,
+    }),
+  };
+}
 
 /** Ordinary membership never supplies Server, delegated-maintenance or Workspace export authority. */
 export const WORKSPACE_MEMBER_OPERATIONS = [
@@ -162,13 +298,23 @@ export function evaluatePolicyKernel(
     | {
         readonly operation: string;
         /** Current native scope classifications; neither flag grants an effect. */
-        readonly goal: {
-          readonly user: string;
-          readonly process?: string;
-          readonly inGoalEnvelope: boolean;
-          readonly selectedByTask: boolean;
-          readonly humanKernel: PolicyDecision;
-        };
+        readonly goal:
+          | {
+              readonly user: string;
+              readonly process?: string;
+              readonly inGoalEnvelope: boolean;
+              readonly selectedByTask: boolean;
+              readonly humanKernel: PolicyDecision;
+            }
+          | {
+              /** Current prepared admission has no Worker process or effect credential yet. */
+              readonly domain: GoalDomainStatement | null;
+              readonly workspaceId: string;
+              readonly planVersionId: string;
+              readonly agentId: string;
+              readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
+              readonly humanKernel: PolicyDecision;
+            };
       }
     | {
         readonly subject: Pick<z.infer<typeof PolicySubjectV1Schema>, 'principal' | 'process'>;
@@ -490,7 +636,37 @@ export function compilePolicyGraph(
     };
   }
   if ('goal' in input) {
-    const { goal } = input;
+    const native = input.goal;
+    const domain = 'domain' in native ? native.domain : null;
+    const agentId = 'agentId' in native ? AgentIdSchema.parse(native.agentId) : null;
+    const preparedResources =
+      'resources' in native
+        ? native.resources.map((value) => PolicyResourceV1Schema.parse(value))
+        : [];
+    const goal =
+      'user' in native
+        ? native
+        : {
+            user: `agent:${agentId}`,
+            process: undefined,
+            inGoalEnvelope: Boolean(
+              domain?.state === 'active' &&
+                domain.source.workspaceId === native.workspaceId &&
+                domain.source.planVersionId === native.planVersionId &&
+                domain.scope.subjects.some(
+                  (value) => value.kind === 'agent' && value.id === agentId
+                )
+            ),
+            selectedByTask: Boolean(
+              domain &&
+                preparedResources.every((resource) =>
+                  domain.scope.resources.some(
+                    (value) => policyDigest(value) === policyDigest(resource)
+                  )
+                )
+            ),
+            humanKernel: native.humanKernel,
+          };
     const operation = Object.hasOwn(PRODUCT_OPERATION_ACCESS_RIGHTS, input.operation)
       ? (input.operation as ProductOperation)
       : null;
