@@ -93,3 +93,71 @@ it('ORACLE S7 refuses logical Workspace effects in Core while sibling Core publi
     rmSync(dataRoot, { recursive: true, force: true });
   }
 }, 120_000);
+
+it('ORACLE S7 retains the logical Core target and its distinct original parent through ACK', async () => {
+  const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-core-target-ack-'));
+  const store = createTestStore({ dataRoot });
+  const coreDb = openCoreDb(dataRoot);
+  const posts = vi.spyOn(Worker.prototype, 'postMessage');
+  const emit = Worker.prototype.emit;
+  let forwardAck: (() => void) | undefined;
+  let published: Promise<void> | undefined;
+  const cuts: (() => void)[] = [];
+  const reached = Promise.withResolvers<void>();
+  let replies: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    const ownerUserId = ensureLocalUser(coreDb);
+    const target = await store.createWorkspace('Logical target');
+    const original = await store.createWorkspace('Original accepted scope');
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
+    replies = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (event, ...args) {
+      const request = posts.mock.calls.find(
+        ([message]) =>
+          message.operation === 'private-workspace' && message.input.workspaceId === target.id
+      )?.[0];
+      if (event === 'message' && request && args[0]?.id === request.id && !forwardAck) {
+        forwardAck = () => {
+          emit.call(this, event, ...args);
+        };
+        reached.resolve();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    coreDb.sqlite.pragma('query_only = ON');
+    // The original scope lease is accounting, not authority for the real Core membership command.
+    const parent = gate.runWorkerCloseout(original.id, async () => {
+      published = publishWorkspaceOwnerMembership({ coreDb, workspaceId: target.id, ownerUserId });
+      await reached.promise;
+    });
+    expect(parent).not.toBeNull();
+    await parent;
+    for (const workspaceId of [target.id, original.id]) {
+      const cut = gate.tryFreeze(workspaceId, () => []);
+      if (cut.status === 'frozen') cuts.push(cut.release);
+      expect(cut.status).toBe('busy');
+    }
+    forwardAck!();
+    await published;
+    expect(
+      coreDb.sqlite
+        .prepare('SELECT status FROM workspace_registry WHERE workspace_id=?')
+        .pluck()
+        .get(target.id)
+    ).toBe('active');
+    for (const workspaceId of [target.id, original.id]) {
+      const cut = gate.tryFreeze(workspaceId, () => []);
+      if (cut.status === 'frozen') cuts.push(cut.release);
+      expect(cut.status).toBe('frozen');
+    }
+  } finally {
+    for (const release of cuts) release();
+    forwardAck?.();
+    await published;
+    replies?.mockRestore();
+    posts.mockRestore();
+    await shutdownControlStoreWorkerClient();
+    if (coreDb.sqlite.open) coreDb.sqlite.close();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+}, 120_000);

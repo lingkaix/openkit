@@ -582,7 +582,7 @@ interface Pending {
   readonly inputBytes: number;
   readonly capacity: NativeCapacityReservation[];
   /** The accepted parent's real unit is handed to this child through ACK or backing disposal. */
-  readonly workspaceLease?: WorkspaceMutationLease;
+  readonly workspaceLeases: readonly WorkspaceMutationLease[];
   /** A forecast is resolved once within this request's existing slot. */
   physicalForecasted?: boolean;
   /** Original owner capture; neither the supplier nor facts are sent back in a forecast decision. */
@@ -1188,7 +1188,7 @@ class ControlStoreWorkerClient {
     Promise<unknown>,
     {
       publication: ControlPublicationIdentity | undefined;
-      workspaceLease: WorkspaceMutationLease | undefined;
+      workspaceLeases: readonly WorkspaceMutationLease[];
     }
   >();
   private readonly turnTails = new Map<
@@ -1623,7 +1623,10 @@ class ControlStoreWorkerClient {
     };
     // Register before invoking the producer: its synchronous Core commit may expose this identity.
     const promise = this.operationContext.run(context, () => Promise.resolve().then(operation));
-    this.operations.set(promise, context);
+    this.operations.set(promise, {
+      publication: context.publication,
+      workspaceLeases: context.workspaceLease ? [context.workspaceLease] : [],
+    });
     try {
       return await promise;
     } finally {
@@ -5485,10 +5488,10 @@ class ControlStoreWorkerClient {
         .filter(([key]) => JSON.parse(key)[0] === path)
         .map(([, entry]) => entry.tail),
       ...[...this.operations]
-        .filter(
-          ([, operation]) =>
-            operation.workspaceLease?.owner === owner &&
-            operation.workspaceLease.workspaceId === workspaceId
+        .filter(([, operation]) =>
+          operation.workspaceLeases.some(
+            (lease) => lease.owner === owner && lease.workspaceId === workspaceId
+          )
         )
         .map(([promise]) => promise),
     ];
@@ -5908,22 +5911,34 @@ class ControlStoreWorkerClient {
     const parentLease = context?.active ? context.workspaceLease : undefined;
     const scoped = command.operation === 'open' ? command : opening?.command;
     const physical = scoped?.physicalScope ?? scoped?.productOwner;
-    const physicalWorkspaceId =
-      physical?.kind === 'workspace' || physical?.kind === 'app' ? physical.workspaceId : undefined;
-    // Real frozen recovery/capture calls already retain their original exclusive owner.
-    const owner =
-      parentLease?.owner ??
-      (!recovery && scoped?.dataRoot && physicalWorkspaceId
-        ? this.workspaceMutations(scoped.dataRoot)
-        : undefined);
-    const workspaceId = parentLease?.workspaceId ?? physicalWorkspaceId;
-    const workspaceRelease = owner && workspaceId ? owner.enter(workspaceId, 'capture') : undefined;
-    if (workspaceRelease === null)
-      return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
-    const workspaceLease =
-      owner && workspaceId && workspaceRelease
-        ? { owner, workspaceId, release: workspaceRelease }
-        : undefined;
+    const workspaceLeases: WorkspaceMutationLease[] = [];
+    // These are real admitted resource units, never a permission/scope descriptor.
+    const retainWorkspace = (owner: WorkspaceMutationAdmission, workspaceId: string) => {
+      if (
+        workspaceLeases.some((lease) => lease.owner === owner && lease.workspaceId === workspaceId)
+      )
+        return;
+      const release = owner.enter(workspaceId, 'capture');
+      if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
+      workspaceLeases.push({ owner, workspaceId, release });
+    };
+    try {
+      if (parentLease) retainWorkspace(parentLease.owner, parentLease.workspaceId);
+      // Real frozen recovery/capture calls already retain their original exclusive owner.
+      if (!recovery && scoped?.dataRoot) {
+        const owner = this.workspaceMutations(scoped.dataRoot);
+        if (physical?.kind === 'workspace' || physical?.kind === 'app')
+          retainWorkspace(owner, physical.workspaceId);
+        if (command.operation === 'private-workspace') {
+          if ('workspaceId' in command.input) retainWorkspace(owner, command.input.workspaceId);
+          if ('expectedWorkspaceId' in command.input)
+            retainWorkspace(owner, command.input.expectedWorkspaceId);
+        }
+      }
+    } catch (error) {
+      for (const lease of workspaceLeases) lease.release();
+      return Promise.reject(error);
+    }
     let capacity: readonly NativeCapacityReservation[];
     try {
       capacity = [
@@ -5937,7 +5952,7 @@ class ControlStoreWorkerClient {
         ),
       ];
     } catch (error) {
-      workspaceLease?.release();
+      for (const lease of workspaceLeases) lease.release();
       return Promise.reject(
         error instanceof FileAdmissionError
           ? new ControlStoreWorkerError('no-space', 'not-committed')
@@ -5949,7 +5964,7 @@ class ControlStoreWorkerClient {
       worker = this.startWorker(host);
     } catch {
       for (const reservation of capacity) reservation.release();
-      workspaceLease?.release();
+      for (const lease of workspaceLeases) lease.release();
       this.fail(host);
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
@@ -5965,7 +5980,7 @@ class ControlStoreWorkerClient {
       this.adjustBacking(database, inputBytes, materialBytes, host);
       host.pending += 1;
       for (const reservation of capacity) host.capacity.add(reservation);
-      if (workspaceLease) host.capacity.add(workspaceLease);
+      for (const lease of workspaceLeases) host.capacity.add(lease);
       if (closeout) closeout.borrowing = true;
       const entry: Pending = {
         counted: !borrowed,
@@ -5978,7 +5993,7 @@ class ControlStoreWorkerClient {
         materialBytes,
         inputBytes,
         capacity: [...capacity],
-        ...(workspaceLease ? { workspaceLease } : {}),
+        workspaceLeases,
         closeout,
         ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
         ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
@@ -6030,7 +6045,7 @@ class ControlStoreWorkerClient {
         : result;
     this.operations.set(operation, {
       publication: undefined,
-      workspaceLease,
+      workspaceLeases,
     });
     const release = () => this.operations.delete(operation);
     void operation.then(release, release);
@@ -6206,9 +6221,9 @@ class ControlStoreWorkerClient {
         reservation.release();
         entry.host.capacity.delete(reservation);
       }
-      if (entry.workspaceLease) {
-        entry.workspaceLease.release();
-        entry.host.capacity.delete(entry.workspaceLease);
+      for (const lease of entry.workspaceLeases) {
+        lease.release();
+        entry.host.capacity.delete(lease);
       }
     }
     if (entry.progressCopy) {
