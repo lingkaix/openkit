@@ -2560,7 +2560,25 @@ class ControlStoreWorkerClient {
     statements: readonly ControlSqlStatement[],
     recovery?: ControlRecoveryNativeCall
   ): Promise<readonly ControlSqlResult[]> {
-    return this.writeFrozen(database, statements, recovery);
+    // Existing producers keep their original context/credits; exact recovery keeps its frozen owner.
+    if (recovery || this.operationContext.getStore()?.active)
+      return this.writeFrozen(database, statements, recovery);
+    const opening = this.openings.get(database)?.command;
+    const physical = opening?.physicalScope ?? opening?.productOwner;
+    if (!opening?.dataRoot || (physical?.kind !== 'workspace' && physical?.kind !== 'app'))
+      return this.writeFrozen(database, statements, recovery);
+    const owner = this.workspaceMutations(opening.dataRoot);
+    const release = owner.enter(physical.workspaceId, 'capture');
+    // Preserve the original typed refusal and its exact binding checks.
+    if (!release) return this.writeFrozen(database, statements, recovery);
+    return this.runOperation(
+      () => this.writeFrozen(database, statements, recovery),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { owner, workspaceId: physical.workspaceId, release }
+    ).finally(release);
   }
 
   /** Internal write shared by the existing recovery composition. */

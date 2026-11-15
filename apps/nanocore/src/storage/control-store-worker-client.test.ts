@@ -375,6 +375,29 @@ describe('control writer parent admission', () => {
     if (afterAck.status === 'frozen') afterAck.release();
   });
 
+  it('owns a standalone Workspace write through its original native ACK', async () => {
+    const f = await poolFixture(1, 'before');
+    const scope = f.scope(0);
+    const owner = f.client.workspaceMutations(f.root);
+    Atomics.store(f.gate!, 0, 0);
+    const write = f.client.write(scope.database, nativeRequest('standalone-native-write'));
+    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    try {
+      await waitForHold(f.gate!);
+      expect(nativeRequests(scope.path)).toEqual([]);
+      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      expect(cut.status).toBe('busy');
+    } finally {
+      if (cut?.status === 'frozen') cut.release();
+      release(f.gate);
+      await write;
+    }
+    expect(nativeRequests(scope.path)).toEqual(['standalone-native-write']);
+    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    expect(afterAck.status).toBe('frozen');
+    if (afterAck.status === 'frozen') afterAck.release();
+  });
+
   it('retains unknown child backing and the original deletion fence across native restart', async () => {
     const posts = vi.spyOn(Worker.prototype, 'postMessage');
     const f = await poolFixture(1, 'after');
