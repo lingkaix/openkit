@@ -332,7 +332,7 @@ export function createVaultOperationImplementations(
         principal: taskContext
           ? { kind: 'agent', id: agentId }
           : { kind: 'human', id: responsibleHumanId },
-        onBehalfOf: null,
+        onBehalfOf: taskContext && taskContext.goalId === null ? responsibleHumanId : null,
         actor: agentId
           ? { kind: 'agent', id: agentId, responsibleUserId: responsibleHumanId }
           : context.actorRef,
@@ -371,19 +371,22 @@ export function createVaultOperationImplementations(
         inputReferences: { ...references, selectionDigest: factsRevision },
         inputAttributes: { contract: POLICY_OPERATION_REFERENCE_INPUT_V1, ...attributes },
       };
-      const taskPolicy = taskContext ? dependencies.goalTaskPolicy?.(db, responsibleHumanId) : null;
-      if (taskContext && !taskPolicy) throw new Error('Goal Task Policy is unavailable.');
+      const taskPolicy = taskContext?.goalId
+        ? dependencies.goalTaskPolicy?.(db, responsibleHumanId)
+        : null;
+      if (taskContext?.goalId && !taskPolicy) throw new Error('Goal Task Policy is unavailable.');
       let ownDecision: InterceptionDecision | undefined;
       const currentAuthority = (consumed = false) =>
         PolicyInterception.readVaultAuthority({
           coreDb,
+          store,
           workspaceDb: db,
           workspaceId: input.workspaceId,
           requester: vaultRequesterForContext(context),
           coordinator: context.kind === 'coordinator' ? context : null,
           worker:
             context.kind === 'worker'
-              ? { lineage: context.lineage, goalLinked: taskContext !== null }
+              ? { lineage: context.lineage, goalLinked: taskContext?.goalId != null }
               : null,
           subject,
           resource,
@@ -469,7 +472,10 @@ export function createVaultOperationImplementations(
                     turnId: context.turnId,
                   }
                 : context.kind === 'worker'
-                  ? { ...vaultRequesterForContext(context), goalLinked: taskContext !== null }
+                  ? {
+                      ...vaultRequesterForContext(context),
+                      goalLinked: taskContext?.goalId != null,
+                    }
                   : vaultRequesterForContext(context),
           })
         : undefined;
@@ -1374,7 +1380,7 @@ export function createVaultOperationImplementations(
         finalKernel: () => {
           const repository = dependencies.repositoryWorkspaceDb;
           const taskPolicy = dependencies.goalTaskPolicy;
-          if (!confirmedWorker || context.kind !== 'worker' || !repository || !taskPolicy)
+          if (!confirmedWorker || context.kind !== 'worker' || !repository)
             return currentFacts().kernel;
           // Only the authentic live failure can select its original proved Task decision.
           const failure = readCoreConfirmedLoginQuarantine(
@@ -1393,12 +1399,15 @@ export function createVaultOperationImplementations(
               originalOperation !== 'vault.binding-replace')
           )
             vaultWorkspaceAccessDenied();
+          const store = dependencies.store;
+          if (!store || (original.caller.goalLinked && !taskPolicy)) vaultWorkspaceAccessDenied();
           const definition = VAULT_OPERATION_DEFINITIONS[originalOperation];
           const workspaceId = original.caller.lineage.workspaceId;
           const workspaceDb = repository(workspaceId);
           try {
             const authority = PolicyInterception.readVaultAuthority({
               coreDb,
+              store,
               workspaceDb,
               workspaceId,
               requester: failure.binding.requester.requester,
@@ -1411,7 +1420,9 @@ export function createVaultOperationImplementations(
               resource: original.proposal.resource,
               operation: definition.policyOperation,
               mutating: definition.mutating,
-              taskPolicy: taskPolicy(workspaceDb, responsibleHumanId),
+              taskPolicy: original.caller.goalLinked
+                ? taskPolicy!(workspaceDb, responsibleHumanId)
+                : null,
               decision: original.decision,
             });
             // Keep the separate current User Kernel last; the original Task cannot widen it.

@@ -31,7 +31,7 @@ export interface GoalTaskEvaluationInput {
 export function createGoalTaskPolicyService(deps: {
   readonly coreDb: CoreDb;
   readonly store: GoalTaskPolicyReadPort;
-  readonly domains: Pick<GoalDomainPolicyService, 'read' | 'readForDecision' | 'readPermissions'>;
+  readonly domains?: Pick<GoalDomainPolicyService, 'read' | 'readForDecision' | 'readPermissions'>;
 }) {
   function evaluate(input: GoalTaskEvaluationInput, decision?: PolicyUseDecision) {
     const context = readGoalTaskPolicyContext({
@@ -50,14 +50,23 @@ export function createGoalTaskPolicyService(deps: {
       input.subject.process.turnId !== context.turnId
     )
       throw new Error('Goal Task Policy subject must match the canonical current Task context.');
-    const key = { workspaceId: context.workspaceId, goalId: context.goalId };
-    const domain = decision
-      ? deps.domains.readForDecision({ ...key, decision })
-      : deps.domains.read(key);
+    const key =
+      context.goalId === null ? null : { workspaceId: context.workspaceId, goalId: context.goalId };
+    if (key && !deps.domains) throw new Error('Goal Task Policy domain is unavailable.');
+    const domain =
+      key && deps.domains
+        ? decision
+          ? deps.domains.readForDecision({ ...key, decision })
+          : deps.domains.read(key)
+        : null;
     const result = evaluateGoalTaskAccess({
       ...input,
       domain,
-      permissions: deps.domains.readPermissions({ context, ...(decision ? { decision } : {}) }),
+      goalRequired: key !== null,
+      permissions:
+        key && deps.domains
+          ? deps.domains.readPermissions({ context, ...(decision ? { decision } : {}) })
+          : [],
       responsibleHumanId: context.responsibleUserId,
       resources: context.resources,
     });
@@ -83,7 +92,7 @@ export function createGoalTaskPolicyService(deps: {
     };
   }
   return {
-    /** Null is only an ordinary unlinked Task; a linked unavailable domain produces a Kernel deny. */
+    /** Null means non-Task execution; every Task retains its finite native selection. */
     evaluateTask(input: GoalTaskEvaluationInput) {
       return evaluate(input);
     },
@@ -104,6 +113,7 @@ export function createGoalTaskPolicyService(deps: {
       readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
       readonly humanKernel: PolicyDecision;
     }) {
+      if (!deps.domains) throw new Error('Goal Task Policy domain is unavailable.');
       const workspaceId = input.workspaceDb.workspaceId;
       const goal = readNativeGoalView(input.workspaceDb, input.goalId).goal;
       if (
