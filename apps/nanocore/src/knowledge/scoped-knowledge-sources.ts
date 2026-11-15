@@ -5,7 +5,7 @@ import { RegisterKnowledgeSourceRequestSchema } from '@openkit/app-api-schemas';
 import { allocateEntityId, KnowledgeSourceIdSchema, RequestIdSchema } from '@openkit/protocol';
 import { assertCanonicalDirectory } from '@openkit/storage';
 import { z } from 'zod';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
@@ -183,9 +183,9 @@ export function admitUserMemorySources(
       return { registeredSources: new Map(), sourceFingerprints: [] };
     if (actor.userId !== captured.ownerScope.userId)
       throw new PendingRequestCommandError(
-        'workspace_access_denied',
+        WORKSPACE_ACCESS_DENIED.code,
         'Current self Source authority is unavailable.',
-        403
+        WORKSPACE_ACCESS_DENIED.status
       );
     const scope = resolveScopedNotebookOwner({ coreDb, actor, target: { kind: 'user' } });
     const userRoot = dirname(scope.notebookRoot);

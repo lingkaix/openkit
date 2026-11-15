@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { z } from 'zod';
 import type { OperationInvocationContext } from '../operation-contract.js';
-import { TurnStartValidationError } from '../operation-error.js';
+import { TurnStartValidationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
 import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import type { CoreDb } from '../storage/db.js';
@@ -363,7 +363,11 @@ export async function withCoreConfirmedLoginQuarantine<T>(
     ) ||
     context.requestId !== failure.binding.policyProof.proposal.inputReferences.requestId
   )
-    throw new TurnStartValidationError('workspace_access_denied', 'Workspace access denied.', 403);
+    throw new TurnStartValidationError(
+      WORKSPACE_ACCESS_DENIED.code,
+      WORKSPACE_ACCESS_DENIED.message,
+      WORKSPACE_ACCESS_DENIED.status
+    );
   failure.claimed = true;
   assertRefreshFailureCurrent(failure);
   const handle = Object.freeze({});

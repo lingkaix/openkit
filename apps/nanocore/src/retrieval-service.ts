@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import { isAbsolute, join, relative } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import { sha256CanonicalJson } from '@openkit/protocol/digest';
 import {
   makePrivateTreeDirectory,
   measureDerivedTreeBytes,
@@ -424,16 +425,12 @@ export class RetrievalService {
               );
               await makePrivateTreeDirectory(this.transportRoot);
               // Stable within this service, including single-scope publish and multi-scope search.
-              const name = createHash('sha256')
-                .update(
-                  JSON.stringify([
-                    view.scope,
-                    selected.key.namespace,
-                    selected.key.id,
-                    selected.digest,
-                  ])
-                )
-                .digest('hex');
+              const name = sha256CanonicalJson([
+                view.scope,
+                selected.key.namespace,
+                selected.key.id,
+                selected.digest,
+              ]);
               const path = join(this.transportRoot, name);
               const chunks = function* () {
                 for (let offset = 0; offset < text.length; ) {
