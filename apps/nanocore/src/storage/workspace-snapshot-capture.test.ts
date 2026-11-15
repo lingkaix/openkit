@@ -3631,13 +3631,13 @@ describe('C-a independent sealed generations', () => {
     let held = false;
     const preparation = vi
       .spyOn(client, 'runTurnPublication')
-      .mockImplementation((database, turns, input, prepare, ...rest) =>
+      .mockImplementation((opening, turns, input, prepare, ...rest) =>
         original(
-          database,
+          opening,
           turns,
           input,
           async (owned) => {
-            if (database === target && turns.includes(turn.id) && !held) {
+            if (opening.database === target && turns.includes(turn.id) && !held) {
               held = true;
               prepareEntered.resolve();
               await resumePreparation.promise;

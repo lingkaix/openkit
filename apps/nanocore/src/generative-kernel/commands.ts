@@ -863,13 +863,14 @@ function runPreparedNativeAppCommand<T extends ControlAppResult>(
       }
       const path = lightAppDbPath(context.dataRoot, context.workspaceId, appId);
       const database = `app:${path}`;
-      await client.open({
+      const opening = {
         database,
         path,
         create: fresh,
         dataRoot: context.dataRoot,
         physicalScope: { kind: 'app', workspaceId: context.workspaceId, appId },
-      });
+      } as const;
+      await client.open(opening);
       await context.recheckAdmission?.();
       const input: Omit<ControlAppInput, 'change'> & { change: KernelCommandSpec<T>['change'] } = {
         workspaceId: context.workspaceId,
@@ -895,7 +896,7 @@ function runPreparedNativeAppCommand<T extends ControlAppResult>(
         return client.appKernel(database, ControlAppInputSchema.parse(owned));
       };
       const result = context.execution
-        ? await client.runTurnPublication(database, [context.execution.turnId], input, publish)
+        ? await client.runTurnPublication(opening, [context.execution.turnId], input, publish)
         : await publish(input);
       return boundedKernelResponse(result) as T;
     },

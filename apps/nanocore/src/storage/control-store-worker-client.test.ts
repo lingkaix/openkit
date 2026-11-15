@@ -435,6 +435,112 @@ describe('control writer parent admission', () => {
     if (afterAck.status === 'frozen') afterAck.release();
   });
 
+  it('owns direct Turn publication before JSON and before its first native post', async () => {
+    const f = await poolFixture(1);
+    const scope = f.scope(0);
+    const owner = f.client.workspaceMutations(f.root);
+    const reached = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    let jsonCut: string | undefined;
+    const input = {
+      toJSON() {
+        const cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+        jsonCut = cut.status;
+        if (cut.status === 'frozen') cut.release();
+        return { id: 'native-preparation-owner' };
+      },
+    };
+    const publication = f.client.runTurnPublication(
+      scope,
+      [allocateEntityId('tu')],
+      input,
+      async () => {
+        reached.resolve();
+        await resume.promise;
+        return f.client.write(scope.database, nativeRequest('native-preparation-owner'));
+      }
+    );
+    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    try {
+      await reached.promise;
+      expect(jsonCut).toBe('busy');
+      expect(nativeRequests(scope.path)).toEqual([]);
+      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      expect(cut.status).toBe('busy');
+    } finally {
+      if (cut?.status === 'frozen') cut.release();
+      resume.resolve();
+      await publication;
+    }
+    expect(nativeRequests(scope.path)).toEqual(['native-preparation-owner']);
+    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    expect(afterAck.status).toBe('frozen');
+    if (afterAck.status === 'frozen') afterAck.release();
+  });
+
+  it('retains the original parent alongside a distinct publication target through preparation and ACK', async () => {
+    const f = await poolFixture(2, 'before');
+    const original = f.scope(0);
+    const target = f.scope(1);
+    const owner = f.client.workspaceMutations(f.root);
+    const reached = Promise.withResolvers<void>();
+    const resumePreparation = Promise.withResolvers<void>();
+    const cuts: (() => void)[] = [];
+    let publication: Promise<unknown> | undefined;
+    Atomics.store(f.gate!, 0, 0);
+    try {
+      const parent = owner.runWorkerCloseout(original.productOwner.workspaceId, async () => {
+        publication = f.client.runTurnPublication(
+          target,
+          [allocateEntityId('tu')],
+          {},
+          async () => {
+            reached.resolve();
+            await resumePreparation.promise;
+            return f.client.write(target.database, nativeRequest('distinct-publication-target'));
+          }
+        );
+        await reached.promise;
+      });
+      expect(parent).not.toBeNull();
+      await parent;
+      for (const workspaceId of [
+        original.productOwner.workspaceId,
+        target.productOwner.workspaceId,
+      ]) {
+        const cut = owner.tryFreeze(workspaceId, () => []);
+        if (cut.status === 'frozen') cuts.push(cut.release);
+        expect(cut.status).toBe('busy');
+      }
+      resumePreparation.resolve();
+      await waitForHold(f.gate!);
+      for (const workspaceId of [
+        original.productOwner.workspaceId,
+        target.productOwner.workspaceId,
+      ]) {
+        const cut = owner.tryFreeze(workspaceId, () => []);
+        if (cut.status === 'frozen') cuts.push(cut.release);
+        expect(cut.status).toBe('busy');
+      }
+      release(f.gate);
+      await publication;
+      expect(nativeRequests(target.path)).toEqual(['distinct-publication-target']);
+      for (const workspaceId of [
+        original.productOwner.workspaceId,
+        target.productOwner.workspaceId,
+      ]) {
+        const cut = owner.tryFreeze(workspaceId, () => []);
+        if (cut.status === 'frozen') cuts.push(cut.release);
+        expect(cut.status).toBe('frozen');
+      }
+    } finally {
+      for (const end of cuts) end();
+      resumePreparation.resolve();
+      release(f.gate);
+      await publication;
+    }
+  });
+
   it('retains unknown child backing and the original deletion fence across native restart', async () => {
     const posts = vi.spyOn(Worker.prototype, 'postMessage');
     const f = await poolFixture(1, 'after');
@@ -1243,6 +1349,14 @@ describe('control writer parent admission', () => {
     const aliasPath = join(f.root, 'publication-alias.sqlite');
     symlinkSync(workspaceDbPath(f.root, f.workspaces[0]!.id), aliasPath);
     const alias = `workspace:${aliasPath}`;
+    const opening = {
+      database,
+      path: workspaceDbPath(f.root, f.workspaces[0]!.id),
+      dataRoot: f.root,
+      create: false,
+      initialize: 'workspace',
+      productOwner: { kind: 'workspace', workspaceId: f.workspaces[0]!.id },
+    } as const;
     const turn = allocateEntityId('tu');
     let resume!: () => void;
     const held = new Promise<void>((resolve) => {
@@ -1259,7 +1373,7 @@ describe('control writer parent admission', () => {
       }
       return f.client.write(database, nativeRequest(input.id));
     });
-    const accepted = [f.client.runTurnPublication(database, [turn], { id: 'hot-0' }, prepare)];
+    const accepted = [f.client.runTurnPublication(opening, [turn], { id: 'hot-0' }, prepare)];
     const settled: Promise<unknown>[] = [Promise.allSettled(accepted)];
     let excess: Promise<unknown> | undefined;
     try {
@@ -1267,7 +1381,7 @@ describe('control writer parent admission', () => {
       for (let index = 1; index < 8; index += 1)
         accepted.push(
           f.client.runTurnPublication(
-            index % 2 ? alias : database,
+            index % 2 ? { ...opening, database: alias, path: aliasPath } : opening,
             [turn],
             { id: `hot-${index}` },
             prepare
@@ -1275,10 +1389,17 @@ describe('control writer parent admission', () => {
         );
       settled.push(Promise.allSettled(accepted));
       const rejectedPrepare = vi.fn(async () => f.client.write(database, nativeRequest('excess')));
-      excess = f.client.runTurnPublication(alias, [turn], {}, rejectedPrepare).then(
-        () => ({ code: 'unexpected-accept' }),
-        (error: unknown) => error
-      );
+      excess = f.client
+        .runTurnPublication(
+          { ...opening, database: alias, path: aliasPath },
+          [turn],
+          {},
+          rejectedPrepare
+        )
+        .then(
+          () => ({ code: 'unexpected-accept' }),
+          (error: unknown) => error
+        );
       const disposition = await Promise.race([
         excess,
         nextTurn().then(() => ({ code: 'still-pending' })),
@@ -1286,14 +1407,17 @@ describe('control writer parent admission', () => {
       expect.soft(disposition).toMatchObject({ code: 'busy', commit: 'not-committed' });
       expect.soft(rejectedPrepare).not.toHaveBeenCalled();
       expect.soft(prepare).toHaveBeenCalledTimes(1);
+      await f.client.runTurnPublication(opening, [allocateEntityId('tu')], { id: 'peer' }, prepare);
       await f.client.runTurnPublication(
-        database,
-        [allocateEntityId('tu')],
-        { id: 'peer' },
-        prepare
-      );
-      await f.client.runTurnPublication(sibling, [turn], {}, () =>
-        f.client.write(sibling, nativeRequest('sibling'))
+        {
+          ...opening,
+          database: sibling,
+          path: workspaceDbPath(f.root, f.workspaces[1]!.id),
+          productOwner: { kind: 'workspace', workspaceId: f.workspaces[1]!.id },
+        },
+        [turn],
+        {},
+        () => f.client.write(sibling, nativeRequest('sibling'))
       );
       const workspaceId = f.workspaces[0]!.id;
       const call = await f.client.capability(database, {
@@ -1320,7 +1444,7 @@ describe('control writer parent admission', () => {
     expect.soft(nativeRequests(database.slice('workspace:'.length))).not.toContain('excess');
     // Refusal must not install a rejected tail that poisons later valid work.
     await expect(
-      f.client.runTurnPublication(database, [turn], { id: 'later' }, prepare)
+      f.client.runTurnPublication(opening, [turn], { id: 'later' }, prepare)
     ).resolves.toHaveLength(1);
     expect(nativeRequests(database.slice('workspace:'.length))).toContain('later');
   });
@@ -1340,26 +1464,28 @@ describe('control writer parent admission', () => {
       return f.client.write(database, nativeRequest(id));
     });
     const hotWork = Array.from({ length: 8 }, (_, index) =>
-      f.client.runTurnPublication(database, [hot], `hot-${index}`, hotPrepare)
+      f.client.runTurnPublication(f.scope(0), [hot], `hot-${index}`, hotPrepare)
     );
     const hotSettled = Promise.allSettled(hotWork);
     const rejectedPrepare = vi.fn(async () => {
       throw new Error('A refused tuple must not prepare.');
     });
-    const candidate = f.client.runTurnPublication(database, [cold, hot], {}, rejectedPrepare).then(
-      () => ({ code: 'unexpected-accept' }),
-      (error: unknown) => error
-    );
+    const candidate = f.client
+      .runTurnPublication(f.scope(0), [cold, hot], {}, rejectedPrepare)
+      .then(
+        () => ({ code: 'unexpected-accept' }),
+        (error: unknown) => error
+      );
     const coldPrepare = vi.fn(async (id: string) => {
       await held;
       return f.client.write(database, nativeRequest(id));
     });
     const coldWork = Array.from({ length: 8 }, (_, index) =>
-      f.client.runTurnPublication(database, [cold, cold], `cold-${index}`, coldPrepare)
+      f.client.runTurnPublication(f.scope(0), [cold, cold], `cold-${index}`, coldPrepare)
     );
     const coldSettled = Promise.allSettled(coldWork);
     const overflowPrepare = vi.fn(async () => f.client.write(database, nativeRequest('overflow')));
-    const overflow = f.client.runTurnPublication(database, [cold], {}, overflowPrepare).then(
+    const overflow = f.client.runTurnPublication(f.scope(0), [cold], {}, overflowPrepare).then(
       () => ({ code: 'unexpected-accept' }),
       (error: unknown) => error
     );

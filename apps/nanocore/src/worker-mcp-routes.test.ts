@@ -9625,7 +9625,19 @@ describe('MCP proved failure and admitted schema observation', () => {
           for (let index = 0; index < 1024; index++)
             pending.push(
               client
-                .runTurnPublication(database, [`schema-pressure-${index}`], {}, () => hold.promise)
+                .runTurnPublication(
+                  {
+                    database,
+                    path: database.slice('workspace:'.length),
+                    dataRoot: f.dataRoot,
+                    create: false,
+                    initialize: 'workspace',
+                    productOwner: { kind: 'workspace', workspaceId: f.workspaceId },
+                  },
+                  [`schema-pressure-${index}`],
+                  {},
+                  () => hold.promise
+                )
                 .catch((error: unknown) => error)
             );
         });
@@ -9733,7 +9745,19 @@ describe('MCP native admission and original closeout', () => {
       for (let index = 0; index < 1024; index += 1)
         pending.push(
           client
-            .runTurnPublication(database, [`pressure-${index}`], {}, () => hold.promise)
+            .runTurnPublication(
+              {
+                database,
+                path: database.slice('workspace:'.length),
+                dataRoot: f.dataRoot,
+                create: false,
+                initialize: 'workspace',
+                productOwner: { kind: 'workspace', workspaceId: f.workspaceId },
+              },
+              [`pressure-${index}`],
+              {},
+              () => hold.promise
+            )
             .catch((error: unknown) => error)
         );
       const response = await f.call(9100);
@@ -9761,7 +9785,19 @@ describe('MCP native admission and original closeout', () => {
       for (let index = 0; index < 1023; index += 1)
         pending.push(
           client
-            .runTurnPublication(database, [`pressure-${index}`], {}, () => hold.promise)
+            .runTurnPublication(
+              {
+                database,
+                path: database.slice('workspace:'.length),
+                dataRoot: f.dataRoot,
+                create: false,
+                initialize: 'workspace',
+                productOwner: { kind: 'workspace', workspaceId: f.workspaceId },
+              },
+              [`pressure-${index}`],
+              {},
+              () => hold.promise
+            )
             .catch((error: unknown) => error)
         );
       const response = await f.listServers();
@@ -9828,7 +9864,14 @@ describe('MCP native admission and original closeout', () => {
       let serial = 0;
       const offer = (text: string) => {
         const result = client.runTurnPublication(
-          database,
+          {
+            database,
+            path: database.slice('workspace:'.length),
+            dataRoot: f.dataRoot,
+            create: false,
+            initialize: 'workspace',
+            productOwner: { kind: 'workspace', workspaceId: f.workspaceId },
+          },
           [`pressure-${serial++}`],
           text,
           () => pressure.promise

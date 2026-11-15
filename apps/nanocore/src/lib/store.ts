@@ -3301,33 +3301,22 @@ export class FsStore {
   ): Promise<T> {
     if (!this.dataRoot) return prepare(input);
     const scope = this.nativeScope(owner);
-    const release =
-      owner.kind === 'workspace'
-        ? this.enterWorkspaceMutation(owner.workspaceId, 'capture')
-        : () => undefined;
-    return getControlStoreWorkerClient()
-      .runTurnPublication(
-        `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
-        turns,
-        input,
-        prepare,
-        closeoutCallId,
-        progressItem
-          ? {
-              input: progressItem,
-              opening: {
-                database: `workspace:${scope.path}`,
-                path: scope.path,
-                dataRoot: this.dataRoot,
-                create: false,
-                initialize: 'workspace',
-                productOwner: scope.owner,
-                contentMount: scope.contentMount,
-              },
-            }
-          : undefined
-      )
-      .finally(release);
+    return getControlStoreWorkerClient().runTurnPublication(
+      {
+        database: `${owner.kind === 'server' ? 'core' : 'workspace'}:${scope.path}`,
+        path: scope.path,
+        dataRoot: this.dataRoot,
+        create: false,
+        initialize: owner.kind === 'server' ? 'core' : 'workspace',
+        productOwner: scope.owner,
+        contentMount: scope.contentMount,
+      },
+      turns,
+      input,
+      prepare,
+      closeoutCallId,
+      progressItem
+    );
   }
 
   /** Releases the native terminal boundary before the explicit Pending wake, retaining its shutdown lifetime. */

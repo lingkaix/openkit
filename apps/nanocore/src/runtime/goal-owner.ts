@@ -1610,7 +1610,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
   const path = workspaceDbPath(db.dataRoot, input.workspaceId);
   const database = `workspace:${path}`;
   const contentMount = goalContentMount(db);
-  await client.open({
+  const opening = {
     database,
     path,
     dataRoot: db.dataRoot,
@@ -1618,7 +1618,8 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     initialize: 'workspace',
     productOwner: { kind: 'workspace', workspaceId: input.workspaceId },
     contentMount,
-  });
+  } as const;
+  await client.open(opening);
   let freshGoalTitle:
     | {
         readonly workspaceId: string;
@@ -1905,7 +1906,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
     context.coordinatorTurnId &&
     (id === 'goal.plan.propose' ||
       (id === 'goal.completion.accept' && input.candidate && !input.pendingRequestId))
-      ? client.runTurnPublication(database, [context.coordinatorTurnId], input, (owned) =>
+      ? client.runTurnPublication(opening, [context.coordinatorTurnId], input, (owned) =>
           invokePrepared(receipt, owned)
         )
       : invokePrepared(receipt, input);
