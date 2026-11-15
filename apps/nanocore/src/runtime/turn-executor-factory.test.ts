@@ -3177,6 +3177,820 @@ describe('createConfiguredTurnExecutor', () => {
     60_000
   );
 
+  // CRED-WRITER §3 O6/O7: real governed delivery; only the external placement peer is doubled.
+  it.each(['blocked-refresh', 'default-deny'] as const)(
+    'credential writer oracle O6/O7 refuses before credential effects (%s)',
+    async (fault) => {
+      const grantId = testEntityId('grant', randomUUID());
+      const referenceId = testEntityId('vault', randomUUID());
+      const planId = randomUUID();
+      const receiptId = randomUUID();
+      const material = JSON.stringify({
+        client_id: randomUUID(),
+        client_secret: randomUUID(),
+        ...(fault === 'blocked-refresh' ? { refresh_token: randomUUID() } : {}),
+      });
+      const shape = {
+        id: 'credential_writer_refresh',
+        credentialKey: 'EXAMPLE_TOKEN',
+        endpoints: [
+          { name: 'refresh_api', host: 'api.example.test', port: 443, binaries: ['/usr/bin/curl'] },
+        ],
+        refresh: {
+          strategy:
+            fault === 'blocked-refresh'
+              ? ('oauth2_refresh_token' as const)
+              : ('oauth2_client_credentials' as const),
+          tokenUrl: 'https://api.example.test/token',
+          scopes: ['read'],
+        },
+      };
+      const effects: NanoHostSessionEffectRequest[] = [];
+      const pending: unknown[] = [];
+      let vault: ReturnType<typeof createVaultUnlockState> | undefined;
+      let core: ReturnType<typeof createFactoryCoreDb> | undefined;
+      let cleanupBackend: (() => Promise<void>) | undefined;
+      let ownerStage = 'factory-setup';
+      let imports = 0;
+      let observedRefusal = false;
+      onTestFinished(() => vault?.lock());
+      const work = admitIdleSupplyResident(`credential_writer_${fault}`, {
+        effects,
+        localIdentity: true,
+        providerAccessShapes: [shape],
+        vaultBackend: () => vault!.backend(),
+        onImport: async (request) => {
+          const binding = request.input.providerBinding as Record<string, unknown> | undefined;
+          if (!binding) return { state: 'imported' };
+          imports++;
+          const digest = createHash('sha256')
+            .update('credential-writer-external-proof')
+            .digest('hex');
+          // A correct proof would permit the old static path. It grants no new delegation right.
+          return {
+            state: 'imported',
+            providerProtection: {
+              declarationId: binding.declarationId,
+              grantId,
+              planId,
+              receiptId,
+              vaultReferenceId: referenceId,
+              materialVersion: 1,
+              mappingVersion: 1,
+              profileDigest: createHash('sha256').update(JSON.stringify(shape)).digest('hex'),
+              expectedPolicyDigest: digest,
+              observedPolicyDigest: digest,
+              placeholderOnly: true,
+              exposure: 'sandbox-provider',
+            },
+          };
+        },
+        configurePackage: async (pkg, db) => {
+          core = db;
+          const store = new FsStore({ dataRoot: db.dataRoot });
+          vault = createVaultUnlockState({
+            backendKind: 'encrypted-file',
+            storeDir: join(db.dataRoot, 'vault'),
+          });
+          vault.unlock({
+            masterKey: Buffer.from(
+              randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+              'hex'
+            ),
+          });
+          vault.backend().store({ referenceId, material, metadata: { ownerScope: 'server' } });
+          ownerStage = 'reference-create';
+          await createVaultReference(db, {
+            referenceId,
+            ownerScope: 'server',
+            displayName: 'Credential writer reference',
+            secretKind: 'opaque',
+            backendKind: 'encrypted-file',
+            backendLocator: `encrypted-file://server/vault/${referenceId}`,
+          });
+          ownerStage = 'grant-create';
+          await createVaultGrant(db, {
+            grantId,
+            vaultReferenceId: referenceId,
+            ownerScope: 'server',
+            lifetime: 'agent-session',
+            targetAgentSessionId: pkg.scope.agentSessionId,
+            allowedInjectionPaths: ['backend-provider'],
+          });
+          ownerStage = 'session-create';
+          await store.createAgentSession({
+            id: pkg.scope.agentSessionId,
+            agentId: pkg.agent.agentId,
+            workspaceId: pkg.scope.workspaceId,
+            threadId: pkg.scope.threadId,
+            environmentPackageSnapshotId: pkg.snapshotId,
+            status: 'busy',
+            message: null,
+            createdAt: pkg.createdAt,
+            updatedAt: pkg.createdAt,
+          });
+          ownerStage = 'turn-create';
+          const turn = await store.createTurn(
+            pkg.scope.workspaceId,
+            pkg.scope.threadId,
+            'Exercise the credential writer gate',
+            pkg.scope.triggerActor,
+            null,
+            {
+              turnId: pkg.scope.turnId,
+              executorKind: 'worker',
+              agentId: pkg.agent.agentId,
+              agentSessionId: pkg.scope.agentSessionId,
+              captureCoverage: { scope: 'server', value: 'on' },
+            }
+          );
+          ownerStage = 'turn-update';
+          await store.updateTurn(turn.id, { status: 'running' });
+          // This backend fixture authors an AEP input, not a retained grant or completion.
+          const { aepVaultGrantScope } = await import('./worker-credential-authority.js');
+          pkg.credentials.declarations = [
+            {
+              id: 'static_provider',
+              vaultGrantId: grantId,
+              visibility: 'sandbox-provider',
+              provider: {
+                instanceId: 'static-provider-fixture',
+                type: 'generic',
+                credentialKey: shape.credentialKey,
+                profileId: shape.id,
+              },
+            },
+          ];
+          pkg.vault.grants = [
+            {
+              id: grantId,
+              scope: aepVaultGrantScope(getVaultGrant(db, grantId)!),
+              vaultRefId: referenceId,
+            },
+          ];
+          pkg.vault.references = [
+            { id: referenceId, kind: 'secret-ref', secretRef: `vault://${referenceId}` },
+          ];
+          ownerStage = 'lineage-and-anchor';
+        },
+        materializationContext: async ({ coreDb, environmentPackage: pkg }) => {
+          const { createVaultInjectionPlan } = await import('../vault-injection-plans.js');
+          ownerStage = 'plan-create';
+          await createVaultInjectionPlan(coreDb, {
+            planId,
+            grantId,
+            packageSnapshotId: pkg.snapshotId,
+            injectionVisibility: 'backend-provider',
+            targetEnvVarName: shape.credentialKey,
+            expirationBehavior: 'fail-closed',
+            revocationBehavior:
+              'terminate affected Sandbox; invalidate Epoch if deletion is unproved',
+            redactionRule: 'reference-only',
+            backendCapabilityRequirement: 'sandbox-provider:generic',
+          });
+          pending.push({
+            declarationId: 'static_provider',
+            grantId,
+            planId,
+            receiptId,
+            vaultReferenceId: referenceId,
+            materialVersion: 1,
+            providerInstanceId: 'static-provider-fixture',
+            providerType: 'generic',
+            credentialKey: shape.credentialKey,
+            profileId: shape.id,
+            accessShape: shape,
+          });
+          ownerStage = 'materialize';
+          return { providerCredentials: pending } as unknown as Parameters<
+            WorkerGovernanceBackend['materialize']
+          >[1];
+        },
+        beforeSubmit: async ({ coreDb, environmentPackage: pkg, backend, runtime }) => {
+          cleanupBackend = () => backend.cleanupSession(backend.planSession(pkg));
+          ownerStage = 'governed-refusal';
+          const store = new FsStore({ dataRoot: coreDb.dataRoot });
+          const localUserId =
+            pkg.scope.triggerActor.kind === 'user'
+              ? pkg.scope.triggerActor.id
+              : (pkg.scope.triggerActor.responsibleUserId ?? undefined);
+          const app = createAppWithWorkspaceAuthority({
+            coreDb,
+            store,
+            dataRoot: coreDb.dataRoot,
+            turnExecutor: runtime.turnExecutor,
+            ...(localUserId === undefined ? {} : { localUserId }),
+            vaultUnlockState: vault!,
+            gatewayConfig: {
+              ...loadRuntimeConfig(coreDb.dataRoot).gatewayConfig,
+              providerAccessShapes: [shape],
+            },
+            policyInterception: new PolicyInterception(),
+          });
+          const before = getVaultReference(coreDb, referenceId);
+          expect(before).toMatchObject({ currentVersion: 1, status: 'active' });
+          const writerRow = () =>
+            coreDb.sqlite
+              .prepare('SELECT credential_writer_json FROM vault_references WHERE reference_id=?')
+              .get(referenceId);
+          const beforeWriter = writerRow();
+          expect(beforeWriter).toEqual({ credential_writer_json: null });
+          const backendOwner = vault!.backend();
+          const resolve = vi.spyOn(backendOwner, 'resolve');
+          const rotate = vi.spyOn(backendOwner, 'rotate');
+          const beforeEffects = [...effects];
+          const response = await app.request(
+            ...operationRequest(
+              'vault.binding-deliver',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  workspaceId: pkg.scope.workspaceId,
+                  bindingThreadId: pkg.scope.threadId,
+                  planId,
+                  receiptId,
+                  materialVersion: 1,
+                  requestId: randomUUID(),
+                }),
+              }
+            )
+          );
+          const body = await response.json();
+          expect(response.status).toBe(fault === 'blocked-refresh' ? 409 : 403);
+          if (fault === 'blocked-refresh')
+            expect(body).toMatchObject({ error: { code: 'credential_delegation_blocked' } });
+          else {
+            expect(body).toMatchObject({ error: { code: 'workspace_access_denied' } });
+            const { PRODUCT_OPERATION_ACCESS_RIGHTS } = await import('@openkit/config-schema');
+            expect(
+              (PRODUCT_OPERATION_ACCESS_RIGHTS as Record<string, string>)['vault.delegate-refresh']
+            ).toBe('ar:vault-delegate-refresh');
+          }
+          expect(getVaultReference(coreDb, referenceId)).toEqual(before);
+          expect(writerRow()).toEqual(beforeWriter);
+          expect(listVaultInjectionReceipts(coreDb)).toEqual([]);
+          expect(imports).toBe(0);
+          expect(resolve).not.toHaveBeenCalled();
+          expect(rotate).not.toHaveBeenCalled();
+          expect(effects).toEqual(beforeEffects);
+          expect(effects.some((effect) => effect.kind === 'bridge.open')).toBe(false);
+          resolve.mockRestore();
+          rotate.mockRestore();
+          observedRefusal = true;
+          // Stop this success-only factory before ordinary launch; refusal is already observed.
+          throw new Error('Credential writer refusal observed.');
+        },
+      }).catch((error: unknown) => {
+        if (error instanceof ControlStoreWorkerError)
+          throw new Error(`Credential writer stage=${ownerStage}; code=${error.code}.`);
+        throw error;
+      });
+      void work.catch(() => {});
+      try {
+        await work.catch((error: unknown) => {
+          if (!(error instanceof Error) || error.message !== 'Credential writer refusal observed.')
+            throw error;
+        });
+        expect(observedRefusal).toBe(true);
+      } finally {
+        await work.catch(() => {});
+        try {
+          if (core?.sqlite.open) await cleanupBackend?.();
+        } finally {
+          await shutdownControlStoreWorkerClient();
+          if (core?.sqlite.open) core.sqlite.close();
+        }
+      }
+    }
+  );
+  // CRED-WRITER O4: the original native admission and the actual outside import stay in flight.
+  it.for([
+    { name: 'after-send', evidence: null },
+    { name: 'proven-removal', evidence: 'proven' as const },
+    { name: 'status-row', evidence: { state: 'available' } },
+    { name: 'expiry', evidence: { expiresAt: '2000-01-01T00:00:00.000Z' } },
+    { name: 'detach-ack', evidence: { state: 'detached' } },
+    { name: 'redacted-provider', evidence: { provider: { redacted: true } } },
+    { name: 'bearer-environment', evidence: { environment: { bearerOnly: true } } },
+  ])(
+    'credential writer oracle O3/O4/O5 joins the original native boundary ($name)',
+    { timeout: 60_000 },
+    async ({ evidence }, { signal }) => {
+      const strategy = 'oauth2_client_credentials' as const;
+      const coreDb = createFactoryCoreDb();
+      const ownerUserId = ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+      const workspaceId = DEMO_WORKSPACE_ID;
+      recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
+      const referenceId = testEntityId('vault', randomUUID());
+      const grantId = testEntityId('grant', randomUUID());
+      const shape = {
+        id: 'credential_writer_native',
+        credentialKey: 'EXAMPLE_TOKEN',
+        endpoints: [
+          { name: 'refresh_api', host: 'api.example.test', port: 443, binaries: ['/usr/bin/curl'] },
+        ],
+        refresh: { strategy, tokenUrl: 'https://api.example.test/token', scopes: ['read'] },
+      };
+      // Only generated in-memory material crosses the existing outside-peer boundary.
+      const material = JSON.stringify({ client_id: randomUUID(), client_secret: randomUUID() });
+      const vault = createVaultUnlockState({
+        backendKind: 'encrypted-file',
+        storeDir: join(coreDb.dataRoot, 'vault'),
+      });
+      vault.unlock({
+        masterKey: Buffer.from(
+          randomUUID().replaceAll('-', '') + randomUUID().replaceAll('-', ''),
+          'hex'
+        ),
+      });
+      const importEntered = Promise.withResolvers<NanoHostSessionEffectRequest>();
+      const importRelease = Promise.withResolvers<void>();
+      let native: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>> | undefined;
+      let admission: Promise<unknown> | undefined;
+      let restoreEffect: (() => void) | undefined;
+      let entry: ReturnType<typeof createSchedulerAdmissionEntry> | undefined;
+      let importCount = 0;
+      let removalObservations = 0;
+      let outsideProviderPresent = false;
+      const unblock = () => importRelease.resolve();
+      signal.addEventListener('abort', unblock, { once: true });
+      try {
+        vault
+          .backend()
+          .store({ referenceId, material, metadata: { ownerScope: 'workspace', workspaceId } });
+        await createVaultReference(coreDb, {
+          referenceId,
+          ownerScope: 'workspace',
+          workspaceId,
+          displayName: 'Credential writer native reference',
+          secretKind: 'opaque',
+          backendKind: 'encrypted-file',
+          backendLocator: `encrypted-file://workspace/vault/${referenceId}`,
+        });
+        await createVaultGrant(coreDb, {
+          grantId,
+          vaultReferenceId: referenceId,
+          ownerScope: 'workspace',
+          workspaceId,
+          lifetime: 'workspace',
+          allowedInjectionPaths: ['backend-provider'],
+        });
+        const base = loadRuntimeConfig(coreDb.dataRoot);
+        const gatewayConfig = createTestGatewayConfig();
+        const setup = createTestAgentSetup({
+          logicalModelId: gatewayConfig.defaultLogicalModelId!,
+          requiredCapabilities: ['trusted-worker-inference-relay'],
+        });
+        admitTestNativeEnvironment(coreDb, setup.manifest);
+        const authored = AuthoredAgentConfigSchema.parse({
+          ...setup.manifest,
+          sandbox: {
+            ...setup.manifest.sandbox,
+            credentialDeclarations: [
+              {
+                id: 'delegated_refresh',
+                requirementId: 'delegated_refresh',
+                purpose: 'Use the explicit delegated refresh grant.',
+                required: true,
+                visibility: 'sandbox-provider',
+                provider: {
+                  instanceId: 'refresh-fixture',
+                  type: 'generic',
+                  credentialKey: shape.credentialKey,
+                  profileId: shape.id,
+                },
+              },
+            ],
+          },
+        });
+        const owner = { kind: 'workspace' as const, workspaceId };
+        let configuration = createInMemoryRuntimeConfigSnapshot({
+          ...base,
+          dataRoot: coreDb.dataRoot,
+          gatewayConfig: { ...gatewayConfig, providerAccessShapes: [shape] },
+          agentManifests: [authored],
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Native fixture relay metadata',
+              kind: 'local',
+              baseUrl: 'http://127.0.0.1:0/v1',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+          workspaceConfigs: base.workspaceConfigs.map((source) =>
+            source.workspaceId !== workspaceId
+              ? source
+              : {
+                  ...source,
+                  config: WorkspaceConfigSchema.parse({
+                    ...source.config,
+                    workspace: {
+                      ...source.config.workspace,
+                      agents: [
+                        {
+                          agentId: authored.id,
+                          credentialBindings: [
+                            { requirementId: 'delegated_refresh', vaultGrantId: grantId },
+                          ],
+                        },
+                      ],
+                    },
+                  }),
+                }
+          ),
+        });
+        const { confirmContextDefaults } = await import('../test-support/context-defaults.js');
+        const requestedPolicy = {
+          schemaVersion: 1 as const,
+          statements: [
+            ...(configuration.openKitConfig.policy?.mediation?.statements ?? []),
+            {
+              id: 'credential-writer-explicit-allow',
+              kind: 'permission' as const,
+              author: { kind: 'human' as const, id: ownerUserId },
+              authority: { kind: 'human' as const, userId: ownerUserId },
+              authoredAt: new Date().toISOString(),
+              state: 'active' as const,
+              lifetime: { anchor: { owner, kind: 'workspace' as const, id: workspaceId } },
+              scope: {
+                subjects: [{ kind: 'human' as const, id: ownerUserId }],
+                actions: ['vault.delegate-refresh'],
+                resources: [
+                  {
+                    kind: 'container' as const,
+                    container: { owner, kind: 'workspace' as const, id: workspaceId },
+                  },
+                ],
+              },
+              effect: 'allow' as const,
+              grant: { kind: 'ordinary' as const },
+            },
+          ],
+        };
+        // Existing fixture consent invokes the real configuration candidate, native publication and reload.
+        const manager = await confirmContextDefaults(
+          coreDb,
+          store,
+          createRuntimeConfigManager({
+            dataRoot: coreDb.dataRoot,
+            initialSnapshot: {
+              ...configuration,
+              openKitConfig: {
+                ...configuration.openKitConfig,
+                policy: { ...configuration.openKitConfig.policy, mediation: requestedPolicy },
+              },
+            },
+          })
+        );
+        configuration = manager.current();
+        const interception = new PolicyInterception();
+        native = await createNativeTaskAdmissionFixture(coreDb, store, {
+          readRuntimeConfig: () => configuration,
+          vaultBackend: () => vault.backend(),
+          policyInterception: () => interception,
+        });
+        const f = native;
+        const effectOwner = f.sessionDispatch.effect;
+        if (vi.isMockFunction(effectOwner))
+          throw new Error('Unexpected mutable native effect alias.');
+        const invokeEffect = effectOwner.bind(f.sessionDispatch);
+        f.sessionDispatch.effect = async (
+          ...args: [NanoHostSessionEffectRequest] | [object, NanoHostSessionEffectRequest]
+        ) => {
+          const request = args.length === 1 ? args[0] : args[1];
+          if (request.kind === 'sandbox.delete' && evidence !== null && evidence !== 'proven') {
+            // This outside observation removes nothing. Do not invoke the peer's successful delete.
+            f.effects.push(request);
+            removalObservations++;
+            return evidence;
+          }
+          if (request.kind === 'sandbox.delete' && evidence === 'proven') {
+            const result =
+              args.length === 1
+                ? await invokeEffect(args[0])
+                : await invokeEffect(args[0], args[1]);
+            removalObservations++;
+            outsideProviderPresent = false;
+            return result;
+          }
+          const binding =
+            request.kind === 'reference.import'
+              ? (request.input.providerBinding as Record<string, unknown> | undefined)
+              : undefined;
+          if (!binding)
+            return args.length === 1 ? invokeEffect(args[0]) : invokeEffect(args[0], args[1]);
+          importCount++;
+          importEntered.resolve(request);
+          await importRelease.promise;
+          // No ACK is invented while held; only this original outside invocation can return it.
+          const result =
+            args.length === 1 ? await invokeEffect(args[0]) : await invokeEffect(args[0], args[1]);
+          outsideProviderPresent = true;
+          const digest = createHash('sha256')
+            .update('credential-writer-native-proof')
+            .digest('hex');
+          return {
+            ...(result as Record<string, unknown>),
+            providerProtection: {
+              declarationId: binding.declarationId,
+              grantId,
+              planId: binding.planId,
+              receiptId: binding.receiptId,
+              vaultReferenceId: referenceId,
+              materialVersion: 1,
+              mappingVersion: 1,
+              profileDigest: createHash('sha256')
+                .update(JSON.stringify(binding.accessShape))
+                .digest('hex'),
+              expectedPolicyDigest: digest,
+              observedPolicyDigest: digest,
+              placeholderOnly: true,
+              exposure: 'sandbox-provider',
+            },
+          };
+        };
+        restoreEffect = () => {
+          f.sessionDispatch.effect = effectOwner;
+        };
+        const app = createAppWithWorkspaceAuthority({
+          ...configuration,
+          coreDb,
+          store,
+          dataRoot: coreDb.dataRoot,
+          localUserId: ownerUserId,
+          turnExecutor: f.executor,
+          workerControlGateway: f.workerControlGateway,
+          vaultUnlockState: vault,
+          policyInterception: interception,
+        });
+        const requestId = randomUUID();
+        entry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:${randomUUID()}`,
+          requestId,
+          requestedAgentId: authored.id,
+          workspaceId,
+          threadId: DEMO_THREAD_ID,
+          turnId: deriveEntityId('tu', [
+            JSON.stringify({ kind: 'user', id: ownerUserId }),
+            workspaceId,
+            DEMO_THREAD_ID,
+            requestId,
+            null,
+          ]),
+          turnInput: 'Use the delegated refresh grant.',
+          triggerActor: { kind: 'user', id: ownerUserId },
+        });
+        await createNativeCommandTurn(
+          store,
+          { requestId, agentId: authored.id },
+          entry.workspaceId,
+          entry.threadId,
+          entry.turnInput,
+          entry.triggerActor,
+          undefined,
+          { turnId: entry.turnId, status: 'pending', executorKind: 'worker' }
+        );
+        const agentSessionId = testEntityId('as', randomUUID());
+        admission = f.admitTurn(entry, {
+          attemptId: testEntityId('attempt', randomUUID()),
+          agentSessionId,
+          candidateAgentSessionId: agentSessionId,
+        });
+        void admission.catch(() => {});
+        const sent = await Promise.race([
+          importEntered.promise,
+          admission.then(() => {
+            throw new Error('Native admission completed without its actual Provider import.');
+          }),
+        ]);
+        const binding = sent.input.providerBinding as Record<string, unknown>;
+        expect(binding).toMatchObject({
+          grantId,
+          vaultReferenceId: referenceId,
+          materialVersion: 1,
+        });
+        const readWriter = () =>
+          (
+            getVaultReference(coreDb, referenceId) as unknown as {
+              credentialWriter?: {
+                generation: number;
+                mode: string;
+                holder: string;
+                state: string;
+              };
+            }
+          )?.credentialWriter;
+        const pending = readWriter();
+        expect(pending).toEqual({
+          generation: 1,
+          mode: 'gateway',
+          holder: binding.receiptId,
+          state: 'pending',
+        });
+        expect(importCount).toBe(1);
+        expect(listVaultInjectionReceipts(coreDb).filter((row) => row.grantId === grantId)).toEqual(
+          []
+        );
+        expect(f.effects.some((effect) => effect.kind === 'bridge.open')).toBe(false);
+        const client = getControlStoreWorkerClient();
+        for (const [kind, record] of [
+          [
+            'reference-writer',
+            {
+              action: 'delegate',
+              referenceId,
+              receiptId: randomUUID(),
+              expectedVersion: 1,
+              expectedGeneration: 1,
+            },
+          ],
+          ['reference-advance', { referenceId, currentVersion: 2, expectedWriterGeneration: 1 }],
+        ] as const) {
+          await expect(
+            Reflect.apply(client.vault, client, [coreDb, kind, record])
+          ).rejects.toMatchObject({
+            code: 'credential_family_busy',
+            status: 409,
+            cause: { commit: 'not-committed' },
+          });
+        }
+        await expect(
+          Reflect.apply(client.vault, client, [
+            coreDb,
+            'reference-writer',
+            {
+              action: 'abandon',
+              referenceId,
+              receiptId: binding.receiptId,
+              expectedVersion: 1,
+              expectedGeneration: 1,
+            },
+          ])
+        ).rejects.toMatchObject({ cause: { commit: 'not-committed' } });
+        expect(readWriter()).toEqual(pending);
+        expect(importCount).toBe(1);
+        const rotate = vi.spyOn(vault.backend(), 'rotate');
+        try {
+          const response = await app.request(
+            ...operationRequest(
+              'vault.secret-rotate',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  workspaceId,
+                  referenceId,
+                  material: JSON.stringify({
+                    client_id: randomUUID(),
+                    client_secret: randomUUID(),
+                  }),
+                }),
+              }
+            )
+          );
+          expect(response.status).toBe(409);
+          expect(await response.json()).toMatchObject({
+            error: { code: 'credential_family_busy' },
+          });
+          expect(rotate).not.toHaveBeenCalled();
+          expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(1);
+          expect(readWriter()).toEqual(pending);
+        } finally {
+          rotate.mockRestore();
+        }
+        importRelease.resolve();
+        await admission;
+        expect(readWriter()).toMatchObject({
+          generation: 1,
+          holder: binding.receiptId,
+          state: 'active',
+        });
+        if (evidence !== null) {
+          expect(outsideProviderPresent).toBe(true);
+          const originalSandbox = coreDb.sqlite
+            .prepare(
+              'SELECT sandbox_binding_ref, origin_physical_epoch FROM sandbox_runtime_records'
+            )
+            .get() as { sandbox_binding_ref: string; origin_physical_epoch: string };
+          expect(originalSandbox).toBeDefined();
+          const response = await app.request(
+            ...operationRequest(
+              'vault.binding-revoke',
+              {},
+              {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({
+                  workspaceId,
+                  bindingThreadId: DEMO_THREAD_ID,
+                  planId: binding.planId,
+                  expectedReceiptId: binding.receiptId,
+                  requestId: randomUUID(),
+                }),
+              }
+            )
+          );
+          // Refusal or a genuine fence are both truthful; status alone is never proven removal.
+          await response.arrayBuffer();
+          expect(removalObservations).toBeGreaterThan(0);
+          expect(getVaultGrant(coreDb, grantId)?.status).toBe('active');
+          const after = readWriter();
+          if (evidence === 'proven') {
+            expect(response.status).toBe(200);
+            expect(outsideProviderPresent).toBe(false);
+            expect(after).toEqual({ generation: 2, mode: 'core', holder: null, state: 'active' });
+            const candidates = [randomUUID(), randomUUID()];
+            const results = await Promise.allSettled(
+              candidates.map(
+                (receiptId) =>
+                  Reflect.apply(client.vault, client, [
+                    coreDb,
+                    'reference-writer',
+                    {
+                      action: 'delegate',
+                      referenceId,
+                      receiptId,
+                      expectedVersion: 1,
+                      expectedGeneration: after!.generation,
+                    },
+                  ]) as Promise<unknown>
+              )
+            );
+            expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+            expect(readWriter()).toMatchObject({
+              generation: 3,
+              mode: 'gateway',
+              state: 'pending',
+            });
+            expect(candidates).toContain(readWriter()?.holder);
+            return;
+          }
+          expect(outsideProviderPresent).toBe(true);
+          expect(after).toMatchObject({ mode: 'gateway', holder: binding.receiptId });
+          expect(['active', 'pending', 'fenced']).toContain(after?.state);
+          await expect(
+            Reflect.apply(client.vault, client, [
+              coreDb,
+              'reference-writer',
+              {
+                action: 'delegate',
+                referenceId,
+                receiptId: randomUUID(),
+                expectedVersion: 1,
+                expectedGeneration: after!.generation,
+              },
+            ])
+          ).rejects.toMatchObject({ code: 'credential_family_busy', status: 409 });
+          if (after!.state === 'fenced') {
+            // Count an actual native fence, never the status reply itself or local map absence.
+            expect(
+              coreDb.sqlite
+                .prepare(`SELECT lifecycle_state, health_state, drain_state,
+            cleanup_state, origin_physical_epoch FROM sandbox_runtime_records
+            WHERE sandbox_binding_ref=?`)
+                .get(originalSandbox.sandbox_binding_ref)
+            ).toMatchObject({
+              lifecycle_state: 'failed',
+              health_state: 'unknown',
+              drain_state: 'draining',
+              cleanup_state: 'unknown',
+              origin_physical_epoch: originalSandbox.origin_physical_epoch,
+            });
+          } else {
+            await expect(
+              Reflect.apply(client.vault, client, [
+                coreDb,
+                'reference-advance',
+                {
+                  referenceId,
+                  currentVersion: 2,
+                  expectedWriterGeneration: after!.generation,
+                },
+              ])
+            ).rejects.toMatchObject({ code: 'credential_family_busy', status: 409 });
+            expect(getVaultReference(coreDb, referenceId)?.currentVersion).toBe(1);
+          }
+          expect(readWriter()).toEqual(after);
+        }
+      } finally {
+        unblock();
+        if (entry) native?.executionFor(entry.turnId).completion.resolve();
+        await admission?.catch(() => {});
+        restoreEffect?.();
+        await native?.restore();
+        await shutdownControlStoreWorkerClient();
+        vault.lock();
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        signal.removeEventListener('abort', unblock);
+      }
+    }
+  );
   // Static cut B: revoke through the live executor owner, not a backend-only resident.
   it('withdraws a live Provider grant and joins whole-Sandbox removal before revocation succeeds', async ({
     signal,

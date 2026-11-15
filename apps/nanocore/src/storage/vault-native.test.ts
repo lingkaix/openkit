@@ -3011,3 +3011,487 @@ describe('User Login native receipt proof', () => {
     }
   });
 });
+
+// CRED-WRITER §3: frozen storage oracles. All state changes use the existing native owner.
+describe('credential writer oracle', () => {
+  type Writer = {
+    generation: number;
+    mode: 'core' | 'gateway';
+    holder: string | null;
+    state: 'active' | 'pending' | 'fenced';
+  };
+
+  /** Internal owner readback only; no public writer projection is introduced. */
+  function writer(f: Fixture): Writer {
+    const reference = getVaultReference(f.db, referenceId);
+    expect(reference).not.toBeNull();
+    return (
+      (reference as unknown as { credentialWriter?: Writer | null }).credentialWriter ?? {
+        generation: 0,
+        mode: 'core',
+        holder: null,
+        state: 'active',
+      }
+    );
+  }
+
+  /** Pins the approved new native contract before the client's ordinary stripping step. */
+  function mutate(f: Fixture, kind: string, record: Record<string, unknown>): Promise<unknown> {
+    const wire = {
+      ...record,
+      ...(typeof record.now === 'function' ? { now: record.now() } : {}),
+    };
+    const parsed = ControlVaultInputSchema.safeParse({ kind, record: wire });
+    expect(parsed.success, `CRED-WRITER native input must admit ${kind}`).toBe(true);
+    if (parsed.success) expect(parsed.data.record).toMatchObject(wire);
+    const client = getControlStoreWorkerClient();
+    return Reflect.apply(client.vault, client, [f.db, kind, record]) as Promise<unknown>;
+  }
+
+  /** Existing fixture plus real reference/grant/plan owners; no receipt or writer is fabricated. */
+  async function prepared(version = 1) {
+    const f = await fixture();
+    await createVaultReference(f.db, { ...createInput(), secretKind: 'opaque' });
+    if (version === 2) {
+      const input = { referenceId, currentVersion: 2, expectedWriterGeneration: 0 };
+      await advanceActiveVaultReferenceVersion(f.db, input);
+    }
+    const grant = await createVaultGrant(f.db, {
+      grantId: allocateEntityId('grant'),
+      vaultReferenceId: referenceId,
+      ownerScope: 'server',
+      allowedInjectionPaths: ['backend-provider'],
+      lifetime: 'server',
+      now: () => clock,
+    });
+    const receipts = [];
+    for (let index = 0; index < 3; index++) {
+      const plan = await createVaultInjectionPlan(f.db, {
+        planId: randomUUID(),
+        grantId: grant.grantId,
+        injectionVisibility: 'backend-provider',
+        expirationBehavior: 'fail-closed',
+        revocationBehavior: 'Remove the whole binding or fence its Epoch.',
+        redactionRule: 'reference-only',
+        backendCapabilityRequirement: 'backend-provider',
+        now: () => clock,
+      });
+      receipts.push({
+        receiptId: randomUUID(),
+        planId: plan.planId,
+        grantId: grant.grantId,
+        backendSummary: 'Native owner metadata.',
+        injectedAt: clock,
+        revocationStatus: 'active' as const,
+      });
+    }
+    const initial = writer(f);
+    expect(initial).toMatchObject({ mode: 'core', holder: null, state: 'active' });
+    return { f, receipts, generation: initial.generation, version };
+  }
+
+  type Prepared = Awaited<ReturnType<typeof prepared>>;
+  function delegate(p: Prepared, receiptId: string, generation = p.generation) {
+    return mutate(p.f, 'reference-writer', {
+      action: 'delegate',
+      referenceId,
+      receiptId,
+      expectedVersion: p.version,
+      expectedGeneration: generation,
+    });
+  }
+  function activate(p: Prepared, index = 0, change: Record<string, unknown> = {}) {
+    return mutate(p.f, 'receipt-create', {
+      ...p.receipts[index],
+      expectedVersion: p.version,
+      expectedWriterGeneration: p.generation + 1,
+      ...change,
+    });
+  }
+  function settle(p: Prepared, removal: 'proven' | 'fenced', change: Record<string, unknown> = {}) {
+    return mutate(p.f, 'binding-revoke-receipts-complete', {
+      planId: p.receipts[0]!.planId,
+      receiptId: p.receipts[0]!.receiptId,
+      expectedVersion: p.version,
+      expectedWriterGeneration: p.generation + 1,
+      removal,
+      ...change,
+    });
+  }
+  /** The existing client exposes domain refusals with their original native failure as cause. */
+  async function refused(work: Promise<unknown>): Promise<unknown> {
+    const error: unknown = await work.then(
+      () => undefined,
+      (failure: unknown) => failure
+    );
+    expect(error).toBeInstanceOf(Error);
+    const native = error instanceof ControlStoreWorkerError ? error : (error as Error).cause;
+    expect(native).toBeInstanceOf(ControlStoreWorkerError);
+    expect(native).toMatchObject({ commit: 'not-committed' });
+    return error;
+  }
+  async function busy(work: Promise<unknown>) {
+    const error = await refused(work);
+    expect(error).toMatchObject({ code: 'credential_family_busy', status: 409 });
+  }
+
+  it('O1 admits one competing delegate and gives neither activation nor rotation to the loser', async () => {
+    const p = await prepared();
+    const [first, second] = p.receipts;
+    expect(
+      ControlVaultInputSchema.safeParse({
+        kind: 'reference-writer',
+        record: {
+          action: 'delegate',
+          referenceId,
+          receiptId: first!.receiptId,
+          expectedVersion: p.version,
+          expectedGeneration: p.generation,
+        },
+      }).success,
+      'O1 requires the approved delegate command'
+    ).toBe(true);
+    const { Worker } = await import('node:worker_threads');
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    arm(p.f, 2);
+    const left = p.f.start(() => delegate(p, first!.receiptId));
+    await reached(p.f, left);
+    const right = p.f.start(() => delegate(p, second!.receiptId));
+    const delegateFrames = () =>
+      posted.mock.calls.filter(
+        ([frame]) =>
+          isControlWorkerRequest(frame) &&
+          frame.operation === 'vault' &&
+          (frame.input as { kind: string }).kind === 'reference-writer'
+      );
+    // Use the fixture's original deadline, observing real posts while the first COMMIT stays held.
+    while (delegateFrames().length < 2 && !right.settled()) await nextTurn();
+    expect(delegateFrames()).toHaveLength(2);
+    expect(left.settled()).toBe(false);
+    expect(right.settled()).toBe(false);
+    releaseNative(p.f.gate);
+    const results = await Promise.all([left.result, right.result]);
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    const winner = results[0]!.ok ? 0 : 1;
+    const loser = winner === 0 ? 1 : 0;
+    expect(writer(p.f)).toEqual({
+      generation: p.generation + 1,
+      mode: 'gateway',
+      holder: p.receipts[winner]!.receiptId,
+      state: 'pending',
+    });
+    const failed = results[loser]!;
+    expect(failed.ok).toBe(false);
+    if (failed.ok) throw new Error('Competing delegation admitted two holders.');
+    await busy(Promise.reject(failed.error));
+    await refused(activate(p, loser));
+    expect(getVaultInjectionReceipt(p.f.db, p.receipts[loser]!.receiptId)).toBeNull();
+    await busy(
+      mutate(p.f, 'reference-advance', {
+        referenceId,
+        currentVersion: 2,
+        expectedWriterGeneration: p.generation + 1,
+      })
+    );
+    await activate(p, winner);
+    expect(writer(p.f)).toMatchObject({ holder: p.receipts[winner]!.receiptId, state: 'active' });
+    expect(listVaultInjectionReceipts(p.f.db)).toHaveLength(1);
+  });
+
+  it.each(['holder', 'generation', 'version'] as const)(
+    'O2 refuses one stale %s without changing activation or settlement',
+    async (dimension) => {
+      const p = await prepared(2);
+      await delegate(p, p.receipts[0]!.receiptId);
+      const pending = writer(p.f);
+      const change =
+        dimension === 'holder'
+          ? { receiptId: p.receipts[1]!.receiptId }
+          : dimension === 'generation'
+            ? { expectedWriterGeneration: p.generation }
+            : { expectedVersion: 1 };
+      await refused(activate(p, 0, change));
+      expect(writer(p.f)).toEqual(pending);
+      expect(listVaultInjectionReceipts(p.f.db)).toEqual([]);
+      await activate(p);
+      const active = writer(p.f);
+      await refused(settle(p, 'proven', change));
+      expect(writer(p.f)).toEqual(active);
+      expect(getVaultInjectionReceipt(p.f.db, p.receipts[0]!.receiptId)?.revocationStatus).toBe(
+        'active'
+      );
+      await settle(p, 'fenced');
+      const fenced = writer(p.f);
+      if (dimension !== 'holder') {
+        await refused(
+          mutate(p.f, 'reference-advance', {
+            referenceId,
+            currentVersion: dimension === 'version' ? 2 : 3,
+            expectedWriterGeneration:
+              dimension === 'generation' ? active.generation : fenced.generation,
+          })
+        );
+        expect(writer(p.f)).toEqual(fenced);
+        expect(getVaultReference(p.f.db, referenceId)?.currentVersion).toBe(2);
+      }
+      // A previously valid receipt cannot reactivate its fenced holder, even with current counters.
+      await refused(
+        activate(p, 0, {
+          expectedWriterGeneration: fenced.generation,
+        })
+      );
+      expect(writer(p.f)).toEqual(fenced);
+      await mutate(p.f, 'reference-advance', {
+        referenceId,
+        currentVersion: 3,
+        expectedWriterGeneration: fenced.generation,
+      });
+      expect(writer(p.f)).toEqual({
+        generation: fenced.generation + 1,
+        mode: 'core',
+        holder: null,
+        state: 'active',
+      });
+    }
+  );
+
+  it.each([
+    { state: 'available' },
+    { expiresAt: '2000-01-01T00:00:00.000Z' },
+    { detached: true },
+    { provider: { redacted: true } },
+    { environment: { bearerOnly: true } },
+  ])('O3 rejects status-only removal evidence %j and keeps the family busy', async (evidence) => {
+    const p = await prepared();
+    await delegate(p, p.receipts[0]!.receiptId);
+    await activate(p);
+    const before = writer(p.f);
+    // Closed native removal admits only the trusted producer's proven/fenced classification.
+    const input = {
+      kind: 'binding-revoke-receipts-complete',
+      record: {
+        planId: p.receipts[0]!.planId,
+        receiptId: p.receipts[0]!.receiptId,
+        expectedVersion: p.version,
+        expectedWriterGeneration: before.generation,
+        removal: evidence,
+      },
+    };
+    expect(
+      ControlVaultInputSchema.safeParse({
+        ...input,
+        record: { ...input.record, removal: 'proven' },
+      }).success
+    ).toBe(true);
+    expect(ControlVaultInputSchema.safeParse(input).success).toBe(false);
+    const client = getControlStoreWorkerClient();
+    await expect(
+      Reflect.apply(client.vault, client, [p.f.db, input.kind, input.record])
+    ).rejects.toThrow();
+    expect(writer(p.f)).toEqual(before);
+    await busy(delegate(p, p.receipts[1]!.receiptId, before.generation));
+    await busy(
+      mutate(p.f, 'reference-advance', {
+        referenceId,
+        currentVersion: 2,
+        expectedWriterGeneration: before.generation,
+      })
+    );
+    expect(writer(p.f)).toEqual(before);
+    // The same current binding remains settleable with the approved removal value.
+    await settle(p, 'proven');
+    expect(writer(p.f)).toEqual({
+      generation: before.generation + 1,
+      mode: 'core',
+      holder: null,
+      state: 'active',
+    });
+  });
+
+  it.each(['delivered', 'lost'] as const)(
+    'O4 distinguishes a posted reservation from its post-COMMIT reply (%s)',
+    async (acknowledgement) => {
+      const p = await prepared();
+      const submissions = p.f.submissions();
+      expect(
+        ControlVaultInputSchema.safeParse({
+          kind: 'reference-writer',
+          record: {
+            action: 'delegate',
+            referenceId,
+            receiptId: p.receipts[0]!.receiptId,
+            expectedVersion: p.version,
+            expectedGeneration: p.generation,
+          },
+        }).success,
+        'O4 requires the approved delegate command'
+      ).toBe(true);
+      arm(p.f, 2, true);
+      const operation = p.f.start(() => delegate(p, p.receipts[0]!.receiptId));
+      await reached(p.f, operation);
+      expect(p.f.submissions()).toBeGreaterThan(submissions);
+      // This is the Core command, not the later NanoHost import. Do not confuse their ACKs.
+      expect(writer(p.f)).toMatchObject({ mode: 'core', generation: p.generation });
+      releaseNative(p.f.gate);
+      await reached(p.f, operation, 'reply');
+      const retained = writer(p.f);
+      expect(retained).toEqual({
+        generation: p.generation + 1,
+        mode: 'gateway',
+        holder: p.receipts[0]!.receiptId,
+        state: 'pending',
+      });
+      expect(operation.settled()).toBe(false);
+      await busy(delegate(p, p.receipts[1]!.receiptId, retained.generation));
+      await busy(
+        mutate(p.f, 'reference-advance', {
+          referenceId,
+          currentVersion: 2,
+          expectedWriterGeneration: retained.generation,
+        })
+      );
+      expect(writer(p.f)).toEqual(retained);
+      const sent = p.f.submissions();
+      if (acknowledgement === 'lost') {
+        const worker = interception.workers.at(-1);
+        expect(worker).toBeDefined();
+        await worker!.terminate();
+        expect(await operation.result).toMatchObject({
+          ok: false,
+          error: { commit: 'unknown' },
+        });
+        expect(writer(p.f)).toEqual(retained);
+        // A late buffered reply cannot turn the original unknown result into success or a replay.
+        deliverReplies();
+        expect(await operation.result).toMatchObject({ ok: false, error: { commit: 'unknown' } });
+      } else {
+        deliverReplies();
+        expect(await operation.result).toMatchObject({ ok: true });
+      }
+      expect(p.f.submissions()).toBe(sent);
+      expect(writer(p.f)).toEqual(retained);
+    }
+  );
+
+  it.each(['proven', 'fenced'] as const)(
+    'O5 settles %s removal and admits only the approved recovery sequence',
+    async (removal) => {
+      const p = await prepared();
+      await delegate(p, p.receipts[0]!.receiptId);
+      await activate(p);
+      await settle(p, removal);
+      const completed = writer(p.f);
+      expect(completed).toEqual({
+        generation: p.generation + 2,
+        mode: removal === 'proven' ? 'core' : 'gateway',
+        holder: removal === 'proven' ? null : p.receipts[0]!.receiptId,
+        state: removal === 'proven' ? 'active' : 'fenced',
+      });
+      expect(getVaultInjectionReceipt(p.f.db, p.receipts[0]!.receiptId)?.revocationStatus).toBe(
+        'revoked'
+      );
+      if (removal === 'fenced') {
+        await busy(delegate(p, p.receipts[1]!.receiptId, completed.generation));
+        expect(writer(p.f)).toEqual(completed);
+        await mutate(p.f, 'reference-advance', {
+          referenceId,
+          currentVersion: 2,
+          expectedWriterGeneration: completed.generation,
+        });
+        expect(writer(p.f)).toEqual({
+          generation: completed.generation + 1,
+          mode: 'core',
+          holder: null,
+          state: 'active',
+        });
+        p.version = 2;
+      }
+      const core = writer(p.f);
+      const outcomes = await Promise.allSettled([
+        delegate(p, p.receipts[1]!.receiptId, core.generation),
+        delegate(p, p.receipts[2]!.receiptId, core.generation),
+      ]);
+      expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+      expect(writer(p.f)).toMatchObject({
+        generation: core.generation + 1,
+        mode: 'gateway',
+        state: 'pending',
+      });
+      expect([p.receipts[1]!.receiptId, p.receipts[2]!.receiptId]).toContain(writer(p.f).holder);
+    }
+  );
+
+  it('O8 retains NULL as core and preserves every row across the format-only baseline reopen', async () => {
+    const f = await fixture();
+    await createVaultReference(f.db, createInput());
+    const rows = () => f.fixtureSql('SELECT * FROM vault_references ORDER BY reference_id').all();
+    const before = rows();
+    expect(before).toHaveLength(1);
+    expect(before[0]).toMatchObject({ credential_writer_json: null });
+    expect(writer(f)).toEqual({ generation: 0, mode: 'core', holder: null, state: 'active' });
+    const reopened = openCoreDb(f.db.dataRoot);
+    try {
+      applyMigrations(reopened);
+      expect(
+        reopened.sqlite.prepare('SELECT * FROM vault_references ORDER BY reference_id').all()
+      ).toEqual(before);
+    } finally {
+      reopened.sqlite.close();
+    }
+    expect(rows()).toEqual(before);
+  });
+
+  it.each(['missing', 'future', 'text', 'null', 'boolean'] as const)(
+    'O8 refuses %s writer schemaVersion without rewriting retained rows',
+    async (marker) => {
+      const f = await fixture();
+      await createVaultReference(f.db, createInput());
+      const retained: Record<string, unknown> = {
+        generation: 1,
+        mode: 'gateway',
+        holder: randomUUID(),
+        state: 'pending',
+      };
+      if (marker === 'future') retained.schemaVersion = 2;
+      if (marker === 'text') retained.schemaVersion = '1';
+      if (marker === 'null') retained.schemaVersion = null;
+      if (marker === 'boolean') retained.schemaVersion = true;
+      // Deliberate format fault on the Storage fixture's real retained row, never a writer authority.
+      f.fixtureSql('UPDATE vault_references SET credential_writer_json=? WHERE reference_id=?').run(
+        JSON.stringify(retained),
+        referenceId
+      );
+      const before = f
+        .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+        .get(referenceId);
+      expect(() => getVaultReference(f.db, referenceId)).toThrow(TypeError);
+      expect(
+        f.fixtureSql('SELECT * FROM vault_references WHERE reference_id=?').get(referenceId)
+      ).toEqual(before);
+    }
+  );
+
+  it.each(['pending', 'active', 'fenced', 'core'] as const)(
+    'O8 decodes the supported v1 %s writer without publishing or changing retained bytes',
+    async (state) => {
+      const f = await fixture();
+      await createVaultReference(f.db, createInput());
+      const expected =
+        state === 'core'
+          ? { generation: 2, mode: 'core', holder: null, state: 'active' }
+          : { generation: 2, mode: 'gateway', holder: randomUUID(), state };
+      // Format-only fixture data exercises the decoder, never a behavior-case delegation.
+      f.fixtureSql('UPDATE vault_references SET credential_writer_json=? WHERE reference_id=?').run(
+        JSON.stringify({ schemaVersion: 1, ...expected }),
+        referenceId
+      );
+      const before = f
+        .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+        .get(referenceId);
+      expect(writer(f)).toEqual(expected);
+      expect(
+        f.fixtureSql('SELECT * FROM vault_references WHERE reference_id=?').get(referenceId)
+      ).toEqual(before);
+    }
+  );
+});
