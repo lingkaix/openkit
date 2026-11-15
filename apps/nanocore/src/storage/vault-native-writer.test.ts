@@ -329,6 +329,57 @@ describe('Vault credential writer native transitions', () => {
     }
   );
 
+  it.each(['proven', 'fenced'] as const)(
+    'settles an uncompleted pending holder with %s removal',
+    async (removal) => {
+      await delegate();
+      expect(getVaultInjectionReceipt(db, holder)).toBeNull();
+      await complete(removal);
+      expect(writer()).toEqual(
+        removal === 'proven'
+          ? { generation: 2, mode: 'core', holder: null, state: 'active' }
+          : { generation: 2, mode: 'gateway', holder, state: 'fenced' }
+      );
+      expect(getVaultInjectionReceipt(db, holder)).toBeNull();
+    }
+  );
+
+  it('keeps the current writer when another grant for the same reference is revoked', async () => {
+    const otherGrantId = allocateEntityId('grant');
+    const otherPlanId = 'plan_writer_other_grant';
+    const otherReceiptId = 'receipt_writer_other_grant';
+    await client().vault(db, 'grant-create', {
+      grantId: otherGrantId,
+      vaultReferenceId: referenceId,
+      ownerScope: 'server',
+      allowedInjectionPaths: ['backend-provider'],
+      lifetime: 'server',
+    });
+    await client().vault(db, 'plan-create', {
+      planId: otherPlanId,
+      grantId: otherGrantId,
+      injectionVisibility: 'backend-provider',
+      expirationBehavior: 'Deny expired use.',
+      revocationBehavior: 'Remove the Sandbox.',
+      redactionRule: 'Exclude material.',
+      backendCapabilityRequirement: 'provider-delivery',
+    });
+    await activate({
+      planId: otherPlanId,
+      grantId: otherGrantId,
+      receiptId: otherReceiptId,
+      expectedWriterGeneration: 0,
+    });
+    await delegate();
+    await activate();
+    await client().vault(db, 'grant-revoke', { grantId: otherGrantId });
+    expect(writer()).toEqual({ generation: 1, mode: 'gateway', holder, state: 'active' });
+    expect(getVaultInjectionReceipt(db, holder)?.revocationStatus).toBe('active');
+    expect(getVaultInjectionReceipt(db, otherReceiptId)?.revocationStatus).toBe('stale-session');
+    await client().vault(db, 'grant-revoke', { grantId });
+    expect(writer()).toEqual({ generation: 2, mode: 'gateway', holder, state: 'fenced' });
+  });
+
   it('fences a revoked reference even when its pending holder has no completion receipt', async () => {
     await delegate();
     await client().vault(db, 'reference-revoke', { referenceId });

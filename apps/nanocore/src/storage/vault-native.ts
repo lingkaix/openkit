@@ -718,13 +718,22 @@ function createVaultInjectionReceipt(
  */
 function revokeVaultInjectionReceipts(coreDb: CoreDb, target: ReceiptRevocationTarget): void {
   const byGrant = 'grantId' in target;
+  // Reference revocation already fences its writer, including an uncompleted pending holder.
+  // Grant revocation needs only the current holder, rather than the grant's receipt history.
+  if (byGrant) {
+    const grant = getVaultGrant(coreDb, target.grantId);
+    const reference = grant && getVaultReference(coreDb, grant.vaultReferenceId);
+    const writer = reference && vaultCredentialWriterOf(reference);
+    if (
+      reference &&
+      writer?.mode === 'gateway' &&
+      getVaultInjectionReceipt(coreDb, writer.holder)?.grantId === target.grantId
+    )
+      settleVaultCredentialWriter(coreDb, reference, writer.holder, 'fenced');
+  }
   const predicate = byGrant
     ? 'grant_id = ?'
     : 'grant_id IN (SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?)';
-  const receipts = coreDb.sqlite
-    .prepare(`SELECT receipt_id AS receiptId FROM vault_injection_receipts WHERE ${predicate}`)
-    .all(byGrant ? target.grantId : target.referenceId) as { receiptId: string }[];
-  fenceVaultCredentialWriterReceipts(coreDb, new Set(receipts.map((receipt) => receipt.receiptId)));
   coreDb.sqlite
     .prepare(
       `UPDATE vault_injection_receipts
