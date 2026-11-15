@@ -2569,7 +2569,7 @@ describe('governed User Login Workspace sharing', () => {
       );
       const { listSqliteAuditEvents } = await import('../audit-events.js');
       const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
-      const { policyDigest } = await import('../policy/statements.js');
+      const { policyDigest } = await import('@openkit/protocol/digest');
       const userDb = openUserDb(f.dataRoot, f.owner.id);
       try {
         const finals = listUserPermissionDecisions(userDb).filter(
@@ -2843,7 +2843,7 @@ async function readReviewedIssueDecisions(db: ReturnType<typeof openWorkspaceDb>
 /** Derives the actual admitted document revision through the existing Policy owner. */
 async function admittedReviewedIssuePolicyDigest(f: ReturnType<typeof fixture>) {
   const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
-  const { policyDigest } = await import('../policy/statements.js');
+  const { policyDigest } = await import('@openkit/protocol/digest');
   return policyDigest(
     readAdmittedPolicyDocument(
       f.coreDb,
@@ -3324,7 +3324,7 @@ describe('reviewed grant issue concurrent approved-intent consumption', () => {
           expect(grants[0]!.policyDecisionId).toBe(finalAllows[0]!.decisionId);
           if ('userId' in db) {
             const { readAdmittedPolicyDocument } = await import('../policy/configuration.js');
-            const { policyDigest } = await import('../policy/statements.js');
+            const { policyDigest } = await import('@openkit/protocol/digest');
             const statement = readAdmittedPolicyDocument(
               f.coreDb,
               f.manager.current().openKitConfig.policy?.mediation
