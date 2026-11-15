@@ -100,7 +100,7 @@ import {
   createAssistantSkillReadInvocation,
   createOperationInvocation,
 } from './operation-composition.js';
-import { OperationError } from './operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from './operation-error.js';
 import { PolicyInterception } from './policy/interception.js';
 import type { ResolvedLLMProviderConfig } from './providers/llm-config.js';
 import type { ProviderCredentialConfigured } from './providers/registry.js';
@@ -5144,9 +5144,9 @@ export function createTaskStartOperation({
       responsibleUserIdForActor(triggerActor) !== actor.userId
     )
       throw new TurnStartValidationError(
-        'workspace_access_denied',
-        'Workspace access denied.',
-        403
+        WORKSPACE_ACCESS_DENIED.code,
+        WORKSPACE_ACCESS_DENIED.message,
+        WORKSPACE_ACCESS_DENIED.status
       );
     const actorId = triggerActor.id;
     // An omitted selector retains the original command input and replay hash.
