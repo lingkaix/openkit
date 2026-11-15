@@ -326,39 +326,41 @@ export function readGoalTaskPolicyContext(input: {
     source.checkpoint &&
     source.checkpoint.requestInputHash !== commandInputHash({ input: source.admission.turnInput })
   ) {
-    // Only the original direct Task command can select its prepared credential supply.
-    // An explicitly structured empty selection stays empty, even with a credential manifest.
-    const receipt = getCommandRequestRecordFromDb(
-      db,
-      commandRequestKey('task.start', source.admission.requestId!, {
-        actorId: source.admission.triggerActor.id,
-        workspaceId: lineage.workspaceId,
-        threadId: lineage.threadId,
-      }),
-      new Date().toISOString()
-    );
-    if (
-      !receipt ||
-      receipt.inputHash !== source.checkpoint.requestInputHash ||
-      receipt.response.kind !== 'turn' ||
-      receipt.response.id !== original.turnId
-    )
-      throw unavailable();
-    // The existing Vault owner still checks the exact declaration, target grant and version.
     const prepared = JSON.parse(originalAttempt.preparationInputJson) as { manifest?: unknown };
-    if (prepared.manifest !== undefined) {
-      const manifest = AuthoredAgentConfigSchema.parse(prepared.manifest);
-      if (manifest.id !== source.admission.requestedAgentId) throw unavailable();
-      if ((manifest.sandbox?.credentialDeclarations.length ?? 0) > 0)
-        resources.push({
-          kind: 'container',
-          container: {
-            owner: { kind: 'workspace', workspaceId: lineage.workspaceId },
-            kind: 'workspace',
-            id: lineage.workspaceId,
-          },
-        });
+    const manifest =
+      prepared.manifest === undefined ? null : AuthoredAgentConfigSchema.parse(prepared.manifest);
+    if (manifest && manifest.id !== source.admission.requestedAgentId) throw unavailable();
+    const selectsCredentials = (manifest?.sandbox?.credentialDeclarations.length ?? 0) > 0;
+    // A conversation Task with no credential supply needs no direct Task command receipt.
+    // Missing preparation still fails closed; only the original direct Task can select Vault supply.
+    if (!manifest || selectsCredentials) {
+      const receipt = getCommandRequestRecordFromDb(
+        db,
+        commandRequestKey('task.start', source.admission.requestId!, {
+          actorId: source.admission.triggerActor.id,
+          workspaceId: lineage.workspaceId,
+          threadId: lineage.threadId,
+        }),
+        new Date().toISOString()
+      );
+      if (
+        !receipt ||
+        receipt.inputHash !== source.checkpoint.requestInputHash ||
+        receipt.response.kind !== 'turn' ||
+        receipt.response.id !== original.turnId
+      )
+        throw unavailable();
     }
+    // The existing Vault owner still checks the exact declaration, target grant and version.
+    if (selectsCredentials)
+      resources.push({
+        kind: 'container',
+        container: {
+          owner: { kind: 'workspace', workspaceId: lineage.workspaceId },
+          kind: 'workspace',
+          id: lineage.workspaceId,
+        },
+      });
   }
   return {
     workspaceId: lineage.workspaceId,

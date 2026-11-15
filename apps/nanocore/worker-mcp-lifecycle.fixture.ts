@@ -362,16 +362,17 @@ export async function assertCapturedOutcome(
   let firstTurnId: string | undefined;
   const firstResult = Promise.withResolvers<void>();
   void firstResult.promise.catch(() => undefined);
-  const updateItem = store.updateItem.bind(store);
+  const refreshDisplayProjectionItem = store.refreshDisplayProjectionItem.bind(store);
   const resultPublication = vi
-    .spyOn(store, 'updateItem')
-    .mockImplementation((id, input, admission) => {
-      const publication = updateItem(id, input, admission);
+    .spyOn(store, 'refreshDisplayProjectionItem')
+    .mockImplementation((...args) => {
+      const publication = refreshDisplayProjectionItem(...args);
       if (
+        typeof args[0] === 'string' &&
         firstTurnId &&
-        id === deriveEntityId('it', ['worker-result', firstTurnId]) &&
-        'level' in input &&
-        input.level === 'info'
+        args[0] === deriveEntityId('it', ['worker-result', firstTurnId]) &&
+        'level' in args[1] &&
+        args[1].level === 'info'
       ) {
         void publication.then(() => firstResult.resolve(), firstResult.reject);
       }
