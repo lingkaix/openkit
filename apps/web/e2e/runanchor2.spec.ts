@@ -160,6 +160,31 @@ async function runJourney(page: Page, kind: Journey) {
     )
   );
   await observePlacement(page, targetId);
+  // c7ec1896e reads displayed messages through thread.read-state. These runs exist
+  // only in the timeline mock, so the live read fails and the receipt strip grows
+  // inside the scroller. d364fb986 then holds the visible text by moving scrollTop.
+  await page.route(`**${operationHttpPath('thread.read-state')}`, async (route) => {
+    const definition = OPERATION_DEFINITIONS['thread.read-state'];
+    const input = definition.inputSchema.parse(route.request().postDataJSON());
+    await route.fulfill({
+      json: definition.outputSchema.parse({
+        scope: 'window',
+        readItemIds: input.itemIds,
+        unreadItemIds: [],
+      }),
+    });
+  });
+  await page.route(`**${operationHttpPath('thread.mark-read')}`, async (route) => {
+    const definition = OPERATION_DEFINITIONS['thread.mark-read'];
+    const input = definition.inputSchema.parse(route.request().postDataJSON());
+    await route.fulfill({
+      json: definition.outputSchema.parse(
+        input.itemIds
+          ? { scope: 'window', acknowledgedItemIds: input.itemIds }
+          : { scope: 'thread', acknowledgedCount: 0 }
+      ),
+    });
+  });
   let anchoredReadDelivered = false;
   await page.route(`**${operationHttpPath('thread.timeline')}`, async (route) => {
     const input = ThreadTimelineInputSchema.parse(route.request().postDataJSON());

@@ -79,9 +79,12 @@ test('does not probe tokens when data-root backup opens and rechecks app update 
       effects.push(operation);
     }
   });
-  // The local stack has no server token administration; supply only the App update admission read.
+  // The local stack has no server token administration. ae270a971 made credential.list
+  // strict: App update admits only when canManageServerCredentials is true.
   const tokenListUrl = '**/api/app/operations/credential.list';
-  await page.route(tokenListUrl, (route) => route.fulfill({ json: { items: [] } }));
+  await page.route(tokenListUrl, (route) =>
+    route.fulfill({ json: { items: [], canManageServerCredentials: true } })
+  );
   await page.goto(`${stack.webUrl}/settings/server-operations`);
 
   const tokenListsBeforeBackup = tokenListRequests;
