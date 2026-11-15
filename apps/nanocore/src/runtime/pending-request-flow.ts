@@ -491,11 +491,7 @@ export async function raiseRecordedPendingRequest(
   );
   if (!record) throw associationGap();
   syncApproval(store, record);
-  try {
-    await attentionObservers.get(store)?.(record);
-  } catch {
-    /* Attention is a separate effect. */
-  }
+  await notifyPendingRequestAttention(store, record);
   return record;
 }
 
@@ -1789,4 +1785,16 @@ function associationGap(): PendingRequestCommandError {
     'Pending request Turn association is incomplete.',
     409
   );
+}
+
+/** Reuses the original attention observer only after the source owner's acknowledgement. */
+export async function notifyPendingRequestAttention(
+  store: FsStore,
+  record: PendingRequestRecord
+): Promise<void> {
+  try {
+    await attentionObservers.get(store)?.(record);
+  } catch {
+    /* Attention is a separate effect; the acknowledged source survives. */
+  }
 }

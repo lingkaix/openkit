@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type { FsStore } from '../lib/store.js';
 import { StoreRecordNotFoundError } from '../lib/store-errors.js';
+import { notifyPendingRequestAttention } from '../runtime/pending-request-flow.js';
 import { validateCanonicalLoad } from '../runtime/pending-requests.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
@@ -21,7 +22,7 @@ export interface SecurityAlarmPublication {
   generation: number;
   workspaceId: string;
   threadId: string;
-  rule: 'R1' | 'R8';
+  rule: 'R1' | 'R8' | 'E12';
   key: SecurityItemKey;
   occurrence: { kind: 'initial' | 'reopen' | 'reminder' | 'renotice' | 'conflict'; n: number };
   artifactId: string;
@@ -186,7 +187,7 @@ export async function readSecurityAlarmPublication(
   };
 }
 
-/** Publishes and queues an actual initial R1/R8 through original owners and their separate FULL ACKs. */
+/** Publishes and queues an actual initial R1/R8/E12 through original owners and their separate FULL ACKs. */
 export async function publishSecurityAlarm(
   input: Owners & { requestId: string }
 ): Promise<{ status: 'published'; publication: SecurityAlarmPublication } | { status: 'busy' }> {
@@ -207,6 +208,7 @@ export async function publishSecurityAlarm(
       threadId: destination.threadId,
       recipientUserId: source.recipientUserId,
       rule: source.rule,
+      ...(source.rule === 'E12' ? { sourceAuditEventId: source.key[1] as string } : {}),
     });
     if (result === 'busy') return { status: 'busy' };
     publication = await readSecurityAlarmPublication(address);
@@ -221,5 +223,32 @@ export async function publishSecurityAlarm(
   });
   if (marked.kind !== 'alarm-notice' || !marked.notice)
     throw new TypeError('Unexpected alarm mark/enqueue result.');
+  const pending = input.store.readThreadTimelineSnapshot(
+    publication.workspaceId,
+    publication.threadId,
+    (snapshot) => snapshot.pendingRequest(input.requestId)
+  );
+  if (pending) await notifyPendingRequestAttention(input.store, pending);
   return { status: 'published', publication };
+}
+
+/** Drains the existing source/destination/publisher set; one busy or unavailable recipient does not block others. */
+export async function drainSecurityNotices(input: Owners): Promise<void> {
+  const result = await getControlStoreWorkerClient().securityTrigger(input.coreDb, {
+    action: 'alarms',
+  });
+  if (result.kind !== 'alarms') throw new TypeError('Unexpected security source result.');
+  const failures: unknown[] = [];
+  let published = 0;
+  for (const row of result.rows) {
+    if (published === 8) break;
+    try {
+      const outcome = await publishSecurityAlarm({ ...input, requestId: row.requestId });
+      if (outcome.status === 'published') published++;
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length)
+    throw new AggregateError(failures, 'Security notice publication requires inspection.');
 }

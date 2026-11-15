@@ -3,6 +3,7 @@ import { ControlProductPreconditionError } from './control-store-product-records
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb, WorkspaceDb } from './db.js';
 import { prepareSecurityCanaryAuditInDb } from './security-canary-audit-native.js';
+import { enqueueE12NoticeInDb } from './security-trigger-native.js';
 import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
@@ -25,4 +26,6 @@ export function applyStandaloneAuditInDb(
   }
   const statement = prepareAuditEventStatement(input.event);
   db.sqlite.prepare(statement.sql).run(...statement.parameters);
+  if (db.scope === 'core' && input.stage === 'security.canary')
+    enqueueE12NoticeInDb(db, input.event.id);
 }

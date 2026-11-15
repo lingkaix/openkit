@@ -3,6 +3,7 @@ import {
   type ActorRef,
   type AuditEvent,
   AuditEventSchema,
+  deriveEntityId,
   readRetainedV1,
   TimestampSchema,
   UserIdSchema,
@@ -30,6 +31,8 @@ import {
   securityThreadId,
 } from '../security/identifiers.js';
 import { ControlProductPreconditionError } from './control-store-product-records.js';
+import { assertControlProductWriter } from './control-store-products.js';
+import { SECURITY_OBSERVATION_LIMITS } from './core-journal-codecs.js';
 import type { CoreDb } from './db.js';
 import {
   type SecurityThreadDestination,
@@ -52,6 +55,7 @@ import {
   SecurityTriggerRefusal,
   type SecurityTriggerSnapshot,
 } from './security-trigger-codecs.js';
+import { SECURITY_CANARY_AUDIT_FACT } from './standalone-audit-codecs.js';
 import { resolvePersonalWorkspaceIdInDb } from './workspace-owner-records.js';
 
 const Counter = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
@@ -303,7 +307,7 @@ function checkCurrent(db: CoreDb, timestamp: string, now: Date): View {
       .map((raw) => readAlarmRow(db, raw, originals));
     if (rows.every((row) => row.raised)) {
       // Validate the original native links, not a count or caller acknowledgement alone.
-      for (const row of rows) if (!readAlarmNotice(db, row.requestId)) recovery();
+      for (const row of rows) if (!readSecurityAlarmNoticeInDb(db, row.requestId)) recovery();
       const changed = db.sqlite
         .prepare(`UPDATE security_trigger_state SET state='off'
         WHERE singleton=1 AND state='stopping' AND enable_generation=? AND expected_alarm_count=?`)
@@ -331,7 +335,7 @@ function snapshot(db: CoreDb, view: View, now: Date): SecurityTriggerSnapshot {
 }
 
 const outboxColumns = `schema_version AS schemaVersion,request_id AS requestId,
-  alarm_id AS alarmId,key_json AS keyJson,recipient_user_id AS recipientUserId,
+  alarm_id AS alarmId,audit_event_id AS auditEventId,key_json AS keyJson,recipient_user_id AS recipientUserId,
   occurrence_kind AS occurrenceKind,occurrence_n AS occurrenceN,raised,attention_id AS attentionId`;
 function readAlarmRow(
   db: CoreDb,
@@ -339,6 +343,12 @@ function readAlarmRow(
   originals = new Map<string, Alarm>()
 ): SecurityAlarmRow {
   return retained(raw, (row) => {
+    if (row.alarmId === null && typeof row.auditEventId === 'string') {
+      const event = readEventOutboxRow(db, raw);
+      if (event.rule !== 'E12') return recovery();
+      const { notify: _notify, ...source } = event;
+      return SecurityAlarmRowSchema.parse(source);
+    }
     if (
       typeof row.alarmId !== 'string' ||
       typeof row.keyJson !== 'string' ||
@@ -377,9 +387,10 @@ function readAlarmRow(
 }
 function readAlarmRows(db: CoreDb): SecurityAlarmRow[] {
   readState(db);
+  readProgress(db);
   const rows = db.sqlite
     .prepare(`SELECT ${outboxColumns} FROM security_trigger_outbox
-    WHERE alarm_id IS NOT NULL AND raised=0 ORDER BY created_at,request_id LIMIT 128`)
+    WHERE (alarm_id IS NOT NULL OR EXISTS (SELECT 1 FROM security_trigger_audit_assessments source WHERE source.audit_event_id=security_trigger_outbox.audit_event_id AND source.rule='E12')) AND raised=0 ORDER BY created_at,request_id LIMIT 128`)
     .all();
   const originals = new Map<string, Alarm>();
   return rows.map((raw) => readAlarmRow(db, raw, originals));
@@ -425,7 +436,10 @@ function noticeAttention(
 }
 
 /** Stored Core progress joins its original ready destination; it is not Workspace publication proof. */
-function readAlarmNotice(db: CoreDb, requestId: string): SecurityAlarmNotice | null {
+export function readSecurityAlarmNoticeInDb(
+  db: CoreDb,
+  requestId: string
+): SecurityAlarmNotice | null {
   readState(db);
   const source = readAlarmRequest(db, requestId);
   const row = db.sqlite
@@ -462,7 +476,7 @@ function markAlarmAndEnqueue(
   )
     recovery();
   if (source.raised) {
-    const notice = readAlarmNotice(db, requestId);
+    const notice = readSecurityAlarmNoticeInDb(db, requestId);
     if (!notice || notice.attention.source.threadId !== threadId) recovery();
     return { kind: 'alarm-notice', notice };
   }
@@ -484,7 +498,7 @@ function markAlarmAndEnqueue(
     WHERE request_id=? AND raised=0 AND attention_id IS NULL`)
     .run(attention.id, requestId);
   if (changed.changes !== 1) throw new ControlProductPreconditionError();
-  const notice = readAlarmNotice(db, requestId);
+  const notice = readSecurityAlarmNoticeInDb(db, requestId);
   if (!notice) recovery();
   return { kind: 'alarm-notice', notice };
 }
@@ -539,7 +553,151 @@ const requiredFacts: Record<SecurityAuditAction, readonly SecurityAuditMissingFi
   ],
   'auth.failure-threshold': ['kind', 'key-kind', 'window', 'count'],
   'auth.revoked-credential-presented': ['token-id', 'scope', 'status', 'source'],
+  'security.canary': ['actor'],
+  'security.honey-credential': ['actor'],
+  'security.containment.gap': ['actor'],
 };
+
+function isE12Action(action: string): boolean {
+  return ['security.canary', 'security.honey-credential', 'security.containment.gap'].includes(
+    action
+  );
+}
+function originalE12Source(db: CoreDb, event: AuditEvent): boolean {
+  if (event.outcome !== 'denied') return false;
+  if (event.action === 'security.canary')
+    return (
+      event.resource === SECURITY_CANARY_AUDIT_FACT.resource &&
+      event.summary === SECURITY_CANARY_AUDIT_FACT.summary &&
+      event.actor?.kind === 'agent' &&
+      event.actor.id === event.agentId &&
+      !!event.workspaceId &&
+      !!event.threadId &&
+      !!event.turnId &&
+      !!event.agentSessionId
+    );
+  if (event.action === 'security.honey-credential') {
+    const id =
+      event.authentication?.credentialKind === 'token' ? event.authentication.credentialId : null;
+    const token = id ? getOpenKitAccessTokenRecord(db, id) : null;
+    const subject = token?.runSubject;
+    if (
+      !subject ||
+      !token ||
+      event.actor?.kind !== 'automation' ||
+      event.actor.id !== subject.id ||
+      event.actor.responsibleUserId !== subject.responsibleUserId ||
+      event.resource !== `vault-plan:${subject.planId}`
+    )
+      return false;
+    if (event.id === deriveEntityId('aud', ['run-credential-uncertain', token.tokenId]))
+      return (
+        event.workspaceId === null &&
+        event.threadId === null &&
+        event.turnId === null &&
+        event.agentSessionId === null
+      );
+    return (
+      event.id === deriveEntityId('aud', ['run-credential', token.tokenId]) &&
+      event.workspaceId === subject.lineage.workspaceId &&
+      event.threadId === subject.lineage.threadId &&
+      event.turnId === subject.lineage.turnId &&
+      event.agentSessionId === subject.lineage.agentSessionId
+    );
+  }
+  if (event.action === 'security.containment.gap') {
+    if (event.actor?.kind !== 'system' || event.actor.id !== 'security.containment') return false;
+    const summary = z
+      .object({
+        reason: z.enum([
+          'observation-bound',
+          'capacity',
+          'review-overdue',
+          'shared-resource',
+          'control-unknown',
+        ]),
+        sourceAuditEventId: z.string().nullable(),
+        windowStart: TimestampSchema,
+        observedExcess: z.number().int().min(1).max(SECURITY_OBSERVATION_LIMITS.gapWindow),
+        saturated: z.boolean(),
+        gap: z.string(),
+      })
+      .strict()
+      .safeParse(JSON.parse(event.summary));
+    return (
+      summary.success &&
+      event.resource === `containment-gap:${summary.data.windowStart}` &&
+      event.id ===
+        deriveEntityId('aud', [
+          'containment-gap',
+          summary.data.windowStart,
+          summary.data.observedExcess,
+        ]) &&
+      summary.data.saturated ===
+        (summary.data.observedExcess === SECURITY_OBSERVATION_LIMITS.gapWindow)
+    );
+  }
+  return false;
+}
+
+/** Existing E6 event obligation writer, called by real E12 source owners before their FULL acknowledgement. */
+export function enqueueE12NoticeInDb(db: CoreDb, auditEventId: string): void {
+  assertControlProductWriter(db.sqlite);
+  const before = readProgress(db);
+  const existing = db.sqlite
+    .prepare(
+      `SELECT ${assessmentColumns} FROM security_trigger_audit_assessments WHERE audit_event_id=?`
+    )
+    .get(auditEventId);
+  if (existing) {
+    if (readAssessment(db, existing).rule !== 'E12') recovery();
+    return;
+  }
+  const raw = db.sqlite
+    .prepare('SELECT rowid AS sourceRowId,* FROM audit_events WHERE audit_event_id=?')
+    .get(auditEventId) as Row | undefined;
+  if (!raw) recovery();
+  const { sourceRowId, ...row } = raw;
+  const source = auditEventFromRow(row);
+  if (!originalE12Source(db, source) || !isE12Action(source.action)) recovery();
+  const view = readState(db);
+  const responsibleUserId =
+    source.actor?.kind === 'user'
+      ? source.actor.id
+      : (source.actor?.responsibleUserId ?? view.state.enabler);
+  if (
+    !responsibleUserId ||
+    view.state.generation === 0 ||
+    !Number.isSafeInteger(before.assessed + 1)
+  )
+    recovery();
+  const action = SecurityAuditActionSchema.parse(source.action);
+  const decision = assessFacts(
+    action,
+    source.actor ?? null,
+    null,
+    source.outcome,
+    responsibleUserId
+  );
+  appendAssessment(
+    db,
+    source,
+    Counter.positive().parse(sourceRowId),
+    TimestampSchema.parse(source.createdAt),
+    view.state.generation,
+    action,
+    responsibleUserId,
+    decision,
+    currentAdministrators(db, new Date(), 'alarm'),
+    new Date().toISOString()
+  );
+  const changed = db.sqlite
+    .prepare(
+      `UPDATE security_trigger_audit_progress SET assessed_count=assessed_count+1 WHERE singleton=1 AND assessed_count=?`
+    )
+    .run(before.assessed);
+  if (changed.changes !== 1) recovery();
+}
 
 /** Only admitted original facts are available; resources/summaries/current records are not history. */
 function assessFacts(
@@ -560,6 +718,10 @@ function assessFacts(
         });
   if (missingFields.length)
     return { status: 'unsupported', rule: null, notify: null, missingFields };
+  if (isE12Action(action) && outcome !== 'denied')
+    return { status: 'unsupported', rule: null, notify: null, missingFields: ['status'] };
+  if (isE12Action(action))
+    return { status: 'detected', rule: 'E12', notify: 'immediate', missingFields };
   if (action === 'auth.admin-recovery.issue')
     return { status: 'detected', rule: 'R1', notify: 'immediate', missingFields };
   if (action !== 'user.disable') return recovery();
@@ -593,6 +755,7 @@ function readAssessment(db: CoreDb, raw: unknown): Assessment {
       (source.subject?.kind === 'user' ? source.subject.id : null) !== value.targetUserId
     )
       recovery();
+    if (isE12Action(value.action) && !originalE12Source(db, source)) return recovery();
     const decision = assessFacts(
       value.action,
       value.actor,
@@ -659,7 +822,7 @@ function readProgress(db: CoreDb): Progress {
   )
     recovery();
   const count = db.sqlite
-    .prepare(`SELECT COUNT(*) AS total,MAX(source_rowid) AS last
+    .prepare(`SELECT COUNT(*) AS total,MAX(CASE WHEN rule='E12' THEN NULL ELSE source_rowid END) AS last
     FROM security_trigger_audit_assessments`)
     .get() as { total: number; last: number | null };
   if (
@@ -705,57 +868,118 @@ function readDetections(
         : null,
   };
 }
+function readEventOutboxRow(
+  db: CoreDb,
+  raw: unknown,
+  originals = new Map<string, Assessment>()
+): SecurityEventOutboxRow {
+  return retained(raw, (row) => {
+    if (
+      typeof row.auditEventId !== 'string' ||
+      row.alarmId !== null ||
+      typeof row.keyJson !== 'string' ||
+      ![0, 1].includes(row.raised as number)
+    )
+      return recovery();
+    let original = originals.get(row.auditEventId);
+    if (!original) {
+      const source = db.sqlite
+        .prepare(`SELECT ${assessmentColumns} FROM security_trigger_audit_assessments
+        WHERE audit_event_id=?`)
+        .get(row.auditEventId);
+      if (!source) recovery();
+      original = readAssessment(db, source);
+      originals.set(row.auditEventId, original);
+    }
+    if (original.status !== 'detected') return recovery();
+    const value = SecurityEventOutboxRowSchema.parse({
+      requestId: row.requestId,
+      recipientUserId: row.recipientUserId,
+      key: JSON.parse(row.keyJson),
+      rule: original.rule,
+      notify: original.notify,
+      occurrence: { kind: row.occurrenceKind, n: row.occurrenceN },
+      raised: row.raised === 1,
+    });
+    if (
+      value.key[1] !== original.auditEventId ||
+      (value.rule === 'R1d' && value.recipientUserId !== original.responsibleUserId) ||
+      securityRequestId({
+        key: value.key,
+        recipientUserId: value.recipientUserId,
+        occurrence: value.occurrence,
+      }) !== value.requestId
+    )
+      recovery();
+    noticeAttention(db, value, row.attentionId);
+    return value;
+  });
+}
 function readEventOutbox(db: CoreDb): SecurityEventOutboxRow[] {
   readProgress(db);
   const rows = db.sqlite
-    .prepare(`SELECT ${outboxColumns},audit_event_id AS auditEventId
-    FROM security_trigger_outbox WHERE audit_event_id IS NOT NULL AND raised=0
-    ORDER BY created_at,request_id LIMIT 128`)
+    .prepare(`SELECT ${outboxColumns} FROM security_trigger_outbox
+    WHERE audit_event_id IS NOT NULL AND raised=0 ORDER BY created_at,request_id LIMIT 128`)
     .all();
   const originals = new Map<string, Assessment>();
-  return rows.map((raw) =>
-    retained(raw, (row) => {
-      if (
-        typeof row.auditEventId !== 'string' ||
-        row.alarmId !== null ||
-        typeof row.keyJson !== 'string' ||
-        ![0, 1].includes(row.raised as number)
-      )
-        return recovery();
-      let original = originals.get(row.auditEventId);
-      if (!original) {
-        const source = db.sqlite
-          .prepare(`SELECT ${assessmentColumns} FROM security_trigger_audit_assessments
-        WHERE audit_event_id=?`)
-          .get(row.auditEventId);
-        if (!source) recovery();
-        original = readAssessment(db, source);
-        originals.set(row.auditEventId, original);
-      }
-      if (original.status !== 'detected') return recovery();
-      const value = SecurityEventOutboxRowSchema.parse({
-        requestId: row.requestId,
-        recipientUserId: row.recipientUserId,
-        key: JSON.parse(row.keyJson),
-        rule: original.rule,
-        notify: original.notify,
-        occurrence: { kind: row.occurrenceKind, n: row.occurrenceN },
-        raised: row.raised === 1,
-      });
-      if (
-        value.key[1] !== original.auditEventId ||
-        (value.rule === 'R1d' && value.recipientUserId !== original.responsibleUserId) ||
-        securityRequestId({
-          key: value.key,
-          recipientUserId: value.recipientUserId,
-          occurrence: value.occurrence,
-        }) !== value.requestId
-      )
-        recovery();
-      noticeAttention(db, value, row.attentionId);
-      return value;
-    })
-  );
+  return rows.map((raw) => readEventOutboxRow(db, raw, originals));
+}
+
+/** Existing assessment and all recipient obligations commit together in the native source transaction. */
+function appendAssessment(
+  db: CoreDb,
+  source: AuditEvent,
+  sourceRowId: number,
+  createdAt: string,
+  generation: number,
+  action: SecurityAuditAction,
+  responsibleUserId: string,
+  decision: Pick<SecurityAuditAssessment, 'status' | 'rule' | 'notify' | 'missingFields'>,
+  recipients: string[],
+  timestamp: string
+): void {
+  const actor = source.actor ?? null;
+  const targetUserId = source.subject?.kind === 'user' ? source.subject.id : null;
+  db.sqlite
+    .prepare(`INSERT INTO security_trigger_audit_assessments
+        (schema_version,audit_event_id,source_rowid,created_at,enable_generation,action,actor_json,target_user_id,
+        outcome,responsible_user_id,status,rule,notify,missing_fields_json,recipient_count)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(
+      writeRetainedV1({}).schemaVersion,
+      source.id,
+      sourceRowId as number,
+      createdAt,
+      generation,
+      action,
+      actor === null ? null : JSON.stringify(actor),
+      targetUserId,
+      source.outcome,
+      responsibleUserId,
+      decision.status,
+      decision.rule,
+      decision.notify,
+      JSON.stringify(decision.missingFields),
+      recipients.length
+    );
+  const key: ['event', string] = ['event', source.id];
+  const occurrence = { kind: 'initial' as const, n: 1 };
+  for (const recipientUserId of recipients) {
+    db.sqlite
+      .prepare(`INSERT INTO security_trigger_outbox
+          (request_id,schema_version,audit_event_id,key_json,recipient_user_id,occurrence_kind,occurrence_n,raised,created_at)
+          VALUES (?,?,?,?,?,?,?,0,?)`)
+      .run(
+        securityRequestId({ key, recipientUserId, occurrence }),
+        writeRetainedV1({}).schemaVersion,
+        source.id,
+        JSON.stringify(key),
+        recipientUserId,
+        occurrence.kind,
+        occurrence.n,
+        timestamp
+      );
+  }
 }
 
 /** Append source, assessment, all recipients and cursor advance stay in the original savepoint. */
@@ -781,7 +1005,15 @@ function detectAudit(
     const source = auditEventFromRow(sourceRow);
     const createdAt = TimestampSchema.parse(source.createdAt);
     const action = SecurityAuditActionSchema.safeParse(source.action);
-    if (action.success) {
+    const existing = db.sqlite
+      .prepare(
+        `SELECT ${assessmentColumns} FROM security_trigger_audit_assessments WHERE audit_event_id=?`
+      )
+      .get(source.id);
+    if (existing) {
+      if (readAssessment(db, existing).rule !== 'E12') return recovery();
+    } else if (action.success) {
+      if (isE12Action(action.data) && !originalE12Source(db, source)) return recovery();
       const actor = source.actor ?? null;
       const targetUserId = source.subject?.kind === 'user' ? source.subject.id : null;
       const decision = assessFacts(
@@ -796,48 +1028,23 @@ function detectAudit(
           ? []
           : decision.rule === 'R1'
             ? currentAdministrators(db, now, 'delegated')
-            : [responsibleUserId];
-      if (decision.status === 'detected' && recipients.length === 0) recovery();
-      db.sqlite
-        .prepare(`INSERT INTO security_trigger_audit_assessments
-        (schema_version,audit_event_id,source_rowid,created_at,enable_generation,action,actor_json,target_user_id,
-        outcome,responsible_user_id,status,rule,notify,missing_fields_json,recipient_count)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(
-          writeRetainedV1({}).schemaVersion,
-          source.id,
-          sourceRowId as number,
-          createdAt,
-          view.state.generation,
-          action.data,
-          actor === null ? null : JSON.stringify(actor),
-          targetUserId,
-          source.outcome,
-          responsibleUserId,
-          decision.status,
-          decision.rule,
-          decision.notify,
-          JSON.stringify(decision.missingFields),
-          recipients.length
-        );
-      const key: ['event', string] = ['event', source.id];
-      const occurrence = { kind: 'initial' as const, n: 1 };
-      for (const recipientUserId of recipients) {
-        db.sqlite
-          .prepare(`INSERT INTO security_trigger_outbox
-          (request_id,schema_version,audit_event_id,key_json,recipient_user_id,occurrence_kind,occurrence_n,raised,created_at)
-          VALUES (?,?,?,?,?,?,?,0,?)`)
-          .run(
-            securityRequestId({ key, recipientUserId, occurrence }),
-            writeRetainedV1({}).schemaVersion,
-            source.id,
-            JSON.stringify(key),
-            recipientUserId,
-            occurrence.kind,
-            occurrence.n,
-            input.timestamp
-          );
-      }
+            : decision.rule === 'E12'
+              ? currentAdministrators(db, now, 'alarm')
+              : [responsibleUserId];
+      if (decision.status === 'detected' && decision.rule !== 'E12' && recipients.length === 0)
+        recovery();
+      appendAssessment(
+        db,
+        source,
+        sourceRowId as number,
+        createdAt,
+        view.state.generation,
+        action.data,
+        responsibleUserId,
+        decision,
+        recipients,
+        input.timestamp
+      );
       if (decision.status === 'detected') detected++;
       else unsupported++;
     }
@@ -911,7 +1118,7 @@ function reserveDestination(
   now: Date
 ): ControlSecurityTriggerResult {
   const source = readAlarmRequest(db, requestId);
-  const notice = source.raised ? readAlarmNotice(db, requestId) : null;
+  const notice = source.raised ? readSecurityAlarmNoticeInDb(db, requestId) : null;
   const workspaceId = assertDestinationRecipient(db, source.recipientUserId, now);
   const raw = db.sqlite
     .prepare(`SELECT ${destinationColumns} FROM security_thread_destinations
@@ -995,7 +1202,7 @@ export function applySecurityTriggerInDb(
   if (input.action === 'alarm-read')
     return { kind: 'alarm', row: readAlarmRequest(db, input.requestId) };
   if (input.action === 'alarm-notice-read')
-    return { kind: 'alarm-notice', notice: readAlarmNotice(db, input.requestId) };
+    return { kind: 'alarm-notice', notice: readSecurityAlarmNoticeInDb(db, input.requestId) };
   if (input.action === 'alarm-mark-enqueue')
     return markAlarmAndEnqueue(db, input.requestId, input.threadId, now);
   if (input.action === 'destination-read')

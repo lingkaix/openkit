@@ -19,7 +19,10 @@ import { assertControlProductWriter } from '../storage/control-store-products.js
 import { SECURITY_OBSERVATION_LIMITS } from '../storage/core-journal-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import { recordContainmentGapInDb } from '../storage/security-canary-audit-native.js';
-import { applySecurityTriggerInDb } from '../storage/security-trigger-native.js';
+import {
+  applySecurityTriggerInDb,
+  enqueueE12NoticeInDb,
+} from '../storage/security-trigger-native.js';
 import {
   getVaultGrant,
   getVaultInjectionPlan,
@@ -348,6 +351,7 @@ export function observeRunBoundAccessTokenInDb(db: CoreDb, token: OpenKitAccessT
       resource: `vault-plan:${subject.planId}`,
       summary: 'Verified zero-grant inbound credential refused; delivery attribution is uncertain.',
     });
+    enqueueE12NoticeInDb(db, id);
     return;
   }
   const current = applySecurityTriggerInDb(db, {
@@ -400,6 +404,7 @@ export function observeRunBoundAccessTokenInDb(db: CoreDb, token: OpenKitAccessT
     resource: `vault-plan:${token.runSubject!.planId}`,
     summary: 'Verified zero-grant inbound credential presentation refused.',
   });
+  enqueueE12NoticeInDb(db, id);
 }
 
 /** Re-proves one existing cryptographic-owner sensor for the existing exact containment consumer. */

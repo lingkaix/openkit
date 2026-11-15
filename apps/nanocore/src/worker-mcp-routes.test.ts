@@ -4359,6 +4359,22 @@ describe('worker MCP routes', () => {
                 )
               ).toHaveLength(16);
             }
+            let earlyE12RequestId: string | null = null;
+            if (scenario === 'containment-gaps') {
+              const initial = (await trigger.readAlarms()).filter((row) => row.rule === 'E12');
+              expect(initial).toHaveLength(19);
+              earlyE12RequestId = initial[0]!.requestId;
+              const fresh = await (await import('./security/publication.js')).publishSecurityAlarm({
+                coreDb,
+                store,
+                requestId: earlyE12RequestId,
+              });
+              expect(fresh.status).toBe('published');
+              expect(await trigger.readAlarmNotice(earlyE12RequestId)).toMatchObject({
+                rule: 'E12',
+                raised: true,
+              });
+            }
             const retained = policyNow();
             expect(await trigger.stop({ kind: 'local', userId })).toMatchObject({
               state: 'stopping',
@@ -4393,11 +4409,120 @@ describe('worker MCP routes', () => {
                 .every((alarm) => alarm.raised)
             ).toBe(true);
             expect(await trigger.current()).toMatchObject({ state: 'off' });
+            if (scenario === 'containment-gaps') {
+              const remaining = (await trigger.readAlarms()).filter((row) => row.rule === 'E12');
+              expect(remaining).toHaveLength(18);
+              const owed = [(await trigger.readAlarmNotice(earlyE12RequestId!))!, ...remaining];
+              expect(owed).toHaveLength(19); // Three native run sensors plus sixteen saturated gap originals.
+              expect(new Set(owed.map((row) => row.requestId)).size).toBe(19);
+              expect(
+                owed.every((row) => row.recipientUserId === userId && row.key[0] === 'event')
+              ).toBe(true);
+              const progress = await trigger.readDetectionProgress();
+              expect(progress.assessed).toBe(19);
+              const { drainSecurityNotices } = await import('./security/publication.js');
+              for (let pass = 0; pass < 3; pass++) await drainSecurityNotices({ coreDb, store });
+              const blocked = (await trigger.readAlarms()).filter((row) => row.rule === 'E12');
+              expect(blocked).toHaveLength(4); // Original Pending bound is kept; no notice is falsely marked raised.
+              for (const row of blocked)
+                expect(await trigger.readAlarmNotice(row.requestId)).toBeNull();
+              const { createChannelServices } = await import('./channel-services.js');
+              const channels = createChannelServices({
+                coreDb,
+                store,
+                mode: 'local',
+                openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
+                invokePending: async () => {
+                  throw new Error('A fixed notice cannot invoke a decision.');
+                },
+              });
+              const acknowledged = new Set<string>();
+              const published = [];
+              for (const row of owed) {
+                const notice = await trigger.readAlarmNotice(row.requestId);
+                if (notice && published.length < 4) published.push(notice);
+              }
+              for (const firstNotice of published) {
+                const answer = await taskApp.request(
+                  ...operationRequest(
+                    'question.answer',
+                    {
+                      workspaceId: firstNotice.attention.source.workspaceId,
+                      threadId: firstNotice.attention.source.threadId,
+                    },
+                    {
+                      method: 'POST',
+                      headers: { 'content-type': 'application/json' },
+                      body: JSON.stringify({
+                        requestId: randomUUID(),
+                        workspaceId: firstNotice.attention.source.workspaceId,
+                        threadId: firstNotice.attention.source.threadId,
+                        userInputRequestId: firstNotice.requestId,
+                        answers: { acknowledgement: ['Reviewed'] },
+                      }),
+                    }
+                  )
+                );
+                expect(answer.status, await answer.clone().text()).toBe(200);
+                expect(channels.eligible(firstNotice.attention)).toBe(false);
+                expect(channels.readableDelivery(firstNotice.attention)).toBe(true);
+                acknowledged.add(firstNotice.requestId);
+                expect(policyNow()).toEqual(retained);
+              }
+              await drainSecurityNotices({ coreDb, store });
+              expect((await trigger.readAlarms()).filter((row) => row.rule === 'E12')).toEqual([]);
+
+              for (const row of owed) {
+                const notice = await trigger.readAlarmNotice(row.requestId);
+                expect(notice).toMatchObject({
+                  rule: 'E12',
+                  raised: true,
+                  recipientUserId: userId,
+                });
+                expect(notice!.attention.source.kind).toBe('security-notice');
+                expect(channels.eligible(notice!.attention)).toBe(!acknowledged.has(row.requestId));
+                const delivered = await readSecurityAlarmPublication({
+                  coreDb,
+                  store,
+                  requestId: row.requestId,
+                  workspaceId: notice!.attention.source.workspaceId,
+                  threadId: notice!.attention.source.threadId,
+                });
+                expect(delivered).toMatchObject({ rule: 'E12', key: row.key });
+                const report = store.getArtifactVersion(
+                  delivered!.workspaceId,
+                  delivered!.artifactId,
+                  1
+                );
+                expect(report.artifact.content).toMatchObject({ format: 'markdown' });
+                if (report.artifact.content.format === 'markdown') {
+                  expect(report.artifact.content.body).toContain(row.key[1]);
+                  expect(report.artifact.content.body).toContain(
+                    'Acknowledgement never releases quarantine'
+                  );
+                }
+              }
+              expect(await trigger.current()).toMatchObject({ state: 'off' });
+              expect(policyNow()).toEqual(retained);
+            }
             expect(await trigger.enable({ kind: 'local', userId })).toMatchObject({
               state: 'on',
               delegationCurrent: true,
             });
             expect(policyNow()).toEqual(retained);
+            if (scenario === 'containment-gaps') {
+              // The ordinary E6 scan catches up to directly acknowledged sources without duplication.
+              for (let page = 0; page < 8; page++) {
+                const scan = await trigger.detectAudit({ limit: 128 });
+                if (scan.scanned === 0) break;
+              }
+              expect(
+                (await trigger.readDetections({ limit: 128 })).events.filter(
+                  (row) => row.rule === 'E12'
+                )
+              ).toHaveLength(19);
+              expect((await trigger.readAlarms()).filter((row) => row.rule === 'E12')).toEqual([]);
+            }
             expect(await trigger.containmentUsage(policyNow(), workspaceId)).toMatchObject({
               usage: { currentWorkspace: 2, cumulativeWorkspace: 2, pendingWorkspace: 0 },
             });

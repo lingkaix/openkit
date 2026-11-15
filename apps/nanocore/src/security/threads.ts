@@ -5,6 +5,7 @@ import { getControlStoreWorkerClient } from '../storage/control-store-worker-cli
 import type { CoreDb } from '../storage/db.js';
 import type { SecurityThreadDestination } from '../storage/security-thread-destination-codecs.js';
 import { SecurityTriggerRefusal } from '../storage/security-trigger-codecs.js';
+import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 
 type Owners = { coreDb: CoreDb; store: FsStore };
 /** Trusted source identity only; current principal/effect admission remains with Administration. */
@@ -86,7 +87,12 @@ export async function prepareSecurityThread(
   }
   // A prior reserved intent has an unknown cross-store outcome. Do not adopt, repost or repair it.
   if (!result.fresh) unavailable();
-  const home = await input.store.ensureQuickChatWorkspace(destination.recipientUserId);
+  await ensureUserQuickChatWorkspace({
+    coreDb: input.coreDb,
+    store: input.store,
+    userId: destination.recipientUserId,
+  });
+  const home = input.store.getWorkspace(destination.workspaceId);
   if (home.id !== destination.workspaceId || home.kind !== 'personal') unavailable();
   try {
     input.store.getThread(destination.workspaceId, destination.threadId);

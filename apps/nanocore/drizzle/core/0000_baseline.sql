@@ -539,7 +539,7 @@ CREATE TABLE `security_trigger_audit_progress` (
   `cursor_created_at` text,
   `cursor_audit_event_id` text,
   `assessed_count` integer DEFAULT 0 NOT NULL CHECK (`assessed_count` BETWEEN 0 AND 9007199254740991),
-  CHECK ((`cursor_rowid` IS NULL AND `cursor_created_at` IS NULL AND `cursor_audit_event_id` IS NULL AND `assessed_count` = 0)
+  CHECK ((`cursor_rowid` IS NULL AND `cursor_created_at` IS NULL AND `cursor_audit_event_id` IS NULL)
     OR (`cursor_rowid` IS NOT NULL AND `cursor_rowid` BETWEEN 1 AND 9007199254740991 AND `cursor_created_at` IS NOT NULL AND `cursor_audit_event_id` IS NOT NULL))
 );
 --> statement-breakpoint
@@ -555,12 +555,12 @@ CREATE TABLE `security_trigger_audit_assessments` (
   `outcome` text NOT NULL CHECK (`outcome` IN ('succeeded','failed','denied','cancelled','unknown')),
   `responsible_user_id` text NOT NULL,
   `status` text NOT NULL CHECK (`status` IN ('detected','unsupported')),
-  `rule` text CHECK (`rule` IN ('R1','R1d')),
+  `rule` text CHECK (`rule` IN ('R1','R1d','E12')),
   `notify` text CHECK (`notify` IN ('immediate','daily')),
   `missing_fields_json` text NOT NULL,
   `recipient_count` integer NOT NULL CHECK (`recipient_count` BETWEEN 0 AND 9007199254740991),
   CHECK ((`status` = 'unsupported' AND `rule` IS NULL AND `notify` IS NULL AND `recipient_count` = 0)
-    OR (`status` = 'detected' AND `rule` IS NOT NULL AND `notify` IS NOT NULL AND `recipient_count` > 0)),
+    OR (`status` = 'detected' AND `rule` IS NOT NULL AND `notify` IS NOT NULL AND (`recipient_count` > 0 OR `rule` = 'E12'))),
   CHECK (`rule` IS NULL OR `rule` <> 'R1d' OR `recipient_count` = 1)
 );
 --> statement-breakpoint

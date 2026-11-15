@@ -14,7 +14,7 @@ import {
 import { ControlProductPreconditionError } from './control-store-product-records.js';
 import { SECURITY_CONTAINMENT_LIMITS, SECURITY_OBSERVATION_LIMITS } from './core-journal-codecs.js';
 import type { CoreDb } from './db.js';
-import { applySecurityTriggerInDb } from './security-trigger-native.js';
+import { applySecurityTriggerInDb, enqueueE12NoticeInDb } from './security-trigger-native.js';
 import {
   type ControlStandaloneAuditInput,
   ControlStandaloneAuditInputSchema,
@@ -219,5 +219,6 @@ export function recordContainmentGapInDb(
           : 'No additional restriction is proved.',
     }),
   });
+  enqueueE12NoticeInDb(db, id);
   return id;
 }

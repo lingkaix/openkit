@@ -1,3 +1,5 @@
+import { AuditEventIdSchema } from '@openkit/protocol';
+import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import {
   contextInfluenceWasCleared,
   contextIsExternallyInfluenced,
@@ -189,6 +191,7 @@ import {
   loadApprovalProjections,
   loadApprovalProjectionsFromSqlite,
   pendingRequestSystemActor,
+  preflightPendingRequest,
 } from '../runtime/pending-requests.js';
 import type { RuntimeAgent } from '../runtime/types.js';
 import { securityPublicationIds, securityReportArtifactId } from '../security/identifiers.js';
@@ -3825,7 +3828,8 @@ export class FsStore {
     workspaceId: string;
     threadId: string;
     recipientUserId: string;
-    rule: 'R1' | 'R8';
+    rule: 'R1' | 'R8' | 'E12';
+    sourceAuditEventId?: string;
   }): Promise<'published' | 'busy'> {
     const { requestId, workspaceId, threadId, recipientUserId, rule } = input;
     this.assertWorkspacePublicationAcknowledged(workspaceId);
@@ -3857,11 +3861,18 @@ export class FsStore {
     const now = new Date().toISOString();
     const actor = pendingRequestSystemActor(recipientUserId);
     const title =
-      rule === 'R1' ? 'Security monitoring stopped' : 'Security monitoring authority lost';
+      rule === 'E12'
+        ? 'Security activity requires review'
+        : rule === 'R1'
+          ? 'Security monitoring stopped'
+          : 'Security monitoring authority lost';
+    if (rule === 'E12') AuditEventIdSchema.parse(input.sourceAuditEventId);
     const body =
-      rule === 'R1'
-        ? '# Security monitoring stopped\n\nMonitoring is stopping. Confirm whether this change was expected.\n'
-        : '# Security monitoring authority lost\n\nThe original enabling delegation is unavailable. Review this loss or start a response.\n';
+      rule === 'E12'
+        ? `# Security activity requires review\n\nA security sensor or containment gap requires review. Inspect the original Audit and its evidence: ${input.sourceAuditEventId}. Restriction and stop outcomes may be unknown. Acknowledgement never releases quarantine or restores credentials.\n`
+        : rule === 'R1'
+          ? '# Security monitoring stopped\n\nMonitoring is stopping. Confirm whether this change was expected.\n'
+          : '# Security monitoring authority lost\n\nThe original enabling delegation is unavailable. Review this loss or start a response.\n';
     const artifact = ArtifactSchema.parse({
       id: artifactId,
       workspaceId,
@@ -3887,7 +3898,7 @@ export class FsStore {
     const questions = [
       {
         id: 'acknowledgement',
-        header: 'Security monitoring',
+        header: rule === 'E12' ? 'Security review' : 'Security monitoring',
         question: title,
         options: labels.map((label) => ({ label, description: label })),
         isOther: false,
@@ -3923,6 +3934,32 @@ export class FsStore {
       createdAt: now,
       completedAt: now,
     });
+    const pendingInput = {
+      requestId,
+      workspaceId,
+      threadId,
+      raisingTurnId: ids.raiseTurnId,
+      requestItemId: ids.requestItemId,
+      kind: 'user-input' as const,
+      requesterKind: 'automation' as const,
+      agentId: null,
+      agentSessionId: null,
+      responsibleUserId: recipientUserId,
+      questions,
+      now,
+    };
+    const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner, scope.sqlite);
+    try {
+      preflightPendingRequest(reader.sqlite, pendingInput);
+    } catch (error) {
+      if (error instanceof PendingRequestCommandError && error.code === 'request_limit_reached')
+        return 'busy';
+      throw error;
+    } finally {
+      reader.close();
+    }
+    // The native Pending owner repeats this preflight after all asynchronous publication work.
     let submitted = false;
     this.pendingArtifactSubmissions.add(artifactId);
     try {
@@ -3945,20 +3982,7 @@ export class FsStore {
               action: 'raise',
               workspaceId,
               threadId,
-              input: {
-                requestId,
-                workspaceId,
-                threadId,
-                raisingTurnId: ids.raiseTurnId,
-                requestItemId: ids.requestItemId,
-                kind: 'user-input',
-                requesterKind: 'automation',
-                agentId: null,
-                agentSessionId: null,
-                responsibleUserId: recipientUserId,
-                questions,
-                now,
-              },
+              input: pendingInput,
             },
           ],
         });
@@ -3966,8 +3990,11 @@ export class FsStore {
       this.pendingArtifactSubmissions.delete(artifactId);
       return 'published';
     } catch (error) {
-      const refused = error instanceof ControlStoreWorkerError && error.commit === 'not-committed';
-      // Unknown native or file settlement retains the real files and explicit recovery gap.
+      const limited =
+        error instanceof PendingRequestCommandError && error.code === 'request_limit_reached';
+      const refused =
+        limited || (error instanceof ControlStoreWorkerError && error.commit === 'not-committed');
+      // Native Pending capacity is a definite no-write refusal; unknown settlement retains recovery.
       if ((refused || !submitted) && !this.unacknowledgedWorkspaces.has(workspaceId)) {
         const key = JSON.stringify([
           await realpath(this.nativeScope({ kind: 'workspace', workspaceId }).path),
@@ -3985,7 +4012,10 @@ export class FsStore {
           this.pendingArtifactSubmissions.add(artifactId);
           throw new ArtifactPayloadCleanupError([error, cleanupError]);
         }
-        if (refused && this.readThreadNavigationFacts(workspaceId, threadId).activeTurn)
+        if (
+          refused &&
+          (limited || this.readThreadNavigationFacts(workspaceId, threadId).activeTurn)
+        )
           return 'busy';
       }
       throw error;

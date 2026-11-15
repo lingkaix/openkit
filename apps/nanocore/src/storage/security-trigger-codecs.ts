@@ -45,12 +45,15 @@ export const SecurityAlarmRowSchema = z
   .object({
     requestId: z.string().uuid(),
     recipientUserId: UserIdSchema,
-    rule: z.enum(['R1', 'R8']),
-    key: z.tuple([
-      z.literal('gap'),
-      PositiveCounter,
-      z.enum(['monitoring-off', 'lost-authority']),
-      z.string().uuid(),
+    rule: z.enum(['R1', 'R8', 'E12']),
+    key: z.union([
+      z.tuple([z.literal('event'), AuditEventIdSchema]),
+      z.tuple([
+        z.literal('gap'),
+        PositiveCounter,
+        z.enum(['monitoring-off', 'lost-authority']),
+        z.string().uuid(),
+      ]),
     ]),
     occurrence: z
       .object({
@@ -86,6 +89,9 @@ export const SecurityAuditActionSchema = z.enum([
   'channel.pairing.unbind',
   'auth.failure-threshold',
   'auth.revoked-credential-presented',
+  'security.canary',
+  'security.honey-credential',
+  'security.containment.gap',
 ]);
 export type SecurityAuditAction = z.infer<typeof SecurityAuditActionSchema>;
 export const SecurityAuditMissingFieldSchema = z.enum([
@@ -125,7 +131,7 @@ export const SecurityAuditAssessmentSchema = z
     actor: ActorRefSchema.nullable(),
     targetUserId: UserIdSchema.nullable(),
     status: z.enum(['detected', 'unsupported']),
-    rule: z.enum(['R1', 'R1d']).nullable(),
+    rule: z.enum(['R1', 'R1d', 'E12']).nullable(),
     notify: z.enum(['immediate', 'daily']).nullable(),
     missingFields: z
       .array(SecurityAuditMissingFieldSchema)
@@ -142,7 +148,7 @@ export const SecurityEventOutboxRowSchema = z
     requestId: z.string().uuid(),
     recipientUserId: UserIdSchema,
     key: z.tuple([z.literal('event'), AuditEventIdSchema]),
-    rule: z.enum(['R1', 'R1d']),
+    rule: z.enum(['R1', 'R1d', 'E12']),
     notify: z.enum(['immediate', 'daily']),
     occurrence: z.object({ kind: z.literal('initial'), n: z.literal(1) }).strict(),
     raised: z.boolean(),
