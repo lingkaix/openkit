@@ -1,4 +1,5 @@
 import {
+  HumanCreationPasswordInputLimitSchema,
   HumanDisplayNameInputLimitSchema,
   HumanEmailInputLimitSchema,
 } from '@openkit/app-api-schemas';
@@ -173,10 +174,12 @@ export function createBetterAuth(
     emailAndPassword: {
       disableSignUp: config.auth?.signup?.enabled === false,
       enabled: true,
+      // Creation is bounded below; verification must still accept retained passwords.
+      maxPasswordLength: Number.MAX_SAFE_INTEGER,
     },
     plugins: [
       {
-        id: 'openkit-incomplete-bootstrap',
+        id: 'openkit-auth-inputs',
         hooks: {
           before: [
             {
@@ -186,6 +189,25 @@ export function createBetterAuth(
                 if (mode === 'server' && !isServerBootstrapComplete(coreDb)) {
                   refuseIncompleteServerBootstrap();
                 }
+              }),
+            },
+            {
+              matcher: (context) =>
+                // Server-only setPassword has no public path in the hook context.
+                context.path === undefined ||
+                ['/sign-up/email', '/change-password', '/reset-password'].includes(context.path),
+              handler: createAuthMiddleware(async (context) => {
+                const value =
+                  context.path === '/sign-up/email'
+                    ? context.body?.password
+                    : context.body?.newPassword;
+                if (typeof value !== 'string') return;
+                const result = HumanCreationPasswordInputLimitSchema.safeParse(value);
+                if (!result.success)
+                  throw new APIError('BAD_REQUEST', {
+                    message: result.error.issues[0]?.message ?? 'New password is too long.',
+                    code: 'PASSWORD_TOO_LONG',
+                  });
               }),
             },
           ],

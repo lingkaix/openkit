@@ -313,14 +313,14 @@ describe('configured BetterAuth native writer', () => {
       });
       expect(response.status).toBeGreaterThanOrEqual(400);
       expect(response.headers.getSetCookie()).toEqual([]);
-      expect(f.db.sqlite.prepare('SELECT identifier FROM verification').all()).toEqual([
-        { identifier },
-      ]);
+      expect(f.db.sqlite.prepare('SELECT identifier FROM verification').all()).toEqual(
+        stage === 'password' ? [] : [{ identifier }]
+      );
       const hash = f.db.sqlite.prepare('SELECT password FROM account').pluck().get() as string;
       expect(
         await f.context.password.verify({
           hash,
-          password: stage === 'password' ? password : replacementPassword,
+          password,
         })
       ).toBe(true);
       expect(f.count('session')).toBe(1);
@@ -364,7 +364,7 @@ describe('configured BetterAuth native writer', () => {
       expiresAt: now + 60_000,
       oauthState: state,
     });
-    for (const identifier of [state, 'unrelated-state']) {
+    for (const identifier of [`auth-state:${state}`, 'unrelated-state']) {
       f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?)`).run(
         allocateEntityId('verif'),
@@ -424,8 +424,7 @@ describe('configured BetterAuth native writer', () => {
         await f.request(
           '/unlink-account',
           {
-            providerId: 'retained-provider',
-            accountId: foreign.accountId,
+            accountId: foreign.id,
           },
           user.cookie
         )
@@ -436,8 +435,7 @@ describe('configured BetterAuth native writer', () => {
       f.request(
         '/unlink-account',
         {
-          providerId: 'retained-provider',
-          accountId: selected.accountId,
+          accountId: selected.id,
         },
         user.cookie
       )
@@ -470,8 +468,7 @@ describe('configured BetterAuth native writer', () => {
         f.request(
           '/unlink-account',
           {
-            providerId: 'retained-provider',
-            accountId: selected.accountId,
+            accountId: selected.id,
           },
           user.cookie
         )
@@ -554,10 +551,12 @@ describe('configured BetterAuth native writer', () => {
       expect(
         await f.context.password.verify({
           hash,
-          password: stage === 'password' ? password : replacementPassword,
+          password: stage === 'replacement-session' ? replacementPassword : password,
         })
       ).toBe(true);
-      expect(f.count('session')).toBe(stage === 'replacement-session' ? 0 : 2);
+      expect(f.count('session')).toBe(
+        stage === 'replacement-session' ? 0 : stage === 'password' ? 1 : 2
+      );
     }
   );
 
@@ -566,6 +565,21 @@ describe('configured BetterAuth native writer', () => {
     const user = await f.signUp();
     const now = new Date();
     const attempts = [
+      () =>
+        f.context.adapter.consumeOne({
+          model: 'session',
+          where: [{ field: 'id', value: user.id }],
+        }),
+      () =>
+        f.context.adapter.consumeOne({
+          model: 'verification',
+          where: [{ field: 'identifier', value: 'unissued' }],
+        }),
+      () =>
+        f.context.adapter.consumeOne({
+          model: 'verification',
+          where: [{ field: 'id', value: 'unissued', operator: 'ne' }],
+        }),
       () =>
         f.context.adapter.create({
           model: 'verification',
@@ -676,37 +690,44 @@ describe('configured BetterAuth native writer', () => {
     }
   );
 
-  it('refuses password replacement when the selected account changes owner during a native wait', async () => {
-    const f = await fixture();
-    const user = await f.signUp();
-    const other = await f.signUp();
-    const accountId = f.db.sqlite
-      .prepare('SELECT id FROM account WHERE user_id = ?')
-      .pluck()
-      .get(user.id) as string;
-    arm(f.gate, 3);
-    const { result } = await held(f, () =>
-      f.request(
-        '/change-password',
-        {
-          currentPassword: password,
-          newPassword: replacementPassword,
-        },
-        user.cookie
-      )
-    );
-    try {
-      f.fixtureSql('UPDATE account SET user_id = ? WHERE id = ?').run(other.id, accountId);
-    } finally {
-      release(f.gate);
+  it.each(['owner', 'account-identity'] as const)(
+    'refuses password replacement when the selected account changes %s during a native wait',
+    async (change) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const other = await f.signUp();
+      const accountId = f.db.sqlite
+        .prepare('SELECT id FROM account WHERE user_id = ?')
+        .pluck()
+        .get(user.id) as string;
+      arm(f.gate, 3);
+      const { result } = await held(f, () =>
+        f.request(
+          '/change-password',
+          {
+            currentPassword: password,
+            newPassword: replacementPassword,
+          },
+          user.cookie
+        )
+      );
+      try {
+        f.fixtureSql(
+          change === 'owner'
+            ? 'UPDATE account SET user_id = ? WHERE id = ?'
+            : 'UPDATE account SET account_id = ? WHERE id = ?'
+        ).run(other.id, accountId);
+      } finally {
+        release(f.gate);
+      }
+      expect.soft((await result)?.status).toBeGreaterThanOrEqual(400);
+      const hash = f.db.sqlite
+        .prepare('SELECT password FROM account WHERE id = ?')
+        .pluck()
+        .get(accountId) as string;
+      expect(await f.context.password.verify({ hash, password })).toBe(true);
     }
-    expect.soft((await result)?.status).toBeGreaterThanOrEqual(400);
-    const hash = f.db.sqlite
-      .prepare('SELECT password FROM account WHERE id = ?')
-      .pluck()
-      .get(accountId) as string;
-    expect(await f.context.password.verify({ hash, password })).toBe(true);
-  });
+  );
 
   it.each(['revoked-session', 'competing-password', 'empty-password'] as const)(
     'rechecks actual virtual setPassword authority after the native wait: %s',
@@ -740,10 +761,10 @@ describe('configured BetterAuth native writer', () => {
       expect
         .soft(response?.status)
         .toBe(change === 'empty-password' ? 200 : change === 'revoked-session' ? 401 : 400);
-      expect.soft(f.count('account')).toBe(change === 'empty-password' ? 2 : 1);
+      expect.soft(f.count('account')).toBe(1);
       if (change === 'empty-password') {
         const hash = f.db.sqlite
-          .prepare('SELECT password FROM account WHERE user_id = ? AND id != ?')
+          .prepare('SELECT password FROM account WHERE user_id = ? AND id = ?')
           .pluck()
           .get(user.id, existing.id) as string;
         expect(await f.context.password.verify({ hash, password: replacementPassword })).toBe(true);
@@ -798,6 +819,39 @@ describe('configured BetterAuth native writer', () => {
     const value = await response.json();
     expect(value.user?.id === user.id).toBe(true);
   });
+
+  it.each(['change', 'reset', 'set'] as const)(
+    'keeps the new password bound at the actual %s entry',
+    async (entry) => {
+      const f = await fixture();
+      const user = await f.signUp();
+      const prior = f.commits();
+      const newPassword = 'p'.repeat(129);
+      if (entry === 'set') {
+        await expect(
+          f.auth.api.setPassword({
+            headers: new Headers({ cookie: user.cookie }),
+            body: { newPassword },
+            asResponse: true,
+          })
+        ).rejects.toMatchObject({ statusCode: 400, body: { code: 'PASSWORD_TOO_LONG' } });
+        expect(f.commits()).toBe(prior);
+        return;
+      }
+      const response = await f.request(
+        entry === 'change' ? '/change-password' : '/reset-password',
+        {
+          currentPassword: password,
+          newPassword,
+          token: 'absent-fixture',
+        },
+        user.cookie
+      );
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ code: 'PASSWORD_TOO_LONG' });
+      expect(f.commits()).toBe(prior);
+    }
+  );
 
   it('reads retained Human names above one MiB without applying current public input limits', async () => {
     const f = await fixture();
@@ -1008,4 +1062,42 @@ describe('configured BetterAuth native writer', () => {
     expect(interception.workers).toHaveLength(1);
     expect([f.count('users'), f.count('account'), f.count('session')]).toEqual([1, 0, 0]);
   });
+});
+
+it('atomically consumes one exact SDK verification row once through the native owner', async () => {
+  const f = await fixture();
+  const id = allocateEntityId('verif');
+  const sibling = allocateEntityId('verif');
+  const now = Date.now();
+  for (const key of [id, sibling])
+    f.fixtureSql(`INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)`).run(
+      key,
+      'single-use-fixture',
+      'inert-single-use-value',
+      now + 60_000,
+      now,
+      now
+    );
+  const consume = () =>
+    f.context.adapter.consumeOne<{ id: string }>({
+      model: 'verification',
+      where: [{ field: 'id', value: id }],
+    });
+  arm(f.gate, 2);
+  const { result: first } = await held(f, consume);
+  let second: ReturnType<typeof consume>;
+  try {
+    // The exact row is already committed, but the SDK must still wait for FULL acknowledgement.
+    expect(f.db.sqlite.prepare('SELECT id FROM verification').all()).toEqual([{ id: sibling }]);
+    expect(f.commits()).toBe(1);
+    second = consume();
+  } finally {
+    release(f.gate);
+  }
+  const results = await Promise.all([first, second]);
+  expect(results.filter(Boolean)).toEqual([expect.objectContaining({ id })]);
+  expect(results.filter((row) => row === null)).toHaveLength(1);
+  expect(f.db.sqlite.prepare('SELECT id FROM verification').all()).toEqual([{ id: sibling }]);
+  expect(f.commits()).toBe(2);
 });

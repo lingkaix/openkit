@@ -41,6 +41,14 @@ const account = z.object({
   createdAt: z.date(),
   updatedAt: z.date(),
 });
+const verification = z.object({
+  id: z.string(),
+  identifier: z.string(),
+  value: z.string(),
+  expiresAt: z.date(),
+  createdAt: z.date(),
+  updatedAt: z.date(),
+});
 const userCreate = user.omit({ personalWorkspaceId: true }).extend({
   image: z.string().nullable().optional(),
   lastSeenAt: z.string().nullable().optional(),
@@ -109,6 +117,7 @@ export const ControlBetterAuthInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('user-sessions-delete'),
+      retainActorSession: z.literal(true).optional(),
       userId: z.string(),
       actor: actor.optional(),
     })
@@ -126,6 +135,8 @@ export const ControlBetterAuthInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('account-password-update'),
+      requireUnsetPassword: z.literal(true).optional(),
+      revokeActorSession: z.literal(true).optional(),
       actor: actor.optional(),
       accountId: z.string(),
       password: z.string(),
@@ -151,6 +162,7 @@ export const ControlBetterAuthInputSchema = z.discriminatedUnion('kind', [
     })
     .strict(),
   z.object({ kind: z.literal('expired-verifications-delete'), before: z.date() }).strict(),
+  z.object({ kind: z.literal('verification-consume'), verificationId: z.string() }).strict(),
   z.object({ kind: z.literal('verification-delete'), identifier: z.string() }).strict(),
   z
     .object({ kind: z.literal('user-mark-verified'), email: z.string(), updatedAt: z.date() })
@@ -158,7 +170,7 @@ export const ControlBetterAuthInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('user-address-replace'),
-      email: z.string(),
+      userId: z.string(),
       nextEmail: z.string(),
       emailVerified: z.boolean(),
       updatedAt: z.date(),
@@ -172,6 +184,7 @@ export const ControlBetterAuthResultSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('user'), record: user.nullable() }).strict(),
   z.object({ kind: z.literal('session'), record: session.nullable() }).strict(),
   z.object({ kind: z.literal('account'), record: account.nullable() }).strict(),
+  z.object({ kind: z.literal('verification'), record: verification.nullable() }).strict(),
   z
     .object({
       kind: z.literal('mutation'),

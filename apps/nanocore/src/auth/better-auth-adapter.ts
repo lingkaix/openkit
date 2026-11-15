@@ -28,7 +28,7 @@ export async function commitBetterAuthStage(coreDb: CoreDb, input: ControlBetter
       (input.kind === 'session-delete' &&
         ['/revoke-session', '/revoke-other-sessions'].includes(context.path ?? '')));
   const virtualPassword =
-    input.kind === 'credential-account-create' &&
+    ['credential-account-create', 'account-password-update'].includes(input.kind) &&
     context?.method === 'POST' &&
     context.path === 'virtual:' &&
     context.context.session;
@@ -42,6 +42,16 @@ export async function commitBetterAuthStage(coreDb: CoreDb, input: ControlBetter
   const admitted = ControlBetterAuthInputSchema.parse({
     ...input,
     ...(actor ? { actor } : {}),
+    ...(virtualPassword && input.kind === 'account-password-update'
+      ? { requireUnsetPassword: true }
+      : {}),
+    ...(context?.path === '/change-password' && context.body?.revokeOtherSessions === true
+      ? input.kind === 'user-sessions-delete'
+        ? { retainActorSession: true }
+        : input.kind === 'account-password-update'
+          ? { revokeActorSession: true }
+          : {}
+      : {}),
     ...(input.kind === 'session-delete' && context?.method === 'GET'
       ? { requireExpired: true }
       : {}),
@@ -145,13 +155,16 @@ export function nativeBetterAuthAdapter(coreDb: CoreDb, requireBootstrap: boolea
         } else if (model === 'users' && exact(['displayName', 'image', 'updatedAt'])) {
           input = { kind: 'profile-update', userId: predicate(where, 'id'), ...update };
         } else if (model === 'users' && exact(['email', 'emailVerified', 'updatedAt'])) {
-          const email = predicate(where, 'email');
           input =
             update.email === undefined
-              ? { kind: 'user-mark-verified', email, updatedAt: update.updatedAt }
+              ? {
+                  kind: 'user-mark-verified',
+                  email: predicate(where, 'email'),
+                  updatedAt: update.updatedAt,
+                }
               : {
                   kind: 'user-address-replace',
-                  email,
+                  userId: predicate(where, 'id'),
                   nextEmail: update.email,
                   emailVerified: update.emailVerified,
                   updatedAt: update.updatedAt,
@@ -172,7 +185,7 @@ export function nativeBetterAuthAdapter(coreDb: CoreDb, requireBootstrap: boolea
           Object.keys(update).some((key) => !['password', 'updatedAt'].includes(key))
         )
           return unsupported();
-        if (where.length !== 2) return unsupported();
+        if (where.length !== 3) return unsupported();
         const userId = predicate(
           where.filter((item) => item.field === 'userId'),
           'userId'
@@ -181,7 +194,11 @@ export function nativeBetterAuthAdapter(coreDb: CoreDb, requireBootstrap: boolea
           predicate(
             where.filter((item) => item.field === 'providerId'),
             'providerId'
-          ) !== 'credential'
+          ) !== 'credential' ||
+          predicate(
+            where.filter((item) => item.field === 'accountId'),
+            'accountId'
+          ) !== userId
         )
           return unsupported();
         const result = await commitBetterAuthStage(
@@ -206,10 +223,12 @@ export function nativeBetterAuthAdapter(coreDb: CoreDb, requireBootstrap: boolea
           model === 'session'
             ? { kind: 'user-sessions-delete', userId: predicate(where, 'userId') }
             : model === 'verification'
-              ? {
-                  kind: 'expired-verifications-delete',
-                  before: predicate(where, 'expiresAt', 'lt'),
-                }
+              ? where[0]?.field === 'identifier'
+                ? { kind: 'verification-delete', identifier: predicate(where, 'identifier') }
+                : {
+                    kind: 'expired-verifications-delete',
+                    before: predicate(where, 'expiresAt', 'lt'),
+                  }
               : unsupported();
         const result = await commitBetterAuthStage(
           coreDb,
@@ -217,7 +236,23 @@ export function nativeBetterAuthAdapter(coreDb: CoreDb, requireBootstrap: boolea
         );
         return result.kind === 'mutation' ? result.changes : unsupported();
       },
-      consumeOne: unsupported,
+      consumeOne: async <T>({
+        model,
+        where,
+      }: {
+        model: string;
+        where: Parameters<typeof predicate>[0];
+      }) => {
+        if (model !== 'verification') return unsupported();
+        const result = await commitBetterAuthStage(
+          coreDb,
+          ControlBetterAuthInputSchema.parse({
+            kind: 'verification-consume',
+            verificationId: predicate(where, 'id'),
+          })
+        );
+        return result.kind === 'verification' ? (result.record as T | null) : unsupported();
+      },
     }),
   });
   return (options: Parameters<typeof readFactory>[0]) => {

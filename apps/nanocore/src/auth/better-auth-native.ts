@@ -1,4 +1,4 @@
-import { and, eq, gte, lt, sql } from 'drizzle-orm';
+import { and, eq, gte, lt, ne, sql } from 'drizzle-orm';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import { assertControlProductWriter } from '../storage/control-store-products.js';
 import type { CoreDb } from '../storage/db.js';
@@ -109,18 +109,21 @@ export function applyControlBetterAuth(
             .returning()
             .get() ?? null,
       };
-    case 'account-password-update':
+    case 'account-password-update': {
       if (actor) {
         const selected = db.select().from(account).where(eq(account.id, input.accountId)).get();
         if (
           !selected ||
           selected.userId !== actor.userId ||
           selected.providerId !== 'credential' ||
-          !selected.password
+          selected.accountId !== actor.userId ||
+          (!input.requireUnsetPassword && !selected.password)
         )
           throw new BetterAuthNativeError('credential_account_not_found');
+        if (input.requireUnsetPassword && selected.password)
+          throw new BetterAuthNativeError('password_already_set');
       }
-      return {
+      const result: ControlBetterAuthResult = {
         kind: 'account',
         record:
           db
@@ -130,18 +133,33 @@ export function applyControlBetterAuth(
               and(
                 eq(account.id, input.accountId),
                 actor
-                  ? and(eq(account.userId, actor.userId), eq(account.providerId, 'credential'))
+                  ? and(
+                      eq(account.userId, actor.userId),
+                      eq(account.providerId, 'credential'),
+                      eq(account.accountId, actor.userId)
+                    )
                   : undefined
               )
             )
             .returning()
             .get() ?? null,
       };
+      // 1.7 revokes other sessions first. Keep the initiating session current through this effect.
+      if (actor && input.revokeActorSession)
+        db.delete(session).where(eq(session.token, actor.sessionToken)).run();
+      return result;
+    }
     case 'user-passwords-update': {
       const result = db
         .update(account)
         .set({ password: input.password, updatedAt: input.updatedAt })
-        .where(and(eq(account.userId, input.userId), eq(account.providerId, 'credential')))
+        .where(
+          and(
+            eq(account.userId, input.userId),
+            eq(account.providerId, 'credential'),
+            eq(account.accountId, input.userId)
+          )
+        )
         .run();
       return { kind: 'mutation', ...result };
     }
@@ -162,12 +180,30 @@ export function applyControlBetterAuth(
     case 'user-sessions-delete':
       return {
         kind: 'mutation',
-        ...db.delete(session).where(eq(session.userId, input.userId)).run(),
+        ...db
+          .delete(session)
+          .where(
+            and(
+              eq(session.userId, input.userId),
+              actor && input.retainActorSession ? ne(session.token, actor.sessionToken) : undefined
+            )
+          )
+          .run(),
       };
     case 'expired-verifications-delete':
       return {
         kind: 'mutation',
         ...db.delete(verification).where(lt(verification.expiresAt, input.before)).run(),
+      };
+    case 'verification-consume':
+      return {
+        kind: 'verification',
+        record:
+          db
+            .delete(verification)
+            .where(eq(verification.id, input.verificationId))
+            .returning()
+            .get() ?? null,
       };
     case 'verification-delete':
       return {
@@ -196,7 +232,7 @@ export function applyControlBetterAuth(
               emailVerified: input.emailVerified,
               updatedAt: input.updatedAt,
             })
-            .where(eq(users.email, input.email))
+            .where(eq(users.id, input.userId))
             .returning()
             .get() ?? null,
       };
