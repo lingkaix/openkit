@@ -96,7 +96,7 @@ export function policyResourceUser(
  * @param workspaceId Workspace that must anchor and scope the statement.
  * @returns True for an active, unlimited-use, human-only allowance of `vault.delegate-refresh`.
  */
-export function isExactDelegatedRefreshAllowance(
+function isExactDelegatedRefreshAllowance(
   statement: PolicyDocumentV1['statements'][number],
   workspaceId: string
 ): statement is z.infer<typeof PolicyPermissionV1Schema> {

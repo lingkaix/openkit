@@ -39,7 +39,6 @@ import {
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
-import { readDelegatedRefreshAuthority } from '../policy/delegated-refresh-authority.js';
 import {
   type InterceptionDecision,
   type InterceptionInput,
@@ -96,6 +95,7 @@ import {
   assertDelegatedRefreshStrategyAvailable,
   readDelegatedRefreshShape,
 } from './credential-writer.js';
+import { readDelegatedRefreshAuthority } from './delegated-refresh-authority.js';
 import { isServerMcpReference } from './server-mcp-authority.js';
 import {
   prepareVaultAdminAudit,

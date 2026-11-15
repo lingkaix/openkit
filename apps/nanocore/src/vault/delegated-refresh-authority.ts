@@ -4,7 +4,6 @@ import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { readVaultRequesterAuthority } from '../runtime/worker-credential-authority.js';
 import type { CoreDb } from '../storage/db.js';
 import type { VaultBindingRequester } from '../storage/vault-native-codecs.js';
-import { isExactDelegatedRefreshAllowance } from './statements.js';
 
 const DELEGATE_REFRESH = 'vault.delegate-refresh';
 
@@ -12,8 +11,9 @@ const DELEGATE_REFRESH = 'vault.delegate-refresh';
  * Reads current `vault.delegate-refresh` authority for one binding requester.
  *
  * The Kernel decides first; deployment administrators hold the right as root authority. Otherwise
- * the requester must hold `vault.use`, and one active admitted human allow must name exactly this
- * right, this Workspace and the responsible human, with an author who still holds the right.
+ * the requester must hold `vault.use`, and one active human allow in this Workspace must name this
+ * right and the responsible human, with an author who still holds the right. Policy admission
+ * (`validatePolicyDocument`) owns the exact form, so this reader takes only an admitted document.
  * Goal domains and agent-authored statements never supply it.
  *
  * @returns A revision digest of the deciding facts, or undefined when no authority exists.
@@ -22,6 +22,7 @@ export function readDelegatedRefreshAuthority(input: {
   readonly coreDb: CoreDb;
   readonly workspaceId: string;
   readonly requester: VaultBindingRequester;
+  /** Admitted document from `readAdmittedPolicyDocument`. */
   readonly document: PolicyDocumentV1;
   readonly now?: Date;
 }): string | undefined {
@@ -43,7 +44,13 @@ export function readDelegatedRefreshAuthority(input: {
   const now = (input.now ?? new Date()).getTime();
   const statement = input.document.statements.find(
     (value) =>
-      isExactDelegatedRefreshAllowance(value, input.workspaceId) &&
+      value.kind === 'permission' &&
+      value.state === 'active' &&
+      value.effect === 'allow' &&
+      value.author.kind === 'human' &&
+      value.scope.actions.includes(DELEGATE_REFRESH) &&
+      value.lifetime.anchor.kind === 'workspace' &&
+      value.lifetime.anchor.id === input.workspaceId &&
       value.scope.subjects.some(
         (subject) => subject.kind === 'human' && subject.id === responsibleUserId
       ) &&

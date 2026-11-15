@@ -35,9 +35,7 @@ vi.mock('../auth/operation-authorizer.js', () => ({
 }));
 
 const { readDelegatedRefreshAuthority } = await import('./delegated-refresh-authority.js');
-const { isExactDelegatedRefreshAllowance, validatePolicyDocument } = await import(
-  './statements.js'
-);
+const { validatePolicyDocument } = await import('../policy/statements.js');
 
 const workspaceId = 'ws_00000000-0000-7000-8000-0000000000d1';
 const owner = { kind: 'workspace' as const, workspaceId };
@@ -64,6 +62,7 @@ const allowance = {
 };
 const document = (statements: unknown[]) =>
   ({ schemaVersion: 1, statements }) as unknown as PolicyDocumentV1;
+// Production reads only an admitted document, so every case passes Policy admission first.
 const read = (statements: unknown[], now?: Date) =>
   readDelegatedRefreshAuthority({
     coreDb: {} as never,
@@ -77,7 +76,7 @@ const read = (statements: unknown[], now?: Date) =>
       },
       actorRef: { kind: 'user', id: 'usr_00000000-0000-7000-8000-0000000000a2' },
     },
-    document: document(statements),
+    document: validatePolicyDocument(document(statements)),
     ...(now ? { now } : {}),
   });
 
@@ -130,6 +129,40 @@ describe('vault.delegate-refresh authority', () => {
 
   it.each([
     ['inactive', { state: 'inactive' }],
+    [
+      'other Workspace',
+      {
+        lifetime: {
+          anchor: {
+            owner: { kind: 'workspace', workspaceId: 'ws_00000000-0000-7000-8000-0000000000d2' },
+            kind: 'workspace',
+            id: 'ws_00000000-0000-7000-8000-0000000000d2',
+          },
+        },
+        scope: {
+          ...allowance.scope,
+          resources: [
+            {
+              kind: 'container',
+              container: {
+                owner: {
+                  kind: 'workspace',
+                  workspaceId: 'ws_00000000-0000-7000-8000-0000000000d2',
+                },
+                kind: 'workspace',
+                id: 'ws_00000000-0000-7000-8000-0000000000d2',
+              },
+            },
+          ],
+        },
+      },
+    ],
+  ])('ignores an admitted %s statement', (_name, change) => {
+    expect(() => validatePolicyDocument(document([{ ...allowance, ...change }]))).not.toThrow();
+    expect(read([{ ...allowance, ...change }])).toBeUndefined();
+  });
+
+  it.each([
     ['prohibit', { effect: 'prohibit' }],
     ['agent author', { author: { kind: 'agent', id: 'agent' } }],
     [
@@ -167,10 +200,8 @@ describe('vault.delegate-refresh authority', () => {
         },
       },
     ],
-  ])('ignores a %s statement', (_name, change) => {
-    const statement = { ...allowance, ...change };
-    expect(isExactDelegatedRefreshAllowance(statement as never, workspaceId)).toBe(false);
-    expect(read([statement])).toBeUndefined();
+  ])('never reads a non-exact %s statement because admission refuses it', (_name, change) => {
+    expect(() => read([{ ...allowance, ...change }])).toThrow();
   });
 });
 
