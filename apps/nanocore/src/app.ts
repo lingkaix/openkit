@@ -643,15 +643,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const mode = options.mode ?? 'local';
   const auth = options.auth;
   const dataRoot = options.dataRoot ?? null;
+  const mutationDataRoot = dataRoot ?? options.coreDb?.dataRoot ?? options.store?.getDataRoot();
   const workspaceMutationAdmission =
     options.workspaceMutationAdmission ??
     options.automationStore?.mutationAdmission ??
-    (dataRoot
-      ? getControlStoreWorkerClient().workspaceMutations(dataRoot)
+    (mutationDataRoot
+      ? getControlStoreWorkerClient().workspaceMutations(mutationDataRoot)
       : new WorkspaceMutationAdmission());
   if (
-    dataRoot &&
-    workspaceMutationAdmission !== getControlStoreWorkerClient().workspaceMutations(dataRoot)
+    mutationDataRoot &&
+    workspaceMutationAdmission !==
+      getControlStoreWorkerClient().workspaceMutations(mutationDataRoot)
   )
     throw new Error('Application Workspace mutations must use their native scope owner.');
   if (
