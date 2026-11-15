@@ -42,8 +42,11 @@ export function validateReleasePreflight(input) {
     validateStablePromotionIdentity({ ...input, sourceTag: input.promotionSourceTag });
   }
 
-  if (input.requireReleaseManifestAssessment)
-    readReleaseAssessment(repoRoot, input.promotionSourceTag ?? input.tag);
+  if (input.requireReleaseManifestAssessment) {
+    const facts = readReleaseAssessment(repoRoot, input.promotionSourceTag ?? input.tag);
+    if (input.promotionSourceTag && !compatibleTransitionFacts(facts))
+      throw Error('Release Management: a pre-stable reset prerelease is not a stable source');
+  }
   validatePortableReleaseInputs(repoRoot);
   validateNanoHostReleaseInputs(repoRoot);
   const releaseImages = validateImageManifest(repoRoot, Boolean(input.requireReleaseImageDigests));
@@ -99,18 +102,22 @@ export function parseVersionTag(tag) {
   return match[1];
 }
 
+/** Every compatibility fact is asserted; only such a prerelease may become a stable source. */
+export function compatibleTransitionFacts(facts) {
+  return (
+    facts?.migrationFree === true &&
+    facts.configurationCompatible === true &&
+    facts.retainedDataCompatible === true &&
+    facts.recovery === 'previous-image-compatible'
+  );
+}
+
 /**
  * A compatible transition asserts every fact. Before `v0.1.0`, a prerelease may instead disclose
  * a pre-stable deployment reset: no migration, no retained-data continuity, no previous-image recovery.
  */
 export function admittedTransitionFacts(facts, tag) {
-  if (
-    facts.migrationFree === true &&
-    facts.configurationCompatible === true &&
-    facts.retainedDataCompatible === true &&
-    facts.recovery === 'previous-image-compatible'
-  )
-    return true;
+  if (compatibleTransitionFacts(facts)) return true;
   const [core, prerelease] = parseVersionTag(tag).split(/-(.*)/su);
   const [major, minor, patch] = core.split('.').map(Number);
   return (

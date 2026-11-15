@@ -10,6 +10,7 @@ import { verifyOperationsSkillArchive } from './package-release-assets.mjs';
 import { resolveImageDigest } from './release-image-state.mjs';
 import { readReleaseNotesInput } from './release-notes.mjs';
 import {
+  compatibleTransitionFacts,
   parseVersionTag,
   readReleaseAssessment,
   validateReleasePreflight,
@@ -60,6 +61,11 @@ export function planStablePromotion({ repository, tag, sha, source, registry, au
     requireFact(false, error.message);
   }
   requireFact(/^[a-f0-9]{40}$/.test(sha ?? ''), 'exact source commit');
+  requireFact(
+    compatibleTransitionFacts(source.assessment) &&
+      compatibleTransitionFacts(source.manifest?.assertions),
+    'stable source is not a pre-stable reset'
+  );
   requireFact(
     source.tag.startsWith(`${tag}-`) && source.resolvedSha === sha,
     'same version and source commit'

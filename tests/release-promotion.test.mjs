@@ -303,6 +303,45 @@ test('fresh promotion makes only tag assignments; retry makes none; no build or 
   assert.throws(() => planStablePromotion(x), /superseded stable identity/);
 });
 
+test('a pre-stable reset prerelease is refused as a stable source before any plan or effect', async () => {
+  for (const production of [false, true]) {
+    const x = observed();
+    if (production) {
+      x.repository = 'lingkaix/openkit';
+      x.authorization = `${x.tag}@${x.sha}`;
+    }
+    Object.assign(x.source.assessment, {
+      migrationFree: false,
+      configurationCompatible: false,
+      retainedDataCompatible: false,
+      recovery: 'pre-stable-reset',
+    });
+    x.source.manifest = createReleaseManifest({
+      repository: x.repository,
+      tag: x.source.tag,
+      sha: x.sha,
+      images: x.source.manifest.images.map((image) => ({
+        ...image,
+        prerelease: true,
+        tags: [x.source.tag, x.source.tag.slice(1), `sha-${x.sha.slice(0, 12)}`],
+      })),
+      checksums: x.source.checksums,
+      assertions: {
+        ...x.source.assessment,
+        sourceCommit: x.sha,
+        appDigest: x.source.manifest.images[0].digest,
+      },
+    });
+    assert.throws(() => planStablePromotion(x), /not a pre-stable reset/);
+  }
+  const mixed = observed();
+  mixed.source.manifest = {
+    ...mixed.source.manifest,
+    assertions: { ...mixed.source.manifest.assertions, retainedDataCompatible: false },
+  };
+  assert.throws(() => planStablePromotion(mixed), /not a pre-stable reset/);
+});
+
 test('post-assignment mismatch stops before GitHub Release creation', async () => {
   const plan = planStablePromotion(observed());
   let releases = 0;
