@@ -345,7 +345,7 @@ The retrieval publisher alone writes immutable selection traces at `threads/<thr
 
 ## Current Implementation Projection
 
-Workspace scoped migration applies a one-way drop of `workspace_repository_resources` and `git_push_records`, including their pre-release records. Historical setup DDL is unchanged. Pre-retirement Workspace archives remain verifiable without restoring retired host tables; authored Workspace configuration remains loadable.
+The Workspace baseline has no `workspace_repository_resources` or `git_push_records` tables. Pre-retirement Workspace archives remain verifiable without restoring retired host tables; authored Workspace configuration remains loadable.
 
 The owner-independent V2 Workspace root and most scoped record-family ownership are implemented. This specification remains partial because some named record-family homing, export-schema, retention, and conformance work remains incomplete; the active implementation no longer diverges on physical Workspace ownership:
 
