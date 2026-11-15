@@ -346,6 +346,16 @@ export function currentWorkspaceAuthority(
     const credentialCurrent = !requestActor || isUsablePresentedAccessToken(coreDb, requestActor);
     const credentialBound =
       !requestActor || tokenIncludesWorkspace(requestActor, workspaceId, undefined);
+    const clientAuthority = requestActor
+      ? readCurrentClientAuthorityInputs(
+          coreDb,
+          requestActor,
+          { kind: 'workspace', workspaceId },
+          operation,
+          options?.mutating ?? true,
+          new Date()
+        )
+      : null;
     let decision = evaluatePolicyKernel({
       facts: {
         userId: responsibleUserId,
@@ -370,16 +380,16 @@ export function currentWorkspaceAuthority(
       mutating: options?.mutating ?? true,
       ...(options?.policy ? { policy: options.policy } : {}),
     });
-    if (requestActor)
-      decision = evaluateCurrentClientAuthority(
-        coreDb,
-        requestActor,
-        { kind: 'workspace', workspaceId },
-        operation,
-        options?.mutating ?? true,
-        decision,
-        new Date()
-      );
+    if (clientAuthority)
+      decision = evaluatePolicyKernel({
+        ...clientAuthority,
+        userKernel: decision,
+        issuerChain:
+          clientAuthority.issuerChain?.map(({ input: issuerInput, ...issuer }) => ({
+            ...issuer,
+            kernel: evaluatePolicyKernel(issuerInput),
+          })) ?? null,
+      });
     // Missing eligibility facts publish no capture event; the Kernel still decides every complete request.
     if (
       !activeUser ||
@@ -613,24 +623,23 @@ export function evaluateProductAuthorization(
         operation,
         mutating,
       };
+  const clientAuthority =
+    coreDb && !(target.kind === 'server' && target.family === 'mcp' && operation === 'api.call')
+      ? readCurrentClientAuthorityInputs(coreDb, actor, target, operation, mutating, now)
+      : null;
   let decision: PolicyDecision;
   try {
     decision = evaluatePolicyKernel({ ...input, ...(context ? { context } : {}) });
-    // /mcp transport admission is not a product grant. Its concrete operation is
-    // narrowed below at the original resolved target and repeated native effect owner.
-    if (
-      coreDb &&
-      !(target.kind === 'server' && target.family === 'mcp' && operation === 'api.call')
-    )
-      decision = evaluateCurrentClientAuthority(
-        coreDb,
-        actor,
-        target,
-        operation,
-        mutating,
-        decision,
-        now
-      );
+    if (clientAuthority)
+      decision = evaluatePolicyKernel({
+        ...clientAuthority,
+        userKernel: decision,
+        issuerChain:
+          clientAuthority.issuerChain?.map(({ input: issuerInput, ...issuer }) => ({
+            ...issuer,
+            kernel: evaluatePolicyKernel(issuerInput),
+          })) ?? null,
+      });
   } catch (error) {
     if (target.kind !== 'server') throw error;
     throw new HTTPException(403, { res: workspaceAccessDenied(), cause: error });
@@ -640,21 +649,20 @@ export function evaluateProductAuthorization(
   return decision;
 }
 
-/** Current native binding/issuer facts constrain the actual Integration, never relabel it as its human. */
-function evaluateCurrentClientAuthority(
+/** Reads actual client and issuer facts before the evaluator-only refusal boundary. */
+function readCurrentClientAuthorityInputs(
   coreDb: CoreDb,
   actor: Actor,
   target: Parameters<typeof evaluateProductAuthorization>[2],
   operation: string,
   mutating: boolean,
-  userKernel: PolicyDecision,
   now: Date
-): PolicyDecision {
+) {
   const token =
     actor.kind === 'token' && actor.tokenId
       ? getOpenKitAccessTokenRecord(coreDb, actor.tokenId)
       : null;
-  if (!token?.principalRef) return userKernel;
+  if (!token?.principalRef) return null;
   const lineage = readCurrentOpenKitAccessTokenLineage(coreDb, token, now);
   const issuerChain = lineage?.terminalUserId
     ? [
@@ -669,21 +677,19 @@ function evaluateCurrentClientAuthority(
           active:
             isCanonicalUserActive(coreDb, issuer.ownerUserId) &&
             evaluateOpenKitAccessTokenUsability(issuer, now).usable,
-          kernel: evaluatePolicyKernel(
-            readProductAuthorizationInput(
-              coreDb,
-              {
-                kind: 'token',
-                userId: issuer.ownerUserId,
-                tokenId: issuer.tokenId,
-                tokenScope: issuer.scope,
-                tokenWorkspaceIds: issuer.workspaceIds,
-              },
-              target,
-              operation,
-              mutating,
-              now
-            )
+          input: readProductAuthorizationInput(
+            coreDb,
+            {
+              kind: 'token',
+              userId: issuer.ownerUserId,
+              tokenId: issuer.tokenId,
+              tokenScope: issuer.scope,
+              tokenWorkspaceIds: issuer.workspaceIds,
+            },
+            target,
+            operation,
+            mutating,
+            now
           ),
         })),
         (() => {
@@ -701,7 +707,7 @@ function evaluateCurrentClientAuthority(
             active: isCanonicalUserActive(coreDb, issuerUserId),
             // Retained actual issuer authority is not the caller's presented credential;
             // the caller's independent current User/Token Kernel remains mandatory.
-            kernel: evaluatePolicyKernel({
+            input: {
               ...current,
               facts: {
                 ...current.facts,
@@ -711,22 +717,22 @@ function evaluateCurrentClientAuthority(
                   now.getTime()
                 ),
                 credential: {
-                  kind: 'retained-author',
+                  kind: 'retained-author' as const,
                   current: isCanonicalUserActive(coreDb, issuerUserId),
                   workspaceBound: true,
                   readOnly: false,
                 },
               },
-            }),
+            },
           };
         })(),
       ]
     : null;
   const current = readProductAuthorizationInput(coreDb, actor, target, operation, mutating, now);
-  return evaluatePolicyKernel({
+  return {
     binding: {
       principal: {
-        kind: 'integration',
+        kind: 'integration' as const,
         id: token.principalRef.id,
         responsibleUserId: token.ownerUserId,
       },
@@ -736,9 +742,8 @@ function evaluateCurrentClientAuthority(
     operation,
     target: current.target,
     native: { workspaceScoped: target.kind === 'workspace', mutating },
-    userKernel,
     issuerChain,
-  });
+  };
 }
 
 /** Keeps current authority-read failures outside the caller's evaluator-only refusal boundary. */

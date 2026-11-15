@@ -211,10 +211,25 @@ export async function admitOperation(
     throw denied();
   }
   const { coreDb, store, workspaceMutationAdmission: admission } = dependencies;
-  const token =
-    coreDb && entry.kind !== 'worker' && entry.actor.kind === 'token' && entry.actor.tokenId
-      ? getOpenKitAccessTokenRecord(coreDb, entry.actor.tokenId)
-      : null;
+  let token: ReturnType<typeof getOpenKitAccessTokenRecord> = null;
+  if (coreDb && entry.kind !== 'worker' && entry.actor.kind === 'token' && entry.actor.tokenId) {
+    try {
+      token = getOpenKitAccessTokenRecord(coreDb, entry.actor.tokenId);
+    } catch (error) {
+      // Binding selection reads the same Server authority as the later primary admission.
+      if (
+        definition.scope.kind === 'server' &&
+        (error instanceof Database.SqliteError || !coreDb.sqlite.open)
+      )
+        throw new OperationError(
+          'operation_storage_unavailable',
+          'Operation authority storage is unavailable.',
+          503,
+          { cause: error }
+        );
+      throw error;
+    }
+  }
   if (
     coreDb &&
     entry.kind !== 'worker' &&
