@@ -101,6 +101,8 @@ for (const [index, runtime] of ['codex', 'pi', 'opencode', 'deepseek'].entries()
       loopbacks.set(id, credentials);
     },
     destroySessionLoopback(id) { loopbacks.delete(id); },
+    // Opaque component address only; this dry run binds no credential agent socket.
+    async openCredentialAgentSocket(id) { return `/tmp/openkit-component-agent-${id}.sock`; },
     workerControlFetch() { throw new Error('Image smoke must not perform a Turn request.'); },
   };
   const harness = new WorkerHarness({
