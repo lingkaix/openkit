@@ -48,7 +48,10 @@ import { createConfiguredWorkerLifecycleRuntime } from './src/runtime/turn-execu
 import { createDefaultWorkerMcpGateway } from './src/runtime/worker-mcp-gateway.js';
 import { listSchedulerAdmissionEntriesForWorkspace } from './src/scheduler-records.js';
 import { FileStorageAdmission } from './src/storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './src/storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './src/storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './src/storage/db.js';
 import { applyMigrations } from './src/storage/migrate.js';
 import {
@@ -68,7 +71,6 @@ import { observeNativeTaskStartup } from './src/test-support/native-task-admissi
 import { operationRequest } from './src/test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './src/test-support/release-identity.js';
 import { recordWorkspaceOwnerMembership } from './src/workspace-membership.js';
-import { WorkspaceMutationAdmission } from './src/workspace-mutation-admission.js';
 
 // openkit-test-platform: posix
 
@@ -343,7 +345,7 @@ export async function assertCapturedOutcome(
   };
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
   const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const startup = observeNativeTaskStartup(store);
   const workerLifecycleRuntime = createConfiguredWorkerLifecycleRuntime({
     releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
