@@ -8,7 +8,7 @@ import type {
   LightAppRecord,
   LightAppSchemaInput,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
+import { ActorRefSchema, allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
 import { shutdownControlStoreWorkerClient } from '../../nanocore/dist/storage/control-store-worker-client.js';
 import { seedDemoWorkspaceDataRoot, seedSyntheticLocalSchedulerTarget } from './_lib/demo-data.js';
@@ -60,12 +60,13 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   const workspaceDb = openWorkspaceDb(fixtureRoot, workspaceId);
   applyScopedMigrations(workspaceDb);
   const actor = { kind: 'user' as const, id: users[0]!.id };
-  const turn = await store.createTurn(
-    workspaceId,
-    threadId,
-    'Native Generative browser proof',
-    actor
-  );
+  // requiredTaskTurn only accepts a durable native cause. An ordinary user-input
+  // Turn uses the same id startProductTurn derives, so policy context stays null
+  // and the Worker call is not mistaken for a Goal Task.
+  const admissionRequestId = randomUUID();
+  const triggerActor = ActorRefSchema.parse(actor);
+  const turnInput = 'Update the retained local note.';
+  let turn: Awaited<ReturnType<typeof store.createTurn>>;
   const context = {
     store,
     workspaceDb,
@@ -153,8 +154,17 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     expect(resolved.setup).not.toBeNull();
     const agentSessionId = allocateEntityId('as');
     const createdAt = new Date().toISOString();
-    const workerTurn = await store.updateTurn(turn.id, {
-      agentId: resolved.setup!.manifest.id,
+    const agentId = resolved.setup!.manifest.id;
+    turn = await store.createTurn(workspaceId, threadId, turnInput, triggerActor, null, {
+      turnId: deriveEntityId('tu', [
+        JSON.stringify(triggerActor),
+        workspaceId,
+        threadId,
+        admissionRequestId,
+        null,
+      ]),
+      agentId,
+      triggerSource: { kind: 'user-input', summary: 'User started a worker turn.' },
     });
     const preparation = {
       coreDb,
@@ -162,10 +172,10 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       agentSessionId,
       backend: { kind: 'openshell' as const },
       createdAt,
-      requestId: randomUUID(),
-      triggerActor: actor,
-      turn: workerTurn,
-      turnInput: 'Update the retained local note.',
+      requestId: admissionRequestId,
+      triggerActor,
+      turn,
+      turnInput,
       workspaceCwd: '/workspace',
       workspaceRoots: [],
     };
@@ -174,13 +184,13 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     const entry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       queueEntryId: `generative-browser-${randomUUID()}`,
-      requestId: preparedPackage.scope.requestId!,
-      triggerActor: actor,
+      requestId: admissionRequestId,
+      triggerActor,
       workspaceId,
       threadId,
       turnId: turn.id,
-      turnInput: 'Update the retained local note.',
-      requestedAgentId: resolved.setup!.manifest.id,
+      turnInput,
+      requestedAgentId: agentId,
     });
     const attempt = attempts.createSchedulerExecutionAttempt(coreDb, {
       entry,
@@ -451,6 +461,33 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
     expect(response.ok).toBe(true);
     return response.json();
   };
+  // The server can answer HTTP before Light App read authority is acknowledged.
+  // Until then the timeline hides the Kernel presentation and the note field never mounts.
+  const waitForBothPresentations = async () => {
+    await expect
+      .poll(
+        async () =>
+          ((await operation('kernel.apps.get', { workspaceId, appId })) as { lifecycle?: string })
+            .lifecycle
+      )
+      .toBe('active');
+    await expect
+      .poll(async () => {
+        const timeline = (await operation('thread.timeline', {
+          workspaceId,
+          threadId,
+          anchor: { kind: 'latest' },
+        })) as { runs?: Array<{ narrative?: Array<{ type?: string }> }> };
+        return (timeline.runs ?? []).reduce(
+          (count, run) =>
+            count +
+            (run.narrative ?? []).filter((item) => item.type === 'generative-ui-reference').length,
+          0
+        );
+      })
+      .toBe(2);
+  };
+  await waitForBothPresentations();
   await page.goto(`${stack.webUrl}/chat/${workspaceId}/${threadId}`);
   const note = page.getByRole('textbox', { name: 'Local note', exact: true });
   await expect(note).toHaveValue('Original local note');
@@ -515,6 +552,7 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
   ).toHaveCount(1);
 
   await stack.restartCore();
+  await waitForBothPresentations();
   // Reload must reach this presentation's native read before its content assertion starts.
   const historicalPresentation = page.waitForResponse((response) => {
     const request = response.request();
