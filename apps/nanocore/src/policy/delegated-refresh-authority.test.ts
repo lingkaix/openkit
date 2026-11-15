@@ -175,6 +175,14 @@ describe('vault.delegate-refresh authority', () => {
 });
 
 describe('human delegated-refresh allowance admission', () => {
+  it('keeps every other human allow on the existing Tool-condition refusal', () => {
+    expect(() =>
+      validatePolicyDocument(
+        document([{ ...allowance, scope: { ...allowance.scope, actions: ['workspace.read'] } }])
+      )
+    ).toThrow('Human Tool conditions require exact Workspace Tool scope without finite uses.');
+  });
+
   it('admits the exact Workspace allowance', () => {
     expect(validatePolicyDocument(document([allowance])).statements).toHaveLength(1);
   });
@@ -184,7 +192,6 @@ describe('human delegated-refresh allowance admission', () => {
       'extra action',
       { scope: { ...allowance.scope, actions: ['vault.delegate-refresh', 'vault.use'] } },
     ],
-    ['ordinary action', { scope: { ...allowance.scope, actions: ['workspace.read'] } }],
     ['finite uses', { lifetime: { ...allowance.lifetime, uses: 1 } }],
     [
       'agent subject',

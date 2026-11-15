@@ -445,9 +445,11 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
       statement.kind === 'permission' &&
       statement.grant.kind === 'ordinary' &&
       statement.authority.kind === 'human' &&
-      statement.effect === 'allow'
+      statement.effect === 'allow' &&
+      statement.scope.actions.includes('vault.delegate-refresh')
     ) {
       // The only human-authored allow extends Gateway refresh delegation inside one Workspace.
+      // Other human allows keep the Tool-condition refusal below.
       const anchor = statement.lifetime.anchor;
       if (
         anchor.owner.kind !== 'workspace' ||
