@@ -3687,11 +3687,20 @@ export function createConversationService({
             throw error;
           }
         );
-        void observedLoop.catch(() => {
-          if (acceptSignalled) {
-            console.error('selected_worker_closeout_failed_after_acceptance');
-          }
-        });
+        // Replay must await this original closeout through its final display publication ACK,
+        // just as the existing Assistant Task path does; a terminal Turn alone is not that ACK.
+        const workerCloseout = observedLoop.then(() => undefined);
+        activeTaskCloseouts.set(reservedTurnId, workerCloseout);
+        void workerCloseout
+          .finally(() => {
+            if (activeTaskCloseouts.get(reservedTurnId) === workerCloseout)
+              activeTaskCloseouts.delete(reservedTurnId);
+          })
+          .catch(() => {
+            if (acceptSignalled) {
+              console.error('selected_worker_closeout_failed_after_acceptance');
+            }
+          });
         await Promise.race([accepted, observedLoop]);
         if (!acceptSignalled) {
           throw new Error('Selected Worker Turn completed without an acceptance signal.');
@@ -4217,15 +4226,23 @@ export function createConversationService({
               workerDb.sqlite.close();
             }
           }
+          const metadata = record.response.conversationMetadata;
+          const closeoutThreadId =
+            metadata?.resultKind === 'task-handoff'
+              ? conversationTaskThreadId(triggerActor, workspaceId, threadId, record.requestId)
+              : metadata?.resultKind === 'worker-turn' &&
+                  metadata.receivingWorkspaceId === workspaceId
+                ? metadata.receivingThreadId
+                : undefined;
           if (
-            record.response.conversationMetadata?.resultKind === 'task-handoff' &&
+            closeoutThreadId &&
             downstream?.kind === 'task' &&
             downstream.turnId ===
               conversationTaskTurnId(
                 triggerActor,
                 workspaceId,
                 threadId,
-                conversationTaskThreadId(triggerActor, workspaceId, threadId, record.requestId),
+                closeoutThreadId,
                 record.requestId
               )
           ) {
@@ -4235,7 +4252,11 @@ export function createConversationService({
                 const turn = store.getTurnById(downstream.turnId);
                 if (turn.status !== 'pending' && turn.status !== 'running') await closeout;
               } catch {
-                throw directTaskModeRecoveryError('The original Assistant Task closeout failed.');
+                throw directTaskModeRecoveryError(
+                  metadata?.resultKind === 'worker-turn'
+                    ? 'The original selected Worker closeout failed.'
+                    : 'The original Assistant Task closeout failed.'
+                );
               }
             }
           }
