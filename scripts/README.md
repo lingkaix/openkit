@@ -22,6 +22,10 @@ Root `package.json` owns the command surface and `docs/toolchain.md` owns setup 
 
 NanoCore's Vitest config selects `ci-vitest-sequencer.mjs` when the existing CI recipe passes `--shard`; ordinary unsharded local runs keep Vitest defaults. It assigns runtime-collected files by longest measured duration to the lightest shard and starts longer files first. `ci-nanocore-timings.json` holds median per-file milliseconds from its listed batch reports; refresh it from original-owner JSON execution reports, not TAP case sums. Untimed files receive the measured median-file cost and are never excluded. Unit collection, coverage collection and execution share the assignment; the existing whole-owner merge still checks the exact file/case union and unchanged coverage thresholds. The default worker cap remains two; `ci-l0-l2.mjs` owns the partition count. The completed same-bin worker comparison retained the two-worker default; its temporary three/four-worker jobs are retired.
 
+## Structural Fitness Check
+
+`node scripts/check-structure.mjs [--root PATH] [--baseline FILE] [--update | --init | --report]`, run by `check:repo`, blocks new shared-decision copies (D1) and new value-import edges inside a cycle (D2) against the shrink-only `structure-baseline.json`. [The toolchain guide](../docs/toolchain.md#structural-fitness-check) owns its registry and change rules.
+
 ## Storage Access Ratchet
 
 `node scripts/validate-storage-access.mjs [--root PATH] [--refresh-shrink]` keeps the existing direct physical-access allowances and enforces interface ceilings for six CLOSED domains in `storage-access-baseline.json` version 2. Version 1, unknown keys, missing or extra domains, and invalid ceilings are refused. E/I ceilings are nonnegative safe integers; zero remains CLOSED. Site allowances retain their positive safe-integer rule.

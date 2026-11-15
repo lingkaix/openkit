@@ -45,7 +45,7 @@ Overturned by: accepted work that requires one of them, at which point that stac
 
 ## Owns
 
-This document holds six narrow repository-operation decisions, which `docs/documentation-model.md` permits because no core document or specification owns them: repository default tooling, the toolchain provisioning boundary, the test execution environment, setup procedure, dependency procedure, and version maintenance. None authorizes anything about product behavior or architecture.
+This document holds seven narrow repository-operation decisions, which `docs/documentation-model.md` permits because no core document or specification owns them: repository default tooling, the toolchain provisioning boundary, the test execution environment, setup procedure, dependency procedure, version maintenance, and the structural fitness check. None authorizes anything about product behavior or architecture.
 
 ### Default Tooling
 
@@ -122,6 +122,21 @@ Released Rust binaries use the same manifest's checksum-bound `cargo-auditable` 
 
 Release K/C clearance is an engineer-owned prerequisite: tag-only read-only jobs may consume the existing DS register's schema-version-1 JSON export through the dormant `OPENKIT_SECURITY_FINDINGS` Actions secret. No export means no approvals. Only current mitigations, independently reviewed VEX, and current engineer acceptances of at most 90 days clear K/C; fix availability does not change this. Never put private reachability or decision evidence in public logs. This repository change does not create or change that secret or any repository setting.
 
+### Structural Fitness Check
+
+`pnpm check:structure` runs `scripts/check-structure.mjs` over production TypeScript in `apps/*` and `packages/*`; tests, test support, fixtures, `e2e` and generated files are out of scope. `check:repo` includes it. Two precise detectors block:
+- D1, one implementation of a registered shared decision. A site outside the decision's owner fails.
+- D2, a value-import edge inside a value-import cycle. Type-only imports do not count.
+
+| Decision | Owner | Detector |
+|---|---|---|
+| Canonical JSON encoding | `packages/protocol/src/common/canonical-json.ts` | Canonicalizing serializers by name or sorted-key body |
+| Digest framing | `packages/protocol/src/digest.ts` | `createHash` fed JSON text; raw-byte hashing is not a finding |
+| Workspace access denial | `WORKSPACE_ACCESS_DENIED` in `apps/nanocore/src/operation-error.ts` | The `workspace_access_denied` literal thrown or returned |
+| Worker target codec | Review only | None |
+
+A decision enters this registry only when at least two owners need it, divergence between copies is a defect, and it can be written as a contract with test vectors. `scripts/structure-baseline.json` holds the existing blocking items, keyed by file, enclosing symbol and detail, never by line. A new key or a larger value fails. `node scripts/check-structure.mjs --update` only removes vanished keys and lowers values. Adding a registry entry or tightening a detector needs ordinary review. Growing the baseline, loosening a detector or removing an entry needs independent review; for canonical JSON, digest framing and the Workspace denial it needs the engineer. `node scripts/check-structure.mjs --report` prints the top D4 cognitive complexity, D5 LCOM4 cohesion, D6 list-then-search and D7 pass-through items. These Signals have no baseline and never gate. `tests/check-structure.test.mjs` owns detector and shrink-only behavior. The reasons and the dropped pilot detectors are in [a decision record](decisions/20261115-structural_fitness_check.md).
+
 ### Version Maintenance
 
 - If any default or procedure obligation named in `## Owns` changes, update this guide in the same change and carry a change record.
@@ -136,7 +151,7 @@ Release K/C clearance is an engineer-owned prerequisite: tag-only read-only jobs
 
 ## Does Not Own
 
-This guide does not own tool-version values, the documentation type system, testing taxonomy, verification depth, oracle classification, harness admission, the real-use host manifest, engineering rationale, product behavior, architecture, or general agent execution rules. The six decisions under `## Owns` are the sole exception. Everything else below is a non-authoritative link projection; where it disagrees with an owner or executable file, that source wins and this document is the defect.
+This guide does not own tool-version values, the documentation type system, testing taxonomy, verification depth, oracle classification, harness admission, the real-use host manifest, engineering rationale, product behavior, architecture, or general agent execution rules. The seven decisions under `## Owns` are the sole exception. Everything else below is a non-authoritative link projection; where it disagrees with an owner or executable file, that source wins and this document is the defect.
 
 ## Realization And Version Links
 
