@@ -1711,7 +1711,15 @@ class ControlStoreWorkerClient {
     // Register before invoking the producer, without delaying its original synchronous snapshot.
     const accepted = Promise.withResolvers<T>();
     const promise = accepted.promise;
-    this.operations.set(promise, {
+    // Resource preparation retains caller-owned refusals just like its ordinary request.
+    // Existing explicit operations and opening-dependent requests keep shutdown failure ownership.
+    const drained = resource
+      ? promise.then(
+          () => undefined,
+          () => undefined
+        )
+      : promise;
+    this.operations.set(drained, {
       publication: context.publication,
       workspaceLeases: context.workspaceLeases,
     });
@@ -1727,7 +1735,7 @@ class ControlStoreWorkerClient {
       return await promise;
     } finally {
       context.active = false;
-      this.operations.delete(promise);
+      this.operations.delete(drained);
       for (const lease of retainedParents) lease.release();
       if (credit) {
         credit.active = false;

@@ -414,6 +414,10 @@ describe('local title lifecycle', () => {
     expect(
       receivingTurnWrite.mock.calls.filter((args) => args[5]?.executorKind === 'worker')
     ).toHaveLength(1);
+    // The answer admits the handoff; the original createTurn Promise owns its native ACK.
+    await receivingTurnWrite.mock.results[
+      receivingTurnWrite.mock.calls.findIndex((args) => args[5]?.executorKind === 'worker')
+    ]!.value;
     publications.release[0]!.resolve();
     await awaitTerminalTitles(installation);
     expect(await threadName(installation, receiving.id)).toBe('Schema repair');
