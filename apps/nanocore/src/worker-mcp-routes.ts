@@ -30,6 +30,10 @@ import { Ajv2020 } from 'ajv/dist/2020.js';
 import Database from 'better-sqlite3';
 import type { Hono } from 'hono';
 import { prepareServerAuditEvent } from './audit-events.js';
+import {
+  getOpenKitAccessTokenRecord,
+  readCurrentOpenKitAccessTokenLineage,
+} from './auth/access-token-store.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import {
@@ -161,6 +165,7 @@ import {
   WorkerRawOutputAuthorityError,
   WorkerRawOutputBudgetExceededError,
 } from './runtime/worker-raw-output.js';
+import { findSchedulerAdmissionForTurn } from './scheduler-records.js';
 import { createSecurityCanaryMcpSupply, SECURITY_CANARY_TOOLS } from './security/canaries.js';
 import { SecurityTriggerStore } from './security/trigger.js';
 import {
@@ -2578,7 +2583,6 @@ function currentWorkerMcpPermissions(
     )
   )
     return [];
-  const document = readAdmittedPolicyDocument(input.coreDb!, configured);
   const db =
     workspaceDb ??
     borrowWorkspaceReadDb(input.coreDb!.dataRoot, environmentPackage.scope.workspaceId);
@@ -2590,16 +2594,7 @@ function currentWorkerMcpPermissions(
       toolName,
       workspaceDb: db,
     });
-    return selectHumanToolConditions({
-      document,
-      proposal: {
-        workspaceId: environmentPackage.scope.workspaceId,
-        serverId,
-        toolName,
-        subject: authority.subject,
-      },
-      authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.coreDb!, userId),
-    });
+    return authority.toolConditions;
   })();
 }
 
@@ -2711,16 +2706,39 @@ function currentMcpPolicyAuthority(
     credentialKind: 'worker-package' as const,
     responsibleHumanId,
   };
-  const toolProhibitions = selectHumanToolConditions({
+  const admission = findSchedulerAdmissionForTurn(input.input.coreDb!, scope);
+  if (!admission) throw mcpDeniedError();
+  const token =
+    admission.credentialRef?.kind === 'token'
+      ? getOpenKitAccessTokenRecord(input.input.coreDb!, admission.credentialRef.id)
+      : null;
+  const chain = token?.principalRef
+    ? readCurrentOpenKitAccessTokenLineage(input.input.coreDb!, token)
+    : null;
+  if (token?.principalRef && !chain?.terminalUserId) throw mcpDeniedError();
+  const restrictingPrincipals = [
+    ...new Set(
+      chain
+        ? [
+            token!.ownerUserId,
+            ...chain.issuers.map((issuer) => issuer.ownerUserId),
+            chain.terminalUserId!,
+          ]
+        : []
+    ),
+  ].map((id) => ({ kind: 'human' as const, id }));
+  const toolConditions = selectHumanToolConditions({
     document,
     proposal: {
       workspaceId: scope.workspaceId,
       serverId: input.serverId,
       toolName: input.toolName,
       subject,
+      restrictingPrincipals,
     },
     authorCurrent: (userId) => isCurrentServerPolicyAuthor(input.input.coreDb!, userId),
-  })
+  });
+  const toolProhibitions = toolConditions
     .filter((statement) => statement.effect === 'prohibit')
     .map((statement) => statement.id);
   const resourceKernel = evaluatePolicyKernel(
@@ -2773,6 +2791,8 @@ function currentMcpPolicyAuthority(
   if (context && !task) throw mcpDeniedError();
   return {
     subject,
+    restrictingPrincipals,
+    toolConditions,
     kernel: task?.kernel ?? kernel,
     goalTask: task,
     revision: policyDigest({
@@ -2857,6 +2877,7 @@ function mcpInterceptionInput(
     inputAttributes: { contract: 'mcp-tool-summary-v1' },
     capabilityCallId: call.id,
     subject: authority.subject,
+    restrictingPrincipals: authority.restrictingPrincipals,
   };
   const authorCurrent = (userId: string) => currentMcpBindingAuthor(input, userId);
   const anchorCurrent: InterceptionInput['anchorCurrent'] = (anchor) => {
@@ -2879,19 +2900,7 @@ function mcpInterceptionInput(
     });
     return resolveWorkspaceMcpServer({ catalog, serverId: input.serverId }).catalogDigest;
   };
-  const permissionAuthorCurrent = (userId: string) =>
-    isCurrentServerPolicyAuthor(input.input.coreDb!, userId);
-  const currentPermissions = () =>
-    selectHumanToolConditions({
-      document,
-      proposal: {
-        workspaceId: scope.workspaceId,
-        serverId: input.serverId,
-        toolName: input.toolName,
-        subject: proposal.subject,
-      },
-      authorCurrent: permissionAuthorCurrent,
-    });
+  const currentPermissions = () => currentMcpPolicyAuthority(input).toolConditions;
   const currentBindingRefs = () =>
     [
       ...selectPolicyBindings({

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   policyDigest,
   preparePolicyDocument,
+  selectHumanToolConditions,
   selectPolicyBindings,
   validatePolicyDocument,
 } from './statements.js';
@@ -469,4 +470,65 @@ describe('exact User Policy statement scope', () => {
       })
     ).toThrow();
   });
+});
+
+it('inherits only restrictive gates and Tool conditions from verified issuer principals', () => {
+  const inherited = {
+    ...proposal,
+    subject: {
+      ...proposal.subject,
+      principal: { kind: 'human' as const, id: 'usr_00000000-0000-7000-8000-000000000002' },
+    },
+    restrictingPrincipals: [principal],
+  };
+  const select = (value: PolicyBindingV1) =>
+    selectPolicyBindings({
+      document: { schemaVersion: 1, statements: [value] },
+      proposal: inherited,
+      now: Date.parse('2026-11-15T00:00:00Z'),
+      authorCurrent: () => true,
+      anchorCurrent: () => true,
+    });
+  expect(select(binding).map((value) => value.id)).toEqual(['review']);
+  expect(select({ ...binding, mode: 'observe', stage: 'completed' })).toEqual([]);
+  expect(select({ ...binding, mode: 'advise' })).toEqual([]);
+  const conditions: PolicyDocumentV1 = {
+    schemaVersion: 1,
+    statements: ['prohibit', 'require_approval', 'allow'].map((effect) => ({
+      kind: 'permission',
+      id: effect,
+      state: 'active',
+      effect,
+      grant: { kind: 'ordinary' },
+      author: principal,
+      authority: binding.authority,
+      authoredAt: binding.authoredAt,
+      scope,
+      lifetime: {
+        anchor: { owner: { kind: 'workspace', workspaceId }, kind: 'workspace', id: workspaceId },
+      },
+    })),
+  };
+  expect(
+    selectHumanToolConditions({
+      document: conditions,
+      proposal: {
+        workspaceId,
+        serverId: 'issues',
+        toolName: 'read',
+        subject: inherited.subject,
+        restrictingPrincipals: inherited.restrictingPrincipals,
+      },
+      authorCurrent: () => true,
+    }).map((value) => value.id)
+  ).toEqual(['prohibit', 'require_approval']);
+  expect(
+    selectPolicyBindings({
+      document,
+      proposal: { ...inherited, resource: { ...proposal.resource, toolName: 'write' } },
+      now: Date.now(),
+      authorCurrent: () => true,
+      anchorCurrent: () => true,
+    })
+  ).toEqual([]);
 });

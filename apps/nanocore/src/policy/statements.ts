@@ -31,6 +31,8 @@ export interface PolicyProposal {
   readonly inputAttributes: Readonly<Record<string, string | number | boolean | null>>;
   readonly capabilityCallId: string | null;
   readonly subject: z.infer<typeof PolicySubjectV1Schema>;
+  /** Verified current issuer selectors narrow gates and Tool conditions, never grants or observers. */
+  readonly restrictingPrincipals?: readonly PolicyProposal['subject']['principal'][];
 }
 
 /** Derives supported points from the same operation definition, without another registry. */
@@ -693,11 +695,17 @@ function isNarrowedObservation(
 /** Matches the exact subject and Tool target of the closed schema-independent pilot input. */
 export function policyScopeIncludesProposal(
   scope: PolicyBindingV1['scope'],
-  proposal: PolicyProposal
+  proposal: PolicyProposal,
+  restrictOnly = false
 ): boolean {
   return (
     scope.subjects.some(
-      (principal) => policyDigest(principal) === policyDigest(proposal.subject.principal)
+      (principal) =>
+        policyDigest(principal) === policyDigest(proposal.subject.principal) ||
+        (restrictOnly &&
+          (proposal.restrictingPrincipals ?? []).some(
+            (issuer) => policyDigest(principal) === policyDigest(issuer)
+          ))
     ) &&
     scope.actions.includes(policyOperationDefinition(proposal.operation).policyOperation) &&
     (proposal.workspaceId === null
@@ -753,7 +761,7 @@ export function selectPolicyBindings(input: {
       // A required agent gate cannot disappear when its activation author loses authority.
       if (statement.participant.kind !== 'agent' && !input.authorCurrent(statement.author.id))
         return false;
-      return policyScopeIncludesProposal(statement.scope, proposal);
+      return policyScopeIncludesProposal(statement.scope, proposal, statement.mode === 'gate');
     })
     .sort((a, b) => a.order - b.order || compareCodeUnits(a.id, b.id));
 }
@@ -849,6 +857,7 @@ export function selectHumanToolConditions(input: {
     readonly serverId: string;
     readonly toolName: string;
     readonly subject: PolicyProposal['subject'];
+    readonly restrictingPrincipals?: PolicyProposal['restrictingPrincipals'];
   };
   readonly authorCurrent: (userId: string) => boolean;
   readonly now?: number;
@@ -876,7 +885,11 @@ export function selectHumanToolConditions(input: {
         return false;
       if (
         !statement.scope.subjects.some(
-          (subject) => policyDigest(subject) === policyDigest(input.proposal.subject.principal)
+          (subject) =>
+            policyDigest(subject) === policyDigest(input.proposal.subject.principal) ||
+            (input.proposal.restrictingPrincipals ?? []).some(
+              (issuer) => policyDigest(subject) === policyDigest(issuer)
+            )
         ) ||
         !statement.scope.actions.includes('tool.use') ||
         !statement.scope.resources.some(

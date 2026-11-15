@@ -1083,3 +1083,25 @@ describe('approved command lineage through the real mediated recorder', () => {
     }
   );
 });
+
+it('runs an inherited restrictive I16 gate with its original disclosure and native deny evidence', async () => {
+  const input = fixture([binding('issuer-gate')]);
+  await openTestNativeWorkspace(input.workspaceDb);
+  const invoke = vi.fn(async () => ({ decision: 'deny' as const }));
+  const pipeline = new PolicyInterception({ id: 'test', version: participantVersion, invoke });
+  const actual = {
+    ...proposal,
+    subject: {
+      ...proposal.subject,
+      principal: { kind: 'human' as const, id: 'usr_00000000-0000-7000-8000-000000000002' },
+    },
+    restrictingPrincipals: [principal],
+  };
+  const decision = await pipeline.decide({ ...input, proposal: actual });
+  expect(invoke).toHaveBeenCalledOnce();
+  expect(invoke.mock.calls[0]![0].proposal.subject).toEqual(actual.subject);
+  expect(decision.result).toBe('deny');
+  expect(listExportableWorkspacePermissionDecisions(input.workspaceDb, workspaceId)).toContainEqual(
+    expect.objectContaining({ decisionId: decision.decisionId, result: 'deny' })
+  );
+});

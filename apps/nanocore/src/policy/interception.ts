@@ -1316,8 +1316,11 @@ export class PolicyInterception {
       current = input.stillCurrent();
       if (current)
         participantAuthorized =
-          policyScopeIncludesProposal(binding.inputDisclosure, input.proposal) &&
-          input.participantAuthorized(binding);
+          policyScopeIncludesProposal(
+            binding.inputDisclosure,
+            input.proposal,
+            binding.mode === 'gate'
+          ) && input.participantAuthorized(binding);
     } catch {
       authorityError = true;
     }
