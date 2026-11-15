@@ -4976,68 +4976,74 @@ export class FsStore {
     },
     admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
   ): Promise<Thread> {
-    const id = threadId ?? allocateEntityId('th');
-    if (
-      this.dataRoot
-        ? this.findNativeOwner('thread', id)
-        : this.threads.has(id) || this.serverThreads.has(id)
-    ) {
-      throw new Error(`Thread already exists: ${id}`);
-    }
-    if (!audience && entryPath === 'administration')
-      throw new Error('Private Thread creation requires its explicit canonical User audience.');
-    audience ??= { visibility: 'workspace' };
-    if (
-      this.getWorkspace(workspaceId).kind === 'personal' &&
-      audience.visibility === 'private' &&
-      workspaceId !== quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? '', this.dataRoot)
-    ) {
-      throw new Error('Personal Workspace private Threads require their owner.');
-    }
-    if (audience.parentThreadId === id)
-      throw new Error('A receiving Thread must differ from its parent.');
-    const thread = ThreadSchema.parse({
-      id,
-      name: title,
-      preview: title,
-      status: 'active',
-      entryPath,
-      threadSource: 'conversation',
-      ...audience,
-      owner: { kind: 'workspace', workspaceId },
-      createdAt: now(),
-      updatedAt: now(),
-    });
-    if (this.dataRoot) {
-      const scope = this.nativeScope({ kind: 'workspace', workspaceId });
-      const result = await this.writeNativeProducts(
-        scope,
-        [{ kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) }],
-        [],
-        admission
-      );
-      // Private command admission can select existing history with this same ID without writing it.
+    const release = this.enterWorkspaceMutation(workspaceId);
+    try {
+      const id = threadId ?? allocateEntityId('th');
       if (
-        admission?.receipt.command === 'thread.create' &&
-        thread.visibility === 'private' &&
-        thread.entryPath === 'conversation'
-      )
-        return this.getThread(workspaceId, result?.response.id ?? thread.id);
-      return this.acknowledgedThreadResult(workspaceId, thread, result);
+        this.dataRoot
+          ? this.findNativeOwner('thread', id)
+          : this.threads.has(id) || this.serverThreads.has(id)
+      ) {
+        throw new Error(`Thread already exists: ${id}`);
+      }
+      if (!audience && entryPath === 'administration')
+        throw new Error('Private Thread creation requires its explicit canonical User audience.');
+      audience ??= { visibility: 'workspace' };
+      if (
+        this.getWorkspace(workspaceId).kind === 'personal' &&
+        audience.visibility === 'private' &&
+        workspaceId !==
+          quickChatWorkspaceIdForUser(audience.privateOwnerUserId ?? '', this.dataRoot)
+      ) {
+        throw new Error('Personal Workspace private Threads require their owner.');
+      }
+      if (audience.parentThreadId === id)
+        throw new Error('A receiving Thread must differ from its parent.');
+      const thread = ThreadSchema.parse({
+        id,
+        name: title,
+        preview: title,
+        status: 'active',
+        entryPath,
+        threadSource: 'conversation',
+        ...audience,
+        owner: { kind: 'workspace', workspaceId },
+        createdAt: now(),
+        updatedAt: now(),
+      });
+      if (this.dataRoot) {
+        const scope = this.nativeScope({ kind: 'workspace', workspaceId });
+        const result = await this.writeNativeProducts(
+          scope,
+          [{ kind: 'thread', expectedRevision: 0, record: writeRetainedV1(thread) }],
+          [],
+          admission
+        );
+        // Private command admission can select existing history with this same ID without writing it.
+        if (
+          admission?.receipt.command === 'thread.create' &&
+          thread.visibility === 'private' &&
+          thread.entryPath === 'conversation'
+        )
+          return this.getThread(workspaceId, result?.response.id ?? thread.id);
+        return this.acknowledgedThreadResult(workspaceId, thread, result);
+      }
+      const threads = [...this.listThreads(workspaceId), thread];
+      const workspace: WorkspaceRecord = {
+        ...this.getWorkspace(workspaceId),
+        counts: {
+          threadCount: threads.length,
+          artifactCount: this.listArtifacts(workspaceId).length,
+          knowledgeEntryCount: this.getWorkspaceResources(workspaceId).knowledge.length,
+        },
+        updatedAt: now(),
+      };
+      this.threads.set(thread.id, thread);
+      this.workspaces.set(workspaceId, workspace);
+      return thread;
+    } finally {
+      release();
     }
-    const threads = [...this.listThreads(workspaceId), thread];
-    const workspace: WorkspaceRecord = {
-      ...this.getWorkspace(workspaceId),
-      counts: {
-        threadCount: threads.length,
-        artifactCount: this.listArtifacts(workspaceId).length,
-        knowledgeEntryCount: this.getWorkspaceResources(workspaceId).knowledge.length,
-      },
-      updatedAt: now(),
-    };
-    this.threads.set(thread.id, thread);
-    this.workspaces.set(workspaceId, workspace);
-    return thread;
   }
 
   /**
