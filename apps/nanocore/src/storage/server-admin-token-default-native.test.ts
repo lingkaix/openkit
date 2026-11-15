@@ -7,7 +7,6 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId, isRecord } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import {
   createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
@@ -17,6 +16,7 @@ import {
   ensureServerBootstrapToken,
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
@@ -107,7 +107,7 @@ async function fixture() {
   const bootstrap = ensureServerBootstrapToken(coreDb);
   if (!bootstrap) throw new Error('Expected fresh Bootstrap owner.');
   writeServerBootstrapTokenEmission(dataRoot, bootstrap);
-  const operations = createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+  const operations = createCredentialOperationImplementations({ coreDb, mode: 'server' });
   const userId = allocateEntityId('usr');
   const owner = await operations['bootstrap.consume']({
     token: bootstrap.token,
@@ -297,7 +297,10 @@ it.each([
       now: new Date('2000-01-01T00:00:00.000Z'),
     }).record.tokenId;
   } else if (kind === 'revoked') {
-    await f.operations['token.revoke']({ tokenId: f.target.tokenId }, f.context);
+    await f.operations['credential.revoke'](
+      { kind: 'access-token', id: f.target.tokenId },
+      f.context
+    );
     tokenId = f.target.tokenId;
   } else if (kind === 'rotated') {
     await f.operations['token.rotate']({ tokenId: f.target.tokenId, graceSeconds: 0 }, f.context);
@@ -316,7 +319,10 @@ it.each(['revoked', 'disabled'] as const)(
       true
     );
     if (kind === 'revoked') {
-      await f.operations['token.revoke']({ tokenId: f.target.tokenId }, f.context);
+      await f.operations['credential.revoke'](
+        { kind: 'access-token', id: f.target.tokenId },
+        f.context
+      );
     } else {
       // The actual User owner keeps disable, lifecycle Audit and receipt in its original Core tuple.
       const operations = createWorkspaceSharingOperationImplementations({

@@ -32,7 +32,7 @@ const protectedOperations = new Set([
   'policy.write',
   'bootstrap.consume',
   'administration.configuration-apply',
-  'token.revoke',
+  'credential.revoke',
   'token.my-admin-list',
   'token.my-admin-default',
 ]);

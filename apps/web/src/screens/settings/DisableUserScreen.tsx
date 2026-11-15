@@ -22,7 +22,11 @@ export function DisableUserScreen() {
   const adminAccess = useQuery({
     queryKey: ['settings', 'disable-user', 'admin-access'],
     queryFn: async () => {
-      await client.operations['token.list']({});
+      const credentials = await client.operations['credential.list']({});
+      if (!credentials.canManageServerCredentials)
+        throw new ApiCallError(403, 'Current deployment administrator authority is required.', {
+          code: 'deployment_admin_required',
+        });
       return true;
     },
     retry: false,

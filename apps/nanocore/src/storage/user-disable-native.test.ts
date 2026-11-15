@@ -7,7 +7,6 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId, isRecord, UserIdSchema } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import {
   createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
@@ -17,6 +16,7 @@ import {
   ensureServerBootstrapToken,
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { applyControlUserDisable } from '../auth/user-disable-native.js';
 import { commandRequestKey, FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
@@ -121,7 +121,7 @@ async function fixture(otherUser = false) {
   const bootstrap = ensureServerBootstrapToken(coreDb);
   if (!bootstrap) throw new Error('Expected fresh Bootstrap owner.');
   writeServerBootstrapTokenEmission(dataRoot, bootstrap);
-  const tokenOperations = createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+  const tokenOperations = createCredentialOperationImplementations({ coreDb, mode: 'server' });
   const actorUserId = allocateEntityId('usr');
   let userId = actorUserId;
   const email = [randomUUID(), 'example.test'].join('@');
@@ -466,7 +466,10 @@ it('rechecks current presented administrator Token facts after Main preparation'
   expect(await Promise.race([held.arrived.then(() => true), held.result.then(() => false)])).toBe(
     true
   );
-  await f.tokenOperations['token.revoke']({ tokenId: f.actorTokenId }, f.context);
+  await f.tokenOperations['credential.revoke'](
+    { kind: 'access-token', id: f.actorTokenId },
+    f.context
+  );
   fault.mode = '';
   fault.release?.();
   fault.release = undefined;

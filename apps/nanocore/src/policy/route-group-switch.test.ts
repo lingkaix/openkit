@@ -930,8 +930,8 @@ describe('E13 Phase A native human configuration', () => {
     const active = f.loaded();
     const revoke = await f.app.request(
       ...operationRequest(
-        'token.revoke',
-        { tokenId: f.first.administrator.tokenId },
+        'credential.revoke',
+        { kind: 'access-token', id: f.first.administrator.tokenId },
         { headers: { cookie: f.second.cookie } }
       )
     );

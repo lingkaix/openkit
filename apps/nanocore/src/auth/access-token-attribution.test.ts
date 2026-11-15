@@ -8,7 +8,7 @@ import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { createAccessTokenOperationImplementations } from './access-token-operations.js';
+import { createCredentialOperationImplementations } from './credential-operations.js';
 
 describe('Token lifecycle attribution', () => {
   it('records the administrator that issued a Token to another User', async () => {
@@ -30,7 +30,7 @@ describe('Token lifecycle attribution', () => {
         actorRef: { kind: 'user', id: administrator },
         scope: { kind: 'server' },
       };
-      const operations = createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      const operations = createCredentialOperationImplementations({ coreDb, mode: 'server' });
       const issued = await operations['token.create'](
         {
           scope: 'server-admin',

@@ -4,6 +4,7 @@ import { allocateEntityId, UserIdSchema } from '@openkit/protocol';
 import { expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
+  getOpenKitAccessTokenRecord,
   resolveSessionDeploymentAdminTokenId,
 } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
@@ -165,12 +166,16 @@ it('refuses a formerly privileged Artifact projection after acknowledged session
           // The exact original projection must already contain the separately joined privileged source.
           expect(JSON.stringify(result)).toContain(privateArtifact.id);
           const revoked = await app.request(
-            ...operationRequest('token.revoke', { tokenId: admin.tokenId }, { headers })
+            ...operationRequest(
+              'credential.revoke',
+              { kind: 'access-token', id: admin.tokenId },
+              { headers }
+            )
           );
           expect(revoked.status).toBe(200);
           const body = await revoked.json();
-          expect(body.record.tokenId).toBe(admin.tokenId);
-          expect(body.record.revokedAt).not.toBeNull();
+          expect(body.status).toBe('revoked');
+          expect(getOpenKitAccessTokenRecord(f.coreDb, admin.tokenId)?.revokedAt).not.toBeNull();
           expect(resolveSessionDeploymentAdminTokenId(f.coreDb, browserUserId)).toBeNull();
           acknowledged = true;
         }

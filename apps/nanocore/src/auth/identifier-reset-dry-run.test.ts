@@ -178,7 +178,9 @@ it('re-registers the protected synthetic account set on a clean candidate and re
       throw new Error('Candidate verification is incomplete.');
     selectedIngress = verifiedCandidate;
   };
-  const failedVerification = await candidate.app.request(...operationRequest('token.list', {}, {}));
+  const failedVerification = await candidate.app.request(
+    ...operationRequest('credential.list', {}, {})
+  );
   expect(failedVerification.status).toBe(401);
   expect(() => switchCandidate()).toThrow('Candidate verification is incomplete.');
   expect(selectedIngress).toBe(source);
@@ -281,7 +283,7 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     verifiedSubjects.add(subject);
     if (index === 2) {
       const adminRead = await reopened.app.request(
-        ...operationRequest('token.list', {}, { headers: { cookie: account.cookie } })
+        ...operationRequest('credential.list', {}, { headers: { cookie: account.cookie } })
       );
       expect(adminRead.status).toBe(200);
       const administratorRead = await reopened.app.request(

@@ -73,15 +73,6 @@ export const CHANNEL_OPERATION_DEFINITIONS = {
     mutating: true,
     returnsOneTimeSecret: true,
   },
-  'channel.discord.revoke': {
-    stability: 'release-coupled',
-    ...userBoundary,
-    description: 'Revoke your Discord account binding and outstanding pairing challenges.',
-    inputSchema: z.object({}).strict(),
-    outputSchema: z.null(),
-    mutating: true,
-    returnsOneTimeSecret: false,
-  },
   'notification.list': {
     stability: 'release-coupled',
     ...userBoundary,

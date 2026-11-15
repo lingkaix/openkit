@@ -12,7 +12,6 @@ import {
   createDiscordChannel,
   type DiscordPendingView,
   readDiscordAccountBinding,
-  revokeDiscordAccountBinding,
 } from './channels/discord.js';
 import type { createDiscordRestTransport } from './channels/discord-rest.js';
 import type { CoreMode } from './config/mode.js';
@@ -330,7 +329,6 @@ export function createChannelServices(input: {
   return {
     discord,
     binding: (actor: Actor) => readDiscordAccountBinding(coreDb.sqlite, actor.userId),
-    revokeBinding: (actor: Actor) => revokeDiscordAccountBinding(coreDb, actor.userId),
     notifications,
     inspectPending,
     eligible,
@@ -367,10 +365,6 @@ export function createChannelOperationImplementations(services: ChannelServices 
       if (!discord)
         throw new OperationError('channel_unavailable', 'Discord is not configured.', 503);
       return discord.beginPairing(publicOperationActor(context));
-    },
-    'channel.discord.revoke': async (_input, context) => {
-      await requireServices().revokeBinding(publicOperationActor(context));
-      return null;
     },
     'notification.list': (input, context) => {
       const userId = publicOperationActor(context).userId;

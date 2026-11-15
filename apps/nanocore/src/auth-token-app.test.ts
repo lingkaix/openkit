@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
-import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  getOpenKitAccessTokenRecord,
+} from './auth/access-token-store.js';
 import { createBetterAuth } from './auth/better-auth.js';
 import { ensureServerBootstrapToken } from './auth/bootstrap-token.js';
 import type { BetterAuthServer } from './auth/middleware.js';
@@ -159,7 +162,7 @@ describe('server-mode access-token auth', () => {
         | undefined;
       const listed = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { authorization: `Bearer ${consumedBody.token}` },
@@ -310,7 +313,7 @@ describe('server-mode access-token auth', () => {
       });
       const listed = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: {
@@ -323,9 +326,12 @@ describe('server-mode access-token auth', () => {
       );
       const listedBody = (await listed.json()) as {
         items: Array<{
-          lastUsedAt: string | null;
-          lastUsedChannel: string | null;
-          lastUsedSource: string | null;
+          kind: string;
+          record?: {
+            lastUsedAt: string | null;
+            lastUsedChannel: string | null;
+            lastUsedSource: string | null;
+          };
         }>;
       };
       coreDb.sqlite
@@ -355,9 +361,9 @@ describe('server-mode access-token auth', () => {
       expect(adminCreatedBody.id).toEqual(expect.any(String));
       expect(sessionAllowed.status).toBe(200);
       expect(listed.status).toBe(200);
-      expect(listedBody.items[0]?.lastUsedAt).toEqual(expect.any(String));
-      expect(listedBody.items[0]?.lastUsedChannel).toBe('mcp');
-      expect(listedBody.items[0]?.lastUsedSource).toBe('desktop-agent');
+      expect(listedBody.items[0]?.record?.lastUsedAt).toEqual(expect.any(String));
+      expect(listedBody.items[0]?.record?.lastUsedChannel).toBe('mcp');
+      expect(listedBody.items[0]?.record?.lastUsedSource).toBe('desktop-agent');
       expect(revokedDenied.status).toBe(401);
       expect(await denied.text()).not.toContain(issued.secret);
     } finally {
@@ -526,7 +532,7 @@ describe('server-mode access-token auth', () => {
       );
       const denied = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { authorization: `Bearer ${workspaceToken.secret}` },
@@ -535,7 +541,7 @@ describe('server-mode access-token auth', () => {
       );
       const listed = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { authorization: `Bearer ${admin.secret}` },
@@ -544,8 +550,8 @@ describe('server-mode access-token auth', () => {
       );
       const revoked = await app.request(
         ...operationRequest(
-          'token.revoke',
-          { tokenId: createdBody.record.tokenId },
+          'credential.revoke',
+          { kind: 'access-token', id: createdBody.record.tokenId },
           {
             method: 'POST',
             headers: { authorization: `Bearer ${admin.secret}` },
@@ -561,7 +567,7 @@ describe('server-mode access-token auth', () => {
       expect(denied.status).toBe(403);
       expect(JSON.stringify(await listed.json())).not.toContain(createdBody.token);
       await expect(revoked.json()).resolves.toMatchObject({
-        record: { status: 'revoked', tokenId: createdBody.record.tokenId },
+        status: 'revoked',
       });
       const auditEvents = listServerAuditEvents(coreDb);
       const issueEvent = auditEvents.find((event) => event.action === 'auth.token.issue');
@@ -587,7 +593,7 @@ describe('server-mode access-token auth', () => {
     }
   });
 
-  it('denies access-token administration to Better Auth sessions', async () => {
+  it('denies issuance and rotation without session administration while allowing own revocation', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-token-session-admin-'));
     const coreDb = openCoreDb(dataRoot);
 
@@ -615,7 +621,6 @@ describe('server-mode access-token auth', () => {
         mode: 'server',
       });
       const responses = await Promise.all([
-        app.request(...operationRequest('token.list', {}, {})),
         app.request(
           ...operationRequest(
             'token.create',
@@ -642,9 +647,6 @@ describe('server-mode access-token auth', () => {
             }
           )
         ),
-        app.request(
-          ...operationRequest('token.revoke', { tokenId: token.tokenId }, { method: 'POST' })
-        ),
       ]);
 
       for (const response of responses) {
@@ -653,6 +655,11 @@ describe('server-mode access-token auth', () => {
           code: 'deployment_admin_required',
         });
       }
+      const revoked = await app.request(
+        ...operationRequest('credential.revoke', { kind: 'access-token', id: token.tokenId })
+      );
+      expect(revoked.status).toBe(200);
+      expect(getOpenKitAccessTokenRecord(coreDb, token.tokenId)?.status).toBe('revoked');
     } finally {
       coreDb.sqlite.close();
     }
@@ -1119,7 +1126,7 @@ describe('server-mode access-token auth', () => {
       });
       const deniedMember = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { [MEMBER_SESSION_HEADER]: '1' },
@@ -1128,7 +1135,7 @@ describe('server-mode access-token auth', () => {
       );
       const allowedOwner = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { [OWNER_SESSION_HEADER]: '1' },
@@ -1186,8 +1193,8 @@ describe('server-mode access-token auth', () => {
       );
       const revoked = await app.request(
         ...operationRequest(
-          'token.revoke',
-          { tokenId: admin.tokenId },
+          'credential.revoke',
+          { kind: 'access-token', id: admin.tokenId },
           {
             method: 'POST',
             headers: { [OWNER_SESSION_HEADER]: '1' },
@@ -1196,7 +1203,7 @@ describe('server-mode access-token auth', () => {
       );
       const afterRevoke = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { [OWNER_SESSION_HEADER]: '1' },
@@ -1204,7 +1211,8 @@ describe('server-mode access-token auth', () => {
         )
       );
 
-      expect(deniedMember.status).toBe(403);
+      expect(deniedMember.status).toBe(200);
+      expect(await deniedMember.json()).toMatchObject({ canManageServerCredentials: false });
       expect(allowedOwner.status).toBe(200);
       expect(mine.status).toBe(200);
       expect(mineBody).toMatchObject({
@@ -1226,7 +1234,8 @@ describe('server-mode access-token auth', () => {
       expect(otherWorkspace.status).toBe(201);
       expect(bypassDenied.status).toBe(200);
       expect(revoked.status).toBe(200);
-      expect(afterRevoke.status).toBe(403);
+      expect(afterRevoke.status).toBe(200);
+      expect(await afterRevoke.json()).toMatchObject({ canManageServerCredentials: false });
       expect(JSON.stringify(mineBody)).not.toContain(admin.secret);
       const revokeEvent = listServerAuditEvents(coreDb).find(
         (event) => event.action === 'auth.token.revoke'
@@ -1283,7 +1292,7 @@ describe('server-mode access-token auth', () => {
       );
       const listed = await app.request(
         ...operationRequest(
-          'token.list',
+          'credential.list',
           {},
           {
             headers: { [OWNER_SESSION_HEADER]: '1' },
@@ -1292,8 +1301,8 @@ describe('server-mode access-token auth', () => {
       );
       await app.request(
         ...operationRequest(
-          'token.revoke',
-          { tokenId: first.tokenId },
+          'credential.revoke',
+          { kind: 'access-token', id: first.tokenId },
           {
             method: 'POST',
             headers: { [OWNER_SESSION_HEADER]: '1' },
@@ -1391,7 +1400,6 @@ describe('personal administrator-token canonical-user access', () => {
       const after = await app.request(...operationRequest('token.my-admin-list', {}, {}));
       expect((await after.json()).defaultTokenId).toBe('tok_00000000-0000-738c-a01b-b50e38d149f1');
       for (const [id, input] of [
-        ['token.list', {}],
         ['token.create', { scope: 'server-admin', expiresAt: '2999-01-01T00:00:00.000Z' }],
         ['token.rotate', { tokenId: 'tok_00000000-0000-7c1a-914e-7b3f8202307f' }],
       ] as const) {

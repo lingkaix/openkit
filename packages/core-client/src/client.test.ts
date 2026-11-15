@@ -2934,7 +2934,7 @@ describe('createCoreClient', () => {
       'POST /api/app/operations/app-update.status': { body: appUpdateStatus() },
       'POST /api/app/operations/bootstrap.consume': {
         body: {
-          token: 'okt_owner_secret',
+          token: 'okt_FAKE_owner',
           record: {
             tokenId: 'tok_00000000-0000-7194-b4f8-8fa26eda7175',
             ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -3448,11 +3448,11 @@ describe('createCoreClient', () => {
         email: 'owner@example.com',
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
-        token: 'okt_bootstrap_secret',
+        token: 'okt_FAKE_boot',
         tokenExpiresAt: timestamp,
       })
     ).resolves.toMatchObject({
-      token: 'okt_owner_secret',
+      token: 'okt_FAKE_owner',
       record: { ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f', scope: 'server-admin' },
     });
     await expect(
@@ -3886,7 +3886,7 @@ describe('createCoreClient', () => {
       email: 'owner@example.com',
       ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
       password: 'password123456',
-      token: 'okt_bootstrap_secret',
+      token: 'okt_FAKE_boot',
       tokenExpiresAt: timestamp,
     });
     expect(requests[9]?.body).toEqual({
@@ -3918,17 +3918,29 @@ describe('createCoreClient', () => {
 
   it('routes OpenKit access-token administration through canonical operation schemas', async () => {
     const { client, requests } = createFakeClient({
-      'POST /api/app/operations/token.list': { body: { items: [accessTokenRecord()] } },
+      'POST /api/app/operations/credential.list': {
+        body: {
+          canManageServerCredentials: true,
+          items: [
+            {
+              kind: 'access-token',
+              id: accessTokenRecord().tokenId,
+              record: accessTokenRecord(),
+              integrationId: null,
+            },
+          ],
+        },
+      },
       'POST /api/app/operations/token.create': {
-        body: { token: 'okt_workspace_secret', record: accessTokenRecord() },
+        body: { token: 'okt_FAKE_ws', record: accessTokenRecord() },
         status: 201,
       },
-      'POST /api/app/operations/token.revoke': {
-        body: { record: accessTokenRecord({ status: 'revoked', revokedAt: timestamp }) },
+      'POST /api/app/operations/credential.revoke': {
+        body: { status: 'revoked' },
       },
       'POST /api/app/operations/token.rotate': {
         body: {
-          token: 'okt_rotated_secret',
+          token: 'okt_FAKE_rotate',
           record: accessTokenRecord({ status: 'rotated', rotatedGraceExpiresAt: timestamp }),
           rotatedRecord: accessTokenRecord({
             predecessorTokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
@@ -3962,11 +3974,14 @@ describe('createCoreClient', () => {
       },
     });
 
-    await expect(client.operations['token.list']({})).resolves.toMatchObject({
+    await expect(client.operations['credential.list']({})).resolves.toMatchObject({
       items: [
         {
-          tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
-          workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+          kind: 'access-token',
+          record: {
+            tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+            workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
+          },
         },
       ],
     });
@@ -3977,13 +3992,16 @@ describe('createCoreClient', () => {
         workspaceIds: ['ws_00000000-0000-7000-8000-000000000001'],
       })
     ).resolves.toMatchObject({
-      token: 'okt_workspace_secret',
+      token: 'okt_FAKE_ws',
       record: { tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8' },
     });
     await expect(
-      client.operations['token.revoke']({ tokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8' })
+      client.operations['credential.revoke']({
+        kind: 'access-token',
+        id: 'tok_00000000-0000-7530-a268-adac6fe06bd8',
+      })
     ).resolves.toMatchObject({
-      record: { status: 'revoked' },
+      status: 'revoked',
     });
     await expect(
       client.operations['token.rotate']({
@@ -3991,7 +4009,7 @@ describe('createCoreClient', () => {
         ...{ graceSeconds: 60 },
       })
     ).resolves.toMatchObject({
-      token: 'okt_rotated_secret',
+      token: 'okt_FAKE_rotate',
       rotatedRecord: { predecessorTokenId: 'tok_00000000-0000-7530-a268-adac6fe06bd8' },
     });
     await expect(client.operations['token.my-admin-list']({})).resolves.toMatchObject({
@@ -4007,9 +4025,9 @@ describe('createCoreClient', () => {
     });
 
     expect(requests.map((request) => `${request.method} ${request.path}`)).toEqual([
-      'POST /api/app/operations/token.list',
+      'POST /api/app/operations/credential.list',
       'POST /api/app/operations/token.create',
-      'POST /api/app/operations/token.revoke',
+      'POST /api/app/operations/credential.revoke',
       'POST /api/app/operations/token.rotate',
       'POST /api/app/operations/token.my-admin-list',
       'POST /api/app/operations/token.my-admin-default',

@@ -466,8 +466,8 @@ describe('E13B2 signed ingress through the real App and native channel owners', 
       .graph()
       .app.request(
         ...operationRequest(
-          'token.revoke',
-          { tokenId: d.f.first.bootstrap!.tokenId },
+          'credential.revoke',
+          { kind: 'access-token', id: d.f.first.bootstrap!.tokenId },
           { headers: { cookie: d.f.second.cookie } }
         )
       );

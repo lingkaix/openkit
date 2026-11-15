@@ -70,6 +70,7 @@ import {
   revokeOpenKitAccessTokenRecord,
   rotateOpenKitAccessTokenRecord,
 } from './access-token-store.js';
+import { createBetterAuth } from './better-auth.js';
 import type { Actor } from './identity.js';
 import type { AuthVariables } from './middleware.js';
 import * as nanoHostOperations from './nanohost-operations.js';
@@ -322,6 +323,11 @@ async function createFixture(prepared?: PreparedAuthBase) {
 
   return {
     actorState,
+    /** Creates the original SDK session row used by authenticated capture-continuity fixtures. */
+    async createSession(userId = actorState.current.userId) {
+      const auth = createBetterAuth(coreDb, { env: { BETTER_AUTH_URL: 'http://localhost:3000' } });
+      return (await auth.$context).internalAdapter.createSession(userId);
+    },
     app,
     administrationHandlerReads: () => administrationHandlerReads,
     coreDb,
@@ -1627,7 +1633,7 @@ describe('central Workspace operation authorizer', () => {
   it('keeps a capture-fenced Workspace listed and readable while mutations stay frozen', async () => {
     fixture.actorState.current = {
       ...fixture.actorState.current,
-      sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+      sessionId: (await fixture.createSession()).id,
     };
     const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
     expect(freeze.status).toBe('frozen');
@@ -1680,7 +1686,13 @@ describe('central Workspace operation authorizer', () => {
       fixture.actorState.current = {
         ...fixture.actorState.current,
         ...(change === 'membership' ? { userId: 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8' } : {}),
-        sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+        sessionId: (
+          await fixture.createSession(
+            change === 'membership'
+              ? 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8'
+              : fixture.actorState.current.userId
+          )
+        ).id,
       };
       const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
       expect(freeze.status).toBe('frozen');
@@ -1718,7 +1730,7 @@ describe('central Workspace operation authorizer', () => {
             if (change === 'session')
               fixture.actorState.current = {
                 ...fixture.actorState.current,
-                sessionId: 'auth_00000000-0000-7000-8000-000000000125',
+                sessionId: (await fixture.createSession()).id,
               };
             if (change === 'membership')
               fixture.coreDb.sqlite
@@ -1799,7 +1811,7 @@ describe('central Workspace operation authorizer', () => {
     }
     fixture.actorState.current = {
       ...fixture.actorState.current,
-      sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+      sessionId: (await fixture.createSession()).id,
     };
     fixture.workspaceMutationAdmission.restoreClosed(fixture.workspace.id, 'capture');
     const recovery = await request();

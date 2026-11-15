@@ -8,9 +8,11 @@ import {
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { type Actor, getLocalUserId } from '../auth/identity.js';
+import { evaluateOwnedUserOperation } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import type { CoreMode } from '../config/mode.js';
 import { OperationError } from '../operation-error.js';
+import { presentControlFacts } from '../storage/control-store-input.js';
 import { assertControlProductWriter } from '../storage/control-store-products.js';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import type { CoreDb } from '../storage/db.js';
@@ -420,6 +422,23 @@ export function applyControlDiscordChannel(
     )
       throw new OperationError('channel_binding_unavailable', 'Current binding unavailable.', 403);
   }
+  if (input.stage === 'revoke-binding' && input.selected) {
+    const actor = presentControlFacts(input.selected.actor);
+    if (
+      actor.userId !== input.userId ||
+      (actor.kind === 'token' && actor.tokenScope !== 'server-admin') ||
+      evaluateOwnedUserOperation(coreDb, actor, input.userId, 'api.call', true).effect !== 'allow'
+    )
+      throw new OperationError(
+        'channel_authority_unavailable',
+        'Current authority unavailable.',
+        403
+      );
+    if (
+      readDiscordAccountBinding(coreDb.sqlite, input.userId)?.revision !== input.selected.revision
+    )
+      throw new OperationError('channel_binding_unavailable', 'Current binding unavailable.', 409);
+  }
   // The same production clock and UUID source stay at their original SQL expression points.
   return applyDiscordStageInDb(coreDb.sqlite, input, {
     now: Date.now,
@@ -442,8 +461,16 @@ export async function reconcileIncompleteDiscordInteractions(coreDb: CoreDb): Pr
 }
 
 /** Revokes the original binding/challenge tuple even when no adapter is configured. */
-export async function revokeDiscordAccountBinding(coreDb: CoreDb, userId: string): Promise<void> {
-  await publishDiscordStage(coreDb, { stage: 'revoke-binding', userId });
+export async function revokeDiscordAccountBinding(
+  coreDb: CoreDb,
+  userId: string,
+  selected?: Extract<ControlDiscordChannelInput, { stage: 'revoke-binding' }>['selected']
+): Promise<void> {
+  await publishDiscordStage(coreDb, {
+    stage: 'revoke-binding',
+    userId,
+    ...(selected ? { selected } : {}),
+  });
 }
 
 /** Creates the Discord projection over migration-owned tables, without network or schema creation. */

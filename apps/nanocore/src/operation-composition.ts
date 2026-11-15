@@ -9,7 +9,7 @@ import { createWorkerOperationImplementations } from './agents/workspace-workers
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { createAppUpdateOperationImplementations } from './app-update/app-update-operations.js';
 import { createArtifactOperationImplementations } from './artifact-operations.js';
-import { createAccessTokenOperationImplementations } from './auth/access-token-operations.js';
+import { createCredentialOperationImplementations } from './auth/credential-operations.js';
 import { createNanoHostOperationImplementations } from './auth/nanohost-operations.js';
 import type { NanoHostTransportSessionAuthority } from './auth/nanohost-transport-session.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
@@ -93,6 +93,8 @@ import { createWorkspaceOperationImplementations } from './workspace-operation-i
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */
 export interface OperationInvocationDependencies {
+  /** Original live Worker credential owner used by human credential management. */
+  readonly workerControlGateway?: import('./runtime/worker-control-gateway.js').WorkerControlGateway;
   /** App-owned capacity admission, shared by Artifact, ZIP and Workspace file transfers. */
   readonly fileAdmission?: FileStorageAdmission;
   /** Bounded Knowledge Manager role supplied by application assembly. */
@@ -237,9 +239,18 @@ export function createOperationImplementations(dependencies: OperationInvocation
       inflightCommands: dependencies.inflightCommands!,
       repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb!,
     }),
-    createAccessTokenOperationImplementations({
+    createCredentialOperationImplementations({
       coreDb: dependencies.coreDb,
       mode: dependencies.mode ?? 'local',
+      ...(dependencies.store ? { store: dependencies.store } : {}),
+      ...(dependencies.workerControlGateway
+        ? { workerControlGateway: dependencies.workerControlGateway }
+        : {}),
+      ...(dependencies.turnExecutor ? { turnExecutor: dependencies.turnExecutor } : {}),
+      ...(dependencies.inflightCommands ? { inflightCommands: dependencies.inflightCommands } : {}),
+      ...(dependencies.nanoHostSessionAuthority
+        ? { nanoHostSessionAuthority: dependencies.nanoHostSessionAuthority }
+        : {}),
     }),
     createDiagnosticsOperationImplementations(dependencies.diagnosticsServices, dependencies),
     createRuntimeConfigOperationImplementations(dependencies.runtimeConfigOperations),

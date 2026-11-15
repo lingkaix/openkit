@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ControlCoreSharingActorSchema } from '../storage/workspace-sharing-codecs.js';
 
 /** Exact configured SDK records; these private values never enter the agent operation surface. */
 const user = z.object({
@@ -66,6 +67,13 @@ export type ControlBetterAuthActor = z.infer<typeof actor>;
 
 /** One existing SQL commit per member, never a model/table/predicate/patch or callback protocol. */
 export const ControlBetterAuthInputSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('session-owned-delete'),
+      sessionId: z.string().min(1),
+      requestActor: ControlCoreSharingActorSchema,
+    })
+    .strict(),
   z
     .object({
       kind: z.literal('human-create'),

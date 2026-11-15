@@ -61,10 +61,10 @@ import {
   ListArtifactReviewsResponseSchema,
   ListBackendWorkspaceHandlesResponseSchema,
   ListHumanAttentionResponseSchema,
+  ListInboundCredentialsResponseSchema,
   ListInterruptedWorkerStatesResponseSchema,
   ListKnowledgeSourcesResponseSchema,
   ListMyAdminAccessTokensResponseSchema,
-  ListOpenKitAccessTokensResponseSchema,
   ListSchedulerAdmissionsResponseSchema,
   ListServerAuditEventsResponseSchema,
   ListServerPermissionDecisionsResponseSchema,
@@ -99,7 +99,7 @@ import {
   RetrySchedulerAdmissionResponseSchema,
   ReverseKnowledgeProposalRequestSchema,
   ReverseKnowledgeProposalResponseSchema,
-  RevokeOpenKitAccessTokenResponseSchema,
+  RevokeInboundCredentialResponseSchema,
   RotateOpenKitAccessTokenRequestSchema,
   RotateOpenKitAccessTokenResponseSchema,
   RuntimeConfigFileListResponseSchema,
@@ -229,12 +229,7 @@ const knowledgeProposalDraftRequest = {
   rationale: 'This completed-work evidence supports one reusable release-review rule.',
   confidence: 0.75,
 };
-const rawSecretShapes = [
-  'sk-openkit-secret',
-  'hf_openkit_secret',
-  'ghp_openkit_secret',
-  'okt_openkit_secret',
-] as const;
+const rawSecretShapes = ['sk-FAKE_5', 'hf_openkit_secret', 'ghp_FAKE_6', 'okt_FAKE_7'] as const;
 describe('app api schema package boundary', () => {
   it('preserves omitted and explicitly empty MCP credential updates', () => {
     const update = {
@@ -1632,7 +1627,7 @@ describe('app api schemas', () => {
       VaultAdminStatusResponseSchema.safeParse({
         backendKind: 'encrypted-file',
         state: 'available',
-        diagnostic: 'Public fixture ghp_publicFixture',
+        diagnostic: 'Public fixture ghp_FAKE_8',
       }).success
     ).toBe(false);
   });
@@ -2350,7 +2345,7 @@ describe('app api schemas', () => {
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
     expect(JSON.stringify(runtimeEvidence)).not.toContain('Authorization');
-    expect(JSON.stringify(runtimeEvidence)).not.toContain('sk-openkit-secret');
+    expect(JSON.stringify(runtimeEvidence)).not.toContain('sk-FAKE_5');
     expect(
       RuntimeEvidenceRecordSchema.safeParse({
         ...runtimeEvidence,
@@ -2650,8 +2645,8 @@ describe('app api schemas', () => {
 
     const item = workspaceReviews.items[0]!;
     for (const text of [
-      'diff --git a/src/fixture.ts b/src/fixture.ts\n+const fixture = "ghp_publicFixture";\n',
-      'sk-Latn hf_publicFixture okt_publicFixture',
+      'diff --git a/src/fixture.ts b/src/fixture.ts\n+const fixture = "ghp_FAKE_8";\n',
+      'sk-Latn hf_publicFixture okt_FAKE_9',
     ]) {
       const payload = { ...item.patchPayload!, text };
       for (const patchPayload of [
@@ -2968,7 +2963,7 @@ describe('app api schemas', () => {
       bundle: null,
       artifactIds: [],
       evidenceRefs: [],
-      redaction: { status: 'redacted', notes: ['ghp_openkit_secret'] },
+      redaction: { status: 'redacted', notes: ['ghp_FAKE_6'] },
       createdAt: timestamp,
     };
 
@@ -2984,9 +2979,7 @@ describe('app api schemas', () => {
         strategy: 'git',
         changedPaths: [{ path: '../secret.txt', status: 'modified' }],
         artifactIds: [],
-        logRefs: [
-          { kind: 'worker-log', ref: 'ghp_openkit_secret', digest: 'sha256:log', bytes: 1 },
-        ],
+        logRefs: [{ kind: 'worker-log', ref: 'ghp_FAKE_6', digest: 'sha256:log', bytes: 1 }],
         testOutputRefs: [],
         ignoredOutputs: [],
         evidenceRefs: [],
@@ -3003,7 +2996,7 @@ describe('app api schemas', () => {
         approvalState: 'approved',
         plannedWrites: ['../secret.txt'],
         baselineChecks: [],
-        pathConflicts: ['ghp_openkit_secret'],
+        pathConflicts: ['ghp_FAKE_6'],
         binaryRisks: [],
         permissionChanges: [],
         policyChecks: [],
@@ -3015,7 +3008,7 @@ describe('app api schemas', () => {
         id: 'wrr_unsafe',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
         triggerReason: 'restart',
-        affectedRecordIds: ['ghp_openkit_secret'],
+        affectedRecordIds: ['ghp_FAKE_6'],
         backendHandleSummary: { backendKind: 'openshell', handleId: 'bwh_1' },
         backendReachability: { status: 'unavailable', checkedAt: timestamp, detail: null },
         collectedOutputManifestIds: [],
@@ -3033,7 +3026,7 @@ describe('app api schemas', () => {
       WorkspaceQuarantineRecordSchema.safeParse({
         id: 'wqr_unsafe',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-        lifecycleRecordIds: ['ghp_openkit_secret'],
+        lifecycleRecordIds: ['ghp_FAKE_6'],
         failureKind: 'schema_failure',
         storageRef: '../secret.txt',
         retentionClass: 'restricted-evidence',
@@ -3088,9 +3081,9 @@ describe('app api schemas', () => {
     expect(
       GetAgentEnvironmentPackageSnapshotResponseSchema.parse({
         ...record,
-        snapshot: { ...snapshot, note: 'sk-public-fixture' },
+        snapshot: { ...snapshot, note: 'sk-FAKE_10' },
       }).snapshot.note
-    ).toBe('sk-public-fixture');
+    ).toBe('sk-FAKE_10');
   });
 
   it('rejects removed app diagnostics compatibility fields', () => {
@@ -3742,7 +3735,7 @@ describe('app api schemas', () => {
     expect(
       ArchivedGitPushRecordSchema.safeParse({
         ...pushRecord,
-        errorSummary: 'public fixture ghp_openkit_fixture',
+        errorSummary: 'public fixture ghp_FAKE_11',
       }).success
     ).toBe(true);
   });
@@ -4389,13 +4382,13 @@ describe('app api schemas', () => {
         email: 'owner@example.com',
         ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
         password: 'password123456',
-        token: 'okt_bootstrap_secret',
+        token: 'okt_FAKE_boot',
         tokenExpiresAt: timestamp,
       }).ownerUserId
     ).toBe('usr_00000000-0000-7011-88df-c2b1e8466b6f');
     expect(
       ConsumeOpenKitBootstrapTokenResponseSchema.parse({
-        token: 'okt_owner_secret',
+        token: 'okt_FAKE_owner',
         record: {
           tokenId: 'tok_00000000-0000-7194-b4f8-8fa26eda7175',
           ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -4430,7 +4423,7 @@ describe('app api schemas', () => {
     ).toBe('usr_00000000-0000-7d56-82f8-ec994b63859b');
     expect(
       CreateOpenKitAccessTokenResponseSchema.parse({
-        token: 'okt_openkit_secret',
+        token: 'okt_FAKE_test',
         record: {
           tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
           ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -4447,51 +4440,41 @@ describe('app api schemas', () => {
           lastUsedSource: null,
         },
       }).token
-    ).toBe('okt_openkit_secret');
+    ).toBe('okt_FAKE_test');
     expect(
-      ListOpenKitAccessTokensResponseSchema.parse({
+      ListInboundCredentialsResponseSchema.parse({
+        canManageServerCredentials: true,
         items: [
           {
-            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
-            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-            scope: 'server-admin',
-            workspaceIds: [],
-            status: 'active',
-            issuedAt: timestamp,
-            expiresAt: timestamp,
-            revokedAt: null,
-            predecessorTokenId: null,
-            rotatedGraceExpiresAt: null,
-            lastUsedAt: null,
-            lastUsedChannel: null,
-            lastUsedSource: null,
+            kind: 'access-token',
+            id: 'tok_00000000-0000-71d2-a336-a862021357ff',
+            integrationId: null,
+            record: {
+              tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+              ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+              scope: 'server-admin',
+              workspaceIds: [],
+              status: 'active',
+              issuedAt: timestamp,
+              expiresAt: timestamp,
+              revokedAt: null,
+              predecessorTokenId: null,
+              rotatedGraceExpiresAt: null,
+              lastUsedAt: null,
+              lastUsedChannel: null,
+              lastUsedSource: null,
+            },
           },
         ],
-      }).items[0]?.tokenId
+      }).items[0]?.id
     ).toBe('tok_00000000-0000-71d2-a336-a862021357ff');
-    expect(
-      RevokeOpenKitAccessTokenResponseSchema.parse({
-        record: {
-          tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
-          ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-          scope: 'server-admin',
-          workspaceIds: [],
-          status: 'revoked',
-          issuedAt: timestamp,
-          expiresAt: timestamp,
-          revokedAt: timestamp,
-          predecessorTokenId: null,
-          rotatedGraceExpiresAt: null,
-          lastUsedAt: null,
-          lastUsedChannel: null,
-          lastUsedSource: null,
-        },
-      }).record.status
-    ).toBe('revoked');
+    expect(RevokeInboundCredentialResponseSchema.parse({ status: 'revoked' }).status).toBe(
+      'revoked'
+    );
     expect(RotateOpenKitAccessTokenRequestSchema.parse({ graceSeconds: 60 }).graceSeconds).toBe(60);
     expect(
       RotateOpenKitAccessTokenResponseSchema.parse({
-        token: 'okt_rotated_secret',
+        token: 'okt_FAKE_rotate',
         record: {
           tokenId: 'tok_00000000-0000-7c9e-a136-86e094ee0dc9',
           ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -4525,22 +4508,28 @@ describe('app api schemas', () => {
       }).rotatedRecord.status
     ).toBe('rotated');
     expect(
-      ListOpenKitAccessTokensResponseSchema.safeParse({
+      ListInboundCredentialsResponseSchema.safeParse({
+        canManageServerCredentials: true,
         items: [
           {
-            tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
-            ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
-            scope: 'server-admin',
-            workspaceIds: [],
-            status: 'active',
-            issuedAt: timestamp,
-            expiresAt: timestamp,
-            revokedAt: null,
-            predecessorTokenId: null,
-            rotatedGraceExpiresAt: null,
-            lastUsedAt: null,
-            lastUsedChannel: null,
-            lastUsedSource: 'okt_openkit_secret',
+            kind: 'access-token',
+            id: 'tok_00000000-0000-71d2-a336-a862021357ff',
+            integrationId: null,
+            record: {
+              tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+              ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
+              scope: 'server-admin',
+              workspaceIds: [],
+              status: 'active',
+              issuedAt: timestamp,
+              expiresAt: timestamp,
+              revokedAt: null,
+              predecessorTokenId: null,
+              rotatedGraceExpiresAt: null,
+              lastUsedAt: null,
+              lastUsedChannel: null,
+              lastUsedSource: rawSecretShapes[3],
+            },
           },
         ],
       }).success
@@ -4588,7 +4577,7 @@ describe('app api schemas', () => {
             rotatedGraceExpiresAt: null,
             lastUsedAt: null,
             lastUsedChannel: null,
-            lastUsedSource: 'okt_openkit_secret',
+            lastUsedSource: rawSecretShapes[3],
           },
         ],
         defaultTokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',

@@ -1,5 +1,6 @@
 import { isUserId, RequestIdSchema } from '@openkit/protocol';
 import { z } from 'zod';
+import { ControlCoreSharingActorSchema } from '../storage/workspace-sharing-codecs.js';
 
 /** Existing external account/event identity, never a Core authority assertion. */
 const SnowflakeSchema = z.string().regex(/^[0-9]{1,20}$/);
@@ -16,7 +17,16 @@ const TargetSchema = z.object({
 /** Eight original Discord SQL stages; no secret, body, answer, callback or SQL crosses. */
 export const ControlDiscordChannelInputSchema = z.discriminatedUnion('stage', [
   z.object({ stage: z.literal('reconcile-incomplete') }).strict(),
-  z.object({ stage: z.literal('revoke-binding'), userId: UserIdSchema }).strict(),
+  z
+    .object({
+      stage: z.literal('revoke-binding'),
+      userId: UserIdSchema,
+      selected: z
+        .object({ revision: RequestIdSchema, actor: ControlCoreSharingActorSchema })
+        .strict()
+        .optional(),
+    })
+    .strict(),
   z
     .object({
       stage: z.literal('issue-challenge'),

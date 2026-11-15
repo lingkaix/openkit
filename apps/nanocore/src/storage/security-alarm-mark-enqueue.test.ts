@@ -7,11 +7,11 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession, ensureLocalUser } from '../auth/identity.js';
 import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { FsStore } from '../lib/store.js';
@@ -138,7 +138,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb);
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     async reopen() {
       await close();
@@ -477,7 +477,9 @@ describe('N3 E4 transaction 3 original alarm mark and native Attention enqueue',
   it('marks a genuine R8 for the remaining current recipient under the original alarm grant despite lost enabling delegation', async () => {
     const { f, admin, backup, adminTokenId } = await server();
     await f.trigger.enable(admin);
-    await f.tokens()['token.revoke']({ tokenId: adminTokenId }, context(backup));
+    await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: adminTokenId }, context(backup));
     await assert.rejects(() => f.trigger.readAudit());
     const alarms = await f.trigger.readAlarms();
     const alarm = owed(alarms, backup.userId, 'R8');
@@ -549,7 +551,9 @@ describe('N3 E4 transaction 3 original alarm mark and native Attention enqueue',
       requestId: alarm.requestId,
     });
     const original = workspaceTuple(f, destination);
-    await f.tokens()['token.revoke']({ tokenId: backupTokenId }, context(admin));
+    await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: backupTokenId }, context(admin));
     await assert.rejects(() => publish(f, alarm.requestId));
     assert.deepEqual(await f.trigger.readAlarms(), alarms);
     assert.deepEqual(attentionRows(f), []);

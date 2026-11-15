@@ -23,7 +23,11 @@ export function WorkspaceAccessRecoveryScreen() {
   const adminAccess = useQuery({
     queryKey: ['settings', 'workspace-access-recovery', 'admin-access'],
     queryFn: async ({ signal }) => {
-      await client.operations['token.list']({});
+      const credentials = await client.operations['credential.list']({});
+      if (!credentials.canManageServerCredentials)
+        throw new ApiCallError(403, 'Current deployment administrator authority is required.', {
+          code: 'deployment_admin_required',
+        });
       // An abandoned read cannot admit a later mount.
       signal.throwIfAborted();
       return true;

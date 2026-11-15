@@ -10,6 +10,7 @@ import type {
 } from './access-token-lifecycle-codecs.js';
 import {
   DeploymentAdminRequiredError,
+  getOpenKitAccessTokenRecord,
   insertOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
   rotateOpenKitAccessTokenRecord,
@@ -24,6 +25,13 @@ export function applyControlAccessTokenLifecycle(
 ): ControlAccessTokenLifecycleResult {
   if (coreDb.scope !== 'core' || !coreDb.sqlite.inTransaction)
     throw new ControlProductPreconditionError();
+  if (input.actor.kind === 'token' && input.actor.tokenScope !== 'server-admin')
+    return { kind: 'denied', code: 'core.auth.scope_forbidden' };
+  const target =
+    input.kind === 'revoke' &&
+    getOpenKitAccessTokenRecord(coreDb, input.tokenId)?.ownerUserId === input.actor.userId
+      ? { kind: 'user' as const }
+      : { kind: 'server' as const };
   // Main admission is not a grant across FIFO waiting. Reuse its exact current
   // server/api.call/mutating predicate, including credential and User eligibility.
   try {
@@ -31,7 +39,7 @@ export function applyControlAccessTokenLifecycle(
       evaluateProductAuthorization(
         coreDb,
         presentControlFacts(input.actor),
-        { kind: 'server' },
+        target,
         'api.call',
         true
       ).effect !== 'allow'

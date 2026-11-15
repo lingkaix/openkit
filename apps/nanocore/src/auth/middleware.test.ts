@@ -194,7 +194,7 @@ describe('createAuthMiddleware', () => {
   });
 
   it('authenticates server-mode bearer access tokens without exposing token material', async () => {
-    const token = 'okt_test_token';
+    const token = 'okt_FAKE_0';
     const app = new Hono();
 
     app.use(
@@ -215,7 +215,7 @@ describe('createAuthMiddleware', () => {
       headers: { authorization: `Bearer ${token}` },
     });
     const denied = await app.request('/api/private', {
-      headers: { authorization: 'Bearer okt_bad_token' },
+      headers: { authorization: 'Bearer okt_FAKE_1' },
     });
 
     expect(ok.status).toBe(200);
@@ -225,7 +225,7 @@ describe('createAuthMiddleware', () => {
       tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
     });
     expect(denied.status).toBe(401);
-    expect(await denied.text()).not.toContain('okt_bad_token');
+    expect(await denied.text()).not.toContain('okt_FAKE_1');
   });
 
   it('refuses bearer tokens over non-loopback plaintext HTTP before verification', async () => {
@@ -248,14 +248,14 @@ describe('createAuthMiddleware', () => {
 
     const denied = await app.request(
       new Request('http://203.0.113.10/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       })
     );
     const body = await denied.json();
 
     expect(denied.status).toBe(400);
     expect(body.code).toBe('core.auth.insecure_transport');
-    expect(JSON.stringify(body)).not.toContain('okt_test_token');
+    expect(JSON.stringify(body)).not.toContain('okt_FAKE_0');
     expect(verifierCalls).toBe(0);
   });
 
@@ -279,7 +279,7 @@ describe('createAuthMiddleware', () => {
 
     const denied = await app.request(
       new Request('http://127.evil.example/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       })
     );
 
@@ -303,7 +303,7 @@ describe('createAuthMiddleware', () => {
 
     const ok = await app.request(
       new Request('http://127.0.0.1/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       })
     );
 
@@ -330,7 +330,7 @@ describe('createAuthMiddleware', () => {
 
     const denied = await app.request(
       new Request('https://127.0.0.1/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       }),
       undefined,
       {
@@ -365,7 +365,7 @@ describe('createAuthMiddleware', () => {
 
     const allowed = await app.request(
       new Request('http://public.example/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       }),
       undefined,
       {
@@ -399,7 +399,7 @@ describe('createAuthMiddleware', () => {
 
     const allowed = await app.request(
       new Request('https://public.example/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       })
     );
 
@@ -422,7 +422,7 @@ describe('createAuthMiddleware', () => {
 
     const ok = await app.request(
       new Request('http://public.example/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       }),
       undefined,
       {
@@ -488,7 +488,7 @@ describe('createAuthMiddleware', () => {
       const response = await tokenApp.request(request.path, {
         method: 'POST',
         headers: {
-          authorization: 'Bearer okt_test_token',
+          authorization: 'Bearer okt_FAKE_0',
           'content-type': 'application/json',
         },
         body: JSON.stringify(request.body),
@@ -530,7 +530,7 @@ describe('createAuthMiddleware', () => {
    * (`docs/specs/20260802-nanohost_runtime_and_transport.md`).
    */
   it('rejects presented nanohost-transport material on product App API paths', async () => {
-    const nanohostSecret = 'okt_nanohost_transport_must_not_become_product_actor';
+    const nanohostSecret = 'okt_FAKE_2';
     const app = new Hono();
 
     app.use(
@@ -551,11 +551,11 @@ describe('createAuthMiddleware', () => {
       })
     );
     app.get('/api/app/workspaces', (c) => c.json(c.get('actor')));
-    app.post('/api/app/operations/token.list', (c) => c.json(c.get('actor')));
+    app.post('/api/app/operations/credential.list', (c) => c.json(c.get('actor')));
 
-    for (const path of ['/api/app/workspaces', '/api/app/operations/token.list']) {
+    for (const path of ['/api/app/workspaces', '/api/app/operations/credential.list']) {
       const denied = await app.request(path, {
-        ...(path.endsWith('token.list') ? { method: 'POST', body: '{}' } : {}),
+        ...(path.endsWith('credential.list') ? { method: 'POST', body: '{}' } : {}),
         headers: { authorization: `Bearer ${nanohostSecret}` },
       });
       const body = await denied.text();
@@ -622,7 +622,7 @@ describe('createAuthMiddleware', () => {
 
     const denied = await app.request(
       new Request('https://127.0.0.1/api/private', {
-        headers: { authorization: 'Bearer okt_test_token' },
+        headers: { authorization: 'Bearer okt_FAKE_0' },
       }),
       undefined,
       { incoming: {} }

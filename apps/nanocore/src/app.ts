@@ -2673,6 +2673,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   });
 
   registerOperationJsonRoutes({
+    workerControlGateway,
     policyInterception,
     goalTaskPolicy,
     knowledgeAgent,

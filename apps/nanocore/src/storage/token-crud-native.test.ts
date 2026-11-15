@@ -16,7 +16,6 @@ import {
   ControlAccessTokenLifecycleSchema,
 } from '../auth/access-token-lifecycle-codecs.js';
 import { applyControlAccessTokenLifecycle } from '../auth/access-token-lifecycle-native.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import {
   createOpenKitAccessTokenRecord,
   getOpenKitAccessTokenRecord,
@@ -29,6 +28,7 @@ import {
   ensureServerBootstrapToken,
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
@@ -151,7 +151,7 @@ async function fixture(kind: (typeof kinds)[number]) {
   const bootstrap = ensureServerBootstrapToken(coreDb);
   if (!bootstrap) throw new Error('Expected fresh Bootstrap owner.');
   writeServerBootstrapTokenEmission(dataRoot, bootstrap);
-  const operations = createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+  const operations = createCredentialOperationImplementations({ coreDb, mode: 'server' });
   const userId = allocateEntityId('usr');
   const owner = await operations['bootstrap.consume']({
     token: bootstrap.token,
@@ -182,7 +182,7 @@ async function fixture(kind: (typeof kinds)[number]) {
   const beforeHistory = listServerAuditEvents(coreDb).filter((event) => event.action === action);
   const invoke = (tokenId = target.record.tokenId) =>
     kind === 'revoke'
-      ? operations['token.revoke']({ tokenId }, context)
+      ? operations['credential.revoke']({ kind: 'access-token', id: tokenId }, context)
       : operations['token.rotate']({ tokenId, graceSeconds: 60 }, context);
   const hold = (mode: '' | 'ack' | 'request' = 'ack') => {
     const arrived = new Promise<void>((resolve) => {
@@ -272,7 +272,7 @@ it.each(kinds)(
     expect(fault.requests.length).toBe(1);
     expect(fault.auditPosts).toBe(1);
     expect(fault.inputFields.includes('secret')).toBe(false);
-    expect(Object.keys(outcome.value.record).includes('tokenHash')).toBe(false);
+    expect(JSON.stringify(outcome.value)).not.toContain('tokenHash');
     if (kind === 'rotate') {
       expect('rotatedRecord' in outcome.value).toBe(true);
       if (!('token' in outcome.value) || typeof outcome.value.token !== 'string')
@@ -436,9 +436,17 @@ it.each(['expired', 'rotated-with-grace'] as const)(
 it('a fresh repeated revoke preserves its original revocation timestamp and separate Audits', async () => {
   const f = await fixture('revoke');
   const first = await f.invoke();
+  expect(first.status).toBe('revoked');
+  const firstAt = listOpenKitAccessTokenRecords(f.coreDb).find(
+    (row) => row.tokenId === f.target.record.tokenId
+  )?.revokedAt;
+  expect(firstAt).not.toBeNull();
   const second = await f.invoke();
-  expect(first.record.revokedAt).not.toBeNull();
-  expect(second.record.revokedAt).toBe(first.record.revokedAt);
+  expect(second.status).toBe('revoked');
+  expect(
+    listOpenKitAccessTokenRecords(f.coreDb).find((row) => row.tokenId === f.target.record.tokenId)
+      ?.revokedAt
+  ).toBe(firstAt);
   expect(listOpenKitAccessTokenRecords(f.coreDb).length).toBe(f.before.length);
   expect(listServerAuditEvents(f.coreDb).filter((event) => event.action === f.action).length).toBe(
     f.beforeHistory.length + 2

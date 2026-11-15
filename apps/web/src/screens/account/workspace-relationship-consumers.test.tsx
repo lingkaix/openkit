@@ -142,7 +142,7 @@ function renderConsumers(
       ...baseClient.operations,
       'conversation.navigation': vi.fn().mockResolvedValue({ items: [] }),
       'thread.list': listThreads,
-      'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      'credential.list': vi.fn().mockResolvedValue({ items: [], canManageServerCredentials: true }),
       'worker-environment.list': vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     },
   };

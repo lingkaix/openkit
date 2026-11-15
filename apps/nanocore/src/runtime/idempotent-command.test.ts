@@ -4,12 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { listOpenKitAccessTokenRecords } from '../auth/access-token-store.js';
 import {
   ensureServerBootstrapToken,
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type CommandRequestScope, FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -170,7 +170,7 @@ describe('workspace-transaction idempotent commands', () => {
       if (!bootstrap) throw new Error('Expected isolated Bootstrap admission.');
       writeServerBootstrapTokenEmission(dataRoot, bootstrap);
       const userId = allocateEntityId('usr');
-      const owner = await createAccessTokenOperationImplementations({ coreDb, mode: 'server' })[
+      const owner = await createCredentialOperationImplementations({ coreDb, mode: 'server' })[
         'bootstrap.consume'
       ]({
         token: bootstrap.token,

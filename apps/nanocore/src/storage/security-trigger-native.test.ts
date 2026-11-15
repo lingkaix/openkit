@@ -8,12 +8,12 @@ import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession, ensureLocalUser } from '../auth/identity.js';
 import { createCatalogOperationImplementations } from '../catalog/catalog-operations.js';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
@@ -145,7 +145,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb);
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     async reopen() {
       await close();
@@ -413,8 +413,8 @@ describe('N1 real-native Server security trigger authority and alarms', () => {
       if (loss === 'credential revocation') {
         const revoked = await f
           .tokens()
-          ['token.revoke']({ tokenId: s.ownerTokenId }, context(s.backup));
-        assert.equal(revoked.record.status, 'revoked');
+          ['credential.revoke']({ kind: 'access-token', id: s.ownerTokenId }, context(s.backup));
+        assert.equal(revoked.status, 'revoked');
       } else {
         const operations = createWorkspaceSharingOperationImplementations({
           coreDb: f.db,

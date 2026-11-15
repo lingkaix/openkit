@@ -4,8 +4,6 @@ import {
   DecommissionNanoHostResponseSchema,
   EnrollNanoHostResponseSchema,
   IssueNanoHostTransportTokenResponseSchema,
-  ListNanoHostTransportTokensResponseSchema,
-  RevokeNanoHostTransportTokenResponseSchema,
   RotateNanoHostTransportTokenResponseSchema,
 } from '@openkit/app-api-schemas';
 import type { OpenKitNanoHostConfig } from '@openkit/config-schema';
@@ -55,6 +53,104 @@ import {
   submitNanoHostTransportEnrollment,
   submitNanoHostTransportRevocation,
 } from './nanohost-transport-token-store.js';
+
+/** Revokes through the original writer, physical fencing and awaited lifecycle Audit. */
+export async function revokeNanoHostInboundCredential(
+  {
+    coreDb,
+    mode,
+    sessionAuthority,
+  }: {
+    readonly coreDb: CoreDb | undefined;
+    readonly mode: CoreMode;
+    readonly sessionAuthority?: NanoHostTransportSessionAuthority;
+  },
+  tokenId: string,
+  context: AdmittedOperationContext
+): Promise<void> {
+  const actor = context.actorRef;
+  if (mode !== 'server' || !coreDb)
+    throw new OperationError(
+      'nanohost_transport_storage_unavailable',
+      'NanoHost transport administration is unavailable.',
+      mode === 'server' ? 503 : 404
+    );
+
+  const admin = { ...publicOperationActor(context) };
+  const beforeSubmit = context.recheckAdmission;
+  let record: NanoHostTransportTokenRecord | null;
+  if (sessionAuthority) {
+    const prior = getNanoHostTransportTokenRecord(coreDb!, tokenId);
+    const writer = await prepareNanoHostTransportWriter(coreDb!);
+    await beforeSubmit?.();
+    try {
+      record = await submitNanoHostTransportRevocation(writer, tokenId, {}, admin);
+    } catch (error) {
+      if (nanoHostTransportCommitState(error) === 'unknown' && prior) {
+        try {
+          await fenceNanoHostTransportAuthority(
+            coreDb!,
+            sessionAuthority,
+            prior.ownerNanoHostIdentityId,
+            new Date().toISOString()
+          );
+        } catch {
+          // Process fencing ran first; readiness failure must preserve the original unknown commit.
+        }
+      }
+      throw error;
+    }
+    if (record)
+      await fenceNanoHostTransportAuthority(
+        coreDb!,
+        sessionAuthority,
+        record.ownerNanoHostIdentityId,
+        new Date().toISOString()
+      );
+  } else {
+    record = await revokeNanoHostTransportTokenRecord(coreDb!, tokenId, {}, admin, beforeSubmit);
+  }
+  if (!record) {
+    return failure(
+      'NanoHost transport token not found.',
+      'nanohost_transport_token_not_found',
+      404
+    );
+  }
+
+  await recordNanoHostTransportLifecycleAuditEvent(
+    coreDb!,
+    'nanohost.transport.revoke',
+    record,
+    actor.id
+  );
+}
+
+/**
+ * Records a server audit event for one successful NanoHost transport lifecycle operation.
+ *
+ * @param coreDb Server database that owns the event.
+ * @param action Stable NanoHost transport lifecycle action.
+ * @param record Redacted token record affected by the operation.
+ * @param actorUserId User id that requested the operation when authenticated.
+ */
+async function recordNanoHostTransportLifecycleAuditEvent(
+  coreDb: CoreDb,
+  action:
+    | 'nanohost.transport.enroll'
+    | 'nanohost.transport.issue'
+    | 'nanohost.transport.revoke'
+    | 'nanohost.transport.rotate',
+  record: NanoHostTransportTokenRecord,
+  actorUserId: string | null
+): Promise<void> {
+  await recordNanoHostTransportAudit(coreDb, {
+    kind: 'lifecycle-audit',
+    action,
+    record,
+    actorUserId,
+  });
+}
 
 /** Exact native NanoHost handler signatures; facts remain in the browser-safe family table. */
 type NanoHostImplementations = FamilyImplementations<typeof NANOHOST_OPERATION_DEFINITIONS>;
@@ -115,32 +211,6 @@ export function createNanoHostOperationImplementations({
       }
     }
     return null;
-  }
-
-  /**
-   * Records a server audit event for one successful NanoHost transport lifecycle operation.
-   *
-   * @param coreDb Server database that owns the event.
-   * @param action Stable NanoHost transport lifecycle action.
-   * @param record Redacted token record affected by the operation.
-   * @param actorUserId User id that requested the operation when authenticated.
-   */
-  async function recordNanoHostTransportLifecycleAuditEvent(
-    coreDb: CoreDb,
-    action:
-      | 'nanohost.transport.enroll'
-      | 'nanohost.transport.issue'
-      | 'nanohost.transport.revoke'
-      | 'nanohost.transport.rotate',
-    record: NanoHostTransportTokenRecord,
-    actorUserId: string | null
-  ): Promise<void> {
-    await recordNanoHostTransportAudit(coreDb, {
-      kind: 'lifecycle-audit',
-      action,
-      record,
-      actorUserId,
-    });
   }
 
   /** Rechecks current credential facts immediately before a later Main sink effect. */
@@ -342,14 +412,6 @@ export function createNanoHostOperationImplementations({
       return observation.status;
     },
 
-    'nanohost.token-list': () => {
-      requireNanoHostEnvironment();
-
-      return ListNanoHostTransportTokensResponseSchema.parse({
-        items: listNanoHostTransportTokenRecords(coreDb!),
-      });
-    },
-
     'nanohost.token-issue': async (input, context) => {
       const actor = context.actorRef;
       requireNanoHostEnvironment();
@@ -401,69 +463,6 @@ export function createNanoHostOperationImplementations({
           400
         );
       }
-    },
-
-    'nanohost.token-revoke': async (input, context) => {
-      const actor = context.actorRef;
-      requireNanoHostEnvironment();
-
-      const tokenId = input.tokenId;
-      const admin = { ...publicOperationActor(context) };
-      const beforeSubmit = context.recheckAdmission;
-      let record: NanoHostTransportTokenRecord | null;
-      if (sessionAuthority) {
-        const prior = getNanoHostTransportTokenRecord(coreDb!, tokenId);
-        const writer = await prepareNanoHostTransportWriter(coreDb!);
-        await beforeSubmit?.();
-        try {
-          record = await submitNanoHostTransportRevocation(writer, tokenId, {}, admin);
-        } catch (error) {
-          if (nanoHostTransportCommitState(error) === 'unknown' && prior) {
-            try {
-              await fenceNanoHostTransportAuthority(
-                coreDb!,
-                sessionAuthority,
-                prior.ownerNanoHostIdentityId,
-                new Date().toISOString()
-              );
-            } catch {
-              // Process fencing ran first; readiness failure must preserve the original unknown commit.
-            }
-          }
-          throw error;
-        }
-        if (record)
-          await fenceNanoHostTransportAuthority(
-            coreDb!,
-            sessionAuthority,
-            record.ownerNanoHostIdentityId,
-            new Date().toISOString()
-          );
-      } else {
-        record = await revokeNanoHostTransportTokenRecord(
-          coreDb!,
-          tokenId,
-          {},
-          admin,
-          beforeSubmit
-        );
-      }
-      if (!record) {
-        return failure(
-          'NanoHost transport token not found.',
-          'nanohost_transport_token_not_found',
-          404
-        );
-      }
-
-      await recordNanoHostTransportLifecycleAuditEvent(
-        coreDb!,
-        'nanohost.transport.revoke',
-        record,
-        actor.id
-      );
-
-      return RevokeNanoHostTransportTokenResponseSchema.parse({ record });
     },
 
     'nanohost.token-rotate': async (input, context) => {

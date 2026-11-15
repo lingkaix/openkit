@@ -145,7 +145,7 @@ it.each(['token', 'session'] as const)(
       expect(current()).toBe(kind === 'token' ? 'member' : 'administrator');
       const revoked =
         kind === 'token'
-          ? await command('token.revoke', { tokenId: client.record.tokenId })
+          ? await command('credential.revoke', { kind: 'access-token', id: client.record.tokenId })
           : await auth.handler(
               new Request(`${base}/api/auth/revoke-session`, {
                 method: 'POST',

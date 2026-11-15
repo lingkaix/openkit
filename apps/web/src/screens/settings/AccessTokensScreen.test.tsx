@@ -7,7 +7,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { AccessTokensScreen } from './AccessTokensScreen';
 
 const TIMESTAMP = '2026-08-30T00:00:00.000Z';
-const RAW_TOKEN = 'okt_issued_once_never_cached';
+const RAW_TOKEN = 'okt_FAKE_3';
 const RECORD = {
   tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
   ownerUserId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f',
@@ -45,17 +45,16 @@ const NANOHOST_TOKEN = {
 function makeClient(app: Partial<CoreClient['operations']> = {}): CoreClient {
   return {
     operations: {
-      'token.list': vi.fn().mockResolvedValue({ items: [RECORD] }),
+      'credential.list': vi.fn().mockResolvedValue({
+        canManageServerCredentials: true,
+        items: [{ kind: 'access-token', id: RECORD.tokenId, record: RECORD, integrationId: null }],
+      }),
       'token.create': vi.fn().mockResolvedValue({ token: RAW_TOKEN, record: RECORD }),
-      'token.revoke': vi.fn().mockResolvedValue({ record: { ...RECORD, status: 'revoked' } }),
+      'credential.revoke': vi.fn().mockResolvedValue({ status: 'revoked' }),
       'token.rotate': vi.fn().mockResolvedValue({
         token: RAW_TOKEN,
         record: { ...RECORD, tokenId: 'tok_00000000-0000-7c9e-a136-86e094ee0dc9' },
         rotatedRecord: { ...RECORD, status: 'rotated' },
-      }),
-      'nanohost.token-list': vi.fn().mockResolvedValue({ items: [] }),
-      'nanohost.token-revoke': vi.fn().mockResolvedValue({
-        record: { ...NANOHOST_TOKEN, status: 'revoked' },
       }),
       ...app,
     },
@@ -129,8 +128,9 @@ describe('Access tokens administration', () => {
     expect(screen.getByText('tok_00000000-0000-71d2-a336-a862021357ff')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Revoke' }));
     await waitFor(() =>
-      expect(client.operations['token.revoke']).toHaveBeenCalledWith({
-        tokenId: 'tok_00000000-0000-71d2-a336-a862021357ff',
+      expect(client.operations['credential.revoke']).toHaveBeenCalledWith({
+        kind: 'access-token',
+        id: 'tok_00000000-0000-71d2-a336-a862021357ff',
       })
     );
 
@@ -161,7 +161,7 @@ describe('Access tokens administration', () => {
     const listOpenKitAccessTokens = vi
       .fn()
       .mockRejectedValue(new ApiCallError(403, 'deployment admin required', { code: 'forbidden' }));
-    renderScreen(makeClient({ 'token.list': listOpenKitAccessTokens }));
+    renderScreen(makeClient({ 'credential.list': listOpenKitAccessTokens }));
 
     expect(await screen.findByText('Access denied')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Issue token' })).not.toBeInTheDocument();
@@ -170,42 +170,62 @@ describe('Access tokens administration', () => {
     await waitFor(() => expect(listOpenKitAccessTokens).toHaveBeenCalledTimes(2));
   });
 
-  it('explains that access tokens exist only in server mode', async () => {
-    renderScreen(
-      makeClient({
-        'token.list': vi.fn().mockRejectedValue(
-          new ApiCallError(404, 'Access-token administration is only available in server mode.', {
-            code: 'access_token_admin_server_mode_required',
-          })
-        ),
+  it('shows ordinary users their own sessions, pairing and runs without administrator issuance', async () => {
+    const user = userEvent.setup();
+    const client = makeClient({
+      'credential.list': vi.fn().mockResolvedValue({
+        canManageServerCredentials: false,
+        items: [
+          {
+            kind: 'auth-session',
+            id: 'auth_owned',
+            current: true,
+            status: 'active',
+            issuedAt: TIMESTAMP,
+            expiresAt: TIMESTAMP,
+          },
+          { kind: 'discord-pairing', id: 'pairing_owned', issuedAt: TIMESTAMP },
+          { kind: 'worker-run', id: 'run_owned', status: 'open', issuedAt: TIMESTAMP },
+        ],
+      }),
+    });
+    renderScreen(client);
+    await user.click(await screen.findByRole('button', { name: 'Records' }));
+    expect(screen.getByText('Web session (current)')).toBeInTheDocument();
+    expect(screen.getByText('Discord pairing')).toBeInTheDocument();
+    expect(screen.getByText('Worker run')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Issue token' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'End run' }));
+    await waitFor(() =>
+      expect(client.operations['credential.revoke']).toHaveBeenCalledWith({
+        kind: 'worker-run',
+        id: 'run_owned',
       })
     );
-
-    expect(
-      await screen.findByText('Access tokens are used only when OpenKit runs as a server.')
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Couldn't load access tokens.")).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Issue token' })).not.toBeInTheDocument();
   });
 
   it('lists a NanoHost transport token and revokes it only after review', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      'nanohost.token-list': vi.fn().mockResolvedValue({ items: [NANOHOST_TOKEN] }),
+      'credential.list': vi.fn().mockResolvedValue({
+        canManageServerCredentials: true,
+        items: [{ kind: 'nanohost-transport', id: NANOHOST_TOKEN.tokenId, record: NANOHOST_TOKEN }],
+      }),
     });
     renderScreen(client);
 
-    const section = await screen.findByRole('region', { name: 'NanoHost transport tokens' });
+    const section = document.body;
     await user.click(await within(section).findByRole('button', { name: 'Records' }));
     expect(
       within(section).getByText('nhtok_00000000-0000-7000-8000-000000000001')
     ).toBeInTheDocument();
     await user.click(within(section).getByRole('button', { name: 'Review revoke' }));
-    expect(client.operations['nanohost.token-revoke']).not.toHaveBeenCalled();
+    expect(client.operations['credential.revoke']).not.toHaveBeenCalled();
     await user.click(within(section).getByRole('button', { name: 'Revoke transport token' }));
     await waitFor(() =>
-      expect(client.operations['nanohost.token-revoke']).toHaveBeenCalledWith({
-        tokenId: 'nhtok_00000000-0000-7000-8000-000000000001',
+      expect(client.operations['credential.revoke']).toHaveBeenCalledWith({
+        kind: 'nanohost-transport',
+        id: 'nhtok_00000000-0000-7000-8000-000000000001',
       })
     );
   });
@@ -213,55 +233,42 @@ describe('Access tokens administration', () => {
   it('keeps a NanoHost transport token when review is cancelled', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      'nanohost.token-list': vi.fn().mockResolvedValue({ items: [NANOHOST_TOKEN] }),
+      'credential.list': vi.fn().mockResolvedValue({
+        canManageServerCredentials: true,
+        items: [{ kind: 'nanohost-transport', id: NANOHOST_TOKEN.tokenId, record: NANOHOST_TOKEN }],
+      }),
     });
     renderScreen(client);
 
-    const section = await screen.findByRole('region', { name: 'NanoHost transport tokens' });
+    const section = document.body;
     await user.click(await within(section).findByRole('button', { name: 'Records' }));
     await user.click(within(section).getByRole('button', { name: 'Review revoke' }));
     await user.click(within(section).getByRole('button', { name: 'Keep transport token' }));
     expect(
       within(section).queryByRole('button', { name: 'Revoke transport token' })
     ).not.toBeInTheDocument();
-    expect(client.operations['nanohost.token-revoke']).not.toHaveBeenCalled();
+    expect(client.operations['credential.revoke']).not.toHaveBeenCalled();
   });
 
   it('does not offer revoke for an already revoked NanoHost transport token', async () => {
     const user = userEvent.setup();
     const client = makeClient({
-      'nanohost.token-list': vi.fn().mockResolvedValue({
-        items: [{ ...NANOHOST_TOKEN, status: 'revoked' }],
+      'credential.list': vi.fn().mockResolvedValue({
+        canManageServerCredentials: true,
+        items: [
+          {
+            kind: 'nanohost-transport',
+            id: NANOHOST_TOKEN.tokenId,
+            record: { ...NANOHOST_TOKEN, status: 'revoked' },
+          },
+        ],
       }),
     });
     renderScreen(client);
 
-    const section = await screen.findByRole('region', { name: 'NanoHost transport tokens' });
+    const section = document.body;
     await user.click(await within(section).findByRole('button', { name: 'Records' }));
     expect(within(section).getByRole('button', { name: 'Review revoke' })).toBeDisabled();
-  });
-
-  it('explains that NanoHost transport tokens exist only in server mode', async () => {
-    renderScreen(
-      makeClient({
-        'nanohost.token-list': vi
-          .fn()
-          .mockRejectedValue(
-            new ApiCallError(
-              404,
-              'NanoHost transport administration is only available in server mode.',
-              { code: 'nanohost_transport_admin_server_mode_required' }
-            )
-          ),
-      })
-    );
-
-    expect(
-      await screen.findByText(
-        'NanoHost transport tokens are used only when OpenKit runs as a server.'
-      )
-    ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Review revoke' })).not.toBeInTheDocument();
   });
 
   it('shows a denied phone revoke inside the Records dialog and keeps access tokens', async () => {
@@ -279,19 +286,24 @@ describe('Access tokens administration', () => {
     })) as typeof window.matchMedia;
     try {
       const client = makeClient({
-        'nanohost.token-list': vi.fn().mockResolvedValue({ items: [NANOHOST_TOKEN] }),
-        'nanohost.token-revoke': vi
+        'credential.list': vi.fn().mockResolvedValue({
+          canManageServerCredentials: true,
+          items: [
+            { kind: 'nanohost-transport', id: NANOHOST_TOKEN.tokenId, record: NANOHOST_TOKEN },
+          ],
+        }),
+        'credential.revoke': vi
           .fn()
           .mockRejectedValue(
             new ApiCallError(403, 'deployment admin required', { code: 'forbidden' })
           ),
       });
       renderScreen(client);
-      const section = await screen.findByRole('region', { name: 'NanoHost transport tokens' });
+      const section = document.body;
       await waitFor(() =>
         expect(within(section).queryByLabelText('Search')).not.toBeInTheDocument()
       );
-      await user.click(within(section).getByRole('button', { name: 'Records' }));
+      await user.click(await within(section).findByRole('button', { name: 'Records' }));
       const dialog = await screen.findByRole('dialog', { name: 'Records' });
       await user.click(within(dialog).getByRole('button', { name: 'Review revoke' }));
       await user.click(within(dialog).getByRole('button', { name: 'Revoke transport token' }));
@@ -302,9 +314,9 @@ describe('Access tokens administration', () => {
       expect(within(dialog).getByText(NANOHOST_TOKEN.tokenId)).toBeInTheDocument();
       expect(within(dialog).queryByText(RECORD.tokenId)).not.toBeInTheDocument();
       expect(
-        screen.getByRole('heading', { name: 'Access tokens', hidden: true })
+        screen.getByRole('heading', { name: 'Credentials', hidden: true })
       ).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Issue token', hidden: true })).toBeInTheDocument();
+
       expect(
         screen
           .getAllByRole('button', { name: 'Records', hidden: true })

@@ -138,16 +138,6 @@ export const IssueNanoHostTransportTokenResponseSchema = z
     addRawSecretIssues(value, ctx, []);
   });
 
-/** NanoHost transport Token list response. */
-export const ListNanoHostTransportTokensResponseSchema = z
-  .object({
-    items: z.array(NanoHostTransportTokenRecordSchema),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
 /** NanoHost transport Token rotation request. */
 export const RotateNanoHostTransportTokenRequestSchema = z
   .object({
@@ -195,16 +185,6 @@ export const DecommissionNanoHostResponseSchema = z
   })
   .strict();
 
-/** NanoHost transport Token revocation response. */
-export const RevokeNanoHostTransportTokenResponseSchema = z
-  .object({
-    record: NanoHostTransportTokenRecordSchema,
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
 /** Closed NanoHost transport Token type. */
 export type NanoHostTransportTokenType = z.infer<typeof NanoHostTransportTokenTypeSchema>;
 /** Closed NanoHost transport Token scope. */
@@ -233,10 +213,6 @@ export type IssueNanoHostTransportTokenRequest = z.infer<
 export type IssueNanoHostTransportTokenResponse = z.infer<
   typeof IssueNanoHostTransportTokenResponseSchema
 >;
-/** NanoHost transport Token list response. */
-export type ListNanoHostTransportTokensResponse = z.infer<
-  typeof ListNanoHostTransportTokensResponseSchema
->;
 /** NanoHost transport Token rotation request. */
 export type RotateNanoHostTransportTokenRequest = z.infer<
   typeof RotateNanoHostTransportTokenRequestSchema
@@ -251,7 +227,3 @@ export type AbortNanoHostTransportRotationResponse = z.infer<
 >;
 /** Configured NanoHost decommission response. */
 export type DecommissionNanoHostResponse = z.infer<typeof DecommissionNanoHostResponseSchema>;
-/** NanoHost transport Token revocation response. */
-export type RevokeNanoHostTransportTokenResponse = z.infer<
-  typeof RevokeNanoHostTransportTokenResponseSchema
->;

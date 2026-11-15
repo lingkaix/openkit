@@ -514,7 +514,11 @@ describe('E13 native current resource availability', () => {
       f
         .graph()
         .app.request(
-          ...operationRequest('token.list', {}, { headers: f.callers['ordinary scoped bearer']! })
+          ...operationRequest(
+            'credential.list',
+            {},
+            { headers: f.callers['ordinary scoped bearer']! }
+          )
         );
     expect((await forbidden()).status).toBe(403);
     await f.change(document(control(f.first.userId, 'inactive')));
@@ -646,8 +650,8 @@ describe('E13 native current resource availability', () => {
       .graph()
       .app.request(
         ...operationRequest(
-          'token.revoke',
-          { tokenId: f.first.bootstrap!.tokenId },
+          'credential.revoke',
+          { kind: 'access-token', id: f.first.bootstrap!.tokenId },
           { headers: { cookie: f.second.cookie } }
         )
       );

@@ -3,6 +3,7 @@ import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { isRecord } from '@openkit/protocol';
 import { createAdapterFactory } from 'better-auth/adapters';
 import { APIError } from 'better-auth/api';
+import { OperationError } from '../operation-error.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import * as schema from '../storage/schema/better-auth/index.js';
@@ -65,6 +66,8 @@ export async function commitBetterAuthStage(coreDb: CoreDb, input: ControlBetter
   } catch (error) {
     if (!(error instanceof BetterAuthNativeError)) throw error;
     const refusal = BETTER_AUTH_REFUSALS[error.code];
+    if (input.kind === 'session-owned-delete')
+      throw new OperationError(error.code, refusal.message, refusal.status, { cause: error });
     throw new APIError(
       refusal.status === 403
         ? 'FORBIDDEN'

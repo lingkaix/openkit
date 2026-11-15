@@ -269,8 +269,11 @@ describe('E11 original native MCP client binding and issuer-chain consumers', ()
       expect((await f.read(first.token)).status).toBe(200);
       expect((await f.read(rotated.token)).status).toBe(200);
       await f.command(
-        'token.revoke',
-        { tokenId: selected === 'predecessor' ? first.record.tokenId : rotated.record.tokenId },
+        'credential.revoke',
+        {
+          kind: 'access-token',
+          id: selected === 'predecessor' ? first.record.tokenId : rotated.record.tokenId,
+        },
         f.session(f.owner)
       );
       expect((await f.read(first.token)).status).toBe(401);
@@ -434,7 +437,11 @@ describe('E11 original native MCP client binding and issuer-chain consumers', ()
     });
     expect((await f.read(rotated.token)).status).toBe(200);
     await f.nativeMcpEffect(rotated, principal);
-    await f.command('token.revoke', { tokenId: ancestor.record.tokenId }, f.session(f.issuer));
+    await f.command(
+      'credential.revoke',
+      { kind: 'access-token', id: ancestor.record.tokenId },
+      f.session(f.issuer)
+    );
     expect((await f.read(rotated.token)).status).toBe(401);
     expect((await f.message(rotated.token, 'tools/list', {})).status).toBe(401);
     // Separate branch: a DIFFERENT issuer User becomes disabled while Token owner remains current.

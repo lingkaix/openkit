@@ -1,15 +1,25 @@
+import { randomUUID } from 'node:crypto';
 import type {
   ACCESS_TOKEN_OPERATION_DEFINITIONS,
+  INBOUND_CREDENTIAL_OPERATION_DEFINITIONS,
+  InboundCredentialRecord,
   OpenKitAccessTokenRecord as PublicOpenKitAccessTokenRecord,
 } from '@openkit/app-api-schemas';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, responsibleUserIdForActor } from '@openkit/protocol';
 import { prepareServerAuditEvent } from '../audit-events.js';
+import { readDiscordAccountBinding, revokeDiscordAccountBinding } from '../channels/discord.js';
 import type { CoreMode } from '../config/mode.js';
+import type { FsStore } from '../lib/store.js';
 import { type FamilyImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import type { TurnExecutor } from '../runtime/types.js';
+import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
+import { findSchedulerAdmissionForTurn } from '../scheduler-records.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
+import { interruptProductTurn } from '../turn-routes.js';
 import { resolveWorkspaceMembershipRelation } from '../workspace-sharing.js';
 import {
   AccessTokenScopeError,
@@ -19,13 +29,19 @@ import {
 } from './access-token.js';
 import type { ControlAccessTokenLifecycleResult } from './access-token-lifecycle-codecs.js';
 import {
+  getOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
   listOwnedServerAdminAccessTokens,
   type OpenKitAccessTokenRecord,
 } from './access-token-store.js';
 import { auditAuthenticationFromActor } from './audit-attribution.js';
+import { commitBetterAuthStage } from './better-auth-adapter.js';
 import { consumeServerBootstrapToken } from './bootstrap-token.js';
 import type { Actor } from './identity.js';
+import { revokeNanoHostInboundCredential } from './nanohost-operations.js';
+import type { NanoHostTransportSessionAuthority } from './nanohost-transport-session.js';
+import { listNanoHostTransportTokenRecords } from './nanohost-transport-token-store.js';
+import { isCurrentDeploymentAdministrator } from './operation-authorizer.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 /**
@@ -144,14 +160,20 @@ function publicOwnedAdminTokens(coreDb: CoreDb, userId: string) {
   return { defaultTokenId: listed.defaultTokenId, items: listed.items.map(publicTokenRecord) };
 }
 
-/** Joins the human credential family to the existing token, bootstrap, membership and audit owners. */
-export function createAccessTokenOperationImplementations({
-  coreDb,
-  mode,
-}: {
+/** Existing owners supplied by App assembly, without another credential registry. */
+export interface InboundCredentialOwners {
   readonly coreDb: CoreDb | undefined;
   readonly mode: CoreMode;
-}) {
+  readonly store?: FsStore;
+  readonly workerControlGateway?: WorkerControlGateway;
+  readonly turnExecutor?: TurnExecutor;
+  readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
+  readonly nanoHostSessionAuthority?: NanoHostTransportSessionAuthority;
+}
+
+/** Joins the human credential family to the existing token, bootstrap, membership and audit owners. */
+export function createCredentialOperationImplementations(owners: InboundCredentialOwners) {
+  const { coreDb, mode } = owners;
   const storage = () => {
     if (!coreDb)
       throw new OperationError(
@@ -170,7 +192,160 @@ export function createAccessTokenOperationImplementations({
       );
     return storage();
   };
+  const missing = () => new OperationError('credential_not_found', 'Credential not found.', 404);
+  const runs = (userId: string) =>
+    owners.workerControlGateway?.listCredentialRuns().filter((run) => {
+      const admission = findSchedulerAdmissionForTurn(storage(), run);
+      return admission && responsibleUserIdForActor(admission.triggerActor) === userId;
+    }) ?? [];
   return {
+    'credential.list': (_input, context) => {
+      const actor = publicOperationActor(context);
+      const db = storage();
+      const administrator = owners.mode === 'server' && isCurrentDeploymentAdministrator(db, actor);
+      const items: InboundCredentialRecord[] = listOpenKitAccessTokenRecords(db)
+        .filter((record) => administrator || record.ownerUserId === actor.userId)
+        .map((record) => ({
+          kind: 'access-token',
+          id: record.tokenId,
+          record: publicTokenRecord(record),
+          integrationId: record.principalRef?.id ?? null,
+        }));
+      const sessions = db.sqlite
+        .prepare(
+          'SELECT id, created_at AS issuedAt, expires_at AS expiresAt FROM session WHERE user_id = ? ORDER BY created_at, id'
+        )
+        .all(actor.userId) as { id: string; issuedAt: number; expiresAt: number }[];
+      for (const session of sessions)
+        items.push({
+          kind: 'auth-session',
+          id: session.id,
+          issuedAt: new Date(session.issuedAt).toISOString(),
+          expiresAt: new Date(session.expiresAt).toISOString(),
+          status: session.expiresAt > Date.now() ? 'active' : 'expired',
+          current: actor.kind === 'session' && actor.sessionId === session.id,
+        });
+      const binding = readDiscordAccountBinding(db.sqlite, actor.userId);
+      if (binding)
+        items.push({
+          kind: 'discord-pairing',
+          id: binding.revision,
+          issuedAt: new Date(binding.pairedAt).toISOString(),
+        });
+      for (const run of runs(actor.userId)) {
+        const turn = owners.store?.getTurnById(run.turnId);
+        items.push({
+          kind: 'worker-run',
+          id: run.turnId,
+          workspaceId: run.workspaceId,
+          threadId: run.threadId,
+          turnId: run.turnId,
+          agentSessionId: run.agentSessionId,
+          status:
+            turn && ['completed', 'failed', 'interrupted'].includes(turn.status)
+              ? 'closing'
+              : 'open',
+          issuedAt: run.registeredAt,
+          expiresAt: null,
+        });
+      }
+      if (administrator)
+        for (const record of listNanoHostTransportTokenRecords(db))
+          items.push({ kind: 'nanohost-transport', id: record.tokenId, record });
+      return { items, canManageServerCredentials: administrator };
+    },
+    'credential.revoke': async (input, context) => {
+      const actor = publicOperationActor(context);
+      const db = storage();
+      switch (input.kind) {
+        case 'access-token': {
+          const current = getOpenKitAccessTokenRecord(db, input.id);
+          const administrator =
+            owners.mode === 'server' && isCurrentDeploymentAdministrator(db, actor);
+          if (!current || (current.ownerUserId !== actor.userId && !administrator)) throw missing();
+          const result = requireTokenLifecycleResult(
+            await getControlStoreWorkerClient().accessTokenLifecycle(db, {
+              kind: 'revoke',
+              actor: presentControlFacts(actor),
+              tokenId: input.id,
+            })
+          );
+          if (result.kind !== 'revoke' || !result.record) throw missing();
+          await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.revoke', result.record, actor);
+          return { status: 'revoked' as const };
+        }
+        case 'auth-session': {
+          const current = db.sqlite
+            .prepare('SELECT id FROM session WHERE id = ? AND user_id = ?')
+            .get(input.id, actor.userId);
+          if (!current) throw missing();
+          await commitBetterAuthStage(db, {
+            kind: 'session-owned-delete',
+            sessionId: input.id,
+            requestActor: presentControlFacts(actor),
+          });
+          return { status: 'revoked' as const };
+        }
+        case 'discord-pairing': {
+          const binding = readDiscordAccountBinding(db.sqlite, actor.userId);
+          if (!binding || binding.revision !== input.id) throw missing();
+          await revokeDiscordAccountBinding(db, actor.userId, {
+            revision: input.id,
+            actor: presentControlFacts(actor),
+          });
+          return { status: 'revoked' as const };
+        }
+        case 'nanohost-transport': {
+          if (owners.mode !== 'server' || !isCurrentDeploymentAdministrator(db, actor))
+            throw missing();
+          await revokeNanoHostInboundCredential(
+            {
+              coreDb: db,
+              mode: owners.mode,
+              ...(owners.nanoHostSessionAuthority
+                ? { sessionAuthority: owners.nanoHostSessionAuthority }
+                : {}),
+            },
+            input.id,
+            context
+          );
+          return { status: 'revoked' as const };
+        }
+        case 'worker-run': {
+          const run = runs(actor.userId).find((run) => run.turnId === input.id);
+          if (!run) throw missing();
+          if (!owners.store || !owners.turnExecutor || !owners.inflightCommands)
+            throw new OperationError(
+              'operation_storage_unavailable',
+              'Worker cancellation is unavailable.',
+              503
+            );
+          await context.recheckAdmission?.();
+          if (
+            ['completed', 'failed', 'interrupted'].includes(
+              owners.store.getTurnById(run.turnId).status
+            )
+          )
+            return { status: 'ending' as const };
+          await interruptProductTurn({
+            store: owners.store,
+            coreDb: db,
+            inflightCommands: owners.inflightCommands,
+            turnExecutor: owners.turnExecutor,
+            workspaceId: run.workspaceId,
+            threadId: run.threadId,
+            turnId: run.turnId,
+            requestId: randomUUID(),
+            actor: context.actorRef,
+          });
+          return {
+            status: owners.workerControlGateway?.getSessionSnapshot(run.packageSnapshotId)
+              ? ('ending' as const)
+              : ('revoked' as const),
+          };
+        }
+      }
+    },
     'bootstrap.consume': async (input) => {
       if (mode !== 'server')
         throw new OperationError(
@@ -217,9 +392,6 @@ export function createAccessTokenOperationImplementations({
       });
       return { record: publicTokenRecord(consumed.record), token: consumed.secret };
     },
-    'token.list': () => ({
-      items: listOpenKitAccessTokenRecords(administratorStorage()).map(publicTokenRecord),
-    }),
     'token.create': async (input, context) => {
       const db = administratorStorage();
       const actor = publicOperationActor(context);
@@ -278,24 +450,6 @@ export function createAccessTokenOperationImplementations({
       await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.issue', record, actor);
       return { record: publicTokenRecord(record), token: secret };
     },
-    'token.revoke': async (input, context) => {
-      const db = administratorStorage();
-      const actor = publicOperationActor(context);
-      const mutation = requireTokenLifecycleResult(
-        await getControlStoreWorkerClient().accessTokenLifecycle(db, {
-          kind: 'revoke',
-          actor: presentControlFacts(actor),
-          tokenId: input.tokenId,
-        })
-      );
-      if (mutation.kind !== 'revoke')
-        throw new Error('Unexpected canonical token mutation result.');
-      const record = mutation.record;
-      if (!record)
-        throw new OperationError('access_token_not_found', 'Access token not found.', 404);
-      await recordAccessTokenLifecycleAuditEvent(db, 'auth.token.revoke', record, actor);
-      return { record: publicTokenRecord(record) };
-    },
     'token.rotate': async (input, context) => {
       const db = administratorStorage();
       const actor = publicOperationActor(context);
@@ -346,5 +500,7 @@ export function createAccessTokenOperationImplementations({
         );
       return publicOwnedAdminTokens(db, actor.userId);
     },
-  } satisfies FamilyImplementations<typeof ACCESS_TOKEN_OPERATION_DEFINITIONS>;
+  } satisfies FamilyImplementations<
+    typeof ACCESS_TOKEN_OPERATION_DEFINITIONS & typeof INBOUND_CREDENTIAL_OPERATION_DEFINITIONS
+  >;
 }

@@ -27,7 +27,7 @@ function makeClient(
       meta: metaOk ? vi.fn().mockResolvedValue({}) : vi.fn().mockRejectedValue(new Error('down')),
     },
     operations: {
-      'token.list': vi.fn().mockRejectedValue(
+      'credential.list': vi.fn().mockRejectedValue(
         new ApiCallError(403, 'Server-admin authority is required.', {
           code: 'forbidden',
         })
@@ -249,7 +249,7 @@ describe('app shell — build-tier gating (DESIGN.md §11)', () => {
     expect(screen.getByRole('button', { name: 'App update' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Gateway' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Administration' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Access tokens' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Credentials' })).toBeInTheDocument();
   });
 
   it('shows current-workspace destinations once and switches authorized workspaces from the brand row', async () => {

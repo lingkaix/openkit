@@ -7,11 +7,11 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession, ensureLocalUser } from '../auth/identity.js';
 import { artifactReferenceItemId } from '../lib/artifact-reference-id.js';
 import { FsStore } from '../lib/store.js';
@@ -136,7 +136,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb);
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     async reopen() {
       await close();
@@ -415,7 +415,11 @@ describe('N3 genuine initial alarm publication and trusted original reader', () 
     const { f, admin, backup, adminTokenId } = await server();
     await f.trigger.enable(admin);
     assert.equal(
-      (await f.tokens()['token.revoke']({ tokenId: adminTokenId }, context(backup))).record.status,
+      (
+        await f
+          .tokens()
+          ['credential.revoke']({ kind: 'access-token', id: adminTokenId }, context(backup))
+      ).status,
       'revoked'
     );
     await assert.rejects(() => f.trigger.readAudit());
@@ -514,7 +518,11 @@ describe('N3 genuine initial alarm publication and trusted original reader', () 
       requestId: alarm.requestId,
     });
     assert.equal(
-      (await f.tokens()['token.revoke']({ tokenId: backupTokenId }, context(admin))).record.status,
+      (
+        await f
+          .tokens()
+          ['credential.revoke']({ kind: 'access-token', id: backupTokenId }, context(admin))
+      ).status,
       'revoked'
     );
     await assert.rejects(() => publish(f, alarm.requestId));

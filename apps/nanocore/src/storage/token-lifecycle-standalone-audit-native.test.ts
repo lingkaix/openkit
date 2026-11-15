@@ -7,12 +7,12 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId, isRecord } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { listOpenKitAccessTokenRecords } from '../auth/access-token-store.js';
 import {
   ensureServerBootstrapToken,
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -102,7 +102,7 @@ async function fixture(stage: (typeof stages)[number], refuseAuditSql = false) {
   const issued = ensureServerBootstrapToken(coreDb);
   if (!issued) throw new Error('Expected fresh isolated bootstrap');
   writeServerBootstrapTokenEmission(dataRoot, issued);
-  const operations = createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+  const operations = createCredentialOperationImplementations({ coreDb, mode: 'server' });
   const userId = allocateEntityId('usr');
   const owner = await operations['bootstrap.consume']({
     token: issued.token,
@@ -142,7 +142,10 @@ async function fixture(stage: (typeof stages)[number], refuseAuditSql = false) {
     stage === 'auth.token.issue'
       ? create()
       : stage === 'auth.token.revoke'
-        ? operations['token.revoke']({ tokenId: predecessor?.record.tokenId ?? '' }, context)
+        ? operations['credential.revoke'](
+            { kind: 'access-token', id: predecessor?.record.tokenId ?? '' },
+            context
+          )
         : operations['token.rotate'](
             { tokenId: predecessor?.record.tokenId ?? '', graceSeconds: 60 },
             context
@@ -244,7 +247,10 @@ it.each(stages)(
     const result = await f.result;
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(event.resource === `auth-token:${result.value.record.tokenId}`).toBe(true);
+    expect(
+      event.resource ===
+        `auth-token:${stage === 'auth.token.revoke' ? f.predecessor?.record.tokenId : result.value.record.tokenId}`
+    ).toBe(true);
     if (stage !== 'auth.token.revoke') {
       const secret = 'token' in result.value ? result.value.token : undefined;
       expect(typeof secret).toBe('string');

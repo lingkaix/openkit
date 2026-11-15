@@ -9,7 +9,6 @@ import { type AuditEvent, allocateEntityId, isRecord } from '@openkit/protocol';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { createServerMcpOperationImplementations } from '../administration/server-mcp-operations.js';
 import { listServerAuditEvents, prepareServerAuditEvent } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { listOpenKitAccessTokenRecords } from '../auth/access-token-store.js';
 import {
   consumeServerBootstrapToken,
@@ -17,6 +16,7 @@ import {
   isServerBootstrapComplete,
   writeServerBootstrapTokenEmission,
 } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
 import { ControlScalarTextSchema, readControlScalarText } from './control-store-input.js';
@@ -258,7 +258,7 @@ async function fixture() {
     password: randomUUID(),
     tokenExpiresAt: '2999-01-01T00:00:00.000Z',
   };
-  const operations = createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+  const operations = createCredentialOperationImplementations({ coreDb, mode: 'server' });
   const consume = () => {
     const result = operations['bootstrap.consume'](input);
     pending.push(result);

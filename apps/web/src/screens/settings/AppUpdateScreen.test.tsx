@@ -106,7 +106,7 @@ function makeClient(app: Partial<CoreClient['app'] & CoreClient['operations']> =
   return {
     app: { ...app },
     operations: {
-      'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      'credential.list': vi.fn().mockResolvedValue({ items: [], canManageServerCredentials: true }),
       'diagnostics.app': vi.fn().mockResolvedValue(DIAGNOSTICS),
       ...app,
       'app-update.prepare': vi.fn().mockResolvedValue(PREPARED),
@@ -147,12 +147,12 @@ describe('App update administration', () => {
     const first = renderScreen(client);
     await screen.findByRole('button', { name: 'Prepare' });
     first.unmount();
-    const pending = deferred<{ items: [] }>();
-    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+    const pending = deferred<{ items: []; canManageServerCredentials: boolean }>();
+    vi.mocked(client.operations['credential.list']).mockImplementationOnce(() => pending.promise);
     renderScreen(client, first.queryClient);
-    expect(client.operations['token.list']).toHaveBeenCalledTimes(2);
+    expect(client.operations['credential.list']).toHaveBeenCalledTimes(2);
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
-    await act(async () => pending.resolve({ items: [] }));
+    await act(async () => pending.resolve({ items: [], canManageServerCredentials: true }));
     expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
   });
 
@@ -164,7 +164,7 @@ describe('App update administration', () => {
     const pending = deferred<Awaited<ReturnType<CoreClient['operations']['diagnostics.app']>>>();
     vi.mocked(client.operations['diagnostics.app']).mockImplementationOnce(() => pending.promise);
     renderScreen(client, first.queryClient);
-    await waitFor(() => expect(client.operations['token.list']).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(client.operations['credential.list']).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(client.operations['diagnostics.app']).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('Service availability: available')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Prepare' })).toBeInTheDocument();
@@ -174,18 +174,18 @@ describe('App update administration', () => {
 
   it('does not admit a remount from an abandoned pending transport', async () => {
     const client = makeClient();
-    const abandoned = deferred<{ items: [] }>();
-    const current = deferred<{ items: [] }>();
-    vi.mocked(client.operations['token.list'])
+    const abandoned = deferred<{ items: []; canManageServerCredentials: boolean }>();
+    const current = deferred<{ items: []; canManageServerCredentials: boolean }>();
+    vi.mocked(client.operations['credential.list'])
       .mockImplementationOnce(() => abandoned.promise)
       .mockImplementationOnce(() => current.promise);
     const first = renderScreen(client);
     first.unmount();
     renderScreen(client, first.queryClient);
-    expect(client.operations['token.list']).toHaveBeenCalledTimes(2);
-    await act(async () => abandoned.resolve({ items: [] }));
+    expect(client.operations['credential.list']).toHaveBeenCalledTimes(2);
+    await act(async () => abandoned.resolve({ items: [], canManageServerCredentials: true }));
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
-    await act(async () => current.resolve({ items: [] }));
+    await act(async () => current.resolve({ items: [], canManageServerCredentials: true }));
     expect(await screen.findByRole('button', { name: 'Prepare' })).toBeInTheDocument();
   });
 
@@ -198,7 +198,7 @@ describe('App update administration', () => {
       await fillPublishedSource(user);
       await user.click(screen.getByRole('button', { name: 'Prepare' }));
       await screen.findByText(REQUEST_ID);
-      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      vi.mocked(client.operations['credential.list']).mockRejectedValueOnce(
         new ApiCallError(status, 'private detail')
       );
       await act(() =>
@@ -206,12 +206,12 @@ describe('App update administration', () => {
       );
       await screen.findByText('Access denied');
       expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
-      const pending = deferred<{ items: [] }>();
-      vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+      const pending = deferred<{ items: []; canManageServerCredentials: boolean }>();
+      vi.mocked(client.operations['credential.list']).mockImplementationOnce(() => pending.promise);
       await user.click(screen.getByRole('button', { name: 'Retry' }));
       expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
-      await act(async () => pending.resolve({ items: [] }));
+      await act(async () => pending.resolve({ items: [], canManageServerCredentials: true }));
       await screen.findByRole('button', { name: 'Prepare' });
       expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
       expect(client.operations['app-update.start']).not.toHaveBeenCalled();
@@ -226,8 +226,8 @@ describe('App update administration', () => {
     await user.click(screen.getByRole('button', { name: 'Prepare' }));
     await screen.findByText(REQUEST_ID);
     await user.click(screen.getByRole('switch'));
-    const pending = deferred<{ items: [] }>();
-    vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+    const pending = deferred<{ items: []; canManageServerCredentials: boolean }>();
+    vi.mocked(client.operations['credential.list']).mockImplementationOnce(() => pending.promise);
     let refetch!: Promise<void>;
     act(() => {
       refetch = queryClient.invalidateQueries({
@@ -239,7 +239,7 @@ describe('App update administration', () => {
     );
     expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
     await act(async () => {
-      pending.resolve({ items: [] });
+      pending.resolve({ items: [], canManageServerCredentials: true });
       await refetch;
     });
     await screen.findByRole('button', { name: 'Start update' });
@@ -250,7 +250,7 @@ describe('App update administration', () => {
     const client = makeClient();
     const { queryClient } = renderScreen(client);
     await screen.findByRole('button', { name: 'Prepare' });
-    vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+    vi.mocked(client.operations['credential.list']).mockRejectedValueOnce(
       new ApiCallError(500, 'private detail')
     );
     await act(() =>
@@ -277,12 +277,12 @@ describe('App update administration', () => {
         queryClient.invalidateQueries({ queryKey: ['settings', 'app-update', 'diagnostics'] })
       );
       await screen.findByText('Access denied');
-      const pending = deferred<{ items: [] }>();
-      vi.mocked(client.operations['token.list']).mockImplementationOnce(() => pending.promise);
+      const pending = deferred<{ items: []; canManageServerCredentials: boolean }>();
+      vi.mocked(client.operations['credential.list']).mockImplementationOnce(() => pending.promise);
       await user.click(screen.getByRole('button', { name: 'Retry' }));
       expect(screen.queryByText(REQUEST_ID)).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
-      await act(async () => pending.resolve({ items: [] }));
+      await act(async () => pending.resolve({ items: [], canManageServerCredentials: true }));
       await screen.findByRole('button', { name: 'Prepare' });
       expect(client.operations['app-update.prepare']).toHaveBeenCalledTimes(1);
     }
@@ -508,19 +508,25 @@ describe('App update administration', () => {
     expect(JSON.stringify(errors)).not.toContain(privateDetail);
   });
 
-  it('states missing server-admin authority without a credential prompt', async () => {
-    const client = makeClient({
-      'token.list': vi
-        .fn()
-        .mockRejectedValue(new ApiCallError(403, 'Server-admin authority is required.')),
-    });
-    renderScreen(client);
+  it.each(['denied', 'ordinary-user'] as const)(
+    'states missing server-admin authority for %s without a credential prompt',
+    async (caseName) => {
+      const client = makeClient({
+        'credential.list':
+          caseName === 'denied'
+            ? vi
+                .fn()
+                .mockRejectedValue(new ApiCallError(403, 'Server-admin authority is required.'))
+            : vi.fn().mockResolvedValue({ items: [], canManageServerCredentials: false }),
+      });
+      renderScreen(client);
 
-    expect(await screen.findByText('Access denied')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
-  });
+      expect(await screen.findByText('Access denied')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Prepare' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Start update' })).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Server admin token')).not.toBeInTheDocument();
+    }
+  );
 
   it('states missing deployment configuration without probing a fake receipt', async () => {
     const user = userEvent.setup();

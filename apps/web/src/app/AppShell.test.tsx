@@ -39,7 +39,7 @@ function makeClient(): CoreClient {
       meta: vi.fn().mockResolvedValue({}),
     },
     operations: {
-      'token.list': vi.fn().mockRejectedValue(
+      'credential.list': vi.fn().mockRejectedValue(
         new ApiCallError(403, 'Server-admin authority is required.', {
           code: 'forbidden',
         })

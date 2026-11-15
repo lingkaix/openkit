@@ -649,8 +649,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
       // Revoke the enrollment token so a later issue can create a fresh usable secret.
       await app.request(
         ...operationRequest(
-          'nanohost.token-revoke',
-          { tokenId: enrollBody.record.tokenId },
+          'credential.revoke',
+          { kind: 'nanohost-transport', id: enrollBody.record.tokenId },
           {
             method: 'POST',
             headers: { authorization: `Bearer ${admin.secret}` },
@@ -857,8 +857,8 @@ describe('NanoHost transport App API safe-sink routes', () => {
       const successorSlotSecret = readFileSync(config.credentialSlots.B.secretPath, 'utf8');
       const revokePredecessor = await app.request(
         ...operationRequest(
-          'nanohost.token-revoke',
-          { tokenId: enrolledBody.record.tokenId },
+          'credential.revoke',
+          { kind: 'nanohost-transport', id: enrolledBody.record.tokenId },
           {
             method: 'POST',
             headers: { authorization: `Bearer ${admin.secret}` },
@@ -1918,7 +1918,10 @@ describe('definition-derived deployment administration cutover', () => {
         } else if (loss === 'restart') {
           await fenceNanoHostRuntimeTargetAfterRestart(f.coreDb, observedAt);
         } else {
-          await f.client.operations['nanohost.token-revoke']({ tokenId: transport.tokenId });
+          await f.client.operations['credential.revoke']({
+            kind: 'nanohost-transport',
+            id: transport.tokenId,
+          });
           const stored = f.coreDb.sqlite
             .prepare('SELECT observed_at FROM nanohost_runtime_targets')
             .get() as { observed_at: string };
@@ -2057,9 +2060,11 @@ describe('definition-derived deployment administration cutover', () => {
       expect(JSON.stringify(enrolled.result)).not.toContain(initialSecret.trim());
       expect(statSync(f.config.credentialSlots.A.secretPath).mode & 0o777).toBe(0o600);
       expect(statSync(f.config.credentialSlots.A.companionPath).mode & 0o777).toBe(0o600);
-      expect(await f.client.operations['nanohost.token-list']({})).toEqual({
-        items: [enrolled.result.record],
-      });
+      expect(
+        (await f.client.operations['credential.list']({})).items.filter(
+          (row) => row.kind === 'nanohost-transport'
+        )
+      ).toEqual([{ kind: 'nanohost-transport', id: initial, record: enrolled.result.record }]);
       const rotated = await f.mcp('openkit_call', {
         operation: 'nanohost.token-rotate',
         input: { tokenId: initial },
@@ -2076,7 +2081,12 @@ describe('definition-derived deployment administration cutover', () => {
       expect(aborted.successor.status).toBe('revoked');
       expect(existsSync(f.config.credentialSlots.B.secretPath)).toBe(false);
       expect(
-        (await f.client.operations['nanohost.token-revoke']({ tokenId: initial })).record.status
+        (
+          await f.client.operations['credential.revoke']({
+            kind: 'nanohost-transport',
+            id: initial,
+          })
+        ).status
       ).toBe('revoked');
       const issued = await f.mcp('openkit_call', {
         operation: 'nanohost.token-issue',
@@ -2128,9 +2138,13 @@ describe('definition-derived deployment administration cutover', () => {
         expect(row.requiredAccess).toContain('deployment admin');
       }
       const listed = await operationCatalog
-        .find((entry: { id: string }) => entry.id === 'nanohost.token-list')!
+        .find((entry: { id: string }) => entry.id === 'credential.list')!
         .handler({ client: f.client }, {});
-      expect(listed).toEqual(await f.client.operations['nanohost.token-list']({}));
+      const direct = await f.client.operations['credential.list']({});
+      expect(
+        listed.items.filter((row: { kind: string }) => row.kind === 'nanohost-transport')
+      ).toEqual(direct.items.filter((row) => row.kind === 'nanohost-transport'));
+      expect(listed.canManageServerCredentials).toBe(direct.canManageServerCredentials);
       const decommissioned = await f.client.operations['nanohost.decommission']({});
       expect(decommissioned.status).toBe('decommissioned');
       expect(existsSync(f.config.credentialSlots.A.secretPath)).toBe(false);
@@ -2183,7 +2197,6 @@ describe('definition-derived deployment administration cutover', () => {
       for (const [id, input] of Object.entries({
         'nanohost.enroll': { expiresAt: '2999-01-01T00:00:00.000Z' },
         'nanohost.token-issue': { targetSlot: 'A', expiresAt: '2999-01-01T00:00:00.000Z' },
-        'nanohost.token-revoke': { tokenId: 'token_gated' },
         'nanohost.token-rotate': { tokenId: 'token_gated' },
         'nanohost.token-rotation-abort': { tokenId: 'token_gated' },
         'nanohost.decommission': {},
@@ -2208,8 +2221,8 @@ describe('definition-derived deployment administration cutover', () => {
       expect(readdirSync(f.slotRoot)).toEqual([]);
       expect(existsSync(`${f.dataRoot}.backups`)).toBe(false);
       expect(
-        (await f.mcp('openkit_call', { operation: 'nanohost.token-list', input: {} })).result
-      ).toEqual({ items: [] });
+        (await f.mcp('openkit_call', { operation: 'credential.list', input: {} })).result
+      ).toMatchObject({ canManageServerCredentials: true });
     } finally {
       await shutdownControlStoreWorkerClient();
       f.coreDb.sqlite.close();
@@ -2238,9 +2251,9 @@ describe('definition-derived deployment administration cutover', () => {
       for (const [id, input] of Object.entries({
         'nanohost.enroll': { expiresAt: '2999-01-01T00:00:00.000Z' },
         'nanohost.runtime-target': {},
-        'nanohost.token-list': {},
+        'credential.list': {},
         'nanohost.token-issue': { targetSlot: 'B', expiresAt: '2999-01-01T00:00:00.000Z' },
-        'nanohost.token-revoke': { tokenId: enrolled.record.tokenId },
+        'credential.revoke': { kind: 'nanohost-transport', id: enrolled.record.tokenId },
         'nanohost.token-rotate': { tokenId: enrolled.record.tokenId },
         'nanohost.token-rotation-abort': { tokenId: enrolled.record.tokenId },
         'nanohost.decommission': {},
@@ -2254,10 +2267,18 @@ describe('definition-derived deployment administration cutover', () => {
           body: JSON.stringify(input),
         });
         expect(response.status, id).toBe(403);
-        expect(await response.json()).toMatchObject({ code: 'deployment_admin_required' });
+        expect(await response.json()).toMatchObject({
+          code: id.startsWith('credential.')
+            ? 'workspace_access_denied'
+            : 'deployment_admin_required',
+        });
         expect(await f.mcp('openkit_call', { operation: id, input }, headers)).toMatchObject({
           isError: true,
-          result: { code: 'deployment_admin_required' },
+          result: {
+            code: id.startsWith('credential.')
+              ? 'workspace_access_denied'
+              : 'deployment_admin_required',
+          },
         });
       }
       expect(f.coreDb.sqlite.prepare('SELECT * FROM nanohost_transport_tokens').all()).toEqual(

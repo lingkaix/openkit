@@ -1,4 +1,5 @@
 import type {
+  InboundCredentialRecord,
   NanoHostTransportTokenRecord,
   OpenKitAccessTokenRecord,
   OpenKitAccessTokenScope,
@@ -31,14 +32,13 @@ import {
 } from './LongList';
 
 const QUERY_KEY = ['settings', 'access-tokens'] as const;
-const NANOHOST_QUERY_KEY = ['settings', 'nanohost-transport-tokens'] as const;
 const SCOPE_ITEMS = [
   { id: 'server-admin', label: 'server-admin' },
   { id: 'workspace', label: 'workspace' },
   { id: 'workspace-readonly', label: 'workspace-readonly' },
 ];
 
-/** Deployment-admin list, issue, revoke, and rotate for redacted access tokens. */
+/** One credential list with own revocation and current administrator token issuance and rotation. */
 export function AccessTokensScreen() {
   const client = useCoreClient();
   const queryClient = useQueryClient();
@@ -51,7 +51,7 @@ export function AccessTokensScreen() {
   const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
   const listed = useQuery({
     queryKey: QUERY_KEY,
-    queryFn: () => client.operations['token.list']({}),
+    queryFn: () => client.operations['credential.list']({}),
     retry: false,
   });
   const issue = useMutation({
@@ -69,7 +69,8 @@ export function AccessTokensScreen() {
     },
   });
   const revoke = useMutation({
-    mutationFn: (tokenId: string) => client.operations['token.revoke']({ tokenId: tokenId }),
+    mutationFn: (item: InboundCredentialRecord) =>
+      client.operations['credential.revoke']({ kind: item.kind, id: item.id }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: QUERY_KEY });
     },
@@ -83,6 +84,7 @@ export function AccessTokensScreen() {
     },
   });
 
+  const [reviewId, setReviewId] = useState<string | null>(null);
   const phone = usePhoneLayout();
   const denied = isAccessDenied(listed.error);
   const canIssue = Boolean(ownerUserId.trim() && expiresAt.trim());
@@ -95,9 +97,9 @@ export function AccessTokensScreen() {
   return (
     <Page>
       <PageHeader
-        eyebrow="Administration"
-        title="Access tokens"
-        subtitle="Issue, revoke, and rotate redacted OpenKit access tokens. Newly returned secrets appear once in this page only."
+        eyebrow="User"
+        title="Credentials"
+        subtitle="Manage your inbound credentials. Administrators can also issue and rotate tokens. Newly issued secrets appear once."
       />
 
       {issuedSecret ? (
@@ -142,7 +144,7 @@ export function AccessTokensScreen() {
         )
       ) : null}
 
-      {listed.isSuccess ? (
+      {listed.data?.canManageServerCredentials ? (
         <Card className="flex flex-col gap-3">
           <h2 className="text-sm font-bold text-fg-strong">Issue token</h2>
           <TextField
@@ -180,8 +182,6 @@ export function AccessTokensScreen() {
 
       {listed.isLoading ? (
         <Skeleton lines={4} />
-      ) : listed.isError && isServerModeOnly(listed.error) ? (
-        <EmptyState icon="key" title="Access tokens are used only when OpenKit runs as a server." />
       ) : listed.isError && denied ? (
         <EmptyState
           icon="key"
@@ -207,16 +207,20 @@ export function AccessTokensScreen() {
             const lines = (listed.data?.items ?? [])
               .filter(
                 (item) =>
-                  isAttention(item.status) &&
+                  isAttention(credentialStatus(item)) &&
                   matchesLoadedRow(filter, {
-                    outcome: item.status,
-                    title: item.scope,
-                    at: item.issuedAt,
+                    outcome: credentialStatus(item),
+                    title: item.kind,
+                    at: credentialIssuedAt(item),
                   })
               )
               .map((item) => (
-                <p key={item.tokenId}>
-                  {attentionSentence(attentionClause(item.status), item.scope, item.issuedAt)}
+                <p key={`${item.kind}:${item.id}`}>
+                  {attentionSentence(
+                    attentionClause(credentialStatus(item)),
+                    item.kind,
+                    credentialIssuedAt(item)
+                  )}
                 </p>
               ));
             return lines.length > 0 ? (
@@ -229,128 +233,62 @@ export function AccessTokensScreen() {
             (listed.data?.items ?? [])
               .filter((item) =>
                 matchesLoadedRow(filter, {
-                  outcome: item.status,
-                  title: item.tokenId,
-                  at: item.issuedAt,
+                  outcome: credentialStatus(item),
+                  title: item.id,
+                  at: credentialIssuedAt(item),
                 })
               )
-              .map((item) => (
-                <TokenRow
-                  key={item.tokenId}
-                  item={item}
-                  busy={revoke.isPending || rotate.isPending}
-                  onRevoke={() => revoke.mutate(item.tokenId)}
-                  onRotate={() => rotate.mutate(item.tokenId)}
-                />
-              ))
+              .map((item) =>
+                item.kind === 'access-token' ? (
+                  <TokenRow
+                    key={`${item.kind}:${item.id}`}
+                    item={item.record}
+                    busy={revoke.isPending || rotate.isPending}
+                    canRotate={listed.data?.canManageServerCredentials === true}
+                    onRevoke={() => revoke.mutate(item)}
+                    onRotate={() => rotate.mutate(item.id)}
+                  />
+                ) : item.kind === 'nanohost-transport' ? (
+                  <NanoHostTokenRow
+                    key={`${item.kind}:${item.id}`}
+                    item={item.record}
+                    reviewing={reviewId === item.id}
+                    busy={revoke.isPending}
+                    failed={revoke.isError && revoke.variables?.id === item.id}
+                    onReview={() => setReviewId(reviewId === item.id ? null : item.id)}
+                    onRevoke={() => revoke.mutate(item)}
+                  />
+                ) : (
+                  <ListRow key={`${item.kind}:${item.id}`}>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-fg-strong">
+                        {item.kind === 'auth-session'
+                          ? `Web session${item.current ? ' (current)' : ''}`
+                          : item.kind === 'discord-pairing'
+                            ? 'Discord pairing'
+                            : 'Worker run'}
+                      </p>
+                      <p className="truncate text-xs text-fg-muted">
+                        {item.id} · {credentialStatus(item)}
+                      </p>
+                    </div>
+                    <Button
+                      variant="quiet"
+                      isDisabled={revoke.isPending || credentialStatus(item) === 'closing'}
+                      onPress={() => revoke.mutate(item)}
+                    >
+                      {item.kind === 'worker-run' ? 'End run' : 'Revoke'}
+                    </Button>
+                  </ListRow>
+                )
+              )
           }
         />
       )}
-      <NanoHostTransportTokens />
+      {revoke.isError && revoke.variables?.kind !== 'nanohost-transport' ? (
+        <ErrorBanner message="Couldn’t revoke the credential." />
+      ) : null}
     </Page>
-  );
-}
-
-/** Administrator list and revoke for redacted NanoHost transport tokens. */
-function NanoHostTransportTokens() {
-  const client = useCoreClient();
-  const queryClient = useQueryClient();
-  const [reviewId, setReviewId] = useState<string | null>(null);
-  const listed = useQuery({
-    queryKey: NANOHOST_QUERY_KEY,
-    queryFn: () => client.operations['nanohost.token-list']({}),
-    retry: false,
-  });
-  const revoke = useMutation({
-    mutationFn: (tokenId: string) => client.operations['nanohost.token-revoke']({ tokenId }),
-    onSuccess: () => {
-      setReviewId(null);
-      void queryClient.invalidateQueries({ queryKey: NANOHOST_QUERY_KEY });
-    },
-  });
-  const denied = isAccessDenied(listed.error);
-  const items = listed.data?.items;
-
-  return (
-    <section className="flex flex-col gap-3" aria-label="NanoHost transport tokens">
-      <h2 className="text-sm font-bold text-fg-strong">NanoHost transport tokens</h2>
-      {listed.isLoading ? (
-        <Skeleton lines={3} />
-      ) : listed.isError && isNanoHostServerModeOnly(listed.error) ? (
-        <EmptyState
-          icon="key"
-          title="NanoHost transport tokens are used only when OpenKit runs as a server."
-        />
-      ) : listed.isError && denied ? (
-        <EmptyState
-          icon="key"
-          title="Access denied"
-          hint="NanoHost transport token administration requires derived server-admin authority on the signed-in session."
-          action={
-            <Button variant="outline" className="min-h-11" onPress={() => void listed.refetch()}>
-              Retry NanoHost tokens
-            </Button>
-          }
-        />
-      ) : listed.isError ? (
-        <ErrorBanner
-          message="Couldn't load NanoHost transport tokens."
-          onRetry={() => void listed.refetch()}
-        />
-      ) : !items || items.length === 0 ? (
-        <EmptyState
-          icon="key"
-          title="No NanoHost transport tokens"
-          hint="Issued transport tokens appear here with redacted metadata only."
-        />
-      ) : (
-        <LongList
-          summary={(filter) => {
-            const lines = items
-              .filter(
-                (item) =>
-                  isAttention(item.status) &&
-                  matchesLoadedRow(filter, {
-                    outcome: item.status,
-                    title: item.tokenType,
-                    at: item.issuedAt,
-                  })
-              )
-              .map((item) => (
-                <p key={item.tokenId}>
-                  {attentionSentence(attentionClause(item.status), item.scope, item.issuedAt)}
-                </p>
-              ));
-            return lines.length > 0 ? (
-              lines
-            ) : (
-              <p>Nothing failed, was denied, or needs a decision.</p>
-            );
-          }}
-          records={(filter) =>
-            items
-              .filter((item) =>
-                matchesLoadedRow(filter, {
-                  outcome: item.status,
-                  title: item.tokenId,
-                  at: item.issuedAt,
-                })
-              )
-              .map((item) => (
-                <NanoHostTokenRow
-                  key={item.tokenId}
-                  item={item}
-                  reviewing={reviewId === item.tokenId}
-                  busy={revoke.isPending}
-                  failed={revoke.isError && revoke.variables === item.tokenId}
-                  onReview={() => setReviewId(reviewId === item.tokenId ? null : item.tokenId)}
-                  onRevoke={() => revoke.mutate(item.tokenId)}
-                />
-              ))
-          }
-        />
-      )}
-    </section>
   );
 }
 
@@ -414,8 +352,10 @@ function TokenRow({
   busy,
   onRevoke,
   onRotate,
+  canRotate,
 }: {
   item: OpenKitAccessTokenRecord;
+  canRotate: boolean;
   busy: boolean;
   onRevoke: () => void;
   onRotate: () => void;
@@ -432,7 +372,7 @@ function TokenRow({
         size="sm"
         variant="outline"
         className="min-h-11"
-        isDisabled={busy || item.status !== 'active'}
+        isDisabled={busy || !canRotate || item.status !== 'active'}
         onPress={onRotate}
       >
         Rotate
@@ -462,14 +402,12 @@ function isAccessDenied(error: unknown): boolean {
   return error instanceof ApiCallError && (error.status === 401 || error.status === 403);
 }
 
-/** Local mode refuses token administration with this exact code. */
-function isServerModeOnly(error: unknown): boolean {
-  return error instanceof ApiCallError && error.code === 'access_token_admin_server_mode_required';
+/** Reads the shared row vocabulary without exposing any credential material. */
+function credentialStatus(item: InboundCredentialRecord): string {
+  return 'record' in item ? item.record.status : 'status' in item ? item.status : 'active';
 }
 
-/** Local mode refuses NanoHost transport administration with this exact code. */
-function isNanoHostServerModeOnly(error: unknown): boolean {
-  return (
-    error instanceof ApiCallError && error.code === 'nanohost_transport_admin_server_mode_required'
-  );
+/** Uses each original owner's issued timestamp for the common list. */
+function credentialIssuedAt(item: InboundCredentialRecord): string {
+  return 'record' in item ? item.record.issuedAt : item.issuedAt;
 }

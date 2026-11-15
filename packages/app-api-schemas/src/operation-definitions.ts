@@ -34,6 +34,7 @@ import {
 } from './generative-operations.js';
 import { GOAL_OPERATION_DEFINITIONS } from './goal.js';
 import { GOVERNANCE_OPERATION_DEFINITIONS } from './governance-operations.js';
+import { INBOUND_CREDENTIAL_OPERATION_DEFINITIONS } from './inbound-credential-operations.js';
 import { KERNEL_OPERATION_DEFINITIONS } from './kernel-operations.js';
 import {
   KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS,
@@ -236,10 +237,12 @@ export const PRODUCT_OPERATION_DEFINITIONS: typeof CALLER_OPERATION_DEFINITIONS 
 /** Static composition of the implemented families; this is not a registration surface. */
 const API_OPERATION_DEFINITIONS: typeof PRODUCT_OPERATION_DEFINITIONS &
   typeof ADMINISTRATION_OPERATION_DEFINITIONS &
-  typeof ACCESS_TOKEN_OPERATION_DEFINITIONS = composeOperationTables(
+  typeof ACCESS_TOKEN_OPERATION_DEFINITIONS &
+  typeof INBOUND_CREDENTIAL_OPERATION_DEFINITIONS = composeOperationTables(
   PRODUCT_OPERATION_DEFINITIONS,
   ADMINISTRATION_OPERATION_DEFINITIONS,
-  ACCESS_TOKEN_OPERATION_DEFINITIONS
+  ACCESS_TOKEN_OPERATION_DEFINITIONS,
+  INBOUND_CREDENTIAL_OPERATION_DEFINITIONS
 );
 /** Native selection names a Task; the Goal owner restores all current authority and lineage. */
 export const GoalTaskPolicyWriteInputSchema = z
@@ -312,6 +315,7 @@ type ExposedOperations<T> = {
 const independentOperations = new Set([
   ...Object.keys(ADMINISTRATION_OPERATION_DEFINITIONS),
   ...Object.keys(ACCESS_TOKEN_OPERATION_DEFINITIONS),
+  ...Object.keys(INBOUND_CREDENTIAL_OPERATION_DEFINITIONS),
   ...Object.keys(CALLER_OPERATION_DEFINITIONS),
   ...Object.keys(RUNTIME_CONFIG_OPERATION_DEFINITIONS),
   ...Object.keys(RECOVERY_OPERATION_DEFINITIONS),

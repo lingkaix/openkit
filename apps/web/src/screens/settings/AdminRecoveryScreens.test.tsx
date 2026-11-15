@@ -7,7 +7,7 @@ import { CoreClientProvider } from '../../app/core-client';
 import { SURFACE_ELEMENTS } from '../../app/routes';
 import { surfaceById, surfacesInGroup } from '../../app/surfaces';
 
-const POISON = 'okt_private_payload_must_not_escape';
+const POISON = 'okt_FAKE_4';
 const RECOVERY = {
   recovery: {
     workspaceId: 'ws_00000000-0000-7981-ab18-24cc470147b4',
@@ -32,7 +32,7 @@ const DISABLED = {
 function makeClient(): CoreClient {
   return {
     operations: {
-      'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      'credential.list': vi.fn().mockResolvedValue({ items: [], canManageServerCredentials: true }),
       'workspace.access-recovery-read': vi.fn().mockResolvedValue(RECOVERY),
       'workspace.access-recover': vi.fn().mockResolvedValue({
         recovery: {
@@ -244,7 +244,7 @@ describe('Web admin recovery and user disable', () => {
   describe.each(['workspace-access-recovery', 'disable-user'])('%s authority', (id) => {
     it.each([401, 403])('handles initial %s and probes again without mutations', async (status) => {
       const client = makeClient();
-      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      vi.mocked(client.operations['credential.list']).mockRejectedValueOnce(
         new ApiCallError(status, POISON)
       );
       const { container } = renderScreen(client, id);
@@ -253,7 +253,7 @@ describe('Web admin recovery and user disable', () => {
       expect(container.innerHTML).not.toContain(POISON);
       await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
       await screen.findByLabelText(id === 'disable-user' ? 'User ID' : 'Workspace ID');
-      expect(client.operations['token.list']).toHaveBeenCalledTimes(2);
+      expect(client.operations['credential.list']).toHaveBeenCalledTimes(2);
       expect(client.operations['workspace.access-recover']).not.toHaveBeenCalled();
       expect(client.operations['user.disable']).not.toHaveBeenCalled();
     });
@@ -265,7 +265,7 @@ describe('Web admin recovery and user disable', () => {
         await confirmDisable();
         await screen.findByText('disabled');
       } else await loadRecovery();
-      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(
+      vi.mocked(client.operations['credential.list']).mockRejectedValueOnce(
         new ApiCallError(403, POISON)
       );
       await act(() =>
@@ -373,7 +373,7 @@ describe('Web admin recovery and user disable', () => {
     'recovers a safe probe error on %s',
     async (id) => {
       const client = makeClient();
-      vi.mocked(client.operations['token.list']).mockRejectedValueOnce(new Error(POISON));
+      vi.mocked(client.operations['credential.list']).mockRejectedValueOnce(new Error(POISON));
       const { container } = renderScreen(client, id);
       await screen.findByRole('alert');
       expect(container.innerHTML).not.toContain(POISON);

@@ -269,7 +269,7 @@ function makeClient(
       ...core,
     },
     operations: {
-      'token.list': vi.fn().mockResolvedValue({ items: [] }),
+      'credential.list': vi.fn().mockResolvedValue({ items: [], canManageServerCredentials: true }),
       ...app,
       'runtime.file-list': vi.fn().mockResolvedValue({ files: [] }),
       'runtime.file-read': vi.fn(),
@@ -633,7 +633,7 @@ describe('Administration', () => {
 
   it('fails closed when the signed-in session has no usable administrator authority', async () => {
     const client = makeClient({
-      'token.list': vi
+      'credential.list': vi
         .fn()
         .mockRejectedValue(
           new ApiCallError(403, 'Server-admin authority is required.', { code: 'forbidden' })
@@ -1591,7 +1591,7 @@ describe('Administration', () => {
         ],
       };
       const methods = {
-        access: 'token.list',
+        access: 'credential.list',
         thread: 'thread.read',
         items: 'thread.items',
         candidate: 'artifact.read',
@@ -1647,7 +1647,7 @@ describe('Administration', () => {
     const { queryClient } = renderScreen(client);
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     expect(screen.getByRole('dialog', { name: 'Delete this Sandbox?' })).toBeInTheDocument();
-    vi.mocked(client.operations['token.list']).mockRejectedValue(
+    vi.mocked(client.operations['credential.list']).mockRejectedValue(
       new ApiCallError(403, 'administrator-denied')
     );
     await act(() =>
@@ -1748,10 +1748,10 @@ describe('Administration', () => {
     const client = fixture();
     let allowAccess!: () => void;
     let allowParent!: () => void;
-    vi.mocked(client.operations['token.list']).mockImplementation(
+    vi.mocked(client.operations['credential.list']).mockImplementation(
       () =>
         new Promise((resolve) => {
-          allowAccess = () => resolve({ items: [] });
+          allowAccess = () => resolve({ items: [], canManageServerCredentials: true });
         })
     );
     const readParent = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
@@ -1764,7 +1764,7 @@ describe('Administration', () => {
         })
     );
     renderScreen(client, queryClient);
-    await waitFor(() => expect(client.operations['token.list']).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(client.operations['credential.list']).toHaveBeenCalledTimes(1));
     expect(screen.queryByText('Prepared configuration change')).not.toBeInTheDocument();
     expect(client.operations['thread.read']).not.toHaveBeenCalled();
     await act(async () => allowAccess());
@@ -1821,7 +1821,7 @@ describe('Administration', () => {
           'thread.list': vi.fn().mockResolvedValue({ items: [ADMIN_THREAD] }),
         }
       );
-      const readAccess = vi.mocked(client.operations['token.list']).getMockImplementation()!;
+      const readAccess = vi.mocked(client.operations['credential.list']).getMockImplementation()!;
       const readParent = vi.mocked(client.operations['thread.read']).getMockImplementation()!;
       const { queryClient } = renderScreen(client);
       await userEvent.click(
@@ -1846,7 +1846,7 @@ describe('Administration', () => {
           ? ['settings', 'administration', 'access']
           : ['settings', 'administration', 'thread', QUICK_CHAT.id, ADMIN_THREAD.id];
       if (authority === 'access')
-        vi.mocked(client.operations['token.list']).mockRejectedValue(
+        vi.mocked(client.operations['credential.list']).mockRejectedValue(
           new ApiCallError(403, 'administrator-denied')
         );
       else
@@ -1868,7 +1868,7 @@ describe('Administration', () => {
         )
       ).not.toBeInTheDocument();
       if (authority === 'access')
-        vi.mocked(client.operations['token.list']).mockImplementation(readAccess);
+        vi.mocked(client.operations['credential.list']).mockImplementation(readAccess);
       else vi.mocked(client.operations['thread.read']).mockImplementation(readParent);
       await userEvent.click(
         screen.getByRole('button', { name: authority === 'access' ? 'Retry' : 'Try again' })

@@ -345,8 +345,19 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
         channelServices: unconfigured,
         workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
-      return (id: 'channel.discord.status' | 'channel.discord.revoke') =>
-        invoke(id, {}, { kind: 'public', actor, delivery: 'human' });
+      return async (id: 'channel.discord.status' | 'credential.revoke') => {
+        const context = { kind: 'public' as const, actor, delivery: 'human' as const };
+        const input =
+          id === 'credential.revoke'
+            ? {
+                kind: 'discord-pairing',
+                id: (await invoke('credential.list', {}, context)).items.find(
+                  (row) => row.kind === 'discord-pairing'
+                )!.id,
+              }
+            : {};
+        return invoke(id, input, context);
+      };
     },
     removeMembership() {
       const result = coreDb.sqlite.transaction(() =>
@@ -646,7 +657,7 @@ describe('Discord to native Pending Request seam', () => {
       sendingAvailable: false,
       binding: { discordUserId, pairedAt: expect.any(Number) },
     });
-    expect(await invoke('channel.discord.revoke')).toBeNull();
+    expect(await invoke('credential.revoke')).toEqual({ status: 'revoked' });
     expect(await invoke('channel.discord.status')).toMatchObject({
       configured: false,
       binding: null,
@@ -724,7 +735,7 @@ describe('Discord to native Pending Request seam', () => {
     // Ordinary authenticated session administration remains valid for this same user.
     await expect(
       invoke(
-        'token.list',
+        'credential.list',
         {},
         {
           kind: 'public',
@@ -733,7 +744,9 @@ describe('Discord to native Pending Request seam', () => {
         }
       )
     ).resolves.toMatchObject({
-      items: expect.arrayContaining([expect.objectContaining({ tokenId: admin.record.tokenId })]),
+      items: expect.arrayContaining([
+        expect.objectContaining({ kind: 'access-token', id: admin.record.tokenId }),
+      ]),
     });
 
     await f.pair();
@@ -743,7 +756,11 @@ describe('Discord to native Pending Request seam', () => {
     const channelActor = f.nativeCalls[0]!.actor;
     expect(channelActor.userId).toBe(actor.userId);
     await expect(
-      invoke('token.list', {}, { kind: 'public', actor: channelActor, delivery: 'human' })
+      invoke(
+        'token.create',
+        { scope: 'server-admin', workspaceIds: [], expiresAt: '2999-01-01T00:00:00.000Z' },
+        { kind: 'public', actor: channelActor, delivery: 'human' }
+      )
     ).rejects.toMatchObject({ code: 'deployment_admin_required', status: 403 });
     expect(f.record()).toMatchObject({ state: 'resolved', resolution: 'denied' });
   });

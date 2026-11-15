@@ -8,12 +8,12 @@ import { Worker } from 'node:worker_threads';
 import { type ActorRef, type AuditEvent, allocateEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { runOpenKitOperatorCli } from '../auth/admin-recovery.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession } from '../auth/identity.js';
 import { createCatalogOperationImplementations } from '../catalog/catalog-operations.js';
 import { loadWorkspaceResourceCatalog } from '../catalog/resource-catalog.js';
@@ -231,7 +231,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb) as DetectionStore;
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     async reopen() {
       await close();
@@ -781,7 +781,9 @@ describe('N2 genuine native Core Audit assessment/outbox and durable compound pr
     assert.ok(s.backup);
     await f.trigger.enable(s.admin);
     const before = await scanAll(f);
-    await f.tokens()['token.revoke']({ tokenId: s.ownerTokenId }, context(s.backup));
+    await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: s.ownerTokenId }, context(s.backup));
     const entry = f.trace.checkpoint();
     await assert.rejects(() => f.trigger.detectAudit({ limit: 1 }));
     f.trace.ack(entry);
@@ -807,7 +809,9 @@ describe('N2 genuine native Core Audit assessment/outbox and durable compound pr
     const s = await server(false),
       f = s.f;
     await f.trigger.enable(s.admin);
-    await f.tokens()['token.revoke']({ tokenId: s.ownerTokenId }, context(s.admin));
+    await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: s.ownerTokenId }, context(s.admin));
     const entry = f.trace.checkpoint();
     await assert.rejects(() => f.trigger.detectAudit());
     f.trace.ack(entry);

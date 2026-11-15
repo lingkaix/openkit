@@ -343,7 +343,9 @@ export function currentWorkspaceAuthority(
     const membership = resolveWorkspaceMembershipRelation(coreDb, workspaceId, responsibleUserId);
     const activeUser = isCanonicalUserActive(coreDb, responsibleUserId);
     const activeWorkspace = isActiveRegisteredWorkspace(coreDb, workspaceId);
-    const credentialCurrent = !requestActor || isUsablePresentedAccessToken(coreDb, requestActor);
+    const credentialCurrent =
+      (!presentedActor || isUsablePresentedCredential(coreDb, presentedActor)) &&
+      (!requestActor || isUsablePresentedCredential(coreDb, requestActor));
     const credentialBound =
       !requestActor || tokenIncludesWorkspace(requestActor, workspaceId, undefined);
     const clientAuthority = requestActor
@@ -492,10 +494,6 @@ export function currentSchedulerAdmissionWorkspaceAuthority(
       };
     } else {
       if (admission.triggerActor.kind !== 'user') return null;
-      const session = coreDb.sqlite
-        .prepare('SELECT user_id AS userId, expires_at AS expiresAt FROM session WHERE id = ?')
-        .get(admission.credentialRef.id) as { userId: string; expiresAt: number } | undefined;
-      if (session?.userId !== userId || session.expiresAt <= Date.now()) return null;
       requestActor = {
         kind: 'session',
         userId,
@@ -854,7 +852,7 @@ function readProductAuthorizationInput(
       administrator,
       credential: {
         kind: actor.kind,
-        current: isUsablePresentedAccessToken(coreDb, actor, now),
+        current: isUsablePresentedCredential(coreDb, actor, now),
         workspaceBound:
           target.kind !== 'workspace' ||
           tokenIncludesWorkspace(actor, target.workspaceId, undefined),
@@ -1058,7 +1056,7 @@ function currentWorkspaceDeletionRetryCoreAuthority(
   actor: Actor,
   workspaceId: string
 ): Readonly<{ ownerUserId: string; administrator: boolean }> | null {
-  if (!isCanonicalUserActive(coreDb, actor.userId) || !isUsablePresentedAccessToken(coreDb, actor))
+  if (!isCanonicalUserActive(coreDb, actor.userId) || !isUsablePresentedCredential(coreDb, actor))
     return null;
   if (actor.kind === 'token' && !isUsablePresentedServerAdminToken(coreDb, actor)) {
     if (actor.tokenScope !== 'workspace' || !actor.tokenWorkspaceIds?.includes(workspaceId)) {
@@ -1213,22 +1211,32 @@ export function isUsablePresentedServerAdminToken(
   return (
     actor.kind === 'token' &&
     actor.tokenScope === 'server-admin' &&
-    isUsablePresentedAccessToken(coreDb, actor, now)
+    isUsablePresentedCredential(coreDb, actor, now)
   );
 }
 
 /**
- * Rechecks current presented OpenKit access-token usability from durable Token state.
+ * Rechecks current presented Token and AuthSession usability at the original durable owners.
  *
- * Session and local actors have no bearer to revalidate here. A presented workspace or
+ * Actual browser sessions retain their exact id and expiry. A presented workspace or
  * workspace-readonly Token must still match its owner, exact scope, and current usability.
  *
  * @param coreDb Core identity and Token authority.
  * @param actor Authenticated request actor.
  * @param now Current time for Token usability evaluation.
- * @returns True when the actor is not a bearer, or when the presented Token remains usable.
+ * @returns True when the actual presented credential remains current, or no durable credential is presented.
  */
-function isUsablePresentedAccessToken(coreDb: CoreDb, actor: Actor, now = new Date()): boolean {
+function isUsablePresentedCredential(coreDb: CoreDb, actor: Actor, now = new Date()): boolean {
+  if (actor.kind === 'session' && actor.sessionId) {
+    const session = coreDb.sqlite
+      .prepare('SELECT user_id AS userId, expires_at AS expiresAt FROM session WHERE id = ?')
+      .get(actor.sessionId) as { userId: string; expiresAt: number } | undefined;
+    return (
+      session?.userId === actor.userId &&
+      session.expiresAt > now.getTime() &&
+      isCanonicalUserActive(coreDb, actor.userId)
+    );
+  }
   if (actor.kind !== 'token') {
     return true;
   }

@@ -170,7 +170,11 @@ export function AdministrationScreen() {
   const access = useQuery({
     queryKey: administrationKeys.access,
     queryFn: async ({ signal }) => {
-      const result = await client.operations['token.list']({});
+      const result = await client.operations['credential.list']({});
+      if (!result.canManageServerCredentials)
+        throw new ApiCallError(403, 'Current deployment administrator authority is required.', {
+          code: 'deployment_admin_required',
+        });
       signal.throwIfAborted();
       return result;
     },

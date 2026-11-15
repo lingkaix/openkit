@@ -9,7 +9,10 @@ import type { Worker as NativeWorker, WorkerOptions } from 'node:worker_threads'
 import { allocateEntityId } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { afterEach, expect, it, vi } from 'vitest';
-import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import {
+  createOpenKitAccessTokenRecord,
+  getOpenKitAccessTokenRecord,
+} from '../auth/access-token-store.js';
 import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
@@ -353,6 +356,7 @@ async function fixture(server = false) {
   seen.path = path;
   return {
     root,
+    coreDb,
     store,
     item,
     message,
@@ -393,14 +397,15 @@ it('repeats actual public Timeline admission after its original cold User OPEN w
   // raw SQL edit, cached actor mutation, fabricated denial or direct revoke helper.
   const revokeBefore = acks('access-token-lifecycle').length;
   const revoked = await f.request(
-    'token.revoke',
-    { tokenId: f.token!.tokenId },
+    'credential.revoke',
+    { kind: 'access-token', id: f.token!.tokenId },
     f.administrator!.secret
   );
   expect(revoked.status).toBe(200);
   expect(await revoked.json()).toMatchObject({
-    record: { tokenId: f.token!.tokenId, status: 'revoked' },
+    status: 'revoked',
   });
+  expect(getOpenKitAccessTokenRecord(f.coreDb, f.token!.tokenId)?.status).toBe('revoked');
   expect(acks('access-token-lifecycle')).toHaveLength(revokeBefore + 1);
   expect(acks('open', f.database)).toHaveLength(openBefore);
   expect(seen.readers).toHaveLength(0);

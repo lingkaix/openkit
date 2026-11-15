@@ -8,11 +8,11 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
@@ -215,7 +215,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb);
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     async reopen() {
       await close();
@@ -295,8 +295,12 @@ describe('N3 stopping durability across actual native sibling current requests',
     const records = new Int32Array(observation.records);
     const { f, admin, backupTokenId, adminTokenId } = await server();
     await f.trigger.enable(admin);
-    await f.tokens()['token.revoke']({ tokenId: backupTokenId }, context(admin));
-    await f.tokens()['token.revoke']({ tokenId: adminTokenId }, context(admin));
+    await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: backupTokenId }, context(admin));
+    await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: adminTokenId }, context(admin));
     const path = f.db.sqlite.name;
     assert.ok(path.length <= 4096);
     for (let i = 0; i < path.length; i++) Atomics.store(records, 65 + i, path.charCodeAt(i));

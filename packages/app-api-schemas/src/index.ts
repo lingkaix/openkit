@@ -34,6 +34,8 @@ export * from './generative-operations.js';
 export * from './generative-ui.js';
 export * from './goal.js';
 export * from './governance-operations.js';
+export * from './inbound-credential-operations.js';
+export * from './inbound-credentials.js';
 export * from './knowledge-agent.js';
 export * from './knowledge-manager.js';
 export * from './knowledge-notebook.js';

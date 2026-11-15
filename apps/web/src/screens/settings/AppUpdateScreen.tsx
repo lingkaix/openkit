@@ -39,7 +39,11 @@ export function AppUpdateScreen() {
     queryKey: ['settings', 'app-update', 'admin-access'],
     queryFn: async ({ signal }) => {
       try {
-        await client.operations['token.list']({});
+        const credentials = await client.operations['credential.list']({});
+        if (!credentials.canManageServerCredentials)
+          throw new ApiCallError(403, 'Current deployment administrator authority is required.', {
+            code: 'deployment_admin_required',
+          });
         // Cached metadata and abandoned transports cannot admit a different mount.
         signal.throwIfAborted();
         return true;

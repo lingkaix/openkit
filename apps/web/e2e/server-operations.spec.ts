@@ -62,7 +62,7 @@ test('inspects server operations through the supported local APIs', async ({ pag
   expect(errors).toEqual([]);
 });
 
-/** Data-root backup checks authority on the operation. App update still rechecks token.list. */
+/** Data-root backup checks authority on the operation. App update still rechecks credential.list. */
 test('does not probe tokens when data-root backup opens and rechecks app update access', async ({
   page,
 }) => {
@@ -74,13 +74,13 @@ test('does not probe tokens when data-root backup opens and rechecks app update 
   page.on('request', (request) => {
     const operation = new URL(request.url()).pathname.split('/api/app/operations/')[1];
     if (!operation) return;
-    if (operation === 'token.list') tokenListRequests += 1;
+    if (operation === 'credential.list') tokenListRequests += 1;
     if (/^(backup\.(create|verify)|app-update\.(prepare|start))$/.test(operation)) {
       effects.push(operation);
     }
   });
   // The local stack has no server token administration; supply only the App update admission read.
-  const tokenListUrl = '**/api/app/operations/token.list';
+  const tokenListUrl = '**/api/app/operations/credential.list';
   await page.route(tokenListUrl, (route) => route.fulfill({ json: { items: [] } }));
   await page.goto(`${stack.webUrl}/settings/server-operations`);
 
@@ -91,7 +91,7 @@ test('does not probe tokens when data-root backup opens and rechecks app update 
       page.getByRole('heading', { name: 'Create and verify backups', exact: true })
     ).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create backup', exact: true })).toBeEnabled();
-    expect(tokenListRequests, `backup open ${open} must not call token.list`).toBe(
+    expect(tokenListRequests, `backup open ${open} must not call credential.list`).toBe(
       tokenListsBeforeBackup
     );
     expect(effects).toEqual([]);

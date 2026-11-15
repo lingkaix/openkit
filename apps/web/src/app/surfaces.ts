@@ -358,10 +358,10 @@ export const SURFACES: Surface[] = [
   },
   {
     id: 'access-tokens',
-    title: 'Access tokens',
+    title: 'Credentials',
     path: '/settings/access-tokens',
     tier: 'A',
-    nav: 'settings-admin',
+    nav: 'settings-user',
     icon: 'key',
     board: '10',
     wp: 'WP-7',

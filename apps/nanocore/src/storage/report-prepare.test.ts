@@ -7,12 +7,12 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession, ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
@@ -128,7 +128,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb);
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     async reopen() {
       await close();

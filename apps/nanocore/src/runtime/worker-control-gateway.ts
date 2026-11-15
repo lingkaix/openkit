@@ -1623,6 +1623,21 @@ export class WorkerControlGateway {
     });
   }
 
+  /** Lists only live credential coordinates; event bodies and hashes remain in this owner. */
+  public listCredentialRuns(): Pick<
+    WorkerControlSessionSnapshot,
+    'workspaceId' | 'threadId' | 'turnId' | 'agentSessionId' | 'packageSnapshotId' | 'registeredAt'
+  >[] {
+    return [...this.sessionsBySnapshotId.values()].map(({ snapshot }) => ({
+      workspaceId: snapshot.workspaceId,
+      threadId: snapshot.threadId,
+      turnId: snapshot.turnId,
+      agentSessionId: snapshot.agentSessionId,
+      packageSnapshotId: snapshot.packageSnapshotId,
+      registeredAt: snapshot.registeredAt,
+    }));
+  }
+
   /**
    * Reads a product-safe live session snapshot.
    *

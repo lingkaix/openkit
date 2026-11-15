@@ -11,6 +11,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import type { Actor } from '../auth/identity.js';
 import { createNanoHostOperationImplementations } from '../auth/nanohost-operations.js';
 import { admitNanoHostTransportConnection } from '../auth/nanohost-transport-admission.js';
@@ -186,12 +187,19 @@ async function fixture(options: { enrolled?: boolean; open?: boolean; authority?
     bind: { host: '127.0.0.1', port: 4318 },
     rendezvousUrl: 'http://127.0.0.1',
   };
-  const implementations = createNanoHostOperationImplementations({
-    coreDb: db,
-    mode: 'server',
-    nanoHostConfig: config,
-    ...(options.authority === false ? {} : { sessionAuthority: authority }),
-  });
+  const implementations = {
+    ...createCredentialOperationImplementations({
+      coreDb: db,
+      mode: 'server',
+      ...(options.authority === false ? {} : { nanoHostSessionAuthority: authority }),
+    }),
+    ...createNanoHostOperationImplementations({
+      coreDb: db,
+      mode: 'server',
+      nanoHostConfig: config,
+      ...(options.authority === false ? {} : { sessionAuthority: authority }),
+    }),
+  };
   const invoke = createOperationEngine(implementations, { coreDb: db, dataRoot: root });
   const pendingOperations = new Set<Promise<void>>();
   // Join the entire public handler, including later compensation/Audit, on failed assertions.
@@ -676,7 +684,7 @@ describe('NanoHost native credential ownership', () => {
     expect(slotPresent(f, 'B')).toBe(false);
     await completeNanoHostTransportTokenCutover(f.db, enrolled.record.tokenId, { now: clock });
     expect((await verifyNanoHostTransportTokenRecord(f.db, oldSecret)) === null).toBe(true);
-    await f.op('nanohost.token-revoke', { tokenId: enrolled.record.tokenId });
+    await f.op('credential.revoke', { kind: 'nanohost-transport', id: enrolled.record.tokenId });
     const next = await issueSlot(f);
     const foreign = await foreignAuthority(f);
     const decommissioned = await f.op('nanohost.decommission', {});
@@ -782,7 +790,7 @@ describe('NanoHost native credential ownership', () => {
                   transportRevision: String(transportRevision),
                 })
             : kind === 'revoke'
-              ? () => f.op('nanohost.token-revoke', { tokenId: predecessor! })
+              ? () => f.op('credential.revoke', { kind: 'nanohost-transport', id: predecessor! })
               : kind === 'rotate'
                 ? () =>
                     f.op('nanohost.token-rotate', { tokenId: predecessor!, overlapSeconds: 3600 })
@@ -1155,13 +1163,15 @@ describe('NanoHost native credential ownership', () => {
       audit: audits(f),
     };
     fault(f, 'nanohost_transport_tokens', 'UPDATE');
-    await failed(f.op('nanohost.token-revoke', { tokenId: issued.record.tokenId }));
+    await failed(
+      f.op('credential.revoke', { kind: 'nanohost-transport', id: issued.record.tokenId })
+    );
     expect(tokens(f)).toEqual(before.tokens);
     expect(f.authority.mayCarryWork(live)).toBe(true);
     expect(getNanoHostRuntimeTarget(f.db, identityId)).toEqual(before.target);
     expect(audits(f)).toBe(before.audit);
     await expect(
-      f.op('nanohost.token-revoke', { tokenId: allocateEntityId('nhtok') })
+      f.op('credential.revoke', { kind: 'nanohost-transport', id: allocateEntityId('nhtok') })
     ).rejects.toMatchObject({ code: 'nanohost_transport_token_not_found', status: 404 });
     expect(f.authority.mayCarryWork(live)).toBe(true);
   });
@@ -1183,7 +1193,7 @@ describe('NanoHost native credential ownership', () => {
       arm(f, 2);
       const pending = await held(f, async () =>
         kind === 'revoke'
-          ? f.op('nanohost.token-revoke', { tokenId: first.record.tokenId })
+          ? f.op('credential.revoke', { kind: 'nanohost-transport', id: first.record.tokenId })
           : f.op('nanohost.decommission', {})
       );
       expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('revoked');
@@ -1330,8 +1340,13 @@ describe('NanoHost native credential ownership', () => {
       .pluck()
       .get(first.record.tokenId) as string;
     expect(getNanoHostTransportTokenRecord(f.db, successorId)?.status).toBe('active');
-    const revoked = await f.op('nanohost.token-revoke', { tokenId: first.record.tokenId });
-    expect(revoked.record.status).toBe('revoked');
+    const revoked = await f.op('credential.revoke', {
+      kind: 'nanohost-transport',
+      id: first.record.tokenId,
+    });
+    expect(revoked.status).toBe('revoked');
+    const revokedAt = getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.revokedAt;
+    expect(revokedAt).not.toBeNull();
     expect(pending.settled()).toBe(false);
     expect(f.authority.mayCarryWork(live)).toBe(false);
     expect(audits(f)).toBe(beforeAudit + 1);
@@ -1344,9 +1359,7 @@ describe('NanoHost native credential ownership', () => {
         status: 400,
       });
     expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.status).toBe('revoked');
-    expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.revokedAt).toBe(
-      revoked.record.revokedAt
-    );
+    expect(getNanoHostTransportTokenRecord(f.db, first.record.tokenId)?.revokedAt).toBe(revokedAt);
     expect(getNanoHostTransportTokenRecord(f.db, successorId)?.status).toBe('revoked');
     expect(
       f.db.sqlite

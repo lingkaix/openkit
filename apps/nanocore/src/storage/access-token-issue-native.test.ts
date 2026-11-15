@@ -6,13 +6,13 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import {
   createOpenKitAccessTokenRecord,
   listOpenKitAccessTokenRecords,
 } from '../auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import { disableCanonicalUser, isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { createOperationInvocation } from '../operation-composition.js';
@@ -195,7 +195,7 @@ async function fixture(ordinaryMember = false) {
     if (accepted.kind !== 'accepted') throw new Error('Fixture invitation was not accepted.');
     expect(resolveWorkspaceMembershipRelation(db, workspace.id, target.id)).toBe('member');
   }
-  const operations = createAccessTokenOperationImplementations({ coreDb: db, mode: 'server' });
+  const operations = createCredentialOperationImplementations({ coreDb: db, mode: 'server' });
   const input = {
     ownerUserId: target.id as string,
     scope: 'workspace-readonly' as const,
@@ -265,8 +265,12 @@ it('rechecks the admitted caller administrator after native revoke while its sep
   interception.holdIssue = true;
   const work = f.start(() => invoke('token.create', f.input, f.context));
   await reached(() => interception.forward !== undefined, work);
-  const revoked = await invoke('token.revoke', { tokenId: f.administrator.tokenId }, f.context);
-  expect(revoked.record.status === 'revoked').toBe(true);
+  const revoked = await invoke(
+    'credential.revoke',
+    { kind: 'access-token', id: f.administrator.tokenId },
+    f.context
+  );
+  expect(revoked.status === 'revoked').toBe(true);
   expect(f.input.ownerUserId !== f.context.actor.userId).toBe(true);
   expect(isCanonicalUserActive(f.db, f.input.ownerUserId)).toBe(true);
   expect(
@@ -350,7 +354,7 @@ it('retains a lost canonical issue result after reopen without later Audit or au
     listServerAuditEvents(cold).filter((event) => event.action === 'auth.token.issue').length
   ).toBe(f.beforeAudit);
   expect(interception.audits).toBe(0);
-  const operations = createAccessTokenOperationImplementations({ coreDb: cold, mode: 'server' });
+  const operations = createCredentialOperationImplementations({ coreDb: cold, mode: 'server' });
   const second = await operations['token.create'](f.input, f.context);
   expect(typeof second.token === 'string').toBe(true);
   expect(listOpenKitAccessTokenRecords(cold).length).toBe(f.before + 2);

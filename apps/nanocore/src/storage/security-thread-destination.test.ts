@@ -7,11 +7,11 @@ import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, it, onTestFinished, vi } from 'vitest';
-import { createAccessTokenOperationImplementations } from '../auth/access-token-operations.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { ensureServerBootstrapTokenForStartup } from '../auth/bootstrap-ensure.js';
 import { writeServerBootstrapTokenEmission } from '../auth/bootstrap-token.js';
+import { createCredentialOperationImplementations } from '../auth/credential-operations.js';
 import { type Actor, actorFromSession, ensureLocalUser } from '../auth/identity.js';
 import { FsStore } from '../lib/store.js';
 import type { AdmittedOperationContext } from '../operation-contract.js';
@@ -201,7 +201,7 @@ async function fixture() {
       return new SecurityTriggerStore(coreDb);
     },
     tokens() {
-      return createAccessTokenOperationImplementations({ coreDb, mode: 'server' });
+      return createCredentialOperationImplementations({ coreDb, mode: 'server' });
     },
     foreignStore() {
       const root = mkdtempSync(join(tmpdir(), 'openkit-security-n3-other-'));
@@ -531,8 +531,8 @@ describe('N3 original owed-alarm Thread destination producer and trusted native 
       if (loss === 'Token revocation') {
         const revoked = await f
           .tokens()
-          ['token.revoke']({ tokenId: backupTokenId }, context(admin));
-        assert.equal(revoked.record.status, 'revoked');
+          ['credential.revoke']({ kind: 'access-token', id: backupTokenId }, context(admin));
+        assert.equal(revoked.status, 'revoked');
       } else {
         const operations = createWorkspaceSharingOperationImplementations({
           coreDb: f.db,
@@ -564,8 +564,10 @@ describe('N3 original owed-alarm Thread destination producer and trusted native 
   it('uses an actual R8 despite lost delegation; retains renamed/archived classification and refuses rollover or raising', async () => {
     const { f, admin, backup, adminTokenId } = await server();
     await f.trigger.enable(admin);
-    const revoked = await f.tokens()['token.revoke']({ tokenId: adminTokenId }, context(backup));
-    assert.equal(revoked.record.status, 'revoked');
+    const revoked = await f
+      .tokens()
+      ['credential.revoke']({ kind: 'access-token', id: adminTokenId }, context(backup));
+    assert.equal(revoked.status, 'revoked');
     await assert.rejects(() => f.trigger.readAudit());
     assert.equal((await f.trigger.current()).delegationCurrent, false);
     const alarms = await f.trigger.readAlarms();

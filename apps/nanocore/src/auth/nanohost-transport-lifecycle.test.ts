@@ -12,6 +12,7 @@ import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createCredentialOperationImplementations } from './credential-operations.js';
 import { createNanoHostOperationImplementations } from './nanohost-operations.js';
 import { admitNanoHostTransportConnection } from './nanohost-transport-admission.js';
 import {
@@ -216,13 +217,13 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
         responsibleServerAdminActorId: 'usr_00000000-0000-768a-8658-44c33d82c1f5',
       });
       const userId = ensureLocalUser(coreDb);
-      const operations = createNanoHostOperationImplementations({
+      const operations = createCredentialOperationImplementations({
         coreDb,
         mode: 'server',
-        sessionAuthority: authority,
+        nanoHostSessionAuthority: authority,
       });
-      const { record: revoked } = await operations['nanohost.token-revoke'](
-        { tokenId: issued.tokenId },
+      const revoked = await operations['credential.revoke'](
+        { kind: 'nanohost-transport', id: issued.tokenId },
         {
           kind: 'public',
           actor: { kind: 'local', userId },
@@ -230,7 +231,8 @@ describe('NanoHost transport lifecycle (WP-2b R3)', () => {
           scope: { kind: 'server' },
         }
       );
-      expect(revoked?.status).toBe('revoked');
+      expect(revoked.status).toBe('revoked');
+      expect(getNanoHostTransportTokenRecord(coreDb, issued.tokenId)?.status).toBe('revoked');
       expect(authority.authoritativeGeneration(IDENTITY)).toBeNull();
       expectRuntimeTargetUnready(coreDb);
       expect(

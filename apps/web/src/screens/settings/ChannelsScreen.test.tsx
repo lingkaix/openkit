@@ -26,7 +26,17 @@ function client(operations: Partial<CoreClient['operations']> = {}) {
         challenge: 'one-use-test-challenge',
         expiresAt: Date.now() + 300_000,
       }),
-      'channel.discord.revoke': vi.fn().mockResolvedValue(null),
+      'credential.list': vi.fn().mockResolvedValue({
+        canManageServerCredentials: false,
+        items: [
+          {
+            kind: 'discord-pairing',
+            id: '10000000-0000-4000-8000-000000000007',
+            issuedAt: '2026-10-16T00:00:00Z',
+          },
+        ],
+      }),
+      'credential.revoke': vi.fn().mockResolvedValue({ status: 'revoked' }),
       'notification.list': vi.fn().mockResolvedValue({ items: [] }),
       'notification.send': vi.fn(),
       ...operations,
@@ -171,7 +181,10 @@ describe('Discord settings', () => {
     });
     show(value);
     await userEvent.click(await screen.findByRole('button', { name: 'Revoke Discord binding' }));
-    expect(value.operations['channel.discord.revoke']).toHaveBeenCalledWith({});
+    expect(value.operations['credential.revoke']).toHaveBeenCalledWith({
+      kind: 'discord-pairing',
+      id: '10000000-0000-4000-8000-000000000007',
+    });
     expect(screen.queryByRole('button', { name: 'Pair Discord account' })).not.toBeInTheDocument();
   });
 

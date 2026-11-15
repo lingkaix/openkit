@@ -84,26 +84,6 @@ export const CreateOpenKitAccessTokenResponseSchema = z
   })
   .strict();
 
-/** OpenKit access-token list response. */
-export const ListOpenKitAccessTokensResponseSchema = z
-  .object({
-    items: z.array(OpenKitAccessTokenRecordSchema),
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
-/** OpenKit access-token revocation response. */
-export const RevokeOpenKitAccessTokenResponseSchema = z
-  .object({
-    record: OpenKitAccessTokenRecordSchema,
-  })
-  .strict()
-  .superRefine((value, ctx) => {
-    addRawSecretIssues(value, ctx, []);
-  });
-
 /** OpenKit access-token rotation request. */
 export const RotateOpenKitAccessTokenRequestSchema = z
   .object({
@@ -243,12 +223,6 @@ export type CreateOpenKitAccessTokenRequest = z.infer<typeof CreateOpenKitAccess
 /** OpenKit access-token issue response. */
 export type CreateOpenKitAccessTokenResponse = z.infer<
   typeof CreateOpenKitAccessTokenResponseSchema
->;
-/** OpenKit access-token list response. */
-export type ListOpenKitAccessTokensResponse = z.infer<typeof ListOpenKitAccessTokensResponseSchema>;
-/** OpenKit access-token revocation response. */
-export type RevokeOpenKitAccessTokenResponse = z.infer<
-  typeof RevokeOpenKitAccessTokenResponseSchema
 >;
 /** OpenKit access-token rotation request. */
 export type RotateOpenKitAccessTokenRequest = z.infer<typeof RotateOpenKitAccessTokenRequestSchema>;

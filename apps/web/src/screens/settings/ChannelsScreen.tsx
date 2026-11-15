@@ -93,10 +93,20 @@ export function ChannelsScreen() {
     mutationFn: () => client.operations['channel.discord.pair']({}),
     onSuccess: setChallenge,
   });
+  const credentials = useQuery({
+    queryKey: ['settings', 'access-tokens'],
+    queryFn: () => client.operations['credential.list']({}),
+    retry: false,
+  });
   const revoke = useMutation({
     mutationKey: [...accountChannelsKey, 'revoke'],
-    mutationFn: () => client.operations['channel.discord.revoke']({}),
+    mutationFn: async () => {
+      const binding = credentials.data?.items.find((item) => item.kind === 'discord-pairing');
+      if (!binding) throw new Error('Current pairing is unavailable.');
+      return client.operations['credential.revoke']({ kind: 'discord-pairing', id: binding.id });
+    },
     onSuccess: () => {
+      void queries.invalidateQueries({ queryKey: ['settings', 'access-tokens'] });
       setChallenge(null);
       pair.reset();
       refresh();
@@ -110,10 +120,11 @@ export function ChannelsScreen() {
   });
   useEffect(() => {
     if (status.data?.binding) {
+      void queries.invalidateQueries({ queryKey: ['settings', 'access-tokens'] });
       setChallenge(null);
       pair.reset();
     }
-  }, [status.data?.binding, pair.reset]);
+  }, [status.data?.binding, pair.reset, queries]);
   useEffect(() => {
     if (!challenge) return;
     const timeout = setTimeout(

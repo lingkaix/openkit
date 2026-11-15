@@ -1,4 +1,5 @@
 import { and, eq, gte, lt, sql } from 'drizzle-orm';
+import { presentControlFacts } from '../storage/control-store-input.js';
 import { assertControlProductWriter } from '../storage/control-store-products.js';
 import type { CoreDb } from '../storage/db.js';
 import { account, session, users, verification } from '../storage/schema/better-auth/index.js';
@@ -9,6 +10,7 @@ import {
   type ControlBetterAuthResult,
 } from './better-auth-codecs.js';
 import { isServerBootstrapComplete } from './bootstrap-token.js';
+import { evaluateProductAuthorization } from './operation-authorizer.js';
 import { isCanonicalUserActive } from './user-lifecycle.js';
 
 /** Applies one configured SDK stage in the existing native Core savepoint, without async callbacks. */
@@ -18,6 +20,21 @@ export function applyControlBetterAuth(
 ): ControlBetterAuthResult {
   assertControlProductWriter(coreDb.sqlite);
   const db = coreDb.db;
+  if (input.kind === 'session-owned-delete') {
+    const requestActor = presentControlFacts(input.requestActor);
+    if (
+      evaluateProductAuthorization(coreDb, requestActor, { kind: 'user' }, 'api.call', true)
+        .effect !== 'allow'
+    )
+      throw new BetterAuthNativeError('session_invalid');
+    return {
+      kind: 'mutation',
+      ...db
+        .delete(session)
+        .where(and(eq(session.id, input.sessionId), eq(session.userId, requestActor.userId)))
+        .run(),
+    };
+  }
   const actor = 'actor' in input ? input.actor : undefined;
   if (actor) {
     requireCurrentSession(coreDb, actor);
