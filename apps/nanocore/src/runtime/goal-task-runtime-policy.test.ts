@@ -282,6 +282,8 @@ async function fixture(
     publish?: boolean;
     approval?: boolean;
     taskGrant?: boolean;
+    /** A genuine unlinked Task; the unrelated fixture Goal supplies no Task authority. */
+    standalone?: boolean;
     activation?: 'pending' | 'granted';
     /** Adds a real reference-only file plan to the existing linked Task AEP. */
     credentialFile?: boolean;
@@ -484,7 +486,7 @@ async function fixture(
   const domain = domains.read(scope);
   expect(domain !== null).toBe(options.publish !== false && !options.activation);
   const goalTaskPolicy = (_workspaceDb: typeof db) =>
-    createGoalTaskPolicyService({ coreDb, store, domains });
+    createGoalTaskPolicyService({ coreDb, store, ...(options.standalone ? {} : { domains }) });
   const { reporting: _coreReporting, ...request } = createStructuredWorkerDelegationRequest({
     objective: 'Read an issue',
     acceptanceCriteria: ['Read issue'],
@@ -556,13 +558,14 @@ async function fixture(
         ...(options.parentLineage ? { parentThreadId: goal.threadId } : {}),
       }
     );
-    db.sqlite.transaction(() =>
-      applyControlAdmission(
-        db,
-        { goalTaskCitation: { ...dispatchInput, goalId: goal.goalId }, threadId: thread.id },
-        store
-      )
-    )();
+    if (!options.standalone)
+      db.sqlite.transaction(() =>
+        applyControlAdmission(
+          db,
+          { goalTaskCitation: { ...dispatchInput, goalId: goal.goalId }, threadId: thread.id },
+          store
+        )
+      )();
     const prompt = serializeStructuredWorkerDelegationRequest(request);
     const agentSessionId = testEntityId('as', requestId);
     const sessionStartedAt = new Date().toISOString();
@@ -876,24 +879,28 @@ async function fixture(
       ).toBe('accepted');
       await recordAgentEnvironmentPackageSnapshot(db, { environmentPackage, createdAt: now });
     }
-    expect(
-      readGoalTaskPolicyContext({
-        coreDb,
-        store,
-        db,
-        lineage: { ...environmentPackage.scope, packageSnapshotId: environmentPackage.snapshotId },
-      })
-    ).toMatchObject({
-      goalId: goal.goalId,
-      agentId,
-      responsibleUserId: userId,
-      resources:
-        options.taskGrant === false
-          ? []
-          : options.credentialFile
-            ? [resource, fileResource]
-            : [resource],
-    });
+    if (!options.standalone)
+      expect(
+        readGoalTaskPolicyContext({
+          coreDb,
+          store,
+          db,
+          lineage: {
+            ...environmentPackage.scope,
+            packageSnapshotId: environmentPackage.snapshotId,
+          },
+        })
+      ).toMatchObject({
+        goalId: goal.goalId,
+        agentId,
+        responsibleUserId: userId,
+        resources:
+          options.taskGrant === false
+            ? []
+            : options.credentialFile
+              ? [resource, fileResource]
+              : [resource],
+      });
     const gateway: WorkerMcpGateway = {
       listTools: vi.fn(async () => ({
         serverVersion: 'fixture',
@@ -1065,65 +1072,116 @@ async function prohibitFixtureThread(
 }
 
 describe('P7 Task lineage and physical access through production consumers', () => {
-  it('inherits an ancestor Thread prohibition in the actual Task and its continuation but not an unrelated Thread restriction', async () => {
+  it('bounds actual standalone Task and continuation MCP calls without borrowing an unrelated Goal', async () => {
     for (const continuation of [false, true]) {
-      const f = await fixture({ parentLineage: true });
-      const mcp = await f.setupMcp(continuation);
-      expect(f.store.getThread(f.scope.workspaceId, mcp.turn.threadId)?.parentThreadId).toBe(
-        f.goal.threadId
-      );
-      const unrelated = await f.store.createThread(f.scope.workspaceId, 'Unrelated restriction');
-      await prohibitFixtureThread(f, unrelated.id, ['tool.use']);
-      expect((await mcp.call()).isError).not.toBe(true);
-      vi.mocked(mcp.gateway.callTool).mockClear();
-      await prohibitFixtureThread(f, f.goal.threadId, ['tool.use']);
-      const blocked = await mcp.call().then(
+      const selected = await fixture({ standalone: true });
+      const admitted = await selected.setupMcp(continuation);
+      const selectedContext = readGoalTaskPolicyContext({
+        coreDb: selected.coreDb,
+        store: selected.store,
+        db: selected.db,
+        lineage: {
+          ...admitted.environmentPackage.scope,
+          packageSnapshotId: admitted.environmentPackage.snapshotId,
+        },
+      });
+      expect(selectedContext).not.toBeNull();
+      expect(selectedContext).toMatchObject({ goalId: null, planVersionId: null });
+      expect(selectedContext?.environmentRevision).toEqual(expect.any(String));
+      expect((await admitted.call()).isError).not.toBe(true);
+      expect(admitted.gateway.callTool).toHaveBeenCalledTimes(1);
+
+      const bounded = await fixture({ standalone: true, taskGrant: false });
+      const refused = await bounded.setupMcp(continuation);
+      const emptyContext = readGoalTaskPolicyContext({
+        coreDb: bounded.coreDb,
+        store: bounded.store,
+        db: bounded.db,
+        lineage: {
+          ...refused.environmentPackage.scope,
+          packageSnapshotId: refused.environmentPackage.snapshotId,
+        },
+      });
+      expect(emptyContext).not.toBeNull();
+      expect(emptyContext).toMatchObject({ goalId: null, planVersionId: null, resources: [] });
+      const discoveriesBeforeCall = vi.mocked(refused.gateway.listTools).mock.calls.length;
+      const blocked = await refused.call().then(
         (result) => result.isError === true,
         () => true
       );
       expect(blocked).toBe(true);
-      expect(mcp.gateway.callTool).not.toHaveBeenCalled();
-      expect(mcp.decisions().at(-1)?.result).toBe('deny');
-      expect(mcp.decisions().at(-1)?.mediation?.kernel?.reason).toBe('restriction');
+      expect(refused.gateway.callTool).not.toHaveBeenCalled();
+      expect(refused.gateway.listTools).toHaveBeenCalledTimes(discoveriesBeforeCall);
+      expect(refused.decisions().at(-1)?.result).toBe('deny');
+      expect(bounded.goalWake).not.toHaveBeenCalled();
     }
   });
+  it.each([false, true])(
+    'inherits an ancestor Thread prohibition in the actual Task and its continuation but not an unrelated Thread restriction (standalone=%s)',
+    async (standalone) => {
+      for (const continuation of [false, true]) {
+        const f = await fixture({ parentLineage: true, standalone });
+        const mcp = await f.setupMcp(continuation);
+        expect(f.store.getThread(f.scope.workspaceId, mcp.turn.threadId)?.parentThreadId).toBe(
+          f.goal.threadId
+        );
+        const unrelated = await f.store.createThread(f.scope.workspaceId, 'Unrelated restriction');
+        await prohibitFixtureThread(f, unrelated.id, ['tool.use']);
+        expect((await mcp.call()).isError).not.toBe(true);
+        vi.mocked(mcp.gateway.callTool).mockClear();
+        await prohibitFixtureThread(f, f.goal.threadId, ['tool.use']);
+        const blocked = await mcp.call().then(
+          (result) => result.isError === true,
+          () => true
+        );
+        expect(blocked).toBe(true);
+        expect(mcp.gateway.callTool).not.toHaveBeenCalled();
+        expect(mcp.decisions().at(-1)?.result).toBe('deny');
+        expect(mcp.decisions().at(-1)?.mediation?.kernel?.reason).toBe('restriction');
+      }
+    }
+  );
 
-  it('projects current physical prohibitions into the actual AEP network, Vault and every filesystem rule including CWD', async () => {
-    const f = await fixture({ credentialFile: true, physicalAccess: true });
-    const mcp = await f.setupMcp();
-    const before = mcp.environmentPackage;
-    expect(before.policy.network?.rules.length).toBeGreaterThan(0);
-    expect(before.vault.grants.length).toBeGreaterThan(0);
-    expect(before.policy.filesystem?.rules).toContainEqual(
-      expect.objectContaining({
-        id: 'openkit-working-directory',
-        access: 'read-write',
-      })
-    );
-    const bounded = await fixture({
-      credentialFile: true,
-      physicalAccess: true,
-      physicalProhibition: true,
-    });
-    const restricted = (await bounded.setupMcp()).environmentPackage;
-    expect(restricted.policy.network?.rules).toEqual([]);
-    expect(restricted.vault.grants).toEqual([]);
-    expect(restricted.policy.filesystem?.rules).toContainEqual(
-      expect.objectContaining({
-        id: 'openkit-working-directory',
-        access: 'read-only',
-      })
-    );
-    expect(
-      restricted.policy.filesystem?.rules.every(
-        (rule) =>
-          rule !== null &&
-          typeof rule === 'object' &&
-          'access' in rule &&
-          rule.access === 'read-only'
-      )
-    ).toBe(true);
-  });
+  it.each([false, true])(
+    'projects current physical prohibitions into the actual AEP network, Vault and every filesystem rule including CWD (standalone=%s)',
+    async (standalone) => {
+      const f = await fixture({ credentialFile: true, physicalAccess: true, standalone });
+      const mcp = await f.setupMcp();
+      const before = mcp.environmentPackage;
+      expect(before.policy.network?.rules.length).toBeGreaterThan(0);
+      expect(before.vault.grants.length).toBeGreaterThan(0);
+      expect(before.policy.filesystem?.rules).toContainEqual(
+        expect.objectContaining({
+          id: 'openkit-working-directory',
+          access: 'read-write',
+        })
+      );
+      const bounded = await fixture({
+        credentialFile: true,
+        physicalAccess: true,
+        physicalProhibition: true,
+        standalone,
+      });
+      const restricted = (await bounded.setupMcp()).environmentPackage;
+      expect(restricted.policy.network?.rules).toEqual([]);
+      expect(restricted.vault.grants).toEqual([]);
+      expect(restricted.policy.filesystem?.rules).toContainEqual(
+        expect.objectContaining({
+          id: 'openkit-working-directory',
+          access: 'read-only',
+        })
+      );
+      expect(
+        restricted.policy.filesystem?.rules.every(
+          (rule) =>
+            rule !== null &&
+            typeof rule === 'object' &&
+            'access' in rule &&
+            rule.access === 'read-only'
+        )
+      ).toBe(true);
+    }
+  );
 });
 
 describe('Goal Coordinator missing Task grant routing', () => {

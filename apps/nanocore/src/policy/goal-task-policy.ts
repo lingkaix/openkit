@@ -75,6 +75,7 @@ export function createGoalTaskPolicyService(deps: {
       authorizationRevision: policyDigest({
         scope: result.authorizationRevision,
         requestInputHash: context.requestInputHash,
+        environmentRevision: context.environmentRevision ?? null,
       }),
       authorizationUses:
         result.kernel.effect === 'allow'

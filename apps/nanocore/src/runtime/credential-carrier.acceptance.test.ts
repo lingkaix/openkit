@@ -1732,8 +1732,9 @@ it.each(['other', 'empty', 'vault'] as const)(
         : {
             kind: 'mcp-tool' as const,
             workspaceId: DEMO_WORKSPACE_ID,
-            serverId: 'issues',
-            toolName: 'read',
+            // A genuine different resource in this native environment's finite Tool manifest.
+            serverId: 'openkit-work',
+            toolName: 'work_peer_list',
           };
       const request = createStructuredWorkerDelegationRequest({
         objective: 'Use only the selected synthetic resource.',

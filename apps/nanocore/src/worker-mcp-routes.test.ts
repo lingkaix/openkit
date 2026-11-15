@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 import Database from 'better-sqlite3';
 import { disableCanonicalUser } from './auth/user-lifecycle.js';
+import { createGoalTaskPolicyService } from './policy/goal-task-policy.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -364,6 +365,7 @@ describe('worker MCP routes', () => {
       const gateway = createDefaultWorkerMcpGateway(coreDb);
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         store,
@@ -777,6 +779,7 @@ describe('worker MCP routes', () => {
       const baseConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot, agentManifests: [] });
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         store,
@@ -1294,6 +1297,7 @@ describe('worker MCP routes', () => {
       };
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         store,
@@ -1593,6 +1597,7 @@ describe('worker MCP routes', () => {
       expect(readAdmittedPolicyDocument(coreDb, builtinPolicy)).toEqual(builtinPolicy);
     };
     registerWorkerMcpRoutes({
+      goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
       app,
       coreDb,
       knowledgeAgent: { ask: askKnowledge, maintain: vi.fn() },
@@ -2178,6 +2183,7 @@ describe('worker MCP routes', () => {
       });
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         store,
@@ -3407,6 +3413,7 @@ describe('worker MCP routes', () => {
       });
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         store,
@@ -4755,6 +4762,7 @@ describe('worker MCP routes', () => {
     const register = () => {
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         runtimeConfig: () => runtimeConfig,
@@ -5970,6 +5978,7 @@ describe('worker MCP routes', () => {
                     catalog,
                     interception: new PolicyInterception(),
                     routes: {
+                      goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
                       coreDb,
                       store,
                       workerMcpGateway,
@@ -6455,6 +6464,7 @@ describe('worker MCP routes', () => {
     const app = new Hono();
     const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     registerWorkerMcpRoutes({
+      goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
       app,
       coreDb,
       runtimeConfig: () =>
@@ -7500,6 +7510,7 @@ describe('worker MCP routes', () => {
       const workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
       const app = new Hono();
       registerWorkerMcpRoutes({
+        goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
         app,
         coreDb,
         runtimeConfig: () =>
@@ -8765,6 +8776,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   const register = () => {
     const app = new Hono();
     registerWorkerMcpRoutes({
+      goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
       app,
       coreDb,
       runtimeConfig: () => runtimeConfig,

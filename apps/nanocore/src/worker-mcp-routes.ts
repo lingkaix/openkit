@@ -2695,7 +2695,7 @@ function currentMcpPolicyAuthority(
   const subject = {
     principal: context?.goalId
       ? { kind: 'agent' as const, id: context.agentId }
-      : { kind: 'human' as const, id: responsibleHumanId },
+      : { kind: 'human' as const, id: initiatingHumanId },
     onBehalfOf: null,
     actor: {
       kind: 'agent' as const,
@@ -2761,14 +2761,22 @@ function currentMcpPolicyAuthority(
   );
   const kernel = captured.decision.effect === 'deny' ? captured.decision : resourceKernel;
 
-  const taskPolicy = context?.goalId
+  const taskPolicy = context
     ? input.input.goalTaskPolicy?.(input.workspaceDb, responsibleHumanId)
     : null;
-  if (context?.goalId && !taskPolicy) throw mcpDeniedError();
+  if (context && !taskPolicy) throw mcpDeniedError();
   const taskInput = {
     workspaceDb: input.workspaceDb,
     lineage,
-    subject,
+    // The Task ceiling uses the actual selected Worker; it does not replace the
+    // existing human caller/conditions above or provide their baseline authority.
+    subject: context
+      ? {
+          ...subject,
+          principal: { kind: 'agent' as const, id: context.agentId },
+          onBehalfOf: context.goalId === null ? context.responsibleUserId : null,
+        }
+      : subject,
     operation: 'tool.use',
     resource: {
       kind: 'mcp-tool' as const,
@@ -2788,7 +2796,7 @@ function currentMcpPolicyAuthority(
       authorizationUses = evaluatedTask?.authorizationUses ?? [];
     }
   }
-  if (context?.goalId && !task) throw mcpDeniedError();
+  if (context && !task) throw mcpDeniedError();
   return {
     subject,
     restrictingPrincipals,

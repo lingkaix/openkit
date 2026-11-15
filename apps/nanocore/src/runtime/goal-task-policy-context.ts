@@ -26,6 +26,7 @@ import {
 } from '../storage/command-request-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { goalPlanDigest, readNativeGoalView } from './goal-owner.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
@@ -51,6 +52,8 @@ export interface GoalTaskPolicyContext {
   readonly resources: readonly z.infer<typeof PolicyResourceV1Schema>[];
   /** Scheduler's immutable hash of the complete original request and provenance. */
   readonly requestInputHash: string;
+  /** Original prepared environment manifest revision; never a current catalog or new grant. */
+  readonly environmentRevision?: string;
 }
 
 /** Canonical Turn content remains required; a metadata-only projection cannot establish Task authority. */
@@ -317,24 +320,19 @@ export function readGoalTaskPolicyContext(input: {
       : !isSealedTurnTerminal(source.turn.status))
   )
     throw unavailable();
-  const resources = request.resources.flatMap((value) =>
+  const selected = request.resources.flatMap((value) =>
     value.kind === 'policy' ? [value.resource] : []
   );
-  if (
-    !link &&
-    resources.length === 0 &&
-    source.checkpoint &&
-    source.checkpoint.requestInputHash !== commandInputHash({ input: source.admission.turnInput })
-  ) {
-    const prepared = JSON.parse(originalAttempt.preparationInputJson) as { manifest?: unknown };
-    const manifest =
-      prepared.manifest === undefined ? null : AuthoredAgentConfigSchema.parse(prepared.manifest);
-    if (manifest && manifest.id !== source.admission.requestedAgentId) throw unavailable();
-    const selectsCredentials = (manifest?.sandbox?.credentialDeclarations.length ?? 0) > 0;
-    // A conversation Task with no credential supply needs no direct Task command receipt.
-    // Missing preparation still fails closed; only the original direct Task can select Vault supply.
-    if (!manifest || selectsCredentials) {
-      const receipt = getCommandRequestRecordFromDb(
+  const structuredInputHash = commandInputHash({ input: source.admission.turnInput });
+  const nativeSelection =
+    !link && selected.length === 0 && source.checkpoint?.requestInputHash !== structuredInputHash;
+  const prepared = JSON.parse(originalAttempt.preparationInputJson) as { manifest?: unknown };
+  const manifest =
+    prepared.manifest === undefined ? null : AuthoredAgentConfigSchema.parse(prepared.manifest);
+  if (manifest && manifest.id !== source.admission.requestedAgentId) throw unavailable();
+  const selectsCredentials = (manifest?.sandbox?.credentialDeclarations.length ?? 0) > 0;
+  const originalCommand = nativeSelection
+    ? getCommandRequestRecordFromDb(
         db,
         commandRequestKey('task.start', source.admission.requestId!, {
           actorId: source.admission.triggerActor.id,
@@ -342,15 +340,61 @@ export function readGoalTaskPolicyContext(input: {
           threadId: lineage.threadId,
         }),
         new Date().toISOString()
-      );
-      if (
-        !receipt ||
-        receipt.inputHash !== source.checkpoint.requestInputHash ||
-        receipt.response.kind !== 'turn' ||
-        receipt.response.id !== original.turnId
       )
-        throw unavailable();
-    }
+    : null;
+  if (
+    (nativeSelection &&
+      source.checkpoint &&
+      (!manifest || selectsCredentials) &&
+      !originalCommand) ||
+    (originalCommand &&
+      (originalCommand.response.kind !== 'turn' ||
+        originalCommand.response.id !== original.turnId ||
+        (source.checkpoint && originalCommand.inputHash !== source.checkpoint.requestInputHash)))
+  )
+    throw unavailable();
+  // A closed Task can lose its live checkpoint, not its exact native command/manifest selection.
+  const naturalSelection =
+    nativeSelection &&
+    (originalCommand
+      ? originalCommand.inputHash !== structuredInputHash
+      : Boolean(source.checkpoint && manifest && !selectsCredentials));
+  const environmentRecord =
+    naturalSelection || selected.some((resource) => resource.kind === 'mcp-tool')
+      ? requireAgentEnvironmentPackageSnapshot(db, lineage.workspaceId, originalAttempt.inputRef)
+      : null;
+  const environment = environmentRecord?.snapshot;
+  if (
+    environment &&
+    (environment.scope.workspaceId !== lineage.workspaceId ||
+      environment.scope.threadId !== lineage.threadId ||
+      environment.scope.turnId !== original.turnId ||
+      environment.scope.agentSessionId !== originalAttempt.agentSessionId ||
+      environment.agent.agentId !== source.admission.requestedAgentId)
+  )
+    throw unavailable();
+  // Native preparation already records this finite manifest and its environment revision.
+  // It is a Task ceiling only: no caller, credential, approval or Thread authority comes from supply.
+  const declaredTools = (environment?.supply.mcpServers ?? []).flatMap((server) =>
+    server.allowedTools
+      .filter((toolName) => toolName !== '*')
+      .map((toolName) => ({
+        kind: 'mcp-tool' as const,
+        workspaceId: lineage.workspaceId,
+        serverId: server.id,
+        toolName,
+      }))
+  );
+  const resources = selected.filter(
+    (resource) =>
+      resource.kind !== 'mcp-tool' ||
+      declaredTools.some((declared) => commandInputHash(declared) === commandInputHash(resource))
+  );
+  if (naturalSelection) {
+    // Native conversation Task preparation can select Tools without a task.start command.
+    // Credential selection still requires that exact direct Task receipt, as above.
+    // Explicit structured empty selections enter neither path.
+    resources.push(...declaredTools);
     // The existing Vault owner still checks the exact declaration, target grant and version.
     if (selectsCredentials)
       resources.push({
@@ -372,5 +416,6 @@ export function readGoalTaskPolicyContext(input: {
     responsibleUserId,
     resources,
     requestInputHash: source.admission.inputHash,
+    ...(environmentRecord ? { environmentRevision: environmentRecord.contentDigest } : {}),
   };
 }

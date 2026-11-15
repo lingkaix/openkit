@@ -2221,14 +2221,17 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     runtimeConfigFiles: (actor) => runtimeConfigFileService({ get: () => actor }),
   };
 
-  /** Reads native Goal Policy with the caller-owned DB; the file reader supplies no authority. */
+  /** Standalone Tasks need no Goal/file owner; only a native linked context reads that dependency. */
   function goalTaskPolicy(db: WorkspaceDb, responsibleUserId: string): GoalTaskPolicyService {
-    const domain = goalServices().goalDomain;
-    if (!options.coreDb || !domain) throw new Error('Goal Task Policy is unavailable.');
+    if (!options.coreDb) throw new Error('Goal Task Policy is unavailable.');
     return createGoalTaskPolicyService({
       coreDb: options.coreDb,
       store: sharedStore,
-      domains: domain.forActor({ kind: 'session', userId: responsibleUserId }, db),
+      get domains() {
+        const domain = goalServices().goalDomain;
+        if (!domain) throw new Error('Goal Task Policy is unavailable.');
+        return domain.forActor({ kind: 'session', userId: responsibleUserId }, db);
+      },
     });
   }
   const goalServices = (): GoalOwnerServices => ({
