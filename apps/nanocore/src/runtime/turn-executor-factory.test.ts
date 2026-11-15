@@ -3604,6 +3604,12 @@ describe('createConfiguredTurnExecutor', () => {
           ),
         });
         const { confirmContextDefaults } = await import('../test-support/context-defaults.js');
+        const manager = await confirmContextDefaults(
+          coreDb,
+          store,
+          createRuntimeConfigManager({ dataRoot: coreDb.dataRoot, initialSnapshot: configuration })
+        );
+        configuration = manager.current();
         const requestedPolicy = {
           schemaVersion: 1 as const,
           statements: [
@@ -3631,22 +3637,83 @@ describe('createConfiguredTurnExecutor', () => {
             },
           ],
         };
-        // Existing fixture consent invokes the real configuration candidate, native publication and reload.
-        const manager = await confirmContextDefaults(
-          coreDb,
-          store,
-          createRuntimeConfigManager({
+        // Propose from the actual loaded revision; publish the allowance before loading it.
+        const [
+          { actorFromRequest },
+          { createAdministrationConfiguration },
+          { RuntimeConfigFileService },
+        ] = await Promise.all([
+          import('../auth/identity.js'),
+          import('../config/administration-configuration.js'),
+          import('../config/runtime-config-files.js'),
+        ]);
+        const home = await store.ensureQuickChatWorkspace(ownerUserId);
+        const reviewThread = await store.createThread(
+          home.id,
+          'Review refresh delegation',
+          undefined,
+          'administration',
+          { visibility: 'private', privateOwnerUserId: ownerUserId }
+        );
+        const reviewTurn = await store.createTurn(
+          home.id,
+          reviewThread.id,
+          'Allow the explicit delegated refresh grant.',
+          { kind: 'user', id: ownerUserId },
+          null
+        );
+        const reviewDb = openWorkspaceDb(coreDb.dataRoot, home.id);
+        try {
+          const files = new RuntimeConfigFileService({
             dataRoot: coreDb.dataRoot,
-            initialSnapshot: {
-              ...configuration,
-              openKitConfig: {
-                ...configuration.openKitConfig,
-                policy: { ...configuration.openKitConfig.policy, mediation: requestedPolicy },
+            userId: ownerUserId,
+            workspaceIds: [home.id, workspaceId],
+            runtimeConfigManager: manager,
+            readRuntimeConfigStatus: () => manager.status(),
+          });
+          const service = createAdministrationConfiguration({
+            actor: actorFromRequest(new Request('http://fixture.invalid/'), 'local', ownerUserId),
+            coreDb,
+            store,
+            files,
+            runtimeConfig: () => manager.current(),
+            reload: () => manager.reload({ mode: 'safe', dryRun: false }),
+            repositoryWorkspaceDb(id) {
+              if (id !== home.id) throw new Error('Unexpected delegation Policy review scope.');
+              return reviewDb;
+            },
+            inflightCommands: new WeakMap(),
+          });
+          const proposal = await service.propose(
+            {
+              targetFamily: 'policy',
+              targetId: 'server',
+              expectedRevision: files.readFile('server.jsonc').file.revision!,
+              changes: {
+                proposed: requestedPolicy,
+                rationale: 'Explicit fixture-human delegation consent.',
               },
             },
-          })
-        );
-        configuration = manager.current();
+            { threadId: reviewThread.id, turnId: reviewTurn.id, requestId: randomUUID() }
+          );
+          const applied = await service.apply({
+            requestId: randomUUID(),
+            candidate: proposal.candidate,
+            confirmation: proposal.confirmation,
+          });
+          if (!applied.persisted || applied.reload !== 'applied')
+            throw new Error('Delegation Policy fixture was not published and loaded.');
+        } finally {
+          reviewDb.sqlite.close();
+        }
+        // Preserve the existing outside-peer configuration; Policy comes from the actual publication.
+        configuration = {
+          ...configuration,
+          openKitConfig: {
+            ...configuration.openKitConfig,
+            policy: manager.current().openKitConfig.policy,
+          },
+        };
         const interception = new PolicyInterception();
         native = await createNativeTaskAdmissionFixture(coreDb, store, {
           readRuntimeConfig: () => configuration,
