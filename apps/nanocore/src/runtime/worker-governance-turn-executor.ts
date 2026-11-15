@@ -75,7 +75,7 @@ import {
   StoreRecordNotFoundError,
   type TerminalTurnPublication,
 } from '../lib/store.js';
-import { OperationError } from '../operation-error.js';
+import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { PolicyInterception } from '../policy/interception.js';
 import { WORKER_TURN_LAUNCH_POLICY_SNAPSHOT_ID } from '../policy/permission-decisions.js';
@@ -4819,9 +4819,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             )
           ) {
             throw new TurnStartValidationError(
-              'workspace_access_denied',
-              'Workspace access denied.',
-              403
+              WORKSPACE_ACCESS_DENIED.code,
+              WORKSPACE_ACCESS_DENIED.message,
+              WORKSPACE_ACCESS_DENIED.status
             );
           }
           if (!workspaceDb) {
@@ -4860,9 +4860,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
               )
             )
               throw new TurnStartValidationError(
-                'workspace_access_denied',
-                'Workspace access denied.',
-                403
+                WORKSPACE_ACCESS_DENIED.code,
+                WORKSPACE_ACCESS_DENIED.message,
+                WORKSPACE_ACCESS_DENIED.status
               );
           };
           for (const source of transcript.observationSources) {
@@ -4895,9 +4895,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           )
         ) {
           throw new TurnStartValidationError(
-            'workspace_access_denied',
-            'Workspace access denied.',
-            403
+            WORKSPACE_ACCESS_DENIED.code,
+            WORKSPACE_ACCESS_DENIED.message,
+            WORKSPACE_ACCESS_DENIED.status
           );
         }
         const importResult = await importWorkerTranscript(store, environmentPackage, transcript, {
@@ -4987,9 +4987,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           )
         ) {
           throw new TurnStartValidationError(
-            'workspace_access_denied',
-            'Workspace access denied.',
-            403
+            WORKSPACE_ACCESS_DENIED.code,
+            WORKSPACE_ACCESS_DENIED.message,
+            WORKSPACE_ACCESS_DENIED.status
           );
         }
         await this.createWorkspaceChangeArtifacts(

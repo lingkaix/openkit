@@ -35,7 +35,11 @@ import {
   type OperationInvocationDependencies,
 } from './operation-composition.js';
 import type { OperationInvocationContext } from './operation-contract.js';
-import { OperationError, projectOperationError } from './operation-error.js';
+import {
+  OperationError,
+  projectOperationError,
+  WORKSPACE_ACCESS_DENIED,
+} from './operation-error.js';
 import { parseOperationInput } from './operation-resolvers.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
@@ -57,7 +61,11 @@ export function registerOperationJsonRoutes(
       try {
         const retryContext = c.req.header('x-openkit-retry-context');
         if (retryContext !== undefined && retryContext !== captureRetryContext(c.get('actor')))
-          throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
+          throw new OperationError(
+            WORKSPACE_ACCESS_DENIED.code,
+            WORKSPACE_ACCESS_DENIED.message,
+            WORKSPACE_ACCESS_DENIED.status
+          );
         if (operationUsesBootstrapSecret(definition) && c.get('bootstrapSecretAdmission') !== true)
           throw new OperationError('core.auth.unauthenticated', 'Authentication required.', 401);
         if (
@@ -292,7 +300,7 @@ export function registerRetainedOperationRoutes(input: {
         getControlStoreWorkerClient().isWorkspaceLifecycleClosed(input.coreDb.dataRoot, workspaceId)
       ) {
         if (route.access.mutating) return frozenWorkspace(workspaceId);
-        return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+        return workspaceAccessDenied();
       }
       if (!route.access.mutating) {
         await next();
@@ -332,14 +340,14 @@ async function authorizeOperation(
 ): Promise<Response | null> {
   const actor = context.get('actor');
   if (!actor) {
-    return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+    return workspaceAccessDenied();
   }
 
   if (route.access.scope === 'user') {
     if (route.access.authentication === 'canonical-user') {
       return isCanonicalUserOperationAuthorized(input.coreDb, actor, route.access.policyOperation)
         ? null
-        : asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+        : workspaceAccessDenied();
     }
     return authorizeGatewayOperation(context, actor, route.access, input.coreDb);
   }
@@ -351,7 +359,7 @@ async function authorizeOperation(
       requireCurrentDeploymentAdmin(input.coreDb, actor);
     } catch (error) {
       if (error instanceof DeploymentAdminRequiredError) {
-        return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+        return workspaceAccessDenied();
       }
       throw error;
     }
@@ -377,17 +385,17 @@ async function authorizeGatewayOperation(
 ): Promise<Response | null> {
   const workspaceId = await gatewayWorkspaceId(context);
   if (workspaceId === null) {
-    return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+    return workspaceAccessDenied();
   }
   if (workspaceId === undefined) {
     return isCanonicalUserOperationAuthorized(coreDb, actor, access.policyOperation)
       ? null
-      : asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+      : workspaceAccessDenied();
   }
 
   const authorized = authorizeWorkspace(coreDb, actor, workspaceId, access);
   if (!authorized) {
-    return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+    return workspaceAccessDenied();
   }
   context.set('workspaceAccess', {
     ...authorized,
@@ -418,7 +426,7 @@ async function authorizeWorkspaceOperation(
       actor.tokenScope === 'workspace-readonly' &&
       route.access.mutating
     ) {
-      return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+      return workspaceAccessDenied();
     }
     const workspaceIds = authorizedWorkspaceSet(
       input.coreDb,
@@ -436,14 +444,14 @@ async function authorizeWorkspaceOperation(
 
   const workspaceId = resolveWorkspaceId(context, route);
   if (!workspaceId) {
-    return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+    return workspaceAccessDenied();
   }
   const authorized = authorizeWorkspace(input.coreDb, actor, workspaceId, route.access);
   if (
     !authorized ||
     (route.access.resolver === 'actor-quick-chat-workspace' && !authorized.isOwner)
   ) {
-    return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
+    return workspaceAccessDenied();
   }
   context.set('workspaceAccess', {
     ...authorized,
@@ -595,4 +603,13 @@ function nonempty(value: string | undefined): string | null {
 /** Returns the uniform missing-or-inaccessible Thread failure. */
 function threadNotFound(): Response {
   return asApiError('Thread not found.', 'not_found', 404);
+}
+
+/** Frames the shared Workspace denial as the uniform route response. */
+function workspaceAccessDenied(): Response {
+  return asApiError(
+    WORKSPACE_ACCESS_DENIED.message,
+    WORKSPACE_ACCESS_DENIED.code,
+    WORKSPACE_ACCESS_DENIED.status
+  );
 }
