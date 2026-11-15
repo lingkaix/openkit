@@ -18,7 +18,6 @@ import {
 } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
-import { evaluateGoalTaskAccess } from './goal-task-access.js';
 import { PolicyInterception } from './interception.js';
 import {
   EMPTY_POLICY_DOCUMENT,
@@ -26,6 +25,7 @@ import {
   policyDigest,
   preparePolicyDocument,
 } from './statements.js';
+import { evaluateGoalTaskAccess } from './workspace-access.js';
 
 const agentId = 'design-worker';
 const cleanup: (() => Promise<void>)[] = [];

@@ -1,5 +1,9 @@
 import type { PolicyDecision } from '@openkit/policy-kernel';
-import type { PolicyResourceV1Schema, PolicySubjectV1Schema } from '@openkit/protocol';
+import {
+  AgentIdSchema,
+  PolicyResourceV1Schema,
+  type PolicySubjectV1Schema,
+} from '@openkit/protocol';
 import type { z } from 'zod';
 import { readNativeGoalView } from '../runtime/goal-owner.js';
 import {
@@ -9,9 +13,9 @@ import {
 import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { GoalDomainPolicyService } from './goal-domains.js';
-import { evaluateGoalTaskAccess, evaluateGoalTaskAdmission } from './goal-task-access.js';
 import type { PolicyUseDecision } from './permission-decisions.js';
 import { policyDigest } from './statements.js';
+import { evaluateGoalTaskAccess, evaluatePolicyKernel } from './workspace-access.js';
 
 /** Actual native Worker facts; the live and captured entry owners keep their own lifecycle guards. */
 export interface GoalTaskEvaluationInput {
@@ -112,11 +116,31 @@ export function createGoalTaskPolicyService(deps: {
         throw new Error(
           'Prepared Task Policy admission requires the current Goal, Plan and responsible human.'
         );
-      return evaluateGoalTaskAdmission({
-        ...input,
-        workspaceId,
-        domain: deps.domains.read({ workspaceId, goalId: input.goalId }),
-      });
+      const agentId = AgentIdSchema.parse(input.agentId);
+      const resources = input.resources.map((value) => PolicyResourceV1Schema.parse(value));
+      const domain = deps.domains.read({ workspaceId, goalId: input.goalId });
+      return {
+        domainAvailable: domain?.state === 'active',
+        kernel: evaluatePolicyKernel({
+          operation: 'turn.run',
+          goal: {
+            domain,
+            workspaceId,
+            planVersionId: input.planVersionId,
+            agentId,
+            resources,
+            humanKernel: input.humanKernel,
+          },
+        }),
+        authorizationRevision: policyDigest({
+          domain,
+          workspaceId,
+          planVersionId: input.planVersionId,
+          agentId,
+          resources,
+          humanKernel: input.humanKernel,
+        }),
+      };
     },
   };
 }

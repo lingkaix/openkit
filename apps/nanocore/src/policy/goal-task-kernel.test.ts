@@ -4,10 +4,9 @@ import type { z } from 'zod';
 import { testEntityId } from '../test-support/entity-ids.js';
 import {
   evaluateGoalTaskAccess,
-  evaluateGoalTaskAdmission,
+  evaluatePolicyKernel,
   type GoalTaskAccessInput,
-} from './goal-task-access.js';
-import { evaluatePolicyKernel } from './workspace-access.js';
+} from './workspace-access.js';
 
 const workspaceId = testEntityId('ws', 'goal-task-kernel');
 const humanId = testEntityId('usr', 'goal-task-human');
@@ -90,10 +89,12 @@ describe('Goal Task native Kernel projection', () => {
         mutating: false,
       }),
     };
-    const result = evaluateGoalTaskAdmission(prepared);
-    expect(result.kernel.effect).toBe('allow');
-    expect(result.kernel.trace.process).toBeUndefined();
-    expect(evaluateGoalTaskAdmission({ ...prepared, resources: [] }).kernel.effect).toBe('allow');
+    const result = evaluatePolicyKernel({ operation: 'turn.run', goal: prepared });
+    expect(result.effect).toBe('allow');
+    expect(result.trace.process).toBeUndefined();
+    expect(
+      evaluatePolicyKernel({ operation: 'turn.run', goal: { ...prepared, resources: [] } }).effect
+    ).toBe('allow');
     for (const change of [
       { agentId: 'other-worker' },
       { planVersionId: 'obsolete-plan' },
@@ -117,7 +118,9 @@ describe('Goal Task native Kernel projection', () => {
         }),
       },
     ])
-      expect(evaluateGoalTaskAdmission({ ...prepared, ...change }).kernel.effect).toBe('deny');
+      expect(
+        evaluatePolicyKernel({ operation: 'turn.run', goal: { ...prepared, ...change } }).effect
+      ).toBe('deny');
   });
   it('requires both Goal and exact Task associations in the existing Kernel', () => {
     const result = evaluateGoalTaskAccess(input());
