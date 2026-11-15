@@ -22,9 +22,9 @@ import {
 /** Fixed admission deadline measured from the original nominal instant. */
 export const RECURRING_DEADLINE_MS = 600_000;
 
-export { RecurringAdmissionPayloadSchema } from './scheduler-admission-codecs.js';
+export { RecurringAdmissionPayloadSchema } from './control-store-admission-codecs.js';
 
-import type { RecurringAdmissionPayloadSchema } from './scheduler-admission-codecs.js';
+import type { RecurringAdmissionPayloadSchema } from './control-store-admission-codecs.js';
 
 /** Closed native v1 attempt outcomes, independent of current operation projections. */
 const RecurringAttemptCodeSchema = StoredRecurringAttemptCodeV1Schema;

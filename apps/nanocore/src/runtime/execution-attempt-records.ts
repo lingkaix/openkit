@@ -9,8 +9,8 @@ import type { z } from 'zod';
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { revokeRunBoundAccessTokensInDb } from '../auth/run-bound-access-token-native.js';
 import {
+  type CoreSchedulerQueueEntry,
   requireSchedulerAdmissionEntry,
-  type SchedulerAdmissionEntryRecord,
 } from '../scheduler-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { CoreDb } from '../storage/db.js';
@@ -133,7 +133,7 @@ export function listOpenSchedulerExecutionAttempts(
 export function createSchedulerExecutionAttempt(
   coreDb: CoreDb,
   input: {
-    readonly entry: SchedulerAdmissionEntryRecord;
+    readonly entry: CoreSchedulerQueueEntry;
     readonly attemptId?: string;
     readonly preparationInput: unknown;
     readonly now?: () => string;

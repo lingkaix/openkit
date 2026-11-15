@@ -20,9 +20,9 @@ import {
 } from '../policy/workspace-access.js';
 import { assertCurrentWorkerCredentialAuthority } from '../runtime/worker-credential-authority.js';
 import {
+  type CoreSchedulerQueueEntry,
   findSchedulerAdmissionForTurn,
   findSchedulerAdmissionForWorkerLineage,
-  type SchedulerAdmissionEntryRecord,
   type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
 import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
@@ -460,7 +460,7 @@ export function currentWorkspaceAuthority(
 export function currentSchedulerAdmissionWorkspaceAuthority(
   coreDb: CoreDb,
   admission: Pick<
-    SchedulerAdmissionEntryRecord,
+    CoreSchedulerQueueEntry,
     'workspaceId' | 'triggerActor' | 'serverAdminTokenId' | 'credentialRef'
   >,
   operation: string,

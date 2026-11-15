@@ -17,16 +17,16 @@ import { StructuredWorkerDelegationRequestSchema } from '../internal-agents/dele
 import type { CommandRequestRecord, FsStore } from '../lib/store.js';
 import type { ProviderCredentialResolver } from '../providers/registry.js';
 import {
+  type CoreSchedulerQueueEntry,
   requireSchedulerAdmissionEntry,
-  type SchedulerAdmissionEntryRecord,
   SchedulerAdmissionTransitionError,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
+import type { ExternalSourceSchema } from '../storage/control-store-admission-codecs.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { ExternalTriggerAdmission } from '../storage/external-trigger-admissions.js';
-import type { ExternalSourceSchema } from '../storage/scheduler-admission-codecs.js';
-import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { assertRunSkillSelectionsIncluded } from './agent-environment.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { commandInputHash, type IdempotentCommandReceipt } from './idempotent-command.js';
@@ -89,7 +89,7 @@ interface StartProductTurnInput
   readonly validateAdmissionSource?: () => void;
   /** Observes only the already FULL-acknowledged original admission; never writes Core. */
   readonly onAdmissionCommitted?: (
-    entry: SchedulerAdmissionEntryRecord,
+    entry: CoreSchedulerQueueEntry,
     external?: ExternalTriggerAdmission
   ) => void;
   /**
@@ -262,7 +262,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
     input.input.reasoningEffort ?? setup.setup.manifest.models.reasoningEffort;
   if (input.fileInputs?.length) input.assertFileInputAdmission?.();
   try {
-    const result = await publishSchedulerAdmission(
+    const result = await admitCoreScheduler(
       input.coreDb,
       {
         mode: 'create',
@@ -443,7 +443,7 @@ export async function cancelOwnedQueuedAdmission(
     if (entry.status !== 'queued' && entry.status !== 'denied') {
       return;
     }
-    await publishSchedulerAdmission(coreDb, { mode: 'cancel', ...input });
+    await admitCoreScheduler(coreDb, { mode: 'cancel', ...input });
   } catch {
     // The dispatch failure remains authoritative when concurrent admission progress blocks cleanup.
   }
@@ -554,7 +554,7 @@ export function verifyAcceptedTurnLineage(input: {
     : null;
   let turn: z.infer<typeof TurnSchema>;
   let attempt: ReturnType<typeof listSchedulerExecutionAttemptsForTurn>[number] | null;
-  let admission: SchedulerAdmissionEntryRecord;
+  let admission: CoreSchedulerQueueEntry;
   try {
     turn = input.store.getTurn(input.workspaceId, input.threadId, input.turnId);
     const attempts = listSchedulerExecutionAttemptsForTurn(input.coreDb, input);

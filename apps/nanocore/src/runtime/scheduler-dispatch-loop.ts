@@ -29,11 +29,12 @@ import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import type { ProviderRegistry } from '../providers/registry.js';
 import {
+  type CoreSchedulerQueueEntry,
   findNextDispatchableSchedulerAdmissionEntry,
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
-  type SchedulerAdmissionEntryRecord,
 } from '../scheduler-records.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
@@ -43,7 +44,6 @@ import {
 } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
-import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { withTurnDispatchTelemetry } from '../telemetry.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import {
@@ -110,7 +110,7 @@ export interface RunSchedulerDispatchLoopInput
 export interface SchedulerDispatchLoopStartedTurn {
   dispatch: {
     status: 'dispatched';
-    entry: SchedulerAdmissionEntryRecord;
+    entry: CoreSchedulerQueueEntry;
     attempt: SchedulerExecutionAttemptRecord;
   };
   handle: TurnHandle;
@@ -130,7 +130,7 @@ export interface SchedulerDispatchLoopResult {
           | 'recovery-required'
           | 'max-dispatches';
       }
-    | { status: 'denied'; entry: SchedulerAdmissionEntryRecord };
+    | { status: 'denied'; entry: CoreSchedulerQueueEntry };
 }
 
 /** Existing process-local invocation claim joins full closeout; no receipt, result, or claim survives its attempt. */
@@ -209,7 +209,7 @@ export async function runSchedulerDispatchLoop(
       if (
         !currentSchedulerAdmissionWorkspaceAuthority(input.coreDb, entry, 'runtime.launch', true)
       ) {
-        const denied = await publishSchedulerAdmission(input.coreDb, {
+        const denied = await admitCoreScheduler(input.coreDb, {
           mode: 'deny',
           queueEntryId: entry.queueEntryId,
           denialReason: 'authority-denied',
@@ -234,7 +234,7 @@ export async function runSchedulerDispatchLoop(
       }
       // Admission is only early refusal; the live activated policy decides before effects.
       if (!currentSchedulerDispatchAuthority(input, entry)) {
-        const denied = await publishSchedulerAdmission(input.coreDb, {
+        const denied = await admitCoreScheduler(input.coreDb, {
           mode: 'deny',
           queueEntryId: entry.queueEntryId,
           denialReason: 'authority-denied',
@@ -286,7 +286,7 @@ export async function runSchedulerDispatchLoop(
 /** Checks the existing receipt or receipt-free source tuple without inventing a second ready flag. */
 function schedulerEntryPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
-  entry: SchedulerAdmissionEntryRecord
+  entry: CoreSchedulerQueueEntry
 ): boolean {
   const occurrence = findAcceptedRecurringOccurrenceForQueue(input.coreDb, entry.queueEntryId);
   if (occurrence) return recurringTurnPublicationIssue(input.store, entry) === null;
@@ -357,7 +357,7 @@ function schedulerEntryPublicationComplete(
 /** Resolves the existing administrator-home activation receipt and immutable result for its queued successor. */
 function activationPublicationComplete(
   input: RunSchedulerDispatchLoopInput,
-  entry: SchedulerAdmissionEntryRecord
+  entry: CoreSchedulerQueueEntry
 ): boolean {
   for (const workspace of listExistingWorkspaceDatabaseScopes(input.coreDb.dataRoot)) {
     const db = openWorkspaceReadDb(input.coreDb.dataRoot, workspace.workspaceId);
@@ -399,7 +399,7 @@ function activationPublicationComplete(
 /** Re-evaluates live Core eligibility and activated Thread policy at the execution boundary. */
 function currentSchedulerDispatchAuthority(
   input: RunSchedulerDispatchLoopInput,
-  entry: SchedulerAdmissionEntryRecord
+  entry: CoreSchedulerQueueEntry
 ): boolean {
   const authority = currentSchedulerAdmissionWorkspaceAuthority(
     input.coreDb,
@@ -435,7 +435,7 @@ function currentSchedulerDispatchAuthority(
 /** Keeps preparation, submission, and Turn closeout with their current executor owner. */
 async function dispatchSchedulerAdmission(
   input: RunSchedulerDispatchLoopInput,
-  entry: SchedulerAdmissionEntryRecord,
+  entry: CoreSchedulerQueueEntry,
   acknowledgeSubmission: (result: SchedulerDispatchLoopResult) => void
 ): Promise<SchedulerDispatchLoopResult> {
   input.onDispatchAttribution?.(entry.queueEntryId);

@@ -433,30 +433,34 @@ it('refuses a public definition mutation when its real bearer is revoked after p
 
   f.setTime(sealedAt);
   const client = getControlStoreWorkerClient();
-  const submit = client.schedulerAdmission.bind(client);
+  const submit = client.transition.bind(client);
   let revokedRows: ReturnType<typeof coreRows> | undefined;
-  const posted = vi
-    .spyOn(client, 'schedulerAdmission')
-    .mockImplementation(async (database, request) => {
-      expect(rechecks).toBe(2);
-      expect(isWorkspaceOperationAuthorized(f.db, actor, workspace.id, access)).toBe(true);
-      // Change only the real credential owner after preparation, immediately before native submission.
-      const authority = openCoreDb(f.db.dataRoot);
-      try {
-        expect(
-          revokeOpenKitAccessTokenRecord(authority, issued.tokenId, new Date(sealedAt))
-        ).toMatchObject({
-          tokenId: issued.tokenId,
-          status: 'revoked',
-          revokedAt: sealedAt,
-        });
-      } finally {
-        authority.sqlite.close();
-      }
-      expect(isWorkspaceOperationAuthorized(f.db, actor, workspace.id, access)).toBe(false);
-      revokedRows = coreRows(f.db);
+  const posted = vi.spyOn(client, 'transition').mockImplementation(async (database, request) => {
+    if (
+      database !== `core:${f.db.sqlite.name}` ||
+      !('kind' in request) ||
+      request.kind !== 'scheduler-work'
+    )
       return await submit(database, request);
-    });
+    expect(rechecks).toBe(2);
+    expect(isWorkspaceOperationAuthorized(f.db, actor, workspace.id, access)).toBe(true);
+    // Change only the real credential owner after preparation, immediately before native submission.
+    const authority = openCoreDb(f.db.dataRoot);
+    try {
+      expect(
+        revokeOpenKitAccessTokenRecord(authority, issued.tokenId, new Date(sealedAt))
+      ).toMatchObject({
+        tokenId: issued.tokenId,
+        status: 'revoked',
+        revokedAt: sealedAt,
+      });
+    } finally {
+      authority.sqlite.close();
+    }
+    expect(isWorkspaceOperationAuthorized(f.db, actor, workspace.id, access)).toBe(false);
+    revokedRows = coreRows(f.db);
+    return await submit(database, request);
+  });
   try {
     const refused = operations['automation.update'](
       { automationId: target.id, expectedRevision: active.revision, status: 'paused' },
@@ -468,7 +472,14 @@ it('refuses a public definition mutation when its real bearer is revoked after p
       status: 403,
       message: 'Workspace access denied.',
     });
-    expect(posted).toHaveBeenCalledOnce();
+    expect(
+      posted.mock.calls.filter(
+        ([database, transition]) =>
+          database === `core:${f.db.sqlite.name}` &&
+          'kind' in transition &&
+          transition.kind === 'scheduler-work'
+      )
+    ).toHaveLength(1);
     expect(revokedRows).toBeDefined();
     expect(coreRows(f.db)).toEqual(revokedRows);
     expect(f.store.getAutomation(target.id)).toEqual(scanned);

@@ -157,11 +157,16 @@ import {
   controlStoreFor,
 } from './control-store.js';
 import { applyControlAdmission } from './control-store-admission.js';
+import type { CoreSchedulerResult } from './control-store-admission-codecs.js';
 import {
   type ControlAdmissionResult,
   type ControlCommandReceiptAdmission,
   ControlCommandReceiptAdmissionSchema,
   type ControlKnowledgeAdmissionResult,
+  type CoreSchedulerInput,
+  CoreSchedulerInputSchema,
+  CoreSchedulerRefusalSchema,
+  SchedulerAdmissionTransitionError,
 } from './control-store-admission-codecs.js';
 import {
   applyControlCapabilityCommand,
@@ -287,13 +292,6 @@ import {
 } from './runtime-policy-publication.js';
 import { RuntimeTargetRefusal } from './runtime-target-codecs.js';
 import { applyControlRuntimeTarget } from './runtime-target-native.js';
-import {
-  type ControlSchedulerAdmission,
-  ControlSchedulerAdmissionRefusalSchema,
-  ControlSchedulerAdmissionSchema,
-  SchedulerAdmissionTransitionError,
-} from './scheduler-admission-codecs.js';
-import { applyControlSchedulerAdmission } from './scheduler-admission-native.js';
 import { applyScopedNotebookSqlInDb } from './scoped-notebook-sql-native.js';
 import { SECURITY_TRIGGER_REFUSALS, SecurityTriggerRefusal } from './security-trigger-codecs.js';
 import { applySecurityTriggerInDb } from './security-trigger-native.js';
@@ -442,7 +440,6 @@ type WriteCommand = Extract<
       | 'worker-control-evidence'
       | 'generative-presentation'
       | 'evaluation-candidate'
-      | 'scheduler-admission'
       | 'recovery-target-registration'
       | 'recovery-target-preparation'
       | 'recovery-source-reactivation'
@@ -479,7 +476,7 @@ type WriteRequest = WriteCommand & {
   readonly preparedApp?: PreparedControlApp;
   readonly preparedSchemaApplication?: PreparedNativeSchemaApplication;
   readonly appInput?: ControlAppInput;
-  readonly preparedSchedulerAdmission?: ControlSchedulerAdmission;
+  readonly preparedSchedulerAdmission?: CoreSchedulerInput;
   readonly preparedAttentionEnqueue?: AttentionEnqueueCommand;
   readonly preparedCommandReceipt?: ControlCommandReceiptAdmission;
   readonly preparedStandaloneAudit?: ControlStandaloneAuditInput;
@@ -737,7 +734,15 @@ function failure(
 }
 
 /** Projects only declared owner refusals; SQLite diagnostics never enter this trusted projection. */
-function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRefusal | undefined {
+function domainRefusal(
+  operation: string,
+  error: unknown,
+  request?: ControlWorkerRequest | WriteRequest
+): ControlWorkerDomainRefusal | undefined {
+  const schedulerWork =
+    request?.operation === 'transition' &&
+    'kind' in request.transition &&
+    request.transition.kind === 'scheduler-work';
   if (
     operation === 'resolved-agent-setup' &&
     error instanceof TypeError &&
@@ -1045,7 +1050,8 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
   if (operation === 'worker-storage-binding' && error instanceof WorkerStorageBindingError)
     return { operation, code: error.code, message: error.message, status: 409 };
   if (
-    operation === 'scheduler-admission' &&
+    operation === 'transition' &&
+    schedulerWork &&
     (error instanceof SyntaxError || error instanceof ZodError)
   )
     return {
@@ -1055,7 +1061,7 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       message: 'The record could not be processed.',
       status: 400,
     };
-  if (operation === 'scheduler-admission' && error instanceof SchedulerAdmissionTransitionError) {
+  if (schedulerWork && error instanceof SchedulerAdmissionTransitionError) {
     const domain = {
       operation,
       kind: 'transition' as const,
@@ -1067,9 +1073,9 @@ function domainRefusal(operation: string, error: unknown): ControlWorkerDomainRe
       ? (domain as ControlWorkerDomainRefusal)
       : undefined;
   }
-  if (operation === 'scheduler-admission' && error instanceof OperationError) {
+  if (schedulerWork && error instanceof OperationError) {
     for (const kind of ['authority', 'turn'] as const) {
-      const parsed = ControlSchedulerAdmissionRefusalSchema.safeParse({
+      const parsed = CoreSchedulerRefusalSchema.safeParse({
         operation,
         kind,
         code: error.code,
@@ -2161,7 +2167,7 @@ function flush(owner: OwnedDatabase): void {
       releaseContentPublications(owner.publications, first.preparedPublications ?? []);
       const code = failureCode(error, [first.id]);
       if (code === 'integrity') owner.poisoned = true;
-      const domain = domainRefusal(first.operation, error);
+      const domain = domainRefusal(first.operation, error, first);
       complete(
         owner,
         first,
@@ -2210,7 +2216,7 @@ function flush(owner: OwnedDatabase): void {
     try {
       request.preparedSchemaApplication.publishHistory();
     } catch (error) {
-      const domain = domainRefusal(request.operation, error);
+      const domain = domainRefusal(request.operation, error, request);
       request.refusal = domain
         ? { ...failure(request.id, 'precondition'), domain }
         : failure(request.id, failureCode(error, [request.id]));
@@ -2320,7 +2326,7 @@ function flush(owner: OwnedDatabase): void {
       }
       request.preparedVaultRead?.sampleHead();
     } catch (error) {
-      const domain = domainRefusal(request.operation, error);
+      const domain = domainRefusal(request.operation, error, request);
       request.refusal = domain
         ? { ...failure(request.id, 'precondition'), domain }
         : failure(request.id, failureCode(error, [request.id]), 'not-committed');
@@ -2352,7 +2358,11 @@ function flush(owner: OwnedDatabase): void {
               result: request.preparedSchemaApplication.result,
             };
           } else if (request.operation === 'transition') {
-            let result: ControlAdmissionResult | ControlKnowledgeAdmissionResult | null;
+            let result:
+              | ControlAdmissionResult
+              | ControlKnowledgeAdmissionResult
+              | CoreSchedulerResult
+              | null;
             if ('kind' in request.transition && request.transition.kind === 'command-receipt') {
               const input = request.preparedCommandReceipt;
               if (!input) throw new ControlProductPreconditionError();
@@ -2360,6 +2370,16 @@ function flush(owner: OwnedDatabase): void {
               const db = 'userId' in scope ? nativeUserDb(owner, scope.userId) : owner.scopeDb;
               if (!db) throw new ControlProductPreconditionError();
               result = applyControlAdmission(db, input);
+            } else if (
+              'kind' in request.transition &&
+              request.transition.kind === 'scheduler-work'
+            ) {
+              if (owner.scopeDb?.scope !== 'core' || !request.preparedSchedulerAdmission)
+                throw new ControlProductPreconditionError();
+              result = applyControlAdmission(owner.scopeDb, {
+                kind: 'scheduler-work',
+                input: request.preparedSchedulerAdmission,
+              });
             } else if ('kind' in request.transition) {
               if (!owner.scopeDb || !owner.productOwner)
                 throw new ControlProductPreconditionError();
@@ -2373,12 +2393,22 @@ function flush(owner: OwnedDatabase): void {
                 request.preparedEntries ?? []
               );
             }
-            if (result && !result.replayed && owner.scopeDb?.scope === 'workspace')
+            if (
+              result &&
+              'replayed' in result &&
+              !result.replayed &&
+              owner.scopeDb?.scope === 'workspace'
+            )
               for (const threadId of archivedThreads(request)) {
                 if (!request.preparedPending) throw new ControlProductPreconditionError();
                 assertControlPendingArchive(owner.scopeDb, threadId, request.preparedPending);
               }
-            if (result && !result.replayed && 'products' in request.transition)
+            if (
+              result &&
+              'replayed' in result &&
+              !result.replayed &&
+              'products' in request.transition
+            )
               for (const command of request.transition.pending ?? []) {
                 if (owner.scopeDb?.scope !== 'workspace')
                   throw new ControlProductPreconditionError();
@@ -3052,20 +3082,6 @@ function flush(owner: OwnedDatabase): void {
               operation: 'worker-storage-binding',
               result,
             };
-          } else if (request.operation === 'scheduler-admission') {
-            if (owner.scopeDb?.scope !== 'core') throw new ControlProductPreconditionError();
-            if (!request.preparedSchedulerAdmission) throw new ControlProductPreconditionError();
-            const result = applyControlSchedulerAdmission(
-              owner.scopeDb,
-              request.preparedSchedulerAdmission
-            );
-            outcome = {
-              version: CONTROL_WORKER_VERSION,
-              id: request.id,
-              status: 'ok',
-              operation: 'scheduler-admission',
-              result,
-            };
           } else if (request.operation === 'recovery-source-reactivation') {
             if (!owner.scopeDb) throw new ControlProductPreconditionError();
             applyControlRecoverySourceReactivation(owner.scopeDb, request.input);
@@ -3445,7 +3461,7 @@ function flush(owner: OwnedDatabase): void {
           sqlite.exec('ROLLBACK TO control_transition');
           sqlite.exec('RELEASE control_transition');
           if (failureCode(error) === 'integrity') throw error;
-          const domain = domainRefusal(request.operation, error);
+          const domain = domainRefusal(request.operation, error, request);
           const refused = domain
             ? { ...failure(request.id, 'precondition'), domain }
             : failure(request.id, failureCode(error, [request.id]));
@@ -4441,7 +4457,6 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
       value.operation === 'worker-control-final-status' ||
       value.operation === 'worker-control-heartbeat' ||
       value.operation === 'worker-control-record' ||
-      value.operation === 'scheduler-admission' ||
       value.operation === 'recovery-target-registration' ||
       value.operation === 'recovery-target-preparation' ||
       value.operation === 'recovery-source-reactivation' ||
@@ -4460,7 +4475,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
         try {
           lanes = requestLanes(owner, value);
         } catch (error) {
-          const domain = domainRefusal(value.operation, error);
+          const domain = domainRefusal(value.operation, error, value);
           reply(
             domain
               ? { ...failure(value.id, 'precondition'), domain }
@@ -4511,7 +4526,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
           let preparedWorkspaceCapture: RawWorkspaceCapture | null | undefined;
           let preparedApp: PreparedControlApp | undefined;
           let appInput: ControlAppInput | undefined;
-          let preparedSchedulerAdmission: ControlSchedulerAdmission | undefined;
+          let preparedSchedulerAdmission: CoreSchedulerInput | undefined;
           let preparedAttentionEnqueue: AttentionEnqueueCommand | undefined;
           let preparedCommandReceipt: ControlCommandReceiptAdmission | undefined;
           let preparedStandaloneAudit: ControlStandaloneAuditInput | undefined;
@@ -4623,12 +4638,16 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
                 admitPhysicalPublication(owner, queued, files)
               );
             }
-            if (value.operation === 'scheduler-admission') {
-              preparedSchedulerAdmission = ControlSchedulerAdmissionSchema.parse(
+            if (
+              value.operation === 'transition' &&
+              'kind' in value.transition &&
+              value.transition.kind === 'scheduler-work'
+            ) {
+              preparedSchedulerAdmission = CoreSchedulerInputSchema.parse(
                 JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(value.content))
               );
               if (
-                value.input.turnId !==
+                value.transition.input.turnId !==
                 (preparedSchedulerAdmission.mode === 'create'
                   ? preparedSchedulerAdmission.entry.turnId
                   : null)
@@ -4994,7 +5013,7 @@ function receive(value: unknown, cohort?: WriteRequest['cohort']): void {
             schedule(owner);
           } catch (error) {
             preparedVaultRead?.close();
-            const domain = domainRefusal(value.operation, error);
+            const domain = domainRefusal(value.operation, error, value);
             queued.refusal = owner.poisoned
               ? failure(value.id, 'unavailable')
               : domain

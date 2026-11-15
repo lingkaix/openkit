@@ -2,10 +2,20 @@ import { isDeepStrictEqual } from 'node:util';
 import { readRetainedV1, responsibleUserIdForActor, writeRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import {
+  currentSchedulerAdmissionWorkspaceAuthority,
+  currentWorkerLineageWorkspaceAuthority,
+  currentWorkspaceAuthority,
+  isWorkspaceOperationAuthorized,
+} from '../auth/operation-authorizer.js';
 import { NotebookError } from '../knowledge/notebook.js';
-import type { CommandRequestResponse } from '../lib/store.js';
-import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
-import { IdempotencyKeyConflictError } from '../operation-error.js';
+import {
+  type CommandRequestResponse,
+  type FsStore,
+  quickChatWorkspaceIdForUser,
+} from '../lib/store.js';
+import { IdempotencyKeyConflictError, OperationError } from '../operation-error.js';
+import { readExternalTriggerPollSource } from '../runtime/external-trigger-source.js';
 import { GoalCommandError } from '../runtime/goal-error.js';
 import { advanceGoalRevision, goalPlanDigest } from '../runtime/goal-owner.js';
 import {
@@ -14,6 +24,15 @@ import {
   StoredGoalPlanVersionV1Schema,
   StoredGoalV1Schema,
 } from '../runtime/goal-retained-v1.js';
+import { TurnStartValidationError } from '../runtime/orchestrator.js';
+import {
+  cancelSchedulerAdmissionEntry,
+  createSchedulerAdmissionEntry,
+  denySchedulerAdmissionEntry,
+  retryDeniedSchedulerAdmissionEntry,
+} from '../scheduler-records.js';
+import { accessDenied } from '../workspace-sharing-operations.js';
+import { applyAutomationDefinitionInDb } from './automation-definition-native.js';
 import { parseStoredCommandScope } from './command-request-codecs.js';
 import {
   assertCommandRequestDbOwner,
@@ -26,6 +45,8 @@ import {
   writeCommandRequestRecordInDb,
 } from './command-request-records.js';
 import {
+  AutomationMutationError,
+  AutomationRecordNotFoundError,
   type ControlAdmission,
   type ControlAdmissionInput,
   ControlAdmissionInputSchema,
@@ -36,12 +57,16 @@ import {
   type ControlKnowledgeAdmissionInput,
   ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
+  type CoreSchedulerDraft,
+  type CoreSchedulerInput,
+  CoreSchedulerInputSchema,
+  type CoreSchedulerResult,
   type GoalTaskCitation,
   isSeparateScopedNotebookReceipt,
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
   SCOPED_NOTEBOOK_USER_RECEIPTS,
 } from './control-store-admission-codecs.js';
-import { commandInputHash } from './control-store-input.js';
+import { commandInputHash, presentControlFacts } from './control-store-input.js';
 import {
   type ControlProductMutation,
   type ControlProductOwner,
@@ -56,8 +81,15 @@ import {
   type PreparedControlEntry,
   readPreparedControlEntry,
 } from './control-store-products.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import type { CoreDb, UserDb, WorkspaceDb } from './db.js';
+import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
+import {
+  applyNativeRecurringAttempt,
+  findRecurringAutomationFromDb,
+} from './recurring-attempt-native.js';
 import { StoredItemV1Schema } from './retained-work-items-v1.js';
+import { nativeProductScope } from './workspace-file-records.js';
 
 /** Verifies the actual physical receipt owner, without treating extra resource selectors as new authority. */
 function assertReceiptOwner(owner: ControlProductOwner, scope: Record<string, string>): void {
@@ -111,6 +143,10 @@ export function applyControlAdmission(
   entries: readonly PreparedControlEntry[]
 ): ControlAdmissionResult;
 export function applyControlAdmission(
+  db: CoreDb,
+  work: Extract<ControlAdmissionInput, { kind: 'scheduler-work' }>
+): CoreSchedulerResult;
+export function applyControlAdmission(
   db: CoreDb | WorkspaceDb,
   work: Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
 ): ControlKnowledgeAdmissionResult;
@@ -123,12 +159,18 @@ export function applyControlAdmission(
   connection: Database.Database | CoreDb | WorkspaceDb | UserDb,
   ownerOrWork:
     | ControlProductOwner
+    | Extract<ControlAdmissionInput, { kind: 'scheduler-work' }>
     | Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
     | ControlCommandReceiptAdmission
     | { readonly goalTaskCitation: GoalTaskCitation; readonly threadId: string },
   value?: ControlAdmission | Pick<FsStore, 'getThread' | 'listThreads'>,
   entries: readonly PreparedControlEntry[] = []
-): ControlAdmissionResult | ControlKnowledgeAdmissionResult | null | undefined {
+):
+  | ControlAdmissionResult
+  | ControlKnowledgeAdmissionResult
+  | CoreSchedulerResult
+  | null
+  | undefined {
   if ('sqlite' in connection && 'goalTaskCitation' in ownerOrWork) {
     const db = connection;
     if (db.scope !== 'workspace') throw new ControlProductPreconditionError();
@@ -236,6 +278,10 @@ export function applyControlAdmission(
     if (work.kind === 'command-receipt') {
       admitCommandReceipt(connection, work);
       return null;
+    }
+    if (work.kind === 'scheduler-work') {
+      if (connection.scope !== 'core') throw new ControlProductPreconditionError();
+      return admitCoreSchedulerWork(connection, work.input);
     }
     if (connection.scope === 'user') throw new ControlProductPreconditionError();
     return admitKnowledgeWork(connection, work.input);
@@ -778,4 +824,186 @@ function admitKnowledgeWork(
     recordControlCommandRequestRecordInDb(db, { ...receipt, response });
   }
   return { threadId, turnId: input.turnId, busy, replayed: false };
+}
+
+/** Original Core policy/queue/source tuple, decided only by its owning native savepoint. */
+function admitCoreSchedulerWork(db: CoreDb, raw: CoreSchedulerInput): CoreSchedulerResult {
+  assertControlProductWriter(db.sqlite);
+  const input = CoreSchedulerInputSchema.parse(raw);
+  if (input.mode === 'definition') {
+    if (
+      input.actor &&
+      (input.actor.userId !== input.userId ||
+        !isWorkspaceOperationAuthorized(db, presentControlFacts(input.actor), input.workspaceId, {
+          mutating: true,
+          policyOperation: 'workspace.configure',
+        }))
+    )
+      throw accessDenied();
+    try {
+      const actualWorkspace =
+        input.mutation.action === 'create'
+          ? input.mutation.input.workspaceId
+          : findRecurringAutomationFromDb(db, input.mutation.id)?.workspaceId;
+      if (actualWorkspace !== input.workspaceId)
+        throw new AutomationRecordNotFoundError(`Automation not found: ${input.mutation.id}`);
+      return {
+        kind: 'definition',
+        record: applyAutomationDefinitionInDb(db, input.userId, input.mutation, input.timestamp),
+      };
+    } catch (error) {
+      if (error instanceof AutomationMutationError)
+        throw new OperationError('automation_conflict', error.message, 409, { cause: error });
+      if (error instanceof AutomationRecordNotFoundError)
+        throw new OperationError(
+          input.mutation.action === 'delete'
+            ? 'automation_delete_failed'
+            : 'automation_update_failed',
+          error.message,
+          404,
+          { cause: error }
+        );
+      throw error;
+    }
+  }
+  if (input.mode === 'recurring-attempt')
+    return { kind: 'occurrence', occurrence: applyNativeRecurringAttempt(db, input) };
+  if (input.mode === 'create') {
+    if (input.external) {
+      const { source, scheduleId } = input.external;
+      const schedule = findRecurringAutomationFromDb(db, scheduleId);
+      const { occurrence } = readExternalTriggerPollSource(db, source.turnId);
+      if (
+        !schedule ||
+        schedule.status !== 'active' ||
+        schedule.workspaceId !== source.workspaceId ||
+        occurrence.scheduleId !== scheduleId ||
+        occurrence.snapshot.threadId !== source.threadId ||
+        !isDeepStrictEqual(schedule.actor, source.triggerActor) ||
+        !isDeepStrictEqual(occurrence.snapshot.actor, source.triggerActor) ||
+        !isDeepStrictEqual(input.entry.triggerActor, source.triggerActor) ||
+        input.entry.workspaceId !== source.workspaceId ||
+        !currentWorkerLineageWorkspaceAuthority(db, source, 'turn.run', true) ||
+        !currentWorkerLineageWorkspaceAuthority(db, source, 'runtime.launch', true)
+      )
+        throw new OperationError(
+          'external_event_denied',
+          'Scheduled poll admission was denied.',
+          403
+        );
+    } else if (
+      !currentSchedulerAdmissionWorkspaceAuthority(
+        db,
+        {
+          ...input.entry,
+          serverAdminTokenId: input.entry.serverAdminTokenId ?? null,
+          credentialRef: input.entry.credentialRef ?? null,
+        },
+        'runtime.launch',
+        true
+      )
+    )
+      throw accessDenied();
+    if (
+      db.sqlite
+        .prepare(
+          "SELECT 1 FROM scheduler_admission_entries WHERE workspace_id = ? AND thread_id = ? AND turn_id <> ? AND status = 'queued' LIMIT 1"
+        )
+        .get(input.entry.workspaceId, input.entry.threadId, input.entry.turnId)
+    )
+      throw new OperationError('thread_busy', 'Thread already has a nonterminal Turn.', 409);
+    const entry = createSchedulerAdmissionEntry(
+      db,
+      presentControlFacts({
+        ...input.entry,
+        ...(input.entry.timestamp ? { now: () => input.entry.timestamp! } : {}),
+      })
+    );
+    if (!input.external) return { kind: 'queue', entry };
+    const external = insertExternalTriggerAdmission(db, {
+      scheduleId: input.external.scheduleId,
+      eventKey: input.external.eventKey,
+      sourceTurnId: input.external.source.turnId,
+      queueEntryId: entry.queueEntryId,
+    });
+    if (external.queueEntryId !== entry.queueEntryId)
+      throw new OperationError(
+        'recovery_required',
+        'Accepted external event work requires inspection.',
+        409
+      );
+    return { kind: 'queue', entry, external };
+  }
+  if (
+    (input.mode === 'retry' || input.mode === 'cancel') &&
+    input.actor &&
+    !('userId' in input.actor
+      ? isWorkspaceOperationAuthorized(db, presentControlFacts(input.actor), input.workspaceId, {
+          mutating: true,
+          policyOperation: 'turn.run',
+        })
+      : input.lineage &&
+        input.lineage.workspaceId === input.workspaceId &&
+        currentWorkerLineageWorkspaceAuthority(
+          db,
+          { ...input.lineage, triggerActor: input.actor },
+          'turn.run',
+          true
+        ) &&
+        currentWorkspaceAuthority(db, input.workspaceId, input.actor, 'turn.run', true))
+  )
+    throw accessDenied();
+  // Denial may come from the live policy owner; it grants no execution authority.
+  const entry =
+    input.mode === 'deny'
+      ? denySchedulerAdmissionEntry(db, input)
+      : input.mode === 'retry'
+        ? retryDeniedSchedulerAdmissionEntry(db, input)
+        : cancelSchedulerAdmissionEntry(db, input);
+  return { kind: 'queue', entry };
+}
+
+/** Original complete Core scheduler business admission; preparation still follows native open. */
+export async function admitCoreScheduler<I extends CoreSchedulerDraft>(
+  db: CoreDb,
+  input: I,
+  prepare?: (input: I) => I | CoreSchedulerInput | Promise<I | CoreSchedulerInput>
+): Promise<CoreSchedulerResult> {
+  const snapshot = structuredClone(input);
+  const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+  const database = `core:${scope.path}`;
+  const client = getControlStoreWorkerClient();
+  await client.open({
+    database,
+    path: scope.path,
+    dataRoot: db.dataRoot,
+    create: false,
+    initialize: 'core',
+    productOwner: scope.owner,
+    contentMount: scope.contentMount,
+  });
+  const prepared = prepare ? await prepare(snapshot) : snapshot;
+  const ready = CoreSchedulerInputSchema.parse(
+    prepared.mode === 'create'
+      ? {
+          ...prepared,
+          entry: {
+            ...prepared.entry,
+            timestamp: prepared.entry.timestamp ?? new Date().toISOString(),
+          },
+        }
+      : prepared
+  );
+  try {
+    return await client.transition(database, { kind: 'scheduler-work', input: ready });
+  } catch (error) {
+    if (input.mode === 'definition' && error instanceof OperationError) {
+      if (error.code === 'automation_conflict') throw new AutomationMutationError(error.message);
+      if (error.code === 'automation_update_failed' || error.code === 'automation_delete_failed')
+        throw new AutomationRecordNotFoundError(error.message);
+    }
+    if (input.mode === 'create' && error instanceof OperationError)
+      throw new TurnStartValidationError(error.code, error.message, error.status);
+    throw error;
+  }
 }

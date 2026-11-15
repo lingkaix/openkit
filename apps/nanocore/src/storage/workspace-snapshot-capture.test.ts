@@ -101,6 +101,7 @@ import {
 } from '../workspace-sharing.js';
 import { lightAppDbPath } from './app-db.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import * as schedulerPublication from './control-store-admission.js';
 import {
   closeWorkspaceProductReadHandles,
   openControlStoreProductReadHandle,
@@ -115,7 +116,6 @@ import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
 import { ensureLayout, readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import * as migrationOwner from './migrate.js';
-import * as schedulerPublication from './scheduler-admission-publication.js';
 import {
   createWorkspaceBackup,
   readBlockers,
@@ -1755,7 +1755,7 @@ describe('C-a frozen scheduler pre-post ordering', () => {
       const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
       const beforeWorkspace = tree(f.workspaceRoot);
       const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-      const deny = vi.spyOn(schedulerPublication, 'publishSchedulerAdmission');
+      const deny = vi.spyOn(schedulerPublication, 'admitCoreScheduler');
       const open = vi.spyOn(databaseOwner, 'openWorkspaceDb');
       const read = vi.spyOn(databaseOwner, 'openWorkspaceReadDb');
       const migrate = vi.spyOn(migrationOwner, 'applyScopedMigrations');

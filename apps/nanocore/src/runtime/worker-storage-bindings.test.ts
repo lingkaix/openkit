@@ -13,10 +13,10 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -42,6 +42,7 @@ import {
 
 const purgeRace = vi.hoisted(() => ({
   signal: undefined as SharedArrayBuffer | undefined,
+  database: undefined as string | undefined,
   posted: undefined as (() => void) | undefined,
   queueEntryId: 'queue-purge-reference-race',
   posts: 0,
@@ -62,7 +63,7 @@ vi.mock('node:worker_threads', async (load) => {
             const post = parentPort.postMessage;
             const signal = new Int32Array(workerData.purgeRaceSignal);
             parentPort.postMessage = function(value, ...args) {
-              if (value?.operation === 'scheduler-admission' && value.status === 'ok' &&
+              if (value?.operation === 'transition' && value.status === 'ok' &&
                   value.result?.kind === 'queue' &&
                   value.result.entry.queueEntryId === workerData.purgeRaceQueueEntryId) {
                 Atomics.store(signal, 0, 1);
@@ -90,7 +91,10 @@ vi.mock('node:worker_threads', async (load) => {
         let selected = false;
         if (
           isRecord(message) &&
-          message.operation === 'scheduler-admission' &&
+          message.operation === 'transition' &&
+          message.database === purgeRace.database &&
+          isRecord(message.transition) &&
+          message.transition.kind === 'scheduler-work' &&
           message.content instanceof ArrayBuffer
         ) {
           const input: unknown = JSON.parse(new TextDecoder().decode(message.content));
@@ -209,11 +213,12 @@ describe('Worker storage bindings', () => {
     const workspaceId = testEntityId('ws', 'purge-reference-race');
     const threadId = testEntityId('th', 'purge-reference-race');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+    purgeRace.database = `core:${coreDb.sqlite.name}`;
     purgeRace.signal = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     purgeRace.posts = 0;
     const signal = new Int32Array(purgeRace.signal);
     let blocker: CoreDb | undefined;
-    let admission: ReturnType<typeof publishSchedulerAdmission> | undefined;
+    let admission: ReturnType<typeof admitCoreScheduler> | undefined;
     try {
       const reserved = await createAndReserveWorkerStorageAttachment(coreDb, {
         agentSessionId: testEntityId('as', 'purge-reference-race'),
@@ -239,7 +244,7 @@ describe('Worker storage bindings', () => {
       const posted = new Promise<void>((resolve) => {
         purgeRace.posted = resolve;
       });
-      admission = publishSchedulerAdmission(coreDb, {
+      admission = admitCoreScheduler(coreDb, {
         mode: 'create',
         entry: {
           backendId: 'nanohost',
@@ -339,6 +344,7 @@ describe('Worker storage bindings', () => {
       await admission?.catch(() => undefined);
       await closeCoreDb(coreDb);
       purgeRace.signal = undefined;
+      purgeRace.database = undefined;
       purgeRace.posted = undefined;
       purgeRace.posts = 0;
     }

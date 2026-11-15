@@ -571,7 +571,7 @@ describe('bounded scheduled poll event admission', () => {
       }
       return child;
     });
-    const native = vi.spyOn(getControlStoreWorkerClient(), 'schedulerAdmission');
+    const native = vi.spyOn(getControlStoreWorkerClient(), 'transition');
     const first = f.admit();
     let second: ReturnType<typeof f.admit> | undefined;
     try {
@@ -580,7 +580,14 @@ describe('bounded scheduled poll event admission', () => {
       await secondCreated.promise;
       // Both public callers passed the absent-join check; neither scheduler request was submitted yet.
       expect(findExternalTriggerAdmission(f.db, f.schedule.id, f.dependencies.eventKey)).toBeNull();
-      expect(native).not.toHaveBeenCalled();
+      expect(
+        native.mock.calls.filter(
+          ([database, transition]) =>
+            database === `core:${f.db.sqlite.name}` &&
+            'kind' in transition &&
+            transition.kind === 'scheduler-work'
+        )
+      ).toHaveLength(0);
       releaseFirst.resolve();
       const winner = await first;
       expect(winner.duplicate).toBe(false);
@@ -588,13 +595,24 @@ describe('bounded scheduled poll event admission', () => {
       releaseSecond.resolve();
       const duplicate = await second;
       expect(duplicate).toEqual({ ...winner, duplicate: true });
-      expect(native).toHaveBeenCalledTimes(2);
-      const losing = native.mock.calls[1]![1];
+      const schedulerCalls = native.mock.calls.filter(
+        ([database, transition]) =>
+          database === `core:${f.db.sqlite.name}` &&
+          'kind' in transition &&
+          transition.kind === 'scheduler-work'
+      );
+      expect(schedulerCalls).toHaveLength(2);
+      const losingTransition = schedulerCalls[1]![1];
+      if (!('kind' in losingTransition) || losingTransition.kind !== 'scheduler-work')
+        throw new Error('The losing event did not submit a scheduler transition.');
+      const losing = losingTransition.input;
       expect(losing.mode).toBe('create');
       if (losing.mode !== 'create') throw new Error('The losing event did not submit admission.');
       expect(losing.entry.threadId).toBe(children[1]);
       // Observe the real native losing transition, not only the service's duplicate recovery result.
-      await expect(native.mock.results[1]!.value).rejects.toMatchObject({
+      await expect(
+        native.mock.results[native.mock.calls.indexOf(schedulerCalls[1]!)]!.value
+      ).rejects.toMatchObject({
         code: 'recovery_required',
         status: 409,
       });
@@ -809,18 +827,21 @@ describe('bounded scheduled poll event admission', () => {
       contentMount: scope.contentMount,
     });
     f.db.sqlite.pragma('query_only = ON');
-    const result = await client.schedulerAdmission(database, {
-      mode: 'create',
-      entry: {
-        backendId: 'test-backend',
-        queueEntryId,
-        requestId: 'request_large_exact_input',
-        requestedAgentId: 'worker',
-        triggerActor: f.source.triggerActor,
-        workspaceId: f.schedule.workspaceId,
-        threadId: target.id,
-        turnId,
-        turnInput,
+    const result = await client.transition(database, {
+      kind: 'scheduler-work',
+      input: {
+        mode: 'create',
+        entry: {
+          backendId: 'test-backend',
+          queueEntryId,
+          requestId: 'request_large_exact_input',
+          requestedAgentId: 'worker',
+          triggerActor: f.source.triggerActor,
+          workspaceId: f.schedule.workspaceId,
+          threadId: target.id,
+          turnId,
+          turnInput,
+        },
       },
     });
     expect(result.kind).toBe('queue');
