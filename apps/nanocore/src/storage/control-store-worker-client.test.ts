@@ -346,6 +346,44 @@ afterEach(async () => {
 });
 
 describe('control writer parent admission', () => {
+  it('hides a recovered deletion fence while preserving exact continuation and capture reads', async () => {
+    const f = await poolFixture(1);
+    const workspaceId = f.scope(0).productOwner.workspaceId;
+    const capture = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
+    expect(capture.status).toBe('frozen');
+    expect(f.client.isWorkspaceLifecycleClosed(f.root, workspaceId)).toBe(false);
+    if (capture.status !== 'frozen') throw new Error('Expected the idle Workspace to freeze.');
+    capture.release();
+
+    const captureOrigin = { captureId: allocateEntityId('wsbak') };
+    f.client.restoreWorkspaceRecoveryClosed(f.root, workspaceId, captureOrigin);
+    expect(f.client.isWorkspaceLifecycleClosed(f.root, workspaceId)).toBe(false);
+    f.client.reopenWorkspaceMutations(f.root, workspaceId, 'capture');
+
+    const deletionOrigin = { deletionRequestId: randomUUID(), revision: 1 };
+    f.client.restoreWorkspaceRecoveryClosed(f.root, workspaceId, deletionOrigin);
+    expect(f.client.isWorkspaceLifecycleClosed(f.root, workspaceId)).toBe(true);
+    expect(f.client.enterWorkspaceMutation(f.root, workspaceId)).toBeNull();
+    expect(
+      f.client.tryResumeWorkspaceRecovery(
+        f.root,
+        workspaceId,
+        { ...deletionOrigin, deletionRequestId: randomUUID() },
+        () => []
+      ).status
+    ).toBe('busy');
+    const resumed = f.client.tryResumeWorkspaceRecovery(
+      f.root,
+      workspaceId,
+      deletionOrigin,
+      () => []
+    );
+    expect(resumed.status).toBe('frozen');
+    if (resumed.status !== 'frozen') throw new Error('Expected the exact deletion to resume.');
+    resumed.release();
+    expect(f.client.isWorkspaceLifecycleClosed(f.root, workspaceId)).toBe(true);
+  });
+
   it('owns the actual App producer before schema and JSON preparation', async () => {
     const f = await productPoolFixture();
     const workspaceId = f.workspaces[0]!.id;

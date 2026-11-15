@@ -1267,11 +1267,16 @@ class ControlStoreWorkerClient {
   }
 
   /**
-   * True only after `closeWorkspaceMutations()`. A capture fence is not this close.
-   * Callers still authorized for the Workspace keep seeing it; mutations use `isWorkspaceMutationClosed`.
+   * Hides lifecycle closures, including a restored deletion's exact recovery fence.
+   * Other capture fences keep authorized reads visible; mutations use `isWorkspaceMutationClosed`.
    */
   public isWorkspaceLifecycleClosed(dataRoot: string, workspaceId: string): boolean {
-    return this.workspaceMutations(dataRoot).gates.get(workspaceId)?.closed === true;
+    const state = this.workspaceMutations(dataRoot).gates.get(workspaceId);
+    return (
+      state?.closed === true ||
+      (state?.captureClosed?.origin !== undefined &&
+        'deletionRequestId' in state.captureClosed.origin)
+    );
   }
 
   /** Serializes deletion-request admission for one Workspace. */
