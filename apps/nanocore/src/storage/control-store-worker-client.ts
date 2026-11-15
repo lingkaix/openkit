@@ -195,6 +195,7 @@ import {
   type ControlMaterialCommandResult,
   prepareControlMaterialTransfer,
 } from '../workspace-materials.js';
+import { getWorkspaceInvitation } from '../workspace-sharing.js';
 import type {
   ControlAccessTokenVerification,
   ControlAccessTokenVerificationResult,
@@ -5362,10 +5363,28 @@ class ControlStoreWorkerClient {
     input: ControlCoreSharing,
     assertCurrent?: () => void
   ): Promise<ControlCoreSharingResult> {
-    // Only these closed tuples name their actual Workspace effect. Invitation-row and
-    // journal roots are separate; user.disable owns the physical Core, not member Workspaces.
-    const workspaceId = 'workspaceId' in input ? input.workspaceId : undefined;
+    // Create/revoke already name their Workspace. Invitee transitions address the
+    // original immutable invitation identity; user.disable remains physical Core only.
+    let workspaceId = 'workspaceId' in input ? input.workspaceId : undefined;
+    const command = input.command;
+    const invitationId =
+      command === 'workspace.invitation.accept' || command === 'workspace.invitation.decline'
+        ? input.invitationId
+        : undefined;
     const opening = this.openings.get(database);
+    if (invitationId !== undefined) {
+      if (!opening?.command.dataRoot || opening.command.productOwner?.kind !== 'server')
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      const reader = openCoreReadDb(opening.command.dataRoot);
+      try {
+        if (reader.sqlite.name !== opening.command.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        // Missing originals keep the native owner's existing denial; this read grants no authority.
+        workspaceId = getWorkspaceInvitation(reader, invitationId)?.workspaceId;
+      } finally {
+        reader.sqlite.close();
+      }
+    }
     if (workspaceId && !opening?.command.dataRoot)
       throw new ControlStoreWorkerError(opening ? 'invalid-request' : 'not-open', 'not-committed');
     const owner = workspaceId ? this.workspaceMutations(opening!.command.dataRoot!) : undefined;
@@ -5374,26 +5393,29 @@ class ControlStoreWorkerClient {
     const workspaceLease =
       owner && workspaceId && release ? { owner, workspaceId, release } : undefined;
     try {
-      let prepared = input;
-      if (workspaceLease) {
-        try {
-          prepared = structuredClone(input);
-        } catch {
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        }
-        // The accepted producer cannot be retargeted before its deferred native post.
-        if (!('workspaceId' in prepared) || prepared.workspaceId !== workspaceId)
-          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      let prepared: ControlCoreSharing;
+      try {
+        prepared = structuredClone(input);
+      } catch {
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       }
+      // The accepted producer cannot be retargeted before its deferred native post.
+      if (
+        prepared.command !== command ||
+        (command === 'workspace.invitation.accept' || command === 'workspace.invitation.decline'
+          ? !('invitationId' in prepared) || prepared.invitationId !== invitationId
+          : ('workspaceId' in prepared ? prepared.workspaceId : undefined) !== workspaceId)
+      )
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
       let call: ControlCoreRetirementCall | undefined;
-      if (input.command === 'workspace.retire-quarantined') {
+      if (prepared.command === 'workspace.retire-quarantined') {
         const opening = this.openings.get(database);
         if (!opening || opening.identity === undefined || !assertCurrent)
           throw new ControlStoreWorkerError('precondition', 'not-committed');
         call = {
           kind: 'core-sharing-retirement',
           [coreRetirementCall]: true,
-          input,
+          input: prepared,
           command: opening.command,
           path: opening.path,
           identity: opening.identity,
