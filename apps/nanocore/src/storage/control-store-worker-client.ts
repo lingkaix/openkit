@@ -5276,7 +5276,29 @@ class ControlStoreWorkerClient {
     input: ControlCoreSharing,
     assertCurrent?: () => void
   ): Promise<ControlCoreSharingResult> {
+    // Only these closed tuples name their actual Workspace effect. Invitation-row and
+    // journal roots are separate; user.disable owns the physical Core, not member Workspaces.
+    const workspaceId = 'workspaceId' in input ? input.workspaceId : undefined;
+    const opening = this.openings.get(database);
+    if (workspaceId && !opening?.command.dataRoot)
+      throw new ControlStoreWorkerError(opening ? 'invalid-request' : 'not-open', 'not-committed');
+    const owner = workspaceId ? this.workspaceMutations(opening!.command.dataRoot!) : undefined;
+    const release = owner && workspaceId ? owner.enter(workspaceId) : undefined;
+    if (release === null) throw new OperationError('workspace_frozen', 'Workspace is frozen.', 409);
+    const workspaceLease =
+      owner && workspaceId && release ? { owner, workspaceId, release } : undefined;
     try {
+      let prepared = input;
+      if (workspaceLease) {
+        try {
+          prepared = structuredClone(input);
+        } catch {
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        }
+        // The accepted producer cannot be retargeted before its deferred native post.
+        if (!('workspaceId' in prepared) || prepared.workspaceId !== workspaceId)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      }
       let call: ControlCoreRetirementCall | undefined;
       if (input.command === 'workspace.retire-quarantined') {
         const opening = this.openings.get(database);
@@ -5292,13 +5314,24 @@ class ControlStoreWorkerClient {
           assertCurrent,
         };
       }
-      const reply = await this.request(
-        { operation: 'core-sharing', database, input },
-        undefined,
-        undefined,
-        false,
-        call
-      );
+      const submit = () =>
+        this.request(
+          { operation: 'core-sharing', database, input: prepared },
+          undefined,
+          undefined,
+          false,
+          call
+        );
+      const reply = workspaceLease
+        ? await this.runOperation(
+            submit,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            workspaceLease
+          )
+        : await submit();
       return (reply as Extract<Success, { operation: 'core-sharing' }>).result;
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'core-sharing') {
@@ -5312,6 +5345,8 @@ class ControlStoreWorkerClient {
         );
       }
       throw error;
+    } finally {
+      release?.();
     }
   }
 
