@@ -49,6 +49,10 @@ export function AssistantHome() {
 
   useLayoutEffect(() => {
     if (pathname !== '/') return;
+    // BrowserRouter writes history before React applies that location. This effect
+    // can still observe `/` after a click has already moved history, and its replace
+    // would discard the click.
+    if (window.location.pathname !== '/') return;
     if (pending || navigation.isError || !workspaceId) return;
     if (assistant) {
       navigate(chatThreadPath(workspaceId, assistant.thread.id), { replace: true });

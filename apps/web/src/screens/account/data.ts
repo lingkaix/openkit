@@ -531,6 +531,10 @@ export function useSelfLeave() {
   >({
     retry: false,
     mutationFn: async (variables) => {
+      // Stop protected lists before membership changes. An in-flight workspace.list
+      // rechecks admission after leave and otherwise finishes as a 403.
+      await queryClient.cancelQueries({ queryKey: accountAdmissionKey, exact: true });
+      await queryClient.cancelQueries({ queryKey: chatKeys.workspaces, exact: true });
       try {
         return await client.operations['workspace.leave']({
           workspaceId: variables.workspaceId,

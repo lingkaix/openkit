@@ -191,7 +191,7 @@ export function useAccountAdmission(options?: { readonly enabled?: boolean }) {
   const admission = useQuery({
     queryKey: accountAdmissionKey,
     queryFn: async ({ signal, client: queryClient }) => {
-      const result = await client.operations['workspace.list']({});
+      const result = await client.operations['workspace.list']({}, { signal });
       // Reading the signal lets an account transition cancel this fetch before a late response commits.
       signal.throwIfAborted();
       offerReusableAdmission(queryClient, result);

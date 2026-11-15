@@ -19,6 +19,8 @@ const admissionConsoleError =
   'Failed to load resource: the server responded with a status of 401 (Unauthorized)';
 const deniedConsoleError =
   'Failed to load resource: the server responded with a status of 403 (Forbidden)';
+const frozenConsoleError =
+  'Failed to load resource: the server responded with a status of 409 (Conflict)';
 
 let stack: IsolatedWebStack | null = null;
 
@@ -28,10 +30,13 @@ test.afterEach(async () => {
   if (current) await current.stop();
 });
 
-/** Captures browser errors and exact protected-read denials without retaining payloads. */
-function watchRuntimeErrors(page: Page) {
+/** Captures browser errors and the request identity of each protected-read denial. */
+async function watchRuntimeErrors(page: Page) {
   const observation = {
-    admission401Count: 0,
+    admission401Ids: new Set<string>(),
+    logged401Ids: new Set<string>(),
+    frozen409Ids: new Set<string>(),
+    logged409Ids: new Set<string>(),
     consoleErrors: [] as string[],
     pageErrors: [] as string[],
   };
@@ -39,12 +44,65 @@ function watchRuntimeErrors(page: Page) {
     if (message.type() === 'error') observation.consoleErrors.push(message.text());
   });
   page.on('pageerror', (error) => observation.pageErrors.push(error.message));
-  page.on('response', (response) => {
-    if (new URL(response.url()).pathname.startsWith('/api/') && response.status() === 401) {
-      observation.admission401Count += 1;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Log.enable');
+  await cdp.send('Network.enable');
+  cdp.on('Log.entryAdded', (event: unknown) => {
+    const entry = (event as { entry?: { text?: string; networkRequestId?: string } }).entry;
+    const text = entry?.text;
+    const target =
+      text === admissionConsoleError
+        ? observation.logged401Ids
+        : text === frozenConsoleError
+          ? observation.logged409Ids
+          : null;
+    if (!target) return;
+    target.add(entry?.networkRequestId ?? `unattached-${target.size}`);
+  });
+  cdp.on('Network.responseReceived', (event: unknown) => {
+    const received = event as {
+      requestId?: string;
+      response?: { status?: number; url?: string; headers?: Record<string, string> };
+    };
+    const response = received.response;
+    if (!response?.url) return;
+    if (!new URL(response.url).pathname.startsWith('/api/')) return;
+    const requestId = received.requestId ?? `unattached-${observation.admission401Ids.size}`;
+    if (response.status === 401) {
+      observation.admission401Ids.add(requestId);
+      return;
     }
+    if (response.status !== 409) return;
+    const retryAfter = headerValue(response.headers, 'retry-after');
+    const context = headerValue(response.headers, 'x-openkit-retry-context');
+    // The client resends only this capture freeze. Any other 409 stays unexplained.
+    if (retryAfter !== '1' || !context || !/^[a-f0-9]{64}$/.test(context)) return;
+    observation.frozen409Ids.add(requestId);
   });
   return observation;
+}
+
+/** Stable request-identity list for an admission assertion. */
+function admissionRequestIds(ids: ReadonlySet<string>): string[] {
+  return [...ids].sort();
+}
+
+/** Reads one response header from either CDP shape. */
+function headerValue(headers: unknown, name: string): string | undefined {
+  if (Array.isArray(headers)) {
+    const found = headers.find(
+      (entry) =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        String((entry as { name?: string }).name).toLowerCase() === name
+    ) as { value?: string } | undefined;
+    return found?.value;
+  }
+  if (typeof headers === 'object' && headers !== null) {
+    const record = headers as Record<string, string>;
+    return record[name] ?? record[name.toLowerCase()];
+  }
+  return undefined;
 }
 
 /** Allowed UI-only localStorage keys. Theme plus the explicit Workspace switcher envelope. */
@@ -228,7 +286,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
   test.setTimeout(120_000);
   stack = await startIsolatedWebStack({ mode: 'server', useSimulator: true });
   await page.setViewportSize({ width: 800, height: 600 });
-  const runtimeErrors = watchRuntimeErrors(page);
+  const runtimeErrors = await watchRuntimeErrors(page);
   await page.goto(stack.webUrl);
 
   // Bootstrap creates only the deployment administrator. The sharing owner signs up afterwards.
@@ -275,7 +333,7 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
 
   const staleOwnerContext = await browser.newContext({ viewport: { width: 800, height: 600 } });
   const staleOwnerPage = await staleOwnerContext.newPage();
-  const staleRuntimeErrors = watchRuntimeErrors(staleOwnerPage);
+  const staleRuntimeErrors = await watchRuntimeErrors(staleOwnerPage);
   const deniedEmail = 'must-not-leak@example.test';
   try {
     await staleOwnerPage.goto(stack.webUrl);
@@ -340,12 +398,18 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
     expect(
       staleRuntimeErrors.consoleErrors.filter((message) => message === deniedConsoleError)
     ).toHaveLength(1);
-    expect(
-      staleRuntimeErrors.consoleErrors.filter((message) => message === admissionConsoleError)
-    ).toHaveLength(staleRuntimeErrors.admission401Count);
+    expect(admissionRequestIds(staleRuntimeErrors.logged401Ids)).toEqual(
+      admissionRequestIds(staleRuntimeErrors.admission401Ids)
+    );
+    expect(admissionRequestIds(staleRuntimeErrors.logged409Ids)).toEqual(
+      admissionRequestIds(staleRuntimeErrors.frozen409Ids)
+    );
     expect(
       staleRuntimeErrors.consoleErrors.filter(
-        (message) => message !== admissionConsoleError && message !== deniedConsoleError
+        (message) =>
+          message !== admissionConsoleError &&
+          message !== deniedConsoleError &&
+          message !== frozenConsoleError
       )
     ).toEqual([]);
   } finally {
@@ -392,10 +456,17 @@ test('proves server accounts, cross-actor isolation, sharing boundaries, and saf
     expect(staleRuntimeErrors.consoleErrors.join('\n')).not.toContain(email);
   }
   expect(runtimeErrors.pageErrors).toEqual([]);
-  expect(runtimeErrors.consoleErrors).toHaveLength(runtimeErrors.admission401Count);
-  expect(runtimeErrors.consoleErrors.every((message) => message === admissionConsoleError)).toBe(
-    true
+  expect(admissionRequestIds(runtimeErrors.logged401Ids)).toEqual(
+    admissionRequestIds(runtimeErrors.admission401Ids)
   );
+  expect(admissionRequestIds(runtimeErrors.logged409Ids)).toEqual(
+    admissionRequestIds(runtimeErrors.frozen409Ids)
+  );
+  expect(
+    runtimeErrors.consoleErrors.every(
+      (message) => message === admissionConsoleError || message === frozenConsoleError
+    )
+  ).toBe(true);
 
   const viewport = await page.evaluate(() => ({
     bodyWidth: document.body.scrollWidth,

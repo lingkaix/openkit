@@ -424,7 +424,7 @@ export function useWorkspaces() {
       const admitted = await reuseAdmissionList(discoveryClient);
       const items = admitted
         ? admitted.items
-        : (await client.operations['workspace.list']({})).items;
+        : (await client.operations['workspace.list']({}, { signal })).items;
       return commitDiscoveredWorkspaces(discoveryClient, signal, epoch, items);
     },
   });
