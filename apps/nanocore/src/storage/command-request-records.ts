@@ -16,8 +16,9 @@ import {
   type CommandRequestOwner,
   commandRequestOwner,
   commandRequestValues,
-  ExternalTriggerCommandScopeSchema,
   normalizeCommandRequestResponse,
+  PERMANENT_COMMANDS,
+  parseCommandScope,
   parseStoredCommandScope,
   prepareControlCommandRequestStatement,
   readCommandResponseMetadata,
@@ -577,14 +578,11 @@ export function mapCommandRequestRow(row: CommandRequestRow): CommandRequestReco
 
 /** Decodes the fixed receipt payload after its SQL row or native App format has been admitted. */
 function decodeCommandRequestPayloadV1(row: CommandRequestRow): CommandRequestRecord {
-  const scope =
-    row.command === 'scheduler.external-trigger.admit'
-      ? ExternalTriggerCommandScopeSchema.parse(JSON.parse(row.scopeJson))
-      : parseStoredCommandScope(JSON.parse(row.scopeJson));
-  if (row.command === 'scheduler.external-trigger.admit') {
+  const scope = parseCommandScope(row.command, JSON.parse(row.scopeJson));
+  if (PERMANENT_COMMANDS.includes(row.command)) {
     if (
       row.expiresAt !== null ||
-      row.requestId !== scope.eventKey ||
+      (row.command === 'scheduler.external-trigger.admit' && row.requestId !== scope.eventKey) ||
       row.key !== commandRequestKey(row.command, row.requestId, scope)
     )
       throw new Error('The retained external-event command identity conflicts.');
@@ -600,7 +598,8 @@ function decodeCommandRequestPayloadV1(row: CommandRequestRow): CommandRequestRe
     response: normalizeCommandRequestResponse(row.command, {
       kind: row.responseKind,
       id: row.responseId,
-      ...(row.responseJson === null
+      // The Discord channel owner keeps its event state in the response JSON.
+      ...(row.responseJson === null || row.command === 'channel.discord.inbound'
         ? {}
         : readCommandResponseMetadata(row.command, row.responseJson)),
     }),

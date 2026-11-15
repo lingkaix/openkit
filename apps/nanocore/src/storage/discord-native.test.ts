@@ -13,6 +13,10 @@ import {
   type DiscordPendingView,
   type DiscordReply,
 } from '../channels/discord.js';
+import {
+  DISCORD_INBOUND_ROWS,
+  DISCORD_STATE_CHANGE,
+} from '../test-support/discord-inbound-rows.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -394,8 +398,8 @@ describe('Discord native family', () => {
       } else if (stage === 'publish-disclosure') {
         action = () => f.send('inspect', f.target);
       } else if (stage === 'reconcile-incomplete') {
-        f.fault(`CREATE TRIGGER fail_settlement BEFORE UPDATE OF state ON discord_inbound_receipts
-          BEGIN SELECT RAISE(ABORT, 'settlement refused'); END`);
+        f.fault(`CREATE TRIGGER fail_settlement BEFORE UPDATE OF response_json ON idempotency_requests
+          WHEN ${DISCORD_STATE_CHANGE} BEGIN SELECT RAISE(ABORT, 'settlement refused'); END`);
         await expect(f.send('inspect', f.target)).rejects.toThrow();
         f.fault('DROP TRIGGER fail_settlement');
         action = () => f.channel.reconcileIncompleteInteractions();
@@ -448,7 +452,7 @@ describe('Discord native family', () => {
         expect(
           f.db.sqlite
             .prepare(
-              "SELECT count(*) AS count FROM discord_inbound_receipts WHERE state='dispatching'"
+              `SELECT count(*) AS count FROM ${DISCORD_INBOUND_ROWS} WHERE state='dispatching'`
             )
             .get()
         ).toEqual({ count: 0 });
@@ -456,13 +460,13 @@ describe('Discord native family', () => {
         expect(f.inspect).toHaveBeenCalledTimes(priorInspections);
         expect(
           f.db.sqlite
-            .prepare("SELECT operation_id FROM discord_inbound_receipts WHERE state='dispatching'")
+            .prepare(`SELECT operation_id FROM ${DISCORD_INBOUND_ROWS} WHERE state='dispatching'`)
             .get()
         ).toEqual({ operation_id: null });
       } else if (stage === 'publish-origin') {
         expect(
           f.db.sqlite
-            .prepare("SELECT operation_id FROM discord_inbound_receipts WHERE state='dispatching'")
+            .prepare(`SELECT operation_id FROM ${DISCORD_INBOUND_ROWS} WHERE state='dispatching'`)
             .get()
         ).toEqual({ operation_id: 'approval.respond' });
       }
@@ -523,7 +527,7 @@ describe('Discord native family', () => {
         ]);
         expect(continued).toBe(false);
         const retained = f.db.sqlite
-          .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id=?')
+          .prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id=?`)
           .get(input.id) as Record<string, unknown>;
         expect(retained.state).toBe(stage === 'settle-inbound' ? 'settled' : 'dispatching');
         expect(f.invoke).toHaveBeenCalledTimes(stage === 'settle-inbound' ? 1 : 0);
@@ -539,7 +543,7 @@ describe('Discord native family', () => {
         expect(await f.cold()).toBe(stage === 'settle-inbound' ? 0 : 1);
         expect(
           f.db.sqlite
-            .prepare('SELECT * FROM discord_inbound_receipts WHERE event_id=?')
+            .prepare(`SELECT * FROM ${DISCORD_INBOUND_ROWS} WHERE event_id=?`)
             .get(input.id)
         ).toEqual({
           ...retained,
@@ -606,7 +610,7 @@ describe('Discord native family', () => {
         expect(f.invoke).not.toHaveBeenCalled();
         expect(
           f.db.sqlite
-            .prepare('SELECT state,operation_id FROM discord_inbound_receipts WHERE event_id=?')
+            .prepare(`SELECT state,operation_id FROM ${DISCORD_INBOUND_ROWS} WHERE event_id=?`)
             .get(input.id)
         ).toEqual({
           state: 'settled',

@@ -326,7 +326,6 @@ describe('database setup', () => {
           'discord_account_bindings',
           'discord_pairing_challenges',
           'discord_disclosures',
-          'discord_inbound_receipts',
         ])
       );
       expect(listTableNames(coreDb)).toEqual(expect.arrayContaining(CORE_TABLES));

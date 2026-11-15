@@ -16,6 +16,12 @@ import { presentControlFacts } from '../storage/control-store-input.js';
 import { assertControlProductWriter } from '../storage/control-store-products.js';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import type { CoreDb } from '../storage/db.js';
+import {
+  publishDiscordInboundOrigin,
+  reconcileDiscordInboundCommands,
+  reserveDiscordInboundCommand,
+  settleDiscordInboundCommand,
+} from '../storage/discord-inbound-commands.js';
 import type { ControlDiscordChannelInput, ControlDiscordChannelResult } from './discord-codecs.js';
 
 /** Discord inline response. Protected replies are private and disable mentions. */
@@ -261,11 +267,7 @@ function applyDiscordStageInDb(
     case 'reconcile-incomplete':
       return {
         stage: input.stage,
-        changes: sqlite
-          .prepare(
-            "UPDATE discord_inbound_receipts SET state = 'response-unknown' WHERE state = 'dispatching'"
-          )
-          .run().changes,
+        changes: reconcileDiscordInboundCommands(sqlite),
       };
     case 'revoke-binding':
       revokeDiscordAccountBindingInDb(sqlite, input.userId, context.now());
@@ -327,41 +329,34 @@ function applyDiscordStageInDb(
     }
     case 'reserve-inbound': {
       const receipt = sqlite
-        .transaction(() => {
-          const existing = sqlite
-            .prepare(
-              'SELECT payload_digest AS payloadDigest,state FROM discord_inbound_receipts WHERE event_id = ?'
-            )
-            .get(input.eventId) as { payloadDigest: string; state: string } | undefined;
-          if (existing) return { existing };
-          const requestId = RequestIdSchema.parse(context.newRequestId());
-          sqlite
-            .prepare(
-              "INSERT INTO discord_inbound_receipts(event_id,payload_digest,request_id,state,created_at,discord_user_id) VALUES(?,?,?,'dispatching',?,?)"
-            )
-            .run(input.eventId, input.payloadDigest, requestId, context.now(), input.discordUserId);
-          return { requestId };
-        })
+        .transaction(() =>
+          reserveDiscordInboundCommand(sqlite, {
+            eventId: input.eventId,
+            payloadDigest: input.payloadDigest,
+            discordUserId: input.discordUserId,
+            requestId: RequestIdSchema.parse(context.newRequestId()),
+            now: context.now(),
+          })
+        )
         .immediate();
       return { stage: input.stage, receipt };
     }
     case 'publish-origin':
       return {
         stage: input.stage,
-        changes: sqlite
-          .prepare(`UPDATE discord_inbound_receipts SET core_user_id = ?,binding_revision = ?,operation_id = ?,workspace_id = ?,thread_id = ?,pending_request_id = ?,turn_id = ?
-          WHERE event_id = ? AND request_id = ? AND state = 'dispatching' AND operation_id IS NULL`)
-          .run(
-            input.userId,
-            input.bindingRevision,
-            input.operationId,
-            input.workspaceId,
-            input.threadId,
-            input.pendingRequestId,
-            input.turnId,
-            input.eventId,
-            input.requestId
-          ).changes,
+        changes: publishDiscordInboundOrigin(sqlite, {
+          eventId: input.eventId,
+          requestId: input.requestId,
+          origin: {
+            coreUserId: input.userId,
+            bindingRevision: input.bindingRevision,
+            operationId: input.operationId,
+            workspaceId: input.workspaceId,
+            threadId: input.threadId,
+            pendingRequestId: input.pendingRequestId,
+            turnId: input.turnId,
+          },
+        }),
       };
     case 'publish-disclosure':
       sqlite
@@ -380,11 +375,7 @@ function applyDiscordStageInDb(
         );
       return { stage: input.stage };
     case 'settle-inbound':
-      sqlite
-        .prepare(
-          "UPDATE discord_inbound_receipts SET state = ? WHERE event_id = ? AND state = 'dispatching'"
-        )
-        .run(input.state, input.eventId);
+      settleDiscordInboundCommand(sqlite, input.eventId, input.state);
       return { stage: input.stage };
   }
 }

@@ -209,14 +209,6 @@ CREATE TABLE discord_disclosures (
   expires_at INTEGER NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE discord_inbound_receipts (
-  event_id TEXT PRIMARY KEY NOT NULL,
-  payload_digest TEXT NOT NULL,
-  request_id TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('dispatching','settled','response-unknown')),
-  created_at INTEGER NOT NULL
-, discord_user_id TEXT, core_user_id TEXT, binding_revision TEXT, operation_id TEXT CHECK (operation_id IN ('approval.respond', 'question.answer')), workspace_id TEXT, thread_id TEXT, pending_request_id TEXT, turn_id TEXT);
---> statement-breakpoint
 CREATE TABLE discord_pairing_challenges (
   digest TEXT PRIMARY KEY NOT NULL,
   user_id TEXT NOT NULL,
@@ -288,8 +280,8 @@ CREATE TABLE `idempotency_requests` (
   `created_at` text NOT NULL,
   `expires_at` text,
   `schema_version` integer DEFAULT 1 NOT NULL,
-  CHECK ((command_name = 'scheduler.external-trigger.admit' AND expires_at IS NULL)
-    OR (command_name <> 'scheduler.external-trigger.admit' AND expires_at IS NOT NULL))
+  CHECK ((command_name IN ('scheduler.external-trigger.admit', 'channel.discord.inbound') AND expires_at IS NULL)
+    OR (command_name NOT IN ('scheduler.external-trigger.admit', 'channel.discord.inbound') AND expires_at IS NOT NULL))
 );
 --> statement-breakpoint
 CREATE TABLE `nanohost_integration_identities` (
@@ -991,6 +983,9 @@ CREATE UNIQUE INDEX `command_log_external_event_idx` ON `idempotency_requests`
 --> statement-breakpoint
 CREATE INDEX `command_log_external_queue_idx` ON `idempotency_requests` (response_id)
   WHERE command_name = 'scheduler.external-trigger.admit';
+--> statement-breakpoint
+CREATE UNIQUE INDEX `command_log_discord_event_idx` ON `idempotency_requests` (request_id)
+  WHERE command_name = 'channel.discord.inbound';
 --> statement-breakpoint
 CREATE INDEX `command_receipts_pending_target_idx` ON `idempotency_requests` (coalesce(json_extract(scope_json,'$.approvalRequestId'),json_extract(scope_json,'$.userInputRequestId'),json_extract(scope_json,'$.pendingRequestId')));
 --> statement-breakpoint
