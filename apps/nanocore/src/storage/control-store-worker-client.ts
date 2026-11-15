@@ -58,6 +58,10 @@ import type {
   ControlAutomationScanner,
   ControlAutomationScannerResult,
 } from './automation-scanner-codecs.js';
+import {
+  CoreSchedulerRefusalSchema,
+  CoreSchedulerResultSchema,
+} from './control-store-admission-codecs.js';
 
 import { ControlStoreWorkerError } from './control-store-worker-error.js';
 import type { ControlPrivateWorkspaceInput } from './private-workspace-codecs.js';
@@ -205,7 +209,12 @@ import type {
   ControlCommandReceiptAdmission,
   ControlKnowledgeAdmissionResult,
 } from './control-store-admission-codecs.js';
-import { CommandReceiptSchema } from './control-store-admission-codecs.js';
+import {
+  CommandReceiptSchema,
+  type CoreSchedulerInput,
+  type CoreSchedulerResult,
+  SchedulerAdmissionTransitionError,
+} from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandInput,
   type ControlCapabilityCommandResult,
@@ -288,11 +297,6 @@ import type {
   ControlRuntimeTargetInput,
   ControlRuntimeTargetResult,
 } from './runtime-target-codecs.js';
-import {
-  type ControlSchedulerAdmission,
-  type ControlSchedulerAdmissionResult,
-  SchedulerAdmissionTransitionError,
-} from './scheduler-admission-codecs.js';
 import type { ControlServerAdminTokenDefault } from './server-admin-token-default-codecs.js';
 import {
   type ControlThreadReadMembership,
@@ -1593,21 +1597,40 @@ class ControlStoreWorkerClient {
   }
 
   /** Counts the same Turn's accepted preparation and direct native observation slots once. */
+  /** Only the same original direct native Turn packets participate in the existing bound. */
+  private directNativeTurn(
+    command: ControlWorkerCommand
+  ): { readonly turnId: string | null } | undefined {
+    if (
+      command.operation === 'observation' ||
+      command.operation === 'provenance' ||
+      command.operation === 'generative-presentation' ||
+      command.operation === 'worker-control-evidence'
+    )
+      return command.input;
+    if (
+      command.operation === 'transition' &&
+      'kind' in command.transition &&
+      command.transition.kind === 'scheduler-work'
+    )
+      return command.transition.input.turnId === null ? undefined : command.transition.input;
+    return undefined;
+  }
+
   private pendingTurnPublications(key: string): number {
     const [physical, turn] = JSON.parse(key) as [string, string];
     let count = this.turnTails.get(key)?.pending ?? 0;
-    for (const entry of this.pending.values())
+    for (const entry of this.pending.values()) {
+      const nativeTurn = this.directNativeTurn(entry.command);
       if (
         entry.counted &&
-        (entry.command.operation === 'observation' ||
-          entry.command.operation === 'provenance' ||
-          entry.command.operation === 'scheduler-admission' ||
-          entry.command.operation === 'generative-presentation' ||
-          entry.command.operation === 'worker-control-evidence') &&
+        nativeTurn &&
+        'database' in entry.command &&
         this.openings.get(entry.command.database)?.path === physical &&
-        entry.command.input.turnId === turn
+        nativeTurn.turnId === turn
       )
         count += 1;
+    }
     return count;
   }
 
@@ -2603,23 +2626,50 @@ class ControlStoreWorkerClient {
   ): Promise<ControlKnowledgeAdmissionResult>;
   async transition(
     database: string,
-    transition: ControlAdmissionInput
-  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult | null>;
+    transition: Extract<ControlAdmissionInput, { kind: 'scheduler-work' }>
+  ): Promise<CoreSchedulerResult>;
   async transition(
     database: string,
     transition: ControlAdmissionInput
-  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult | null> {
+  ): Promise<ControlAdmissionResult | ControlKnowledgeAdmissionResult | CoreSchedulerResult | null>;
+  async transition(
+    database: string,
+    transition: ControlAdmissionInput
+  ): Promise<
+    ControlAdmissionResult | ControlKnowledgeAdmissionResult | CoreSchedulerResult | null
+  > {
+    const scheduler = 'kind' in transition && transition.kind === 'scheduler-work';
     try {
-      const json =
-        'kind' in transition && transition.kind === 'command-receipt'
+      // Preserve the original inner scheduler JSON and binary account, not an inline metadata body.
+      const json = scheduler
+        ? JSON.stringify(transition.input)
+        : 'kind' in transition && transition.kind === 'command-receipt'
           ? JSON.stringify(transition)
           : undefined;
-      const reply =
-        json === undefined
+      const reply = scheduler
+        ? await this.request(
+            {
+              operation: 'transition',
+              database,
+              transition: {
+                kind: 'scheduler-work',
+                input: {
+                  byteLength: Buffer.byteLength(json!),
+                  turnId: transition.input.mode === 'create' ? transition.input.entry.turnId : null,
+                },
+              },
+              content: new ArrayBuffer(0),
+            },
+            [json!]
+          )
+        : json === undefined
           ? await this.request({
               operation: 'transition',
               database,
-              transition: transition as Exclude<ControlAdmissionInput, { kind: 'command-receipt' }>,
+              transition: transition as Exclude<
+                ControlAdmissionInput,
+                { kind: 'command-receipt' | 'scheduler-work' }
+              >,
             })
           : await this.request(
               {
@@ -2631,7 +2681,9 @@ class ControlStoreWorkerClient {
               [json]
             );
       const result = (reply as Extract<Success, { operation: 'transition' }>).result;
-      if (json !== undefined && result !== null)
+      if (scheduler && !CoreSchedulerResultSchema.safeParse(result).success)
+        throw new ControlStoreWorkerError('invalid-request', 'unknown');
+      if ('kind' in transition && transition.kind === 'command-receipt' && result !== null)
         throw new ControlStoreWorkerError('invalid-request', 'unknown');
       return result;
     } catch (error) {
@@ -2640,6 +2692,14 @@ class ControlStoreWorkerClient {
         error instanceof ControlStoreWorkerError &&
         error.domain?.operation === 'transition'
       ) {
+        if (scheduler && !CoreSchedulerRefusalSchema.safeParse(error.domain).success)
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        if (scheduler && 'kind' in error.domain) {
+          if (error.domain.kind === 'decoder') throw new SyntaxError(error.domain.message);
+          if (error.domain.kind === 'transition')
+            throw new SchedulerAdmissionTransitionError(error.domain.message, error.domain.code);
+          throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+        }
         if (error.domain.code === 'idempotency_key_conflict')
           throw new IdempotencyKeyConflictError();
         if (
@@ -4981,39 +5041,6 @@ class ControlStoreWorkerClient {
     }
   }
 
-  /** Publishes the complete scheduler/source tuple, returning only after covering FULL commit. */
-  async schedulerAdmission(
-    database: string,
-    input: ControlSchedulerAdmission
-  ): Promise<ControlSchedulerAdmissionResult> {
-    try {
-      const json = JSON.stringify(input);
-      const reply = await this.request(
-        {
-          operation: 'scheduler-admission',
-          database,
-          input: {
-            byteLength: Buffer.byteLength(json),
-            turnId: input.mode === 'create' ? input.entry.turnId : null,
-          },
-        },
-        [json]
-      );
-      return (reply as Extract<Success, { operation: 'scheduler-admission' }>).result;
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.domain?.operation === 'scheduler-admission'
-      ) {
-        if (error.domain.kind === 'decoder') throw new SyntaxError(error.domain.message);
-        if (error.domain.kind === 'transition')
-          throw new SchedulerAdmissionTransitionError(error.domain.message, error.domain.code);
-        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
-      }
-      throw error;
-    }
-  }
-
   /** Acknowledges one original stopped-reactivation stage only after its own covering FULL commit. */
   async recoverySourceReactivation(
     database: string,
@@ -5664,19 +5691,15 @@ class ControlStoreWorkerClient {
       return Promise.reject(
         new ControlStoreWorkerError(host ? 'unavailable' : 'not-open', 'not-committed')
       );
+    const nativeTurn = this.directNativeTurn(command);
     if (
       (database !== undefined &&
         (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
           CONTROL_WORKER_LIMITS.pendingTransitions) ||
-      ((command.operation === 'observation' ||
-        command.operation === 'provenance' ||
-        command.operation === 'scheduler-admission' ||
-        command.operation === 'generative-presentation' ||
-        command.operation === 'worker-control-evidence') &&
+      (nativeTurn &&
         opening &&
-        (command.operation !== 'scheduler-admission' || command.input.turnId !== null) &&
         !borrowed &&
-        this.pendingTurnPublications(JSON.stringify([opening.path, command.input.turnId])) >=
+        this.pendingTurnPublications(JSON.stringify([opening.path, nativeTurn.turnId])) >=
           CONTROL_WORKER_LIMITS.pendingTurnTransitions)
     ) {
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
@@ -5710,14 +5733,14 @@ class ControlStoreWorkerClient {
       command.operation === 'material' ||
       command.operation === 'capability' ||
       command.operation === 'observation' ||
-      command.operation === 'scheduler-admission' ||
       command.operation === 'generative-presentation' ||
       command.operation === 'app-kernel' ||
       command.operation === 'schema-application' ||
       command.operation === 'attention-enqueue' ||
       (command.operation === 'transition' &&
         'kind' in command.transition &&
-        command.transition.kind === 'command-receipt') ||
+        (command.transition.kind === 'command-receipt' ||
+          command.transition.kind === 'scheduler-work')) ||
       command.operation === 'standalone-audit' ||
       command.operation === 'thread-read-membership' ||
       command.operation === 'worker-control-final-status' ||
@@ -5728,7 +5751,8 @@ class ControlStoreWorkerClient {
       const size =
         command.operation === 'transition' &&
         'kind' in command.transition &&
-        command.transition.kind === 'command-receipt'
+        (command.transition.kind === 'command-receipt' ||
+          command.transition.kind === 'scheduler-work')
           ? { byteLength: command.transition.input.byteLength, replyByteLength: 0 }
           : command.operation === 'execution-attempt'
             ? {
@@ -5737,8 +5761,7 @@ class ControlStoreWorkerClient {
               }
             : command.operation === 'material'
               ? controlMaterialTransferSize(command.input)
-              : command.operation === 'scheduler-admission' ||
-                  command.operation === 'generative-presentation' ||
+              : command.operation === 'generative-presentation' ||
                   command.operation === 'app-kernel' ||
                   command.operation === 'schema-application' ||
                   command.operation === 'attention-enqueue' ||

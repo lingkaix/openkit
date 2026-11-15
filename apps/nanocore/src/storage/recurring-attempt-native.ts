@@ -8,6 +8,10 @@ import {
   SchedulerAdmissionTransitionError,
   schedulerAdmissionInputHash,
 } from '../scheduler-records.js';
+import {
+  AutomationRecordNotFoundError,
+  type CoreSchedulerInput,
+} from './control-store-admission-codecs.js';
 import { assertControlProductWriter } from './control-store-products.js';
 import type { CoreDb } from './db.js';
 import {
@@ -17,10 +21,6 @@ import {
   readRecurringSchedule,
   recurringSchedulerAdmissionInput,
 } from './recurring-records.js';
-import {
-  AutomationRecordNotFoundError,
-  type ControlSchedulerAdmission,
-} from './scheduler-admission-codecs.js';
 
 type JsonRow = { schemaVersion: unknown; record_json: string };
 /** The existing exact recurring occurrence read. */
@@ -115,7 +115,7 @@ export function finishRecurringOccurrenceInDb(
 /** One complete recurring attempt, original queue acceptance and terminal Audit on the native savepoint. */
 export function applyNativeRecurringAttempt(
   coreDb: CoreDb,
-  input: Extract<ControlSchedulerAdmission, { mode: 'recurring-attempt' }>
+  input: Extract<CoreSchedulerInput, { mode: 'recurring-attempt' }>
 ): RecurringOccurrence | null {
   assertControlProductWriter(coreDb.sqlite);
   const { occurrenceId, definitionRevision, preparation } = input;

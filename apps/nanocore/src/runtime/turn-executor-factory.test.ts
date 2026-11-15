@@ -112,8 +112,8 @@ import {
   NativeThreadLoginSchema,
 } from '../storage/native-thread-login.js';
 import { StoredAgentSessionV1Schema } from '../storage/retained-work-metadata-v1.js';
-import type { ControlSchedulerAdmission } from '../storage/scheduler-admission-codecs.js';
-import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
+import type { CoreSchedulerInput } from '../storage/control-store-admission-codecs.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import {
   HarnessLoginContextSchema,
   type HarnessLoginObservations,
@@ -4169,7 +4169,7 @@ describe('createConfiguredTurnExecutor', () => {
         const attemptId = testEntityId('attempt', label);
         // The actual boot Core handle remains a reader; setup publishes through its native owners.
         const now = () => new Date().toISOString();
-        const admission = await publishSchedulerAdmission(coreDb, {
+        const admission = await admitCoreScheduler(coreDb, {
           mode: 'create',
           entry: {
             backendId: 'nanohost',
@@ -16581,9 +16581,9 @@ describe('createConfiguredTurnExecutor', () => {
       const scope = { workspaceId, threadId, actorId: ownerUserId };
       /** Creates queue state through its native owner before the existing Turn/receipt publication. */
       const createAdmission = async (
-        input: Extract<ControlSchedulerAdmission, { mode: 'create' }>['entry']
+        input: Extract<CoreSchedulerInput, { mode: 'create' }>['entry']
       ) => {
-        const result = await publishSchedulerAdmission(coreDb, { mode: 'create', entry: input });
+        const result = await admitCoreScheduler(coreDb, { mode: 'create', entry: input });
         if (result.kind !== 'queue') throw new Error('Expected a native scheduler queue entry.');
         return result.entry;
       };

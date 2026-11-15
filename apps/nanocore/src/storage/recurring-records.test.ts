@@ -8,16 +8,16 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
 import {
+  CoreSchedulerInputSchema,
+  CoreSchedulerWireSchema,
+} from './control-store-admission-codecs.js';
+import {
   ExpiredOccurrenceRangeSchema,
   findAcceptedRecurringOccurrenceForQueue,
   readRecurringOccurrence,
   readRecurringSchedule,
   recurringRequestId,
 } from './recurring-records.js';
-import {
-  ControlSchedulerAdmissionSchema,
-  ControlSchedulerAdmissionWireSchema,
-} from './scheduler-admission-codecs.js';
 
 const monthlyUtc = { zone: 'UTC' as const, dayOfMonth: 28, hour: 9, minute: 0, second: 0 };
 const actor = {
@@ -367,9 +367,9 @@ describe('scheduler admission wire decoding', () => {
         timestamp: acceptedScheduledAt,
       },
     ])
-      expect(ControlSchedulerAdmissionSchema.safeParse(value).success).toBe(true);
+      expect(CoreSchedulerInputSchema.safeParse(value).success).toBe(true);
     expect(
-      ControlSchedulerAdmissionWireSchema.safeParse({
+      CoreSchedulerWireSchema.safeParse({
         byteLength: Buffer.byteLength(JSON.stringify(acceptedOccurrence)),
         turnId: acceptedTurnId,
       }).success
@@ -398,12 +398,12 @@ describe('scheduler admission wire decoding', () => {
         timestamp: acceptedScheduledAt,
       },
     ])
-      expect(ControlSchedulerAdmissionSchema.safeParse(value).success).toBe(false);
+      expect(CoreSchedulerInputSchema.safeParse(value).success).toBe(false);
     for (const value of [
       { byteLength: 0, turnId: acceptedTurnId },
       { byteLength: 42 },
       { byteLength: 42, turnId: null, extra: 'not admitted' },
     ])
-      expect(ControlSchedulerAdmissionWireSchema.safeParse(value).success).toBe(false);
+      expect(CoreSchedulerWireSchema.safeParse(value).success).toBe(false);
   });
 });

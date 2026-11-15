@@ -59,12 +59,12 @@ const StoredSchedulerWorkspaceRootV1Schema = z.discriminatedUnion('sourceKind', 
     .strip(),
 ]);
 
-export { SchedulerAdmissionTransitionError } from './storage/scheduler-admission-codecs.js';
+export { SchedulerAdmissionTransitionError } from './storage/control-store-admission-codecs.js';
 
 import {
   SchedulerAdmissionTransitionError,
   SchedulerCredentialRefSchema,
-} from './storage/scheduler-admission-codecs.js';
+} from './storage/control-store-admission-codecs.js';
 
 /** Explicit retained-storage choice captured with one scheduler admission request. */
 export type SchedulerWorkerStorageChoice =
@@ -87,7 +87,7 @@ export type SchedulerWorkerStorageChoice =
 type SchedulerCredentialRef = z.infer<typeof SchedulerCredentialRefSchema>;
 
 /** Durable checked FIFO admission bound to one configured backend. */
-export interface SchedulerAdmissionEntryRecord {
+export interface CoreSchedulerQueueEntry {
   /** Stable queue entry id. */
   readonly queueEntryId: string;
   /** Configured backend identity captured on acceptance, never selected by placement. */
@@ -274,7 +274,7 @@ export function schedulerAdmissionInputHash(input: CreateSchedulerAdmissionEntry
 export function createSchedulerAdmissionEntry(
   coreDb: CoreDb,
   input: CreateSchedulerAdmissionEntryInput
-): SchedulerAdmissionEntryRecord {
+): CoreSchedulerQueueEntry {
   const timestamp = input.now?.() ?? new Date().toISOString();
   const triggerActor = ActorRefSchema.parse(input.triggerActor);
   const storageChoice = input.workerStorageChoice
@@ -363,7 +363,7 @@ export function createSchedulerAdmissionEntry(
 export function denySchedulerAdmissionEntry(
   coreDb: CoreDb,
   input: DenySchedulerAdmissionEntryInput
-): SchedulerAdmissionEntryRecord {
+): CoreSchedulerQueueEntry {
   const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId);
 
   if (entry.status !== 'queued') {
@@ -390,7 +390,7 @@ export function denySchedulerAdmissionEntry(
 export function retryDeniedSchedulerAdmissionEntry(
   coreDb: CoreDb,
   input: RetryDeniedSchedulerAdmissionEntryInput
-): SchedulerAdmissionEntryRecord {
+): CoreSchedulerQueueEntry {
   return coreDb.sqlite
     .transaction(() => {
       const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
@@ -456,7 +456,7 @@ export function retryDeniedSchedulerAdmissionEntry(
 export function cancelSchedulerAdmissionEntry(
   coreDb: CoreDb,
   input: CancelSchedulerAdmissionEntryInput
-): SchedulerAdmissionEntryRecord {
+): CoreSchedulerQueueEntry {
   const entry = requireSchedulerAdmissionEntry(coreDb, input.queueEntryId, input);
 
   if (entry.status !== 'queued' && entry.status !== 'denied') {
@@ -486,9 +486,7 @@ export function cancelSchedulerAdmissionEntry(
  * @param coreDb Open Core database handle.
  * @returns Queued admission entries.
  */
-export function listQueuedSchedulerAdmissionEntries(
-  coreDb: CoreDb
-): SchedulerAdmissionEntryRecord[] {
+export function listQueuedSchedulerAdmissionEntries(coreDb: CoreDb): CoreSchedulerQueueEntry[] {
   return (
     coreDb.sqlite
       .prepare(
@@ -510,11 +508,11 @@ export function listQueuedSchedulerAdmissionEntries(
 export function listSchedulerAdmissionEntriesForWorkspace(
   coreDb: CoreDb,
   input: ListSchedulerAdmissionEntriesForWorkspaceInput
-): SchedulerAdmissionEntryRecord[] {
+): CoreSchedulerQueueEntry[] {
   // Preserve the original single-SELECT snapshot for synchronous authority consumers.
   return coreDb.sqlite
     .transaction(() => {
-      const result: SchedulerAdmissionEntryRecord[] = [];
+      const result: CoreSchedulerQueueEntry[] = [];
       for (const page of readSchedulerAdmissionPagesForWorkspace(coreDb, input))
         result.push(...page);
       return result;
@@ -530,7 +528,7 @@ export function listSchedulerAdmissionEntriesForWorkspace(
 export function* readSchedulerAdmissionPagesForWorkspace(
   coreDb: CoreDb,
   input: ListSchedulerAdmissionEntriesForWorkspaceInput
-): Generator<readonly SchedulerAdmissionEntryRecord[], void, void> {
+): Generator<readonly CoreSchedulerQueueEntry[], void, void> {
   if (input.statuses.length === 0) return;
   const placeholders = input.statuses.map(() => '?').join(', ');
   let after: { enqueuedAt: string; queueEntryId: string } | undefined;
@@ -568,7 +566,7 @@ export function requireSchedulerAdmissionEntry(
   coreDb: CoreDb,
   queueEntryId: string,
   ownership?: { readonly workspaceId: string }
-): SchedulerAdmissionEntryRecord {
+): CoreSchedulerQueueEntry {
   const row = coreDb.sqlite
     .prepare(`${schedulerAdmissionSelectSql()} WHERE queue_entry_id = ?`)
     .get(queueEntryId) as SchedulerAdmissionEntryRow | undefined;
@@ -620,9 +618,7 @@ function schedulerAdmissionSelectSql(): string {
  * @param row Raw SQLite row.
  * @returns Admission entry record.
  */
-function mapSchedulerAdmissionEntryRow(
-  row: SchedulerAdmissionEntryRow
-): SchedulerAdmissionEntryRecord {
+function mapSchedulerAdmissionEntryRow(row: SchedulerAdmissionEntryRow): CoreSchedulerQueueEntry {
   return readRetainedV1(row, () => ({
     queueEntryId: row.queue_entry_id,
     backendId: row.backend_id,
@@ -764,7 +760,7 @@ export interface SchedulerExecutionLineage {
 export function findNextDispatchableSchedulerAdmissionEntry(
   coreDb: CoreDb,
   unpublishedQueueEntryIds: ReadonlySet<string> = new Set()
-): SchedulerAdmissionEntryRecord | null {
+): CoreSchedulerQueueEntry | null {
   return (
     listQueuedSchedulerAdmissionEntries(coreDb).find(
       (entry) =>
@@ -782,7 +778,7 @@ export function findNextDispatchableSchedulerAdmissionEntry(
 export function findSchedulerAdmissionForTurn(
   coreDb: CoreDb,
   lineage: { readonly workspaceId: string; readonly threadId: string; readonly turnId: string }
-): SchedulerAdmissionEntryRecord | null {
+): CoreSchedulerQueueEntry | null {
   const row = coreDb.sqlite
     .prepare(
       `${schedulerAdmissionSelectSql()} WHERE workspace_id = ? AND thread_id = ? AND turn_id = ? AND status IN ('queued', 'admitted')`
@@ -797,7 +793,7 @@ export function findSchedulerAdmissionForTurn(
 export function findSchedulerAdmissionForWorkerLineage(
   coreDb: CoreDb,
   lineage: SchedulerExecutionLineage
-): SchedulerAdmissionEntryRecord | null {
+): CoreSchedulerQueueEntry | null {
   const rows = coreDb.sqlite
     .prepare(`SELECT admission.*, admission.schema_version AS schemaVersion
     FROM scheduler_execution_attempts attempt
@@ -820,7 +816,7 @@ export function findSchedulerAdmissionForWorkerLineage(
 export function requireSchedulerExecutionAttemptAdmissionContext(
   coreDb: CoreDb,
   attemptId: string
-): SchedulerAdmissionEntryRecord {
+): CoreSchedulerQueueEntry {
   const row = coreDb.sqlite
     .prepare(`SELECT admission.*, admission.schema_version AS schemaVersion
     FROM scheduler_execution_attempts attempt

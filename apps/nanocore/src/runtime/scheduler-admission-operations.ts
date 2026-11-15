@@ -19,11 +19,11 @@ import {
   requireSchedulerAdmissionEntry,
   SchedulerAdmissionTransitionError,
 } from '../scheduler-records.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
 import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
-import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
 import { externalTriggerTurnPublicationComplete } from './external-trigger-source.js';
 import { recurringTurnPublicationIssue } from './recurring-turn-publication.js';
 import { terminalizeGovernedWorkerTurn } from './worker-turn-failure.js';
@@ -120,7 +120,7 @@ export function createSchedulerAdmissionOperationImplementations(
           administratorEligible(context)
         );
 
-        const published = await publishSchedulerAdmission(
+        const published = await admitCoreScheduler(
           coreDb,
           { mode: 'retry', queueEntryId, workspaceId, actor: context.actor },
           (request) => {
@@ -207,7 +207,7 @@ export function createSchedulerAdmissionOperationImplementations(
               requireSchedulerAdmissionEntry(coreDb, queueEntryId)
             )
           : eventSource && !externalTriggerTurnPublicationComplete(coreDb, store, eventSource);
-        const published = await publishSchedulerAdmission(
+        const published = await admitCoreScheduler(
           coreDb,
           { mode: 'cancel', queueEntryId, workspaceId, actor: context.actor },
           (request) => {

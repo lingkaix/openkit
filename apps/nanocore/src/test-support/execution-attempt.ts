@@ -12,7 +12,7 @@ import {
   prepareNanoHostHarnessOperation,
   queueNanoHostHarnessOperation,
 } from '../runtime/nanohost-harness.js';
-import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
+import type { CoreSchedulerQueueEntry } from '../scheduler-records.js';
 import type { CoreDb } from '../storage/db.js';
 
 /**
@@ -25,7 +25,7 @@ import type { CoreDb } from '../storage/db.js';
 export function recordTestExecutionAttempt(
   coreDb: CoreDb,
   input: {
-    readonly entry: SchedulerAdmissionEntryRecord;
+    readonly entry: CoreSchedulerQueueEntry;
     readonly attemptId: string;
     readonly agentSessionId: string;
     readonly inputRef: string;

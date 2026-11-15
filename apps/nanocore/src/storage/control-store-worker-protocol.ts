@@ -160,6 +160,12 @@ import {
   type ControlAdmissionResult,
   type ControlKnowledgeAdmissionResult,
   ControlKnowledgeAdmissionResultSchema,
+  type CoreSchedulerRefusal,
+  CoreSchedulerRefusalSchema,
+  type CoreSchedulerResult,
+  CoreSchedulerResultSchema,
+  type CoreSchedulerWire,
+  CoreSchedulerWireSchema,
 } from './control-store-admission-codecs.js';
 import {
   type ControlCapabilityCommandResult,
@@ -266,14 +272,6 @@ import {
   type ControlRuntimeTargetResult,
   ControlRuntimeTargetResultSchema,
 } from './runtime-target-codecs.js';
-import {
-  type ControlSchedulerAdmissionRefusal,
-  ControlSchedulerAdmissionRefusalSchema,
-  type ControlSchedulerAdmissionResult,
-  ControlSchedulerAdmissionResultSchema,
-  type ControlSchedulerAdmissionWire,
-  ControlSchedulerAdmissionWireSchema,
-} from './scheduler-admission-codecs.js';
 import {
   type ControlScopedNotebookSqlInput,
   ControlScopedNotebookSqlInputSchema,
@@ -784,8 +782,9 @@ export type ControlWorkerCommand =
       | {
           readonly operation: 'transition';
           readonly transition:
-            | Exclude<ControlAdmissionInput, { kind: 'command-receipt' }>
-            | { readonly kind: 'command-receipt'; readonly input: ControlScalarText };
+            | Exclude<ControlAdmissionInput, { kind: 'command-receipt' | 'scheduler-work' }>
+            | { readonly kind: 'command-receipt'; readonly input: ControlScalarText }
+            | { readonly kind: 'scheduler-work'; readonly input: CoreSchedulerWire };
           readonly content?: ArrayBuffer;
         }
       | { readonly operation: 'products'; readonly transition: ControlProductTransition }
@@ -959,11 +958,6 @@ export type ControlWorkerCommand =
         }
       | { readonly operation: 'harness-lifecycle'; readonly input: ControlHarnessLifecycleInput }
       | {
-          readonly operation: 'scheduler-admission';
-          readonly input: ControlSchedulerAdmissionWire;
-          readonly content?: ArrayBuffer;
-        }
-      | {
           readonly operation: 'recovery-target-preparation';
           readonly input: ControlRecoveryTargetPreparationInput;
         }
@@ -1012,14 +1006,14 @@ export function controlWorkerInputBytes(
           !(
             (command.operation === 'capability' ||
               command.operation === 'observation' ||
-              command.operation === 'scheduler-admission' ||
               command.operation === 'generative-presentation' ||
               command.operation === 'app-kernel' ||
               command.operation === 'schema-application' ||
               command.operation === 'attention-enqueue' ||
               (command.operation === 'transition' &&
                 'kind' in command.transition &&
-                command.transition.kind === 'command-receipt') ||
+                (command.transition.kind === 'command-receipt' ||
+                  command.transition.kind === 'scheduler-work')) ||
               command.operation === 'standalone-audit' ||
               command.operation === 'thread-read-membership' ||
               command.operation === 'execution-attempt' ||
@@ -1166,7 +1160,7 @@ export type ControlWorkerDomainRefusal =
   | z.infer<typeof ControlRecoveryTargetRegistrationRefusalSchema>
   | z.infer<typeof ControlRecoverySourceReactivationRefusalSchema>
   | ControlCoreSharingRefusal
-  | ControlSchedulerAdmissionRefusal;
+  | CoreSchedulerRefusal;
 
 /** Safe current impact only; native exception diagnostics and input facts never leave the owner. */
 export const ControlSchemaApplicationRefusalSchema = z
@@ -1279,11 +1273,6 @@ export type ControlWorkerReply = {
       readonly status: 'ok';
       readonly operation: 'evaluation-candidate';
       readonly result: import('@openkit/app-api-schemas').CandidateSetRecord;
-    }
-  | {
-      readonly status: 'ok';
-      readonly operation: 'scheduler-admission';
-      readonly result: ControlSchedulerAdmissionResult;
     }
   | {
       readonly status: 'ok';
@@ -1488,7 +1477,11 @@ export type ControlWorkerReply = {
   | {
       readonly status: 'ok';
       readonly operation: 'transition';
-      readonly result: ControlAdmissionResult | ControlKnowledgeAdmissionResult | null;
+      readonly result:
+        | ControlAdmissionResult
+        | ControlKnowledgeAdmissionResult
+        | CoreSchedulerResult
+        | null;
     }
   | {
       readonly status: 'ok';
@@ -1670,10 +1663,14 @@ function isDomainRefusal(value: unknown): value is ControlWorkerDomainRefusal {
     return ControlHarnessLifecycleRefusalSchema.safeParse(value).success;
   if (isRecord(value) && value.operation === 'worker-storage-binding')
     return ControlWorkerStorageRefusalSchema.safeParse(value).success;
-  if (isRecord(value) && value.operation === 'scheduler-admission')
+  if (
+    isRecord(value) &&
+    value.operation === 'transition' &&
+    ['decoder', 'authority', 'transition', 'turn'].includes(String(value.kind))
+  )
     return (
       Buffer.byteLength(JSON.stringify(value)) <= CONTROL_PRODUCT_LIMITS.metadataBytes &&
-      ControlSchedulerAdmissionRefusalSchema.safeParse(value).success
+      CoreSchedulerRefusalSchema.safeParse(value).success
     );
   if (isRecord(value) && value.operation === 'core-sharing')
     return ControlCoreSharingRefusalSchema.safeParse(value).success;
@@ -1967,8 +1964,6 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
     return ControlHarnessLifecycleResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'worker-storage-binding')
     return ControlWorkerStorageResultSchema.safeParse(reply.result).success;
-  if (reply.operation === 'scheduler-admission')
-    return ControlSchedulerAdmissionResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'core-sharing')
     return ControlCoreSharingResultSchema.safeParse(reply.result).success;
   if (reply.operation === 'evaluation-candidate')
@@ -1992,6 +1987,7 @@ export function isControlWorkerReply(value: unknown): value is ControlWorkerRepl
   if (reply.operation === 'transition') {
     return (
       reply.result === null ||
+      CoreSchedulerResultSchema.safeParse(reply.result).success ||
       ControlKnowledgeAdmissionResultSchema.safeParse(reply.result).success ||
       (isRecord(reply.result) &&
         typeof reply.result.replayed === 'boolean' &&
@@ -2283,6 +2279,19 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
         value.initialize === 'core' ||
         value.initialize === 'user' ||
         value.initialize === 'workspace')
+    );
+  }
+  if (
+    value.operation === 'transition' &&
+    isRecord(value.transition) &&
+    value.transition.kind === 'scheduler-work'
+  ) {
+    const parsed = CoreSchedulerWireSchema.safeParse(value.transition.input);
+    return (
+      parsed.success &&
+      exactFields(value, [...scoped, 'transition', 'content']) &&
+      exactFields(value.transition, ['kind', 'input']) &&
+      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
     );
   }
   if (
@@ -2665,14 +2674,6 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
     );
   if (value.operation === 'thread-read-membership') {
     const parsed = ControlThreadReadMembershipWireSchema.safeParse(value.input);
-    return (
-      parsed.success &&
-      exactFields(value, [...scoped, 'input', 'content']) &&
-      controlMaterialArrayBufferByteLength(value.content) === parsed.data.byteLength
-    );
-  }
-  if (value.operation === 'scheduler-admission') {
-    const parsed = ControlSchedulerAdmissionWireSchema.safeParse(value.input);
     return (
       parsed.success &&
       exactFields(value, [...scoped, 'input', 'content']) &&

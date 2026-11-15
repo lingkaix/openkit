@@ -15,9 +15,9 @@ import {
 } from '../runtime/execution-attempt-records.js';
 import { getWorkerBackendSession } from '../runtime/worker-backend-session-records.js';
 import {
+  type CoreSchedulerQueueEntry,
   listSchedulerAdmissionEntriesForWorkspace,
   readSchedulerAdmissionPagesForWorkspace,
-  type SchedulerAdmissionEntryRecord,
 } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { verifyTurnFileInput } from '../storage/workspace-file-records.js';
@@ -217,7 +217,7 @@ function workerContextAuthoritySteps(
         : yield* readAssistantTaskHandoffSourceSteps(store, workspaceDb, source);
     },
     *readAdmission(workspaceId, threadId, turnId) {
-      const entries: SchedulerAdmissionEntryRecord[] = [];
+      const entries: CoreSchedulerQueueEntry[] = [];
       const selection = { workspaceId, statuses: ['admitted'] as const };
       const pages = synchronousLeafReads
         ? [listSchedulerAdmissionEntriesForWorkspace(coreDb, selection)]

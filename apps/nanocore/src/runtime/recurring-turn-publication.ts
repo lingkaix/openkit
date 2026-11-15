@@ -3,7 +3,7 @@ import type { AutomationOccurrence } from '@openkit/app-api-schemas';
 import type { TurnSchema } from '@openkit/protocol';
 import { workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
-import type { SchedulerAdmissionEntryRecord } from '../scheduler-records.js';
+import type { CoreSchedulerQueueEntry } from '../scheduler-records.js';
 import { readPublishedTurnFileRecords } from '../storage/workspace-file-records.js';
 
 /** Canonical protocol Turn consumed by the publication checks. */
@@ -11,7 +11,7 @@ type Turn = import('zod').infer<typeof TurnSchema>;
 
 /** Checks the accepted source tuple against a canonical Turn without consulting derivative caches. */
 export function recurringCanonicalTurnPublicationIssue(
-  entry: SchedulerAdmissionEntryRecord,
+  entry: CoreSchedulerQueueEntry,
   turn: Turn | null
 ): AutomationOccurrence['publicationIssue'] {
   if (!turn) return 'turn_missing';
@@ -31,7 +31,7 @@ export function recurringCanonicalTurnPublicationIssue(
 /** Checks canonical publication and the exact cache consumed by native dispatch and cancellation. */
 export function recurringTurnPublicationIssue(
   store: FsStore,
-  entry: SchedulerAdmissionEntryRecord
+  entry: CoreSchedulerQueueEntry
 ): AutomationOccurrence['publicationIssue'] {
   try {
     const dataRoot = store.getDataRoot();

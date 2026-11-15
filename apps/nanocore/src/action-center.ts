@@ -26,8 +26,8 @@ import { materializeInterruptedWorkerStates } from './runtime/worker-recovery.js
 import { listWorkspaceReconciliationRecords } from './runtime/workspace-reconciliation-records.js';
 import { listWorkspaceSyncReviews } from './runtime/workspace-sync-records.js';
 import {
+  type CoreSchedulerQueueEntry,
   listSchedulerAdmissionEntriesForWorkspace,
-  type SchedulerAdmissionEntryRecord,
 } from './scheduler-records.js';
 import { readPendingCommandRequestRecords } from './storage/command-request-records.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
@@ -940,7 +940,7 @@ function schedulerOrphanWorkerRows(
  * @param entry Scheduler admission entry.
  * @returns Human-readable row title.
  */
-function schedulerAdmissionTitle(entry: SchedulerAdmissionEntryRecord): string {
+function schedulerAdmissionTitle(entry: CoreSchedulerQueueEntry): string {
   if (entry.status === 'denied') {
     return 'Worker scheduling is blocked';
   }
@@ -954,7 +954,7 @@ function schedulerAdmissionTitle(entry: SchedulerAdmissionEntryRecord): string {
  * @param entry Scheduler admission entry.
  * @returns Human-readable row summary.
  */
-function schedulerAdmissionSummary(entry: SchedulerAdmissionEntryRecord): string {
+function schedulerAdmissionSummary(entry: CoreSchedulerQueueEntry): string {
   if (entry.denialReason === 'queue-full') {
     return 'The worker admission queue is full.';
   }
@@ -976,7 +976,7 @@ function schedulerAdmissionSummary(entry: SchedulerAdmissionEntryRecord): string
  * @param entry Scheduler admission entry.
  * @returns Actions backed by public App API routes.
  */
-function schedulerAdmissionActions(entry: SchedulerAdmissionEntryRecord): HumanAttentionAction[] {
+function schedulerAdmissionActions(entry: CoreSchedulerQueueEntry): HumanAttentionAction[] {
   const actions: HumanAttentionAction[] = [openThreadAction(entry.threadId)];
 
   if (entry.status === 'denied') {

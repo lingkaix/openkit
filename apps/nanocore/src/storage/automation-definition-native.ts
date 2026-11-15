@@ -18,6 +18,11 @@ import {
   recurringNominalMatches,
   recurringPrefixThrough,
 } from '../lib/recurring-cadence.js';
+import {
+  type AutomationDefinitionMutation,
+  AutomationMutationError,
+  AutomationRecordNotFoundError,
+} from './control-store-admission-codecs.js';
 import type { CoreDb } from './db.js';
 import {
   findRecurringAutomationFromDb,
@@ -32,11 +37,6 @@ import {
   recurringRequestId,
 } from './recurring-records.js';
 import { StoredAutomationCadenceV1Schema } from './recurring-retained-v1.js';
-import {
-  type AutomationDefinitionMutation,
-  AutomationMutationError,
-  AutomationRecordNotFoundError,
-} from './scheduler-admission-codecs.js';
 
 /** Decides exactly one definition tuple within the caller's existing transaction or native savepoint. */
 export function applyAutomationDefinitionInDb(

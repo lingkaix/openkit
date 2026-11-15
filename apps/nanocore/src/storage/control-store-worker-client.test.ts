@@ -49,6 +49,7 @@ import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
+import { admitCoreScheduler } from './control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
@@ -70,7 +71,6 @@ import {
   workspaceDbPath,
 } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations, hasPendingUserMigrations } from './migrate.js';
-import { publishSchedulerAdmission } from './scheduler-admission-publication.js';
 import { advanceThreadReadReceipt, readThreadReadReceipt } from './thread-read-receipts.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
@@ -1681,7 +1681,7 @@ describe('typed global capture cut across native physical owners', () => {
       const userDatabase = `user:${userDbPath(f.root, f.userId)}`;
       const workspaceDatabase = `workspace:${workspaceDbPath(f.root, workspace.id)}`;
       const selectors = {
-        Core: { operation: 'scheduler-admission', database: coreDatabase },
+        Core: { operation: 'transition', database: coreDatabase },
         User: { operation: 'thread-read-membership', database: userDatabase },
         Workspace: { operation: 'item', database: workspaceDatabase },
       };
@@ -1698,9 +1698,18 @@ describe('typed global capture cut across native physical owners', () => {
         this: Worker,
         ...args
       ) {
-        const request = args[0] as { operation?: string; database?: string; id?: number };
+        const request = args[0] as {
+          operation?: string;
+          database?: string;
+          id?: number;
+          transition?: { kind?: string };
+        };
         for (const [role, selector] of Object.entries(selectors)) {
-          if (request.operation !== selector.operation || request.database !== selector.database)
+          if (
+            request.operation !== selector.operation ||
+            request.database !== selector.database ||
+            (role === 'Core' && request.transition?.kind !== 'scheduler-work')
+          )
             continue;
           if (typeof request.id !== 'number')
             throw new Error('Typed native frame has no request identity.');
@@ -1753,7 +1762,7 @@ describe('typed global capture cut across native physical owners', () => {
       let userClosed = false;
       let backupRoot: string | undefined;
       try {
-        const initialCore = track(publishSchedulerAdmission(f.coreDb, coreCommands[0]!));
+        const initialCore = track(admitCoreScheduler(f.coreDb, coreCommands[0]!));
         const initialUser = track(
           advanceThreadReadReceipt(userDb, workspace.id, userTurn.threadId, [eligible[0]!.id])
         );
@@ -1829,10 +1838,11 @@ describe('typed global capture cut across native physical owners', () => {
           lateEntered.add(name);
           if (lateEntered.size === 3) allLateEntered.resolve();
         };
-        const schedulerAdmission = f.client.schedulerAdmission.bind(f.client);
-        vi.spyOn(f.client, 'schedulerAdmission').mockImplementation((...args) => {
-          const result = schedulerAdmission(...args);
-          entered('Core');
+        const transition = f.client.transition.bind(f.client);
+        vi.spyOn(f.client, 'transition').mockImplementation((...args) => {
+          const result = transition(...args);
+          if (args[0] === coreDatabase && 'kind' in args[1] && args[1].kind === 'scheduler-work')
+            entered('Core');
           return result;
         });
         const membership = f.client.threadReadMembership.bind(f.client);
@@ -1849,7 +1859,7 @@ describe('typed global capture cut across native physical owners', () => {
         });
         let laterAcknowledged = 0;
         const laterCore = track(
-          publishSchedulerAdmission(f.coreDb, coreCommands[1]!).then((value) => {
+          admitCoreScheduler(f.coreDb, coreCommands[1]!).then((value) => {
             laterAcknowledged++;
             return value;
           })

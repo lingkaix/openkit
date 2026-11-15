@@ -26,18 +26,18 @@ const SCAN_LIMIT = 128;
 export {
   AutomationMutationError,
   AutomationRecordNotFoundError,
-} from '../storage/scheduler-admission-codecs.js';
+} from '../storage/control-store-admission-codecs.js';
 
-import {
-  findRecurringAutomationFromDb,
-  readRecurringOccurrenceFromDb,
-} from '../storage/recurring-attempt-native.js';
+import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import {
   type AutomationDefinitionMutation,
   AutomationMutationError,
   AutomationRecordNotFoundError,
-} from '../storage/scheduler-admission-codecs.js';
-import { publishSchedulerAdmission } from '../storage/scheduler-admission-publication.js';
+} from '../storage/control-store-admission-codecs.js';
+import {
+  findRecurringAutomationFromDb,
+  readRecurringOccurrenceFromDb,
+} from '../storage/recurring-attempt-native.js';
 
 /** Durable Workspace schedule authority sharing the scheduler's Core SQLite connection. */
 export class AutomationStore {
@@ -174,7 +174,7 @@ export class AutomationStore {
     const release = this.mutationAdmission.enter(this.getOccurrence(occurrenceId).workspaceId);
     if (!release) throw new AutomationMutationError('Workspace mutations are fenced.');
     try {
-      const result = await publishSchedulerAdmission(
+      const result = await admitCoreScheduler(
         this.coreDb,
         {
           mode: 'recurring-attempt',
@@ -262,7 +262,7 @@ export class AutomationStore {
     const release = this.mutationAdmission.enter(workspaceId);
     if (!release) throw new AutomationMutationError('Workspace mutations are fenced.');
     try {
-      const result = await publishSchedulerAdmission(
+      const result = await admitCoreScheduler(
         this.coreDb,
         {
           mode: 'definition',

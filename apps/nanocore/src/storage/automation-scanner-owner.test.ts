@@ -125,7 +125,7 @@ it('refuses a changed native scan selection and leaves the complete post-mutatio
   const original = coreRows(f.db);
   let beforeWrite: ReturnType<typeof coreRows> | undefined;
   let armed = true;
-  // Return the real native plan unchanged. The ordinary mutation uses schedulerAdmission independently.
+  // Return the real native plan unchanged. The ordinary mutation uses the scheduler-work transition independently.
   const observed = vi
     .spyOn(client, 'automationScanner')
     .mockImplementation(async (database, input) => {
