@@ -34,6 +34,7 @@ import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { applyControlAdmission } from '../storage/control-store-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -51,7 +52,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
 import { listThreadPendingRequests, readPendingRequest } from './pending-requests.js';
@@ -338,20 +338,22 @@ async function fixture() {
     { visibility: 'workspace', threadSource: 'worker' }
   );
   db.sqlite.transaction(() =>
-    reserveGoalTask(
-      store,
+    applyControlAdmission(
       db,
       {
-        goalId: goal.goalId,
-        cardId: card.cardId,
-        planVersionId: plan.planVersionId,
-        cardRevision: 0,
-        intentRevision: 0,
-        withinCurrentIntent: true,
-        withinPermittedAdjustments: true,
-        rationale: 'Read the issue',
+        goalTaskCitation: {
+          goalId: goal.goalId,
+          cardId: card.cardId,
+          planVersionId: plan.planVersionId,
+          cardRevision: 0,
+          intentRevision: 0,
+          withinCurrentIntent: true,
+          withinPermittedAdjustments: true,
+          rationale: 'Read the issue',
+        },
+        threadId: thread.id,
       },
-      thread.id
+      store
     )
   )();
   // The request mentions the Tool in prose but has no typed resource association.

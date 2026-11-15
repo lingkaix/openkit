@@ -48,6 +48,7 @@ import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
@@ -107,7 +108,6 @@ import {
 } from './execution-attempt-records.js';
 import { createGoalCoordinator, createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -557,7 +557,11 @@ async function fixture(
       }
     );
     db.sqlite.transaction(() =>
-      reserveGoalTask(store, db, { ...dispatchInput, goalId: goal.goalId }, thread.id)
+      applyControlAdmission(
+        db,
+        { goalTaskCitation: { ...dispatchInput, goalId: goal.goalId }, threadId: thread.id },
+        store
+      )
     )();
     const prompt = serializeStructuredWorkerDelegationRequest(request);
     const agentSessionId = testEntityId('as', requestId);

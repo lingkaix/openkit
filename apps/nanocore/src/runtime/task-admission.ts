@@ -115,7 +115,7 @@ export function createCoordinatorTaskTool(options: {
             'task_admission_failed',
             'Current Task write authority is unavailable.'
           );
-        const assertGoalTaskAdmission = () => {
+        const assertGoalTaskCitation = () => {
           const current: { kernel?: PolicyDecision } = {};
           const human = currentWorkspaceAuthority(
             options.coreDb!,
@@ -156,7 +156,7 @@ export function createCoordinatorTaskTool(options: {
             );
         };
         // Refuse before creating a Task; asynchronous preparation must not preserve stale bounds.
-        assertGoalTaskAdmission();
+        assertGoalTaskCitation();
         const requestId = randomUUID();
         const threadId = deriveEntityId('th', ['task', requestId]);
         receivingThreadId = threadId;
@@ -240,7 +240,7 @@ export function createCoordinatorTaskTool(options: {
                 };
               },
               reservedTurnId: turnId,
-              goalTaskAdmission: {
+              goalTaskCitation: {
                 goalId: goal.goalId,
                 cardId: input.cardId,
                 planVersionId: input.planVersionId,
@@ -251,11 +251,11 @@ export function createCoordinatorTaskTool(options: {
                 rationale: input.rationale,
               },
               reserveTurn: () => {
-                assertGoalTaskAdmission();
+                assertGoalTaskCitation();
                 return { turnId };
               },
               startWorker: async ({ onAdmitted }) => {
-                assertGoalTaskAdmission();
+                assertGoalTaskCitation();
                 const ended = await options.startWorker({
                   store: options.store,
                   commandReceipt,

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
+import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -18,7 +19,6 @@ import {
   listExportableGoalState,
   readGoalView,
 } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import { commandInputHash } from './idempotent-command.js';
 import { raiseRecordedPendingRequest, respondRecordedApproval } from './pending-request-flow.js';
 import { type PendingRequestRecord, readPendingRequest } from './pending-requests.js';
@@ -339,20 +339,22 @@ describe('Proposed Plan eligibility', () => {
         await f.consume(plan.pendingRequestId);
         const task = await f.store.createThread(f.scope.workspaceId, 'Retained Task');
         f.db.sqlite.transaction(() =>
-          reserveGoalTask(
-            f.store,
+          applyControlAdmission(
             f.db,
             {
-              goalId: f.scope.goalId,
-              cardId: f.card.cardId,
-              planVersionId: plan.planVersionId,
-              cardRevision: 0,
-              intentRevision: 0,
-              withinCurrentIntent: true,
-              withinPermittedAdjustments: true,
-              rationale: 'Design within the approved commitment.',
+              goalTaskCitation: {
+                goalId: f.scope.goalId,
+                cardId: f.card.cardId,
+                planVersionId: plan.planVersionId,
+                cardRevision: 0,
+                intentRevision: 0,
+                withinCurrentIntent: true,
+                withinPermittedAdjustments: true,
+                rationale: 'Design within the approved commitment.',
+              },
+              threadId: task.id,
             },
-            task.id
+            f.store
           )
         )();
       }
@@ -948,24 +950,34 @@ describe('Proposed Plan eligibility', () => {
         rationale: 'Implementation is now prohibited.',
       };
       expect(() =>
-        f.db.sqlite.transaction(() => reserveGoalTask(f.store, f.db, input, thread.id))()
+        f.db.sqlite.transaction(() =>
+          applyControlAdmission(f.db, { goalTaskCitation: input, threadId: thread.id }, f.store)
+        )()
       ).toThrow('not authorized');
       expect(() =>
         f.db.sqlite.transaction(() =>
-          reserveGoalTask(
-            f.store,
+          applyControlAdmission(
             f.db,
-            { ...input, intentRevision: 0, withinCurrentIntent: true },
-            thread.id
+            {
+              goalTaskCitation: { ...input, intentRevision: 0, withinCurrentIntent: true },
+              threadId: thread.id,
+            },
+            f.store
           )
         )()
       ).toThrow('changed before reservation');
       f.db.sqlite.transaction(() =>
-        reserveGoalTask(
-          f.store,
+        applyControlAdmission(
           f.db,
-          { ...input, withinCurrentIntent: true, rationale: 'Research the design only.' },
-          thread.id
+          {
+            goalTaskCitation: {
+              ...input,
+              withinCurrentIntent: true,
+              rationale: 'Research the design only.',
+            },
+            threadId: thread.id,
+          },
+          f.store
         )
       )();
       const view = await executeGoalOperation('goal.read', f.scope, f.human, f.store, f.db);
@@ -1011,7 +1023,9 @@ describe('Proposed Plan eligibility', () => {
         rationale: 'Examples are within the approved refinement.',
       };
       const reserve = (value: typeof admission) =>
-        f.db.sqlite.transaction(() => reserveGoalTask(f.store, f.db, value, task.id))();
+        f.db.sqlite.transaction(() =>
+          applyControlAdmission(f.db, { goalTaskCitation: value, threadId: task.id }, f.store)
+        )();
       expect(() => reserve({ ...admission, cardRevision: 0 })).toThrow(
         'changed before reservation'
       );
@@ -1037,7 +1051,11 @@ describe('Proposed Plan eligibility', () => {
       const another = await f.store.createThread(f.scope.workspaceId, 'Another Task');
       expect(() =>
         f.db.sqlite.transaction(() =>
-          reserveGoalTask(f.store, f.db, { ...admission, cardRevision: 2 }, another.id)
+          applyControlAdmission(
+            f.db,
+            { goalTaskCitation: { ...admission, cardRevision: 2 }, threadId: another.id },
+            f.store
+          )
         )()
       ).toThrow('has ended');
       expect(

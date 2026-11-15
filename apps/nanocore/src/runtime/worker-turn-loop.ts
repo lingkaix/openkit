@@ -12,6 +12,7 @@ import { currentWorkspaceAuthority } from '../auth/operation-authorizer.js';
 import { serializeStructuredWorkerDelegationRequest } from '../internal-agents/delegation.js';
 import type { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import type { GoalTaskCitation } from '../storage/control-store-admission-codecs.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -22,7 +23,6 @@ import {
   listSchedulerExecutionAttemptsForTurn,
   requireSchedulerExecutionAttempt,
 } from './execution-attempt-records.js';
-import type { GoalTaskAdmission } from './goal-task-admission.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import type { PreparedNextTurn } from './prepare-next-turn.js';
 import { verifyAcceptedTurnLineage } from './product-turn-start.js';
@@ -168,7 +168,7 @@ export interface RunWorkerTurnLoopInput {
   /** Optional goal task id associated with the worker turn. */
   readonly taskId?: string | null;
   /** Original Goal Task citation committed with launch admission and the checkpoint. */
-  readonly goalTaskAdmission?: GoalTaskAdmission;
+  readonly goalTaskCitation?: GoalTaskCitation;
   /** Command request that owns this worker envelope. */
   readonly requestId: string;
   /** Hash of the canonical command input without raw request content. */
@@ -273,7 +273,7 @@ export async function runWorkerTurnLoop(
       contextDigest: prepared.contextPackageDigest,
       diagnosticsSummary: createWorkerCheckpointContextDiagnostics(contextAssembly),
       now: input.now?.() ?? new Date().toISOString(),
-      ...(input.goalTaskAdmission ? { goalTaskAdmission: input.goalTaskAdmission } : {}),
+      ...(input.goalTaskCitation ? { goalTaskCitation: input.goalTaskCitation } : {}),
     },
   });
   if (!checkpoint || typeof checkpoint !== 'object' || !('checkpointId' in checkpoint))
