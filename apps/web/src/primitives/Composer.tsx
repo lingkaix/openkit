@@ -769,16 +769,22 @@ export function Composer({
           </AriaButton>
         )}
       </div>
-      {live ? (
-        <div className="mt-2 flex max-w-full flex-col gap-2" data-composer-action={live.mode}>
+      {/* Task threads keep this row's box so a later steer offer does not shift the timeline. */}
+      {live || variant !== 'assistant' ? (
+        <div
+          className={`mt-2 flex max-w-full flex-col gap-2${live ? '' : ' invisible'}`}
+          {...(live
+            ? { 'data-composer-action': live.mode }
+            : { 'aria-hidden': true as const, inert: true as const })}
+        >
           <p
-            id="steer-consequence"
+            id={live ? 'steer-consequence' : undefined}
             className="break-words text-base leading-normal"
             style={{ overflowWrap: 'anywhere' }}
           >
-            {live.consequence}
+            {live?.consequence ?? '\u00a0'}
           </p>
-          {live.mode === 'steer' && steerExtras ? (
+          {live?.mode === 'steer' && steerExtras ? (
             <div className="flex flex-col items-start gap-2">
               <p id="steer-inapplicable" className="break-words text-base leading-normal">
                 {steerCopy.inapplicable}
@@ -793,7 +799,7 @@ export function Composer({
               {steerCopy.sending}
             </p>
           ) : null}
-          {steerApi?.failure && live.mode === 'steer' ? (
+          {steerApi?.failure && live?.mode === 'steer' ? (
             <SteerOutcome
               onReplay={steerApi.replay}
               receipt={{
@@ -805,14 +811,16 @@ export function Composer({
               }}
             />
           ) : null}
-          {phoneRun?.stop ? <p id="composer-stop-why">{phoneRun.stop.consequence}</p> : null}
-          {phoneRun?.stop?.pending ? (
+          {live && phoneRun?.stop ? (
+            <p id="composer-stop-why">{phoneRun.stop.consequence}</p>
+          ) : null}
+          {live && phoneRun?.stop?.pending ? (
             <p id="composer-stop-wait" role="status">
               {phoneRun.stop.waitReason}
             </p>
           ) : null}
           <div className="flex flex-wrap gap-2">
-            {phoneRun?.stop ? (
+            {live && phoneRun?.stop ? (
               <button
                 type="button"
                 className="min-h-11 rounded-full border border-negative-fg px-3 text-sm font-bold text-negative-fg"
@@ -825,7 +833,7 @@ export function Composer({
                 {phoneRun.stop.label}
               </button>
             ) : null}
-            {live.mode === 'steer' ? (
+            {live?.mode === 'steer' ? (
               <button
                 type="submit"
                 className="min-h-11 rounded-full bg-accent px-3 text-sm font-bold text-on-accent disabled:bg-disabled-bg disabled:text-disabled-fg"
@@ -843,10 +851,11 @@ export function Composer({
               <button
                 type="button"
                 className="min-h-11 rounded-full border border-border px-3 text-sm font-bold text-fg"
-                aria-describedby="steer-consequence"
+                aria-describedby={live ? 'steer-consequence' : undefined}
+                tabIndex={live ? undefined : -1}
                 onClick={() => textareaRef.current?.focus()}
               >
-                {live.actionLabel}
+                {live?.actionLabel ?? '\u00a0'}
               </button>
             )}
           </div>
