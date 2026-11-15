@@ -113,7 +113,7 @@ A runtime may execute agents:
 
 Runtime owns execution lifecycle and infrastructure concerns such as startup, liveness, interruption, recovery, sandbox attachment, workspace materialization, artifact and workspace-change collection, and capability-plane connectivity. Workspace changes are collected by a read-only scan from outside the Sandbox, at Turn end, at AgentSession release, and before a successor uses the same work volume, without stopping the running worker. Collection happens while the work runs, so loss of the Sandbox, the Harness or native history does not lose the collected work record; [Fault Tolerance](fault-tolerance.md) defines complete collection and how incomplete collection is reported.
 
-Runtime is separate from permission. Runtime may enforce sandbox constraints, but authorization decisions belong to the permission model.
+Runtime is separate from permission. Runtime may enforce sandbox constraints, but authorization decisions belong to the Policy model.
 
 ## AgentSession
 
@@ -220,7 +220,7 @@ The substrate lifecycle has these responsibilities:
 6. Recovery may adopt only the exact surviving execution under an accepted proof contract. Otherwise it completes existing cleanup and preserves interruption or uncertainty. An invalid epoch may return capacity only after the prior effect domain is fenced and a fresh compatible epoch is proved ready and free of prior mutable execution state; separately retained working volumes are not live execution state and remain subject to fresh authorized attachment. Replacement and retry require a fresh authorized request and do not rewrite the prior attempt.
 7. Dependency failure before admission blocks launch. Dependency failure after admission follows the same interruption, evidence, cleanup, and fresh-request boundaries; runtime must not synthesize authority or a successful terminal result.
 
-A pending approval or user-input request never pauses the Turn that raised it and never closes its AgentSession. A worker's outcome is delivered on a later Turn of the same Thread, which the current AgentSession executes, or a successor that resumes the native conversation when that binding has ended. Outcomes for the internal Assistant or for a person are delivered by their own owners without an AgentSession. The replacement Goal owner admits ordinary Tasks through the existing worker path. A Goal-dispatched Task is an ordinary worker Turn, and this runtime adds no separate Goal execution path.
+A pending approval or user-input request never pauses the Turn that raised it and never closes its AgentSession. A worker's outcome is delivered on a later Turn of the same Thread, which the current AgentSession executes, or a successor that resumes the native conversation when that binding has ended. Outcomes for the internal Assistant or for a person are delivered by their own owners without an AgentSession. The Goal owner admits ordinary Tasks through the existing worker path. A Goal-dispatched Task is an ordinary worker Turn, and this runtime adds no separate Goal execution path.
 
 An execution substrate can fail while a Turn remains inspectable or eligible for a separately authorized retry, and after a Turn completes, is cancelled, or fails, its AgentSession remains reusable only when the owning runtime can prove that continuity and reuse are safe. Failure of one shared epoch may interrupt multiple AgentSessions, but it MUST NOT merge their identities, lineages, evidence, or terminal outcomes.
 
