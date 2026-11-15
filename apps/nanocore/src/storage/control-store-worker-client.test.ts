@@ -398,6 +398,43 @@ describe('control writer parent admission', () => {
     if (afterAck.status === 'frozen') afterAck.release();
   });
 
+  it('owns a standalone physical close until its real native ACK is delivered', async () => {
+    const f = await poolFixture(1);
+    const scope = f.scope(0);
+    const owner = f.client.workspaceMutations(f.root);
+    const reached = Promise.withResolvers<void>();
+    const emit = Worker.prototype.emit;
+    let resume: (() => void) | undefined;
+    const replies = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (
+      event,
+      ...args
+    ) {
+      if (event === 'message' && args[0]?.operation === 'close' && !resume) {
+        resume = () => {
+          emit.call(this, event, ...args);
+        };
+        reached.resolve();
+        return true;
+      }
+      return emit.call(this, event, ...args);
+    });
+    const closing = f.client.close(scope.database);
+    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    try {
+      await reached.promise;
+      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      expect(cut.status).toBe('busy');
+    } finally {
+      if (cut?.status === 'frozen') cut.release();
+      resume?.();
+      await closing;
+      replies.mockRestore();
+    }
+    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    expect(afterAck.status).toBe('frozen');
+    if (afterAck.status === 'frozen') afterAck.release();
+  });
+
   it('retains unknown child backing and the original deletion fence across native restart', async () => {
     const posts = vi.spyOn(Worker.prototype, 'postMessage');
     const f = await poolFixture(1, 'after');

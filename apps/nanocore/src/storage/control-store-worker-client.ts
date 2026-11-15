@@ -5906,16 +5906,23 @@ class ControlStoreWorkerClient {
       }
     }
     const parentLease = context?.active ? context.workspaceLease : undefined;
-    const workspaceRelease = parentLease?.owner.enter(parentLease.workspaceId, 'capture');
+    const scoped = command.operation === 'open' ? command : opening?.command;
+    const physical = scoped?.physicalScope ?? scoped?.productOwner;
+    const physicalWorkspaceId =
+      physical?.kind === 'workspace' || physical?.kind === 'app' ? physical.workspaceId : undefined;
+    // Real frozen recovery/capture calls already retain their original exclusive owner.
+    const owner =
+      parentLease?.owner ??
+      (!recovery && scoped?.dataRoot && physicalWorkspaceId
+        ? this.workspaceMutations(scoped.dataRoot)
+        : undefined);
+    const workspaceId = parentLease?.workspaceId ?? physicalWorkspaceId;
+    const workspaceRelease = owner && workspaceId ? owner.enter(workspaceId, 'capture') : undefined;
     if (workspaceRelease === null)
       return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
     const workspaceLease =
-      parentLease && workspaceRelease
-        ? {
-            owner: parentLease.owner,
-            workspaceId: parentLease.workspaceId,
-            release: workspaceRelease,
-          }
+      owner && workspaceId && workspaceRelease
+        ? { owner, workspaceId, release: workspaceRelease }
         : undefined;
     let capacity: readonly NativeCapacityReservation[];
     try {

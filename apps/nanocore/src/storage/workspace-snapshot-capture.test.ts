@@ -3954,8 +3954,7 @@ describe('C-a independent sealed generations', () => {
         );
       });
       const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
-      const gate = vi.spyOn(f.mutationAdmission, 'tryFreeze').mockImplementation((...args) => {
-        const result = tryFreeze(...args);
+      const observeFreeze = (result: ReturnType<typeof tryFreeze>) => {
         if (result.status !== 'frozen') return result;
         return {
           ...result,
@@ -3965,7 +3964,15 @@ describe('C-a independent sealed generations', () => {
             result.release();
           },
         };
-      });
+      };
+      const gate = vi
+        .spyOn(f.mutationAdmission, 'tryFreeze')
+        .mockImplementation((...args) => observeFreeze(tryFreeze(...args)));
+      // A counted native Pending now selects the real accepted-preparation drain entry.
+      const tryFreezeAfterDrain = f.mutationAdmission.tryFreezeAfterDrain.bind(f.mutationAdmission);
+      const drainingGate = vi
+        .spyOn(f.mutationAdmission, 'tryFreezeAfterDrain')
+        .mockImplementation(async (...args) => observeFreeze(await tryFreezeAfterDrain(...args)));
       let worker: Worker | undefined;
       let entered!: () => void;
       const draining = new Promise<void>((resolve) => {
@@ -4033,6 +4040,7 @@ describe('C-a independent sealed generations', () => {
         await capturing;
         hold.mockRestore();
         gate.mockRestore();
+        drainingGate.mockRestore();
         post.mockRestore();
       }
       const reacquired = client.tryPauseForWorkspaceCapture(targetDatabase);
