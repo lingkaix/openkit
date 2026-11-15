@@ -8,7 +8,7 @@ import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
 const root = process.cwd();
-const { attestationArguments } = await import(
+const { attestationArguments, candidateSubjects, verifyCandidateSubjects } = await import(
   pathToFileURL(join(root, 'scripts/verify-release-integrity.mjs')).href
 );
 const { provenanceSubjects } = await import(
@@ -198,4 +198,57 @@ test('provenance checksum rows bind every controlled file and every immutable ca
   } finally {
     rmSync(assetsDir, { recursive: true, force: true });
   }
+});
+
+test('candidate image subjects bind the admitted index and exact platforms before any release tag', () => {
+  const image = 'ghcr.io/lingkaix/openkit-app';
+  const [index, amd64, arm64] = ['1', '2', '3'].map((c) => `sha256:${c.repeat(64)}`);
+  const observed = {
+    manifests: [
+      { digest: amd64, platform: { os: 'linux', architecture: 'amd64' } },
+      { digest: arm64, platform: { os: 'linux', architecture: 'arm64' } },
+    ],
+  };
+  const observe = (name, digest) => {
+    assert.deepEqual([name, digest], [image, index]);
+    return observed;
+  };
+  const platforms = ['linux/amd64', 'linux/arm64'];
+  const rows = candidateSubjects({ image, digest: index, platforms, observe });
+  assert.equal(
+    rows,
+    `${[index, amd64, arm64].map((d) => `${d.slice(7)}  ${image}@${d}`).join('\n')}\n`
+  );
+  assert.throws(() =>
+    candidateSubjects({ image, digest: index, platforms: ['linux/amd64'], observe })
+  );
+  const verified = [];
+  const count = verifyCandidateSubjects({
+    subjects: rows,
+    repository,
+    tag: 'v0.1.0-rc.9',
+    sha,
+    verify: (input) => verified.push(input.subject),
+  });
+  assert.equal(count, 3);
+  assert.deepEqual(
+    verified,
+    [index, amd64, arm64].map((d) => `oci://${image}@${d}`)
+  );
+  for (const bad of [
+    rows.replace(`${image}@${index}`, `${image}@${amd64}`),
+    `${rows}${'4'.repeat(64)}  synthetic-archive.tar.gz\n`,
+  ])
+    assert.throws(() =>
+      verifyCandidateSubjects({ subjects: bad, repository, tag: 'v0.1.0-rc.9', sha, verify() {} })
+    );
+  assert.throws(() =>
+    verifyCandidateSubjects({
+      subjects: rows,
+      repository: 'other/openkit',
+      tag: 'v0.1.0-rc.9',
+      sha,
+      verify() {},
+    })
+  );
 });

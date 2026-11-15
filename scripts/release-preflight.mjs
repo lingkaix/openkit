@@ -99,6 +99,31 @@ export function parseVersionTag(tag) {
   return match[1];
 }
 
+/**
+ * A compatible transition asserts every fact. Before `v0.1.0`, a prerelease may instead disclose
+ * a pre-stable deployment reset: no migration, no retained-data continuity, no previous-image recovery.
+ */
+export function admittedTransitionFacts(facts, tag) {
+  if (
+    facts.migrationFree === true &&
+    facts.configurationCompatible === true &&
+    facts.retainedDataCompatible === true &&
+    facts.recovery === 'previous-image-compatible'
+  )
+    return true;
+  const [core, prerelease] = parseVersionTag(tag).split(/-(.*)/su);
+  const [major, minor, patch] = core.split('.').map(Number);
+  return (
+    Boolean(prerelease) &&
+    major === 0 &&
+    (minor === 0 || (minor === 1 && patch === 0)) &&
+    facts.migrationFree === false &&
+    typeof facts.configurationCompatible === 'boolean' &&
+    facts.retainedDataCompatible === false &&
+    facts.recovery === 'pre-stable-reset'
+  );
+}
+
 /** Admit only reviewed compatibility facts; source and published digest are joined by the producer. */
 export function readReleaseAssessment(repoRoot, tag) {
   if (!parseVersionTag(tag).includes('-'))
@@ -123,10 +148,7 @@ export function readReleaseAssessment(repoRoot, tag) {
         .sort()
         .join(',') ||
     !/^sha256:[a-f0-9]{64}$/u.test(facts.previousAppImageId ?? '') ||
-    facts.migrationFree !== true ||
-    facts.configurationCompatible !== true ||
-    facts.retainedDataCompatible !== true ||
-    facts.recovery !== 'previous-image-compatible' ||
+    !admittedTransitionFacts(facts, tag) ||
     !/^[a-z0-9-]+$/u.test(facts.provenance ?? '')
   )
     throw Error(

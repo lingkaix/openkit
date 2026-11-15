@@ -2,13 +2,13 @@
 /** Verify controlled release SBOMs and GitHub-keyless provenance with the native Sigstore verifier. */
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { parseVersionTag } from './release-preflight.mjs';
 import { assertSbom, provenanceSubjects, sbomAssetNames, sbomName } from './release-sbom.mjs';
-import { publishedImages } from './release-security.mjs';
+import { indexPlatforms, observeIndex, publishedImages } from './release-security.mjs';
 
 const hash = (bytes) => createHash('sha256').update(bytes).digest('hex');
 /** This is verification, never a new signer/issuer configuration surface. */
@@ -58,6 +58,28 @@ function verifyNative(input) {
   });
   if (result.error || result.status !== 0)
     throw Error('Native release attestation verification refused');
+}
+/**
+ * Candidate OCI subjects before any release tag: the admitted index and its exact platform
+ * manifests, in the published subject inventory's checksum form.
+ */
+export function candidateSubjects({ image, digest, platforms, observe = observeIndex }) {
+  const manifests = indexPlatforms(observe(image, digest), platforms);
+  return `${[digest, ...manifests.map((entry) => entry.digest)]
+    .map((value) => `${value.slice(7)}  ${image}@${value}`)
+    .sort()
+    .join('\n')}\n`;
+}
+/** Every candidate subject must carry verified keyless provenance before publishers may tag it. */
+export function verifyCandidateSubjects({ subjects, repository, tag, sha, verify = verifyNative }) {
+  signerConstraints({ repository, tag, sha });
+  const lines = subjects.trimEnd().split('\n');
+  for (const line of lines) {
+    const match = /^([a-f0-9]{64}) {2}(ghcr\.io\/[a-z0-9._/-]+@sha256:\1)$/u.exec(line);
+    if (!match) throw Error('Candidate provenance subject refused');
+    verify({ subject: `oci://${match[2]}`, repository, tag, sha });
+  }
+  return lines.length;
 }
 /** Shared manifest/checksum verification happens before any package inventory is admitted. */
 export function verifyReleaseIntegrity({
@@ -135,15 +157,37 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         tag: { type: 'string' },
         sha: { type: 'string' },
         'repo-root': { type: 'string' },
+        image: { type: 'string' },
+        digest: { type: 'string' },
+        platforms: { type: 'string' },
+        subjects: { type: 'string' },
+        'verify-subjects': { type: 'string' },
       },
     });
-    verifyReleaseIntegrity({
-      directory: resolve(values.directory),
-      repository: values.repository,
-      tag: values.tag,
-      sha: values.sha,
-      repoRoot: resolve(values['repo-root'] ?? '.'),
-    });
+    if (values.image) {
+      signerConstraints(values);
+      const subjects = candidateSubjects({
+        image: values.image,
+        digest: values.digest,
+        platforms: values.platforms?.split(','),
+      });
+      writeFileSync(values.subjects, subjects, { flag: 'wx' });
+    } else if (values['verify-subjects']) {
+      const count = verifyCandidateSubjects({
+        subjects: readFileSync(values['verify-subjects'], 'utf8'),
+        repository: values.repository,
+        tag: values.tag,
+        sha: values.sha,
+      });
+      console.log(`Candidate provenance verified: ${count} signed subjects`);
+    } else
+      verifyReleaseIntegrity({
+        directory: resolve(values.directory),
+        repository: values.repository,
+        tag: values.tag,
+        sha: values.sha,
+        repoRoot: resolve(values['repo-root'] ?? '.'),
+      });
   } catch {
     console.error('Release integrity verification refused; no private input was printed');
     process.exitCode = 1;

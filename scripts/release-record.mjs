@@ -6,7 +6,11 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { createReleaseNotes, parseReleaseNotesInput } from './release-notes.mjs';
-import { parseVersionTag, readReleaseAssessment } from './release-preflight.mjs';
+import {
+  admittedTransitionFacts,
+  parseVersionTag,
+  readReleaseAssessment,
+} from './release-preflight.mjs';
 import { noSecrets } from './release-safety.mjs';
 import { sbomAssetNames } from './release-sbom.mjs';
 
@@ -99,10 +103,7 @@ export function createReleaseManifest({ repository, tag, sha, images, checksums,
     assertions.sourceCommit !== sha ||
     assertions.appDigest !== app.digest ||
     !SHA256.test(assertions.previousAppImageId ?? '') ||
-    assertions.migrationFree !== true ||
-    assertions.configurationCompatible !== true ||
-    assertions.retainedDataCompatible !== true ||
-    assertions.recovery !== 'previous-image-compatible' ||
+    !admittedTransitionFacts(assertions, tag) ||
     typeof assertions.provenance !== 'string' ||
     !/^[a-z0-9-]+$/u.test(assertions.provenance)
   )

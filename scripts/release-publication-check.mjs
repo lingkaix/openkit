@@ -91,6 +91,9 @@ export function publicationInputsAt(repoRoot, sourceCommit) {
       'publish-app-image'
     );
   }
+  // The admission and attestation gates decide what publishers accept; bind their instructions.
+  for (const name of ['release-security', 'attest-release-images'])
+    if (blocks.has(name)) publicationJobIds.push(name);
   const movedJobs = [
     'candidate-plan',
     'candidate-images',

@@ -626,6 +626,7 @@ test('the complete job graph stays enumerated and no checkout persists credentia
       ...shardJobNames,
       ...candidateJobNames,
       'release-security',
+      'attest-release-images',
       'image-security-diagnostic',
     ].sort()
   );

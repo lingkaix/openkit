@@ -178,6 +178,22 @@ test('GitHub provenance signing covers image and archive subjects with tag-only 
   }
 });
 
+test('image provenance is produced and verified before any publisher assigns a release image tag', () => {
+  const attest = ci.jobs['attest-release-images'];
+  const signing = attest.steps.findIndex(attests);
+  const verify = attest.steps.findIndex((step) =>
+    /verify-release-integrity\.mjs --verify-subjects/u.test(step.run ?? '')
+  );
+  assert.ok(signing > 0 && verify > signing, 'Verification must follow the candidate attestation');
+  assert.ok(upstream(ci, 'release-security', 'attest-release-images'));
+  for (const [id, job] of Object.entries(ci.jobs).filter(([, job]) =>
+    /imagetools create/u.test(commands(job))
+  ))
+    assert.ok(upstream(ci, 'attest-release-images', id), `${id} tags before provenance`);
+  assert.ok(upstream(ci, 'attest-release-images', 'publish-app-image'));
+  assert.ok(upstream(ci, 'attest-release-images', 'publish-container-images'));
+});
+
 test('terminal release verification invokes integrity checks for the complete published release', () => {
   const terminal = ci.jobs['verify-release'];
   assert.ok(

@@ -80,7 +80,7 @@ for (const [name, change] of [
   [
     'credential-shaped provenance',
     (i) => {
-      i.assertions.provenance = 'sk-syntheticcredentialvalue';
+      i.assertions.provenance = ['sk', 'syntheticcredentialvalue'].join('-');
     },
   ],
   [
@@ -131,6 +131,39 @@ for (const [name, change] of [
     change(input);
     assert.throws(() => createReleaseManifest(input));
   });
+/** The disclosed pre-stable reset form, retagged when another release version is needed. */
+function resetInput(tag = 'v0.1.0-rc.6') {
+  const input = manifestInput();
+  Object.assign(input.assertions, {
+    migrationFree: false,
+    configurationCompatible: false,
+    retainedDataCompatible: false,
+    recovery: 'pre-stable-reset',
+  });
+  input.checksums = input.checksums.replaceAll(input.tag, tag);
+  for (const image of input.images)
+    image.tags = image.tags.map((t) =>
+      t === input.tag ? tag : t === input.tag.slice(1) ? tag.slice(1) : t
+    );
+  input.tag = tag;
+  return input;
+}
+test('manifest admits a disclosed pre-stable reset only for a prerelease up to v0.1.0', () => {
+  assert.equal(createReleaseManifest(resetInput()).assertions.recovery, 'pre-stable-reset');
+  assert.equal(createReleaseManifest(resetInput('v0.0.9-rc.1')).assertions.migrationFree, false);
+  for (const tag of ['v0.1.1-rc.1', 'v0.2.0-rc.1', 'v1.0.0-rc.1'])
+    assert.throws(() => createReleaseManifest(resetInput(tag)), /compatibility\/recovery/, tag);
+  for (const [key, value] of [
+    ['migrationFree', true],
+    ['retainedDataCompatible', true],
+    ['recovery', 'previous-image-compatible'],
+    ['configurationCompatible', 'unknown'],
+  ]) {
+    const input = resetInput();
+    input.assertions[key] = value;
+    assert.throws(() => createReleaseManifest(input), /compatibility\/recovery/, key);
+  }
+});
 test('draft producer preserves the existing reviewed two-section grammar', () => {
   const draft = draftReleaseNotes({
     changes: ['Accepted change #241.'],
@@ -338,6 +371,14 @@ test('reviewed publication assessment refuses absent, negative and caller-suppli
   }
   writeFileSync(file, JSON.stringify(facts));
   assert.deepEqual(readReleaseAssessment(dir, input.tag), facts);
+  const { sourceCommit: _rs, appDigest: _ra, ...reset } = resetInput().assertions;
+  writeFileSync(file, JSON.stringify(reset));
+  assert.deepEqual(readReleaseAssessment(dir, input.tag), reset);
+  writeFileSync(file, JSON.stringify({ ...reset, retainedDataCompatible: true }));
+  assert.throws(() => readReleaseAssessment(dir, input.tag), /missing or unassessed/);
+  const later = path.join(dir, 'release-notes', 'v0.1.1-rc.1.manifest.json');
+  writeFileSync(later, JSON.stringify(reset));
+  assert.throws(() => readReleaseAssessment(dir, 'v0.1.1-rc.1'), /missing or unassessed/);
 });
 
 test('manifest uses canonical hyphenated prerelease grammar before publication', () => {

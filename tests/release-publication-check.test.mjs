@@ -132,6 +132,34 @@ test('publication proof includes every moved job and image-construction input', 
   }
 });
 
+test('publication proof binds the admission and attestation gate instructions, not only their scripts', () => {
+  const r = repository();
+  const scan =
+    '      - run: node scripts/release-security.mjs --image "${IMAGE}" --digest "${DIGEST}" --output "security-admitted/${IMAGE_ID}.digest"\n';
+  const ci = path.join(r.root, '.github/workflows/ci.yml');
+  writeFileSync(
+    ci,
+    `${readFileSync(ci, 'utf8')}  release-security:\n    steps:\n${scan}  attest-release-images:\n    steps:\n      - run: node scripts/release-notes.mjs\n`
+  );
+  writeFileSync(path.join(r.root, 'scripts/release-security.mjs'), 'export const scan = 1;\n');
+  r.git('add', '.');
+  r.git('commit', '-m', 'add admission and attestation gates');
+  const before = publicationInputsAt(r.root, r.git('rev-parse', 'HEAD'));
+  assert.ok(before.jobs['release-security']);
+  assert.ok(before.jobs['attest-release-images']);
+  assert.ok(before.files['scripts/release-security.mjs']);
+  writeFileSync(
+    ci,
+    readFileSync(ci, 'utf8').replace(
+      scan,
+      '      - run: printf "%s\\n" "${DIGEST}" > "security-admitted/${IMAGE_ID}.digest"\n'
+    )
+  );
+  r.git('add', '.');
+  r.git('commit', '-m', 'bypass the scan invocation only');
+  assert.notEqual(publicationInputsAt(r.root, r.git('rev-parse', 'HEAD')).sha256, before.sha256);
+});
+
 test('directory URL locators are not file inputs, while literal file dependencies remain proved', () => {
   const r = repository();
   writeFileSync(

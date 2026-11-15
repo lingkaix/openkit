@@ -48,7 +48,7 @@ export function indexPlatforms(index, expected) {
   return platforms;
 }
 /** Observe an immutable index, not the mutable release alias. */
-function observeIndex(image, digest) {
+export function observeIndex(image, digest) {
   if (!/^ghcr\.io\/[a-z0-9._/-]+$/u.test(image) || !sha256.test(digest))
     throw Error('Exact image identity required');
   return JSON.parse(
