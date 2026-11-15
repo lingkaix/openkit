@@ -14,11 +14,11 @@ NanoCore's App HTTP/1.1 listener stays loopback-only and is exposed through Cadd
 scripts/docker/build-image.sh app
 ```
 
-The image is built from `node:26-bookworm-slim` to match `.node-version`.
+The image is built from the digest-pinned `node:26.13.0-bookworm-slim` tag to match `.node-version`.
 
 The builder enables pnpm 10 through Corepack, installs native build tooling for `better-sqlite3`, builds the workspace packages in dependency order, and uses `pnpm deploy --prod --legacy` to create the production NanoCore tree.
 
-Worker runtimes are packaged separately under `containers/worker-*`.
+Worker runtimes are packaged separately under `containers/workers/` and `containers/worker-runtimes/`.
 
 ## Database Changes
 
@@ -84,7 +84,7 @@ Run the host-side persistence smoke after building the app image:
 scripts/docker/app-persistence-smoke.sh
 ```
 
-The script starts explicit local mode and sends HTTP requests from inside the disposable container, through its loopback Caddy listener. It starts `openkit-app` with a temporary host directory mounted at `/data/openkit`, seeds a minimal `config/server.jsonc` when no server config exists, verifies `/api/health` and the SPA root through the public Caddy route, creates a Workspace through `POST /api/app/operations/workspace.create`, writes smoke-owned runtime and log markers, restarts the container with the same mount, and reads the definition-derived `workspace.list` JSON binding to verify the Workspace plus the canonical data-root layout survived.
+The script starts explicit local mode and sends HTTP requests from inside the disposable container, through its loopback Caddy listener. It starts the `openkit/app:dev` image as container `openkit-app-persistence-smoke-<pid>` with a temporary host directory mounted at `/data/openkit`, seeds a minimal `config/server.jsonc` when no server config exists, verifies `/api/health` and the SPA root through the public Caddy route, creates a Workspace through `POST /api/app/operations/workspace.create`, writes smoke-owned runtime and log markers, restarts the container with the same mount, and reads the definition-derived `workspace.list` JSON binding to verify the Workspace plus the canonical data-root layout survived.
 
 The PASS summary covers `server/db/core.sqlite`, `config/server.jsonc`, `server/files`, `server/runtime`, `server/vendor`, the personal `users/<recordedUserId>` subtree, the canonical `workspaces/<workspaceId>` subtree, an agent resolved-snapshot marker, and server and Workspace log markers.
 
@@ -104,7 +104,7 @@ Run the host-side packaged UI e2e after building the app image:
 scripts/docker/e2e-app.sh
 ```
 
-The script starts `openkit/app:dev` with a temporary data root, seeds a redaction-safe provider profile that uses `secretRef: "env:OPENKIT_APP_E2E_SECRET"`, enables the simulator executor, publishes only the public Caddy route, and runs `pnpm --filter @openkit/web e2e:staging` against that route.
+The script starts `openkit/app:dev` with a temporary data root, seeds a redaction-safe provider profile that uses `secretRef: "env:OPENKIT_APP_E2E_SECRET"`, enables the simulator executor, publishes only the public Caddy route, and runs `pnpm --filter @openkit/web e2e:staging` against that route. The Web package has no `e2e:staging` script, so this run fails until [#516](https://github.com/lingkaix/openkit/issues/516) is fixed.
 
 Override the image, host port, data root, provider id, or fixture secret when needed:
 
@@ -135,4 +135,4 @@ The app entrypoint accepts either `OPENKIT_HTTP_PORT` or `PORT`, requires them t
 
 Caddy is locked to the current app image because the app image needs one public HTTP port for the SPA and NanoCore APIs.
 
-Caddy is not part of the future formal release image contract unless a later release-image decision adds it explicitly.
+The release `app` image includes Caddy as its current HTTP frontend, which the [container image packaging specification](../specs/20260708-container_image_packaging.md) permits.

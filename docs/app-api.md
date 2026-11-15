@@ -40,7 +40,7 @@ This guide does not own the semantic contracts, executable route facts, package 
 ## Owner And Generated Projection Index
 
 - Stable concepts and protocol or communication semantics: `docs/core/core-concepts.md`, `docs/core/protocol.md`, `docs/core/communication.md`
-- Accepted implementation-facing contracts: the owning specification indexed under Active Specifications in `docs/INDEX.md`
+- Accepted implementation-facing contracts: the owning specification indexed under Specifications in `docs/INDEX.md`
 - App API payload schemas: `packages/app-api-schemas/README.md`
 - NanoCore route registrations and behavior: `apps/nanocore/README.md`
 - Generated OpenAPI ownership and artifact workflow: `docs/specs/20260704-app_api_openapi_projection.md`, `apps/nanocore/openapi/README.md`

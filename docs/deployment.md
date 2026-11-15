@@ -37,7 +37,7 @@ This guide does not own any contract or implementation fact linked below. Core d
 
 - Deployment scope and semantic invariance: `docs/core/doctrine.md`, `docs/core/architecture.md`
 - Core mode, startup, configuration, identity, authentication, and storage: `docs/specs/20260628-nanocore_config_identity_contract.md`, `docs/specs/20260704-nanocore_bootstrap_readiness.md`, `docs/specs/20260704-remote_auth_credential_bootstrap.md`, `docs/specs/20260703-storage_layout_record_ownership.md`
-- Worker placement, scheduling scale, sandboxing, and session continuity: `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/core/sandbox.md`, `docs/core/agent-session.md`, `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260715-openshell_disposable_cell_lifecycle.md`
+- Worker placement, scheduling scale, sandboxing, and session continuity: `docs/specs/20260703-runtime_scheduling_scale.md`, `docs/core/sandbox.md`, `docs/core/agent-session.md`, `docs/specs/20260704-agent_session_continuity.md`, `docs/specs/20260802-nanohost_runtime_and_transport.md`
 - Communication, worker control, workspace transfer, and capability supply: `docs/core/communication.md`, `docs/core/mediation.md`, `docs/specs/20260703-worker_control_protocol.md`, `docs/specs/20260703-workspace_synchronization.md`, `docs/specs/20260703-worker_agent_capability.md`
 - Vault and provider credentials: `docs/core/vault.md`, `docs/specs/20260704-vault_backend_implementation.md`, `docs/specs/20260721-provider_subscription_accounts.md`
 - Administrator-directed App/Web update delivery: `docs/specs/20260910-app_update_delivery.md`

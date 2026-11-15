@@ -344,7 +344,7 @@ Because OpenKit is still internal, no compatibility reader for the old hard-code
 
 ## Current Implementation Projection
 
-The current implementation is partial. Harness Login selection, Codex host-managed tokens and mid-run replacement, on-demand helpers and generic HTTP bearer delegated refresh are accepted design and are not yet implemented. Existing generic file bindings remain a separate mechanism; a declared contract is not full-service qualification.
+The current implementation is partial. Harness Login selection and governed replacement Logins (`apps/nanocore/src/runtime/harness-login-selection.ts`, `harness-login-exchange.ts`), Codex host-managed tokens with their native refresh request (`packages/worker-shim/src/adapters/codex.ts`), and the on-demand helpers with the SSH agent facade (`packages/worker-shim/src/credential-helper-*.ts`) are implemented. Generic HTTP bearer delegated refresh has only dormant staged NanoHost Provider adapters (`apps/nanohost/src/openshell_provider.rs`) and is not active. Existing generic file bindings remain a separate mechanism; a declared contract is not full-service qualification.
 
 `packages/config-schema/src/agent-environment.ts` accepts `sandbox-provider`, `runtime-file`, and `runtime-env` declarations.
 
