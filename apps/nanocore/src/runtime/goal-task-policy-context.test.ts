@@ -2,6 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  AgentEnvironmentCredentialDeclarationSchema,
+  AuthoredAgentCredentialDeclarationSchema,
+  parseWorkspaceMcpServerCatalog,
+} from '@openkit/config-schema';
 import { deriveEntityId, PROTOCOL_VERSION, workspaceIdForOwner } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -26,11 +31,14 @@ import {
 } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
+import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
   acceptSchedulerExecutionObservation,
   closeSchedulerExecutionAttemptWithFence,
@@ -398,11 +406,41 @@ async function fixture(typed = true, linked = true) {
     turnInput,
     requestedAgentId: agentId,
   });
+  const environmentPackage = await resolveAgentEnvironmentPackage({
+    captureCoverage: { scope: 'server', value: 'off' },
+    agentSessionId,
+    agentSetup: createTestAgentSetup({ agentId, mcpIds: ['sis'] }),
+    backend: { kind: 'openshell' },
+    createdAt: sessionStartedAt,
+    requestId,
+    triggerActor: turn.triggerActor,
+    turn,
+    workspaceCwd: '/workspace',
+    workspaceRoots: [],
+    workspaceMcpServerCatalog: parseWorkspaceMcpServerCatalog({
+      schemaVersion: 1,
+      servers: [
+        {
+          id: 'sis',
+          enabled: true,
+          allowedTools: ['application.read'],
+          schemaPolicy: 'tracking',
+          pinnedSchemaSnapshotId: null,
+          timeoutMs: 2000,
+          transport: { kind: 'http', endpoint: 'https://sis.invalid/mcp' },
+        },
+      ],
+    }),
+  });
+  const environmentRecord = recordAgentEnvironmentPackageSnapshot(db, {
+    environmentPackage,
+    createdAt: sessionStartedAt,
+  });
   const attempt = recordTestExecutionAttempt(coreDb, {
     entry: admission,
     attemptId: testEntityId('attempt', root),
     agentSessionId,
-    inputRef: 'task-package',
+    inputRef: environmentPackage.snapshotId,
     bindingRef: `task-binding:${root}`,
     sessionCompatibilityKey: 'task-context',
     now: () => new Date().toISOString(),
@@ -423,7 +461,7 @@ async function fixture(typed = true, linked = true) {
     threadId: thread.id,
     turnId: turn.id,
     agentSessionId,
-    packageSnapshotId: 'task-package',
+    packageSnapshotId: environmentPackage.snapshotId,
   };
   return {
     get coreDb() {
@@ -436,6 +474,7 @@ async function fixture(typed = true, linked = true) {
       return store;
     },
     lineage,
+    environmentRevision: environmentRecord.contentDigest,
     scope,
     card,
     plan,
@@ -662,6 +701,22 @@ async function fixture(typed = true, linked = true) {
   };
 }
 
+it('refuses unresolved package tokens and authored fabrication of a resolved token grant', () => {
+  const requirement = {
+    id: 'login',
+    requirementId: 'login',
+    visibility: 'runtime-token',
+    consumer: 'codex-login',
+  };
+  expect(() => AgentEnvironmentCredentialDeclarationSchema.parse(requirement)).toThrow();
+  expect(() =>
+    AuthoredAgentCredentialDeclarationSchema.parse({
+      ...requirement,
+      vaultGrantId: testEntityId('grant', 'unprepared-grant'),
+    })
+  ).toThrow(/explicit Workspace credential binding/);
+});
+
 it('reads only typed resources from exact retained Task lineage after database reopen', async () => {
   const f = await fixture();
   await f.reopen();
@@ -675,6 +730,7 @@ it('reads only typed resources from exact retained Task lineage after database r
     responsibleUserId: f.actor.userId,
     resources: [f.resource],
     requestInputHash: f.admission.inputHash,
+    environmentRevision: f.environmentRevision,
   });
 });
 

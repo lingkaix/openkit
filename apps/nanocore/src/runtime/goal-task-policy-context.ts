@@ -1,6 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
 import { GoalTaskLinkSchema } from '@openkit/app-api-schemas';
-import { AuthoredAgentConfigSchema } from '@openkit/config-schema';
 import {
   deriveEntityId,
   isSealedTurnTerminal,
@@ -356,11 +355,6 @@ export function readGoalTaskPolicyContext(input: {
   const structuredInputHash = commandInputHash({ input: source.admission.turnInput });
   const nativeSelection =
     !link && selected.length === 0 && source.checkpoint?.requestInputHash !== structuredInputHash;
-  const prepared = JSON.parse(originalAttempt.preparationInputJson) as { manifest?: unknown };
-  const manifest =
-    prepared.manifest === undefined ? null : AuthoredAgentConfigSchema.parse(prepared.manifest);
-  if (manifest && manifest.id !== source.admission.requestedAgentId) throw unavailable();
-  const selectsCredentials = (manifest?.sandbox?.credentialDeclarations.length ?? 0) > 0;
   const originalCommand = nativeSelection
     ? getCommandRequestRecordFromDb(
         db,
@@ -372,23 +366,12 @@ export function readGoalTaskPolicyContext(input: {
         new Date().toISOString()
       )
     : null;
-  if (
-    (nativeSelection &&
-      source.checkpoint &&
-      (!manifest || selectsCredentials) &&
-      !originalCommand) ||
-    (originalCommand &&
-      (originalCommand.response.kind !== 'turn' ||
-        originalCommand.response.id !== original.turnId ||
-        (source.checkpoint && originalCommand.inputHash !== source.checkpoint.requestInputHash)))
-  )
-    throw unavailable();
   // A closed Task can lose its live checkpoint, not its exact native command/manifest selection.
   const naturalSelection =
     nativeSelection &&
     (originalCommand
       ? originalCommand.inputHash !== structuredInputHash
-      : Boolean(source.checkpoint && manifest && !selectsCredentials));
+      : Boolean(source.checkpoint));
   const environmentRecord =
     naturalSelection || selected.some((resource) => resource.kind === 'mcp-tool')
       ? requireAgentEnvironmentPackageSnapshot(db, lineage.workspaceId, originalAttempt.inputRef)
@@ -401,6 +384,20 @@ export function readGoalTaskPolicyContext(input: {
       environment.scope.turnId !== original.turnId ||
       environment.scope.agentSessionId !== originalAttempt.agentSessionId ||
       environment.agent.agentId !== source.admission.requestedAgentId)
+  )
+    throw unavailable();
+  // Resolved credentials belong to the validated immutable AEP, not the authored grammar,
+  // which intentionally refuses direct runtime-token grants before native resolution.
+  const selectsCredentials = (environment?.credentials.declarations.length ?? 0) > 0;
+  if (
+    (nativeSelection &&
+      source.checkpoint &&
+      (!environment || selectsCredentials) &&
+      !originalCommand) ||
+    (originalCommand &&
+      (originalCommand.response.kind !== 'turn' ||
+        originalCommand.response.id !== original.turnId ||
+        (source.checkpoint && originalCommand.inputHash !== source.checkpoint.requestInputHash)))
   )
     throw unavailable();
   // Native preparation already records this finite manifest and its environment revision.
