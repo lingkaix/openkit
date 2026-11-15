@@ -40,16 +40,16 @@ import {
   controlKnowledgeReviewStatement,
   readControlKnowledgeProposal,
 } from '../storage/control-store-knowledge-heads.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../storage/control-store-worker-client.js';
 import { readImmutableContentBytes } from '../storage/immutable-content-read.js';
 import {
   ActorRefReaderSchema,
   knowledgeProposalDocumentDigest,
   knowledgeProposalId,
 } from '../storage/knowledge-proposal-codecs.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
 import {
   decidedTurnFieldsConflict,
   displayProjectionFieldsEqual,
@@ -1166,7 +1166,12 @@ export class FsStore {
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private turnAdmissionHooks: TurnAdmissionHooks | null = null;
   private terminalHookDepth = 0;
-  private workspaceMutationAdmission?: WorkspaceMutationAdmission;
+  private inMemoryMutationAdmission?: WorkspaceMutationAdmission;
+  private get workspaceMutationAdmission(): WorkspaceMutationAdmission | undefined {
+    return this.dataRoot
+      ? getControlStoreWorkerClient().workspaceMutations(this.dataRoot)
+      : this.inMemoryMutationAdmission;
+  }
   private readonly dataRoot: string | null;
   /** A request-scoped existing owner binding; never an owned connection or a second Store. */
   private readonly borrowedProductScope?: NativeProductScope;
@@ -3267,10 +3272,11 @@ export class FsStore {
     if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
       throw new Error('Store already has a different Workspace mutation owner.');
     if (this.dataRoot) {
-      getControlStoreWorkerClient(admission);
+      if (getControlStoreWorkerClient().workspaceMutations(this.dataRoot) !== admission)
+        throw new Error('Store Workspace mutations must use their native scope owner.');
       bindMcpCaptureAdmission(this.dataRoot, admission);
     }
-    this.workspaceMutationAdmission = admission;
+    if (!this.dataRoot) this.inMemoryMutationAdmission = admission;
   }
 
   /** Acquires the existing gate for a direct producer; this creates no separate writer registry. */

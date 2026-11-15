@@ -8,7 +8,10 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -20,7 +23,6 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
 import { validateNotebookCandidate } from './notebook-validation.js';
 import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
@@ -128,7 +130,7 @@ async function fixture() {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const access = { store, coreDb, actor, requestActor };
   const dependencies = {
     store,

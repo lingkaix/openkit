@@ -30,7 +30,10 @@ import {
 } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
@@ -43,7 +46,6 @@ import { createTestStore } from './test-support/store.js';
 import * as materialOwners from './workspace-materials.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 interface PreparedRemoteBase {
   dataRoot: string;
@@ -121,7 +123,7 @@ async function fixture(
       workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
   const app = createApp({
     automationStore,

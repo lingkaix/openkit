@@ -18,8 +18,10 @@ import { commandInputHash } from '../runtime/idempotent-command.js';
 import { createAppWithLocalIdentity } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -274,7 +276,7 @@ async function fixture(command: Command) {
       store,
       runtimeConfigManager: manager,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       repositoryWorkspaceDb: (id: string) => openWorkspaceDb(dataRoot, id),
       closeServerMcpSessions,
     });

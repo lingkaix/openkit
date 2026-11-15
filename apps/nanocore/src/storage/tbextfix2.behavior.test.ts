@@ -31,7 +31,7 @@ import { createNativeTaskAdmissionFixture } from '../test-support/native-task-ad
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -62,7 +62,7 @@ async function liveWorkerFixture() {
   }).manifest;
   manifest.runtime.version = '0.166.0';
   admitTestNativeEnvironment(f.coreDb, manifest);
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(f.root);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(f.root),
     agentManifests: [manifest],

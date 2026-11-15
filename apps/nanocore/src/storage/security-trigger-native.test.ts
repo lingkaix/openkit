@@ -23,10 +23,12 @@ import type { AdmittedOperationContext } from '../operation-contract.js';
 import { securityRequestId } from '../security/identifiers.js';
 import { SecurityTriggerStore } from '../security/trigger.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 
@@ -418,7 +420,7 @@ describe('N1 real-native Server security trigger authority and alarms', () => {
           coreDb: f.db,
           store: new FsStore({ dataRoot: f.dataRoot }),
           inflightCommands: new Map(),
-          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
         });
         const result = await operations['user.disable'](
           { requestId: randomUUID(), targetUserId: s.admin.userId },
@@ -472,7 +474,7 @@ describe('N1 real-native Server security trigger authority and alarms', () => {
       coreDb: f.db,
       store,
       inflightCommands: new Map(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
     });
     await sharing['workspace.invitation-create'](
       { workspaceId: workspace.id, requestId: linkedRequestId, inviteeEmail: s.backupEmail },

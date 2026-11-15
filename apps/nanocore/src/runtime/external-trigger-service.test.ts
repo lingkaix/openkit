@@ -41,7 +41,6 @@ import {
 } from '../test-support/resource-policy.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   acceptWorkspaceInvitation,
   createWorkspaceInvitation,
@@ -98,7 +97,7 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     options.privateSource ? { visibility: 'private', privateOwnerUserId: userId } : undefined
   );
   recordWorkspaceOwnerMembership({ coreDb: db, workspaceId: workspace.id, ownerUserId: userId });
-  const mutationAdmission = new WorkspaceMutationAdmission();
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   let instant = '2026-10-18T00:00:00.000Z';
   const schedules = new AutomationStore(db, mutationAdmission, () => instant);
   const agentSetup = createTestAgentSetup();
@@ -676,7 +675,10 @@ describe('bounded scheduled poll event admission', () => {
     owned.find((entry) => entry.root === f.root)!.db = db;
     applyMigrations(db);
     const store = new FsStore({ dataRoot: f.root });
-    const schedules = new AutomationStore(db, new WorkspaceMutationAdmission());
+    const schedules = new AutomationStore(
+      db,
+      getControlStoreWorkerClient().workspaceMutations(db.dataRoot)
+    );
     const again = await f.admit({ schedules, store, source, input: 'Still the same event' });
     expect(again.admission).toEqual(first.admission);
     expect(again.entry).toEqual(first.entry);

@@ -5,6 +5,7 @@ import { afterEach, expect, it } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -14,7 +15,6 @@ import {
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareRecurringOccurrence } from './recurring-schedule-preparation.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
@@ -32,7 +32,7 @@ async function fixture() {
   const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring preparation');
   const schedules = new AutomationStore(
     db,
-    new WorkspaceMutationAdmission(),
+    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
     () => '2026-10-16T00:00:00.000Z'
   );
   const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {

@@ -29,7 +29,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { observeRetainedItemBodies } from '../test-support/retained-body-observation.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   ADMINISTRATION_TOOL_NAMES,
   type AdministrationEnvironmentTools,
@@ -396,7 +395,7 @@ describe('administration conversation route', () => {
         coreDb,
         store,
         requestStore: () => store,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         administrationServices: {
           coreDb,
           environmentToolsForTurn: () => environmentTools,
@@ -568,7 +567,7 @@ describe('administration conversation route', () => {
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () => inertEnvironmentTools(),
@@ -736,7 +735,7 @@ describe('administration conversation route', () => {
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () => inertEnvironmentTools(),
@@ -998,7 +997,7 @@ describe('administration conversation route', () => {
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () => inertEnvironmentTools(),
@@ -1235,7 +1234,7 @@ async function postAdministrationAdmissionTurn(options: {
     coreDb,
     store,
     requestStore: () => store,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     administrationServices: {
       coreDb,
       environmentToolsForTurn: () => inertEnvironmentTools(),

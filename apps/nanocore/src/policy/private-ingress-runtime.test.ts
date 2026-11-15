@@ -20,11 +20,12 @@ import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
-
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
-
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -34,7 +35,6 @@ import {
   createTestWorkspaceDb,
   disposeTestStore,
 } from '../test-support/store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const BASE = 'http://localhost:3000';
 const GROUP = 'llm-gateway';
@@ -160,7 +160,7 @@ async function fixture(serverConfig: Record<string, unknown> = {}) {
     authentication.get('/api/e13-fixture-identity', (c) => c.json(c.get('actor')));
     const accounts = [];
     for (const human of [first, second, ordinary]) {
-      const response = await authentication.request(BASE + '/api/e13-fixture-identity', {
+      const response = await authentication.request(`${BASE}/api/e13-fixture-identity`, {
         headers: { cookie: human.cookie },
       });
       expect(response.status).toBe(200);
@@ -267,7 +267,7 @@ async function fixture(serverConfig: Record<string, unknown> = {}) {
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -436,9 +436,9 @@ describe('E13B2 signed ingress through the real App and native channel owners', 
   it('closes signed Discord before ordinary App authentication without replacing its verifier or channel', async () => {
     const d = await discordFixture();
     await d.open(); // Real cryptographic verifier + production ChannelServices/Discord channel, not a callback.
-    const invalid = await d.send(d.body + ' ', d.headers());
+    const invalid = await d.send(`${d.body} `, d.headers());
     expect(invalid.status).toBe(401);
-    const group = sourceGroup('POST ' + DISCORD);
+    const group = sourceGroup(`POST ${DISCORD}`);
     expect(group).not.toBe(GROUP); // The accepted llm-gateway remains exactly its original source family.
     await d.f.change(document(control(d.f.first.userId, 'active', group)));
     // B2 OLD baseline is after B1 metadata, with the signed private join still unchanged.
@@ -457,9 +457,9 @@ describe('E13B2 signed ingress through the real App and native channel owners', 
   it('keeps invalid signatures forbidden under an inactive switch and never reopens on author loss', async () => {
     const d = await discordFixture();
     await d.open();
-    const group = sourceGroup('POST ' + DISCORD);
+    const group = sourceGroup(`POST ${DISCORD}`);
     await d.f.change(document(control(d.f.first.userId, 'inactive', group)));
-    expect((await d.send(d.body + ' ', d.headers())).status).toBe(401);
+    expect((await d.send(`${d.body} `, d.headers())).status).toBe(401);
     await d.open();
     await d.f.change(document(control(d.f.first.userId, 'active', group)));
     const revoke = await d.f

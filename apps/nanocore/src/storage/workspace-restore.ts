@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from 'node:fs';
 import { realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,13 +10,7 @@ import {
 } from '@openkit/app-api-schemas';
 import { compareCodeUnits } from '@openkit/protocol';
 import { sha256Hex } from '@openkit/protocol/digest';
-import {
-  copyVerifiedFile,
-  createPrivateTree,
-  publishDurableFile,
-  removeDurableFile,
-  removePrivateTree,
-} from '@openkit/storage';
+import { copyVerifiedFile, createPrivateTree, removePrivateTree } from '@openkit/storage';
 import type { Actor } from '../auth/identity.js';
 import {
   isScopeAdmitted,
@@ -31,13 +25,13 @@ import type { AdmittedOperationContext } from '../operation-contract.js';
 import { publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
 import type { WorkspaceDeletionRequestRecord } from '../workspace-deletion-request.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from './control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -62,8 +56,6 @@ import {
 } from './workspace-backup.js';
 import {
   WORKSPACE_BACKUP_MANIFEST_FILE,
-  WORKSPACE_BACKUP_MAX_FILE_BYTES,
-  WorkspaceBackupBundleError,
   type WorkspaceBackupManifest,
 } from './workspace-backup-bundle.js';
 import {

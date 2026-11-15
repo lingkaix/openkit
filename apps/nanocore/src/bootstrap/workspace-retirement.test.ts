@@ -1,11 +1,9 @@
 // openkit-test-platform: posix
 import { spawn } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
-  copyFileSync,
   cpSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -41,11 +39,7 @@ import {
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { coreDbPath, userMemoryRoot, workspaceDbPath } from '../storage/fs-layout.js';
-import {
-  applyMigrations,
-  applyNativeScopeMigrations,
-  applyScopedMigrations,
-} from '../storage/migrate.js';
+import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import { heldCommit, releaseCommit } from '../test-support/control-native-transport.js';
@@ -55,7 +49,6 @@ import {
   ensureUserQuickChatWorkspace,
   recordWorkspaceOwnerMembership,
 } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { isScopeAdmitted } from './readiness.js';
 
 // Wrap the real native entry only to stop its actual FULL COMMIT before its reply.
@@ -118,7 +111,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     workspaceIds: [workspaceId, siblingId],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   const app = createApp({
     coreDb,
@@ -546,7 +539,7 @@ describe('retired registry consumers and retained Core migration', () => {
       const readiness = await import('./readiness.js');
       const appOwner = await import('../app.js');
       const storeOwner = await import('../lib/store.js');
-      const gateOwner = await import('../workspace-mutation-admission.js');
+      const gateOwner = await import('../storage/control-store-worker-client.js');
       expect(readiness.scopeAdmissionFailures(f.dataRoot)).toEqual([]);
       const coreDb = dbOwner.openCoreDbWithIntegrityCheck(f.dataRoot);
       disposals.push(() => {

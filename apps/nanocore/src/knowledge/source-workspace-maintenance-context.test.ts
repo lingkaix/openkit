@@ -21,13 +21,15 @@ import {
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   type KnowledgeMaintenanceDependencies,
   prepareKnowledgeMaintenance,
@@ -63,7 +65,7 @@ it('captures native Workspace tell during execution and publishes from the exact
   const selection = () =>
     readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId });
   const initialRevision = selection().head.notebookCommit;
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const providerRegistry = new ProviderRegistry([
     {
       id: 'fixture',

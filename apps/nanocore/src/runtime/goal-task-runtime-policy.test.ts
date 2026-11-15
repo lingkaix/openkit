@@ -51,6 +51,7 @@ import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
+  getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import {
@@ -86,7 +87,6 @@ import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   listExportableAgentEnvironmentPackageSnapshots,
   recordAgentEnvironmentPackageSnapshot,
@@ -531,7 +531,7 @@ async function fixture(
       coreDb,
       openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       startWorker,
       goalId: goal.goalId,
       coordinatorTurnId: coordinator.id,
@@ -939,7 +939,7 @@ async function fixture(
       interception,
       goalTaskPolicy,
       goalWake,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       workerControlGateway: {
         authenticatePackageToken: () => environmentPackage,
       } as unknown as WorkerControlGateway,
@@ -1874,7 +1874,7 @@ it.each([
     deadlineMs: 120000,
   };
   const inflightCommands = new WeakMap();
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const services = { ...f.services, inflightCommands };
   const runtimeConfig = () =>
     createInMemoryRuntimeConfigSnapshot({
@@ -2455,7 +2455,7 @@ describe('credential carrier Goal Tools and Task scope acceptance', () => {
       });
       const first = await f.setupMcp();
       const sibling = mode === 'scope' ? await f.setupMcp() : null;
-      const admission = new WorkspaceMutationAdmission();
+      const admission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       f.store.setWorkspaceMutationAdmission(admission);
       const interception = new PolicyInterception();
       const resolve = vi.spyOn(f.fileVault!.backend(), 'resolve');

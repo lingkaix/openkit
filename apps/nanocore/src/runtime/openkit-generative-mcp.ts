@@ -6,9 +6,9 @@ import type { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import type { VaultUnlockState } from '../vault/vault-unlock-state.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   OPENKIT_GENERATIVE_OPERATION_DEFINITIONS as definitions,
   OPENKIT_GENERATIVE_TOOL_OPERATIONS,

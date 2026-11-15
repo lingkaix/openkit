@@ -20,6 +20,7 @@ import {
 import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readImmutableProductJson } from '../storage/immutable-content.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -27,7 +28,6 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createLoadMcpPeer } from './load-mcp-peer.js';
 import { diagnosticContext, diagnosticStage } from './load-observe.js';
 
@@ -138,7 +138,9 @@ export async function createMeasurementEffectFixture(input: {
     coreDb: input.coreDb,
     store: input.store,
     runtimeConfig: () => runtime,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+      input.coreDb.dataRoot
+    ),
     workerMcpGateway: gateway,
     workerControlGateway: {
       authenticatePackageToken: (authorization: string) => {

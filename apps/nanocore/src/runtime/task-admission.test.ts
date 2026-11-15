@@ -32,7 +32,10 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import {
@@ -47,7 +50,6 @@ import {
 } from '../test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   listSchedulerExecutionAttemptsByTurnId,
   listSchedulerExecutionAttemptsForTurn,
@@ -351,7 +353,9 @@ it.each([
           return connection;
         },
         inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          coreDb.dataRoot
+        ),
         goalId: goal.goalId,
         coordinatorTurnId: coordinator.id,
         startWorker,
@@ -432,7 +436,7 @@ it.each([
         });
         // The same real Goal-linked Task and admission owners compose public live input.
         const native = interruptedNative!;
-        const admission = new WorkspaceMutationAdmission();
+        const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
         const steerDependencies = {
           coreDb,
           store,

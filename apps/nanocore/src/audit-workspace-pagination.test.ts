@@ -16,7 +16,10 @@ import {
 import { recordUsage, startCapabilityCall } from './capability/usage-ledger.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -30,7 +33,6 @@ import {
   createTestWorkspaceDb,
 } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const OWNER_ID = 'usr_00000000-0000-7000-8000-000000000001';
 const TOKEN_EXPIRY = '2999-01-01T00:00:00.000Z';
@@ -254,7 +256,7 @@ describe('audit.workspace-list pagination', () => {
     });
     const schedules = new AutomationStore(
       fixture.coreDb,
-      new WorkspaceMutationAdmission(),
+      getControlStoreWorkerClient().workspaceMutations(fixture.coreDb.dataRoot),
       () => '2099-01-01T00:00:02.500Z'
     );
     const schedule = await schedules.createAutomation(OWNER_ID, {

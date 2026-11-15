@@ -1,5 +1,8 @@
 import { refuseScope } from '../bootstrap/readiness.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -11,7 +14,6 @@ import {
   readWorkspaceSourceFixture,
 } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 // openkit-test-platform: posix
 
 import { createHash } from 'node:crypto';
@@ -501,7 +503,7 @@ describe('FsStore canonical reload', () => {
     expect(pending.read(requestId)).toMatchObject({ requestId, resolution: null });
     pending.close();
     coreDb.sqlite.close();
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     store.setWorkspaceMutationAdmission(admission);
     const freeze = admission.tryFreeze(workspace.id, () => []);
     if (freeze.status !== 'frozen') throw new Error('Fixture freeze was refused.');
@@ -559,10 +561,12 @@ describe('FsStore canonical reload', () => {
     expect(recoveredProjection(store, 'threads', thread.id)).toEqual(thread);
     expect(recoveredProjection(store, 'workspaces', target.id)).toMatchObject({ id: target.id });
     expect(recoveredProjection(store, 'workspaces', sibling.id)).toBeDefined();
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     store.setWorkspaceMutationAdmission(admission);
     const stale = admission.tryFreeze(target.id, () => []);
-    const foreign = new WorkspaceMutationAdmission().tryFreeze(target.id, () => []);
+    const foreign = getControlStoreWorkerClient()
+      .workspaceMutations(dataRoot)
+      .tryFreeze(target.id, () => []);
     const wrongTarget = admission.tryFreeze(sibling.id, () => []);
     if (stale.status !== 'frozen' || foreign.status !== 'frozen' || wrongTarget.status !== 'frozen')
       throw new Error('Fixture freeze was refused.');
@@ -1815,7 +1819,7 @@ describe('FsStore canonical reload', () => {
           )
       );
     }
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     store.setWorkspaceMutationAdmission(admission);
     const freeze = admission.tryFreeze(secondWorkspace.id, () => []);
     if (freeze.status !== 'frozen') throw new Error('Fixture freeze was refused.');

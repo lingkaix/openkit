@@ -23,6 +23,7 @@ import {
 import { readPendingRequest } from './runtime/pending-requests.js';
 import {
   ControlStoreWorkerError,
+  getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -35,7 +36,6 @@ import {
   workspaceMembershipDecisionFixture,
 } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { removeWorkspaceMember } from './workspace-sharing.js';
 
 // Intercept the real Worker's genuine post-commit enqueue ACK only. The
@@ -238,7 +238,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       repositoryWorkspaceDb,
       inflightCommands,
       pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     });
     return createChannelServices({
       publicBaseUrl: 'https://openkit.invalid',
@@ -343,7 +343,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
         store,
         mode: 'server',
         channelServices: unconfigured,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       return (id: 'channel.discord.status' | 'channel.discord.revoke') =>
         invoke(id, {}, { kind: 'public', actor, delivery: 'human' });
@@ -717,7 +717,9 @@ describe('Discord to native Pending Request seam', () => {
       coreDb: f.coreDb,
       store: f.store,
       mode: 'server',
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+        f.coreDb.dataRoot
+      ),
     });
     // Ordinary authenticated session administration remains valid for this same user.
     await expect(

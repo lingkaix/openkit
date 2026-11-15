@@ -103,11 +103,6 @@ import {
   isTerminalWorkspaceDeletionRequest,
   listWorkspaceDeletionRequests,
 } from '../workspace-deletion-request.js';
-import type {
-  WorkspaceFreezeAdmission,
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
 import { assertAppDefinitionMatches } from './app-db.js';
 import {
   FileAdmissionError,
@@ -119,6 +114,11 @@ import {
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
+import type {
+  WorkspaceFreezeAdmission,
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from './control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -1917,35 +1917,22 @@ async function runWorkspaceCapture(
               }
               if (value.phase === 'freeze') {
                 live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
-                let hold: Promise<() => void> | null = null;
-                const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
-                const workspaceBlockers = (): readonly WorkspaceBlocker[] =>
-                  readBlockers({
-                    ...live,
-                    workspaceId: targetWorkspaceId,
-                    operation: 'capture',
-                  });
-                const captureBlockers = (): readonly WorkspaceBlocker[] => {
-                  const blockers = workspaceBlockers();
-                  // A destructive caller keeps its existing freeze/blockers, not a new stop permission.
-                  if (live.freezeOwner && hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId))
-                    return [
-                      {
-                        kind: 'publication',
-                        reason: 'pending-publication',
-                        reference: { workspaceId: targetWorkspaceId },
-                        actions: [],
-                      },
-                    ];
-                  if (blockers.length) return blockers;
-                  nativeCaptureClient = getControlStoreWorkerClient();
-                  hold = nativeCaptureClient.tryPauseForWorkspaceCapture(
-                    `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
-                    live.mutationAdmission
-                  );
-                  return hold
-                    ? []
-                    : [
+                // Freeze closes admission synchronously; the existing drain rendezvous
+                // joins admitted preparation and native ACKs before the Worker can cut.
+                drained = (async () => {
+                  let hold: Promise<() => void> | null = null;
+                  const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
+                  const workspaceBlockers = (): readonly WorkspaceBlocker[] =>
+                    readBlockers({
+                      ...live,
+                      workspaceId: targetWorkspaceId,
+                      operation: 'capture',
+                    });
+                  const captureBlockers = (): readonly WorkspaceBlocker[] => {
+                    const blockers = workspaceBlockers();
+                    // A destructive caller keeps its existing freeze/blockers, not a new stop permission.
+                    if (live.freezeOwner && hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId))
+                      return [
                         {
                           kind: 'publication',
                           reason: 'pending-publication',
@@ -1953,62 +1940,84 @@ async function runWorkspaceCapture(
                           actions: [],
                         },
                       ];
-                };
-                let admission: WorkspaceFreezeAdmission;
-                if (live.freezeOwner) {
-                  const blockers = captureBlockers();
-                  admission = blockers.length ? { status: 'blocked', blockers } : live.freezeOwner;
-                } else if (hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId)) {
-                  const priorBlockers = workspaceBlockers();
-                  admission = priorBlockers.length
-                    ? { status: 'blocked', blockers: priorBlockers }
-                    : await live.mutationAdmission.tryFreezeAfterDrain(
-                        targetWorkspaceId,
-                        async () => {
-                          const blockers = workspaceBlockers();
-                          if (blockers.length) return blockers;
-                          await quiesceWorkspaceMcpData(live.dataRoot, targetWorkspaceId);
-                        },
-                        captureBlockers
-                      );
-                } else {
-                  admission = live.mutationAdmission.tryFreeze(targetWorkspaceId, captureBlockers);
-                }
-                if (admission.status !== 'frozen') {
-                  const busy = wasClosed && admission.status === 'busy';
-                  throw new OperationError(
-                    busy ? 'workspace_frozen' : 'workspace_blocked',
-                    'Workspace capture is not admitted.',
-                    409,
-                    {
-                      details: {
-                        workspaceId: targetWorkspaceId,
-                        operation: 'capture',
-                        retryable: busy,
-                        blockers:
-                          admission.status === 'blocked'
-                            ? admission.blockers
-                            : [
-                                {
-                                  kind: 'publication',
-                                  reason: busy ? 'frozen' : 'pending-publication',
-                                  reference: { workspaceId: targetWorkspaceId },
-                                  actions: [],
-                                },
-                              ],
-                      },
-                    }
+                    if (blockers.length) return blockers;
+                    nativeCaptureClient = getControlStoreWorkerClient();
+                    hold = nativeCaptureClient.tryPauseForWorkspaceCapture(
+                      `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
+                      live.mutationAdmission
+                    );
+                    return hold
+                      ? []
+                      : [
+                          {
+                            kind: 'publication',
+                            reason: 'pending-publication',
+                            reference: { workspaceId: targetWorkspaceId },
+                            actions: [],
+                          },
+                        ];
+                  };
+                  const turnDrain = getControlStoreWorkerClient().drainTurnPublications(
+                    `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`
                   );
-                }
-                captureFreeze = admission;
-                drained = hold!.then(
-                  (release) => {
-                    resumeNative = release;
-                  },
-                  (error) => {
-                    authorityError ??= error;
+                  let admission: WorkspaceFreezeAdmission;
+                  if (live.freezeOwner) {
+                    const blockers = captureBlockers();
+                    admission = blockers.length
+                      ? { status: 'blocked', blockers }
+                      : live.freezeOwner;
+                  } else if (turnDrain || hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId)) {
+                    const priorBlockers = workspaceBlockers();
+                    admission = priorBlockers.length
+                      ? { status: 'blocked', blockers: priorBlockers }
+                      : await live.mutationAdmission.tryFreezeAfterDrain(
+                          targetWorkspaceId,
+                          async () => {
+                            const blockers = workspaceBlockers();
+                            if (blockers.length) return blockers;
+                            if (hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId))
+                              await quiesceWorkspaceMcpData(live.dataRoot, targetWorkspaceId);
+                            await turnDrain;
+                          },
+                          captureBlockers
+                        );
+                  } else {
+                    admission = live.mutationAdmission.tryFreeze(
+                      targetWorkspaceId,
+                      captureBlockers
+                    );
                   }
-                );
+                  if (admission.status !== 'frozen') {
+                    const busy = wasClosed && admission.status === 'busy';
+                    throw new OperationError(
+                      busy ? 'workspace_frozen' : 'workspace_blocked',
+                      'Workspace capture is not admitted.',
+                      409,
+                      {
+                        details: {
+                          workspaceId: targetWorkspaceId,
+                          operation: 'capture',
+                          retryable: busy,
+                          blockers:
+                            admission.status === 'blocked'
+                              ? admission.blockers
+                              : [
+                                  {
+                                    kind: 'publication',
+                                    reason: busy ? 'frozen' : 'pending-publication',
+                                    reference: { workspaceId: targetWorkspaceId },
+                                    actions: [],
+                                  },
+                                ],
+                        },
+                      }
+                    );
+                  }
+                  captureFreeze = admission;
+                  resumeNative = await hold!;
+                })().catch((error) => {
+                  authorityError ??= error;
+                });
               }
               if (value.phase === 'drain') {
                 await drained;

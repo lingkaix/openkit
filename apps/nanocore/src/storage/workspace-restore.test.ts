@@ -63,7 +63,6 @@ import {
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   beginWorkspaceDeletion,
   completeWorkspaceDeletion,
@@ -804,7 +803,7 @@ async function readmissionFixture(
   readmissionCleanups.push(() => core.sqlite.close());
   const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
   readmissionCleanups.push(() => lock.release());
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
   restoreWorkspaceRecoveryAdmission(core, gate);
   f.store.setWorkspaceMutationAdmission(gate);
   const prepared = readRecoveryExecution(core, f.requestId)!;
@@ -1309,7 +1308,7 @@ describe('D0-2 same-deployment restore', () => {
         const instant = new Date(Date.now() - 30 * 60_000).toISOString();
         const schedules = new AutomationStore(
           core,
-          new WorkspaceMutationAdmission(),
+          getControlStoreWorkerClient().workspaceMutations(current.dataRoot),
           () => instant
         );
         const schedule = await schedules.createAutomation(current.ownerId, {
@@ -1509,7 +1508,7 @@ describe('D0-2 same-deployment restore', () => {
     readmissionCleanups.push(() => core.sqlite.close());
     const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
     readmissionCleanups.push(() => lock.release());
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
     const freeze = gate.tryFreeze(workspaceId, () => []);
     if (freeze.status !== 'frozen') throw new Error('Expected the original target freeze.');
     readmissionCleanups.push(() => freeze.release());
@@ -1787,7 +1786,7 @@ describe('D0-2 same-deployment restore', () => {
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: randomUUID() })
     ).toThrow(WorkspaceRecoveryError);
-    const foreignGate = new WorkspaceMutationAdmission();
+    const foreignGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
     const foreign = foreignGate.tryFreeze(workspaceId, () => []);
     if (foreign.status !== 'frozen') throw new Error('Expected the independent foreign freeze.');
     try {
@@ -1849,7 +1848,7 @@ describe('D0-2 same-deployment restore', () => {
 
   it('prepares an admitted frozen target under the existing root lock without publishing it', async () => {
     const f = await fixture();
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
     const freeze = gate.tryFreeze(workspaceId, () => []);
     if (freeze.status !== 'frozen') throw new Error('Expected an admitted target freeze.');
     const core = openCoreDb(f.dataRoot);
@@ -1956,7 +1955,7 @@ describe('D0-2 same-deployment restore', () => {
     try {
       const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned.state).toBe('prepared');
-      const gate = new WorkspaceMutationAdmission();
+      const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       restoreWorkspaceRecoveryAdmission(core, gate);
       const failures = scopeAdmissionFailures(f.dataRoot);
       expect(failures).toContainEqual({ scope: 'workspace', id: workspaceId, check: 'recovery' });
@@ -2055,8 +2054,8 @@ describe('D0-2 same-deployment restore', () => {
     const core = openCoreDb(f.dataRoot);
     const owned = readRecoveryExecution(core, f.requestId)!;
     expect(owned.state).toBe('prepared');
-    const gate = new WorkspaceMutationAdmission();
-    const otherGate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
+    const otherGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
     const frozen = gate.tryFreeze(workspaceId, () => []);
     const other = otherGate.tryFreeze(workspaceId, () => []);
     if (frozen.status !== 'frozen' || other.status !== 'frozen')
@@ -2741,7 +2740,11 @@ describe('D0-2 same-deployment restore', () => {
     const f = await fixture(true);
     const core = openCoreDb(f.dataRoot);
     const instant = new Date().toISOString();
-    const schedules = new AutomationStore(core, new WorkspaceMutationAdmission(), () => instant);
+    const schedules = new AutomationStore(
+      core,
+      getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
+      () => instant
+    );
     const schedule = await schedules.createAutomation(f.ownerId, {
       name: 'Current automation',
       workspaceId,

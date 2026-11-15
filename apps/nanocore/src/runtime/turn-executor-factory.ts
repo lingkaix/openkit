@@ -58,6 +58,7 @@ import {
   openControlStoreProductReadHandle,
   readProduct,
 } from '../storage/control-store-product-records.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
@@ -84,7 +85,6 @@ import { vaultSecretMaterialToString } from '../vault/vault-backend.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { getVaultInjectionPlan } from '../vault-injection-plans.js';
 import { getVaultInjectionReceipt } from '../vault-injection-receipts.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   type AgentEnvironmentPackageSnapshotReadRecord,
   requireAgentEnvironmentPackageSnapshot,

@@ -23,7 +23,6 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestCoreDb, openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
@@ -71,7 +70,7 @@ function fixture(competing = false) {
   const captureId = randomUUID();
   const selected = protectCapture(db, workspaceId, captureId);
   const competitor = competing ? protectCapture(db, workspaceId, randomUUID()) : undefined;
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   restoreWorkspaceRecoveryAdmission(core, gate);
   return {
     dataRoot,
@@ -101,7 +100,7 @@ describe('retained capture exclusion rejoin', () => {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     const db = openWorkspaceDb(dataRoot, workspaceId);
     handles.push(db);
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const source = {
       kind: 'live-workspace' as const,
       dataRoot,
@@ -194,7 +193,9 @@ describe('retained capture exclusion rejoin', () => {
     expect(freeze.status).toBe('frozen');
     if (freeze.status !== 'frozen')
       throw new Error('Expected the original live capture exclusion.');
-    const foreign = new WorkspaceMutationAdmission().tryFreeze(workspaceId, () => []);
+    const foreign = getControlStoreWorkerClient()
+      .workspaceMutations(dataRoot)
+      .tryFreeze(workspaceId, () => []);
     if (foreign.status !== 'frozen') throw new Error('Expected an unrelated freeze.');
     try {
       await expect(inspectWorkspaceSnapshot(input, owned)).rejects.toThrow();
@@ -359,7 +360,7 @@ describe('retained capture exclusion rejoin', () => {
     expect(prepared?.state).toBe('prepared');
     const db = openWorkspaceDb(dataRoot, workspaceId);
     handles.push(db);
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     restoreWorkspaceRecoveryAdmission(core, gate);
     const resume = () =>
       recovery.resumeWorkspaceCaptureOwner(core, workspaceId, captureId, gate, () => []);

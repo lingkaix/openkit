@@ -11,6 +11,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -18,7 +19,6 @@ import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
@@ -68,7 +68,7 @@ it.each([
       store,
       goalServices: services,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
       repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
     });
     try {

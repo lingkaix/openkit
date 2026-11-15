@@ -30,7 +30,10 @@ import { createOperationEngine } from '../operation-invocation.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import { policyDigest } from '../policy/statements.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -40,7 +43,6 @@ import {
   createTestWorkspaceDb,
   disposeTestStore,
 } from '../test-support/store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
 
 const verification = vi.hoisted(() => ({
@@ -198,7 +200,7 @@ async function fixture() {
     authentication.get('/api/e13-fixture-identity', (c) => c.json(c.get('actor')));
     const accounts = [];
     for (const human of [first, second, ordinary]) {
-      const response = await authentication.request(BASE + '/api/e13-fixture-identity', {
+      const response = await authentication.request(`${BASE}/api/e13-fixture-identity`, {
         headers: { cookie: human.cookie },
       });
       expect(response.status).toBe(200);
@@ -305,7 +307,7 @@ async function fixture() {
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,

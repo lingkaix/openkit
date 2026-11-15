@@ -70,7 +70,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { selectQueuedThreadMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Computes the digest independently from the command and revision owners. */
 function digest(content: string): string {
@@ -101,7 +100,7 @@ async function fixture() {
       store,
       dataRoot: root,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
       repositoryWorkspaceDb: (id) => {
         const handle = openWorkspaceDb(root, id);
         if (readOnlyMain) {
@@ -895,7 +894,7 @@ it('recomputes schema impact when an absent named AEP becomes unreadable in anot
       dataRoot: f.root,
       captureCoverage: f.store,
     }),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.root),
     repositoryWorkspaceDb: (id) => openWorkspaceDb(f.root, id),
   });
   const entry = { kind: 'public', actor: { kind: 'session', userId: f.userId } } as const;

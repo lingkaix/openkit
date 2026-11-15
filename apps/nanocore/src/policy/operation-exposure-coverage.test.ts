@@ -7,9 +7,9 @@ import { expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { createAppOpenApiDocument, getRegisteredAppApiOperationIds } from '../openapi.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 type Route = {
   readonly method: string;
@@ -17,7 +17,7 @@ type Route = {
   readonly handler?: object;
 };
 const IMAGE_PATH = '/api/nanohost/transport/effects/image.build/input';
-const IMAGE_INPUT = 'POST ' + IMAGE_PATH;
+const IMAGE_INPUT = `POST ${IMAGE_PATH}`;
 /** Bounded mapping of the one real terminal USE handler hidden behind ALL *. */
 function nativeWildcard(route: Route) {
   return (
@@ -217,7 +217,7 @@ async function fixture() {
     dataRoot,
     store,
     auth,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   });
   return { app, ids: getRegisteredAppApiOperationIds(app) };
 }

@@ -6,11 +6,11 @@ import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import { afterEach, expect, it } from 'vitest';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
 import { operationRequest } from '../test-support/operation-request.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
@@ -31,7 +31,7 @@ afterEach(async () => {
 /** Opens an isolated candidate with the real identity, membership and operation owners. */
 function deployment(
   root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-')),
-  admission = new WorkspaceMutationAdmission()
+  admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot)
 ) {
   if (!roots.includes(root)) roots.push(root);
   const coreDb = openCoreDb(root);

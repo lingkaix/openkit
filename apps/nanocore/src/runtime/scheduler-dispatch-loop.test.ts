@@ -48,7 +48,6 @@ import {
 import { resolveAgentSessionCompatibilityKey } from '../test-support/prepared-agent-environment.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DeterministicAgentPreparationError } from './agent-preparation-error.js';
 import * as attemptRecords from './execution-attempt-records.js';
 import * as attemptCommands from './execution-attempts.js';
@@ -592,7 +591,11 @@ describe('scheduler dispatch loop', () => {
     const executor = await RecordingTurnExecutor.create(coreDb);
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
     const instant = '2026-10-28T09:30:00.000Z';
-    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedules = new AutomationStore(
+      coreDb,
+      getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
+      () => instant
+    );
     const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
@@ -692,7 +695,7 @@ describe('scheduler dispatch loop', () => {
       const instant = '2026-10-16T00:00:00.000Z';
       const schedules = new AutomationStore(
         coreDb,
-        new WorkspaceMutationAdmission(),
+        getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
         () => instant
       );
       const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
@@ -836,7 +839,7 @@ describe('scheduler dispatch loop', () => {
       const pollThread = await store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
       const schedules = new AutomationStore(
         coreDb,
-        new WorkspaceMutationAdmission(),
+        getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
         () => '2026-10-16T00:00:00.000Z'
       );
       const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
@@ -1026,7 +1029,7 @@ describe('scheduler dispatch loop', () => {
       const manifest = agentManifest();
       const initialExecutor = await RecordingTurnExecutor.create(coreDb);
       const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
-      const mutationAdmission = new WorkspaceMutationAdmission();
+      const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       let instant = '2026-10-16T00:00:00.000Z';
       const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
       const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {

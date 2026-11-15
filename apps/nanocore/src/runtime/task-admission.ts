@@ -16,8 +16,8 @@ import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
 import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { GoalCommandError } from './goal-error.js';
 import { goalActor, readGoalView } from './goal-owner.js';
 import {

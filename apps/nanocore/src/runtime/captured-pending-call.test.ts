@@ -30,6 +30,7 @@ import {
   preparePolicyDocument,
 } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -45,7 +46,6 @@ import { createVaultGrant } from '../vault/vault-grants.js';
 import { createVaultReference } from '../vault/vault-references.js';
 import * as workerMcpRoutes from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { resolveAgentEnvironmentPackage } from './agent-environment.js';
 import {
@@ -654,7 +654,9 @@ describe('captured pending MCP schema identity at grant', () => {
       coreDb: f.coreDb,
       store: f.store,
       interception,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+        f.coreDb.dataRoot
+      ),
       workerMcpGateway: f.gateway,
       workerControlGateway: {
         authenticatePackageToken: () => f.environmentPackage,

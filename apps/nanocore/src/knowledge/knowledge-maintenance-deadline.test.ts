@@ -22,13 +22,15 @@ import { FsStore } from '../lib/store.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   type KnowledgeMaintenanceDependencies,
   maintainKnowledgeAgent,
@@ -175,7 +177,7 @@ async function fixture(scope: Scope, deadlineMs = 300_000) {
     coreDb,
     userDb,
     runtimeConfigManager,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     pin: async (input: Pick<MaintenanceRun, 'turn' | 'inputs'>) => {

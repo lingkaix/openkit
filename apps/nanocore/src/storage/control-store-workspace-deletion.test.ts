@@ -16,7 +16,6 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 import {
   commandRequestKey,
@@ -179,7 +178,7 @@ async function fixture(lostAck = false) {
     throw new Error('Owner fixture could not create a pending invitation.');
 
   let instant = '2026-10-16T00:00:00.000Z';
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const schedules = new AutomationStore(coreDb, admission, () => instant);
   const schedule = await schedules.createAutomation(actorId, {
     workspaceId,

@@ -14,9 +14,8 @@ import {
 } from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationDependencies, NotebookUpdate } from './notebook-publication.js';
 import {

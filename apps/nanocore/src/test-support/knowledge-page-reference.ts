@@ -8,10 +8,12 @@ import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-wor
 import { readWorkspaceNotebookSelection } from '../knowledge/notebook-workspace-selection.js';
 import { resolveWorkspaceKnowledgeReferenceProofs } from '../knowledge-source-authority.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createDemoWorkspaceForUser } from './demo-store.js';
 import { serializeKnowledgePageFixture } from './knowledge-page.js';
 import { ensureLocalUser } from './local-user.js';
@@ -166,7 +168,7 @@ export async function createPageReferenceFixture(
       currentAuthority: () => {},
       actor: { kind: 'user', id: userId },
       runtimeConfigManager: createRuntimeConfigManager({ dataRoot }),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       scopeSchemaText: selection.scopeSchemaText,
       notebook: readWorkspaceNotebookSelection({
         workspaceDb: workspaceDb!,

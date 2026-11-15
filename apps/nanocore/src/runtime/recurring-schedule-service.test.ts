@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AutomationStore } from '../lib/automation-store.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import type { RecurringPreparation } from '../storage/recurring-records.js';
@@ -10,7 +11,6 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   type RecurringScheduleService,
   startRecurringScheduleService,
@@ -41,7 +41,7 @@ async function fixture() {
     workspaceId: workspace.id,
     ownerUserId: localUserId,
   });
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
   const schedules = new AutomationStore(db, gate, clock);

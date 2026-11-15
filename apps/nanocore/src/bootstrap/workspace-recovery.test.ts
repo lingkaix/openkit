@@ -1,3 +1,4 @@
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { spawn } from 'node:child_process';
@@ -56,7 +57,6 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const disposals: (() => Promise<void> | void)[] = [];
 const templateRoots: string[] = [];
@@ -163,7 +163,11 @@ beforeAll(async () => {
   const recurringStore = new FsStore({ dataRoot: recurringRoot });
   const recCore = openCoreDb(recurringRoot);
   let instant = '2026-10-16T00:00:00.000Z';
-  const schedules = new AutomationStore(recCore, new WorkspaceMutationAdmission(), () => instant);
+  const schedules = new AutomationStore(
+    recCore,
+    getControlStoreWorkerClient().workspaceMutations(recCore.dataRoot),
+    () => instant
+  );
   const schedule = await schedules.createAutomation(ownerId, {
     name: 'Retained weekly work',
     workspaceId: badId,
@@ -1155,7 +1159,10 @@ describe('D0 12:49Z recurring-history ruling / WM 182–188, 382, 431–432', ()
       expect(before.scheduler_execution_attempts).toEqual([]);
       const core = openCoreDb(targetRoot);
       try {
-        const schedules = new AutomationStore(core, new WorkspaceMutationAdmission());
+        const schedules = new AutomationStore(
+          core,
+          getControlStoreWorkerClient().workspaceMutations(f.dataRoot)
+        );
         expect(await schedules.collectScanCandidates(new Date().toISOString())).toEqual([]);
       } finally {
         core.sqlite.close();

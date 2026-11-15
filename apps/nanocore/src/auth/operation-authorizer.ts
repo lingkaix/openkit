@@ -26,11 +26,11 @@ import {
   type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
 import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { ControlVaultInput } from '../storage/vault-native-codecs.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
 import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   getWorkspaceInvitation,
   getWorkspaceMember,

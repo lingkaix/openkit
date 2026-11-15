@@ -8,6 +8,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { FsStore } from './lib/store.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createAppWithWorkspaceAuthority as createApp } from './test-support/app.js';
@@ -18,7 +19,6 @@ import {
 } from './test-support/local-user.js';
 import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const corpus = JSON.parse(
   readFileSync(new URL('../../../tests/fixtures/large-context/cases.json', import.meta.url), 'utf8')
@@ -95,7 +95,7 @@ function ordinarySessionApp(state: Awaited<ReturnType<typeof fixture>>) {
     store: state.store,
     requestStore: () => state.store,
     fileAdmission: new FileStorageAdmission(state.dataRoot, () => 0n),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(state.dataRoot),
   });
   return app;
 }

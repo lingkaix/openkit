@@ -9,7 +9,6 @@ import { armCommit, releaseCommit } from '../test-support/control-native-transpo
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -48,7 +47,7 @@ function fixture() {
     ownerUserId: userId,
   });
   let instant = start;
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   const store = new AutomationStore(db, gate, () => instant);
   return {
     db,

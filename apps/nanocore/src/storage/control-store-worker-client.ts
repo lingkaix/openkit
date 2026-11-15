@@ -1,4 +1,4 @@
-import type { WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
+import type { WorkspaceBlocker, WorkspaceReconciliationRecord } from '@openkit/app-api-schemas';
 import {
   type ControlAccessTokenLifecycle,
   type ControlAccessTokenLifecycleResult,
@@ -186,10 +186,6 @@ import {
   type ControlMaterialCommandResult,
   prepareControlMaterialTransfer,
 } from '../workspace-materials.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
 import type {
   ControlAccessTokenVerification,
   ControlAccessTokenVerificationResult,
@@ -704,6 +700,8 @@ function isControlCapacityCommand(command: ControlWorkerCommand): boolean {
   }
 }
 
+// Physical host disposal never releases a logical Workspace exclusion.
+const workspaceMutationOwners = new Map<string, WorkspaceMutationAdmission>();
 let singleton: ControlStoreWorkerClient | undefined;
 
 /**
@@ -738,6 +736,376 @@ export async function shutdownControlStoreWorkerClient(): Promise<void> {
 }
 
 /** Owns the worker lifetime, finite pre-post admission and asynchronous acknowledgements. */
+/** Nonwaiting freeze result; the caller owns release only after successful admission. */
+export type WorkspaceFreezeAdmission =
+  | { readonly status: 'busy' }
+  | { readonly status: 'blocked'; readonly blockers: readonly WorkspaceBlocker[] }
+  | WorkspaceFrozenAdmission;
+
+/** Exact process-local owner of one successful freeze; release invalidates its native bindings. */
+export interface WorkspaceFrozenAdmission {
+  readonly status: 'frozen';
+  readonly release: () => void;
+}
+
+/** Exact retained target admission or source capture that caused this process-local boot exclusion. */
+export type WorkspaceRecoveryFreezeOrigin =
+  | {
+      readonly admissionId: string;
+      readonly revision: number;
+      readonly candidateRef: string;
+    }
+  | { readonly captureId: string }
+  | { readonly deletionRequestId: string; readonly revision: number };
+
+/** Source recovery binds only canonical bytes; target recovery also binds its owned candidate. */
+interface CaptureClosure {
+  owner: WorkspaceFrozenAdmission | null;
+  preparing?: true;
+  origin?: WorkspaceRecoveryFreezeOrigin;
+  recovery?:
+    | { readonly canonical: object; readonly candidate?: object }
+    | { readonly canonical?: object; readonly candidate: object };
+}
+
+/** Process-local mutation admission state for one Workspace. */
+interface WorkspaceMutationGateState {
+  admitted: number;
+  closed: boolean;
+  captureClosed: CaptureClosure | null;
+  waiters: Set<() => void>;
+}
+
+/** Registered canonical publishers that can write after ordinary handler admission. */
+export const WORKSPACE_MUTATION_LATE_PUBLISHERS = [
+  'worker-turn-closeout',
+  'mcp-workspace-data',
+] as const;
+
+/** Registered canonical publisher that must name late mutation admission. */
+export type WorkspaceMutationLatePublisher = (typeof WORKSPACE_MUTATION_LATE_PUBLISHERS)[number];
+
+/** Coordinates ordinary Workspace mutations and exclusive lifecycle admission. */
+export class WorkspaceMutationAdmission {
+  private readonly gates = new Map<string, WorkspaceMutationGateState>();
+  private readonly deletionTails = new Map<string, Promise<void>>();
+
+  /** Fences an idle target before synchronous authoritative inspection, without draining live work. */
+  public tryFreeze(
+    workspaceId: string,
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): WorkspaceFreezeAdmission {
+    const state = this.state(workspaceId);
+    if (this.isClosed(workspaceId) || state.admitted !== 0) return { status: 'busy' };
+    const closure: CaptureClosure = { owner: null };
+    state.captureClosed = closure;
+    const blockers = this.freezeBlockers(readBlockers);
+    if (blockers.length !== 0) {
+      if (state.captureClosed === closure) state.captureClosed = null;
+      return { status: 'blocked', blockers };
+    }
+    if (state.captureClosed !== closure || state.closed) return { status: 'busy' };
+    return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Stops new ordinary calls while original bounded calls/cleanup settle, then takes the same cut. */
+  public async tryFreezeAfterDrain(
+    workspaceId: string,
+    prepare: () => Promise<readonly WorkspaceBlocker[] | undefined>,
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): Promise<WorkspaceFreezeAdmission> {
+    const state = this.state(workspaceId);
+    if (this.isClosed(workspaceId)) return { status: 'busy' };
+    const closure: CaptureClosure = { owner: null, preparing: true };
+    state.captureClosed = closure;
+    const drain = async () => {
+      while (state.admitted !== 0) await new Promise<void>((resolve) => state.waiters.add(resolve));
+    };
+    try {
+      await drain();
+      const preparationBlockers = await prepare();
+      if (preparationBlockers?.length) {
+        if (state.captureClosed === closure) state.captureClosed = null;
+        return { status: 'blocked', blockers: preparationBlockers };
+      }
+      await drain();
+    } catch {
+      // Unknown physical stop must not reopen admission. All original prepare calls are joined.
+      delete closure.preparing;
+      return {
+        status: 'blocked',
+        blockers: [{ kind: 'unavailable', reason: 'unavailable', actions: [] }],
+      };
+    }
+    if (state.captureClosed !== closure || state.closed) {
+      if (state.captureClosed === closure) state.captureClosed = null;
+      return { status: 'busy' };
+    }
+    delete closure.preparing;
+    const blockers = this.freezeBlockers(readBlockers);
+    if (blockers.length) {
+      if (state.captureClosed === closure) state.captureClosed = null;
+      return { status: 'blocked', blockers };
+    }
+    if (state.captureClosed !== closure || state.closed || state.admitted !== 0)
+      return { status: 'busy' };
+    return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Rejoins only the retained origin of an ownerless recovery exclusion, without opening it. */
+  public tryResumeRecovery(
+    workspaceId: string,
+    origin: WorkspaceRecoveryFreezeOrigin,
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): WorkspaceFreezeAdmission {
+    const state = this.gates.get(workspaceId);
+    const closure = state?.captureClosed;
+    if (
+      !state ||
+      state.closed ||
+      state.admitted !== 0 ||
+      !closure ||
+      closure.owner !== null ||
+      !isDeepStrictEqual(closure.origin, origin)
+    )
+      return { status: 'busy' };
+    const blockers = this.freezeBlockers(readBlockers);
+    if (blockers.length !== 0) return { status: 'blocked', blockers };
+    if (
+      state.captureClosed !== closure ||
+      state.closed ||
+      state.admitted !== 0 ||
+      closure.owner !== null
+    )
+      return { status: 'busy' };
+    return this.ownFreeze(workspaceId, state, closure);
+  }
+
+  /** Transfers only the same live deletion closure to its exact newly retained target admission. */
+  public transferDeletionRecovery(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    deletion: { readonly deletionRequestId: string; readonly revision: number },
+    target: {
+      readonly admissionId: string;
+      readonly revision: number;
+      readonly candidateRef: string;
+    }
+  ): void {
+    if (
+      !this.ownsFreeze(workspaceId, owner) ||
+      !isDeepStrictEqual(this.gates.get(workspaceId)!.captureClosed!.origin, deletion)
+    )
+      throw new Error('Workspace deletion recovery closure changed.');
+    this.gates.get(workspaceId)!.captureClosed!.origin = Object.freeze({ ...target });
+  }
+
+  /** Restores exclusion provenance only; this never recovers a live permission. */
+  public restoreRecoveryClosed(workspaceId: string, origin: WorkspaceRecoveryFreezeOrigin): void {
+    this.state(workspaceId).captureClosed = { owner: null, origin: Object.freeze({ ...origin }) };
+  }
+
+  /** Both entry paths preserve the original closed, typed inspection failure. */
+  private freezeBlockers(
+    readBlockers: () => readonly WorkspaceBlocker[]
+  ): readonly WorkspaceBlocker[] {
+    try {
+      return readBlockers();
+    } catch {
+      return [{ kind: 'unavailable', reason: 'unavailable', actions: [] }];
+    }
+  }
+
+  /** Gives the same closure a live owner; a resumed release restores its prior exclusion. */
+  private ownFreeze(
+    workspaceId: string,
+    state: WorkspaceMutationGateState,
+    closure: CaptureClosure
+  ): WorkspaceFrozenAdmission {
+    let released = false;
+    const owner: WorkspaceFrozenAdmission = {
+      status: 'frozen',
+      release: () => {
+        if (released) return;
+        released = true;
+        if (state.captureClosed !== closure) return;
+        if (closure.origin) {
+          closure.owner = null;
+          delete closure.recovery;
+        } else this.reopen(workspaceId, 'capture');
+      },
+    };
+    closure.owner = owner;
+    return owner;
+  }
+
+  /** Tests this exact live freeze without creating a gate or recovering permission from a Boolean. */
+  public ownsFreeze(workspaceId: string, owner: WorkspaceFrozenAdmission): boolean {
+    const state = this.gates.get(workspaceId);
+    return !!state && !state.closed && state.captureClosed?.owner === owner;
+  }
+
+  /** A resumed owner must match its retained origin; a fresh freeze has no predecessor origin. */
+  public ownsRecoveryOrigin(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    origin: WorkspaceRecoveryFreezeOrigin
+  ): boolean {
+    if (!this.ownsFreeze(workspaceId, owner)) return false;
+    const retained = this.gates.get(workspaceId)!.captureClosed!.origin;
+    return !retained || isDeepStrictEqual(retained, origin);
+  }
+
+  /** The recovery owner installs only its exact native bindings; replacing them retires old calls. */
+  public bindRecovery(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    bindings: NonNullable<CaptureClosure['recovery']>
+  ): void {
+    if (!this.ownsFreeze(workspaceId, owner))
+      throw new Error('Workspace recovery freeze is not current.');
+    this.gates.get(workspaceId)!.captureClosed!.recovery = { ...bindings };
+  }
+
+  /** A native exception belongs only to the current closure and exact installed binding object. */
+  public isRecoveryBinding(
+    workspaceId: string,
+    owner: WorkspaceFrozenAdmission,
+    binding: object
+  ): boolean {
+    if (!this.ownsFreeze(workspaceId, owner)) return false;
+    const bindings = this.gates.get(workspaceId)!.captureClosed!.recovery;
+    return !!bindings && (bindings.canonical === binding || bindings.candidate === binding);
+  }
+
+  /** Counts ordinary admission or existing settlement; capture exclusion fences both without changing legacy deletion settlement. */
+  public enter(
+    workspaceId: string,
+    exclusion: 'ordinary' | 'capture' = 'ordinary'
+  ): (() => void) | null {
+    const state = this.state(workspaceId);
+    if (this.isClosed(workspaceId, exclusion)) {
+      return null;
+    }
+    state.admitted += 1;
+    let released = false;
+    return () => {
+      if (released) {
+        return;
+      }
+      released = true;
+      state.admitted -= 1;
+      if (state.admitted === 0) {
+        for (const resolve of state.waiters) {
+          resolve();
+        }
+        state.waiters.clear();
+      }
+    };
+  }
+
+  /** Admits one registered late publisher through the same Workspace gate. */
+  public enterLatePublisher(
+    workspaceId: string,
+    publisher: WorkspaceMutationLatePublisher
+  ): (() => void) | null {
+    if (!WORKSPACE_MUTATION_LATE_PUBLISHERS.includes(publisher)) {
+      throw new Error(`Unknown Workspace late publisher: ${publisher}.`);
+    }
+    const state = this.gates.get(workspaceId);
+    // Existing closeout may settle during preparation, never through the actual cut or deletion.
+    return this.enter(
+      workspaceId,
+      publisher === 'worker-turn-closeout' && state?.captureClosed?.preparing && !state.closed
+        ? 'capture'
+        : 'ordinary'
+    );
+  }
+
+  /** Closes one Workspace gate and waits for previously admitted mutations to leave. */
+  public async close(workspaceId: string): Promise<void> {
+    const state = this.state(workspaceId);
+    state.closed = true;
+    if (state.admitted === 0) {
+      return;
+    }
+    await new Promise<void>((resolve) => state.waiters.add(resolve));
+  }
+
+  /** Releases only the selected owner closure; capture release cannot reopen a concurrent deletion. */
+  public reopen(workspaceId: string, closure: 'ordinary' | 'capture' = 'ordinary'): void {
+    const state = this.state(workspaceId);
+    if (state.admitted !== 0) {
+      throw new Error('Workspace mutation gate cannot reopen while mutations remain admitted.');
+    }
+    if (closure === 'capture') state.captureClosed = null;
+    else state.closed = false;
+  }
+
+  /** Restores an owned closure without clearing a different lifecycle owner's exclusion. */
+  public restoreClosed(workspaceId: string, closure: 'ordinary' | 'capture' = 'ordinary'): void {
+    const state = this.state(workspaceId);
+    if (closure === 'capture') state.captureClosed = { owner: null };
+    else state.closed = true;
+  }
+
+  /** Tests ordinary exclusion or the capture-only exclusion required by already-owned low-level settlement. */
+  public isClosed(workspaceId: string, exclusion: 'ordinary' | 'capture' = 'ordinary'): boolean {
+    const state = this.state(workspaceId);
+    return (
+      (state.captureClosed !== null &&
+        (exclusion === 'ordinary' || !state.captureClosed.preparing)) ||
+      (exclusion === 'ordinary' && state.closed)
+    );
+  }
+
+  /** A live capture owner can release its fence; retained recovery and deletion closures cannot. */
+  public isCaptureActive(workspaceId: string): boolean {
+    const state = this.gates.get(workspaceId);
+    return !!state && !state.closed && state.captureClosed?.owner != null;
+  }
+
+  /**
+   * True only after `close()`. A capture fence is not this close.
+   * Callers still authorized for the Workspace keep seeing it; mutations use `isClosed`.
+   */
+  public isLifecycleClosed(workspaceId: string): boolean {
+    return this.gates.get(workspaceId)?.closed === true;
+  }
+
+  /** Serializes deletion-request admission for one Workspace. */
+  public async runDeletionExclusive<T>(
+    workspaceId: string,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    const preceding = this.deletionTails.get(workspaceId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const tail = preceding.then(() => current);
+    this.deletionTails.set(workspaceId, tail);
+    await preceding;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.deletionTails.get(workspaceId) === tail) {
+        this.deletionTails.delete(workspaceId);
+      }
+    }
+  }
+
+  private state(workspaceId: string): WorkspaceMutationGateState {
+    let state = this.gates.get(workspaceId);
+    if (!state) {
+      state = { admitted: 0, closed: false, captureClosed: null, waiters: new Set() };
+      this.gates.set(workspaceId, state);
+    }
+    return state;
+  }
+}
+
 class ControlStoreWorkerClient {
   private readonly hosts: WriterHost[] = Array.from(
     { length: CONTROL_WORKER_LIMITS.workspaceWorkers + 1 },
@@ -777,8 +1145,16 @@ class ControlStoreWorkerClient {
   private shutdownPromise: Promise<void> | undefined;
   private backupHold: PostingHold | undefined;
   private readonly databaseHolds = new Map<string, PostingHold>();
-  /** The application's one gate survives cold scope close/open for this native client lifetime. */
-  private workspaceMutationAdmission: WorkspaceMutationAdmission | undefined;
+  /** Returns the actual scope component; callers cannot install a second authority. */
+  workspaceMutations(dataRoot: string): WorkspaceMutationAdmission {
+    const root = resolve(dataRoot);
+    let owner = workspaceMutationOwners.get(root);
+    if (!owner) {
+      owner = new WorkspaceMutationAdmission();
+      workspaceMutationOwners.set(root, owner);
+    }
+    return owner;
+  }
   private readonly fileAdmissions = new Map<string, FileStorageAdmission>();
   private readonly walCapacity = new Map<
     string,
@@ -1466,8 +1842,17 @@ class ControlStoreWorkerClient {
   private assertFrozenCall(
     command: ControlWorkerCommand,
     recovery: ControlFrozenNativeCall | undefined,
-    opening?: Opening
+    opening?: Opening,
+    accepted?: Pending
   ): void {
+    const context = this.operationContext.getStore();
+    const continuing =
+      (context?.active && 'database' in command && context.reservation === command.database) ||
+      (accepted !== undefined && this.pending.get(accepted.request.id) === accepted);
+    const physical =
+      opening ?? ('database' in command ? this.openings.get(command.database) : undefined);
+    const dataRoot = command.operation === 'open' ? command.dataRoot : physical?.command.dataRoot;
+    const admission = dataRoot ? this.workspaceMutations(dataRoot) : undefined;
     if (recovery === undefined) {
       const owner =
         command.operation === 'open'
@@ -1488,14 +1873,14 @@ class ControlStoreWorkerClient {
                 : []),
             ]
           : [];
-      const ordinary = command.operation === 'capability' && command.input.kind === 'admit';
+      const ordinary =
+        (command.operation === 'capability' && command.input.kind === 'admit') ||
+        (command.operation === 'terminal' && !continuing);
       const workspaceId =
-        logical.find((id) => this.workspaceMutationAdmission?.isClosed(id)) ??
+        logical.find((id) => admission?.isClosed(id, accepted ? 'capture' : 'ordinary')) ??
         ((owner?.kind === 'workspace' || owner?.kind === 'app') &&
-        this.workspaceMutationAdmission?.isClosed(
-          owner.workspaceId,
-          ordinary ? 'ordinary' : 'capture'
-        )
+        (admission?.isLifecycleClosed(owner.workspaceId) ||
+          admission?.isClosed(owner.workspaceId, ordinary ? 'ordinary' : 'capture'))
           ? owner.workspaceId
           : undefined);
       if (workspaceId)
@@ -1533,7 +1918,7 @@ class ControlStoreWorkerClient {
         capture.root.captureReads !== capture ||
         capture.root.retirement ||
         capture.root.host.failed ||
-        !this.workspaceMutationAdmission?.isCaptureActive(capture.workspaceId) ||
+        !admission?.isCaptureActive(capture.workspaceId) ||
         command.operation !== 'open' ||
         command.create !== false ||
         command.initialize !== undefined ||
@@ -1620,10 +2005,7 @@ class ControlStoreWorkerClient {
           recovery[recoveryTargetRegistrationCall] !== true ||
           (recovery.input.authority.mode !== 'stopped'
             ? !recovery.freeze ||
-              !this.workspaceMutationAdmission?.ownsFreeze(
-                recovery.input.workspaceId,
-                recovery.freeze
-              )
+              !admission?.ownsFreeze(recovery.input.workspaceId, recovery.freeze)
             : recovery.freeze !== undefined) ||
           recovery.command.productOwner?.kind !== 'server' ||
           recovery.command.initialize !== 'core' ||
@@ -1657,10 +2039,7 @@ class ControlStoreWorkerClient {
         const current = statSync(recovery.path);
         if (
           recovery[workspaceDeletionCall] !== true ||
-          !this.workspaceMutationAdmission?.ownsFreeze(
-            recovery.input.workspaceId,
-            recovery.freeze
-          ) ||
+          !admission?.ownsFreeze(recovery.input.workspaceId, recovery.freeze) ||
           recovery.command.productOwner?.kind !== 'server' ||
           recovery.command.initialize !== 'core' ||
           recovery.command.create !== false ||
@@ -1704,7 +2083,7 @@ class ControlStoreWorkerClient {
         if (
           owner?.kind !== 'workspace' ||
           app.workspaceId !== owner.workspaceId ||
-          !this.workspaceMutationAdmission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
+          !admission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
           binding.command.create !== false ||
           binding.command.initialize !== 'workspace' ||
           !original ||
@@ -1725,7 +2104,7 @@ class ControlStoreWorkerClient {
       }
       if (
         owner?.kind !== 'workspace' ||
-        !this.workspaceMutationAdmission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
+        !admission?.isRecoveryBinding(owner.workspaceId, freeze, binding) ||
         !('database' in command) ||
         command.database !== binding.command.database ||
         binding.command.create !== false ||
@@ -1864,7 +2243,7 @@ class ControlStoreWorkerClient {
       physicalScope: { kind: 'app', workspaceId, appId },
     };
     for (;;) {
-      if (this.workspaceMutationAdmission?.isLifecycleClosed(workspaceId))
+      if (this.workspaceMutations(dataRoot).isLifecycleClosed(workspaceId))
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
           details: { workspaceId, retryable: true },
         });
@@ -1878,7 +2257,7 @@ class ControlStoreWorkerClient {
       }
       const parent = this.openings.get(`workspace:${workspaceDbPath(dataRoot, workspaceId)}`);
       const capture = parent?.captureReads;
-      if (!this.workspaceMutationAdmission?.isCaptureActive(workspaceId)) {
+      if (!this.workspaceMutations(dataRoot).isCaptureActive(workspaceId)) {
         await this.openFrozen(command);
         await this.assertExistingAppReadReadyAsync(dataRoot, workspaceId, appId);
         return;
@@ -4962,9 +5341,27 @@ class ControlStoreWorkerClient {
    */
   /** Binds the application's same gate without creating a native host, connection or hold. */
   setWorkspaceMutationAdmission(admission: WorkspaceMutationAdmission): void {
-    if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
-      throw new Error('Native client already has a different Workspace mutation owner.');
-    this.workspaceMutationAdmission = admission;
+    if (![...workspaceMutationOwners.values()].includes(admission))
+      throw new Error('Workspace mutation component is not owned by this native coordinator.');
+  }
+
+  /** Joins only this physical scope's existing Turn preparations and their covering ACKs. */
+  drainTurnPublications(database: string): Promise<void> | undefined {
+    const path =
+      this.openings.get(database)?.path ?? resolve(database.slice(database.indexOf(':') + 1));
+    const current = () =>
+      [...this.turnTails]
+        .filter(([key]) => JSON.parse(key)[0] === path)
+        .map(([, entry]) => entry.tail);
+    const entered = current();
+    if (entered.length === 0) return undefined;
+    return (async () => {
+      let pending = entered;
+      while (pending.length !== 0) {
+        await Promise.allSettled(pending);
+        pending = current();
+      }
+    })();
   }
 
   /** Installs the existing target hold without joining a competing target or global hold. Only posted ACKs may settle. */
@@ -5528,7 +5925,7 @@ class ControlStoreWorkerClient {
     const opening =
       'database' in entry.command ? this.openings.get(entry.command.database) : undefined;
     try {
-      this.assertFrozenCall(entry.command, entry.recovery, opening);
+      this.assertFrozenCall(entry.command, entry.recovery, opening, entry);
     } catch (error) {
       const members = entry.cohort?.frame.requests.map(
         (request) => this.pending.get(request.id)!
@@ -5559,7 +5956,8 @@ class ControlStoreWorkerClient {
         this.assertFrozenCall(
           member.command,
           member.recovery,
-          'database' in member.command ? this.openings.get(member.command.database) : undefined
+          'database' in member.command ? this.openings.get(member.command.database) : undefined,
+          member
         );
     } catch (error) {
       for (const member of members)

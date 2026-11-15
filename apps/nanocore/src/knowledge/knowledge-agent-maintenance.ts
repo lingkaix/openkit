@@ -35,10 +35,10 @@ import {
   ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
 } from '../storage/control-store-admission-codecs.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { DEFAULT_NOTEBOOK_INDEX, NotebookError } from './notebook.js';
 import {
   createNotebookAgentEditing,

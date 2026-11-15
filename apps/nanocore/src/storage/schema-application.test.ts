@@ -56,7 +56,6 @@ import {
 } from '../test-support/resource-policy.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   acceptWorkspaceInvitation,
   createWorkspaceInvitation,
@@ -590,7 +589,7 @@ it('applies only a reviewed complete schema report and respects an existing exte
   let store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Reviewed schema application');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   let app = createAppWithLocalIdentity({
     mode: 'server',
     coreDb,
@@ -890,7 +889,7 @@ interface NativeSchemaReviewFixtureInput {
 function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
   const { dataRoot, coreDb, userId, workspace, store: appStore } = input;
   const sourceRef = { pin: input.sourcePin, path: input.sourcePath };
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const runtimeConfigManager = createRuntimeConfigManager({
     dataRoot,
     captureCoverage: appStore,
@@ -3245,7 +3244,7 @@ it.each([false, true])(
         body: {
           name: 'Schema Policy author',
           email: authorAddress,
-          ['password']: randomBytes(32).toString('base64url'),
+          password: randomBytes(32).toString('base64url'),
         },
       })
       .then(

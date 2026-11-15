@@ -31,6 +31,7 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { conversationBody } from '../test-support/mode-entry-fixture.js';
@@ -42,7 +43,6 @@ import {
   disposeTestStore,
 } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
 import { policyDigest, preparePolicyDocument, validatePolicyDocument } from './statements.js';
@@ -419,7 +419,7 @@ async function fixture(withReviewerDomain = false) {
     },
     inflightCommands: new WeakMap(),
   });
-  const mutation = new WorkspaceMutationAdmission();
+  const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const app = createApp({
     mode: 'server',
     coreDb,

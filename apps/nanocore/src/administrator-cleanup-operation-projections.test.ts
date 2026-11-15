@@ -45,7 +45,10 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import { createWorkerStorageBinding as createLegacyWorkerStorageBinding } from './runtime/worker-storage-binding-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
@@ -60,7 +63,6 @@ import {
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { beginWorkspaceDeletion } from './workspace-sharing.js';
 
 // The reader stays synchronous. This test-only prelude gates the real native owner,
@@ -171,7 +173,7 @@ async function fixture() {
     dataRoot,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   };
   const invoke = createOperationInvocation(dependencies);
   const app = new Hono<{ Variables: AuthVariables }>();

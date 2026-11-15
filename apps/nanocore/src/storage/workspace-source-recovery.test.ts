@@ -29,15 +29,12 @@ import { createOperationInvocation } from '../operation-composition.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import {
-  type WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  type WorkspaceFrozenAdmission,
 } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
@@ -82,7 +79,7 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
   mkdirSync(join(sourceFile, '..'), { recursive: true });
   writeFileSync(sourceFile, 'Retain these source bytes across recovery.');
   const sourceBytes = readFileSync(sourceFile);
-  const mutationAdmission = new WorkspaceMutationAdmission();
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const source = {
     kind: 'live-workspace' as const,
     dataRoot,
@@ -653,7 +650,7 @@ describe('exact live source capture finalization', () => {
         expect(readRecoveryExecution(reopened, f.backupId)).toEqual(retained.core);
         expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
         if (stage !== 'source-abandon-final') {
-          const coldAdmission = new WorkspaceMutationAdmission();
+          const coldAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
           restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
           expect(coldAdmission.enter(f.workspaceId)).toBeNull();
         }
@@ -699,7 +696,7 @@ describe('exact live source capture finalization', () => {
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
       expect(readRecoveryExecution(reopened, f.backupId)).toBeUndefined();
-      const coldAdmission = new WorkspaceMutationAdmission();
+      const coldAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(f.workspaceId)).toBeNull();
     } finally {
@@ -767,7 +764,7 @@ describe('exact live source capture finalization', () => {
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
       expect(readRecoveryExecution(reopened, f.backupId)).toEqual(before.core);
-      const coldAdmission = new WorkspaceMutationAdmission();
+      const coldAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(f.workspaceId)).toBeNull();
     } finally {
@@ -938,12 +935,12 @@ describe('exact live source capture finalization', () => {
         syncBuiltinESMExports();
         const { acquireDataRootLock } = await import(${JSON.stringify(new URL('../bootstrap/lock.ts', import.meta.url).href)});
         const { openCoreDb } = await import(${JSON.stringify(new URL('./db.ts', import.meta.url).href)});
-        const { WorkspaceMutationAdmission } = await import(${JSON.stringify(new URL('../workspace-mutation-admission.ts', import.meta.url).href)});
+        const { getControlStoreWorkerClient } = await import(${JSON.stringify(new URL('./control-store-worker-client.ts', import.meta.url).href)});
         const { restoreWorkspaceRecoveryAdmission } = await import(${JSON.stringify(new URL('../bootstrap/workspace-recovery.ts', import.meta.url).href)});
         const { isScopeAdmitted, scopeAdmissionFailures } = await import(${JSON.stringify(new URL('../bootstrap/readiness.ts', import.meta.url).href)});
         const root = ${JSON.stringify(f.dataRoot)}, workspaceId = ${JSON.stringify(f.workspaceId)};
         const lock = acquireDataRootLock(root, { bootId: 'source-retirement-census' });
-        const core = openCoreDb(root), gate = new WorkspaceMutationAdmission();
+        const core = openCoreDb(root), gate = getControlStoreWorkerClient().workspaceMutations(root);
         try {
           restoreWorkspaceRecoveryAdmission(core, gate);
           const admitted = isScopeAdmitted(root, 'workspace', workspaceId);
@@ -1038,7 +1035,7 @@ describe('exact live source capture finalization', () => {
       expect(existsSync(f.marker)).toBe(true);
       f.freeze.release();
       await shutdownControlStoreWorkerClient();
-      const gate = new WorkspaceMutationAdmission();
+      const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       restoreWorkspaceRecoveryAdmission(f.owned.coreDb, gate);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
       expect(gate.enter(f.workspaceId)).toBeNull();

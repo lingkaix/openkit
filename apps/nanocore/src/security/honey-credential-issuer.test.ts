@@ -25,7 +25,10 @@ import {
 import { PolicyInterception } from '../policy/interception.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as dispatch from '../runtime/scheduler-dispatch-loop.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -42,7 +45,6 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { SecurityTriggerStore } from './trigger.js';
 
 // H/C5: ordinary selected Vault delivery must have a real Identity issuer first.
@@ -55,7 +57,7 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
   const userId = await ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
-  const mutation = new WorkspaceMutationAdmission();
+  const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   store.setWorkspaceMutationAdmission(mutation);
   const agentSessionId = allocateEntityId('as');
   const grantId = allocateEntityId('grant');

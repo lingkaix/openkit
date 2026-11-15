@@ -168,7 +168,7 @@ import {
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import {
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -2444,7 +2444,7 @@ describe('createConfiguredTurnExecutor', () => {
       inspection?: 'unavailable' | 'stale';
       effects?: NanoHostSessionEffectRequest[];
       vaultBackend?: () => VaultBackend;
-      workspaceMutationAdmission?: WorkspaceMutationAdmission;
+      workspaceMutationAdmission?: (coreDb: ReturnType<typeof createFactoryCoreDb>) => WorkspaceMutationAdmission;
       policyInterception?: PolicyInterception;
       onImport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       materializationContext?: (input: {
@@ -2559,7 +2559,7 @@ describe('createConfiguredTurnExecutor', () => {
           }),
       ...(providerConfiguration === undefined ? {} : { readRuntimeConfig: providerConfiguration }),
       ...(options.workspaceMutationAdmission
-        ? { workspaceMutationAdmission: options.workspaceMutationAdmission }
+        ? { workspaceMutationAdmission: options.workspaceMutationAdmission(coreDb) }
         : {}),
       ...(options.policyInterception
         ? { policyInterception: () => options.policyInterception! }
@@ -2838,7 +2838,7 @@ describe('createConfiguredTurnExecutor', () => {
       const grantId = testEntityId('grant', randomUUID());
       const referenceId = testEntityId('vault', randomUUID());
       const effects: NanoHostSessionEffectRequest[] = [];
-      const mutation = new WorkspaceMutationAdmission();
+      let mutation!: WorkspaceMutationAdmission;
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const material = randomUUID() + randomUUID();
@@ -2869,7 +2869,7 @@ describe('createConfiguredTurnExecutor', () => {
         effects,
         localIdentity: true,
         wholeSandboxCleanup: fault === 'exact',
-        workspaceMutationAdmission: mutation,
+        workspaceMutationAdmission: (db) => (mutation = getControlStoreWorkerClient().workspaceMutations(db.dataRoot)),
         providerAccessShapes: [shape],
         vaultBackend: () => vault!.backend(),
         onImport: async (request) => {
@@ -3195,7 +3195,7 @@ describe('createConfiguredTurnExecutor', () => {
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
-    const mutation = new WorkspaceMutationAdmission();
+    const mutation = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     store.setWorkspaceMutationAdmission(mutation);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
     const vault = createVaultUnlockState({
@@ -3592,7 +3592,7 @@ describe('createConfiguredTurnExecutor', () => {
       const referenceId = testEntityId('vault', randomUUID());
       const grantId = testEntityId('grant', randomUUID());
       const label = `credential_capture_${mode}`;
-      const admission = new WorkspaceMutationAdmission();
+      let admission!: WorkspaceMutationAdmission;
       const interception = new PolicyInterception();
       const exportEntered = Promise.withResolvers<void>();
       const releaseExport = Promise.withResolvers<void>();
@@ -3648,7 +3648,7 @@ describe('createConfiguredTurnExecutor', () => {
       const f = await admitIdleSupplyResident(label, {
         effects,
         finishAfterLiveCheck: mode === 'unknown-restart',
-        workspaceMutationAdmission: admission,
+        workspaceMutationAdmission: (db) => (admission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot)),
         policyInterception: interception,
         vaultBackend: () => vault!.backend(),
         onImport: importResult,
@@ -7235,7 +7235,7 @@ describe('createConfiguredTurnExecutor', () => {
       const targetPath = `/sandbox/synthetic-${label}`;
       const referenceId = testEntityId('vault', label);
       const grantId = testEntityId('grant', label);
-      const admission = new WorkspaceMutationAdmission();
+      let admission!: WorkspaceMutationAdmission;
       const effects: NanoHostSessionEffectRequest[] = [];
       const pending: NonNullable<
         Parameters<WorkerGovernanceBackend['materialize']>[1]
@@ -7263,7 +7263,7 @@ describe('createConfiguredTurnExecutor', () => {
       const fixture = await admitIdleSupplyResident(label, {
         effects,
         finishAfterLiveCheck: true,
-        workspaceMutationAdmission: admission,
+        workspaceMutationAdmission: (db) => (admission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot)),
         vaultBackend: () => vault!.backend(),
         onImport: async (request) => ({
           state: 'imported',
@@ -16748,7 +16748,7 @@ describe('createConfiguredTurnExecutor', () => {
                   coreDb,
                   store,
                   dataRoot,
-                  workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+                  workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
                   repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
                 });
                 await expect(
@@ -23522,7 +23522,7 @@ describe('inert initial private Login exchange through the concrete backend sess
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
-      const mutation = new WorkspaceMutationAdmission();
+      const mutation = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       store.setWorkspaceMutationAdmission(mutation);
       const interception = new PolicyInterception();
       const vault = createVaultUnlockState({
@@ -26905,7 +26905,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const workspaceId = DEMO_WORKSPACE_ID;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
-  const mutation = new WorkspaceMutationAdmission();
+  const mutation = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   store.setWorkspaceMutationAdmission(mutation);
   const interception = new PolicyInterception();
   const vault = createVaultUnlockState({

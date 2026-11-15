@@ -88,6 +88,7 @@ import { closeWorkspaceProductReadHandles } from './storage/control-store-produc
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  type WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import {
   CONTROL_WORKER_VERSION,
@@ -109,7 +110,6 @@ import {
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { closeTestCoreDb, createTestCoreDb, createTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 // The real client retry owner uses timers/promises; route tests control only its clock.
 vi.mock('node:timers/promises', async (original) => {
@@ -232,7 +232,9 @@ async function createWorkerControlRouteFixture(
   token: string;
   workspaceMutationAdmission: WorkspaceMutationAdmission;
 }> {
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
+    coreDb.dataRoot
+  );
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   if (captureOn) store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
   const turn = await store.createTurn(
@@ -4462,7 +4464,7 @@ describe('worker control routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Rebuild worker session'

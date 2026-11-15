@@ -6,7 +6,10 @@ import { expect, it } from 'vitest';
 import { AutomationStore } from './lib/automation-store.js';
 import { FsStore } from './lib/store.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { insertExternalTriggerAdmission } from './storage/external-trigger-admissions.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -18,7 +21,6 @@ import {
   verifyWorkspaceDeletionClosure,
 } from './workspace-deletion-evidence.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 it('verifies extended descriptive closure bytes after reopen while inventory and requirements stay exact', async () => {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-closure-extensions-'));
@@ -103,7 +105,11 @@ it('retains the immutable external admission join in deletion evidence before it
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId: workspace.id });
     const pollThread = await store.createThread(workspace.id, 'Poll');
     const instant = '2026-10-18T00:00:00.000Z';
-    const schedules = new AutomationStore(coreDb, new WorkspaceMutationAdmission(), () => instant);
+    const schedules = new AutomationStore(
+      coreDb,
+      getControlStoreWorkerClient().workspaceMutations(dataRoot),
+      () => instant
+    );
     const schedule = await schedules.createAutomation(actorId, {
       workspaceId: workspace.id,
       threadId: pollThread.id,

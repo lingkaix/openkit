@@ -42,7 +42,10 @@ import {
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { retrieveWorkspaceKnowledge } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -80,7 +83,6 @@ import {
   ensureUserQuickChatWorkspace,
   recordWorkspaceOwnerMembership,
 } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   beginWorkspaceDeletion,
   completeWorkspaceDeletion,
@@ -107,7 +109,7 @@ it.each(['workspace', 'server-admin'] as const)(
         workspaceIds: scope === 'workspace' ? [workspaceId] : [],
         expiresAt: '2999-01-01T00:00:00.000Z',
       });
-      const admission = new WorkspaceMutationAdmission();
+      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const app = createApp({
         coreDb,
         dataRoot,
@@ -219,7 +221,7 @@ it.each([
       workspaceIds: phase === 'requested' ? [workspace.id] : [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     gateway = createDefaultWorkerMcpGateway(coreDb);
     const closeWorkspace = gateway.closeWorkspace.bind(gateway);
     const heldClose = new Promise<void>((resolve) => {
@@ -321,7 +323,7 @@ it('resumes an exact fenced request after its registry transition without ordina
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       coreDb,
       dataRoot,
@@ -1629,7 +1631,7 @@ it('terminates a pre-transition deletion request when its original owner is disa
     coreDb.sqlite.transaction(() =>
       disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
     )();
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 
     createApp({
       coreDb,
@@ -1685,7 +1687,7 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     });
     const requestId = '00000000-0000-4000-8000-000000000023';
     const deletingRequestId = '00000000-0000-4000-8000-000000000025';
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       coreDb,
       dataRoot,
@@ -1832,7 +1834,7 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
     coreDb.sqlite.transaction(() =>
       disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
     )();
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 
     createApp({
       coreDb,
@@ -1911,7 +1913,7 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       stagingRelativePath: workspaceDeletionStagingRelativePath(deletedWorkspace.id, requestId),
       terminalAuditEventId: testEntityId('aud', 'workspace-delete-audit'),
     });
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 
     createApp({
       coreDb,
@@ -2839,7 +2841,7 @@ async function nativeDeletionRouteFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const actorId = ensureLocalUser(coreDb);
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const store = new FsStore({ dataRoot });
   store.setWorkspaceMutationAdmission(gate);
   const workspace = await store.createWorkspace('Native deletion route');

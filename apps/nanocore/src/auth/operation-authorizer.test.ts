@@ -39,7 +39,10 @@ import { registerRemoteMcpRoutes } from '../remote-mcp-routes.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -55,7 +58,6 @@ import {
   writeWorkspaceDeletionRequest,
 } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   acceptWorkspaceInvitation,
   beginWorkspaceDeletion,
@@ -218,7 +220,7 @@ async function createFixture(prepared?: PreparedAuthBase) {
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;

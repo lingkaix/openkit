@@ -7,13 +7,13 @@ import { expect, it, vi } from 'vitest';
 import { projectAgentCatalogEntries } from '../agents/catalog-projection.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createOperationInvocation } from '../operation-composition.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools, type GoalWorkerCandidate } from './goal-coordinator.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
 
@@ -61,7 +61,7 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
     coreDb,
     store,
     repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
   });
   const tools = createGoalTools({
     store,

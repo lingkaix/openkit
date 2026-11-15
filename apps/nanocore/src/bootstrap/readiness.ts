@@ -3,11 +3,11 @@ import { resolve } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
 import { WorkspaceIdSchema } from '@openkit/protocol';
 import { OperationError } from '../operation-error-core.js';
-import type { CoreDb } from '../storage/db.js';
 import type {
   WorkspaceFrozenAdmission,
   WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
+} from '../storage/control-store-worker-client.js';
+import type { CoreDb } from '../storage/db.js';
 
 /** A refused authority or unavailable projection; never persisted or used as replacement truth. */
 export interface ScopeAdmissionFailure {

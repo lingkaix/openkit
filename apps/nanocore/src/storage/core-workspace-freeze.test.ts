@@ -7,8 +7,10 @@ import { expect, it, vi } from 'vitest';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import { publishWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 
 it('ORACLE S7 refuses logical Workspace effects in Core while sibling Core publication stays usable', async () => {
@@ -22,7 +24,7 @@ it('ORACLE S7 refuses logical Workspace effects in Core while sibling Core publi
     const ownerUserId = ensureLocalUser(coreDb);
     const target = await store.createWorkspace('Frozen target');
     const sibling = await store.createWorkspace('Unfrozen sibling');
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     store.setWorkspaceMutationAdmission(gate);
     const before = coreDb.sqlite
       .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')

@@ -10,8 +10,8 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -26,7 +26,7 @@ afterEach(async () => {
 /** Creates a real server-mode archive owner with an ordinary canonical-user session. */
 async function archiveFixture(
   fileAdmission?: FileStorageAdmission,
-  workspaceMutationAdmission = new WorkspaceMutationAdmission()
+  workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot)
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-archive-admission-'));
   const coreDb = openCoreDb(dataRoot);

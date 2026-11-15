@@ -41,7 +41,6 @@ import { createDemoStore, DEMO_THREAD_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   buildFilesystemWorkspaceChangeSet,
   createFilesystemSnapshotManifest,
@@ -349,7 +348,7 @@ async function fixture(
     workspaceIds: options.administrator ? [] : ['ws_00000000-0000-7000-8000-000000000001'],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const mutationAdmission = new WorkspaceMutationAdmission();
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const app = createApp({
     coreDb,
     store,

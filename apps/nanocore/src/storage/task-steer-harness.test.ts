@@ -40,7 +40,7 @@ import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.j
 import { disposeTestStore } from '../test-support/store.js';
 import { createThreadOperationImplementations } from '../thread-operation-implementations.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -56,7 +56,7 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const manifest = createTestAgentSetup({
     adapter: runtime.adapter,
     imageRef: `sha256:${'a'.repeat(64)}`,
@@ -515,7 +515,7 @@ describe('Task steer through the existing native Harness slot', () => {
         coreDb: f.coreDb,
         store: f.store,
         turnExecutor: f.native.executor,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.root),
         inflightCommands: new WeakMap(),
         repositoryWorkspaceDb: (workspaceId: string) => openWorkspaceDb(f.root, workspaceId),
       };

@@ -85,6 +85,7 @@ import {
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
@@ -121,7 +122,6 @@ import {
   readWorkspaceMaterialSensitivity,
   selectQueuedThreadMaterialRevision,
 } from '../workspace-materials.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   AgentEnvironmentSnapshotReadError,
   recordAgentEnvironmentPackageSnapshot,

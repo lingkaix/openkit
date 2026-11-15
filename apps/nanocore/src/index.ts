@@ -152,7 +152,6 @@ import { closeRevokedCredentialBindings } from './vault/vault-operation-implemen
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { reconcileWorkerMcpItems } from './worker-mcp-routes.js';
 import { ensureUserQuickChatWorkspace } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const dataRoot = resolveDataRoot(process.env);
 const bootId = createBootId();
@@ -190,7 +189,7 @@ let runRecoveryMaintenance: SchedulerAttemptMaintenanceInput['runRecoveryMainten
 let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
-const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 // Recovery can stage files before the live configuration manager is assembled.
 let readFileReserveBytes = () =>
   runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;

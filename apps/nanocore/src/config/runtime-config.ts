@@ -48,16 +48,16 @@ import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
+import type {
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+} from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   runtimePolicyIdentityForSnapshot,
   sameRuntimePolicyIdentity,
 } from '../storage/runtime-policy-publication.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../workspace-mutation-admission.js';
 import { loadAgentManifests } from './agents-loader.js';
 import { parseJsoncObject } from './jsonc.js';
 import { loadModelCatalog } from './model-catalog.js';

@@ -23,6 +23,7 @@ import { closeWorkspaceProductReadHandles } from './storage/control-store-produc
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  type WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
@@ -31,7 +32,6 @@ import { testEntityId } from './test-support/entity-ids.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { workspaceMembershipDecisionFixture } from './test-support/resource-policy.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   getWorkspaceInvitation,
   getWorkspaceMember,
@@ -159,7 +159,7 @@ async function createFixture(): Promise<RouteFixture> {
   const actorState: ActorState = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
   };
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
     context.set('actor', actorState.current);

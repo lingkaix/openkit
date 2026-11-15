@@ -37,7 +37,6 @@ import {
   titleCalls,
 } from '../test-support/p2-oracle-fixture.js';
 import { asPiAiGatewayClientDouble } from '../test-support/pi-ai-gateway-client-double.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const open: TitleInstallation[] = [];
 const GENERATED = 'Generated title that must not stick';
@@ -775,7 +774,7 @@ async function admitTask(installation: TitleInstallation) {
       return connection;
     },
     inflightCommands,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
     goalId: goal.goalId,
     coordinatorTurnId: coordinator.id,
     startWorker: async (input) => {

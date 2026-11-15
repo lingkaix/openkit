@@ -8,12 +8,12 @@ import { createBetterAuth } from './auth/better-auth.js';
 import { refuseScope } from './bootstrap/readiness.js';
 import { projectOperationError } from './operation-error.js';
 import { admitOperation } from './operation-resolvers.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 describe('quarantined Workspace native admission', () => {
   it('diagnoses only an eligible viewer and preserves the outsider response before history reads', async () => {
@@ -33,7 +33,7 @@ describe('quarantined Workspace native admission', () => {
     const workspace = await store.createWorkspace('Unreadable authority');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId });
     const thread = await store.createThread(workspace.id, 'Do not disclose this history');
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const invoke = (userId: string) =>
       admitOperation(
         OPERATION_DEFINITIONS['thread.read'],

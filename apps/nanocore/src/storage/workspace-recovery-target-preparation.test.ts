@@ -33,7 +33,6 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import {
@@ -279,7 +278,7 @@ async function fixture() {
   await shutdownControlStoreWorkerClient();
   const selectedCore = openCoreDb(dataRoot);
   const lock = acquireDataRootLock(dataRoot, { bootId: randomUUID() });
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const freeze = gate.tryFreeze(DEMO_WORKSPACE_ID, () => []);
   if (freeze.status !== 'frozen') throw new Error('The actual target freeze was not acquired.');
   owners.push(() => {
@@ -1028,7 +1027,7 @@ describe('ORACLE S6 exact recovery authority', () => {
       expect(original).toMatchObject({ state: 'prepared', revision: 1, purpose: 'backup' });
       const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
       const privateCandidate = inventoryRegularFiles(original.candidate_ref);
-      const bootGate = new WorkspaceMutationAdmission();
+      const bootGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       restoreWorkspaceRecoveryAdmission(f.owner.core, bootGate);
       expect(bootGate.isClosed(f.input.workspaceId)).toBe(true);
       expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
@@ -1122,7 +1121,7 @@ describe('ORACLE S6 exact recovery authority', () => {
       })
     ).rejects.toBe(stop);
     const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(f.owner.core.dataRoot);
     restoreWorkspaceRecoveryAdmission(f.owner.core, gate);
     const origin = {
       admissionId: original.admission_id,

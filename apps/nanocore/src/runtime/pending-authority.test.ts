@@ -36,7 +36,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import { recordAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import {
@@ -648,7 +647,7 @@ async function capturedFixture() {
     coreDb: f.coreDb,
     store: f.store,
     interception,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.coreDb.dataRoot),
     workerMcpGateway: gateway,
     workerControlGateway: {
       authenticatePackageToken: () => environmentPackage,

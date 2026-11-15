@@ -6,7 +6,10 @@ import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -14,7 +17,6 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   createOpenkitGenerativeMcpSupply,
   dispatchOpenkitGenerativeTool,
@@ -133,7 +135,7 @@ describe('openkit-generative MCP', () => {
     const context = {
       coreDb,
       packageSnapshotId: 'package_test',
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       protocolRequestId: randomUUID(),
       store,
       inflightCommands: new WeakMap(),
@@ -282,7 +284,7 @@ describe('openkit-generative MCP', () => {
     const context = {
       coreDb,
       packageSnapshotId: 'package_test',
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       protocolRequestId: randomUUID(),
       store,
       inflightCommands: new WeakMap(),

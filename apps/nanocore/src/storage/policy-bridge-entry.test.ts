@@ -46,7 +46,6 @@ import { createVaultReference } from '../vault/vault-references.js';
 import { createVaultUseAuditedBackend } from '../vault/vault-use-audited-backend.js';
 import { getVaultInjectionPlan } from '../vault-injection-plans.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { closeWorkspaceProductReadHandles, readProduct } from './control-store-product-records.js';
 import {
   ControlStoreWorkerError,
@@ -720,7 +719,7 @@ async function fixture() {
     repositoryWorkspaceDb: (id) => createTestWorkspaceDb(root, id),
     runtimeConfigManager: manager,
     policyInterception: new PolicyInterception(),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(root),
     inflightCommands: new WeakMap(),
     turnExecutor: placement as TurnExecutor,
   });

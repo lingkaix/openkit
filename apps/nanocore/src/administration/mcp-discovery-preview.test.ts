@@ -15,7 +15,10 @@ import type { Actor } from '../auth/identity.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -26,7 +29,6 @@ import { createVaultUnlockState } from '../vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionReceipts } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 // F1 fault-owner adapter: the same real after-INSERT rollback seam as the sealed
 // standalone-Audit observer, scoped to this original preview identity and otherwise disarmed.
@@ -136,7 +138,7 @@ function fixture() {
     dataRoot,
     store,
     repositoryWorkspaceDb,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     inflightCommands: new WeakMap(),
     vaultUnlockState,
   });

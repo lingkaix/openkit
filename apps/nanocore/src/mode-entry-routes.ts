@@ -182,6 +182,7 @@ import {
   type FileStorageAdmission,
 } from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
+import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
@@ -189,7 +190,6 @@ import {
   isCurrentAgentSessionStatus,
   verifyTurnFileInputs,
 } from './storage/workspace-file-records.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Shared absolute deadline for an ordinary Assistant run, including summaries and its answer. */
 const ConversationCommandBodySchema = SubmitConversationResponseSchema.omit({

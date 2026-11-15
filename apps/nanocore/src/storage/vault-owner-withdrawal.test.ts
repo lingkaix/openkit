@@ -39,9 +39,11 @@ import {
   getVaultInjectionReceipt,
 } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { getWorkspaceMember } from '../workspace-sharing.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import * as databases from './db.js';
 import { openCoreDb, openUserDb, openWorkspaceDb, type UserDb, type WorkspaceDb } from './db.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -101,7 +103,7 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
   mkdirSync(join(root, 'config'), { recursive: true });
   writeFileSync(join(root, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
   const manager = createRuntimeConfigManager({ dataRoot: root });
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   store.setWorkspaceMutationAdmission(admission);
   const closeRuntime = vi.fn(async (_grantIds: readonly string[]) => undefined);
   const participant = vi.fn(

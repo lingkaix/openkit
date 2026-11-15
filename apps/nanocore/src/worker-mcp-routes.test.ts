@@ -209,7 +209,6 @@ import {
   reviewCapturedMcpPolicy,
 } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
 
 /** Records the admission and lease that own a manually resolved MCP worker package. */
@@ -380,7 +379,7 @@ describe('worker MCP routes', () => {
         workerControlGateway: {
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       // Raw Worker requests keep output compilation inside the actual Gateway SDK client.
       const call = async (id: number, name: string) => {
@@ -784,7 +783,7 @@ describe('worker MCP routes', () => {
         store,
         interception,
         vaultUnlockState,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         workerControlGateway: {
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
@@ -1266,7 +1265,7 @@ describe('worker MCP routes', () => {
         sessionAuthority: authority,
         fileAdmission,
       });
-      const admission = new WorkspaceMutationAdmission();
+      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const gateway = createDefaultWorkerMcpGateway(coreDb);
       const client = new Client({ name: 'capture-wait', version: '1.0.0' });
       let nativeClient: ReturnType<typeof connectHttp2> | undefined;
@@ -1613,7 +1612,7 @@ describe('worker MCP routes', () => {
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     });
     const rpcErrors: unknown[] = [];
     const nativeRequests: { update?: Request } = {};
@@ -2186,7 +2185,7 @@ describe('worker MCP routes', () => {
         workerMcpGateway,
         workerControlGateway: native.workerControlGateway,
         runtimeConfig: () => snapshot,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       const client = new Client({ name: 'work-peers', version: '1.0.0' });
@@ -2911,7 +2910,7 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const threadId = 'th_00000000-0000-7000-8000-000000000001';
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-      const mutation = new WorkspaceMutationAdmission();
+      const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       store.setWorkspaceMutationAdmission(mutation);
       const setup = createTestAgentSetup({
         mcpIds: selected ? ['openkit-security'] : [],
@@ -3079,7 +3078,7 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const threadId = 'th_00000000-0000-7000-8000-000000000001';
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-      const mutation = new WorkspaceMutationAdmission();
+      const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       store.setWorkspaceMutationAdmission(mutation);
       const setup = createTestAgentSetup({
         mcpIds: ['openkit-security'],
@@ -3336,7 +3335,7 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const threadId = 'th_00000000-0000-7000-8000-000000000001';
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-      const mutation = new WorkspaceMutationAdmission();
+      const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       store.setWorkspaceMutationAdmission(mutation);
       const selected = scenario !== 'source-unselected';
       const setup = createTestAgentSetup({
@@ -4638,7 +4637,7 @@ describe('worker MCP routes', () => {
         store,
         workerMcpGateway,
         workerControlGateway: native.workerControlGateway,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       return app;
     };
@@ -5853,7 +5852,8 @@ describe('worker MCP routes', () => {
                       vaultUnlockState,
                       workerControlGateway: native.workerControlGateway,
                       runtimeConfig: () => snapshot,
-                      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+                      workspaceMutationAdmission:
+                        getControlStoreWorkerClient().workspaceMutations(dataRoot),
                     },
                   }),
               });
@@ -6329,7 +6329,7 @@ describe('worker MCP routes', () => {
       listTools,
     } satisfies WorkerMcpGateway;
     const app = new Hono();
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     registerWorkerMcpRoutes({
       app,
       coreDb,
@@ -7394,7 +7394,7 @@ describe('worker MCP routes', () => {
         vaultUnlockState,
         workerControlGateway,
         workerMcpGateway,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       const client = new Client({ name: 'vault-route-test', version: '1.0.0' });
       const transport = new StreamableHTTPClientTransport(
@@ -8663,7 +8663,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       workerControlGateway: {
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     });
     return app;
   };

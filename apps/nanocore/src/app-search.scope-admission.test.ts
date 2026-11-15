@@ -6,13 +6,15 @@ import { expect, it, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { refuseScope } from './bootstrap/readiness.js';
 import { admitOperation } from './operation-resolvers.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 it.each(['before-admission', 'after-admission'] as const)(
   'searches healthy authorized siblings without reading quarantined or unauthorized Workspaces (%s)',
@@ -51,7 +53,12 @@ it.each(['before-admission', 'after-admission'] as const)(
         OPERATION_DEFINITIONS['app.search'],
         input,
         { kind: 'public', actor: { kind: 'session', userId } },
-        { dataRoot, coreDb, store, workspaceMutationAdmission: new WorkspaceMutationAdmission() }
+        {
+          dataRoot,
+          coreDb,
+          store,
+          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
+        }
       );
       expect(admitted.context.scope).toMatchObject({ kind: 'authorized-workspace-set' });
       if (admitted.context.scope.kind !== 'authorized-workspace-set')

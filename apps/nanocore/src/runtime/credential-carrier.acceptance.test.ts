@@ -77,7 +77,6 @@ import { listVaultUseRecords } from '../vault/vault-use-records.js';
 import { listVaultInjectionPlans } from '../vault-injection-plans.js';
 import * as receipts from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { readRuntimeCleanupView } from './administrator-cleanup-view.js';
 import {
   type ResolvedAgentEnvironmentRuntimeFileCredential,
@@ -111,7 +110,7 @@ async function fixture(
   const coreDb = createTestCoreDb(root);
   const userId = ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot: root });
-  const mutationAdmission = new WorkspaceMutationAdmission();
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   store.setWorkspaceMutationAdmission(mutationAdmission);
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
   const material = randomBytes(48).toString('base64url');

@@ -94,7 +94,6 @@ import { createTestStore, openTestNativeWorkspace } from '../test-support/store.
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { listWorkspaceDeletionRequests } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   acceptWorkspaceInvitation,
   createWorkspaceInvitation,
@@ -110,6 +109,7 @@ import type { ControlTerminalTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
 } from './control-store-worker-client.js';
 import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
@@ -652,7 +652,7 @@ async function fixture() {
   await openTestNativeWorkspace(nativeWorkspaceDb);
   nativeWorkspaceDb.sqlite.close();
   const ownerId = base.ownerId;
-  const mutationAdmission = new WorkspaceMutationAdmission();
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const stagingParent = join(root, 'staging');
   mkdirSync(stagingParent);
   const policy = {
@@ -994,7 +994,7 @@ describe('C-a snapshot authoritative blockers', () => {
         source = {
           ...f.source,
           store: new FsStore({ dataRoot: f.dataRoot }),
-          mutationAdmission: new WorkspaceMutationAdmission(),
+          mutationAdmission: getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
         };
         expect(readBlockers({ ...source, workspaceId })).toEqual([]);
         f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
@@ -1333,7 +1333,7 @@ describe('C-a manual recovery closure after restart', () => {
       f.coreDb.sqlite.close();
       const coreDb = openCoreDb(f.dataRoot);
       databaseHandles.push(coreDb);
-      const mutationAdmission = new WorkspaceMutationAdmission();
+      const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       const store = new FsStore({ dataRoot: f.dataRoot });
       store.setWorkspaceMutationAdmission(mutationAdmission);
       // Existing recovery census owns quarantine and the reconstructed process-local gate.
@@ -2773,10 +2773,12 @@ describe('C-a capture and existing deletion ownership', () => {
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
     const store = new FsStore({ dataRoot: f.dataRoot });
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     const input = { ...f.input(), source: { ...f.source, coreDb, store, mutationAdmission } };
     expect(readBlockers({ coreDb, store, workspaceId }).length).toBeGreaterThan(0);
-    await expect(createWorkspaceBackup(input)).rejects.toMatchObject({ code: 'workspace_blocked' });
+    // Native disposal is not a new logical owner and cannot discard the unfinished deletion fence.
+    expect(mutationAdmission).toBe(f.mutationAdmission);
+    await expect(createWorkspaceBackup(input)).rejects.toMatchObject({ code: 'workspace_frozen' });
     expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual(requests);
     expect(getWorkspaceRegistryLifecycleFact(coreDb, workspaceId)).toEqual(deletion.registry);
     const db = openWorkspaceDb(f.dataRoot, workspaceId);
@@ -2785,7 +2787,8 @@ describe('C-a capture and existing deletion ownership', () => {
     } finally {
       db.sqlite.close();
     }
-    expect(mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
+    expect(mutationAdmission.enter(workspaceId)).toBeNull();
   });
 });
 
@@ -2926,7 +2929,7 @@ describe('C-b daily snapshot policy and retention', () => {
       dataRoot,
       store,
       coreDb,
-      mutationAdmission: new WorkspaceMutationAdmission(),
+      mutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       policy: { admission: new FileStorageAdmission(root, () => 0n) },
     };
     task.meta.freshWorkspaceSetupMs = performance.now() - setupStarted;
@@ -3094,7 +3097,7 @@ describe('C-b daily snapshot policy and retention', () => {
       instructionReference: 'test:automatic-snapshot-retention',
     });
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
-    const mutationAdmission = new WorkspaceMutationAdmission();
+    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const stagingParent = join(root, 'staging');
     mkdirSync(stagingParent);
     const policy = {
@@ -3491,7 +3494,7 @@ describe('C-a independent sealed generations', () => {
       databaseHandles.push(reopened);
       expect(readRecoveryExecution(reopened, input.backupId)).toEqual(retained);
       expect(readFileSync(sourceFile)).toEqual(sourceBytes);
-      const coldAdmission = new WorkspaceMutationAdmission();
+      const coldAdmission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
       restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
       expect(coldAdmission.enter(workspaceId)).toBeNull();
     } finally {
@@ -3519,7 +3522,7 @@ describe('C-a independent sealed generations', () => {
           ...f.source,
           coreDb,
           store: new FsStore({ dataRoot: f.dataRoot }),
-          mutationAdmission: new WorkspaceMutationAdmission(),
+          mutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
         };
       }
       // Neither branch performs a product mutation or native open to warm the source.
@@ -3588,6 +3591,107 @@ describe('C-a independent sealed generations', () => {
     ).toEqual([]);
     expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
   });
+
+  it('joins admitted sealed-Turn display preparation through its real native ACK before the capture cut', async () => {
+    const f = await fixture();
+    const turn = await f.store.createTurn(
+      workspaceId,
+      DEMO_THREAD_ID,
+      'Sealed display preparation',
+      {
+        kind: 'user',
+        id: f.ownerId,
+      }
+    );
+    const item = await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'status',
+      status: 'completed',
+      level: 'info',
+      text: 'Original sealed bytes',
+      summary: 'Original sealed display',
+      title: 'Before preparation',
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    });
+    await f.store.completeTurn(turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    expect(readBlockers({ ...f, workspaceId })).toEqual([]);
+    const client = getControlStoreWorkerClient();
+    const target = `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`;
+    const prepareEntered = Promise.withResolvers<void>();
+    const resumePreparation = Promise.withResolvers<void>();
+    const drainEntered = Promise.withResolvers<void>();
+    const original = client.runTurnPublication.bind(client);
+    let held = false;
+    const preparation = vi
+      .spyOn(client, 'runTurnPublication')
+      .mockImplementation((database, turns, input, prepare, ...rest) =>
+        original(
+          database,
+          turns,
+          input,
+          async (owned) => {
+            if (database === target && turns.includes(turn.id) && !held) {
+              held = true;
+              prepareEntered.resolve();
+              await resumePreparation.promise;
+            }
+            return prepare(owned);
+          },
+          ...rest
+        )
+      );
+    const posted = vi.spyOn(Worker.prototype, 'postMessage');
+    let published = false;
+    const publication = f.store
+      .refreshDisplayProjectionItem(item.id, { title: 'After admitted preparation' })
+      .then((value) => {
+        published = true;
+        return value;
+      });
+    void publication.catch(() => undefined);
+    const originalPhase = captureWorkerProbe.onPhase;
+    const cut = holdCapturePhase('db-backup', async () => {
+      expect(published).toBe(true);
+    });
+    const phase = captureWorkerProbe.onPhase!;
+    captureWorkerProbe.onPhase = (worker, message) => {
+      if (message.phase === 'drain') drainEntered.resolve();
+      return phase(worker, message);
+    };
+    let capture: ReturnType<typeof createWorkspaceBackup> | undefined;
+    try {
+      await prepareEntered.promise;
+      expect(posted.mock.calls.some(([message]) => message?.database === target)).toBe(false);
+      capture = createWorkspaceBackup(f.input());
+      void capture.catch(() => undefined);
+      await Promise.race([
+        drainEntered.promise,
+        capture.then(() => {
+          throw new Error('Capture skipped its real drain.');
+        }),
+      ]);
+      expect(published).toBe(false);
+      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(f.mutationAdmission.isClosed(workspaceId, 'capture')).toBe(false);
+      resumePreparation.resolve();
+      expect((await publication).title).toBe('After admitted preparation');
+      expect((await capture).disposition).toBe('sealed');
+    } finally {
+      resumePreparation.resolve();
+      preparation.mockRestore();
+      cut.mockRestore();
+      await Promise.allSettled([publication, ...(capture ? [capture] : [])]);
+      posted.mockRestore();
+      captureWorkerProbe.onPhase = originalPhase;
+    }
+  }, 120_000);
 
   it('drains a real inline terminal ACK into the target cut while refusing new target publication and preserving sibling ACKs', async () => {
     const f = await fixture();
@@ -5589,7 +5693,7 @@ describe('C-b automatic capture origin after restart', () => {
     f.coreDb.sqlite.close();
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     const generations = tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId));
     restoreWorkspaceRecoveryAdmission(coreDb, gate);
     const abandoned = inspectCapture(inspectDb, workspaceId, input.backupId);
@@ -5658,7 +5762,7 @@ describe('C-b automatic capture origin after restart', () => {
     f.coreDb.sqlite.close();
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     restoreWorkspaceRecoveryAdmission(coreDb, gate);
     expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(capture);
     expect(tree(input.bundleRoot)).toEqual(generation);
@@ -5708,7 +5812,7 @@ describe('C-b automatic capture origin after restart', () => {
     refuseScope(f.dataRoot, databaseFailure);
     const capture = inspectCapture(inspectDb, workspaceId, input.backupId);
     const before = tree(input.bundleRoot);
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     restoreWorkspaceRecoveryAdmission(coreDb, gate);
     expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual(databaseFailure);
     expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(capture);

@@ -5,7 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Worker as NativeWorker, WorkerOptions } from 'node:worker_threads';
-import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { expect, it, onTestFinished, vi } from 'vitest';
 import {
@@ -29,7 +28,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { createThread, updateThread } from './thread-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const commitBoundary = vi.hoisted(() => ({
   gate: undefined as SharedArrayBuffer | undefined,
@@ -139,7 +137,7 @@ it('admits Server history only with current Server authority and never through a
   const invoke = createOperationInvocation({
     coreDb,
     store,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   });
   const session = {
     kind: 'public' as const,

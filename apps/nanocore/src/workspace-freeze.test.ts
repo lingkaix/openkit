@@ -5,7 +5,10 @@ import * as schemas from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { bindMcpCaptureAdmission, enterMcpCaptureCall } from './runtime/worker-mcp-capture.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
+import {
+  getControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
+} from './storage/control-store-worker-client.js';
 
 const workspaceId = allocateEntityId('ws');
 const siblingId = allocateEntityId('ws');
@@ -365,8 +368,8 @@ describe('Workspace freeze public contract', () => {
 // the real MCP capture participant and ordinary publishers share the same exclusion.
 describe('ORACLE S7 preparation cut and unknown exclusion', () => {
   it('drains admitted Worker closeout before the cut while refusing actual MCP publication', async () => {
-    const gate = new WorkspaceMutationAdmission();
     const root = mkdtempSync(join(tmpdir(), 'oracle-s7-publishers-'));
+    const gate = getControlStoreWorkerClient().workspaceMutations(root);
     onTestFinished(() => rmSync(root, { recursive: true, force: true }));
     bindMcpCaptureAdmission(root, gate);
     const entered = Promise.withResolvers<void>();

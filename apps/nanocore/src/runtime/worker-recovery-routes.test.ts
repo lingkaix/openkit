@@ -6,6 +6,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -13,7 +14,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 describe('worker recovery routes', () => {
   it('does not discover or open unauthorized Workspaces', async () => {
@@ -36,7 +36,7 @@ describe('worker recovery routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       repositoryWorkspaceDb,
@@ -108,7 +108,7 @@ describe('worker recovery routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       repositoryWorkspaceDb,

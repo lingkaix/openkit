@@ -11,6 +11,7 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -19,7 +20,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const receiptFault = vi.hoisted(() => ({
   gate: new SharedArrayBuffer(4),
@@ -138,7 +138,7 @@ describe('scheduler admission routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
@@ -250,7 +250,7 @@ describe('scheduler admission routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
@@ -357,7 +357,7 @@ describe('scheduler admission routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,

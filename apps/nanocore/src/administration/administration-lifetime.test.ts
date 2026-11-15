@@ -18,14 +18,16 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { AdministrationEnvironmentTools } from './administration-tools.js';
 
 type ModelResponse = Awaited<ReturnType<LLMGatewayProviderDispatcher['createResponses']>>;
@@ -322,7 +324,7 @@ async function fixture(
     gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
   });
   const inflightCommands = new WeakMap();
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const runtimeConfig = () => manager.current();
   const repositoryWorkspaceDb = (id: string) => {
     const db = openWorkspaceDb(dataRoot, id);

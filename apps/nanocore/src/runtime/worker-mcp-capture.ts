@@ -1,5 +1,8 @@
 import { resolve } from 'node:path';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import {
+  getControlStoreWorkerClient,
+  type WorkspaceMutationAdmission,
+} from '../storage/control-store-worker-client.js';
 
 /** The Gateway remains the physical process/close owner; these are its capture joins. */
 interface McpCaptureParticipant {
@@ -12,7 +15,7 @@ interface OriginalMcpCall {
   releaseAdmission: (() => void) | null;
 }
 interface McpCaptureRoot {
-  admission?: WorkspaceMutationAdmission;
+  readonly admission: WorkspaceMutationAdmission;
   participants: Set<McpCaptureParticipant>;
   calls: Set<OriginalMcpCall>;
 }
@@ -22,7 +25,11 @@ function rootFor(dataRoot: string): McpCaptureRoot {
   const key = resolve(dataRoot);
   let root = roots.get(key);
   if (!root) {
-    root = { participants: new Set(), calls: new Set() };
+    root = {
+      admission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
+      participants: new Set(),
+      calls: new Set(),
+    };
     roots.set(key, root);
   }
   return root;
@@ -34,14 +41,8 @@ export function bindMcpCaptureAdmission(
   admission: WorkspaceMutationAdmission
 ): void {
   const root = rootFor(dataRoot);
-  if (
-    root.admission &&
-    root.admission !== admission &&
-    (root.calls.size !== 0 ||
-      [...root.participants].some((participant) => participant.hasWorkspaceData()))
-  )
-    throw new Error('MCP Workspace mutation owner changed.');
-  root.admission = admission;
+  if (root.admission !== admission)
+    throw new Error('MCP Workspace mutations must use their native scope owner.');
   for (const call of root.calls) {
     call.releaseAdmission ??= admission.enterLatePublisher(call.workspaceId, 'mcp-workspace-data');
   }
@@ -62,9 +63,8 @@ export function registerMcpCaptureParticipant(
 /** Reserves the original complete exchange before it can create canonical files or spawn. */
 export function enterMcpCaptureCall(dataRoot: string, workspaceId: string): (() => void) | null {
   const root = rootFor(dataRoot);
-  const releaseAdmission =
-    root.admission?.enterLatePublisher(workspaceId, 'mcp-workspace-data') ?? null;
-  if (root.admission && !releaseAdmission) return null;
+  const releaseAdmission = root.admission.enterLatePublisher(workspaceId, 'mcp-workspace-data');
+  if (!releaseAdmission) return null;
   const settled = Promise.withResolvers<void>();
   const call: OriginalMcpCall = { workspaceId, done: settled.promise, releaseAdmission };
   root.calls.add(call);

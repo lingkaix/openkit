@@ -1384,7 +1384,7 @@ it.each([
     const { Worker } = await import('node:worker_threads');
     const { FsStore } = await import('../lib/store.js');
     const { createOperationInvocation } = await import('../operation-composition.js');
-    const { WorkspaceMutationAdmission } = await import('../workspace-mutation-admission.js');
+    const { WorkspaceMutationAdmission } = await import('./control-store-worker-client.js');
     const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
     const { listVaultGrants } = await import('../vault/vault-grants.js');
     const { listSqliteAuditEvents } = await import('../audit-events.js');
@@ -1425,7 +1425,7 @@ it.each([
         applyScopedMigrations(db);
         return db;
       },
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.db.dataRoot),
       inflightCommands: new WeakMap(),
       vaultUnlockState: unlock,
     });
@@ -1689,7 +1689,7 @@ async function nativeLoginFixture() {
   const { createRuntimeConfigManager } = await import('../config/runtime-config.js');
   const { PolicyInterception } = await import('../policy/interception.js');
   const { createOperationInvocation } = await import('../operation-composition.js');
-  const { WorkspaceMutationAdmission } = await import('../workspace-mutation-admission.js');
+  const { WorkspaceMutationAdmission } = await import('./control-store-worker-client.js');
   const { createVaultUnlockState } = await import('../vault/vault-unlock-state.js');
   const { openUserDb, openWorkspaceDb } = await import('./db.js');
   const { applyScopedMigrations } = await import('./migrate.js');
@@ -1729,7 +1729,7 @@ async function nativeLoginFixture() {
     store: new FsStore({ dataRoot: f.db.dataRoot }),
     repositoryUserDb: (id) => openUserDb(f.db.dataRoot, id),
     repositoryWorkspaceDb: (id) => openWorkspaceDb(f.db.dataRoot, id),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.db.dataRoot),
     inflightCommands: new WeakMap(),
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot: f.db.dataRoot }),
     policyInterception: new PolicyInterception({

@@ -57,7 +57,10 @@ import type { WorkerControlGateway } from './runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from './runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
@@ -70,7 +73,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
 
 describe('shared family contract', () => {
@@ -204,7 +206,9 @@ describe('shared family contract', () => {
       coreDb: f.coreDb,
       store: f.store,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+        f.coreDb.dataRoot
+      ),
       conversationService: {
         submit: async (_store, input) => {
           if (input.input === 'first') {
@@ -552,7 +556,9 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     app: mcp,
     coreDb: f.coreDb,
     store: f.store,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+      f.command.dataRoot
+    ),
     runtimeConfig: () =>
       createInMemoryRuntimeConfigSnapshot({
         dataRoot: f.command.dataRoot,
@@ -641,7 +647,9 @@ describe('operation projection cutover', () => {
                 actor: f.command.actor,
                 inflightCommands: new WeakMap(),
                 packageSnapshotId: 'package_fixture',
-                workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+                workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+                  db.dataRoot
+                ),
                 scope: {
                   workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
                   threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -817,7 +825,9 @@ describe('operation projection cutover', () => {
       const owners = {
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          f.command.dataRoot
+        ),
       };
       const invoke = createOperationInvocation(owners);
       await expect(
@@ -950,7 +960,9 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          f.command.dataRoot
+        ),
       });
       const context = {
         kind: 'public' as const,
@@ -1022,7 +1034,9 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          f.command.dataRoot
+        ),
       });
       const selector = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1069,7 +1083,9 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          f.command.dataRoot
+        ),
       });
       const context = {
         kind: 'worker' as const,
@@ -1136,7 +1152,9 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          f.command.dataRoot
+        ),
       });
       const context = {
         kind: 'public' as const,
@@ -1713,7 +1731,9 @@ describe('Workspace Thread Turn projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          f.coreDb.dataRoot
+        ),
       });
       expect(
         await invoke(
@@ -1858,7 +1878,9 @@ describe('Goal definition projections', () => {
               return db;
             },
             inflightCommands: new WeakMap(),
-            workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+            workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+              db.dataRoot
+            ),
           }),
         });
         expect(tools.map((tool) => tool.name).sort()).toEqual(
@@ -1890,7 +1912,7 @@ describe('Goal definition projections', () => {
           coreDb: f.coreDb,
           store: f.store,
           inflightCommands: new WeakMap(),
-          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
         });
         const acquisitionHttp = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
           throw new Error('Coordinator acquisition crossed the human-only refusal.');
@@ -2717,7 +2739,7 @@ describe('trusted entry currentness through real operation admission', () => {
       connected.resolve(physical);
       response.end();
     });
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(f.command.dataRoot);
     const handlerEntered = Promise.withResolvers<void>();
     const releaseHandler = Promise.withResolvers<void>();
     let client: ReturnType<typeof connectHttp2> | undefined;
@@ -2861,7 +2883,7 @@ describe('trusted entry currentness through real operation admission', () => {
   it('does not accept an entry callback from submitted operation input', async () => {
     const f = await operationFixture();
     let submittedCallbackEntered = false;
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(f.command.dataRoot);
     const invoke = createOperationInvocation({
       ...f.command,
       coreDb: f.coreDb,

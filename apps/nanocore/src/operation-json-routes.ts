@@ -37,8 +37,8 @@ import {
 import type { OperationInvocationContext } from './operation-contract.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { parseOperationInput } from './operation-resolvers.js';
+import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Operation framing selects JSON or conversation file bodies; native invocation owns complete parsing and admission. */
 export function registerOperationJsonRoutes(

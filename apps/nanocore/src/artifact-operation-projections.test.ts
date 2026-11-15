@@ -14,6 +14,7 @@ import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -22,7 +23,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { disposeTestStore } from './test-support/store.js';
 import { createWorkspaceMaterial, saveWorkspaceMaterialRevision } from './workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Exact UTF-8 content digest, independent of transport encoding. */
 function digest(content: string) {
@@ -861,7 +861,7 @@ describe('Artifact definition projections', () => {
           app,
           coreDb: f.coreDb,
           store: f.store,
-          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
           requestStore: () => f.store,
           inflightCommands: new WeakMap(),
           repositoryWorkspaceDb: () => {

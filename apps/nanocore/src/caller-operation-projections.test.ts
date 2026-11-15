@@ -15,14 +15,16 @@ import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError } from './operation-error.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const fixtures: Array<{ coreDb: ReturnType<typeof openCoreDb>; dataRoot: string }> = [];
 const timestamp = '2026-10-15T00:00:00.000Z';
@@ -339,7 +341,7 @@ describe('caller operation projections', () => {
     const invoke = createOperationInvocation({
       coreDb: f.coreDb,
       store: f.store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
     });
     const native = await invoke(operationId, input as never, {
       kind: 'public',
@@ -615,7 +617,9 @@ describe('caller operation projections', () => {
     const invoke = createOperationInvocation({
       coreDb: f.coreDb,
       store: f.store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+        f.coreDb.dataRoot
+      ),
     });
     const admin = f.token();
     const actor = {
@@ -659,7 +663,9 @@ describe('caller operation projections', () => {
     const invoke = createOperationInvocation({
       coreDb: f.coreDb,
       store: f.store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+        f.coreDb.dataRoot
+      ),
     });
     await expect(
       invoke(operationId, {} as never, {

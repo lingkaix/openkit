@@ -7,11 +7,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
 import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
-
 import { createDemoStore } from '../test-support/demo-store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   captureCoverageBindingFromOpenKitConfig,
   createRuntimeConfigManager,
@@ -308,7 +309,7 @@ describe('runtime config loading and reload planning', () => {
     writeServerConfig(dataRoot, '{ invalid unrelated Server');
     writeWorkspaceConfig(dataRoot, sibling, '{ invalid unrelated Workspace');
     writeFileSync(join(dataRoot, 'config', 'agents', 'runtime.agent.jsonc'), '{ invalid Agent');
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const frozen = gate.tryFreeze(target, () => []);
     if (frozen.status !== 'frozen') throw new Error('Expected the target freeze.');
     refuseScope(dataRoot, { scope: 'workspace', id: target, check: 'recovery' });
@@ -367,7 +368,7 @@ describe('runtime config loading and reload planning', () => {
     writeWorkspaceMcpServers(dataRoot, target, '{"schemaVersion":1,"servers":[]}');
     const manager = createRuntimeConfigManager({ dataRoot });
     const before = manager.current();
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const frozen = gate.tryFreeze(target, () => []);
     if (frozen.status !== 'frozen') throw new Error('Expected the target freeze.');
     for (const relativePath of [
@@ -403,8 +404,8 @@ describe('runtime config loading and reload planning', () => {
     }
     const manager = createRuntimeConfigManager({ dataRoot });
     const before = manager.current();
-    const gate = new WorkspaceMutationAdmission();
-    const foreignGate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
+    const foreignGate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const frozen = gate.tryFreeze(target, () => []);
     const foreign = foreignGate.tryFreeze(target, () => []);
     if (frozen.status !== 'frozen' || foreign.status !== 'frozen')

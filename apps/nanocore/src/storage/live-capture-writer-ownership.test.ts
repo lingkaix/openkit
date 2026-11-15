@@ -22,7 +22,6 @@ import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
@@ -201,7 +200,7 @@ vi.mock('node:worker_threads', async (load) => {
           sqliteModule: modulePath,
         };
         probe.events.push(provenance);
-        console.log('Q06_CONSTRUCTION ' + JSON.stringify(provenance));
+        console.log(`Q06_CONSTRUCTION ${JSON.stringify(provenance)}`);
         if (!probe.sourceHashes.has(sourceSha256)) {
           probe.sourceHashes.add(sourceSha256);
           console.log(
@@ -352,7 +351,7 @@ async function fixture(interruptFinish: boolean) {
     completedAt: new Date().toISOString(),
   });
   const sibling = await store.createWorkspace('Q06 sibling');
-  const mutationAdmission = new WorkspaceMutationAdmission();
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const stagingParent = join(root, 'staging');
   mkdirSync(stagingParent);
   const policy = {

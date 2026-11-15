@@ -75,6 +75,7 @@ import { createRecoveryOperationImplementations } from './runtime/worker-recover
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
 import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
+import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
@@ -88,7 +89,6 @@ import { createVaultOperationImplementations } from './vault/vault-operation-imp
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
 import { createWorkerEnvironmentOperationImplementations } from './worker-environments/worker-environment-operation-implementations.js';
 import { createWorkspaceDeletionOperationImplementations } from './workspace-deletion-operations.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { createWorkspaceOperationImplementations } from './workspace-operation-implementations.js';
 import { createWorkspaceSharingOperationImplementations } from './workspace-sharing-operations.js';
 /** Existing process and record owners used by native invocation. */

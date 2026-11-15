@@ -20,10 +20,12 @@ import {
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
 import {
@@ -185,7 +187,7 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
         ownerUserId: ownerId,
       })
     );
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     store.setWorkspaceMutationAdmission(gate);
     const created = start(() =>
       createMcpConfig({
@@ -283,7 +285,6 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
         frame.path === workspaceDbPath(dataRoot, DEMO_WORKSPACE_ID)
       ) {
         entered = true;
-        const originalWorker = this;
         const forwarded = Promise.withResolvers<void>();
         pending.push(forwarded.promise); // Register the original phase's delivery before offering work.
         releasePhase = () => {
@@ -298,7 +299,7 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
           } finally {
             phaseReleased = true;
             try {
-              emit.call(originalWorker, event, ...args); // Same original frame, exactly once.
+              emit.call(this, event, ...args); // Same original frame, exactly once.
             } catch (error) {
               phaseError ??= error;
             } finally {

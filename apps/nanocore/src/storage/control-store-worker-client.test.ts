@@ -47,7 +47,6 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-us
 import { readRetainedBodyBytes } from '../test-support/retained-body-observation.js';
 import { initializeTestCore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { lightAppDbPath, openExistingAppDb } from './app-db.js';
 import { commandRequestKey, getCommandRequestRecord } from './command-request-records.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
@@ -262,7 +261,7 @@ async function productPoolFixture() {
     store,
     dataRoot: root,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
     repositoryWorkspaceDb: (id) => {
       if (!workspaces.some((workspace) => workspace.id === id))
         throw new Error('Fixture Workspace is not admitted.');

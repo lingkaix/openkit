@@ -1,3 +1,4 @@
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 // Independent outside-repository draft. UNRUN / not type-qualified.
@@ -32,7 +33,6 @@ import {
   openTestNativeWorkspace,
 } from '../test-support/store.js';
 import { publishWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { lightAppDbPath } from './app-db.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
@@ -543,7 +543,7 @@ async function exercise(mode: Mode) {
             { value }
           )
         );
-        const database = 'app:' + lightAppDbPath(producerRoot, workspaceId, app.appId);
+        const database = `app:${lightAppDbPath(producerRoot, workspaceId, app.appId)}`;
         for (const kind of ['create', 'record-create']) {
           const offered = requests(database, 'app-kernel').filter(
             (wire) => object(wire.value.input) && wire.value.input.kind === kind
@@ -563,8 +563,8 @@ async function exercise(mode: Mode) {
       for (const { app } of [selected, other]) {
         const path = lightAppDbPath(producerRoot, workspaceId, app.appId);
         expect(existsSync(path)).toBe(true);
-        expect(existsSync(path + '-wal')).toBe(false);
-        expect(existsSync(path + '-shm')).toBe(false);
+        expect(existsSync(`${path}-wal`)).toBe(false);
+        expect(existsSync(`${path}-shm`)).toBe(false);
       }
       active();
       basis = { root: producerRoot, ownerId, workspaceId, selected, other };
@@ -576,8 +576,8 @@ async function exercise(mode: Mode) {
     caseWireStart = observation.wires.length;
     selectedPath = lightAppDbPath(dataRoot, workspaceId, selected.app.appId);
     otherPath = lightAppDbPath(dataRoot, workspaceId, other.app.appId);
-    selectedDatabase = 'app:' + selectedPath;
-    otherDatabase = 'app:' + otherPath;
+    selectedDatabase = `app:${selectedPath}`;
+    otherDatabase = `app:${otherPath}`;
     const selectedIdentity = identity(selectedPath);
     const otherIdentity = identity(otherPath);
     const store = start(() => createTestStore({ dataRoot }));
@@ -585,10 +585,10 @@ async function exercise(mode: Mode) {
     workspace = start(() => openWorkspaceDb(dataRoot, workspaceId));
     await start(() => openTestNativeWorkspace(workspace!));
     start(() => workspace!.sqlite.close());
-    const parentOpen = requests('workspace:' + workspaceDbPath(dataRoot, workspaceId), 'open');
+    const parentOpen = requests(`workspace:${workspaceDbPath(dataRoot, workspaceId)}`, 'open');
     expect(parentOpen).toHaveLength(1);
     successful(parentOpen[0]!);
-    const admission = new WorkspaceMutationAdmission();
+    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const dependencies = {
       coreDb: core,
       store,
@@ -644,7 +644,7 @@ async function exercise(mode: Mode) {
       );
       return original;
     };
-    const stagingParent = join(root, mode + '-staging');
+    const stagingParent = join(root, `${mode}-staging`);
     start(() => mkdirSync(stagingParent));
     const backupId = allocateEntityId('wsbak');
     control = {
@@ -698,7 +698,7 @@ async function exercise(mode: Mode) {
         capture!.then((result) => {
           facts.completedBeforeRequiredHold = result;
           throw new Error(
-            'Required original capture contract missing/completed before hold: ' + contract
+            `Required original capture contract missing/completed before hold: ${contract}`
           );
         }),
       ]);
@@ -962,7 +962,7 @@ async function exercise(mode: Mode) {
       [otherPath, otherDatabase, otherReadAttempted],
     ] as const) {
       if (!path || !database) continue;
-      facts[path] = { wasRead, wal: existsSync(path + '-wal'), shm: existsSync(path + '-shm') };
+      facts[path] = { wasRead, wal: existsSync(`${path}-wal`), shm: existsSync(`${path}-shm`) };
       check(() => {
         if (!wasRead) {
           expect(
@@ -992,10 +992,10 @@ async function exercise(mode: Mode) {
           native?.exitSeq,
           'Actual native exit AFTER its original successful shutdown ACK'
         ).toBeGreaterThan(shutdownAck.seq);
-        expect(existsSync(path + '-wal'), 'Read App after original native RW last-close').toBe(
+        expect(existsSync(`${path}-wal`), 'Read App after original native RW last-close').toBe(
           false
         );
-        expect(existsSync(path + '-shm'), 'Read App after original native RW last-close').toBe(
+        expect(existsSync(`${path}-shm`), 'Read App after original native RW last-close').toBe(
           false
         );
       });

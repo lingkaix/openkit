@@ -31,9 +31,11 @@ import {
   createNanoHostSessionDispatch,
   NANO_HOST_EFFECT_OPERATIONS,
 } from '../runtime/nanohost-session-dispatch.js';
-
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -43,7 +45,6 @@ import {
   createTestWorkspaceDb,
   disposeTestStore,
 } from '../test-support/store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const BASE = 'http://localhost:3000';
 const GROUP = 'llm-gateway';
@@ -174,7 +175,7 @@ async function fixture(
     authentication.get('/api/e13-fixture-identity', (c) => c.json(c.get('actor')));
     const accounts = [];
     for (const human of [first, second, ordinary]) {
-      const response = await authentication.request(BASE + '/api/e13-fixture-identity', {
+      const response = await authentication.request(`${BASE}/api/e13-fixture-identity`, {
         headers: { cookie: human.cookie },
       });
       expect(response.status).toBe(200);
@@ -284,7 +285,7 @@ async function fixture(
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -438,7 +439,7 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
     g.accounts[0]!.actor
   );
   const nativeHeaders = {
-    authorization: 'Bearer ' + token.secret,
+    authorization: `Bearer ${token.secret}`,
     'x-openkit-nanohost-transport-revision': String(transportRevision),
   };
   const noPhysicalSession = await g.app.request('/api/nanohost/transport/session/admit', {
@@ -469,7 +470,7 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
   await once(server, 'listening');
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Missing native fixture listener.');
-  client = connectHttp2('http://127.0.0.1:' + address.port);
+  client = connectHttp2(`http://127.0.0.1:${address.port}`);
   async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
     const stream = client!.request({
       ':method': 'POST',
@@ -512,7 +513,7 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
   );
   const requestId = randomBytes(32).toString('hex');
   // An inspection target identifier only: no image existence or Native inspection result is claimed.
-  const imageDigest = 'sha256:' + randomBytes(32).toString('hex');
+  const imageDigest = `sha256:${randomBytes(32).toString('hex')}`;
   expect(NANO_HOST_EFFECT_OPERATIONS).toContain('image.inspect');
   const effect = dispatch.effect({
     kind: 'image.inspect',
@@ -527,7 +528,7 @@ it('closes native NanoHost effect delivery only after real enrollment, Token ver
   const delivery = await post(path, {});
   expect(delivery.status).toBe(200);
   expect(JSON.parse(delivery.body)).toEqual({ imageDigest, requestId });
-  const group = sourceGroup('POST ' + path);
+  const group = sourceGroup(`POST ${path}`);
   await f.change(document(control(f.first.userId, 'active', group)));
   // Staged B2 OLD has metadata/common enforcement but this original private effect join is still old.
   expect((await post(path, {})).status).toBe(403);

@@ -21,7 +21,6 @@ import { requireAdministratorOperation } from '../auth/operation-authorizer.js';
 import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   ControlStoreWorkerError,
@@ -99,7 +98,7 @@ vi.mock('node:worker_threads', async (load) => {
         const entry = options?.eval
           ? String(filename)
           : `import(${JSON.stringify(String(filename))});`;
-        const source = prelude + '\n' + entry;
+        const source = `${prelude}\n${entry}`;
         super(source, {
           ...options,
           eval: true,
@@ -296,7 +295,7 @@ async function fixture(holdFinish = false) {
     id: ownerId,
   });
   await store.completeTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
-  const mutationAdmission = new WorkspaceMutationAdmission(),
+  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot),
     client = getControlStoreWorkerClient(mutationAdmission),
     database = `workspace:${path}`;
   const stagingParent = join(root, 'staging');

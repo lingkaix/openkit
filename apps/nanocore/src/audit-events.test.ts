@@ -2,7 +2,6 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-
 import {
   listPortableWorkspaceAuditEvents,
   listServerAuditEvents,
@@ -11,11 +10,13 @@ import {
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /**
  * Creates an isolated data root for audit event tests.
@@ -159,7 +160,7 @@ describe('workspace audit events', () => {
       applyScopedMigrations(workspaceDb);
       const schedules = new AutomationStore(
         coreDb,
-        new WorkspaceMutationAdmission(),
+        getControlStoreWorkerClient().workspaceMutations(dataRoot),
         () => '2026-10-16T00:00:00.000Z'
       );
       const schedule = await schedules.createAutomation(testEntityId('usr', 'audit-user'), {

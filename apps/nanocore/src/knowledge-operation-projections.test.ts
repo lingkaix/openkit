@@ -21,7 +21,10 @@ import * as sourcePublication from './knowledge/source-publication.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -33,7 +36,6 @@ import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js'
 import { ensureLocalUser } from './test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** One real isolated Knowledge authority, with explicit membership rather than changed fixture defaults. */
 async function fixture(member = true, citedAnswer = false) {
@@ -78,7 +80,7 @@ async function fixture(member = true, citedAnswer = false) {
     coreDb,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     repositoryWorkspaceDb: (workspaceId: string) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(db);

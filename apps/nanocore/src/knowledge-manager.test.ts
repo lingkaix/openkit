@@ -29,7 +29,10 @@ import { readManagedSourceText } from './knowledge/source-reading.js';
 import * as knowledgeManager from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -52,7 +55,6 @@ import { operationRequest } from './test-support/operation-request.js';
 import { readTestWorkspaceNotebookSelection } from './test-support/workspace-notebook.js';
 import { corruptTestWorkspaceNotebookCommit } from './test-support/workspace-notebook-corruption.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const requestId = '00000000-0000-4000-8000-000000000111';
 const SYNTACTIC_PROPOSAL_SOURCE_REFERENCE =
@@ -88,7 +90,7 @@ async function importedStore(
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
   const requestActor = { kind: 'local' as const, userId: actor.id };
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   try {
     for (const { source, content } of sources) {
       const sourceRequestId = randomUUID();
@@ -264,7 +266,7 @@ describe('Knowledge proposal decision lineage', () => {
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
     const requestActor = { kind: 'local' as const, userId: actor.id };
     const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     let registered: Awaited<ReturnType<typeof publishCapturedSource>>['source'];
     try {
       registered = (

@@ -41,7 +41,10 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -54,7 +57,6 @@ import {
   createTestWorkspaceDb,
   disposeTestStore,
 } from '../test-support/store.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const BASE = 'http://localhost:3000';
 const GROUP = 'llm-gateway';
@@ -185,7 +187,7 @@ async function fixture(
     authentication.get('/api/e13-fixture-identity', (c) => c.json(c.get('actor')));
     const accounts = [];
     for (const human of [first, second, ordinary]) {
-      const response = await authentication.request(BASE + '/api/e13-fixture-identity', {
+      const response = await authentication.request(`${BASE}/api/e13-fixture-identity`, {
         headers: { cookie: human.cookie },
       });
       expect(response.status).toBe(200);
@@ -295,7 +297,7 @@ async function fixture(
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -478,7 +480,7 @@ async function workerFixture() {
   expect(launchKernel?.effect).toBe('allow');
 
   const attemptId = allocateEntityId('attempt');
-  const binding = 'lease-binding:' + attemptId;
+  const binding = `lease-binding:${attemptId}`;
   const attempt = recordTestExecutionAttempt(g.coreDb, {
     entry: requireSchedulerAdmissionEntry(g.coreDb, queueEntryId),
     attemptId,
@@ -487,7 +489,7 @@ async function workerFixture() {
     bindingRef: binding,
     sessionCompatibilityKey: 'e13-native-fixture',
     now: () => new Date().toISOString(),
-    operationId: 'fixture-submit:' + attemptId,
+    operationId: `fixture-submit:${attemptId}`,
   });
   await recordAgentEnvironmentPackageSnapshot(db, {
     environmentPackage,
@@ -568,7 +570,7 @@ async function workerFixture() {
   expect(authority).not.toBeNull();
   expect(kernel?.effect).toBe('allow');
   const client = new WorkerControlClient({
-    baseUrl: BASE + '/api/worker-control',
+    baseUrl: `${BASE}/api/worker-control`,
     token: secrets.control,
     lineage,
     fetch: async (input, init) => await g.app.request(input, init),
@@ -609,10 +611,10 @@ it('closes the actual trusted Worker inference resource without quarantining its
     stream: false,
   };
   const send = () =>
-    w.g.app.request(BASE + '/api/worker-inference/v1/chat/completions', {
+    w.g.app.request(`${BASE}/api/worker-inference/v1/chat/completions`, {
       method: 'POST',
       headers: {
-        authorization: 'Bearer ' + w.secrets.inference,
+        authorization: `Bearer ${w.secrets.inference}`,
         'content-type': 'application/json',
       },
       body: JSON.stringify(body),
@@ -627,7 +629,7 @@ it('closes the actual trusted Worker inference resource without quarantining its
   expect(group).toBe(GROUP);
   await w.f.change(document(control(w.f.first.userId, 'active', group)));
   expect((await send()).status).toBe(403);
-  const authenticated = w.gateway.authenticatePackageToken('Bearer ' + w.secrets.inference, {
+  const authenticated = w.gateway.authenticatePackageToken(`Bearer ${w.secrets.inference}`, {
     tokenFamily: 'inference',
   });
   expect(authenticated.snapshotId).toBe(w.environmentPackage.snapshotId);

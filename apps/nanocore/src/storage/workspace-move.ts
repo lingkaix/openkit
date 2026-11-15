@@ -8,10 +8,10 @@ import {
   removeDurableFile,
   syncCanonicalTree,
 } from '@openkit/storage';
-import type { WorkspaceFrozenAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import { applyControlRecoveryMoveOut } from './control-store-recovery.js';
+import type { WorkspaceFrozenAdmission } from './control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,

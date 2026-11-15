@@ -23,7 +23,10 @@ import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest } from './storage/data-root-backup.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -39,7 +42,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { readWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import {
   getWorkspaceInvitation,
   getWorkspaceMember,
@@ -211,7 +213,7 @@ async function fixture(
       "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_00000000-0000-79cc-be8a-99985c4c44e4', ?, 'usr_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'pending', ?, 1, ?, ?)"
     )
     .run(workspaceId, new Date(Date.now() + 86400000).toISOString(), timestamp, timestamp);
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const releaseIdentityPath = join(dataRoot, 'fixture-release-identity.json');
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   writeFileSync(releaseIdentityPath, JSON.stringify({ releaseTag: null, sourceCommit }));
@@ -852,7 +854,7 @@ it('continues the original committed recovery after serving activation fails wit
     // Recompose the real App from retained owners; this is not a cold-process restart claim.
     // Drain the old process-local native owner before installing the reconstructed gate.
     await shutdownControlStoreWorkerClient();
-    const restartedGate = new WorkspaceMutationAdmission();
+    const restartedGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
     restoreWorkspaceRecoveryAdmission(f.coreDb, restartedGate);
     // Bootstrap must not reopen a placed target whose exact byte seal still owns activation.
     expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(

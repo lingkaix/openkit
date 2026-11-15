@@ -26,7 +26,7 @@ import { disposeTestStore } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, openWorkspaceDbAtRoot } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { applyMigrations, applyScopedMigrations } from './migrate.js';
@@ -89,7 +89,7 @@ async function capturedSource() {
   const owner = { dataRoot: f.dataRoot, ownerScope: scope };
   const selection = () => readTestWorkspaceNotebookSelection(f.dataRoot, workspace.id);
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: f.dataRoot });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
   const requestId = randomUUID();
   const now = new Date().toISOString();
   const source = {

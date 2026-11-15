@@ -40,6 +40,7 @@ import { OperationError, WorkspaceCaptureAdmissionError } from './operation-erro
 import { readPendingOperationLineage } from './pending-request-operations.js';
 import { PolicyInterception } from './policy/interception.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
+import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
 import { recheckCoreConfirmedLoginQuarantine } from './vault/codex-login-refresh.js';
@@ -47,7 +48,6 @@ import {
   ensureUserQuickChatWorkspace,
   WorkspaceOwnerMembershipRemovedError,
 } from './workspace-membership.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { readInvitationOperationLineage } from './workspace-sharing-operations.js';
 
 /** Existing admission owners and statically wired minimum-lineage readers; no family execution services. */

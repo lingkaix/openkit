@@ -40,7 +40,10 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -53,7 +56,6 @@ import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy
 import { createTestStore } from '../test-support/store.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { askKnowledgeAgent, type KnowledgeAgentDependencies } from './knowledge-agent.js';
 import { saveMemoryPage } from './memory-lifecycle.js';
 import { appendMemorySuppression } from './memory-maintenance.js';
@@ -118,7 +120,7 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   };
   const selectWorkspaceNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const publicationConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const admitPublication = (
     notebook: KnowledgeNotebook,
     scopeSchemaText: string,

@@ -3,8 +3,8 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { publishWorkspaceNotebook } from '../knowledge/notebook-publication.js';
 import { readWorkspaceNotebookPublicationFacts } from '../knowledge/notebook-workspace-owner.js';
 import type { FsStore } from '../lib/store.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { closeTestCoreDb, createTestWorkspaceDb } from './store.js';
 import { readTestWorkspaceNotebookSelection } from './workspace-notebook.js';
 
@@ -34,7 +34,7 @@ export async function publishTestWorkspaceNotebook(input: {
     actor,
     requestActor: { kind: 'local' as const, userId: input.userId },
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot: input.dataRoot }),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(input.dataRoot),
     notebook: selection.notebook,
     scopeSchemaText: selection.scopeSchemaText,
     request,

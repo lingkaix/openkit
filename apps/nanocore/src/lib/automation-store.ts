@@ -8,6 +8,7 @@ import {
 import { allocateEntityId, readRetainedV1 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { selectAutomationScan } from '../storage/automation-scanner-selection.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -19,7 +20,6 @@ import {
   readRecurringSchedule,
 } from '../storage/recurring-records.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 const SCAN_LIMIT = 128;
 

@@ -1,3 +1,4 @@
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -43,7 +44,6 @@ import {
   saveWorkspaceMaterialRevision,
 } from '../workspace-materials.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
@@ -436,7 +436,7 @@ describe('borrowed lifecycle capture freeze', () => {
   it('keeps the caller freeze through the cut, seal and real Worker exit until caller release', async () => {
     const f = await fixture();
     const coreDb = openCoreDb(f.dataRoot);
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     f.store.setWorkspaceMutationAdmission(gate);
     const owner = gate.tryFreeze(workspaceId, () => []);
     if (owner.status !== 'frozen') throw new Error('Expected the caller-owned freeze.');
@@ -521,10 +521,10 @@ describe('borrowed lifecycle capture freeze', () => {
   it('preserves caller ownership on a post-cut refusal and refuses foreign or released owners', async () => {
     const f = await fixture();
     const coreDb = openCoreDb(f.dataRoot);
-    const gate = new WorkspaceMutationAdmission();
+    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     f.store.setWorkspaceMutationAdmission(gate);
     const owner = gate.tryFreeze(workspaceId, () => []);
-    const otherGate = new WorkspaceMutationAdmission();
+    const otherGate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     const foreignGate = otherGate.tryFreeze(workspaceId, () => []);
     const foreignWorkspace = gate.tryFreeze(allocateEntityId('ws'), () => []);
     if (

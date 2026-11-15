@@ -70,7 +70,6 @@ import { operationRequest } from './test-support/operation-request.js';
 import { createPendingRequestFixture } from './test-support/pending-request.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 type Tools = Awaited<ReturnType<Client['listTools']>>['tools'];
 const toolA: Tools[number] = {
@@ -299,7 +298,7 @@ describe('MCP definition review through real Pending and native admission', () =
       store: FsStore,
       outside?: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>['outside']
     ) => {
-      const admission = new WorkspaceMutationAdmission();
+      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const native = await createNativeTaskAdmissionFixture(
         coreDb,
         store,

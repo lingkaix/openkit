@@ -34,7 +34,10 @@ import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -46,7 +49,6 @@ import { loadWorkspaceFileRecords } from '../storage/workspace-file-records.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation } from './goal-owner.js';
 import { reserveGoalTask } from './goal-task-admission.js';
@@ -499,7 +501,7 @@ async function fixture() {
     store,
     repositoryWorkspaceDb: () => db,
     goalServices: services,
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
   });
   const toolsFor = (goalId = goal.goalId, turnId = coordinator.id) =>
     createGoalTools({

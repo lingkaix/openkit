@@ -18,7 +18,6 @@ import { OperationError } from '../operation-error.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -65,7 +64,7 @@ function fixture() {
     ownerUserId: userId,
   });
   let timestamp = start;
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   const store = new AutomationStore(db, gate, () => timestamp);
   return {
     db,

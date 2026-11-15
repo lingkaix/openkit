@@ -23,7 +23,10 @@ import {
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -32,7 +35,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { writeManagedThreadPolicyFixture } from '../test-support/resource-policy.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { prepareKnowledgeMaintenance } from './knowledge-agent-maintenance.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { type NotebookUpdate, publishWorkspaceNotebook } from './notebook-publication.js';
@@ -262,7 +264,9 @@ describe('ordinary SourceSummary editing through native owners', () => {
         const actor = { kind: 'user', id: f.userId } as const;
         const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
         const runtimeConfigManager = { current: () => snapshot };
-        const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+        const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
+          f.dataRoot
+        );
         const currentAuthority = () => {
           if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
             throw new OperationError(
@@ -679,7 +683,7 @@ async function runMaintenance(
     dataRoot: f.dataRoot,
     initialSnapshot: snapshot,
   });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
   const actor = { kind: 'user', id: f.userId } as const;
   const currentAuthority = () => {
     if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))

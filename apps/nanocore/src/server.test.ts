@@ -192,7 +192,10 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from './storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -235,7 +238,6 @@ import { createVaultUseRecord, listVaultUseRecords } from './vault/vault-use-rec
 import { createVaultInjectionPlan } from './vault-injection-plans.js';
 import { createVaultInjectionReceipt } from './vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /**
  * Computes the canonical S16 digest for exact UTF-8 Artifact content.
@@ -2045,7 +2047,7 @@ describe('nanocore server', () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-storage-report-route-'));
     mkdirSync(join(dataRoot, 'server', 'quarantine'), { recursive: true });
     writeFileSync(join(dataRoot, 'server', 'quarantine', '1-core.sqlite'), 'demo');
-    const app = await createApp({ dataRoot });
+    const app = createDeterministicTestApp({ dataRoot, store: new FsStore() });
 
     const res = await app.request(...operationRequest('storage.layout-report', {}));
 
@@ -2072,7 +2074,7 @@ describe('nanocore server', () => {
     const coreDb = openCoreDb(dataRoot);
     applyMigrations(coreDb);
     coreDb.sqlite.close();
-    const app = await createApp({ dataRoot });
+    const app = createDeterministicTestApp({ dataRoot, store: new FsStore() });
 
     const createRes = await app.request(
       ...operationRequest('backup.create', {}, { method: 'POST' })
@@ -4545,7 +4547,9 @@ describe('nanocore server', () => {
         store,
         requestStore: () => store,
         inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+          coreDb.dataRoot
+        ),
         turnStartServices: {
           coreDb: undefined,
           inflightCommands: new WeakMap(),
@@ -9446,7 +9450,12 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign workspace review owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createNanoCoreApp({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      turnExecutor: new FakeTurnExecutor(),
+    });
     const baseReview = workspaceSyncReviewRouteItem();
     const reviewId = 'swr_foreign_child_lineage';
     const changeSetId = 'wcs_foreign_child_lineage';
@@ -9565,7 +9574,12 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign workspace recovery owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createNanoCoreApp({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      turnExecutor: new FakeTurnExecutor(),
+    });
     const reconciliationRecordId = 'wrr_foreign_child_lineage';
     const timestamp = '2026-07-19T00:00:00.000Z';
 
@@ -9657,7 +9671,12 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign workspace apply-result owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createNanoCoreApp({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      turnExecutor: new FakeTurnExecutor(),
+    });
     const applyResultId = 'war_foreign_child_lineage';
 
     if (!authorizedWorkspace) {
@@ -9725,7 +9744,12 @@ describe('nanocore server', () => {
       .listWorkspaces()
       .find((workspace) => workspace.kind === 'personal');
     const foreignWorkspace = await store.createWorkspace('Foreign AEP snapshot owner');
-    const app = createNanoCoreApp({ coreDb, store, turnExecutor: new FakeTurnExecutor() });
+    const app = createNanoCoreApp({
+      coreDb,
+      dataRoot: coreDb.dataRoot,
+      store,
+      turnExecutor: new FakeTurnExecutor(),
+    });
     const environmentPackage = AgentEnvironmentPackageSchema.parse(
       await resolveAgentEnvironmentPackage({
         agentSetup: createTestAgentSetup(),

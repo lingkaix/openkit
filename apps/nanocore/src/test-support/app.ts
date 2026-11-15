@@ -15,7 +15,6 @@ import {
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './agent-environment.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './local-user.js';
 import { admitTestNativeEnvironment } from './native-environment.js';
@@ -23,12 +22,7 @@ import { admitTestNativeEnvironment } from './native-environment.js';
 export type { CreateAppOptions } from '../app.js';
 
 /** One real fixture owner follows the existing process-local native-client lifetime. */
-let fixtureNativeOwner:
-  | {
-      client: ReturnType<typeof getControlStoreWorkerClient>;
-      admission: WorkspaceMutationAdmission;
-    }
-  | undefined;
+let fixtureNativeClient: ReturnType<typeof getControlStoreWorkerClient> | undefined;
 
 /** Supplies the explicit physical peer of a local in-process test transport without adding credentials. */
 export function createLoopbackAppFetch(
@@ -60,15 +54,10 @@ export function createAppWithLocalIdentity(
   let admission = options.workspaceMutationAdmission ?? options.automationStore?.mutationAdmission;
   const dataRoot = options.dataRoot ?? options.store?.getDataRoot() ?? options.coreDb?.dataRoot;
   if (dataRoot) {
-    const client = getControlStoreWorkerClient();
-    // Explicit shutdown inside a case creates a new client identity. A fresh Store
-    // gets a fresh default gate; surviving Stores must name their existing owner.
-    if (fixtureNativeOwner?.client !== client) {
-      fixtureNativeOwner = { client, admission: admission ?? new WorkspaceMutationAdmission() };
-    }
-    // Preserve explicitly different owners so the real invariant still refuses
-    // competing live Apps rather than having this fixture silently replace one.
-    admission ??= fixtureNativeOwner.admission;
+    fixtureNativeClient = getControlStoreWorkerClient();
+    // The physical Root selects its actual component, including across native restart.
+    // Explicit competing components still reach the production refusal unchanged.
+    admission ??= fixtureNativeClient.workspaceMutations(dataRoot);
   }
   return createNanoCoreApp({
     ...(!options.coreDb && options.mode !== 'server' ? { localUserId: FIXTURE_LOCAL_USER_ID } : {}),
@@ -146,8 +135,8 @@ const workspaceAuthorityFixtures: Array<{
 // Callers release their owned readers before this helper drains only its entered App fixture.
 beforeEach(() => {
   onTestFinished(async () => {
-    if (fixtureNativeOwner) await shutdownControlStoreWorkerClient();
-    fixtureNativeOwner = undefined;
+    if (fixtureNativeClient) await shutdownControlStoreWorkerClient();
+    fixtureNativeClient = undefined;
     for (const fixture of workspaceAuthorityFixtures.splice(0)) {
       if (fixture.coreDb.sqlite.open) fixture.coreDb.sqlite.close();
       if (fixture.ownsRoot) rmSync(fixture.dataRoot, { recursive: true, force: true });

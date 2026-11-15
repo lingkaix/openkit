@@ -172,6 +172,7 @@ import {
   type ControlMcpItemCall,
 } from './storage/control-store-capability.js';
 import { getWorkspaceProductReadHandle } from './storage/control-store-product-records.js';
+import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -189,7 +190,6 @@ import { isCurrentServerMcpMaterial } from './vault/server-mcp-authority.js';
 import { getVaultGrant } from './vault/vault-grants.js';
 import { getVaultReference } from './vault/vault-references.js';
 import type { VaultUnlockState } from './vault/vault-unlock-state.js';
-import type { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Borrows the existing native reader; scope lifecycle owns closure and each caller ends its snapshot before awaiting. */
 function borrowWorkspaceReadDb(dataRoot: string, workspaceId: string): WorkspaceDb {

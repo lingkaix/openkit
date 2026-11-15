@@ -18,14 +18,16 @@ import type {
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { KnowledgeNotebook } from './notebook.js';
 import { NOTEBOOK_EDITING_LIMITS } from './notebook-agent-editing.js';
@@ -199,7 +201,7 @@ async function fixture(scope: Scope, enabled = false) {
       ],
     }),
   });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   store.setWorkspaceMutationAdmission(workspaceMutationAdmission);
   const finish = async (run: Run) => {
     expect(

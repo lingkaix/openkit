@@ -57,7 +57,6 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { createVaultInjectionPlan } from '../vault-injection-plans.js';
 import { createVaultInjectionReceipt } from '../vault-injection-receipts.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createVaultGrant, getVaultGrant, listVaultGrants } from './vault-grants.js';
 import { createVaultUnlockState } from './vault-unlock-state.js';
 
@@ -643,7 +642,7 @@ it('rejects unsupported lifetime, visibility, raw fields and a changed scope bef
       { ...source.terms, injectionPath: 'runtime-file' },
       { ...source.terms, injectionPath: 'runtime-env' },
       { ...source.terms, material: 'synthetic-private-canary' },
-      { ...source.terms, targetAgentId: 'ghp_private_canary' },
+      { ...source.terms, targetAgentId: 'ghp_FAKE_private_canary' },
     ]) {
       const response = await f.send('vault.grant-request', {
         workspaceId: source.workspaceId,
@@ -651,7 +650,7 @@ it('rejects unsupported lifetime, visibility, raw fields and a changed scope bef
         requestId: randomUUID(),
         terms,
       });
-      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(response.status, JSON.stringify(terms)).toBeGreaterThanOrEqual(400);
       expect(JSON.stringify(await response.json())).not.toContain('synthetic-private-canary');
     }
     const db = openWorkspaceDb(f.dataRoot, source.workspaceId);
@@ -928,7 +927,7 @@ it.each(['workspace', 'server', 'revoked-agent'] as const)(
         workspaceDb,
         dataRoot: f.dataRoot,
         vaultUnlockState: f.vaultUnlockState,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
         packageSnapshotId: pkg.snapshotId,
         protocolRequestId: randomUUID(),
         inflightCommands: new WeakMap(),
@@ -2673,7 +2672,7 @@ it.each(['live', 'revoked-agent'] as const)(
         workspaceDb,
         dataRoot: f.dataRoot,
         vaultUnlockState: f.vaultUnlockState,
-        workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
         packageSnapshotId: pkg.snapshotId,
         protocolRequestId: randomUUID(),
         inflightCommands: new WeakMap(),
@@ -3367,7 +3366,7 @@ it('retains the real signup Session identity through Login request, approval and
       repositoryWorkspaceDb,
       repositoryUserDb: (userId) => openUserDb(f.dataRoot, userId),
       inflightCommands,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
       pendingRequestServices: {
         coreDb: f.coreDb,
         repositoryWorkspaceDb,

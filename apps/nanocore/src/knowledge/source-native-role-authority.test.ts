@@ -17,13 +17,15 @@ import {
   admitKnowledgeRetrieval,
   type KnowledgeRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { resolveKnowledgeMeaningReference } from './knowledge-meaning-reference.js';
 import { deriveManagedSourceAccess } from './managed-source-access.js';
 import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
@@ -55,7 +57,7 @@ async function fixture() {
   )!;
   const root = join(dataRoot, 'workspaces', workspace.id, 'knowledge');
   const notebookSelection = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const runtimeConfigManager = {
     current: () => ({ workspaceConfigs: [] }),
   } as unknown as RuntimeConfigManager;

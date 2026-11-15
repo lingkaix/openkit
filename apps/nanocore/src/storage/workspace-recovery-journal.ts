@@ -25,12 +25,6 @@ import {
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
 import type { ExecutionStepRef } from '../runtime/execution-step-journal.js';
-import type {
-  WorkspaceFreezeAdmission,
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-  WorkspaceRecoveryFreezeOrigin,
-} from '../workspace-mutation-admission.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
 import { configureOwnedSqlite } from './control-store.js';
 import { commandInputHash } from './control-store-input.js';
@@ -41,6 +35,10 @@ import {
 import type {
   ControlRecoveryNativeBinding,
   ControlRecoveryNativeCall,
+  WorkspaceFreezeAdmission,
+  WorkspaceFrozenAdmission,
+  WorkspaceMutationAdmission,
+  WorkspaceRecoveryFreezeOrigin,
 } from './control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck, openWorkspaceReadDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';

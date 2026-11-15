@@ -20,7 +20,6 @@ import {
   publishWorkspaceOwnerMembership,
   recordWorkspaceOwnerMembership,
 } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import {
@@ -509,7 +508,7 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
         ).toHaveLength(2);
         expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError();
         expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
-        const gate = new WorkspaceMutationAdmission();
+        const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
         // Repeated census must neither reopen the opaque scope nor infer a recovery origin.
         for (let pass = 0; pass < 2; pass++) {
           expect(() => restoreWorkspaceRecoveryAdmission(core, gate)).not.toThrow();

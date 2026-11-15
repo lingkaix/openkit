@@ -13,7 +13,10 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -27,7 +30,6 @@ import { corruptTestWorkspaceNotebookCommit } from '../test-support/workspace-no
 import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import { captureWorkspaceSourceFixture } from '../test-support/workspace-source.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createLightApp, createRecord, getLightApp, getRecord } from './commands.js';
 
 const NOW = '2026-10-19T00:00:00.000Z';
@@ -61,7 +63,7 @@ async function fixture() {
     store,
     coreDb,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   });
   onTestFinished(async () => {
     coreDb.sqlite.close();

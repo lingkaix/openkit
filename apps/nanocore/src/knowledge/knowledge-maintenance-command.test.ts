@@ -19,14 +19,16 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import type { KnowledgeMaintenanceDependencies } from './knowledge-agent-maintenance.js';
 import { runKnowledgeMaintenanceCommand } from './knowledge-maintenance-command.js';
 import { publishWorkspaceNotebook } from './notebook-publication.js';
@@ -61,7 +63,7 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   });
   const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const notebook = selectNotebook().notebook;
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const bootstrap = createRuntimeConfigManager({
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),

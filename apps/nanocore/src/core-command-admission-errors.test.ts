@@ -6,6 +6,7 @@ import { expect, it, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from './auth/access-token-store.js';
 import { KernelCommandError } from './generative-kernel/errors.js';
 import { feedbackFilePath } from './runtime/feedback.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -14,7 +15,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const operations = [
   'workspace.read',
@@ -82,7 +82,7 @@ it.each(operations)(
         workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const admission = new WorkspaceMutationAdmission();
+      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const app = createApp({
         coreDb,
         dataRoot,

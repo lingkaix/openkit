@@ -41,7 +41,6 @@ import { operationRequest } from './test-support/operation-request.js';
 import { closeTestCoreDb, createTestCoreDb, createTestWorkspaceDb } from './test-support/store.js';
 import { registerWorkerMcpRoutes } from './worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 type Tools = Awaited<ReturnType<Client['listTools']>>['tools'];
 
@@ -369,7 +368,7 @@ describe('MCP changed-definition exposure through real Core and native capture',
           workerControlGateway: restoredControl,
           workerMcpGateway: reopenedGateway,
           runtimeConfig: () => snapshot,
-          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         });
         const listAfterReopen = await reopenedApp.request('/api/worker-capabilities/mcp/echo', {
           method: 'POST',

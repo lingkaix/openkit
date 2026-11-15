@@ -1,3 +1,4 @@
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 // The contract composes actual Notebook Git publication with managed LocalStorage originals.
 
@@ -20,7 +21,6 @@ import { ensureLocalUser } from '../test-support/local-user.js';
 import { workspaceMembershipDecisionFixture } from '../test-support/resource-policy.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { acceptWorkspaceInvitation, createWorkspaceInvitation } from '../workspace-sharing.js';
 import { deriveManagedSourceAccess } from './managed-source-access.js';
 import { parseOkfDocument, validateOpenKitKnowledgeProfile } from './okf.js';
@@ -57,7 +57,7 @@ async function fixture() {
     coreDb,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(db);

@@ -9,7 +9,10 @@ import {
   requireSchedulerAdmissionEntry,
   retryDeniedSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { exportRecurringPortableHistory } from '../storage/recurring-portable-history.js';
@@ -18,7 +21,6 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { AutomationMutationError, AutomationStore } from './automation-store.js';
 
 const fixtures: { root: string; db: CoreDb }[] = [];
@@ -29,7 +31,7 @@ function fixture() {
   applyMigrations(db);
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
-  const gate = new WorkspaceMutationAdmission();
+  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   const store = new AutomationStore(db, gate, clock);
   return {
     root,
@@ -260,9 +262,11 @@ describe('durable fixed-interval recurrence', () => {
     const reopened = openCoreDb(root);
     fixtures.push({ root, db: reopened });
     expect(
-      new AutomationStore(reopened, new WorkspaceMutationAdmission(), clock).getAutomation(
-        schedule.id
-      )
+      new AutomationStore(
+        reopened,
+        getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
+        clock
+      ).getAutomation(schedule.id)
     ).toEqual(schedule);
     expect(
       reopened.sqlite
@@ -802,7 +806,11 @@ it('reopens pending work with its attempt count, immutable payload, and original
   db.sqlite.close();
   const reopened = openCoreDb(root);
   fixtures.push({ root, db: reopened });
-  const restarted = new AutomationStore(reopened, new WorkspaceMutationAdmission(), clock);
+  const restarted = new AutomationStore(
+    reopened,
+    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
+    clock
+  );
   const [pending] = await restarted.collectScanCandidates('2026-10-16T00:00:00.000Z');
   expect(pending).toMatchObject({
     id: occurrence!.id,
@@ -1159,7 +1167,11 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
     db = openCoreDb(state.root);
     fixtures.push({ root: state.root, db });
     files = createTestStore({ dataRoot: state.root });
-    schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), state.clock);
+    schedules = new AutomationStore(
+      db,
+      getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
+      state.clock
+    );
     state.setTime('2027-02-28T09:00:00.000Z');
     service = start();
     await service.runOnce();
@@ -1229,7 +1241,11 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
     db = openCoreDb(state.root);
     fixtures.push({ root: state.root, db });
     files = createTestStore({ dataRoot: state.root });
-    schedules = new AutomationStore(db, new WorkspaceMutationAdmission(), state.clock);
+    schedules = new AutomationStore(
+      db,
+      getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
+      state.clock
+    );
     service = start();
     await service.runOnce();
     expect(schedules.listHistory(created.id).items).toEqual(history);
@@ -1393,7 +1409,11 @@ it('preserves one series waiting slot during explicit retry, including after res
   db.sqlite.close();
   const reopened = openCoreDb(root);
   fixtures.push({ root, db: reopened });
-  const restored = new AutomationStore(reopened, new WorkspaceMutationAdmission(), clock);
+  const restored = new AutomationStore(
+    reopened,
+    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
+    clock
+  );
   expect(() =>
     retryDeniedSchedulerAdmissionEntry(reopened, {
       workspaceId: created.workspaceId,

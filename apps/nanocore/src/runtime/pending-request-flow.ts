@@ -20,9 +20,11 @@ import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  type WorkspaceMutationAdmission,
+} from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
 import { ControlPendingCommandInputSchema } from './pending-request-codecs.js';

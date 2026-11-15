@@ -18,7 +18,6 @@ import type { AdmittedOperationContext } from '../operation-contract.js';
 import { securityRequestId, securityThreadId } from '../security/identifiers.js';
 import { prepareSecurityThread, selectSecurityThread } from '../security/threads.js';
 import { SecurityTriggerStore } from '../security/trigger.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
@@ -539,7 +538,9 @@ describe('N3 original owed-alarm Thread destination producer and trusted native 
           coreDb: f.db,
           store: f.store,
           inflightCommands: new Map(),
-          workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+            f.coreDb.dataRoot
+          ),
         });
         const disabled = await operations['user.disable'](
           { requestId: randomUUID(), targetUserId: backup.userId },

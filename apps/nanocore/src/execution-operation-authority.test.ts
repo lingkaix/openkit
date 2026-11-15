@@ -17,6 +17,7 @@ import {
   denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
@@ -25,7 +26,6 @@ import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 /** Current credentials and minimum child selectors at the native operation seam. */
 describe('execution operation authority', () => {
@@ -43,7 +43,8 @@ describe('execution operation authority', () => {
           workspaceId: DEMO_WORKSPACE_ID,
           ownerUserId: localUserId,
         });
-        const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+        const workspaceMutationAdmission =
+          getControlStoreWorkerClient().workspaceMutations(dataRoot);
         const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
         const automation = await automationStore.createAutomation(
           testEntityId('usr', 'user_other'),

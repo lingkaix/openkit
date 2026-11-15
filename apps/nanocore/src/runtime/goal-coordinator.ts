@@ -47,12 +47,12 @@ import {
 import { OperationError, projectOperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import {
   ControlStoreWorkerShutdownError,
   getControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
-import type { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import {
   type GoalOwnerServices,

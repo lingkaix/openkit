@@ -29,7 +29,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -53,7 +53,7 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
   }).manifest;
   manifest.runtime.version = runtime.version;
   admitTestNativeEnvironment(coreDb, manifest);
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(root),
     agentManifests: [manifest],

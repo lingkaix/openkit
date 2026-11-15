@@ -8,10 +8,10 @@ import { readSourcePointers } from '../knowledge/source-pointers.js';
 import { publishCapturedSource } from '../knowledge/source-publication.js';
 import { readManagedSourceText } from '../knowledge/source-reading.js';
 import type { FsStore, KnowledgeSourceRecord } from '../lib/store.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import { openWorkspaceDb } from '../storage/db.js';
 import { applyScopedMigrations } from '../storage/migrate.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 
 /** Publishes exact fixture bytes under an already-authorized real User; it creates no principal or grant. */
 export async function captureWorkspaceSourceFixture(input: {
@@ -38,7 +38,7 @@ export async function captureWorkspaceSourceFixture(input: {
   });
   const notebook = selection.notebook;
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = new WorkspaceMutationAdmission();
+  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const requestId = randomUUID();
   try {
     await publishCapturedSource(

@@ -19,7 +19,6 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
 import {
@@ -444,7 +443,9 @@ async function exercise(fault: boolean) {
     const stagingParent = join(root, 'staging');
     start(() => mkdirSync(stagingParent));
     const admission = start(() => new FileStorageAdmission(root, () => 0n));
-    const mutationAdmission = start(() => new WorkspaceMutationAdmission());
+    const mutationAdmission = start(() =>
+      getControlStoreWorkerClient().workspaceMutations(dataRoot)
+    );
     const input: Parameters<typeof createWorkspaceBackup>[0] = {
       source: {
         kind: 'live-workspace',

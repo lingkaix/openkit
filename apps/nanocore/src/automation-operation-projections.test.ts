@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, it } from 'vitest';
 import { AutomationStore } from './lib/automation-store.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp, createLoopbackAppFetch } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { createTestStore, disposeTestStore } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 it('projects the same durable lifecycle through HTTP and the derived Core Client', async () => {
   const root = mkdtempSync(join(tmpdir(), 'recurrence-projections-'));
@@ -21,7 +21,10 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const workspace = await store.createWorkspace('Recurring');
   const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
-  const automationStore = new AutomationStore(coreDb, new WorkspaceMutationAdmission());
+  const automationStore = new AutomationStore(
+    coreDb,
+    getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot)
+  );
   const app = createApp({ store, coreDb, dataRoot: root, automationStore });
   const responses: Response[] = [];
   const client = createCoreClient({

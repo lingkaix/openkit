@@ -4,9 +4,9 @@ import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createApp } from './app.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from './test-support/store.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 
 const POLICY = "script-src 'self'; object-src 'none'; base-uri 'self'";
 const ORIGIN = 'https://ui.fixture.invalid';
@@ -29,7 +29,7 @@ function fixture() {
     coreDb,
     dataRoot,
     store: createTestStore({ dataRoot }),
-    workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   };
 }
 

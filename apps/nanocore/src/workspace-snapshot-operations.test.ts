@@ -31,6 +31,7 @@ import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  type WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import { openWorkspaceReadDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
@@ -47,7 +48,6 @@ import {
   setTestWorkspaceRevision,
 } from './test-support/store.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact, listWorkspaceMembers } from './workspace-sharing.js';
 
 const roots: string[] = [];
@@ -86,7 +86,7 @@ async function fixture(
   const coreDb = createTestCoreDb(dataRoot);
   const ownerId = ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
   const appOptions = {
     mode,
@@ -381,7 +381,7 @@ describe('C-a composed snapshot App API', () => {
         });
       }
 
-      const differentOwner = new WorkspaceMutationAdmission();
+      const differentOwner = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
       expect(() =>
         createAppWithLocalIdentity({ ...f.appOptions, workspaceMutationAdmission: differentOwner })
       ).toThrow();
@@ -1399,7 +1399,7 @@ describe('C-a composed snapshot App API', () => {
           expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
           expect(f.admission.isClosed(workspaceId)).toBe(true);
           await shutdownControlStoreWorkerClient();
-          f.admission = new WorkspaceMutationAdmission();
+          f.admission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
           restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
           f.store = new FsStore({ dataRoot: f.dataRoot });
           f.appOptions = {
@@ -1776,7 +1776,7 @@ describe('C-a composed snapshot App API', () => {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          authorization: 'Bearer ' + issued.secret,
+          authorization: `Bearer ${issued.secret}`,
           'x-openkit-request-id': randomUUID(),
         },
         body: JSON.stringify({ workspaceId, backupId, acknowledgeLostSafety: false }),
@@ -1784,7 +1784,7 @@ describe('C-a composed snapshot App API', () => {
       await Promise.race([
         observed,
         restoring.then((response) => {
-          throw new Error('Restore did not reach verified-byte acquisition: ' + response.status);
+          throw new Error(`Restore did not reach verified-byte acquisition: ${response.status}`);
         }),
       ]);
       const siblingWrite = await request(f.app, 'thread.create', {

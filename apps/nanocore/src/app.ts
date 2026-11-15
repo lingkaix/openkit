@@ -251,7 +251,10 @@ import {
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
+} from './storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
@@ -279,7 +282,6 @@ import {
   listAllWorkspaceDeletionRequests,
   writeWorkspaceDeletionRequest,
 } from './workspace-deletion-request.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { getWorkspaceRegistryLifecycleFact } from './workspace-sharing.js';
 
 /** Main HTTP projection is built once here, not by native workers importing shared route metadata. */
@@ -645,7 +647,14 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const workspaceMutationAdmission =
     options.workspaceMutationAdmission ??
     options.automationStore?.mutationAdmission ??
-    new WorkspaceMutationAdmission();
+    (dataRoot
+      ? getControlStoreWorkerClient().workspaceMutations(dataRoot)
+      : new WorkspaceMutationAdmission());
+  if (
+    dataRoot &&
+    workspaceMutationAdmission !== getControlStoreWorkerClient().workspaceMutations(dataRoot)
+  )
+    throw new Error('Application Workspace mutations must use their native scope owner.');
   if (
     options.automationStore &&
     (options.automationStore.coreDb !== options.coreDb ||

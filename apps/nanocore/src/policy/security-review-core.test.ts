@@ -30,6 +30,7 @@ import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { findSchedulerAdmissionForTurn } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -45,7 +46,6 @@ import {
 } from '../test-support/store.js';
 import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAgentPolicyParticipant } from './agent-gate-provider.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import { PolicyInterception } from './interception.js';
@@ -449,7 +449,7 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
       };
     },
   });
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const sdkCall = vi.spyOn(Client.prototype, 'callTool'); // passive: the real SDK/HTTP peer still runs
   let taskApp: ReturnType<typeof createApp> | undefined;
   let mcpApp: Hono | undefined;

@@ -52,7 +52,6 @@ import { workspaceMembershipDecisionFixture } from './test-support/resource-poli
 import { createTestStore } from './test-support/store.js';
 import { createWorkspaceDeletionRequest } from './workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
-import { WorkspaceMutationAdmission } from './workspace-mutation-admission.js';
 import { createWorkspaceInvitation } from './workspace-sharing.js';
 
 const OPERATION = 'workspace.retire-quarantined';
@@ -128,7 +127,7 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     workspaceIds: [workspaceId, siblingId],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
-  const admission = new WorkspaceMutationAdmission();
+  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   const executor = new SimulatedTurnExecutor({ coreDb });
   const app = createApp({

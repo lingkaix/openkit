@@ -31,7 +31,10 @@ import {
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
 import { policyDigest } from '../policy/statements.js';
 import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -46,7 +49,6 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../workspace-mutation-admission.js';
 import { createAdministrationConfiguration } from './administration-configuration.js';
 import { createRuntimeConfigManager } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
@@ -1181,7 +1183,9 @@ describe('administration catalog configuration', () => {
       coreDb: f.coreDb,
       store: f.store,
       requestStore: () => f.store,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
+      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
+        f.coreDb.dataRoot
+      ),
       administrationServices: {
         coreDb: f.coreDb,
         runtimeConfigFiles: () => f.files,
