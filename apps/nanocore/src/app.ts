@@ -2451,7 +2451,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         .digest('hex');
       const requestId = `${identity.slice(0, 8)}-${identity.slice(8, 12)}-4${identity.slice(13, 16)}-8${identity.slice(17, 20)}-${identity.slice(20, 32)}`;
 
-      const handle = await startProductTurn({
+      const admitted = Promise.withResolvers<void>();
+      const execution = startProductTurn({
         ...setupProviderSupply,
         input: {
           input: 'Receive pending request outcomes.',
@@ -2461,6 +2462,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         },
         requestedAgentId: turn.agentId,
         reservedTurnId: turn.id,
+        onTurnCreated: () => admitted.resolve(),
         providerCredentialResolver,
         snapshot: runtimeConfig(),
         store,
@@ -2468,22 +2470,32 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         turnExecutor,
         workerPlacement,
         ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-      }).catch(async (error: unknown) => {
-        // Only this refused outcome attempt retires its still-queued scheduler ownership.
-        if (options.coreDb && error instanceof TurnStartValidationError) {
-          const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
-            workspaceId: workspaceIdForOwner(turn.owner),
-            statuses: ['queued'],
-          }).find((candidate) => candidate.turnId === turn.id && candidate.requestId === requestId);
-          if (entry)
-            await cancelOwnedQueuedAdmission(options.coreDb, {
-              queueEntryId: entry.queueEntryId,
+      })
+        .catch(async (error: unknown) => {
+          // Only this refused outcome attempt retires its still-queued scheduler ownership.
+          if (options.coreDb && error instanceof TurnStartValidationError) {
+            const entry = listSchedulerAdmissionEntriesForWorkspace(options.coreDb, {
               workspaceId: workspaceIdForOwner(turn.owner),
-            });
-        }
-        throw error;
+              statuses: ['queued'],
+            }).find(
+              (candidate) => candidate.turnId === turn.id && candidate.requestId === requestId
+            );
+            if (entry)
+              await cancelOwnedQueuedAdmission(options.coreDb, {
+                queueEntryId: entry.queueEntryId,
+                workspaceId: workspaceIdForOwner(turn.owner),
+              });
+          }
+          throw error;
+        })
+        .then((handle) => markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn));
+      // The native producer owns the original durable admission ACK, not future Worker completion.
+      // Keep the real execution/terminal bookkeeping observed under its existing Worker owner.
+      void execution.catch((error: unknown) => {
+        admitted.reject(error);
+        console.error(`Pending outcome Worker ${turn.id} failed.`, error);
       });
-      await markSchedulerAttemptForTerminalTurn(options.coreDb, handle.turn);
+      await admitted.promise;
     },
   };
 
