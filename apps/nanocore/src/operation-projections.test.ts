@@ -2750,7 +2750,8 @@ describe('trusted entry currentness through real operation admission', () => {
     const enter = admission.enter.bind(admission);
     const enteredAdmission = vi.spyOn(admission, 'enter').mockImplementation((...args) => {
       const release = enter(...args);
-      if (release) {
+      // Native ACK retention is not another public authority check; the final freeze checks all leases.
+      if (release && args[1] !== 'capture') {
         entries += 1;
         if (
           (loss === 'after-initial-admission' && entries === 1) ||
@@ -2865,7 +2866,7 @@ describe('trusted entry currentness through real operation admission', () => {
           schemaRevision: 1,
         }).totalItems
       ).toBe(loss === 'current' ? 1 : 0);
-      // The real gate can freeze only after every initial/repeated admission has released.
+      // The real gate can freeze only after authorization and native ACK admissions have released.
       const frozen = admission.tryFreeze(f.command.workspaceId, () => []);
       expect(frozen.status).toBe('frozen');
       if (frozen.status === 'frozen') frozen.release();

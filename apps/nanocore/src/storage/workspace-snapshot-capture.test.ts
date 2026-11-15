@@ -5494,7 +5494,6 @@ describe('C-a independent sealed generations', () => {
       app.schemaRevision,
       { text: 'Existing row before capture.' }
     );
-    const client = getControlStoreWorkerClient();
     const appDatabase = `app:${lightAppDbPath(f.dataRoot, workspaceId, app.appId)}`;
     const post = vi.spyOn(Worker.prototype, 'postMessage');
     let forwardAck: (() => void) | undefined;
@@ -5539,16 +5538,6 @@ describe('C-a independent sealed generations', () => {
       }),
     ]);
     expect(postedSettled).toBe(false);
-    let beginDrain!: () => void;
-    const drainStarted = new Promise<void>((resolve) => {
-      beginDrain = resolve;
-    });
-    const tryPause = client.tryPauseForWorkspaceCapture.bind(client);
-    const hold = vi.spyOn(client, 'tryPauseForWorkspaceCapture').mockImplementation((...args) => {
-      const pending = tryPause(...args);
-      if (args[0] === `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`) beginDrain();
-      return pending;
-    });
     let resume!: () => void;
     const barrier = new Promise<void>((resolve) => {
       resume = resolve;
@@ -5569,10 +5558,13 @@ describe('C-a independent sealed generations', () => {
     let siblingApp!: Awaited<ReturnType<typeof createLightApp>>;
     let siblingRecord!: Awaited<ReturnType<typeof createRecord>>;
     try {
+      // Native ACK leases drain before the transport pause, with ordinary target entry closed.
       await Promise.race([
-        drainStarted,
+        vi.waitFor(() => expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true), {
+          timeout: 10_000,
+        }),
         capturing.then(() => {
-          throw new Error('Capture did not start its native App drain.');
+          throw new Error('Capture did not wait for the posted App acknowledgement.');
         }),
       ]);
       expect(postedSettled).toBe(false);
@@ -5609,7 +5601,6 @@ describe('C-a independent sealed generations', () => {
       forwardAck?.();
       resume();
       copy.mockRestore();
-      hold.mockRestore();
       captureWorkerProbe.onNativeMessage = undefined;
       post.mockRestore();
       captured = await capturing;
