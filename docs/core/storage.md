@@ -58,7 +58,7 @@ Storage ownership is divided into three conceptual areas:
 - user-owned Memory, files, preferences, user-local data, user logs, user-scoped config, and user-specific workspace ordering or recent-workspace indexes
 - workspace-owned repository references and lineage, bounded workspace files, task artifacts, turn and item materialization, workspace knowledge, agent runtime outputs, and workspace-specific logs
 
-The concrete path tree is defined in the server config and data layout spec, not duplicated here.
+This aspect does not fix the concrete path tree; the physical layout owner defines it.
 
 ### SQLite Layers
 
@@ -66,7 +66,7 @@ Core DatabaseOwner and the user-data Storage Service MUST share durable atomic-w
 
 A future or unsupported migration ledger MUST cause a typed refusal before DatabaseOwner admission or database writes. The base database bytes, definitions, snapshots and existing committed WAL MUST remain unchanged. Under the [accepted refused-open exception](../decisions/20261110-refused_ledger_sidecar_residue.md), a newly created WAL MUST contain zero bytes and a derived SHM index MAY remain until a supported binary performs a normal open and close. Accepted and normal database lifecycles retain the no-WAL/SHM-at-rest requirement.
 
-For capture, a no-residue cold App read requires proof at the held cut that no WAL or SHM is present, no native App handle is open, and the freeze is held. Otherwise, before the capture/global hold, the existing native owner admits the App as a participant and owns its writable final close, or capture refuses typed. Ordinary non-capture cold App reads must either leave no residue or be covered by an owned writable final close; this does not require a capture freeze for every ordinary read. No normal-at-rest waiver is permitted. Cold App readers now join native admission before opening, and the existing native scope owns their final writable close. Default Core reads use a read-only, query-only view; boot/setup writers retain explicit phase ownership. These changes do not establish complete physical-writer coverage or busy-capture qualification.
+For capture, a no-residue cold App read requires proof at the held cut that no WAL or SHM is present, no native App handle is open, and the freeze is held. Otherwise, before the capture/global hold, the existing native owner admits the App as a participant and owns its writable final close, or capture refuses typed. Ordinary non-capture cold App reads must either leave no residue or be covered by an owned writable final close; this does not require a capture freeze for every ordinary read. No normal-at-rest waiver is permitted.
 
 One Core server may use multiple SQLite databases.
 
@@ -217,7 +217,7 @@ Layer 2 governs user data and the Storage Service: locations and byte operations
 
 ### Shared File Storage
 
-Content identity, locations, attachments, derivatives, indexes and Knowledge entries have separate responsibilities. The Storage Service owns locations and byte operations, not content meaning, Policy decisions, semantic retrieval or processing. Its separate process-agnostic package starts with a local backend and Knowledge Sources; other owners adopt it later. S3-compatible roots, NAS, and cloud drives are later backend candidates and are not current active backends. Vault owns backend credentials.
+Content identity, locations, attachments, derivatives, indexes and Knowledge entries have separate responsibilities. The Storage Service owns locations and byte operations, not content meaning, Policy decisions, semantic retrieval or processing. Its separate process-agnostic package starts with a local backend and Knowledge Sources; other owners adopt it later. Vault owns backend credentials.
 
 A reference binds its observed digest and locator (`contentRef`, with raw-byte SHA-256 content identity, logical mount and confined relative path, optional byte or page range, and observed availability); unavailable bytes never bind another object, and references may miss without silently substituting different content or forcing extra retention copies ([references decision](../decisions/20260921-references_may_miss_never_mislead.md)). Storage leases reuse Policy grants and current runtime enforcement, with host-side mounts and never sandbox FUSE, and audit recorded per lease lifecycle rather than per byte. Knowledge Bases and Knowledge packages share one canonical layout (`pages/`, `sources/`, `schema/`, `raw/`, and optional `indexes/`), with `manifest.json` added at the package root and raw bytes kept in Storage outside Git. Derivation owns conversion; retrieval owns indexes and embeddings. Do not retain extra originals or derivative excerpts solely for historical resolution. Existing canonical data and retained work keep their owners. The [layered storage decision](../decisions/20261018-layered_file_storage_and_knowledge_packages.md) records these boundaries.
 
