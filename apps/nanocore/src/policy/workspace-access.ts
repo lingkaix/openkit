@@ -360,6 +360,35 @@ export function evaluatePolicyKernel(
   return evaluateAccess(policy, request);
 }
 
+/** The Kernel's one reading of Thread-container scope: active statements naming each Thread, in order. */
+export function selectThreadBoundaries(
+  document: PolicyDocumentV1,
+  threadIds: readonly string[]
+): {
+  readonly id: string;
+  readonly statements: PolicyDocumentV1['statements'];
+  /** Only a managed-boundary statement makes the Thread a managed resource. */
+  readonly managed: boolean;
+}[] {
+  return threadIds.map((id) => {
+    const statements = document.statements.filter(
+      (statement) =>
+        statement.state === 'active' &&
+        statement.scope.resources.some(
+          (resource) =>
+            resource.kind === 'container' &&
+            resource.container.kind === 'thread' &&
+            resource.container.id === id
+        )
+    );
+    return {
+      id,
+      statements,
+      managed: statements.some((statement) => statement.kind === 'managed-boundary'),
+    };
+  });
+}
+
 /**
  * Pure synchronous projection of current primary, agent-domain and Goal/Task facts.
  * All classes constrain the same subject and target. Processes are mappings, never principals.
@@ -386,19 +415,7 @@ export function compilePolicyGraph(
     // Reparse at the bridge boundary: corrupt or unsupported mandatory facts cannot become unmanaged.
     const document = parseWorkspacePolicyDocument(facts.workspaceId, facts.policy);
     const ancestors = facts.resource.ancestors ?? [];
-    const boundaries = [facts.resource.id, ...ancestors].map((id) => ({
-      id,
-      statements: document.statements.filter(
-        (statement) =>
-          statement.state === 'active' &&
-          statement.scope.resources.some(
-            (resource) =>
-              resource.kind === 'container' &&
-              resource.container.kind === 'thread' &&
-              resource.container.id === id
-          )
-      ),
-    }));
+    const boundaries = selectThreadBoundaries(document, [facts.resource.id, ...ancestors]);
     const user = `user:${facts.actor.userId}`;
     const target = `object:${JSON.stringify(facts.resource)}`;
     const subject = 'ua:thread-subject';
@@ -496,7 +513,7 @@ export function compilePolicyGraph(
         : []),
     ];
     for (const [boundaryIndex, boundary] of boundaries.entries()) {
-      if (!boundary.statements.some((statement) => statement.kind === 'managed-boundary')) continue;
+      if (!boundary.managed) continue;
       const suffix = boundaryIndex === 0 ? '' : `:${boundary.id}`;
       const managed = {
         grants: boundary.statements.flatMap((statement) =>
