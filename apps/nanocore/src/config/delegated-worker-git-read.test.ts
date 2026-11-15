@@ -619,7 +619,7 @@ describe('finite delegated Worker Git-read application', () => {
       };
       const publication =
         stage === 'outcome'
-          ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
+          ? vi.spyOn(f.store, 'publishSettledTurnArtifact').mockImplementationOnce(interrupt)
           : blockOriginalReceipt(f, request.requestId);
       const context = {
         callId: randomUUID(),
@@ -654,7 +654,7 @@ describe('finite delegated Worker Git-read application', () => {
       };
       const publication =
         stage === 'outcome'
-          ? vi.spyOn(f.store, 'createArtifact').mockImplementationOnce(interrupt)
+          ? vi.spyOn(f.store, 'publishSettledTurnArtifact').mockImplementationOnce(interrupt)
           : blockOriginalReceipt(f, request.requestId);
 
       if (stage === 'outcome')
