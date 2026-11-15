@@ -1,0 +1,8 @@
+{
+  "previousAppImageId": "sha256:1ed39d334b281354662cf9fec7ab395b8c2bcfd649ea0a45de9fa70f63d6bfff",
+  "migrationFree": false,
+  "configurationCompatible": false,
+  "retainedDataCompatible": false,
+  "recovery": "pre-stable-reset",
+  "provenance": "rc9-pre-stable-reset-assessment"
+}
