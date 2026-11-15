@@ -257,7 +257,7 @@ Quiet states a fact; it is not a diagnosis. The server supplies the Now fields (
 
 **B is not proof of reading.** Receipts are the set of messages actually displayed ([User-owned Read Receipts](20260628-web_product_surface_projection.md#user-owned-read-receipts)). A person may jump to a decision or steer without reading earlier notes. Unread marks therefore come from the receipt set, not from B: unread messages before B keep their mark, and the divider row offers "3 earlier unread ›", which jumps to the oldest one.
 
-`thread.timeline` catch-up data may include `earlierUnread`. A null overall result means the fixed probe could not prove the answer. The fixed bounds are documented with the implementation; this specification does not claim that those bounds have landed. When present, the object is `{ count, capped, oldest }`, where `oldest` is `{ turnId, itemId }` for the exact oldest eligible unread message before B, or null when none exists. A proved empty result has `count: 0`, `capped: false`, and `oldest: null`. `count` is exact up to 100. `capped` is true only when a 101st unread message is proved. The read returns no partial count, stores no new durable state, and adds no index. It reuses the existing receipt-eligibility rule. The Web shows the count only when the object is present, and shows an oldest-item jump only when `oldest` is non-null. It keeps its honest fallback, with no count and no oldest Item, when the result is null.
+`thread.timeline` catch-up data may include `earlierUnread`. A null overall result means the fixed probe could not prove the answer. The fixed bounds are documented with the implementation. When present, the object is `{ count, capped, oldest }`, where `oldest` is `{ turnId, itemId }` for the exact oldest eligible unread message before B, or null when none exists. A proved empty result has `count: 0`, `capped: false`, and `oldest: null`. `count` is exact up to 100. `capped` is true only when a 101st unread message is proved. The read returns no partial count, stores no new durable state, and adds no index. It reuses the existing receipt-eligibility rule. The Web shows the count only when the object is present, and shows an oldest-item jump only when `oldest` is non-null. It keeps its honest fallback, with no count and no oldest Item, when the result is null.
 
 A run that ends without a message stays "new" until the viewer acts. A seen-through marker is deferred ([#649](https://github.com/lingkaix/openkit/issues/649)).
 
@@ -686,23 +686,23 @@ These needs add no durable records or owners. They reuse attention `blocking`, `
 
 Implementation is In Progress. Bounded server and Web timeline slices have landed, including several Extended reads. One landed slice is not completion of this specification. The notes below name what is current and what stays open.
 
-- **History reads.** `thread.timeline` and `thread.items` use bounded pages. Web earlier pages continue from the returned cursor (`apps/web/src/screens/chat/data.ts`). Pending-Turn polling is separate from an idle Thread. The server read is `apps/nanocore/src/thread-timeline.ts`.
+- **History reads.** `thread.timeline` and `thread.items` use bounded pages. Web earlier pages continue from the returned cursor (`apps/web/src/screens/chat/data.ts`). Pending-Turn polling is separate from an idle Thread. The server read is `apps/nanocore/src/thread-timeline.ts`; its `earlierUnread` probe reads at most 32 Turns, 128 positions and 65,536 body bytes and returns null when it reaches a bound.
 - **Dashboard.** `thread.dashboard` returns one active or latest run header and no Items. Indexed Now and latest-plan fields stay with that bounded read. The storage guide records the covering indexes.
 - **Events.** Ordinary SSE replaces an Item payload above the preview bound with `item-preview` and a body selector. Turn update and terminal events carry headers and empty Items. Clients request a complete body through `thread.item-body`.
 - **Rendering.** The timeline registry, lenses, run windows and resolver live under `apps/web/src/screens/chat/timeline/`. Remaining presentation polish is open. This is not an absence of the timeline surface.
 - **Registry projection.** The protocol has 17 Item types (`ItemTypeSchema` in `packages/protocol/src/models/item.ts`). The registry is declared `satisfies Record<EntryKind, RegistryRow>`, and the completeness test iterates `ItemTypeSchema.options`. The placement table lives in `packages/app-api-schemas` next to the timeline read schema. `Thread.entryPath` is in `packages/protocol/src/models/thread.ts`.
 - **Attention.** Rows with `blocking`, `ageSeconds` and `turnsSince`, and the Workspace review and recovery rows without a required Thread, are in `packages/app-api-schemas/src/action-center.ts`; runtime attention rows are raised in `apps/nanocore/src/action-center.ts`. `attention.list` accepts only a Workspace (`attention-operations.ts`). The existing handoff toast is in `apps/web/src/screens/chat/data.ts`.
 - **Environment and policy sources.** `usage.read`, `audit.workspace-list` and `audit.server-list` accept intersecting `turnId`, `capabilityCallId` and `itemId` selectors. Filtering precedes pagination, and a continuation keeps the original selectors. Runtime activity on the bounded dashboard remains a separate, narrower read.
-- **Artifacts and errors.** `artifact.version-read` is in `packages/app-api-schemas/src/artifact-operations.ts`; Artifact origin fields are in `packages/protocol/src/models/artifact.ts`. A Turn `error` is `{code, message}` (`packages/protocol/src/models/turn.ts`).
+- **Artifacts and errors.** `artifact.version-read` is in `packages/app-api-schemas/src/artifact-operations.ts`; Artifact origin fields are in `packages/protocol/src/models/artifact.ts`. A Turn `error` is `{explanation?, code, message}` with a nullable `code`; outward reads carry an optional server `presentation` with `class`, `summary` and `actions` (`ProductTurnErrorSchema` in `packages/protocol/src/models/turn.ts`).
 - **Steer.** `task.steer`, its receipt and the qualified-availability source exist. Adapter and runtime qualification are separate. That is not acceptance of every adapter. Codex, Pi and OpenCode require their own qualified delivery proof before enablement. DeepSeek is unsupported in v0.1.0 and offers Keep draft and Stop, not live steer.
 - **Reporting rules.** New Task requests carry fixed `reporting-v1` text. The package manifest and trace digest are checked separately. Sampling proof remains separate.
 - **Web primitives.** Semantic tokens are in `apps/web/src/styles/tokens.css`; the visual language is projected in `DESIGN.md`. Toasts use React Aria's `UNSTABLE_ToastQueue` (`apps/web/src/primitives/Toast.tsx`). The raw-color rule is in `apps/web/AGENTS.md`.
 
 | Ref | Route today | Anchor today |
 | --- | --- | --- |
-| thread | `/chat`, `/tasks` or `/goals` + `/:workspaceId/:threadId` | `turn`, `turnId`, `item` and `request` in `apps/web/src/screens/chat/timeline/resolve.ts` |
+| thread | `/chat`, `/tasks` or `/goals` + `/:workspaceId/:threadId` | `turn`, `turnId`, `item`, `approvalRequest` and `userInputRequest` in `apps/web/src/screens/chat/timeline/resolve.ts` |
 | artifact | `/artifacts?workspaceId=&artifact=`; Goal review `/goals/:ws/:thread/artifacts/:id` | exact `version` when the address has one |
-| audit | `/workspace/usage`; `/settings/server-audit` | Workspace usage resolver carries an exact Turn, CapabilityCall or Item selector; no row-focus anchor |
+| audit | `/workspace/usage` | Workspace usage resolver carries an exact Turn, CapabilityCall or Item selector; no row-focus anchor; the resolver returns no `/settings/server-audit` target |
 | attention | `/attention` (Action Center); owning review or recovery surface | Exact request/Thread anchors, Artifact review/version and Workspace recovery anchors are implemented where supplied by the source |
 | knowledge | `/knowledge` | Not verified |
 | material | `/materials/:ws/:thread/:materialId?` | Yes |
@@ -812,7 +812,7 @@ Audit filtering, source-specific attention anchors, Gateway model focus and Goal
 
 ## Open Questions
 
-- [Non-blocking] Should plan-segment counts be computed by the server (exact) or the client (partial)? The recommendation is the server, in the Extended tier.
+- [Non-blocking] Should plan-segment counts be computed by the server (exact) or the client (partial)? The recommendation is the server, in the Extended tier. The server now computes them (`readTimelinePlanSegments`, called from `apps/nanocore/src/thread-timeline.ts`).
 - [Non-blocking] Does each adapter emit steps when they start? The Quiet rule depends on it; adapters that report steps only when they finish use the 30-minute "Working" threshold.
 
 ## Deferred / Future Work

@@ -279,6 +279,7 @@ Decision records are not indexed. Owners link them; list `docs/decisions/` to se
 - `docs/audits/20261115-independent_doc_audit_fault_tolerance.md` — Independent Documentation Audit: Fault-Tolerance Group
 - `docs/audits/20261115-independent_doc_audit_runtime_model.md` — Independent Documentation Audit: Runtime-Model Group
 - `docs/audits/20261115-independent_doc_audit_storage.md` — Independent Documentation Audit: Storage Group
+- `docs/audits/20261115-independent_doc_audit_work_model.md` — Independent Documentation Audit: Work-Model Group
 
 ## Platform References
 
