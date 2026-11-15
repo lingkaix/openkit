@@ -124,6 +124,70 @@ describe('Workspace current-fact Policy projection', () => {
     }
   );
 
+  describe('delivery of vault.delegate-refresh (#604)', () => {
+    const named =
+      (...userIds: string[]) =>
+      (userId: string) =>
+        userIds.includes(userId);
+    const human = (userId: string, administrator: boolean, allows: (userId: string) => boolean) =>
+      evaluatePolicyKernel({
+        facts: { ...facts, userId, administrator },
+        target,
+        operation: 'vault.delegate-refresh',
+        mutating: true,
+        delegatedRefresh: { allows },
+      });
+
+    it('extends a member only through an allowance naming that member', () => {
+      expect(human('current-member', false, named('current-member')).effect).toBe('allow');
+      expect(human('current-member', false, named('other-member')).effect).toBe('deny');
+    });
+
+    it('requires an allowance for administrators too, while their authoring right stays', () => {
+      expect(human('administrator', true, named()).effect).toBe('deny');
+      expect(human('administrator', true, named('administrator')).effect).toBe('allow');
+      const authoring = evaluatePolicyKernel({
+        facts: { ...facts, userId: 'administrator', administrator: true },
+        target,
+        operation: 'vault.delegate-refresh',
+        mutating: true,
+      });
+      expect(authoring.effect).toBe('allow');
+    });
+
+    it('refuses an Integration whose terminal issuer is not named, even when its owner is', () => {
+      const integration = (allows: (userId: string) => boolean, issuerAdministrator: boolean) =>
+        evaluatePolicyKernel({
+          binding: {
+            principal: { kind: 'integration', id: 'client', responsibleUserId: 'owner' },
+            principalOwnerUserId: 'owner',
+            token: {
+              tokenId: 'token',
+              ownerUserId: 'owner',
+              scope: 'workspace',
+              workspaceIds: [target.workspaceId],
+            },
+          },
+          operation: 'vault.delegate-refresh',
+          native: { workspaceScoped: true, mutating: true },
+          target,
+          userKernel: human('owner', false, allows),
+          issuerChain: [
+            {
+              principal: { kind: 'user', id: 'issuer' },
+              active: true,
+              kernel: human('issuer', issuerAdministrator, allows),
+            },
+          ],
+        }).effect;
+      // The issuer lost administrator eligibility but stays a member: the owner's allowance alone
+      // never supplies the issuer's half of the intersection.
+      expect(integration(named('owner'), false)).toBe('deny');
+      expect(integration(named('owner'), true)).toBe('deny');
+      expect(integration(named('owner', 'issuer'), false)).toBe('allow');
+    });
+  });
+
   it('treats membership and current administrator as alternatives without an owner privilege tier', () => {
     for (const membership of ['owner', 'member', null] as const) {
       const currentTarget = { ...target, membership };

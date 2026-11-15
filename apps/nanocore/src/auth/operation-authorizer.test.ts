@@ -684,6 +684,57 @@ describe('central Workspace operation authorizer', () => {
     expect(read()).toBeNull();
   });
 
+  it('bounds delegated-refresh delivery by the Integration owner and its actual terminal issuer', () => {
+    const ownerId = 'usr_00000000-0000-7b43-8df8-fd24a5ccdbe8';
+    // A former administrator who issued the client credential and remains an ordinary member.
+    const issuerId = 'usr_00000000-0000-7a11-8000-00000000c604';
+    const now = new Date().toISOString();
+    fixture.coreDb.sqlite
+      .prepare(
+        `INSERT INTO users (id, display_name, email, email_verified, created_at, updated_at, kind, status)
+         VALUES (?, 'Former Administrator', 'former-admin@example.com', false, ?, ?, 'human', 'active')`
+      )
+      .run(issuerId, Date.now(), Date.now());
+    fixture.coreDb.sqlite
+      .prepare(
+        `INSERT INTO workspace_members (workspace_id, user_id, status, invitation_id, joined_at, removed_at, revision, created_at, updated_at)
+         VALUES (?, ?, 'active', NULL, ?, NULL, 1, ?, ?)`
+      )
+      .run(fixture.workspace.id, issuerId, now, now, now);
+    const tokenId = 'token_delegated_refresh_client';
+    createOpenKitAccessTokenRecord(fixture.coreDb, {
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      ownerUserId: ownerId,
+      scope: 'workspace',
+      tokenId,
+      workspaceIds: [fixture.workspace.id],
+      principalRef: { kind: 'integration', id: tokenId },
+      issuerRef: { kind: 'user', id: issuerId },
+    });
+    const authority = (operation: string, allowed?: readonly string[]) =>
+      currentWorkspaceAuthority(
+        fixture.coreDb,
+        fixture.workspace.id,
+        { kind: 'integration', id: tokenId, responsibleUserId: ownerId },
+        operation,
+        true,
+        {
+          kind: 'token',
+          userId: ownerId,
+          tokenId,
+          tokenScope: 'workspace',
+          tokenWorkspaceIds: [fixture.workspace.id],
+        },
+        allowed ? { delegatedRefresh: { allows: (userId) => allowed.includes(userId) } } : {}
+      );
+    // The ordinary intersection admits the client, so each refusal below is the delegated right.
+    expect(authority('vault.use')).toBe('member');
+    expect(authority('vault.delegate-refresh')).toBeNull();
+    expect(authority('vault.delegate-refresh', [ownerId])).toBeNull();
+    expect(authority('vault.delegate-refresh', [issuerId])).toBeNull();
+    expect(authority('vault.delegate-refresh', [ownerId, issuerId])).toBe('member');
+  });
+
   it('binds a presented admin bearer to its active human owner without member fallback', () => {
     createOpenKitAccessTokenRecord(fixture.coreDb, {
       expiresAt: '2099-01-01T00:00:00.000Z',

@@ -107,6 +107,8 @@ export interface WorkspaceAuthorityOptions {
     Parameters<typeof evaluatePolicyKernel>[0],
     { readonly facts: unknown }
   >['policy'];
+  /** Vault delivery allowances (#604), applied to the requester and every actual issuer. */
+  readonly delegatedRefresh?: ProductPolicyInput['delegatedRefresh'];
   /** Receives a real Kernel result and safe current facts; missing eligibility emits no event. */
   readonly onEvaluation?: (event: WorkspaceAuthorityEvaluation) => void;
 }
@@ -381,6 +383,7 @@ export function currentWorkspaceAuthority(
       // Effect paths cannot obtain a mutation association from a read-only credential.
       mutating: options?.mutating ?? true,
       ...(options?.policy ? { policy: options.policy } : {}),
+      ...(options?.delegatedRefresh ? { delegatedRefresh: options.delegatedRefresh } : {}),
     });
     if (clientAuthority)
       decision = evaluatePolicyKernel({
@@ -389,7 +392,10 @@ export function currentWorkspaceAuthority(
         issuerChain:
           clientAuthority.issuerChain?.map(({ input: issuerInput, ...issuer }) => ({
             ...issuer,
-            kernel: evaluatePolicyKernel(issuerInput),
+            kernel: evaluatePolicyKernel({
+              ...issuerInput,
+              ...(options?.delegatedRefresh ? { delegatedRefresh: options.delegatedRefresh } : {}),
+            }),
           })) ?? null,
       });
     // Missing eligibility facts publish no capture event; the Kernel still decides every complete request.

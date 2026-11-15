@@ -949,6 +949,9 @@ export function compilePolicyGraph(
         } else if (current.active && current.workspaceId) {
           if (current.membership)
             bind(member, WORKSPACE_MEMBER_OPERATIONS, 'assoc:workspace-active-member');
+          // #604: an administrator-authored Workspace allowance extends exactly this member.
+          if (current.membership && primary.delegatedRefresh?.allows(facts.userId))
+            bind(member, ['vault.delegate-refresh'], 'assoc:workspace-delegated-refresh');
           if (facts.administrator)
             bind(administrator, IDENTITY_OPERATIONS, 'assoc:workspace-administrator');
         }
@@ -1021,6 +1024,38 @@ export function compilePolicyGraph(
         accessRights: credentialRights,
       },
     ];
+  }
+
+  // #604: delivery also requires a current allowance naming this human, for administrators too;
+  // their baseline right only authors and revalidates the allowance.
+  if (primary?.delegatedRefresh && input.operation === 'vault.delegate-refresh') {
+    const refreshClass = 'pc:delegated-refresh';
+    const refreshObjects = 'oa:delegated-refresh-resource';
+    policy.elements = [
+      ...policy.elements,
+      { id: refreshClass, kind: 'policyClass' },
+      { id: refreshObjects, kind: 'objectAttribute' },
+    ];
+    policy.assignments = [
+      ...policy.assignments,
+      { child: subject, parent: refreshClass },
+      { child: target, parent: refreshObjects },
+      { child: refreshObjects, parent: refreshClass },
+    ];
+    if (
+      principal.kind === 'human' &&
+      principal.id === primary.facts.userId &&
+      primary.delegatedRefresh.allows(primary.facts.userId)
+    )
+      policy.associations = [
+        ...policy.associations,
+        {
+          id: 'assoc:delegated-refresh-allowance',
+          userAttribute: subject,
+          targetAttribute: refreshObjects,
+          accessRights: [right(input.operation)],
+        },
+      ];
   }
 
   if (primary?.context) {
@@ -1327,6 +1362,11 @@ export interface ProductPolicyInput {
     readonly now: number;
     readonly authorCurrent: (userId: string) => boolean;
   };
+  /**
+   * Current admitted `vault.delegate-refresh` allowances (#604), read by the Vault delivery owner.
+   * Presence makes delivery require an allowance naming each evaluated human; never model input.
+   */
+  readonly delegatedRefresh?: { readonly allows: (userId: string) => boolean };
   /** Already admitted Policy and exact current subject, supplied by the native fact owner. */
   readonly policy?: {
     readonly document: PolicyDocumentV1;

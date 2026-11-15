@@ -1199,6 +1199,49 @@ describe('runtime config loading and reload planning', () => {
     );
   });
 
+  it('reports a blocked delegated-refresh strategy without rejecting the Gateway config', () => {
+    const dataRoot = createDataRoot();
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    writeGatewayConfig(dataRoot);
+    const path = join(dataRoot, 'config', 'gateway.jsonc');
+    const shape = (id: string, strategy: string) => ({
+      id,
+      credentialKey: 'EXAMPLE_TOKEN',
+      endpoints: [
+        { name: 'api', host: 'api.example.test', port: 443, binaries: ['/usr/bin/curl'] },
+      ],
+      refresh: { strategy, tokenUrl: 'https://auth.example.test/token', scopes: [] },
+    });
+    writeFileSync(
+      path,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(path, 'utf8')),
+        providerAccessShapes: [
+          shape('rotating-api', 'oauth2_refresh_token'),
+          shape('client-api', 'oauth2_client_credentials'),
+        ],
+      })
+    );
+    const loaded = loadRuntimeConfig(dataRoot, { version: 1 });
+    expect(loaded.gatewayConfig.providerAccessShapes?.map((value) => value.id)).toEqual([
+      'rotating-api',
+      'client-api',
+    ]);
+    const blocked = loaded.diagnostics.filter(
+      (value) => value.code === 'credential_delegation_blocked'
+    );
+    expect(blocked).toEqual([
+      {
+        code: 'credential_delegation_blocked',
+        message:
+          'Provider access shape rotating-api cannot delegate refresh: rotating-family recovery is unproved.',
+        severity: 'warning',
+        source: 'DATA_ROOT/config/gateway.jsonc',
+      },
+    ]);
+    expect(loaded.diagnostics.filter((value) => value.severity === 'error')).toEqual([]);
+  });
+
   it('admits a transcription-only model without context through file validation and reload', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');

@@ -2,29 +2,48 @@ import type { PolicyDocumentV1 } from '@openkit/protocol';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const kernel = vi.hoisted(() => ({
-  rights: new Map<string, 'allow' | 'deny' | 'throw'>(),
+  requester: { member: true, administrator: false },
   authors: new Set<string>(),
+  operations: [] as string[],
 }));
 
-vi.mock('../runtime/worker-credential-authority.js', () => ({
-  readVaultRequesterAuthority: (
-    _coreDb: unknown,
-    workspaceId: string,
-    _requester: unknown,
-    operation: string
-  ) => {
-    const effect = kernel.rights.get(operation) ?? 'deny';
-    if (effect !== 'allow') throw new Error('Current credential binding authority is unavailable.');
-    return {
-      decision: { effect, reasons: [] },
-      facts: {
-        workspaceId,
+// The requester's real Kernel decides on synthetic current facts; only fact reading is replaced.
+vi.mock('../runtime/worker-credential-authority.js', async () => {
+  const { evaluatePolicyKernel } = await vi.importActual<
+    typeof import('../policy/workspace-access.js')
+  >('../policy/workspace-access.js');
+  return {
+    readVaultRequesterAuthority: (
+      _coreDb: unknown,
+      workspaceId: string,
+      _requester: unknown,
+      operation: string,
+      mutating: boolean,
+      delegatedRefresh?: { readonly allows: (userId: string) => boolean }
+    ) => {
+      kernel.operations.push(operation);
+      const responsibleUserId = 'usr_00000000-0000-7000-8000-0000000000a2';
+      const decision = evaluatePolicyKernel({
+        facts: {
+          userId: responsibleUserId,
+          activeUser: true,
+          administrator: kernel.requester.administrator,
+          credential: { kind: 'session', current: true, workspaceBound: true, readOnly: false },
+        },
+        target: {
+          kind: 'workspace',
+          workspaceId,
+          active: true,
+          membership: kernel.requester.member ? 'member' : null,
+        },
         operation,
-        responsibleUserId: 'usr_00000000-0000-7000-8000-0000000000a2',
-      },
-    };
-  },
-}));
+        mutating,
+        ...(delegatedRefresh ? { delegatedRefresh } : {}),
+      });
+      return { decision, facts: { workspaceId, operation, responsibleUserId } };
+    },
+  };
+});
 vi.mock('../auth/operation-authorizer.js', () => ({
   currentWorkspaceAuthority: (
     _coreDb: unknown,
@@ -81,14 +100,37 @@ const read = (statements: unknown[], now?: Date) =>
   });
 
 beforeEach(() => {
-  kernel.rights = new Map([['vault.use', 'allow']]);
+  kernel.requester = { member: true, administrator: false };
   kernel.authors = new Set(['usr_00000000-0000-7000-8000-0000000000a1']);
+  kernel.operations = [];
 });
 
 describe('vault.delegate-refresh authority', () => {
-  it('accepts the Kernel right without an authored statement', () => {
-    kernel.rights.set('vault.delegate-refresh', 'allow');
-    expect(read([])).toMatch(/^sha256:[0-9a-f]{64}$/);
+  it('refuses an administrator requester without an authored allowance', () => {
+    kernel.requester = { member: false, administrator: true };
+    expect(read([])).toBeUndefined();
+    // The statement names another human, so the administrator's own half has no allowance.
+    expect(
+      read([
+        {
+          ...allowance,
+          scope: {
+            ...allowance.scope,
+            subjects: [{ kind: 'human', id: 'usr_00000000-0000-7000-8000-0000000000a3' }],
+          },
+        },
+      ])
+    ).toBeUndefined();
+  });
+
+  it('accepts an administrator requester with an explicit allowance naming them', () => {
+    kernel.requester = { member: false, administrator: true };
+    expect(read([allowance])).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+
+  it('evaluates only the delegated right, never vault.use in its place', () => {
+    read([allowance]);
+    expect(kernel.operations).toEqual(['vault.delegate-refresh']);
   });
 
   it('denies by default when no exact authored allowance names the responsible human', () => {
@@ -113,10 +155,10 @@ describe('vault.delegate-refresh authority', () => {
     expect(read([{ ...allowance, authoredAt: '2026-11-15T00:00:01.000Z' }])).not.toBe(first);
   });
 
-  it('refuses when vault.use, author authority or the statement lifetime is not current', () => {
-    kernel.rights.set('vault.use', 'deny');
+  it('refuses when membership, author authority or the statement lifetime is not current', () => {
+    kernel.requester = { member: false, administrator: false };
     expect(read([allowance])).toBeUndefined();
-    kernel.rights.set('vault.use', 'allow');
+    kernel.requester = { member: true, administrator: false };
     kernel.authors.clear();
     expect(read([allowance])).toBeUndefined();
     kernel.authors.add('usr_00000000-0000-7000-8000-0000000000a1');

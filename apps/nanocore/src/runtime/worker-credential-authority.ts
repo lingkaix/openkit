@@ -8,6 +8,7 @@ import {
   currentWorkerLineageWorkspaceAuthority,
   currentWorkspaceAuthority,
   type WorkspaceAuthorityEvaluation,
+  type WorkspaceAuthorityOptions,
 } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
 import { TurnStartValidationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
@@ -294,12 +295,14 @@ export function readVaultRequesterAuthority(
   workspaceId: string,
   requester: VaultBindingRequester,
   operation: string,
-  mutating: boolean
+  mutating: boolean,
+  delegatedRefresh?: WorkspaceAuthorityOptions['delegatedRefresh']
 ): WorkspaceAuthorityEvaluation {
   let evaluated: WorkspaceAuthorityEvaluation | undefined;
   const capture = {
     dependencyFailure: 'throw' as const,
     mutating,
+    ...(delegatedRefresh ? { delegatedRefresh } : {}),
     onEvaluation: (event: WorkspaceAuthorityEvaluation) => {
       evaluated = event;
     },
