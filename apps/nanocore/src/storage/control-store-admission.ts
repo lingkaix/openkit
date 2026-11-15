@@ -1,11 +1,19 @@
 import { isDeepStrictEqual } from 'node:util';
-import { responsibleUserIdForActor } from '@openkit/protocol';
+import { readRetainedV1, responsibleUserIdForActor, writeRetainedV1 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { NotebookError } from '../knowledge/notebook.js';
 import type { CommandRequestResponse } from '../lib/store.js';
 import { type FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { IdempotencyKeyConflictError } from '../operation-error.js';
+import { GoalCommandError } from '../runtime/goal-error.js';
+import { advanceGoalRevision, goalPlanDigest } from '../runtime/goal-owner.js';
+import {
+  StoredGoalCardTaskV1Schema,
+  StoredGoalCardV1Schema,
+  StoredGoalPlanVersionV1Schema,
+  StoredGoalV1Schema,
+} from '../runtime/goal-retained-v1.js';
 import { parseStoredCommandScope } from './command-request-codecs.js';
 import {
   assertCommandRequestDbOwner,
@@ -28,6 +36,7 @@ import {
   type ControlKnowledgeAdmissionInput,
   ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
+  type GoalTaskCitation,
   isSeparateScopedNotebookReceipt,
   SCOPED_NOTEBOOK_SERVER_RECEIPTS,
   SCOPED_NOTEBOOK_USER_RECEIPTS,
@@ -89,6 +98,12 @@ export function pruneControlAdmissionReceipts(
     .run(referenceTime, ...(owner.kind === 'workspace' ? [owner.workspaceId] : []));
 }
 
+/** Internal reservation entry, not an additional wire producer or authority. */
+export function applyControlAdmission(
+  db: WorkspaceDb,
+  citation: { readonly goalTaskCitation: GoalTaskCitation; readonly threadId: string },
+  threads: Pick<FsStore, 'getThread' | 'listThreads'>
+): void;
 export function applyControlAdmission(
   sqlite: Database.Database,
   owner: ControlProductOwner,
@@ -109,10 +124,111 @@ export function applyControlAdmission(
   ownerOrWork:
     | ControlProductOwner
     | Extract<ControlAdmissionInput, { kind: 'knowledge-work' }>
-    | ControlCommandReceiptAdmission,
-  value?: ControlAdmission,
+    | ControlCommandReceiptAdmission
+    | { readonly goalTaskCitation: GoalTaskCitation; readonly threadId: string },
+  value?: ControlAdmission | Pick<FsStore, 'getThread' | 'listThreads'>,
   entries: readonly PreparedControlEntry[] = []
-): ControlAdmissionResult | ControlKnowledgeAdmissionResult | null {
+): ControlAdmissionResult | ControlKnowledgeAdmissionResult | null | undefined {
+  if ('sqlite' in connection && 'goalTaskCitation' in ownerOrWork) {
+    const db = connection;
+    if (db.scope !== 'workspace') throw new ControlProductPreconditionError();
+    const store = value as Pick<FsStore, 'getThread' | 'listThreads'>;
+    const input = ownerOrWork.goalTaskCitation;
+    const threadId = ownerOrWork.threadId;
+    if (!db.sqlite.inTransaction)
+      throw new Error('Goal Task citation requires the ordinary reservation transaction.');
+    const load = (table: string, key: string, id: string) =>
+      db.sqlite
+        .prepare(`SELECT schema_version AS schemaVersion,payload_json FROM ${table} WHERE ${key}=?`)
+        .get(id) as { schemaVersion: unknown; payload_json: string } | undefined;
+    const goalRow = load('goals', 'goal_id', input.goalId);
+    const cardRow = load('goal_cards', 'card_id', input.cardId);
+    const planRow = load('goal_plan_versions', 'plan_version_id', input.planVersionId);
+    if (!goalRow || !cardRow || !planRow)
+      throw new GoalCommandError('not_found', 'Goal admission records are unavailable.', 404);
+    const goal = readRetainedV1(goalRow, () =>
+      StoredGoalV1Schema.parse(JSON.parse(goalRow.payload_json))
+    );
+    const card = readRetainedV1(cardRow, () =>
+      StoredGoalCardV1Schema.parse(JSON.parse(cardRow.payload_json))
+    );
+    const plan = readRetainedV1(planRow, () =>
+      StoredGoalPlanVersionV1Schema.parse(JSON.parse(planRow.payload_json))
+    );
+    if (
+      goalPlanDigest(plan.bytes) !== plan.digest ||
+      JSON.stringify(plan.commitment) !== plan.bytes
+    )
+      throw new GoalCommandError(
+        'admission_conflict',
+        'The immutable Plan bytes or digest are inconsistent.'
+      );
+    if (goal.disposition || card.cancelled)
+      throw new GoalCommandError('goal_cancelled', 'Goal or card has ended.');
+    if (
+      goal.workspaceId !== db.workspaceId ||
+      card.goalId !== goal.goalId ||
+      plan.goalId !== goal.goalId ||
+      goal.activePlanVersionId !== plan.planVersionId ||
+      card.revision !== input.cardRevision ||
+      goal.intentRevision !== input.intentRevision
+    )
+      throw new GoalCommandError(
+        'admission_conflict',
+        'Current intent, card or Plan changed before reservation.'
+      );
+    if (!input.withinCurrentIntent || !input.withinPermittedAdjustments || !input.rationale.trim())
+      throw new GoalCommandError(
+        'new_plan_required',
+        'The contemplated work is not authorized by current intent and permitted adjustments.'
+      );
+    const thread = store.getThread(db.workspaceId, threadId);
+    if (thread.visibility !== 'workspace')
+      throw new GoalCommandError(
+        'shared_thread_required',
+        'Task admission requires an ordinary shared Thread.'
+      );
+    const missing = (
+      db.sqlite
+        .prepare(
+          'SELECT schema_version AS schemaVersion,thread_id FROM goal_card_tasks WHERE card_id=?'
+        )
+        .all(card.cardId) as {
+        schemaVersion: unknown;
+        thread_id: string;
+      }[]
+    ).some((link) =>
+      readRetainedV1(
+        link,
+        () => !store.listThreads(db.workspaceId).some((t) => t.id === link.thread_id)
+      )
+    );
+    if (missing)
+      throw new GoalCommandError(
+        'missing_task',
+        'A missing linked Task remains unresolved; it cannot authorize a duplicate.'
+      );
+    const link = StoredGoalCardTaskV1Schema.parse({
+      goalId: goal.goalId,
+      cardId: card.cardId,
+      threadId,
+      planVersionId: plan.planVersionId,
+      cardRevision: card.revision,
+    });
+    db.sqlite
+      .prepare(
+        'INSERT INTO goal_card_tasks (thread_id,goal_id,card_id,payload_json,schema_version) VALUES (?,?,?,?,?)'
+      )
+      .run(
+        threadId,
+        goal.goalId,
+        card.cardId,
+        JSON.stringify(link),
+        writeRetainedV1({}).schemaVersion
+      );
+    advanceGoalRevision(db, goal.goalId);
+    return;
+  }
   if ('sqlite' in connection) {
     assertControlProductWriter(connection.sqlite);
     const work = ControlAdmissionInputSchema.parse(ownerOrWork);
@@ -124,6 +240,7 @@ export function applyControlAdmission(
     if (connection.scope === 'user') throw new ControlProductPreconditionError();
     return admitKnowledgeWork(connection, work.input);
   }
+  if ('goalTaskCitation' in ownerOrWork) throw new ControlProductPreconditionError();
   const sqlite = connection;
   assertControlProductWriter(sqlite);
   if ('kind' in ownerOrWork && ownerOrWork.kind !== 'workspace' && ownerOrWork.kind !== 'server')

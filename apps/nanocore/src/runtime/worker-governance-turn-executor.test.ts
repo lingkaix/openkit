@@ -160,6 +160,7 @@ import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { artifactFilePayloadPath } from '../storage/artifacts/file-records.js';
 import { withCanonicalFileWriteAdmission } from '../storage/canonical-write-capacity.js';
+import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { presentControlFacts } from '../storage/control-store-input.js';
 import {
   ControlStoreWorkerError,
@@ -261,7 +262,6 @@ import * as nativeExecutionAttempts from './execution-attempts.js';
 import { createExecutionStepJournalReader } from './execution-journal.js';
 import type { ExecutionJournalRef } from './execution-step-journal.js';
 import { executeGoalOperation, readGoalView, requireNativeCoordinatorGoal } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import {
   commandInputHash,
@@ -19838,20 +19838,22 @@ describe('Login publication under the original Goal Task decision', () => {
           { visibility: 'workspace', threadSource: 'worker' }
         );
         db.sqlite.transaction(() =>
-          reserveGoalTask(
-            store,
+          applyControlAdmission(
             db,
             {
-              goalId: goal.goalId,
-              cardId: card.cardId,
-              cardRevision: card.revision,
-              intentRevision: 0,
-              planVersionId: plan.planVersionId,
-              withinCurrentIntent: true,
-              withinPermittedAdjustments: true,
-              rationale: 'Use the reviewed binding only',
+              goalTaskCitation: {
+                goalId: goal.goalId,
+                cardId: card.cardId,
+                cardRevision: card.revision,
+                intentRevision: 0,
+                planVersionId: plan.planVersionId,
+                withinCurrentIntent: true,
+                withinPermittedAdjustments: true,
+                rationale: 'Use the reviewed binding only',
+              },
+              threadId: thread.id,
             },
-            thread.id
+            store
           )
         )();
         const prompt = serializeStructuredWorkerDelegationRequest(taskRequest);

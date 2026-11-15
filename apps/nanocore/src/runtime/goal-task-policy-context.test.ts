@@ -13,6 +13,7 @@ import {
 } from '../internal-agents/delegation.js';
 import { FsStore } from '../lib/store.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
@@ -36,7 +37,6 @@ import {
   schedulerExecutionCorrelation,
 } from './execution-attempt-records.js';
 import { executeGoalOperation } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import { readGoalTaskPolicyContext } from './goal-task-policy-context.js';
 import { commandInputHash } from './idempotent-command.js';
 import { mcpToolArgumentsContentDigest } from './mcp-tool-schema-snapshots.js';
@@ -296,20 +296,22 @@ async function fixture(typed = true, linked = true) {
   );
   if (linked)
     db.sqlite.transaction(() =>
-      reserveGoalTask(
-        store,
+      applyControlAdmission(
         db,
         {
-          goalId: goal.goalId,
-          cardId: card.cardId,
-          planVersionId: plan.planVersionId,
-          cardRevision: 0,
-          intentRevision: 0,
-          withinCurrentIntent: true,
-          withinPermittedAdjustments: true,
-          rationale: 'Read only',
+          goalTaskCitation: {
+            goalId: goal.goalId,
+            cardId: card.cardId,
+            planVersionId: plan.planVersionId,
+            cardRevision: 0,
+            intentRevision: 0,
+            withinCurrentIntent: true,
+            withinPermittedAdjustments: true,
+            rationale: 'Read only',
+          },
+          threadId: thread.id,
         },
-        thread.id
+        store
       )
     )();
   const resource = {

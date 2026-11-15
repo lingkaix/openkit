@@ -11,6 +11,7 @@ import {
   createSchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -21,7 +22,6 @@ import { createTestStore, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalTools } from './goal-coordinator.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
-import { reserveGoalTask } from './goal-task-admission.js';
 import { updateWorkerCheckpoint, upsertWorkerCheckpoint } from './worker-checkpoints.js';
 
 /** Composes the real Goal, Task evidence, operation admission and transient Coordinator loop. */
@@ -165,20 +165,22 @@ it.each([
       );
       for (const thread of [completed, refused]) {
         db.sqlite.transaction(() =>
-          reserveGoalTask(
-            store,
+          applyControlAdmission(
             db,
             {
-              goalId: goal.goalId,
-              cardId: card.cardId,
-              planVersionId: plan.planVersionId,
-              cardRevision: card.revision,
-              intentRevision: goal.intentRevision,
-              withinCurrentIntent: true,
-              withinPermittedAdjustments: true,
-              rationale: 'Bounded note',
+              goalTaskCitation: {
+                goalId: goal.goalId,
+                cardId: card.cardId,
+                planVersionId: plan.planVersionId,
+                cardRevision: card.revision,
+                intentRevision: goal.intentRevision,
+                withinCurrentIntent: true,
+                withinPermittedAdjustments: true,
+                rationale: 'Bounded note',
+              },
+              threadId: thread.id,
             },
-            thread.id
+            store
           )
         )();
       }

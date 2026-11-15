@@ -13,6 +13,11 @@ import {
 } from '@openkit/protocol';
 import { z } from 'zod';
 import type { CommandRequestName, CommandRequestResponse } from '../lib/store.js';
+import {
+  StoredGoalCardV1Schema,
+  StoredGoalPlanVersionV1Schema,
+  StoredGoalV1Schema,
+} from '../runtime/goal-retained-v1.js';
 import { ControlPendingCommandInputSchema } from '../runtime/pending-request-codecs.js';
 import {
   CONTROL_PRODUCT_LIMITS,
@@ -103,6 +108,21 @@ const ReceiptSchema = z
     expiresAt: z.string().datetime(),
   })
   .strict();
+
+/** Original Coordinator citation; its six predicates are decided only inside the active reservation. */
+export const GoalTaskCitationSchema = z
+  .object({
+    goalId: StoredGoalV1Schema.shape.goalId,
+    cardId: StoredGoalCardV1Schema.shape.cardId,
+    planVersionId: StoredGoalPlanVersionV1Schema.shape.planVersionId,
+    cardRevision: StoredGoalCardV1Schema.shape.revision,
+    intentRevision: StoredGoalV1Schema.shape.intentRevision,
+    withinCurrentIntent: z.boolean(),
+    withinPermittedAdjustments: z.boolean(),
+    rationale: z.string(),
+  })
+  .strict();
+export type GoalTaskCitation = Readonly<z.infer<typeof GoalTaskCitationSchema>>;
 
 /** Closed native tuple; large Item/event bodies have synchronized immutable references instead of inline SQL payloads. */
 export const ControlAdmissionSchema = z

@@ -19,12 +19,6 @@ import { z } from 'zod';
 import { IdempotencyKeyConflictError, TurnStartValidationError } from '../operation-error.js';
 import { recordWorkerTurnLaunchDecision } from '../policy/permission-decisions.js';
 import {
-  StoredGoalCardV1Schema,
-  StoredGoalPlanVersionV1Schema,
-  StoredGoalV1Schema,
-} from '../runtime/goal-retained-v1.js';
-import { reserveGoalTask } from '../runtime/goal-task-admission.js';
-import {
   clearWorkerCheckpointInDb as clearWorkerCheckpoint,
   getWorkerCheckpoint,
   updateWorkerCheckpointInDb as updateWorkerCheckpoint,
@@ -38,6 +32,8 @@ import {
   getCommandRequestRecordFromDb,
   recordControlCommandRequestRecordInDb,
 } from './command-request-records.js';
+import { applyControlAdmission } from './control-store-admission.js';
+import { GoalTaskCitationSchema } from './control-store-admission-codecs.js';
 import { commandInputHash, presentControlFacts } from './control-store-input.js';
 import { ControlProductPreconditionError, readProduct } from './control-store-product-records.js';
 import type { WorkspaceDb } from './db.js';
@@ -63,18 +59,6 @@ const admission = {
   requestId: z.string().min(1),
   requestInputHash: z.string(),
 };
-const goalTaskAdmission = z
-  .object({
-    goalId: StoredGoalV1Schema.shape.goalId,
-    cardId: StoredGoalCardV1Schema.shape.cardId,
-    planVersionId: StoredGoalPlanVersionV1Schema.shape.planVersionId,
-    cardRevision: StoredGoalCardV1Schema.shape.revision,
-    intentRevision: StoredGoalV1Schema.shape.intentRevision,
-    withinCurrentIntent: z.boolean(),
-    withinPermittedAdjustments: z.boolean(),
-    rationale: z.string(),
-  })
-  .strict();
 
 const checkpoint = z.object({ ...scope, ...admission, ...mutable, stage, iteration }).strict();
 const checkpointRecord = checkpoint.required().extend({
@@ -126,7 +110,7 @@ export const ControlCheckpointCommandInputSchema = z.discriminatedUnion('kind', 
       contextDigest: optionalText,
       diagnosticsSummary: optionalText,
       now: TimestampSchema,
-      goalTaskAdmission: goalTaskAdmission.optional(),
+      goalTaskCitation: GoalTaskCitationSchema.optional(),
     })
     .strict(),
 ]);
@@ -237,7 +221,7 @@ export function applyControlCheckpointCommand(
     return upsertWorkerCheckpoint(db, presentControlFacts({ ...input, now: () => input.now }));
   if (getWorkerCheckpoint(db, input.workspaceId, input.threadId, input.turnId))
     throw new ControlProductPreconditionError();
-  if (input.goalTaskAdmission) {
+  if (input.goalTaskCitation) {
     const owner = { kind: 'workspace' as const, workspaceId: db.workspaceId };
     const getThread = (workspaceId: string, threadId: string) => {
       if (workspaceId !== db.workspaceId) throw new ControlProductPreconditionError();
@@ -245,7 +229,9 @@ export function applyControlCheckpointCommand(
       if (!row) throw new ControlProductPreconditionError();
       return ThreadSchema.parse(row.record);
     };
-    reserveGoalTask(
+    applyControlAdmission(
+      db,
+      { goalTaskCitation: input.goalTaskCitation, threadId: input.threadId },
       {
         getThread,
         listThreads: (workspaceId: string) => {
@@ -255,10 +241,7 @@ export function applyControlCheckpointCommand(
           }[];
           return ids.map(({ id }) => getThread(workspaceId, id));
         },
-      },
-      db,
-      input.goalTaskAdmission,
-      input.threadId
+      }
     );
   }
   recordWorkerTurnLaunchDecision(
