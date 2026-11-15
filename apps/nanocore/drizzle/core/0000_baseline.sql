@@ -712,7 +712,7 @@ CREATE TABLE `vault_references` (
 	`current_version` integer NOT NULL,
 	`created_at` text NOT NULL,
 	`updated_at` text NOT NULL
-, `login_provider` text, `login_account_id` text, `login_quarantined` integer, `login_observations_json` text);
+, `login_provider` text, `login_account_id` text, `login_quarantined` integer, `login_observations_json` text, `credential_writer_json` text);
 --> statement-breakpoint
 CREATE TABLE `vault_use_records` (
 	`use_id` text PRIMARY KEY NOT NULL,

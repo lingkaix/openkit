@@ -69,11 +69,15 @@ import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 import { importUnboundWorkspaceVaultReference } from './test-support/vault-retained-fixtures.js';
 import {
+  CORE_VAULT_CREDENTIAL_WRITER,
   ControlVaultInputSchema,
+  decodeVaultCredentialWriterJson,
   HarnessLoginMetadataSchema,
   HarnessLoginObservationsSchema,
   mapVaultReferenceRow,
+  VaultReferenceRecordSchema,
   type VaultReferenceRow,
+  vaultCredentialWriterOf,
 } from './vault-native-codecs.js';
 import { nativeProductScope } from './workspace-file-records.js';
 
@@ -2617,6 +2621,127 @@ describe('retained Login quota metadata codec boundary', () => {
   it('keeps a legacy Login without observations usable', () => {
     expect(HarnessLoginMetadataSchema.safeParse(login).success).toBe(true);
   });
+
+  // #604 format only: no producer writes this column; SQL NULL means Core is the writer.
+  const gatewayWriter = {
+    generation: Number.MAX_SAFE_INTEGER,
+    mode: 'gateway',
+    holder: 'r'.repeat(4096),
+    state: 'pending',
+  } as const;
+
+  it('reads an absent credential writer as Core without changing the record', async () => {
+    const f = await nativeLoginFixture();
+    const row = f
+      .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+      .get(f.login.referenceId) as VaultReferenceRow;
+    expect(row.credential_writer_json).toBeNull();
+    const decoded = mapVaultReferenceRow(row);
+    expect(decoded).not.toHaveProperty('credentialWriter');
+    expect(isDeepStrictEqual(decoded, f.login)).toBe(true);
+    expect(vaultCredentialWriterOf(decoded)).toEqual({
+      generation: 0,
+      mode: 'core',
+      holder: null,
+      state: 'active',
+    });
+    expect(decodeVaultCredentialWriterJson(null)).toBe(CORE_VAULT_CREDENTIAL_WRITER);
+    expect(Object.isFrozen(CORE_VAULT_CREDENTIAL_WRITER)).toBe(true);
+  });
+
+  it.each([
+    ['core', { generation: 1, mode: 'core', holder: null, state: 'active' }],
+    ['gateway pending', gatewayWriter],
+    ['gateway active', { ...gatewayWriter, generation: 2, state: 'active' }],
+    ['gateway fenced', { ...gatewayWriter, generation: 3, state: 'fenced' }],
+  ] as const)('reads a retained v1 %s writer without its marker', async (_name, writer) => {
+    const f = await nativeLoginFixture();
+    const row = f
+      .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+      .get(f.login.referenceId) as VaultReferenceRow;
+    // Owner-module decoding only; the canonical row keeps NULL.
+    const decoded = mapVaultReferenceRow({
+      ...row,
+      credential_writer_json: JSON.stringify({ ...writer, schemaVersion: 1 }),
+    });
+    expect(isDeepStrictEqual(decoded, { ...f.login, credentialWriter: writer })).toBe(true);
+    expect(decoded.credentialWriter).not.toHaveProperty('schemaVersion');
+    expect(vaultCredentialWriterOf(decoded)).toEqual(writer);
+    expect(VaultReferenceRecordSchema.parse(decoded)).toEqual(decoded);
+    expect(
+      f
+        .fixtureSql('SELECT credential_writer_json FROM vault_references WHERE reference_id=?')
+        .get(f.login.referenceId)
+    ).toEqual({ credential_writer_json: null });
+  });
+
+  it.each(['missing', 'future', 'text', 'null', 'boolean', 'future-invalid-fields'] as const)(
+    'refuses %s retained credential writer format before semantic decoding',
+    async (marker) => {
+      const f = await nativeLoginFixture();
+      const row = f
+        .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+        .get(f.login.referenceId) as VaultReferenceRow;
+      const retained: Record<string, unknown> = { ...gatewayWriter };
+      if (marker === 'future' || marker === 'future-invalid-fields') retained.schemaVersion = 2;
+      else if (marker === 'text') retained.schemaVersion = '1';
+      else if (marker === 'null') retained.schemaVersion = null;
+      else if (marker === 'boolean') retained.schemaVersion = true;
+      if (marker === 'future-invalid-fields') retained.mode = 'harness';
+      let failure: unknown;
+      try {
+        mapVaultReferenceRow({ ...row, credential_writer_json: JSON.stringify(retained) });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure instanceof TypeError).toBe(true);
+      expect(String(failure)).toBe('TypeError: Unsupported retained record format.');
+    }
+  );
+
+  it.each([
+    ['core with a holder', { generation: 1, mode: 'core', holder: 'r', state: 'active' }],
+    ['core pending', { generation: 1, mode: 'core', holder: null, state: 'pending' }],
+    ['core fenced', { generation: 1, mode: 'core', holder: null, state: 'fenced' }],
+    ['core generation 0', { generation: 0, mode: 'core', holder: null, state: 'active' }],
+    ['gateway without a holder', { ...gatewayWriter, holder: null }],
+    ['gateway empty holder', { ...gatewayWriter, holder: '' }],
+    ['gateway oversized holder', { ...gatewayWriter, holder: 'r'.repeat(4097) }],
+    ['gateway control holder', { ...gatewayWriter, holder: 'r\n' }],
+    ['gateway generation 0', { ...gatewayWriter, generation: 0 }],
+    ['negative generation', { ...gatewayWriter, generation: -1 }],
+    ['fractional generation', { ...gatewayWriter, generation: 1.5 }],
+    ['unsafe generation', { ...gatewayWriter, generation: Number.MAX_SAFE_INTEGER + 1 }],
+    ['text generation', { ...gatewayWriter, generation: '1' }],
+    ['harness mode', { ...gatewayWriter, mode: 'harness' }],
+    ['unknown state', { ...gatewayWriter, state: 'transferring' }],
+    ['retired expiresAt member', { ...gatewayWriter, expiresAt: null }],
+    ['unknown member', { ...gatewayWriter, account: 'x' }],
+    ['missing state', { generation: 1, mode: 'gateway', holder: 'r' }],
+    ['missing mode', { generation: 1, holder: null, state: 'active' }],
+  ] as const)('refuses an illegal retained writer: %s', async (_name, writer) => {
+    const f = await nativeLoginFixture();
+    const row = f
+      .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+      .get(f.login.referenceId) as VaultReferenceRow;
+    expect(() =>
+      mapVaultReferenceRow({
+        ...row,
+        credential_writer_json: JSON.stringify({ ...writer, schemaVersion: 1 }),
+      })
+    ).toThrow(new Error('Invalid retained Vault credential writer.'));
+  });
+
+  it.each(['', 'not-json', '[]', '1', 'null'])(
+    'refuses non-object retained writer text %j',
+    async (text) => {
+      const f = await nativeLoginFixture();
+      const row = f
+        .fixtureSql('SELECT * FROM vault_references WHERE reference_id=?')
+        .get(f.login.referenceId) as VaultReferenceRow;
+      expect(() => mapVaultReferenceRow({ ...row, credential_writer_json: text })).toThrow();
+    }
+  );
 
   it.each(['unknown', 'available', 'exhausted'])(
     'admits the retained %s state with its exact bounded private fields',

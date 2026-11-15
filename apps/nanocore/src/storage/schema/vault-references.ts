@@ -43,6 +43,8 @@ export const vaultReferences = sqliteTable(
     loginQuarantined: integer('login_quarantined', { mode: 'boolean' }),
     /** Bounded correlated native quota evidence; NULL means unknown, never permission. */
     loginObservationsJson: text('login_observations_json'),
+    /** Retained refresh-family writer; NULL means Core is the writer, never delegated authority. */
+    credentialWriterJson: text('credential_writer_json'),
     /** ISO timestamp for reference creation. */
     createdAt: text('created_at').notNull(),
     /** ISO timestamp for latest metadata update. */

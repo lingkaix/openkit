@@ -301,6 +301,7 @@ describe('database setup', () => {
         ['login_account_id', 'TEXT'],
         ['login_quarantined', 'INTEGER'],
         ['login_observations_json', 'TEXT'],
+        ['credential_writer_json', 'TEXT'],
       ]) {
         expect(loginColumns.find((column) => column.name === name)).toMatchObject({
           type,

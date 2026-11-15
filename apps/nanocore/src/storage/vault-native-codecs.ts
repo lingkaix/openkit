@@ -48,6 +48,17 @@ export interface HarnessLoginMetadata {
 /** Canonical private quota facts, stamped by the existing native reference owner. */
 export type HarnessLoginObservations = z.infer<typeof HarnessLoginObservationsSchema>;
 
+/** Exclusive refresh-family writer; a record never authorizes material use by itself. */
+export type VaultCredentialWriter = z.infer<typeof VaultCredentialWriterSchema>;
+
+/** Writer implied by an absent retained value: Core, before any delegation generation. */
+export const CORE_VAULT_CREDENTIAL_WRITER: VaultCredentialWriter = Object.freeze({
+  generation: 0,
+  mode: 'core',
+  holder: null,
+  state: 'active',
+});
+
 /** Durable non-secret vault reference record. */
 export interface VaultReferenceRecord {
   /** Stable vault reference id. */
@@ -72,6 +83,8 @@ export interface VaultReferenceRecord {
   readonly currentVersion: number;
   /** Explicit harness Login subtype; ordinary references omit it. */
   readonly login?: HarnessLoginMetadata | undefined;
+  /** Retained refresh-family writer; absent means Core is the writer. */
+  readonly credentialWriter?: VaultCredentialWriter | undefined;
   /** ISO timestamp for reference creation. */
   readonly createdAt: string;
   /** ISO timestamp for latest metadata update. */
@@ -94,6 +107,7 @@ export interface VaultReferenceRow {
   readonly login_account_id: string | null;
   readonly login_quarantined: number | null;
   readonly login_observations_json: string | null;
+  readonly credential_writer_json: string | null;
   readonly created_at: string;
   readonly updated_at: string;
 }
@@ -356,6 +370,7 @@ export function vaultReferenceSelectSql(): string {
     login_account_id,
     login_quarantined,
     login_observations_json,
+    credential_writer_json,
     created_at,
     updated_at
     FROM vault_references`;
@@ -399,8 +414,13 @@ export function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceReco
     (row.owner_scope !== 'user' || row.workspace_id !== null || !isEntityId('usr', row.user_id))
   )
     throw new Error('Harness Logins require a canonical User-owned reference.');
+  const credentialWriter =
+    row.credential_writer_json == null
+      ? undefined
+      : decodeVaultCredentialWriterJson(row.credential_writer_json);
   return {
     ...(login ? { login } : {}),
+    ...(credentialWriter ? { credentialWriter } : {}),
     backendKind: row.backend_kind,
     backendLocator: row.backend_locator,
     createdAt: row.created_at,
@@ -414,6 +434,33 @@ export function mapVaultReferenceRow(row: VaultReferenceRow): VaultReferenceReco
     userId: row.user_id,
     workspaceId: row.workspace_id,
   };
+}
+
+/**
+ * Decodes one retained writer value. NULL is Core; a non-NULL value is strict schema version 1.
+ *
+ * @param value Raw `credential_writer_json` column value.
+ * @returns Decoded writer, without the retained payload marker.
+ * @throws TypeError for a missing or unsupported schemaVersion; Error for any other shape.
+ */
+export function decodeVaultCredentialWriterJson(value: string | null): VaultCredentialWriter {
+  if (value === null) return CORE_VAULT_CREDENTIAL_WRITER;
+  return readRetainedV1(JSON.parse(value), (record) => {
+    const { schemaVersion: _schemaVersion, ...writer } = record as Record<string, unknown>;
+    const parsed = VaultCredentialWriterSchema.safeParse(writer);
+    if (!parsed.success) throw new Error('Invalid retained Vault credential writer.');
+    return parsed.data;
+  });
+}
+
+/**
+ * Returns the effective writer of one reference's refresh family.
+ *
+ * @param reference Canonical Vault reference record.
+ * @returns The retained writer, or Core when none is retained.
+ */
+export function vaultCredentialWriterOf(reference: VaultReferenceRecord): VaultCredentialWriter {
+  return reference.credentialWriter ?? CORE_VAULT_CREDENTIAL_WRITER;
 }
 
 /** Durable non-secret vault grant record. */
@@ -1495,6 +1542,31 @@ export const HarnessLoginObservationsSchema = z
   })
   .strict();
 
+const writerGeneration = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+
+/**
+ * Closed retained writer forms. Core holds no placement; a Gateway holder is the exact
+ * Core-allocated binding receipt id. Generation 0 exists only as the absent value.
+ */
+export const VaultCredentialWriterSchema = z.union([
+  z
+    .object({
+      generation: writerGeneration,
+      mode: z.literal('core'),
+      holder: z.null(),
+      state: z.literal('active'),
+    })
+    .strict(),
+  z
+    .object({
+      generation: writerGeneration,
+      mode: z.literal('gateway'),
+      holder: boundedLoginIdentity(4096),
+      state: z.enum(['active', 'pending', 'fenced']),
+    })
+    .strict(),
+]);
+
 /** Creation admits identity only; neither creation nor public quarantine authors quota evidence. */
 export const HarnessLoginIdentitySchema = z
   .object({
@@ -1601,6 +1673,7 @@ export const VaultReferenceRecordSchema = z
   .object({
     ...referenceFields,
     login: HarnessLoginMetadataSchema.optional(),
+    credentialWriter: VaultCredentialWriterSchema.optional(),
     workspaceId: nullableString,
     userId: nullableString,
     backendLocator: nullableString,
