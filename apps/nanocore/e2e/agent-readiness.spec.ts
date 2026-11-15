@@ -1,7 +1,12 @@
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  type NanoCoreHarness,
+  removeDataRoot,
+  seedLocalSmartSupply,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
 
@@ -18,8 +23,22 @@ afterEach(async () => {
 describe('nanocore e2e agent readiness', () => {
   it('updates readiness when local agent configs change', async () => {
     harness = await startNanoCoreHarness();
+    const dataRoot = harness.dataRoot;
 
+    // A fresh root has no Provider credential, so no shipped Agent is launchable yet.
     let diagnostics = await readDiagnostics(harness.baseUrl);
+
+    expect(diagnostics.agents).toContainEqual(
+      expect.objectContaining({ id: 'agent_codex_host', readiness: 'blocked' })
+    );
+    expect(diagnostics.agents).toContainEqual(
+      expect.objectContaining({ id: 'agent_opencode_server', readiness: 'blocked' })
+    );
+
+    await seedLocalSmartSupply(dataRoot);
+    await harness.stop();
+    harness = await startNanoCoreHarness({ dataRoot });
+    diagnostics = await readDiagnostics(harness.baseUrl);
 
     expect(diagnostics.agents).toContainEqual(
       expect.objectContaining({ id: 'agent_codex_host', readiness: 'ready' })
@@ -28,10 +47,9 @@ describe('nanocore e2e agent readiness', () => {
       expect.objectContaining({ id: 'agent_opencode_server', readiness: 'ready' })
     );
     expect(diagnostics.agents).toContainEqual(
-      expect.objectContaining({ id: 'agent_pi', readiness: 'disabled' })
+      expect.objectContaining({ id: 'agent_deepseek', readiness: 'disabled' })
     );
 
-    const dataRoot = harness.dataRoot;
     const manifestPath = join(dataRoot, 'config', 'agents', 'opencode-server.agent.jsonc');
     const manifest = readFileSync(manifestPath, 'utf8');
     rmSync(manifestPath);

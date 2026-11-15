@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -145,6 +145,47 @@ export async function completeServerBootstrap(harness: NanoCoreHarness): Promise
  */
 export async function removeDataRoot(dataRoot: string): Promise<void> {
   await rm(dataRoot, { force: true, recursive: true });
+}
+
+/**
+ * Gives the shipped `smart` logical model live Gateway supply through a credential-free local Provider.
+ *
+ * Diagnostics publish `ready` only after setup supply accepts an Agent, and the
+ * shipped `smart` routes need Provider credentials that a disposable root lacks.
+ * Takes effect at the next NanoCore start.
+ */
+export async function seedLocalSmartSupply(dataRoot: string): Promise<void> {
+  await writeFile(
+    join(dataRoot, 'config', 'providers', 'e2e.provider.jsonc'),
+    JSON.stringify({
+      schemaVersion: 1,
+      id: 'provider_e2e',
+      displayName: 'E2E Provider',
+      kind: 'local',
+      baseUrl: 'https://provider.example.com/v1',
+      models: ['model-e2e'],
+      defaultModel: 'model-e2e',
+      // The synthetic uncatalogued model still obeys boot's known-context contract.
+      modelMetadata: { 'model-e2e': { limit: { context: 16_000 } } },
+      readiness: { status: 'ready' },
+    })
+  );
+  const gatewayPath = join(dataRoot, 'config', 'gateway.jsonc');
+  const gateway = JSON.parse(await readFile(gatewayPath, 'utf8')) as {
+    logicalModels: Array<{ id: string }>;
+  };
+  gateway.logicalModels = gateway.logicalModels.map((logicalModel) =>
+    logicalModel.id === 'smart'
+      ? {
+          ...logicalModel,
+          contextManagement: [{ type: 'compaction', compactThreshold: 12_000 }],
+          routes: [
+            { id: 'smart-e2e', providerProfileId: 'provider_e2e', providerModel: 'model-e2e' },
+          ],
+        }
+      : logicalModel
+  );
+  await writeFile(gatewayPath, JSON.stringify(gateway));
 }
 
 /**

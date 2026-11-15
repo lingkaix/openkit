@@ -2,7 +2,12 @@ import { existsSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
+import {
+  type NanoCoreHarness,
+  removeDataRoot,
+  seedLocalSmartSupply,
+  startNanoCoreHarness,
+} from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
 const vaultKeyFilePath = join(tmpdir(), `openkit-vault-config-e2e-${process.pid}.key`);
@@ -21,24 +26,10 @@ afterEach(async () => {
 describe('nanocore e2e config loading', () => {
   it('loads seeded provider and agent files through diagnostics', async () => {
     harness = await startNanoCoreHarness();
-    const providerRoot = join(harness.dataRoot, 'config', 'providers');
     const agentRoot = join(harness.dataRoot, 'config', 'agents');
 
-    writeFileSync(
-      join(providerRoot, 'e2e.provider.jsonc'),
-      JSON.stringify({
-        schemaVersion: 1,
-        id: 'provider_e2e',
-        displayName: 'E2E Provider',
-        kind: 'local',
-        baseUrl: 'https://provider.example.com/v1',
-        models: ['model-e2e'],
-        defaultModel: 'model-e2e',
-        // The synthetic uncatalogued model still obeys boot's known-context contract.
-        modelMetadata: { 'model-e2e': { limit: { context: 16_000 } } },
-        readiness: { status: 'ready' },
-      })
-    );
+    // Seeds provider_e2e and routes the shipped `smart` logical model to it.
+    await seedLocalSmartSupply(harness.dataRoot);
     writeFileSync(
       join(agentRoot, 'e2e.agent.jsonc'),
       JSON.stringify({
@@ -54,7 +45,10 @@ describe('nanocore e2e config loading', () => {
           adapter: 'custom-http',
           version: '0.0.2',
           image: { kind: 'reference', ref: 'openkit/worker-e2e:dev', pullPolicy: 'never' },
-          binaries: [{ id: 'node', path: '/usr/local/bin/node' }],
+          binaries: [
+            { id: 'node', path: '/usr/local/bin/node' },
+            { id: 'openkit-worker-shim', path: '/usr/local/bin/openkit-worker-shim' },
+          ],
         },
         readiness: { status: 'ready' },
       })
