@@ -37,7 +37,6 @@ import {
   projectApprovalEffect,
 } from './pending-request-disclosure.js';
 import {
-  installPendingRequestAdmission,
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
   resolveCommandIntentApproval,
@@ -1691,7 +1690,7 @@ describe('pending requests', () => {
           );
           expect(refused.status).toBe(409);
           expect(await refused.json()).toMatchObject({ code: 'thread_busy' });
-          if (cause === 'boot') store.setTurnAdmissionHooks(null);
+          if (cause === 'boot') store.startPendingRequestDelivery(null);
           await store.updateTurn(busy.id, {
             status: 'completed',
             completedAt: new Date().toISOString(),
@@ -1884,7 +1883,7 @@ describe('pending requests', () => {
           throw new Error('Native submission result unknown');
         },
       };
-      installPendingRequestAdmission(store, {
+      store.startPendingRequestDelivery({
         ...dependencies,
         ...(site === 'terminal-barrier' ? { workerDelivery } : {}),
       });
@@ -1938,7 +1937,7 @@ describe('pending requests', () => {
               return getTurn(id);
             });
           }
-          installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
+          store.startPendingRequestDelivery({ ...dependencies, workerDelivery });
         }
         if (fault !== 'initial-lookup') {
           await attempted.promise;
@@ -1995,7 +1994,7 @@ describe('pending requests', () => {
             status: 'completed',
             completedAt: new Date().toISOString(),
           });
-          installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
+          store.startPendingRequestDelivery({ ...dependencies, workerDelivery });
         }
         expect(submissions).toBe(fault === 'initial-lookup' ? 0 : 1);
       } finally {
@@ -2017,7 +2016,7 @@ describe('pending requests', () => {
       const dependencies = {
         openWorkspace: (workspaceId: string) => openWorkspaceDb(dataRoot, workspaceId),
       };
-      installPendingRequestAdmission(store, dependencies);
+      store.startPendingRequestDelivery(dependencies);
       const turn = await store.createTurn(
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
@@ -2106,7 +2105,7 @@ describe('pending requests', () => {
             settled.resolve();
           },
         };
-        installPendingRequestAdmission(store, {
+        store.startPendingRequestDelivery({
           ...dependencies,
           workerDelivery,
           agentAuthority: () => mode === 'accepted',
@@ -2116,7 +2115,7 @@ describe('pending requests', () => {
         expect(readPendingRequest(db.sqlite, input.requestId)?.delivery).toBe(
           mode === 'accepted' ? 'delivered' : 'closed-out'
         );
-        installPendingRequestAdmission(store, { ...dependencies, workerDelivery });
+        store.startPendingRequestDelivery({ ...dependencies, workerDelivery });
         expect(submissions).toBe(1);
       } finally {
         db.sqlite.close();
@@ -2128,7 +2127,7 @@ describe('pending requests', () => {
   it('closes a removed Agent request at the active Turn terminal barrier', async () => {
     const { coreDb, dataRoot, store } = await openPendingApp();
     let current = true;
-    installPendingRequestAdmission(store, {
+    store.startPendingRequestDelivery({
       coreDb,
       agentAuthority: () => current,
       openWorkspace: (workspaceId) => openWorkspaceDb(dataRoot, workspaceId),

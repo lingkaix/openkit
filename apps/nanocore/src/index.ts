@@ -85,10 +85,7 @@ import {
 } from './runtime/nanohost-attempt-recovery.js';
 import { fenceNanoHostRuntimeTargetAfterRestart } from './runtime/nanohost-runtime-target.js';
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
-import {
-  installPendingRequestAdmission,
-  recoverPendingRequestsAtBoot,
-} from './runtime/pending-request-flow.js';
+import { recoverPendingRequestsAtBoot } from './runtime/pending-request-flow.js';
 import { prepareRecurringOccurrence } from './runtime/recurring-schedule-preparation.js';
 import {
   type RecurringScheduleService,
@@ -527,7 +524,7 @@ const bootResult = await runBootPhases({
           openWorkspace: (workspaceId: string) =>
             openAdmittedWorkspaceReadDb(dataRoot, workspaceId),
         };
-        installPendingRequestAdmission(recoveryStore, pendingWorkspace);
+        recoveryStore.startPendingRequestDelivery(pendingWorkspace);
         await recoverPendingRequestsAtBoot(recoveryStore, pendingWorkspace);
         runRecoveryMaintenance = {
           scheduler: async () => {

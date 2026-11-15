@@ -38,6 +38,7 @@ import {
   getNanoHostRuntimeTarget,
   upsertNanoHostRuntimeTarget,
 } from '../runtime/nanohost-runtime-target.js';
+import * as pendingFlow from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import * as productTurnStart from '../runtime/product-turn-start.js';
 import { createConfiguredWorkerLifecycleRuntime } from '../runtime/turn-executor-factory.js';
@@ -1128,21 +1129,17 @@ describe('SimulatedTurnExecutor', () => {
         }
         return getTurnById(turnId);
       });
-      const setHooks = store.setTurnAdmissionHooks.bind(store);
-      const hooks = vi.spyOn(store, 'setTurnAdmissionHooks').mockImplementation((input) => {
-        if (!input) return setHooks(input);
-        return setHooks({
-          ...input,
-          async onTerminal(turn) {
-            if (!terminalHeld) {
-              terminalHeld = true;
-              entered();
-              await saved;
-            }
-            await input.onTerminal?.(turn);
-          },
+      const wakePendingOutcomes = pendingFlow.wakePendingOutcomes;
+      const terminalWake = vi
+        .spyOn(pendingFlow, 'wakePendingOutcomes')
+        .mockImplementation(async (...args) => {
+          if (args[0] === store && !terminalHeld) {
+            terminalHeld = true;
+            entered();
+            await saved;
+          }
+          await wakePendingOutcomes(...args);
         });
-      });
       const createTurn = store.createTurn.bind(store);
       const creates = vi.spyOn(store, 'createTurn').mockImplementation(async (...args) => {
         if (args[2] === 'User-input outcomes' && !candidateHeld) {
@@ -1314,7 +1311,7 @@ describe('SimulatedTurnExecutor', () => {
             .map((result) => result.value)
         );
         retry.stop();
-        hooks.mockRestore();
+        terminalWake.mockRestore();
         creates.mockRestore();
         lookups.mockRestore();
         commands.mockRestore();

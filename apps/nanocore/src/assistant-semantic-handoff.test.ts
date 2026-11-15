@@ -399,7 +399,7 @@ describe('Assistant semantic Task handoff', () => {
     const f = await fixture();
     // Reconstruct the P14-canonical queued boundary before P19 selection proofs and Worker closeout.
     // The old receiving Thread has no parent/source, and an ordinary answer has no exact selection.
-    f.store.setTurnAdmissionHooks(null);
+    f.store.startPendingRequestDelivery(null);
     const now = '2026-10-14T00:00:00.000Z';
     const actor = { kind: 'user' as const, id: LOCAL_USER_ID };
     const input = 'Implement the bounded sample change.';

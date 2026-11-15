@@ -204,7 +204,6 @@ import {
   TurnStartValidationError,
 } from './runtime/orchestrator.js';
 import {
-  installPendingRequestAdmission,
   type PendingAdmissionDependencies,
   setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
@@ -2487,7 +2486,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   };
 
   if (options.coreDb || sharedStore.getDataRoot())
-    installPendingRequestAdmission(sharedStore, {
+    sharedStore.startPendingRequestDelivery({
       agentAuthority: (record) =>
         runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
       workerDelivery: pendingWorkerDelivery,

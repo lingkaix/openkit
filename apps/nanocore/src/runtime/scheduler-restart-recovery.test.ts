@@ -109,7 +109,6 @@ import type {
   NanoHostSessionEffectRequest,
 } from './nanohost-session-dispatch.js';
 import {
-  installPendingRequestAdmission,
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
 } from './pending-request-flow.js';
@@ -508,7 +507,7 @@ async function createFailedStartFixture(
       return db;
     },
   };
-  installPendingRequestAdmission(restartedStore, pending);
+  restartedStore.startPendingRequestDelivery(pending);
   if (finalized) await recoverPendingRequestsAtBoot(restartedStore, pending);
   const input = {
     store: restartedStore,

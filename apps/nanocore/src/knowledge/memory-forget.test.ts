@@ -20,7 +20,6 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
 import { projectApprovalEffect } from '../runtime/pending-request-disclosure.js';
-import { installPendingRequestAdmission } from '../runtime/pending-request-flow.js';
 import { readPendingRequest } from '../runtime/pending-requests.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
@@ -137,7 +136,7 @@ async function fixture(sourceBacked = false) {
     { executorKind: 'person' }
   );
   const openWorkspace = () => openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
-  installPendingRequestAdmission(store, { coreDb, openWorkspace });
+  store.startPendingRequestDelivery({ coreDb, openWorkspace });
   const request = {
     requestId: randomUUID(),
     workspaceId: DEMO_WORKSPACE_ID,

@@ -142,7 +142,6 @@ import { allocateNanoHostRuntimeTargetConnectionGeneration } from './runtime/nan
 import { createNanoHostSessionDispatch } from './runtime/nanohost-session-dispatch.js';
 import { projectApprovalEffect } from './runtime/pending-request-disclosure.js';
 import {
-  installPendingRequestAdmission,
   raiseRecordedPendingRequest,
   respondRecordedApproval,
 } from './runtime/pending-request-flow.js';
@@ -5896,7 +5895,7 @@ describe('worker MCP routes', () => {
           coreDb,
           openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
         };
-        installPendingRequestAdmission(store, dependencies);
+        store.startPendingRequestDelivery(dependencies);
         if (change === 'revoke') await revokeVaultGrant(coreDb, { grantId: publicGrant.grantId });
         const resolved = vi.spyOn(vaultUnlockState.backend(), 'resolve');
         if (change === 'credential-after-claim') {

@@ -149,13 +149,12 @@ if (retainedRoot) {
     }
   }
   // Explicitly interrupted barrier is the reviewer's F4 entry point.
-  if (mode !== 'invalidation') store.setTurnAdmissionHooks(null);
+  if (mode !== 'invalidation') store.startPendingRequestDelivery(null);
   if (!(mode === 'delivery' && phase === 'between'))
     await store.updateTurn(turn.id, { status: 'completed', completedAt: now });
   if (mode === 'delivery' || mode === 'throw') {
-    // Restore the ordinary owner hook before the deciding response command.
-    const { installPendingRequestAdmission } = await import('../runtime/pending-request-flow.js');
-    installPendingRequestAdmission(store, {
+    // Restore the concrete Pending services before the deciding response command.
+    store.startPendingRequestDelivery({
       coreDb,
       openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     });
@@ -184,7 +183,7 @@ if (retainedRoot) {
   /** Seeds adversarial retained history; the real native Turn-and-freeze packet has no association gap. */
   const retainMissingAssociation = async (record: unknown): Promise<never> => {
     const candidate = StoredTurnV1Schema.parse(record);
-    store.setTurnAdmissionHooks(null);
+    store.startPendingRequestDelivery(null);
     await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       String(candidate.threadId),

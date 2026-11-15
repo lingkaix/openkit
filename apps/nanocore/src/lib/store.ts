@@ -183,6 +183,13 @@ import type {
 } from '../runtime/execution-step-journal.js';
 import { ensureTurnFeedback } from '../runtime/feedback.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import {
+  type PendingAdmissionDependencies,
+  preparePendingDeliveryRelease,
+  preparePendingOutcomeFreeze,
+  resumeFrozenPendingDelivery,
+  wakePendingOutcomes,
+} from '../runtime/pending-request-flow.js';
 import type {
   ControlPendingCommandInput,
   ControlPendingCommandResult,
@@ -895,25 +902,6 @@ export interface ArtifactSubmissionPublication {
   readonly fileAdmission: FileStorageAdmission;
 }
 
-/** Hooks invoked when a Turn is admitted or first becomes terminal. */
-export interface TurnAdmissionHooks {
-  /** Freezes matching ready outcomes into the admitted Turn. */
-  onAdmitted?: (turn: Turn) => void | Promise<void>;
-  /** Prepares immutable outcome projections; the native owner freezes them with admission. */
-  prepareAdmission?: (
-    turn: Turn,
-    executor?: 'worker' | 'assistant' | 'coordinator' | 'person'
-  ) =>
-    | { items: readonly Item[]; pending: readonly ControlPendingCommandInput[] }
-    | Promise<{ items: readonly Item[]; pending: readonly ControlPendingCommandInput[] }>;
-  /** Supplies owned terminal association changes to the same native terminal tuple. */
-  prepareTerminal?: (turn: Turn) => readonly ControlPendingCommandInput[];
-  /** Commits the minimal Task result before canonical file publication. */
-  onTerminalFact?: (turn: Turn) => void;
-  /** Admits the next outcome Turn after a terminal barrier. */
-  onTerminal?: (turn: Turn) => void | Promise<void>;
-}
-
 /** Explicit trusted progress status producer; this grants no post-terminal authority or weaker ACK. */
 export const RETAINED_PROGRESS_PUBLICATION = 'progress' as const;
 
@@ -1167,8 +1155,8 @@ export class FsStore {
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
-  private turnAdmissionHooks: TurnAdmissionHooks | null = null;
-  private terminalHookDepth = 0;
+  private pendingRequestServices: PendingAdmissionDependencies | null = null;
+  private pendingWakeDepth = 0;
   private inMemoryMutationAdmission?: WorkspaceMutationAdmission;
   private get workspaceMutationAdmission(): WorkspaceMutationAdmission | undefined {
     return this.dataRoot
@@ -3342,7 +3330,7 @@ export class FsStore {
       .finally(release);
   }
 
-  /** Releases the native boundary before hooks, while retaining their shutdown lifetime. */
+  /** Releases the native terminal boundary before the explicit Pending wake, retaining its shutdown lifetime. */
   private publishTurnMutation<I>(
     owner: ControlProductOwner,
     turnId: string,
@@ -3350,17 +3338,22 @@ export class FsStore {
     prepare: (owned: I) => Promise<Turn | { turn: Turn; notify: boolean }>
   ): Promise<Turn> {
     const publication = this.publishTurn(owner, [turnId], input, prepare);
-    // If shutdown refuses the separate hook lifetime, its caller still owns the refusal below.
+    // If shutdown refuses the separate wake lifetime, its caller still owns the refusal below.
     void publication.catch(() => undefined);
     const finish = async () => {
       const result = await publication;
       const turn = 'turn' in result ? result.turn : result;
-      if ('turn' in result && result.notify && this.terminalHookDepth < 8) {
-        this.terminalHookDepth++;
+      if (
+        'turn' in result &&
+        result.notify &&
+        this.pendingRequestServices &&
+        this.pendingWakeDepth < 8
+      ) {
+        this.pendingWakeDepth++;
         try {
-          await this.turnAdmissionHooks?.onTerminal?.(turn);
+          await wakePendingOutcomes(this, this.pendingRequestServices, turn);
         } finally {
-          this.terminalHookDepth--;
+          this.pendingWakeDepth--;
         }
       }
       return turn;
@@ -3727,9 +3720,11 @@ export class FsStore {
   /** Prepares the actual Pending freeze and immutable Items for a native owner that admits its own Turn. */
   public async prepareNativeTurnPendingAdmission(
     turn: Turn,
-    executor: 'worker' | 'coordinator'
+    executor?: 'worker' | 'assistant' | 'coordinator' | 'person'
   ): Promise<{ entries: ControlProductEntry[]; pending: readonly ControlPendingCommandInput[] }> {
-    const admission = await this.turnAdmissionHooks?.prepareAdmission?.(turn, executor);
+    const admission = this.pendingRequestServices
+      ? preparePendingOutcomeFreeze(this, this.pendingRequestServices, turn, executor)
+      : undefined;
     const entries = await this.prepareNativeItems(
       this.nativeScope(turn.owner),
       admission?.items ?? []
@@ -5241,11 +5236,11 @@ export class FsStore {
           publishTurnFileInputs(this.workspaceRootPath(workspaceId), turn, options.filePayloadPaths)
         );
       }
-      const pendingAdmission = await this.turnAdmissionHooks?.prepareAdmission?.(
+      const pendingAdmission = await this.prepareNativeTurnPendingAdmission(
         turn,
         options.executorKind
       );
-      const pendingEntries = await this.prepareNativeItems(scope, pendingAdmission?.items ?? []);
+      const pendingEntries = pendingAdmission.entries;
       let commandAdmission: Pick<ControlAdmission, 'receipt' | 'audit'> | undefined;
       if (options.commandReceipt) {
         const { responseKind, ...receipt } = options.commandReceipt;
@@ -5342,8 +5337,6 @@ export class FsStore {
       );
       if (options.executorKind) this.turnExecutors.set(turn.id, options.executorKind);
       this.turnStream(turn.id);
-      if (!this.turnAdmissionHooks?.prepareAdmission)
-        await this.turnAdmissionHooks?.onAdmitted?.(this.getTurn(workspaceId, threadId, turn.id));
       return this.getTurn(workspaceId, threadId, turn.id);
     }
     this.turns.set(turn.id, turn);
@@ -5359,17 +5352,13 @@ export class FsStore {
       listeners: new Set(),
     });
     this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
-    await this.turnAdmissionHooks?.onAdmitted?.(turn);
     return this.getTurnById(turn.id);
   }
 
-  /**
-   * Registers admission and terminal hooks for pending-request delivery.
-   *
-   * @param hooks Hooks invoked by Turn admission and the first terminal transition.
-   */
-  public setTurnAdmissionHooks(hooks: TurnAdmissionHooks | null): void {
-    this.turnAdmissionHooks = hooks;
+  /** Binds the real Pending services and resumes their original frozen Worker deliveries. */
+  public startPendingRequestDelivery(dependencies: PendingAdmissionDependencies | null): void {
+    this.pendingRequestServices = dependencies;
+    if (dependencies) resumeFrozenPendingDelivery(this, dependencies);
   }
 
   /**
@@ -5698,8 +5687,6 @@ export class FsStore {
       return this.getTurnById(turnId);
     }
     updated = this.retainInMemoryInfluence(updated);
-    if (!isSealedTurnTerminal(turn.status) && isSealedTurnTerminal(updated.status))
-      this.turnAdmissionHooks?.onTerminalFact?.(updated);
     this.turns.set(turnId, updated);
     if (updated.status === 'completed' && !turn.completedAt && updated.completedAt) {
       ensureTurnFeedback(this, updated, updated.agentId ?? null);
@@ -5707,13 +5694,14 @@ export class FsStore {
     if (
       !isSealedTurnTerminal(turn.status) &&
       isSealedTurnTerminal(updated.status) &&
-      this.terminalHookDepth < 8
+      this.pendingRequestServices &&
+      this.pendingWakeDepth < 8
     ) {
-      this.terminalHookDepth += 1;
+      this.pendingWakeDepth += 1;
       try {
-        this.turnAdmissionHooks?.onTerminal?.(updated);
+        void wakePendingOutcomes(this, this.pendingRequestServices, updated);
       } finally {
-        this.terminalHookDepth -= 1;
+        this.pendingWakeDepth -= 1;
       }
     }
     return this.getTurnById(turnId);
@@ -5996,7 +5984,9 @@ export class FsStore {
           owner.kind === 'workspace'
             ? [
                 ...(publication.pending ?? []),
-                ...(this.turnAdmissionHooks?.prepareTerminal?.(turn) ?? []),
+                ...(this.pendingRequestServices
+                  ? preparePendingDeliveryRelease(this.pendingRequestServices, turn)
+                  : []),
               ]
             : [],
         reap: { reason: turn.status, inferredBy: 'native-terminal-publication' },

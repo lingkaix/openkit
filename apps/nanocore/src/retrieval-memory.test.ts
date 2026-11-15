@@ -37,7 +37,6 @@ import {
   readAuthorizedUserMemoryPages,
 } from './retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from './storage/db.js';
 import {
@@ -443,7 +442,7 @@ describe('governed current-self Memory search', () => {
     const before = await retrieveUserMemory(f.alice.query());
     expect(before.selected.map(({ reference }) => reference.objectId)).toEqual(['preferences']);
     const openWorkspace = () => openWorkspaceDb(f.dataRoot, f.workspaceId);
-    installPendingRequestAdmission(f.store, { coreDb: f.coreDb, openWorkspace });
+    f.store.startPendingRequestDelivery({ coreDb: f.coreDb, openWorkspace });
     const page = readMemoryPage(f.alice.writer, 'preferences')!;
     const requestId = randomUUID();
     const prepared = await prepareMemoryForgetCommand(f.alice.writer, {

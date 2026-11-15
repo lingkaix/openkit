@@ -7,6 +7,7 @@ import { allocateEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { refuseScope } from '../bootstrap/readiness.js';
 import { feedbackFilePath } from '../runtime/feedback.js';
+import * as pendingFlow from '../runtime/pending-request-flow.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -501,10 +502,10 @@ describe('Store publishes only persisted record candidates', () => {
   it('keeps a refused terminal Turn out of live reads, feedback and terminal notifications', async () => {
     const f = await fixture();
     const before = record(f, 'control_turns', f.turn.id);
-    const onTerminal = vi.fn();
-    // Native terminal facts share the deciding transaction; no pre-commit Main hook may publish them.
-    const onTerminalFact = vi.fn();
-    f.store.setTurnAdmissionHooks({ onTerminal, onTerminalFact });
+    const onTerminal = vi.spyOn(pendingFlow, 'wakePendingOutcomes');
+    f.store.startPendingRequestDelivery({
+      openWorkspace: (workspaceId) => openWorkspaceDb(f.root, workspaceId),
+    });
     refuse(f, 'control_turns', 'UPDATE');
     await expect(
       f.store.completeTurn(f.turn.id, {
@@ -514,7 +515,6 @@ describe('Store publishes only persisted record candidates', () => {
     ).rejects.toMatchObject({ commit: 'not-committed' });
     expect.soft(f.store.getTurnById(f.turn.id)).toEqual(f.turn);
     expect(onTerminal).not.toHaveBeenCalled();
-    expect(onTerminalFact).not.toHaveBeenCalled();
     expect(f.store.getTurnEvents(f.turn.id)).toEqual([]);
     expect(existsSync(feedbackFilePath(f.store, f.turn))).toBe(false);
     expect(record(f, 'control_turns', f.turn.id)).toBe(before);
@@ -567,15 +567,16 @@ describe('Store publishes only persisted record candidates', () => {
     expect(updatedSession).toEqual({ ...session, ...sessionPatch });
     expect(new FsStore({ dataRoot: f.root }).getAgentSession(session.id)).toEqual(updatedSession);
     const publications: string[] = [];
-    f.store.setTurnAdmissionHooks({
-      onTerminalFact: () => {
-        publications.push('fact');
-      },
-      onTerminal: (turn) => {
-        expect(JSON.parse(record(f, 'control_turns', turn.id)).status).toBe('completed');
-        expect(existsSync(feedbackFilePath(f.store, turn))).toBe(true);
-        publications.push('terminal');
-      },
+    f.store.startPendingRequestDelivery({
+      openWorkspace: (workspaceId) => openWorkspaceDb(f.root, workspaceId),
+    });
+    const wakePendingOutcomes = pendingFlow.wakePendingOutcomes;
+    vi.spyOn(pendingFlow, 'wakePendingOutcomes').mockImplementation(async (...args) => {
+      const turn = args[2];
+      expect(JSON.parse(record(f, 'control_turns', turn.id)).status).toBe('completed');
+      expect(existsSync(feedbackFilePath(f.store, turn))).toBe(true);
+      publications.push('terminal');
+      await wakePendingOutcomes(...args);
     });
     const completed = await f.store.completeTurn(f.turn.id, {
       status: 'completed',

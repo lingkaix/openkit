@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getArtifactReview } from '../artifact-reviews.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
+import * as pendingFlow from '../runtime/pending-request-flow.js';
 import type { WorkerArtifactCapture } from '../runtime/worker-governance-backend.js';
 import { importWorkerTranscript } from '../runtime/worker-transcript.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
@@ -474,14 +475,21 @@ describe('Store same-Turn publication order through the real native worker', () 
     const item = message(f.peer, 'Before terminal');
     const decided = message(f.peer, 'Already decided terminal publication');
     const order: string[] = [];
-    f.store.setTurnAdmissionHooks({
-      onTerminal: async () => {
-        entered.release();
-        await release.reached;
-        await f.store.publishSettledTurnItem(decided);
-        order.push('hook');
-      },
+    f.store.startPendingRequestDelivery({
+      openWorkspace: (workspaceId) => openWorkspaceDb(f.root, workspaceId),
     });
+    const wakePendingOutcomes = pendingFlow.wakePendingOutcomes;
+    const terminalWake = vi
+      .spyOn(pendingFlow, 'wakePendingOutcomes')
+      .mockImplementation(async (...args) => {
+        if (args[0] === f.store && args[2].id === f.peer.id) {
+          entered.release();
+          await release.reached;
+          await f.store.publishSettledTurnItem(decided);
+          order.push('hook');
+        }
+        await wakePendingOutcomes(...args);
+      });
     const producer = observe(
       client.runOperation(async () => {
         await Promise.all([
@@ -518,7 +526,8 @@ describe('Store same-Turn publication order through the real native worker', () 
       release.release();
       await producer;
       if (shutdown) await shutdown;
-      f.store.setTurnAdmissionHooks(null);
+      f.store.startPendingRequestDelivery(null);
+      terminalWake.mockRestore();
     }
     expect(await producer).toMatchObject({ status: 'ok' });
     expect(await shutdown).toMatchObject({ status: 'ok' });

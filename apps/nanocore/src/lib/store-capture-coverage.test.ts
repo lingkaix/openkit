@@ -44,8 +44,6 @@ describe('Turn capture coverage binding', () => {
         turnId
       );
       const collect = vi.fn(async () => undefined);
-      const admitted = vi.fn();
-      store.setTurnAdmissionHooks({ onAdmitted: admitted });
       const db = openWorkspaceDb(dataRoot, workspaceId);
       try {
         // These replace file and parent-directory fsync faults: SQL now owns the whole admission tuple.
@@ -65,7 +63,6 @@ describe('Turn capture coverage binding', () => {
           })()
         ).rejects.toMatchObject({ code: 'constraint', commit: 'not-committed' });
         expect(collect).not.toHaveBeenCalled();
-        expect(admitted).not.toHaveBeenCalled();
         expect(store.getTurnCaptureCoverage(turnId)).toBeNull();
         expect(() => store.getTurnById(turnId)).toThrow('Turn not found');
         expect(store.getThread(workspaceId, thread.id)).toEqual(before);

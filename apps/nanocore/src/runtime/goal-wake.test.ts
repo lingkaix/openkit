@@ -7,7 +7,6 @@ import { shutdownControlStoreWorkerClient } from '../storage/control-store-worke
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { executeGoalOperation, readGoalView } from './goal-owner.js';
-import { installPendingRequestAdmission } from './pending-request-flow.js';
 import { recordTaskTerminalFact, recoverTaskTerminalFacts } from './task-terminal-fact.js';
 
 describe('Task terminal and Goal wake shared commit', () => {
@@ -51,7 +50,7 @@ describe('Task terminal and Goal wake shared commit', () => {
         kind: 'user',
         id: 'usr_00000000-0000-7000-8000-000000000001',
       });
-      installPendingRequestAdmission(store, {
+      store.startPendingRequestDelivery({
         openWorkspace: (workspaceId) => openWorkspaceDb(root, workspaceId),
       });
       const before = readGoalView(store, db, goal.goalId).goal!.changeRevision;

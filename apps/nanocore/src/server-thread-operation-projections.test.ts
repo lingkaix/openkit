@@ -16,7 +16,6 @@ import { commandRequestKey, FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { executeGoalOperation, readGoalView } from './runtime/goal-owner.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
-import { installPendingRequestAdmission } from './runtime/pending-request-flow.js';
 import { pendingRequestItemId, readPendingRequest } from './runtime/pending-requests.js';
 import { openControlStoreProductReadHandle } from './storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
@@ -667,7 +666,7 @@ it.each([
       deliveryTurnId: null,
     });
     // These are actual retained Goal decisions. Install the ordinary admission hooks before the next command.
-    installPendingRequestAdmission(f.store, {
+    f.store.startPendingRequestDelivery({
       coreDb: f.coreDb,
       openWorkspace: (id) => openWorkspaceDb(f.dataRoot, id),
     });

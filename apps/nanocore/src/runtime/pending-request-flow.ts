@@ -4,6 +4,7 @@ import {
   type Item,
   ItemSchema,
   isSealedTurnTerminal,
+  type Turn,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
@@ -213,102 +214,112 @@ function pendingOutcomeTrigger(records: readonly PendingRequestRecord[]) {
   };
 }
 
-/**
- * Installs freeze-on-admission and terminal-barrier admission for one store.
- *
- * @param store Product store.
- * @param dependencies Workspace opener and optional worker submission.
- */
-export function installPendingRequestAdmission(
+/** Prepares the exact original outcome Items and freeze command for the native Turn tuple. */
+export function preparePendingOutcomeFreeze(
   store: FsStore,
-  dependencies: PendingAdmissionDependencies
-): void {
-  store.setTurnAdmissionHooks({
-    prepareAdmission(turn, declaredExecutor) {
-      if (turn.owner.kind !== 'workspace') return { items: [], pending: [] };
-      const workspaceId = turn.owner.workspaceId;
-      const executor = declaredExecutor ?? executorKindForTurn(turn);
-      if (!executor) return { items: [], pending: [] };
-      return withWorkspace(dependencies, workspaceId, (sqlite) => {
-        const census = listThreadPendingRequests(sqlite, workspaceId, turn.threadId);
-        const usable = census.filter((record) => canonicalRecordIsUsable(store, sqlite, record));
-        const cause: 'outcome' | 'carried' = outcomeCauses.get(turn.id) ?? 'carried';
-        const selected = selectReadyOutcomes(usable, {
+  dependencies: PendingAdmissionDependencies,
+  turn: Turn,
+  declaredExecutor?: PendingExecutorKind
+): { items: readonly Item[]; pending: readonly ControlPendingCommandInput[] } {
+  if (turn.owner.kind !== 'workspace') return { items: [], pending: [] };
+  const workspaceId = turn.owner.workspaceId;
+  const executor = declaredExecutor ?? executorKindForTurn(turn);
+  if (!executor) return { items: [], pending: [] };
+  return withWorkspace(dependencies, workspaceId, (sqlite) => {
+    const census = listThreadPendingRequests(sqlite, workspaceId, turn.threadId);
+    const usable = census.filter((record) => canonicalRecordIsUsable(store, sqlite, record));
+    const cause: 'outcome' | 'carried' = outcomeCauses.get(turn.id) ?? 'carried';
+    const selected = selectReadyOutcomes(usable, {
+      executor,
+      agentId: turn.agentId ?? null,
+      cause,
+      responsibleUserId: turn.triggerActor.kind === 'user' ? turn.triggerActor.id : null,
+    });
+    if (cause === 'outcome') {
+      if (!selected.length) throw associationGap();
+      // Preparation owns the input passed to the same native Turn/freeze transaction.
+      turn.triggerSource = pendingOutcomeTrigger(selected);
+    }
+    const now = new Date().toISOString();
+    const frozen = selected.map((record) => ({
+      ...record,
+      delivery: 'frozen' as const,
+      deliveryTurnId: turn.id,
+      deliveryCause: cause,
+      publicationTurnId: record.publicationTurnId ?? turn.id,
+      updatedAt: now,
+    }));
+    return {
+      items: pendingOutcomeItems(frozen, turn.id, now),
+      pending: [
+        {
+          action: 'freeze' as const,
+          workspaceId,
+          threadId: turn.threadId,
+          turnId: turn.id,
           executor,
           agentId: turn.agentId ?? null,
           cause,
-          responsibleUserId: turn.triggerActor.kind === 'user' ? turn.triggerActor.id : null,
-        });
-        if (cause === 'outcome') {
-          if (!selected.length) throw associationGap();
-          // Preparation owns the input passed to the same native Turn/freeze transaction.
-          turn.triggerSource = pendingOutcomeTrigger(selected);
-        }
-        const now = new Date().toISOString();
-        const frozen = selected.map((record) => ({
-          ...record,
-          delivery: 'frozen' as const,
-          deliveryTurnId: turn.id,
-          deliveryCause: cause,
-          publicationTurnId: record.publicationTurnId ?? turn.id,
-          updatedAt: now,
-        }));
-        return {
-          items: pendingOutcomeItems(frozen, turn.id, now),
-          pending: [
-            {
-              action: 'freeze' as const,
-              workspaceId,
-              threadId: turn.threadId,
-              turnId: turn.id,
-              executor,
-              agentId: turn.agentId ?? null,
-              cause,
-              now,
-              expected: pendingSources(usable),
-              expectedSelection: selected.map((record) => record.requestId),
-              expectedThreadCensus: census.map((record) => record.requestId),
-            },
-          ],
-        };
-      });
-    },
-    prepareTerminal(turn) {
-      if (turn.owner.kind !== 'workspace') return [];
-      const attempt = dependencies.coreDb
-        ? listSchedulerExecutionAttemptsForTurn(dependencies.coreDb, {
-            workspaceId: turn.owner.workspaceId,
-            threadId: turn.threadId,
-            turnId: turn.id,
-          }).at(-1)
-        : undefined;
-      if (
-        attempt?.phase === 'closed' &&
-        attempt.disposition === 'not_accepted' &&
-        attempt.operationId === null &&
-        attempt.terminalCause !== 'backend-busy'
-      ) {
-        refusedOutcomeTurns.add(turn.id);
-        return [
-          {
-            action: 'delivery-release',
-            workspaceId: turn.owner.workspaceId,
-            turnId: turn.id,
-            now: turn.completedAt ?? new Date().toISOString(),
-          },
-        ];
-      }
-      return [];
-    },
-    async onTerminal(turn) {
-      if (refusedOutcomeTurns.has(turn.id)) return;
-      if (store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).status === 'archived')
-        return;
-      await admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
-      // Finish this native admission before the command owner can issue another Goal wake.
-      await dependencies.goalTerminal?.(turn);
-    },
+          now,
+          expected: pendingSources(usable),
+          expectedSelection: selected.map((record) => record.requestId),
+          expectedThreadCensus: census.map((record) => record.requestId),
+        },
+      ],
+    };
   });
+}
+
+/** Derives the original not-accepted release for the same native terminal tuple. */
+export function preparePendingDeliveryRelease(
+  dependencies: PendingAdmissionDependencies,
+  turn: Turn
+): readonly ControlPendingCommandInput[] {
+  if (turn.owner.kind !== 'workspace') return [];
+  const attempt = dependencies.coreDb
+    ? listSchedulerExecutionAttemptsForTurn(dependencies.coreDb, {
+        workspaceId: turn.owner.workspaceId,
+        threadId: turn.threadId,
+        turnId: turn.id,
+      }).at(-1)
+    : undefined;
+  if (
+    attempt?.phase === 'closed' &&
+    attempt.disposition === 'not_accepted' &&
+    attempt.operationId === null &&
+    attempt.terminalCause !== 'backend-busy'
+  ) {
+    refusedOutcomeTurns.add(turn.id);
+    return [
+      {
+        action: 'delivery-release',
+        workspaceId: turn.owner.workspaceId,
+        turnId: turn.id,
+        now: turn.completedAt ?? new Date().toISOString(),
+      },
+    ];
+  }
+  return [];
+}
+
+/** Wakes actual Pending/Goal outcome owners only after the original terminal publication ACK. */
+export async function wakePendingOutcomes(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies,
+  turn: Turn
+): Promise<void> {
+  if (refusedOutcomeTurns.has(turn.id)) return;
+  if (store.getThread(workspaceIdForOwner(turn.owner), turn.threadId).status === 'archived') return;
+  await admitNextOutcome(store, dependencies, workspaceIdForOwner(turn.owner), turn.threadId);
+  // Finish this native admission before the command owner can issue another Goal wake.
+  await dependencies.goalTerminal?.(turn);
+}
+
+/** Resumes the original frozen pending Worker deliveries when their real service becomes available. */
+export function resumeFrozenPendingDelivery(
+  store: FsStore,
+  dependencies: PendingAdmissionDependencies
+): void {
   if (dependencies.workerDelivery) {
     const pendingTurns = new Set<string>();
     let workspaces: ReturnType<FsStore['listWorkspaces']>;
