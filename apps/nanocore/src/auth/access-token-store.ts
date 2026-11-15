@@ -332,7 +332,7 @@ export function listOpenKitAccessTokenRecords(coreDb: CoreDb): OpenKitAccessToke
 }
 
 /**
- * Revokes one OpenKit access token immediately.
+ * Revokes one OpenKit access-token rotation family immediately.
  *
  * @param coreDb Open Core database handles.
  * @param tokenId Durable token id.
@@ -351,14 +351,40 @@ export function revokeOpenKitAccessTokenRecord(
   if (!row) return null;
 
   return readRetainedV1(row, () => {
-    coreDb.sqlite
-      .prepare(
-        `UPDATE openkit_access_tokens
-       SET status = 'revoked', revoked_at = ?
-       WHERE token_id = ? AND status != 'revoked'`
+    // Rotation preserves one credential family in both directions; issuing another client does not.
+    const family = `WITH RECURSIVE rotation_family(token_id) AS (
+      SELECT token_id FROM openkit_access_tokens WHERE token_id = ?
+      UNION
+      SELECT adjacent.token_id FROM rotation_family AS family
+      JOIN openkit_access_tokens AS current ON current.token_id = family.token_id
+      JOIN openkit_access_tokens AS adjacent
+        ON adjacent.predecessor_token_id = current.token_id
+        OR adjacent.token_id = current.predecessor_token_id
+    )`;
+    const rows = coreDb.sqlite
+      .prepare(`${family}
+      SELECT schema_version AS schemaVersion, * FROM openkit_access_tokens
+      WHERE token_id IN (SELECT token_id FROM rotation_family)`)
+      .all(tokenId) as OpenKitAccessTokenRow[];
+    const records = rows.map(readOpenKitAccessTokenRecord);
+    const selected = records.find((record) => record.tokenId === tokenId);
+    if (
+      !selected ||
+      records.some(
+        (record) =>
+          record.ownerUserId !== selected.ownerUserId ||
+          record.principalRef?.id !== selected.principalRef?.id
       )
-      .run(now.toISOString(), tokenId);
+    )
+      throw new Error('Access-token rotation family is inconsistent.');
+    coreDb.sqlite
+      .prepare(`${family}
+      UPDATE openkit_access_tokens
+      SET status = 'revoked', revoked_at = ?
+      WHERE token_id IN (SELECT token_id FROM rotation_family) AND status != 'revoked'`)
+      .run(tokenId, now.toISOString());
 
+    // Issuer descendants retain their own records; online chain verification refuses their use.
     return getOpenKitAccessTokenRecord(coreDb, tokenId);
   });
 }

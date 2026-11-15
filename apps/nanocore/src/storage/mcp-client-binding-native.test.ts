@@ -255,6 +255,35 @@ async function fixture() {
 }
 
 describe('E11 original native MCP client binding and issuer-chain consumers', () => {
+  it.each(['predecessor', 'successor'] as const)(
+    'revokes the complete client rotation family from its %s without stopping an independent client',
+    async (selected) => {
+      const f = await fixture();
+      const first = await f.issue({ forMcpClient: true });
+      const independent = await f.issue({ forMcpClient: true });
+      const rotated = await f.command(
+        'token.rotate',
+        { tokenId: first.record.tokenId, graceSeconds: 3600 },
+        f.session(f.owner)
+      );
+      expect((await f.read(first.token)).status).toBe(200);
+      expect((await f.read(rotated.token)).status).toBe(200);
+      await f.command(
+        'token.revoke',
+        { tokenId: selected === 'predecessor' ? first.record.tokenId : rotated.record.tokenId },
+        f.session(f.owner)
+      );
+      expect((await f.read(first.token)).status).toBe(401);
+      expect((await f.read(rotated.token)).status).toBe(401);
+      expect(f.privateRecord(first.record.tokenId).status).toBe('revoked');
+      expect(f.privateRecord(rotated.record.tokenId).status).toBe('revoked');
+      expect((await f.read(independent.token)).status).toBe(200);
+      expect(f.privateRecord(independent.record.tokenId).status).toBe('active');
+      expect((await f.read(f.issuer.bootstrap.secret)).status).toBe(200);
+    },
+    30_000
+  );
+
   it('selects a distinct native Integration principal, attributes real MCP effects on behalf of its current owner, and keeps Token restrictions mandatory', async () => {
     const f = await fixture();
     const writer = await f.issue({ forMcpClient: true });
