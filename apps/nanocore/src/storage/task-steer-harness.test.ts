@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
 import { listServerAuditEvents, listWorkspaceAuditEvents } from '../audit-events.js';
@@ -15,12 +15,10 @@ import {
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { createTaskConversationOperationImplementations } from '../conversation-operation-implementations.js';
-import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
-import { commandInputHash } from '../runtime/idempotent-command.js';
 import * as harnessOwner from '../runtime/nanohost-harness.js';
 import { taskSteerInputItemId } from '../runtime/task-steer.js';
 import { readTaskSteerState } from '../runtime/task-steer-receipt.js';
@@ -35,7 +33,10 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
-import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import {
+  createNativeCommandTurn,
+  createNativeTaskAdmissionFixture,
+} from '../test-support/native-task-admission.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { createThreadOperationImplementations } from '../thread-operation-implementations.js';
@@ -91,10 +92,15 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     await disposeTestStore(root, ...handles, coreDb);
   });
   const requestId = randomUUID();
-  const turnId = allocateEntityId('tu');
   const actor = { kind: 'user', id: userId } as const;
+  const turnId = deriveEntityId('tu', [
+    JSON.stringify(actor),
+    DEMO_WORKSPACE_ID,
+    DEMO_THREAD_ID,
+    requestId,
+    null,
+  ]);
   const scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, actorId: userId };
-  const timestamp = new Date().toISOString();
   const entry = createSchedulerAdmissionEntry(coreDb, {
     backendId: 'nanohost',
     requestId,
@@ -106,29 +112,16 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     turnInput: 'Original Task work',
     triggerActor: actor,
   });
-  await store
-    .createTurn(entry.workspaceId, entry.threadId, entry.turnInput, actor, undefined, {
-      turnId,
-      status: 'pending',
-      agentId: manifest.id,
-      executorKind: 'worker',
-      commandReceipt: {
-        key: commandRequestKey('turn.start', requestId, scope),
-        command: 'turn.start',
-        requestId,
-        scope,
-        inputHash: commandInputHash({
-          queueEntryId: entry.queueEntryId,
-          turnInput: entry.turnInput,
-        }),
-        responseKind: 'turn',
-        createdAt: timestamp,
-        expiresAt: commandRequestExpiresAt(timestamp),
-      },
-    })
-    .catch((cause) => {
-      throw new Error('Fixture pending Turn publication failed.', { cause });
-    });
+  await createNativeCommandTurn(
+    store,
+    { requestId, agentId: manifest.id },
+    entry.workspaceId,
+    entry.threadId,
+    entry.turnInput,
+    actor,
+    undefined,
+    { turnId, status: 'pending', agentId: manifest.id, executorKind: 'worker' }
+  );
   const agentSessionId = allocateEntityId('as');
   const admitted = await native
     .admitTurn(entry, {

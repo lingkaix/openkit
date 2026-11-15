@@ -101,6 +101,7 @@ import {
 import { RuntimeConfigFileService } from './config/runtime-config-files.js';
 import { retainWorkObservationBody } from './evidence-bundles.js';
 import { publishGenerativePresentation } from './generative-ui/commands.js';
+import { AutomationStore } from './lib/automation-store.js';
 import { SimulatedTurnExecutor } from './lib/simulator.js';
 import { FsStore } from './lib/store.js';
 import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './policy/configuration.js';
@@ -153,6 +154,7 @@ import {
   readPendingRequest,
 } from './runtime/pending-requests.js';
 import * as productTurnStart from './runtime/product-turn-start.js';
+import { startRecurringScheduleService } from './runtime/recurring-schedule-service.js';
 import {
   getSchedulerPreparationClaims,
   runSchedulerDispatchLoop,
@@ -176,6 +178,7 @@ import * as canonicalWrites from './storage/canonical-write-capacity.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
+import { findAcceptedRecurringOccurrenceForQueue } from './storage/recurring-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
 import { createTestAgentSetup, createTestGatewayConfig } from './test-support/agent-environment.js';
 import { createAppWithLocalIdentity as createApp } from './test-support/app.js';
@@ -192,7 +195,10 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from './test-support/native-environment.js';
-import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
+import {
+  createNativeCommandTurn,
+  createNativeTaskAdmissionFixture,
+} from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from './test-support/prepared-agent-environment.js';
 import { openTestNativeWorkspace } from './test-support/store.js';
@@ -212,6 +218,18 @@ import {
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
 import { resolveWorkspaceMembershipRelation } from './workspace-sharing.js';
 
+/** Supplies the MCP fixture's selected Worker and original request to the native command owner. */
+async function createMcpCommandTurn(store: FsStore, ...args: Parameters<FsStore['createTurn']>) {
+  return createNativeCommandTurn(
+    store,
+    {
+      requestId: randomUUID(),
+      agentId: args[5]?.agentId ?? 'agent_codex_host',
+    },
+    ...args
+  );
+}
+
 /** Records the admission and lease that own a manually resolved MCP worker package. */
 function recordMcpWorkerLineage(
   coreDb: ReturnType<typeof openCoreDb>,
@@ -219,18 +237,20 @@ function recordMcpWorkerLineage(
   serverAdminTokenId: string | null = null
 ): void {
   const scope = environmentPackage.scope;
-  const entry = createSchedulerAdmissionEntry(coreDb, {
-    backendId: 'nanohost',
-    queueEntryId: `queue_${scope.turnId}`,
-    requestId: scope.requestId,
-    triggerActor: scope.triggerActor,
-    serverAdminTokenId,
-    workspaceId: scope.workspaceId,
-    threadId: scope.threadId,
-    turnId: scope.turnId,
-    turnInput: 'Call MCP tool',
-    requestedAgentId: environmentPackage.agent.agentId,
-  });
+  const entry =
+    findSchedulerAdmissionForTurn(coreDb, scope) ??
+    createSchedulerAdmissionEntry(coreDb, {
+      backendId: 'nanohost',
+      queueEntryId: `queue_${scope.turnId}`,
+      requestId: scope.requestId,
+      triggerActor: scope.triggerActor,
+      serverAdminTokenId,
+      workspaceId: scope.workspaceId,
+      threadId: scope.threadId,
+      turnId: scope.turnId,
+      turnInput: 'Call MCP tool',
+      requestedAgentId: environmentPackage.agent.agentId,
+    });
   const submittedAttempt = recordTestExecutionAttempt(coreDb, {
     entry,
     attemptId: testEntityId('attempt', `lease_${scope.turnId}`),
@@ -321,7 +341,8 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const store = await reopenCopiedMcpStore(dataRoot);
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
-      const turn = await store.createTurn(
+      const { turn, requestId: commandRequestId } = await createMcpCommandTurn(
+        store,
         workspaceId,
         'th_00000000-0000-7000-8000-000000000001',
         'Call schema-qualified MCP',
@@ -348,7 +369,7 @@ describe('worker MCP routes', () => {
         agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
         backend: { kind: 'openshell' },
         createdAt: '2026-11-01T00:00:00.000Z',
-        requestId: 'req_mcp_schema_usage',
+        requestId: commandRequestId,
         triggerActor: actor,
         turn,
         workspaceCwd: '/workspace',
@@ -521,7 +542,8 @@ describe('worker MCP routes', () => {
         userId = user.id;
         expect(resolveWorkspaceMembershipRelation(coreDb, workspaceId, userId)).toBeNull();
       }
-      const turn = await store.createTurn(
+      const { turn, requestId: commandRequestId } = await createMcpCommandTurn(
+        store,
         workspaceId,
         'th_00000000-0000-7000-8000-000000000001',
         'Call mediated echo',
@@ -613,7 +635,7 @@ describe('worker MCP routes', () => {
         agentSetup: createTestAgentSetup({ mcpIds: ['echo', 'echo-approval'] }),
         backend: { kind: 'openshell' },
         createdAt: new Date().toISOString(),
-        requestId: 'req_i16_route',
+        requestId: commandRequestId,
         triggerActor: turn.triggerActor,
         turn,
         workspaceCwd: '/workspace',
@@ -1199,7 +1221,8 @@ describe('worker MCP routes', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const turn = await store.createTurn(
+      const { turn, requestId: commandRequestId } = await createMcpCommandTurn(
+        store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Submit one file',
@@ -1229,7 +1252,7 @@ describe('worker MCP routes', () => {
         agentSetup: createTestAgentSetup(),
         backend: { kind: 'openshell' },
         createdAt: '2026-10-05T00:00:00.000Z',
-        requestId: 'req_capture_wait',
+        requestId: commandRequestId,
         triggerActor: turn.triggerActor,
         turn,
         workspaceCwd: '/workspace',
@@ -1441,7 +1464,12 @@ describe('worker MCP routes', () => {
               count: 0,
             }
           );
-          expect(store.listCommandRequests()).toEqual([]);
+          expect(store.listCommandRequests()).toEqual([
+            expect.objectContaining({
+              command: 'turn.start',
+              response: { kind: 'turn', id: turn.id },
+            }),
+          ]);
         } finally {
           db.sqlite.close();
         }
@@ -1477,7 +1505,8 @@ describe('worker MCP routes', () => {
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
     });
-    const turn = await store.createTurn(
+    const { turn, requestId: commandRequestId } = await createMcpCommandTurn(
+      store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'List generative MCP tools',
@@ -1506,7 +1535,7 @@ describe('worker MCP routes', () => {
       agentSetup: createTestAgentSetup(),
       backend: { kind: 'openshell' },
       createdAt: '2026-09-03T00:00:00.000Z',
-      requestId: 'req_mcp_era',
+      requestId: commandRequestId,
       triggerActor: turn.triggerActor,
       turn,
       workspaceCwd: '/workspace',
@@ -6229,7 +6258,8 @@ describe('worker MCP routes', () => {
         ) VALUES ('ws_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'active', NULL, ?, NULL, 1, ?, ?)`
       )
       .run(memberCreatedAt, memberCreatedAt, memberCreatedAt);
-    const turn = await store.createTurn(
+    const { turn, requestId: commandRequestId } = await createMcpCommandTurn(
+      store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
       'Classify MCP failures',
@@ -6280,7 +6310,7 @@ describe('worker MCP routes', () => {
       }),
       backend: { kind: 'openshell' },
       createdAt: '2026-09-03T00:00:00.000Z',
-      requestId: 'req_mcp_failures',
+      requestId: commandRequestId,
       triggerActor: turn.triggerActor,
       turn,
       workspaceCwd: '/workspace',
@@ -6832,7 +6862,8 @@ describe('worker MCP routes', () => {
 
       // Keep the active Tool Turn; the independent denial needs its own Thread.
       const deniedThread = await store.createThread(workspaceIdForOwner(turn.owner), 'MCP denial');
-      const deniedTurn = await store.createTurn(
+      const { turn: deniedTurn, requestId: deniedRequestId } = await createMcpCommandTurn(
+        store,
         'ws_00000000-0000-7000-8000-000000000001',
         deniedThread.id,
         'Reject unauthorized MCP use',
@@ -6847,7 +6878,7 @@ describe('worker MCP routes', () => {
         agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
         backend: { kind: 'openshell' },
         createdAt: '2026-09-03T00:01:00.000Z',
-        requestId: 'req_mcp_denied',
+        requestId: deniedRequestId,
         triggerActor: deniedTurn.triggerActor,
         turn: deniedTurn,
         workspaceCwd: '/workspace',
@@ -7426,7 +7457,8 @@ describe('worker MCP routes', () => {
         ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
       });
-      const turn = await store.createTurn(
+      const { turn, requestId: commandRequestId } = await createMcpCommandTurn(
+        store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
         'Call HTTP MCP',
@@ -7497,7 +7529,7 @@ describe('worker MCP routes', () => {
         agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
         backend: { kind: 'openshell' },
         createdAt: '2026-09-03T00:00:00.000Z',
-        requestId: 'req_mcp_vault',
+        requestId: commandRequestId,
         triggerActor: turn.triggerActor,
         turn,
         workspaceCwd: '/workspace',
@@ -8027,19 +8059,21 @@ describe('worker MCP routes', () => {
           proof,
           fenceRef: release.fenceRef!,
         });
-        const replacementTurn = await store.createTurn(
-          'ws_00000000-0000-7000-8000-000000000001',
-          'th_00000000-0000-7000-8000-000000000001',
-          'Use the explicitly rebound grant',
-          turn.triggerActor
-        );
+        const { turn: replacementTurn, requestId: replacementRequestId } =
+          await createMcpCommandTurn(
+            store,
+            'ws_00000000-0000-7000-8000-000000000001',
+            'th_00000000-0000-7000-8000-000000000001',
+            'Use the explicitly rebound grant',
+            turn.triggerActor
+          );
         environmentPackage = await resolveAgentEnvironmentPackage({
           captureCoverage: { scope: 'server', value: 'off' },
           agentSessionId: testEntityId('as', 'as_mcp_rebound'),
           agentSetup: createTestAgentSetup({ mcpIds: ['http-echo'] }),
           backend: { kind: 'openshell' },
           createdAt: new Date().toISOString(),
-          requestId: randomUUID(),
+          requestId: replacementRequestId,
           triggerActor: turn.triggerActor,
           turn: replacementTurn,
           workspaceCwd: '/workspace',
@@ -8675,10 +8709,13 @@ function observeNativeMcpPhysicalCommits(workspacePath: string) {
 }
 
 /** Composes the public Worker MCP route with its actual Workspace ledger and Policy owners. */
-async function createMcpCommitFixture(interception = new PolicyInterception()) {
+async function createMcpCommitFixture(
+  interception = new PolicyInterception(),
+  options: { readonly recurring?: boolean } = {}
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-mcp-commit-'));
   const coreDb = openCopiedMcpCore(dataRoot);
-  const actor = { kind: 'user' as const, id: ensureLocalUser(coreDb) };
+  let actor: Parameters<FsStore['createTurn']>[3] = { kind: 'user', id: ensureLocalUser(coreDb) };
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const nativeTrace = observeNativeMcpPhysicalCommits(
     join(dataRoot, 'workspaces', workspaceId, 'db', 'workspace.sqlite')
@@ -8686,7 +8723,68 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
   const store = await reopenCopiedMcpStore(dataRoot);
   const threadId = 'th_00000000-0000-7000-8000-000000000001';
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actor.id, workspaceId });
-  const turn = await store.createTurn(workspaceId, threadId, 'Count MCP commits', actor);
+  let turn: Awaited<ReturnType<FsStore['createTurn']>>;
+  let commandRequestId: string;
+  if (options.recurring) {
+    const now = new Date().toISOString();
+    const schedules = new AutomationStore(
+      coreDb,
+      getControlStoreWorkerClient().workspaceMutations(dataRoot),
+      () => now
+    );
+    const created = await schedules.createAutomation(actor.id, {
+      name: 'Recurring MCP witness',
+      workspaceId,
+      threadId,
+      intervalSeconds: 5,
+      prompt: 'Count MCP commits',
+    });
+    await schedules.updateAutomation(actor.id, created.id, {
+      expectedRevision: 1,
+      status: 'active',
+      scheduledAt: now,
+    });
+    const service = startRecurringScheduleService({
+      schedules,
+      store,
+      now: () => now,
+      setInterval: () => null,
+      clearInterval: () => {},
+      prepare: async () => ({
+        kind: 'ready',
+        payload: {
+          backendId: 'nanohost',
+          requestedAgentId: 'agent_codex_host',
+          profileRef: null,
+          modelId: 'openai/gpt-5.2',
+          workspaceCwd: '/workspace',
+          workspaceRoots: [],
+        },
+      }),
+      onError: (error) => {
+        throw error;
+      },
+    });
+    try {
+      await service.runOnce();
+    } finally {
+      service.stop();
+    }
+    const occurrence = schedules.listHistory(created.id).items[0]?.record;
+    if (!occurrence?.turnId || !occurrence.queueEntryId)
+      throw new Error('Recurring witness requires native accepted publication.');
+    turn = store.getTurn(workspaceId, threadId, occurrence.turnId);
+    actor = turn.triggerActor;
+    commandRequestId = occurrence.requestId;
+  } else {
+    ({ turn, requestId: commandRequestId } = await createMcpCommandTurn(
+      store,
+      workspaceId,
+      threadId,
+      'Count MCP commits',
+      actor
+    ));
+  }
   const catalog = {
     schemaVersion: 1 as const,
     servers: [
@@ -8702,26 +8800,70 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       },
     ],
   };
-  const environmentPackage = await resolveAgentEnvironmentPackage({
-    captureCoverage: { scope: 'server', value: 'off' },
-    agentSessionId: testEntityId('as', 'mcp-commit'),
-    agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
-    backend: { kind: 'openshell' },
-    createdAt: '2026-10-24T00:00:00.000Z',
-    requestId: 'req_mcp_commit',
-    triggerActor: actor,
-    turn,
-    workspaceCwd: '/workspace',
-    workspaceMcpServerCatalog: catalog,
-    workspaceRoots: [],
-  });
-  recordMcpWorkerLineage(coreDb, environmentPackage);
+  let environmentPackage: AgentEnvironmentPackage;
+  let recurringCleanup: (() => Promise<void>) | undefined;
+  if (options.recurring) {
+    const setup = createTestAgentSetup({
+      mcpIds: ['echo'],
+      requiredCapabilities: ['trusted-worker-inference-relay'],
+    });
+    const configuration = createInMemoryRuntimeConfigSnapshot({
+      dataRoot,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: new ProviderRegistry([
+        {
+          id: 'agent-openrouter',
+          displayName: 'Recurring native fixture',
+          kind: 'local',
+          models: ['openai/gpt-5.2'],
+        },
+      ]),
+      workspaceConfigs: loadRuntimeConfig(dataRoot).workspaceConfigs,
+      agentManifests: [setup.manifest],
+      workspaceMcpServerCatalogs: [
+        { catalog, path: join(dataRoot, 'catalog/catalog.json'), workspaceId },
+      ],
+    });
+    const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+      readRuntimeConfig: () => configuration,
+    });
+    admitTestNativeEnvironment(coreDb, setup.manifest);
+    const entry = findSchedulerAdmissionForTurn(coreDb, { workspaceId, threadId, turnId: turn.id });
+    if (!entry) throw new Error('Native recurring Turn has no scheduler owner.');
+    const candidate = allocateEntityId('as');
+    const admitted = await native.admitTurn(entry, {
+      attemptId: allocateEntityId('attempt'),
+      agentSessionId: candidate,
+      candidateAgentSessionId: candidate,
+    });
+    environmentPackage = admitted.pkg;
+    recurringCleanup = async () => {
+      await admitted.cleanup();
+      await native.restore();
+    };
+  } else {
+    environmentPackage = await resolveAgentEnvironmentPackage({
+      captureCoverage: { scope: 'server', value: 'off' },
+      agentSessionId: testEntityId('as', 'mcp-commit'),
+      agentSetup: createTestAgentSetup({ mcpIds: ['echo'] }),
+      backend: { kind: 'openshell' },
+      createdAt: '2026-10-24T00:00:00.000Z',
+      requestId: commandRequestId,
+      triggerActor: actor,
+      turn,
+      workspaceCwd: '/workspace',
+      workspaceMcpServerCatalog: catalog,
+      workspaceRoots: [],
+    });
+    recordMcpWorkerLineage(coreDb, environmentPackage);
+  }
   const db = openWorkspaceDb(dataRoot, workspaceId);
   applyScopedMigrations(db);
-  await recordAgentEnvironmentPackageSnapshot(db, {
-    environmentPackage,
-    createdAt: '2026-10-24T00:00:00.000Z',
-  });
+  if (!options.recurring)
+    await recordAgentEnvironmentPackageSnapshot(db, {
+      environmentPackage,
+      createdAt: '2026-10-24T00:00:00.000Z',
+    });
   await openTestNativeWorkspace(db);
   let tools = [mcpEchoTool()];
   let serverVersion = '1';
@@ -8893,6 +9035,7 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
       return openWorkspaceDb(dataRoot, workspaceId);
     },
     async close() {
+      await recurringCleanup?.();
       await trace.drainHandoff();
       try {
         trace.restore();
@@ -8905,6 +9048,37 @@ async function createMcpCommitFixture(interception = new PolicyInterception()) {
     },
   };
 }
+
+it('keeps a native recurring Worker MCP call live without a turn.start receipt', async () => {
+  const f = await createMcpCommitFixture(new PolicyInterception(), { recurring: true });
+  try {
+    const scope = f.environmentPackage.scope;
+    const entry = findSchedulerAdmissionForTurn(f.coreDb, scope);
+    expect(entry).not.toBeNull();
+    expect(findAcceptedRecurringOccurrenceForQueue(f.coreDb, entry!.queueEntryId)?.turnId).toBe(
+      scope.turnId
+    );
+    expect(
+      f.store.getTurn(scope.workspaceId, scope.threadId, scope.turnId).triggerSource?.kind
+    ).toBe('automation');
+    expect(
+      f.store.getCommandRequest('turn.start', scope.requestId!, {
+        workspaceId: scope.workspaceId,
+        threadId: scope.threadId,
+      })
+    ).toBeNull();
+    const response = await f.call(1);
+    expect(response.error, JSON.stringify(response.error)).toBeUndefined();
+    expect(response).toMatchObject({ result: { content: [{ type: 'text', text: 'called' }] } });
+    expect(f.contacts()).toBe(1);
+    expect(listWorkspaceCapabilityCalls(f.db, f.workspaceId).at(-1)?.status).toBe('succeeded');
+    expect(listWorkspaceUsageRecords(f.db, f.workspaceId).at(-1)?.responsibleUserId).toBe(
+      responsibleUserIdForActor(scope.triggerActor)
+    );
+  } finally {
+    await f.close();
+  }
+});
 
 /** Checks the three durable tuples whose physical commit grouping is the accepted warm/cold target. */
 function expectMcpCommittedTuples(

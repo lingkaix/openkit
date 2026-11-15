@@ -60,6 +60,7 @@ import {
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import {
@@ -438,7 +439,10 @@ async function workerFixture() {
     allocateEntityId('th')
   );
   const setup = createTestAgentSetup({ mcpIds: ['fixture-native'] });
-  const turn = await g.store.createTurn(
+  const commandRequestId = randomUUID();
+  const { turn } = await createNativeCommandTurn(
+    g.store,
+    { requestId: commandRequestId, agentId: setup.manifest.id },
     workspaceId,
     thread.id,
     'Exercise the original allocated Worker package.',
@@ -454,7 +458,7 @@ async function workerFixture() {
     triggerActor: turn.triggerActor,
     backend: { kind: 'openshell' },
     createdAt: new Date().toISOString(),
-    requestId: randomUUID(),
+    requestId: commandRequestId,
     turn,
     workspaceCwd: '/workspace',
     workspaceRoots: [],
@@ -482,7 +486,7 @@ async function workerFixture() {
     requestedAgentId: environmentPackage.agent.agentId,
     threadId: thread.id,
     turnId: turn.id,
-    turnInput: 'Exercise original allocated Worker package.',
+    turnInput: 'Exercise the original allocated Worker package.',
     workspaceId,
   });
   expect(entry.status).toBe('queued');

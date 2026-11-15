@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -36,6 +37,7 @@ import { testEntityId } from '../test-support/entity-ids.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
+import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { disposeTestStore, openTestNativeWorkspace } from '../test-support/store.js';
 import type { VaultBackend } from '../vault/vault-backend.js';
 import { createEncryptedFileVaultBackend } from '../vault/vault-encrypted-file-backend.js';
@@ -156,7 +158,10 @@ async function fixture(
       },
     ],
   };
-  const turn = await store.createTurn(
+  const commandRequestId = randomUUID();
+  const { turn } = await createNativeCommandTurn(
+    store,
+    { requestId: commandRequestId, agentId: 'agent_demo' },
     'ws_00000000-0000-7000-8000-000000000001',
     'th_00000000-0000-7000-8000-000000000001',
     'Capture an exact effect',
@@ -171,7 +176,7 @@ async function fixture(
     agentSetup: setup,
     backend: { kind: 'openshell' },
     createdAt: '2026-10-15T00:00:00.000Z',
-    requestId: 'request_capture',
+    requestId: commandRequestId,
     triggerActor: turn.triggerActor,
     turn,
     workspaceCwd: '/workspace',

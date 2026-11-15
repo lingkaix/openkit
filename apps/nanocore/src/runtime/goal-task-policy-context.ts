@@ -5,9 +5,15 @@ import {
   isSealedTurnTerminal,
   type PolicyResourceV1Schema,
   responsibleUserIdForActor,
+  TurnSchema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import type { z } from 'zod';
+import {
+  deriveArtifactReviewFollowUpTurnId,
+  deriveArtifactReviewWorkerRequestId,
+  listExportableArtifactReviews,
+} from '../artifact-reviews.js';
 import {
   StructuredWorkerDelegationRequestSchema,
   serializeStructuredWorkerDelegationRequest,
@@ -24,9 +30,13 @@ import {
   getCommandRequestRecordFromDb,
 } from '../storage/command-request-records.js';
 import { commandInputHash } from '../storage/control-store-input.js';
+import { readProduct } from '../storage/control-store-product-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
+import { findExternalTriggerAdmissionForQueue } from '../storage/external-trigger-admissions.js';
+import { findAcceptedRecurringOccurrenceForQueue } from '../storage/recurring-records.js';
 import { requireAgentEnvironmentPackageSnapshot } from './aep-snapshot-ledger.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
+import { readExternalTriggerPollSource } from './external-trigger-source.js';
 import { goalPlanDigest, readNativeGoalView } from './goal-owner.js';
 import { listThreadPendingRequests, pendingRequestSystemActor } from './pending-requests.js';
 import { getWorkerCheckpoint } from './worker-checkpoints.js';
@@ -90,29 +100,89 @@ export function requiredTaskTurn(input: {
     }).filter((entry) => entry.threadId === lineage.threadId);
     const current = entries.find((entry) => entry.turnId === lineage.turnId);
     if (!current || schedulerAdmissionInputHash(current) !== current.inputHash) throw unavailable();
+    // Native Turn metadata and the owning admission are durable even after command pruning.
+    // These reads use the caller's existing Workspace/Core views, never another connection.
+    const creation = (entry: (typeof entries)[number]) => {
+      const snapshot = readProduct(
+        db.sqlite,
+        { kind: 'workspace', workspaceId: lineage.workspaceId },
+        'turn',
+        entry.turnId
+      );
+      if (!snapshot || schedulerAdmissionInputHash(entry) !== entry.inputHash) throw unavailable();
+      const turn = TurnSchema.parse({ ...snapshot.record, items: [] });
+      if (
+        turn.threadId !== entry.threadId ||
+        workspaceIdForOwner(turn.owner) !== entry.workspaceId ||
+        turn.agentId !== entry.requestedAgentId ||
+        !isDeepStrictEqual(turn.triggerActor, entry.triggerActor)
+      )
+        throw unavailable();
+      const taskIdentity =
+        entry.requestId !== null &&
+        deriveEntityId('tu', {
+          command: 'task.start',
+          actorId: entry.triggerActor.id,
+          workspaceId: entry.workspaceId,
+          threadId: entry.threadId,
+          requestId: entry.requestId,
+        }) === entry.turnId;
+      // startProductTurn owns this original input identity; it survives receipt pruning.
+      const ordinaryIdentity =
+        entry.requestId !== null &&
+        deriveEntityId('tu', [
+          JSON.stringify(entry.triggerActor),
+          entry.workspaceId,
+          entry.threadId,
+          entry.requestId,
+          null,
+        ]) === entry.turnId;
+      const activationIdentity =
+        entry.triggerActor.kind === 'user' &&
+        entry.requestId !== null &&
+        deriveEntityId('tu', {
+          command: 'worker_environment.activate',
+          actorId: entry.triggerActor.id,
+          workspaceId: entry.workspaceId,
+          threadId: entry.threadId,
+          requestId: entry.requestId,
+        }) === entry.turnId;
+      const kind = turn.triggerSource?.kind;
+      // The exact Task command identity is a positive Task cause before ordinary-kind checks.
+      // Required Task preparation still applies; an absent kind never proves NON-Task.
+      if (
+        (taskIdentity && kind !== undefined && kind !== 'handoff') ||
+        ((ordinaryIdentity || activationIdentity) && kind === 'handoff')
+      )
+        throw unavailable();
+      return {
+        turn,
+        kind,
+        taskIdentity,
+        ordinaryIdentity,
+        activationIdentity,
+        revision: snapshot.revision,
+      };
+    };
     const originals = entries.filter((entry) => {
       const checkpoint = getWorkerCheckpoint(db, entry.workspaceId, entry.threadId, entry.turnId);
       if (checkpoint?.goalId || checkpoint?.taskId) throw unavailable();
+      const source = creation(entry);
       return (
         entry.requestId &&
         responsibleUserIdForActor(entry.triggerActor) &&
-        ((checkpoint?.requestId === entry.requestId && checkpoint.contextDigest !== null) ||
-          deriveEntityId('tu', {
-            command: 'task.start',
-            actorId: entry.triggerActor.id,
-            workspaceId: entry.workspaceId,
-            threadId: entry.threadId,
-            requestId: entry.requestId,
-          }) === entry.turnId)
+        (source.taskIdentity || source.kind === 'handoff')
       );
     });
     const exact = originals.find((entry) => entry.turnId === lineage.turnId);
     if (exact) return exact;
-    // Pending supplies an original source position, never a new selection or authority.
+    // Pending owns outcome ancestry; its retained delivery cannot be replaced by a new input.
     const pending = listThreadPendingRequests(db.sqlite, lineage.workspaceId, lineage.threadId);
+    const reviews = listExportableArtifactReviews(db);
     let sourceTurnId = lineage.turnId;
     const visited = new Set<string>();
-    while (!visited.has(sourceTurnId)) {
+    while (true) {
+      if (visited.has(sourceTurnId)) throw unavailable();
       visited.add(sourceTurnId);
       const causes = pending.filter(
         (record) =>
@@ -120,21 +190,95 @@ export function requiredTaskTurn(input: {
           record.deliveryCause === 'outcome' &&
           record.requesterKind === 'worker'
       );
-      if (!causes.length) break;
+      const reviewCauses = reviews.filter((review) => review.followUpTurnId === sourceTurnId);
+      if (causes.length && reviewCauses.length) throw unavailable();
+      const receiving = entries.find((entry) => entry.turnId === sourceTurnId);
+      if (!receiving) throw unavailable();
+      const source = creation(receiving);
+      if (!causes.length && !reviewCauses.length) {
+        if (source.kind !== 'user-input' && source.kind !== 'automation') throw unavailable();
+        break;
+      }
+      if (reviewCauses.length) {
+        const review = reviewCauses[0]!;
+        if (
+          reviewCauses.length !== 1 ||
+          source.kind !== 'approval-resolution' ||
+          (review.decision !== 'redo' && review.decision !== 'needs_refinement') ||
+          !review.decisionRequestId ||
+          !review.sourceTurnId ||
+          review.workspaceId !== receiving.workspaceId ||
+          review.sourceThreadId !== receiving.threadId ||
+          review.sourceAgentId !== receiving.requestedAgentId ||
+          source.turn.triggerActor.kind !== 'user' ||
+          review.decisionActorId !== source.turn.triggerActor.id ||
+          deriveArtifactReviewWorkerRequestId(review.decisionRequestId) !== receiving.requestId ||
+          deriveArtifactReviewFollowUpTurnId(
+            review.workspaceId,
+            review.artifactId,
+            review.artifactVersion,
+            review.decisionRequestId
+          ) !== receiving.turnId
+        )
+          throw unavailable();
+        const origin = entries.find((entry) => entry.turnId === review.sourceTurnId);
+        if (!origin || origin.requestedAgentId !== review.sourceAgentId) throw unavailable();
+        sourceTurnId = review.sourceTurnId;
+        const original = originals.find((entry) => entry.turnId === sourceTurnId);
+        if (original) return original;
+        continue;
+      }
+      const kind = causes.some((record) => record.kind === 'approval')
+        ? 'approval-resolution'
+        : 'user-input';
+      if (
+        source.kind !== kind ||
+        causes.some(
+          (record) =>
+            record.agentId !== receiving.requestedAgentId ||
+            responsibleUserIdForActor(source.turn.triggerActor) !== record.responsibleUserId
+        )
+      )
+        throw unavailable();
       const sources = new Set(causes.map((record) => record.raisingTurnId));
       if (sources.size !== 1) throw unavailable();
       sourceTurnId = causes[0]!.raisingTurnId;
       const original = originals.find((entry) => entry.turnId === sourceTurnId);
       if (original) return original;
     }
-    if (sourceTurnId !== lineage.turnId) throw unavailable();
-    // An ordinary follow-up can inherit one unambiguous native Task on its Thread.
-    // Several independent Tasks on a reused Thread require an exact source cause.
+    // Preserve the Task owner's ceiling for an unambiguous continuation on its Thread.
     if (originals.length > 1) throw unavailable();
     if (originals.length === 1) return originals[0]!;
-    if (getWorkerCheckpoint(db, lineage.workspaceId, lineage.threadId, lineage.turnId))
-      throw unavailable();
-    return null;
+    const entry = entries.find((value) => value.turnId === sourceTurnId);
+    if (!entry) throw unavailable();
+    const source = creation(entry);
+    if (source.kind === 'user-input' && (source.ordinaryIdentity || source.activationIdentity))
+      return null;
+    if (source.kind === 'automation') {
+      const recurring = findAcceptedRecurringOccurrenceForQueue(coreDb, entry.queueEntryId);
+      const external = findExternalTriggerAdmissionForQueue(coreDb, entry.queueEntryId);
+      if (recurring && !external && recurring.turnId === entry.turnId) return null;
+      if (external && !recurring) {
+        const poll = readExternalTriggerPollSource(coreDb, external.sourceTurnId);
+        const thread = readProduct(
+          db.sqlite,
+          { kind: 'workspace', workspaceId: lineage.workspaceId },
+          'thread',
+          entry.threadId
+        );
+        if (
+          entry.triggerActor.kind === 'automation' &&
+          entry.triggerActor.id === external.scheduleId &&
+          poll.occurrence.scheduleId === external.scheduleId &&
+          poll.entry.workspaceId === entry.workspaceId &&
+          poll.entry.threadId !== entry.threadId &&
+          thread?.record.parentThreadId === poll.entry.threadId &&
+          isDeepStrictEqual(poll.entry.triggerActor, entry.triggerActor)
+        )
+          return null;
+      }
+    }
+    throw unavailable();
   }
   const goal = readNativeGoalView(db, link.goalId).goal;
   if (!goal || goal.workspaceId !== lineage.workspaceId) throw unavailable();

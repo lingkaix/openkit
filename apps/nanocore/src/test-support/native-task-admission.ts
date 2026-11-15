@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import fs, { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
-import { workspaceIdForOwner } from '@openkit/protocol';
+import { ActorRefSchema, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { buildWorkerCanonicalTerminalEventRecord as terminalEvent } from '@openkit/worker-protocol';
 import { expect, vi } from 'vitest';
 import { createDefaultWorkerControlGateway } from '../app.js';
@@ -15,6 +15,7 @@ import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-
 import * as attempts from '../runtime/execution-attempt-records.js';
 import { createExecutionStepJournalReader } from '../runtime/execution-journal.js';
 import type { ExecutionJournalRef } from '../runtime/execution-step-journal.js';
+import { runIdempotentCommand } from '../runtime/idempotent-command.js';
 import * as harnessOwner from '../runtime/nanohost-harness.js';
 import {
   dispatchNanoHostHarnessOperation,
@@ -870,4 +871,49 @@ export function observeNativeTaskStartup(store: FsStore) {
     waitFor: (turnId: string) => acknowledgement(turnId).promise,
     restore: () => observation.mockRestore(),
   };
+}
+
+/** Publishes the original human-input command and Turn before fixture admission or AEP creation. This is Core creation evidence, not physical Worker execution proof. */
+export async function createNativeCommandTurn(
+  store: FsStore,
+  source: { readonly requestId: string; readonly agentId: string },
+  ...args: Parameters<FsStore['createTurn']>
+) {
+  const [workspaceId, threadId, input, actor, configVersion, options] = args;
+  const triggerActor = ActorRefSchema.parse(actor);
+  if (triggerActor.kind !== 'user')
+    throw new Error('This fixture owner publishes human input only.');
+  const { requestId, agentId } = source;
+  const turnId = deriveEntityId('tu', [
+    JSON.stringify(triggerActor),
+    workspaceId,
+    threadId,
+    requestId,
+    null,
+  ]);
+  if (options?.turnId && options.turnId !== turnId)
+    throw new Error('The fixture Turn must retain its original native command identity.');
+  if (options?.commandReceipt)
+    throw new Error('The original command owner must create the fixture receipt.');
+  const scope = { actorId: triggerActor.id, workspaceId, threadId };
+  const turn = await runIdempotentCommand({
+    store,
+    inflightCommands: new WeakMap(),
+    command: 'turn.start',
+    requestId,
+    scope,
+    input: { workspaceId, threadId, requestId, input },
+    responseKind: 'turn',
+    replay: (record) => store.getTurn(workspaceId, threadId, record.response.id),
+    responseId: (created) => created.id,
+    execute: (commandReceipt) =>
+      store.createTurn(workspaceId, threadId, input, triggerActor, configVersion, {
+        ...options,
+        turnId,
+        agentId,
+        triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
+        commandReceipt,
+      }),
+  });
+  return { turn, requestId };
 }

@@ -30,6 +30,7 @@ import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
+import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { registerWorkerMcpRoutes, reviewCapturedMcpPolicy } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -471,7 +472,10 @@ async function capturedFixture() {
       },
     ],
   };
-  const turn = await f.store.createTurn(
+  const commandRequestId = randomUUID();
+  const { turn } = await createNativeCommandTurn(
+    f.store,
+    { requestId: commandRequestId, agentId: setup.manifest.id },
     f.workspace.id,
     thread.id,
     'Capture an exact effect',
@@ -485,7 +489,7 @@ async function capturedFixture() {
     agentSessionId: allocateEntityId('as'),
     backend: { kind: 'openshell' },
     createdAt: turn.startedAt!,
-    requestId: randomUUID(),
+    requestId: commandRequestId,
     triggerActor: turn.triggerActor,
     turn,
     workspaceCwd: '/workspace',
