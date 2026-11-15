@@ -132,7 +132,7 @@ A configured access shape may carry an optional, secret-free `refresh` intent: a
 
 The two delegatable strategies never change their root, so Core's current material version remains the recoverable family and no Gateway holder writes material back.
 
-`vault.binding-deliver` for such a `backend-provider` plan additionally requires the default-deny product right `vault.delegate-refresh` beside `vault.use`. Ordinary Workspace membership never supplies it. Deployment administrators hold it as root authority and may extend it only through authored Policy; Goal domains cannot delegate it. The PermissionDecision proposal binds `accessShapeDigest`, and the delegation authority is part of the rechecked facts, so its withdrawal fails the operation.
+`vault.binding-deliver` for such a `backend-provider` plan additionally requires the default-deny product right `vault.delegate-refresh` beside `vault.use`. Ordinary Workspace membership never supplies it. Deployment administrators hold it as root authority. They extend it only through the exact human-authored Workspace allowance in [Policy Enforcement Mapping](20260703-policy_enforcement_mapping.md); Goal domains never supply it. The PermissionDecision proposal binds `accessShapeDigest`, and the delegation authority is part of the rechecked facts, so its withdrawal fails the operation.
 
 The reference's retained `credentialWriter` decides ownership:
 - delegation requires Core to be the writer; otherwise it refuses `credential_family_busy`;

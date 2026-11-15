@@ -39,6 +39,7 @@ import {
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
+import { readDelegatedRefreshAuthority } from '../policy/delegated-refresh-authority.js';
 import {
   type InterceptionDecision,
   type InterceptionInput,
@@ -635,21 +636,27 @@ export function createVaultOperationImplementations(
             409
           );
         assertCoreMayDelegateCredentialFamily(delegatedReference);
+        const readMediation =
+          dependencies.readRuntimePolicy ??
+          (dependencies.runtimeConfigManager
+            ? () => dependencies.runtimeConfigManager!.current().openKitConfig.policy?.mediation
+            : undefined);
         readDelegateRefreshAuthority = () => {
-          let evaluated: ReturnType<typeof readVaultRequesterAuthority>;
+          let revision: string | undefined;
           try {
-            evaluated = readVaultRequesterAuthority(
-              coreDb,
-              input.workspaceId,
-              vaultRequesterForContext(context),
-              'vault.delegate-refresh',
-              true
-            );
+            revision = readMediation
+              ? readDelegatedRefreshAuthority({
+                  coreDb,
+                  workspaceId: input.workspaceId,
+                  requester: vaultRequesterForContext(context),
+                  document: readAdmittedPolicyDocument(coreDb, readMediation()),
+                })
+              : undefined;
           } catch {
-            vaultWorkspaceAccessDenied();
+            revision = undefined;
           }
-          if (evaluated.decision.effect !== 'allow') vaultWorkspaceAccessDenied();
-          return policyDigest(evaluated);
+          if (!revision) vaultWorkspaceAccessDenied();
+          return revision;
         };
         readDelegateRefreshAuthority();
       }

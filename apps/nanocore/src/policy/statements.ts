@@ -89,6 +89,48 @@ export function policyResourceUser(
     : null;
 }
 
+/**
+ * Admission shape of the only human-authored ordinary allow: one Workspace and this one right.
+ *
+ * @param statement Authored Policy statement.
+ * @param workspaceId Workspace that must anchor and scope the statement.
+ * @returns True for an active, unlimited-use, human-only allowance of `vault.delegate-refresh`.
+ */
+export function isExactDelegatedRefreshAllowance(
+  statement: PolicyDocumentV1['statements'][number],
+  workspaceId: string
+): statement is z.infer<typeof PolicyPermissionV1Schema> {
+  if (
+    statement.kind !== 'permission' ||
+    statement.state !== 'active' ||
+    statement.effect !== 'allow' ||
+    statement.grant.kind !== 'ordinary' ||
+    statement.authority.kind !== 'human' ||
+    statement.author.kind !== 'human' ||
+    statement.author.id !== statement.authority.userId
+  )
+    return false;
+  const anchor = statement.lifetime.anchor;
+  const [resource] = statement.scope.resources;
+  return (
+    anchor.kind === 'workspace' &&
+    anchor.owner.kind === 'workspace' &&
+    anchor.owner.workspaceId === workspaceId &&
+    anchor.id === workspaceId &&
+    statement.lifetime.uses === undefined &&
+    statement.scope.actions.length === 1 &&
+    statement.scope.actions[0] === 'vault.delegate-refresh' &&
+    statement.scope.subjects.length > 0 &&
+    statement.scope.subjects.every((subject) => subject.kind === 'human') &&
+    statement.scope.resources.length === 1 &&
+    resource?.kind === 'container' &&
+    resource.container.kind === 'workspace' &&
+    resource.container.owner.kind === 'workspace' &&
+    resource.container.owner.workspaceId === workspaceId &&
+    resource.container.id === workspaceId
+  );
+}
+
 /** Logical approval identity excludes the execution attempt's existing call identifier. */
 export function policyProposalDigest(proposal: PolicyProposal): string {
   const { capabilityCallId: _attempt, ...logical } = proposal;
@@ -397,6 +439,24 @@ export function validatePolicyDocument(input: unknown): PolicyDocumentV1 {
         )
       )
         throw new Error('Process prohibitions require their exact human-authored Workspace scope.');
+      continue;
+    }
+    if (
+      statement.kind === 'permission' &&
+      statement.grant.kind === 'ordinary' &&
+      statement.authority.kind === 'human' &&
+      statement.effect === 'allow'
+    ) {
+      // The only human-authored allow extends Gateway refresh delegation inside one Workspace.
+      const anchor = statement.lifetime.anchor;
+      if (
+        anchor.owner.kind !== 'workspace' ||
+        !isExactDelegatedRefreshAllowance(
+          { ...statement, state: 'active' },
+          anchor.owner.workspaceId
+        )
+      )
+        throw new Error('Human delegated-refresh allowance requires one exact Workspace scope.');
       continue;
     }
     if (
