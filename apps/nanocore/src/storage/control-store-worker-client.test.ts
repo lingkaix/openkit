@@ -346,6 +346,81 @@ afterEach(async () => {
 });
 
 describe('control writer parent admission', () => {
+  it('retains a native child ACK after its original closeout lease parent returns', async () => {
+    const f = await poolFixture(1, 'before');
+    const scope = f.scope(0);
+    const owner = f.client.workspaceMutations(f.root);
+    let child: Promise<unknown> | undefined;
+    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    try {
+      // Isolate lease bookkeeping with an existing transport journal write, not Worker permission.
+      const parent = owner.runWorkerCloseout(scope.productOwner.workspaceId, async () => {
+        Atomics.store(f.gate!, 0, 0);
+        child = f.client.write(scope.database, nativeRequest('unawaited-native-child'));
+        await waitForHold(f.gate!);
+      });
+      expect(parent).not.toBeNull();
+      await parent;
+      expect(nativeRequests(scope.path)).toEqual([]);
+      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      expect(cut.status).toBe('busy');
+    } finally {
+      if (cut?.status === 'frozen') cut.release();
+      release(f.gate);
+      await child;
+    }
+    expect(nativeRequests(scope.path)).toEqual(['unawaited-native-child']);
+    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    expect(afterAck.status).toBe('frozen');
+    if (afterAck.status === 'frozen') afterAck.release();
+  });
+
+  it('retains unknown child backing and the original deletion fence across native restart', async () => {
+    const posts = vi.spyOn(Worker.prototype, 'postMessage');
+    const f = await poolFixture(1, 'after');
+    const scope = f.scope(0);
+    const owner = f.client.workspaceMutations(f.root);
+    let outcome: Promise<unknown> | undefined;
+    let deletion: Promise<void> | undefined;
+    let closed = false;
+    try {
+      const parent = owner.runWorkerCloseout(scope.productOwner.workspaceId, async () => {
+        Atomics.store(f.gate!, 0, 0);
+        outcome = f.client.write(scope.database, nativeRequest('unknown-native-child')).then(
+          () => ({ accepted: true }),
+          (error: unknown) => error
+        );
+        await waitForHold(f.gate!);
+      });
+      expect(parent).not.toBeNull();
+      await parent;
+      deletion = owner.close(scope.productOwner.workspaceId).then(() => {
+        closed = true;
+      });
+      const call = posts.mock.calls.findIndex(
+        ([message]) => message.operation === 'write' && message.database === scope.database
+      );
+      expect(call).toBeGreaterThanOrEqual(0);
+      await nextTurn();
+      expect(closed).toBe(false);
+      await (posts.mock.contexts[call] as NativeWorker).terminate();
+      expect(await outcome).toMatchObject({ code: 'unavailable', commit: 'unknown' });
+      // Known physical disposal releases the IO unit, never the original deletion fence.
+      await deletion;
+      expect(closed).toBe(true);
+      await f.client.shutdown();
+      const restarted = getControlStoreWorkerClient();
+      client = restarted;
+      expect(restarted.workspaceMutations(f.root)).toBe(owner);
+      expect(owner.enter(scope.productOwner.workspaceId)).toBeNull();
+      expect(nativeRequests(scope.path)).toEqual(['unknown-native-child']);
+    } finally {
+      release(f.gate);
+      await f.client.shutdown();
+      await deletion;
+    }
+  });
+
   it('seals recovery only after accepted Item publications and hashes the closed tree', async () => {
     const root = mkdtempSync(join(tmpdir(), 'control-recovery-seal-'));
     roots.push(root);

@@ -462,7 +462,7 @@ interface WriterHost {
   readonly backing: Map<string | undefined, DatabaseBacking>;
   pending: number;
   /** Disk forecasts survive failed transport until the worker actually exits. */
-  readonly capacity: Set<NativeCapacityReservation>;
+  readonly capacity: Set<NativeCapacityReservation | WorkspaceMutationLease>;
   /** Resolves from the real exit event, never transport failure or a delayed terminate Promise. */
   readonly exited: ReturnType<typeof Promise.withResolvers<void>>;
   terminated: boolean;
@@ -581,6 +581,8 @@ interface Pending {
   readonly materialBytes: number;
   readonly inputBytes: number;
   readonly capacity: NativeCapacityReservation[];
+  /** The accepted parent's real unit is handed to this child through ACK or backing disposal. */
+  readonly workspaceLease?: WorkspaceMutationLease;
   /** A forecast is resolved once within this request's existing slot. */
   physicalForecasted?: boolean;
   /** Original owner capture; neither the supplier nor facts are sent back in a forecast decision. */
@@ -5885,6 +5887,18 @@ class ControlStoreWorkerClient {
         return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
       }
     }
+    const parentLease = context?.active ? context.workspaceLease : undefined;
+    const workspaceRelease = parentLease?.owner.enter(parentLease.workspaceId, 'capture');
+    if (workspaceRelease === null)
+      return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+    const workspaceLease =
+      parentLease && workspaceRelease
+        ? {
+            owner: parentLease.owner,
+            workspaceId: parentLease.workspaceId,
+            release: workspaceRelease,
+          }
+        : undefined;
     let capacity: readonly NativeCapacityReservation[];
     try {
       capacity = [
@@ -5898,6 +5912,7 @@ class ControlStoreWorkerClient {
         ),
       ];
     } catch (error) {
+      workspaceLease?.release();
       return Promise.reject(
         error instanceof FileAdmissionError
           ? new ControlStoreWorkerError('no-space', 'not-committed')
@@ -5909,6 +5924,7 @@ class ControlStoreWorkerClient {
       worker = this.startWorker(host);
     } catch {
       for (const reservation of capacity) reservation.release();
+      workspaceLease?.release();
       this.fail(host);
       return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
     }
@@ -5924,6 +5940,7 @@ class ControlStoreWorkerClient {
       this.adjustBacking(database, inputBytes, materialBytes, host);
       host.pending += 1;
       for (const reservation of capacity) host.capacity.add(reservation);
+      if (workspaceLease) host.capacity.add(workspaceLease);
       if (closeout) closeout.borrowing = true;
       const entry: Pending = {
         counted: !borrowed,
@@ -5936,6 +5953,7 @@ class ControlStoreWorkerClient {
         materialBytes,
         inputBytes,
         capacity: [...capacity],
+        ...(workspaceLease ? { workspaceLease } : {}),
         closeout,
         ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
         ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
@@ -5987,7 +6005,7 @@ class ControlStoreWorkerClient {
         : result;
     this.operations.set(operation, {
       publication: undefined,
-      workspaceLease: context?.active ? context.workspaceLease : undefined,
+      workspaceLease,
     });
     const release = () => this.operations.delete(operation);
     void operation.then(release, release);
@@ -6162,6 +6180,10 @@ class ControlStoreWorkerClient {
       for (const reservation of entry.capacity) {
         reservation.release();
         entry.host.capacity.delete(reservation);
+      }
+      if (entry.workspaceLease) {
+        entry.workspaceLease.release();
+        entry.host.capacity.delete(entry.workspaceLease);
       }
     }
     if (entry.progressCopy) {
