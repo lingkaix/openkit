@@ -1595,6 +1595,7 @@ class ControlStoreWorkerClient {
    * @param publication Optional exact initial product identity, never retry authority.
    * @param reservation Existing publication count, or the exact invocation credit borrowed through terminal Item acknowledgement.
    * @param closeout Exact capability call whose serial closeout retains one count credit.
+   * @param resource Original physical opening or DB handle whose producer prepares this operation.
    * @returns The original producer result after its own closeout.
    */
   async runOperation<T>(
@@ -1605,7 +1606,8 @@ class ControlStoreWorkerClient {
       | { readonly database: string; readonly closeout: CapabilityCloseoutCredit },
     closeout?: { readonly database: string; readonly callId: string },
     progressCopy?: ProgressCopyCredit,
-    workspaceLease?: WorkspaceMutationLease
+    workspaceLease?: WorkspaceMutationLease,
+    resource?: CoreDb | UserDb | WorkspaceDb | Omit<OpenCommand, 'operation'>
   ): Promise<T> {
     this.assertAccepting();
     const reservedDatabase = typeof reservation === 'string' ? reservation : reservation?.database;
@@ -1619,6 +1621,56 @@ class ControlStoreWorkerClient {
     const workspaceLeases = workspaceLease ? [workspaceLease] : [];
     const retainedParents: WorkspaceMutationLease[] = [];
     try {
+      if (resource) {
+        const database =
+          'database' in resource ? resource.database : `${resource.scope}:${resource.sqlite.name}`;
+        if (!(inherited?.active && inherited.reservation === database))
+          this.assertScopeProducerAdmission(database);
+        const admitted = this.openings.get(database)?.command;
+        const physical =
+          'database' in resource
+            ? (resource.physicalScope ?? resource.productOwner)
+            : (admitted?.physicalScope ??
+              admitted?.productOwner ??
+              (resource.scope === 'workspace'
+                ? { kind: 'workspace' as const, workspaceId: resource.workspaceId }
+                : undefined));
+        const dataRoot = admitted?.dataRoot ?? resource.dataRoot;
+        if (dataRoot && (physical?.kind === 'workspace' || physical?.kind === 'app')) {
+          const owner = this.workspaceMutations(dataRoot);
+          if (
+            !workspaceLeases.some(
+              (lease) => lease.owner === owner && lease.workspaceId === physical.workspaceId
+            )
+          ) {
+            const release = owner.enter(physical.workspaceId, 'capture');
+            if (!release)
+              throw new OperationError(
+                'workspace_frozen',
+                'Workspace is temporarily frozen.',
+                409,
+                {
+                  details: {
+                    workspaceId: physical.workspaceId,
+                    operation: 'capture',
+                    retryable: true,
+                    blockers: [
+                      {
+                        kind: 'publication',
+                        reason: 'frozen',
+                        reference: { workspaceId: physical.workspaceId },
+                        actions: [],
+                      },
+                    ],
+                  },
+                }
+              );
+            const retained = { owner, workspaceId: physical.workspaceId, release };
+            retainedParents.push(retained);
+            workspaceLeases.push(retained);
+          }
+        }
+      }
       for (const parent of inherited?.active ? inherited.workspaceLeases : []) {
         if (
           workspaceLeases.some(
@@ -1643,16 +1695,34 @@ class ControlStoreWorkerClient {
       active: true,
       publication,
       workspaceLeases,
-      progressCopy,
-      reservation: reservedDatabase,
-      closeout: credit ?? (typeof reservation === 'object' ? reservation.closeout : undefined),
+      progressCopy:
+        progressCopy ?? (resource && inherited?.active ? inherited.progressCopy : undefined),
+      // Nested preparation may borrow only while the original funded operation is still live.
+      get reservation() {
+        return (
+          reservedDatabase ?? (resource && inherited?.active ? inherited.reservation : undefined)
+        );
+      },
+      closeout:
+        credit ??
+        (typeof reservation === 'object' ? reservation.closeout : undefined) ??
+        (resource && inherited?.active ? inherited.closeout : undefined),
     };
-    // Register before invoking the producer: its synchronous Core commit may expose this identity.
-    const promise = this.operationContext.run(context, () => Promise.resolve().then(operation));
+    // Register before invoking the producer, without delaying its original synchronous snapshot.
+    const accepted = Promise.withResolvers<T>();
+    const promise = accepted.promise;
     this.operations.set(promise, {
       publication: context.publication,
       workspaceLeases: context.workspaceLeases,
     });
+    try {
+      Promise.resolve(this.operationContext.run(context, operation)).then(
+        accepted.resolve,
+        accepted.reject
+      );
+    } catch (error) {
+      accepted.reject(error);
+    }
     try {
       return await promise;
     } finally {
@@ -2519,7 +2589,17 @@ class ControlStoreWorkerClient {
     command: Omit<OpenCommand, 'operation'>,
     recovery?: ControlRecoveryNativeCall
   ): Promise<void> {
-    await this.openFrozen(command, recovery);
+    const snapshot = structuredClone(command);
+    if (recovery) return this.openFrozen(snapshot, recovery);
+    return this.runOperation(
+      () => this.openFrozen(snapshot),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      snapshot
+    );
   }
 
   /** Internal open shared by ordinary admission and the existing recovery lifecycle. */
@@ -2757,78 +2837,96 @@ class ControlStoreWorkerClient {
   ): Promise<
     ControlAdmissionResult | ControlKnowledgeAdmissionResult | CoreSchedulerResult | null
   > {
-    const scheduler = 'kind' in transition && transition.kind === 'scheduler-work';
-    try {
-      // Preserve the original inner scheduler JSON and binary account, not an inline metadata body.
-      const json = scheduler
-        ? JSON.stringify(transition.input)
-        : 'kind' in transition && transition.kind === 'command-receipt'
-          ? JSON.stringify(transition)
-          : undefined;
-      const reply = scheduler
-        ? await this.request(
-            {
-              operation: 'transition',
-              database,
-              transition: {
-                kind: 'scheduler-work',
-                input: {
-                  byteLength: Buffer.byteLength(json!),
-                  turnId: transition.input.mode === 'create' ? transition.input.entry.turnId : null,
+    return this.runOperation(
+      async () => {
+        const scheduler = 'kind' in transition && transition.kind === 'scheduler-work';
+        try {
+          // Preserve the original inner scheduler JSON and binary account, not an inline metadata body.
+          const json = scheduler
+            ? JSON.stringify(transition.input)
+            : 'kind' in transition && transition.kind === 'command-receipt'
+              ? JSON.stringify(transition)
+              : undefined;
+          const reply = scheduler
+            ? await this.request(
+                {
+                  operation: 'transition',
+                  database,
+                  transition: {
+                    kind: 'scheduler-work',
+                    input: {
+                      byteLength: Buffer.byteLength(json!),
+                      turnId:
+                        transition.input.mode === 'create' ? transition.input.entry.turnId : null,
+                    },
+                  },
+                  content: new ArrayBuffer(0),
                 },
-              },
-              content: new ArrayBuffer(0),
-            },
-            [json!]
-          )
-        : json === undefined
-          ? await this.request({
-              operation: 'transition',
-              database,
-              transition: transition as Exclude<
-                ControlAdmissionInput,
-                { kind: 'command-receipt' | 'scheduler-work' }
-              >,
-            })
-          : await this.request(
-              {
-                operation: 'transition',
-                database,
-                transition: { kind: 'command-receipt', input: frameControlScalarText(json) },
-                content: new ArrayBuffer(0),
-              },
-              [json]
-            );
-      const result = (reply as Extract<Success, { operation: 'transition' }>).result;
-      if (scheduler && !CoreSchedulerResultSchema.safeParse(result).success)
-        throw new ControlStoreWorkerError('invalid-request', 'unknown');
-      if ('kind' in transition && transition.kind === 'command-receipt' && result !== null)
-        throw new ControlStoreWorkerError('invalid-request', 'unknown');
-      return result;
-    } catch (error) {
-      if (
-        'kind' in transition &&
-        error instanceof ControlStoreWorkerError &&
-        error.domain?.operation === 'transition'
-      ) {
-        if (scheduler && !CoreSchedulerRefusalSchema.safeParse(error.domain).success)
-          throw new ControlStoreWorkerError('invalid-request', 'unknown');
-        if (scheduler && 'kind' in error.domain) {
-          if (error.domain.kind === 'decoder') throw new SyntaxError(error.domain.message);
-          if (error.domain.kind === 'transition')
-            throw new SchedulerAdmissionTransitionError(error.domain.message, error.domain.code);
-          throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+                [json!]
+              )
+            : json === undefined
+              ? await this.request({
+                  operation: 'transition',
+                  database,
+                  transition: transition as Exclude<
+                    ControlAdmissionInput,
+                    { kind: 'command-receipt' | 'scheduler-work' }
+                  >,
+                })
+              : await this.request(
+                  {
+                    operation: 'transition',
+                    database,
+                    transition: { kind: 'command-receipt', input: frameControlScalarText(json) },
+                    content: new ArrayBuffer(0),
+                  },
+                  [json]
+                );
+          const result = (reply as Extract<Success, { operation: 'transition' }>).result;
+          if (scheduler && !CoreSchedulerResultSchema.safeParse(result).success)
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          if ('kind' in transition && transition.kind === 'command-receipt' && result !== null)
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          return result;
+        } catch (error) {
+          if (
+            'kind' in transition &&
+            error instanceof ControlStoreWorkerError &&
+            error.domain?.operation === 'transition'
+          ) {
+            if (scheduler && !CoreSchedulerRefusalSchema.safeParse(error.domain).success)
+              throw new ControlStoreWorkerError('invalid-request', 'unknown');
+            if (scheduler && 'kind' in error.domain) {
+              if (error.domain.kind === 'decoder') throw new SyntaxError(error.domain.message);
+              if (error.domain.kind === 'transition')
+                throw new SchedulerAdmissionTransitionError(
+                  error.domain.message,
+                  error.domain.code
+                );
+              throw new OperationError(
+                error.domain.code,
+                error.domain.message,
+                error.domain.status
+              );
+            }
+            if (error.domain.code === 'idempotency_key_conflict')
+              throw new IdempotencyKeyConflictError();
+            if (
+              transition.kind === 'knowledge-work' &&
+              (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
+            )
+              throw new NotebookError(error.domain.code);
+          }
+          throw error;
         }
-        if (error.domain.code === 'idempotency_key_conflict')
-          throw new IdempotencyKeyConflictError();
-        if (
-          transition.kind === 'knowledge-work' &&
-          (error.domain.code === 'invalid_request' || error.domain.code === 'recovery_required')
-        )
-          throw new NotebookError(error.domain.code);
-      }
-      throw error;
-    }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
+    );
   }
 
   /** Submits a whole non-command product/lifecycle transition; success follows outer FULL COMMIT, never a queued-write acknowledgement. */
@@ -2866,22 +2964,32 @@ class ControlStoreWorkerClient {
     database: string,
     input: ControlEventAppend
   ): Promise<ControlEventAppendResult> {
-    try {
-      const reply = await this.request({
-        operation: 'event',
-        database,
-        input: ControlEventAppendSchema.parse(input),
-      });
-      return (reply as Extract<Success, { operation: 'event' }>).result;
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.commit === 'not-committed' &&
-        error.domain?.operation === 'event'
-      )
-        throw new Error(error.domain.message);
-      throw error;
-    }
+    return this.runOperation(
+      async () => {
+        try {
+          const reply = await this.request({
+            operation: 'event',
+            database,
+            input: ControlEventAppendSchema.parse(input),
+          });
+          return (reply as Extract<Success, { operation: 'event' }>).result;
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.commit === 'not-committed' &&
+            error.domain?.operation === 'event'
+          )
+            throw new Error(error.domain.message);
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
+    );
   }
 
   /**
@@ -2979,27 +3087,37 @@ class ControlStoreWorkerClient {
     database: string,
     input: ControlThreadReadMembership
   ): Promise<string[]> {
-    const json = JSON.stringify(input.itemIds);
-    const wire = {
-      userId: input.userId,
-      workspaceId: input.workspaceId,
-      threadId: input.threadId,
-      byteLength: Buffer.byteLength(json),
-    };
-    try {
-      const reply = await this.request(
-        { operation: 'thread-read-membership', database, input: wire },
-        [json]
-      );
-      return (reply as Extract<Success, { operation: 'thread-read-membership' }>).itemIds;
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.domain?.operation === 'thread-read-membership'
-      )
-        throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
-      throw error;
-    }
+    return this.runOperation(
+      async () => {
+        const json = JSON.stringify(input.itemIds);
+        const wire = {
+          userId: input.userId,
+          workspaceId: input.workspaceId,
+          threadId: input.threadId,
+          byteLength: Buffer.byteLength(json),
+        };
+        try {
+          const reply = await this.request(
+            { operation: 'thread-read-membership', database, input: wire },
+            [json]
+          );
+          return (reply as Extract<Success, { operation: 'thread-read-membership' }>).itemIds;
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.domain?.operation === 'thread-read-membership'
+          )
+            throw new Error(THREAD_READ_RECEIPT_INVALID, { cause: error });
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
+    );
   }
 
   /** Publishes or inspects only the actual canonical Core owner's disposable loaded-Policy readiness. */
@@ -3007,23 +3125,37 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     value: RuntimePolicyPublicationInput
   ): Promise<RuntimePolicyPublicationResult> {
-    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const input = RuntimePolicyPublicationInputSchema.parse(value);
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    const database = `core:${scope.path}`;
-    await this.open({
-      database,
-      path: scope.path,
-      create: false,
-      initialize: 'core',
-      dataRoot: db.dataRoot,
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const reply = await this.request({ operation: 'runtime-policy-publication', database, input });
-    return RuntimePolicyPublicationResultSchema.parse(
-      (reply as Extract<Success, { operation: 'runtime-policy-publication' }>).result
+    return this.runOperation(
+      async () => {
+        if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const input = RuntimePolicyPublicationInputSchema.parse(value);
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        const database = `core:${scope.path}`;
+        await this.open({
+          database,
+          path: scope.path,
+          create: false,
+          initialize: 'core',
+          dataRoot: db.dataRoot,
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        });
+        if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const reply = await this.request({
+          operation: 'runtime-policy-publication',
+          database,
+          input,
+        });
+        return RuntimePolicyPublicationResultSchema.parse(
+          (reply as Extract<Success, { operation: 'runtime-policy-publication' }>).result
+        );
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
     );
   }
 
@@ -3034,46 +3166,56 @@ class ControlStoreWorkerClient {
     record: ControlVaultMainInputMap['thread-login-activate'],
     beforeSubmit?: () => void | Promise<void>
   ): Promise<null> {
-    const { now, ...facts } = record;
-    const input = ControlVaultInputSchema.parse({
-      kind: 'thread-login-activate',
-      record: { ...facts, now: now() },
-    });
-    const core = await this.policyOpening(coreDb);
-    const borrower = await this.policyOpening(workspaceDb);
-    const [coreRoot, workspaceRoot] = await Promise.all([
-      realpath(coreDb.dataRoot),
-      realpath(workspaceDb.dataRoot),
-    ]);
-    if (coreRoot !== workspaceRoot)
-      throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const admission = beforeSubmit?.();
-    if (admission) await admission;
-    if (!coreDb.sqlite.open || !workspaceDb.sqlite.open)
-      throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const call: PolicyCall = {
-      id: -1,
-      core,
-      borrower,
-      phase: 'new',
-      borrowed: Promise.withResolvers<ControlPolicyGrant>(),
-      returned: Promise.withResolvers<void>(),
-    };
-    void call.borrowed.promise.catch(() => undefined);
-    void call.returned.promise.catch(() => undefined);
-    const reply = await this.request(
-      { operation: 'vault', database: borrower.command.database, input, policyRead: true },
+    return this.runOperation(
+      async () => {
+        const { now, ...facts } = record;
+        const input = ControlVaultInputSchema.parse({
+          kind: 'thread-login-activate',
+          record: { ...facts, now: now() },
+        });
+        const core = await this.policyOpening(coreDb);
+        const borrower = await this.policyOpening(workspaceDb);
+        const [coreRoot, workspaceRoot] = await Promise.all([
+          realpath(coreDb.dataRoot),
+          realpath(workspaceDb.dataRoot),
+        ]);
+        if (coreRoot !== workspaceRoot)
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const admission = beforeSubmit?.();
+        if (admission) await admission;
+        if (!coreDb.sqlite.open || !workspaceDb.sqlite.open)
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const call: PolicyCall = {
+          id: -1,
+          core,
+          borrower,
+          phase: 'new',
+          borrowed: Promise.withResolvers<ControlPolicyGrant>(),
+          returned: Promise.withResolvers<void>(),
+        };
+        void call.borrowed.promise.catch(() => undefined);
+        void call.returned.promise.catch(() => undefined);
+        const reply = await this.request(
+          { operation: 'vault', database: borrower.command.database, input, policyRead: true },
+          undefined,
+          undefined,
+          false,
+          undefined,
+          [],
+          undefined,
+          call
+        );
+        if (reply.operation !== 'vault' || reply.result.kind !== 'thread-login-activate')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return reply.result.value;
+      },
       undefined,
       undefined,
-      false,
       undefined,
-      [],
       undefined,
-      call
+      undefined,
+      coreDb
     );
-    if (reply.operation !== 'vault' || reply.result.kind !== 'thread-login-activate')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return reply.result.value;
   }
 
   private async policyOpening(db: CoreDb | WorkspaceDb): Promise<Opening> {
@@ -3105,64 +3247,81 @@ class ControlStoreWorkerClient {
     record: ControlVaultMainInputMap[K],
     beforeSubmit?: () => Promise<void> | void
   ): Promise<ControlVaultResultMap[K]> {
-    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const { now, ...facts } = record as typeof record & { readonly now?: () => string };
-    // Original public record helpers ignore additional row fields on replay; the private wire stays closed.
-    const recordSchema = ControlVaultInputSchema.options.find(
-      (option) => option.shape.kind.value === kind
-    )!.shape.record;
-    const input = ControlVaultInputSchema.parse({
-      kind,
-      record: ('strip' in recordSchema ? recordSchema.strip() : recordSchema).parse({
-        ...facts,
-        ...(now === undefined ? {} : { now: now() }),
-      }),
-    });
-    const scope = nativeProductScope(
-      db.dataRoot,
-      db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId }
+    return this.runOperation(
+      async () => {
+        if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const { now, ...facts } = record as typeof record & { readonly now?: () => string };
+        // Original public record helpers ignore additional row fields on replay; the private wire stays closed.
+        const recordSchema = ControlVaultInputSchema.options.find(
+          (option) => option.shape.kind.value === kind
+        )!.shape.record;
+        const input = ControlVaultInputSchema.parse({
+          kind,
+          record: ('strip' in recordSchema ? recordSchema.strip() : recordSchema).parse({
+            ...facts,
+            ...(now === undefined ? {} : { now: now() }),
+          }),
+        });
+        const scope = nativeProductScope(
+          db.dataRoot,
+          db.scope === 'core'
+            ? { kind: 'server' }
+            : { kind: 'workspace', workspaceId: db.workspaceId }
+        );
+        const database = `${db.scope === 'core' ? 'core' : 'workspace'}:${scope.path}`;
+        await this.open({
+          database,
+          path: scope.path,
+          create: false,
+          initialize: db.scope === 'core' ? 'core' : 'workspace',
+          dataRoot: db.dataRoot,
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        });
+        if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const admission = beforeSubmit?.();
+        if (admission) await admission;
+        if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
+        try {
+          const reply = await this.request({ operation: 'vault', database, input });
+          const result = (reply as Extract<Success, { operation: 'vault' }>).result;
+          if (result.kind !== kind) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          return result.value as ControlVaultResultMap[K];
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.commit === 'not-committed' &&
+            error.domain?.operation === 'vault' &&
+            isControlVaultRefusal(error.domain.code, error.domain.message, error.domain.status)
+          ) {
+            if (
+              !error.domain.code.startsWith('vault_record_') &&
+              error.domain.code !== 'vault_grant_narrowing'
+            )
+              throw new OperationError(
+                error.domain.code,
+                error.domain.message,
+                error.domain.status,
+                {
+                  cause: error,
+                }
+              );
+            if (error.domain.code === 'vault_grant_narrowing')
+              throw new VaultGrantNarrowingError(error.domain.status as 400 | 409);
+            if (error.domain.code === 'vault_record_format')
+              throw new TypeError(error.domain.message, { cause: error });
+            throw new Error(error.domain.message, { cause: error });
+          }
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
     );
-    const database = `${db.scope === 'core' ? 'core' : 'workspace'}:${scope.path}`;
-    await this.open({
-      database,
-      path: scope.path,
-      create: false,
-      initialize: db.scope === 'core' ? 'core' : 'workspace',
-      dataRoot: db.dataRoot,
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const admission = beforeSubmit?.();
-    if (admission) await admission;
-    if (!db.sqlite.open) throw new ControlStoreWorkerError('precondition', 'not-committed');
-    try {
-      const reply = await this.request({ operation: 'vault', database, input });
-      const result = (reply as Extract<Success, { operation: 'vault' }>).result;
-      if (result.kind !== kind) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-      return result.value as ControlVaultResultMap[K];
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.commit === 'not-committed' &&
-        error.domain?.operation === 'vault' &&
-        isControlVaultRefusal(error.domain.code, error.domain.message, error.domain.status)
-      ) {
-        if (
-          !error.domain.code.startsWith('vault_record_') &&
-          error.domain.code !== 'vault_grant_narrowing'
-        )
-          throw new OperationError(error.domain.code, error.domain.message, error.domain.status, {
-            cause: error,
-          });
-        if (error.domain.code === 'vault_grant_narrowing')
-          throw new VaultGrantNarrowingError(error.domain.status as 400 | 409);
-        if (error.domain.code === 'vault_record_format')
-          throw new TypeError(error.domain.message, { cause: error });
-        throw new Error(error.domain.message, { cause: error });
-      }
-      throw error;
-    }
   }
 
   /** Commits one complete original credential or separate Audit stage before its result is published. */
@@ -3254,67 +3413,84 @@ class ControlStoreWorkerClient {
     input: ControlAppInput,
     preparedCapacity?: FileStorageReservation
   ): Promise<ControlAppResult> {
-    const owned = ControlAppInputSchema.parse(input);
-    const json = JSON.stringify(owned);
-    const wire: ControlAppWire = {
-      workspaceId: owned.workspaceId,
-      appId: owned.appId,
-      kind: owned.change.kind,
-      byteLength: Buffer.byteLength(json),
-      ...(owned.execution ? { turnId: owned.execution.turnId } : {}),
-    };
     const opening = this.openings.get(database);
     try {
-      const result = await this.request(
-        { operation: 'app-kernel', database, input: wire, content: new ArrayBuffer(0) },
-        [json],
-        undefined,
-        false,
-        undefined,
-        preparedCapacity ? [preparedCapacity] : []
-      );
-      const reply = result as Extract<Success, { operation: 'app-kernel' }>;
-      if (owned.change.kind === 'rollback') {
-        try {
-          if (!opening || !reply.identity) throw new Error('App replacement identity is missing.');
-          const current = statSync(opening.path);
-          const identity = `${current.dev}:${current.ino}`;
-          if (identity !== reply.identity) throw new Error('App replacement identity changed.');
-          opening.identity = identity;
-        } catch {
-          if (opening) this.fail(opening.host);
-          throw new ControlStoreWorkerError('unavailable', 'unknown');
-        }
-      }
-      return reply.result;
-    } catch (error) {
-      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'app-kernel') {
-        if (error.domain.code === 'EEXIST')
-          throw Object.assign(new Error(error.domain.message), { code: 'EEXIST' });
-        throw new KernelCommandError(
-          error.domain.code as ConstructorParameters<typeof KernelCommandError>[0],
-          error.domain.message,
-          {
-            status: error.domain.status,
-            ...(error.domain.appDetails?.path !== undefined
-              ? { path: error.domain.appDetails.path }
-              : {}),
-            ...(error.domain.appDetails?.limit !== undefined
-              ? { limit: error.domain.appDetails.limit }
-              : {}),
-            ...(error.domain.appDetails?.maximum !== undefined
-              ? { maximum: error.domain.appDetails.maximum }
-              : {}),
-            ...(error.domain.appDetails?.expectedRevision !== undefined
-              ? { expectedRevision: error.domain.appDetails.expectedRevision }
-              : {}),
-            ...(error.domain.appDetails?.currentRevision !== undefined
-              ? { currentRevision: error.domain.appDetails.currentRevision }
-              : {}),
+      return await this.runOperation(
+        async () => {
+          const owned = ControlAppInputSchema.parse(input);
+          const json = JSON.stringify(owned);
+          const wire: ControlAppWire = {
+            workspaceId: owned.workspaceId,
+            appId: owned.appId,
+            kind: owned.change.kind,
+            byteLength: Buffer.byteLength(json),
+            ...(owned.execution ? { turnId: owned.execution.turnId } : {}),
+          };
+          try {
+            const result = await this.request(
+              { operation: 'app-kernel', database, input: wire, content: new ArrayBuffer(0) },
+              [json],
+              undefined,
+              false,
+              undefined,
+              preparedCapacity ? [preparedCapacity] : []
+            );
+            const reply = result as Extract<Success, { operation: 'app-kernel' }>;
+            if (owned.change.kind === 'rollback') {
+              try {
+                if (!opening || !reply.identity)
+                  throw new Error('App replacement identity is missing.');
+                const current = statSync(opening.path);
+                const identity = `${current.dev}:${current.ino}`;
+                if (identity !== reply.identity)
+                  throw new Error('App replacement identity changed.');
+                opening.identity = identity;
+              } catch {
+                if (opening) this.fail(opening.host);
+                throw new ControlStoreWorkerError('unavailable', 'unknown');
+              }
+            }
+            return reply.result;
+          } catch (error) {
+            if (
+              error instanceof ControlStoreWorkerError &&
+              error.domain?.operation === 'app-kernel'
+            ) {
+              if (error.domain.code === 'EEXIST')
+                throw Object.assign(new Error(error.domain.message), { code: 'EEXIST' });
+              throw new KernelCommandError(
+                error.domain.code as ConstructorParameters<typeof KernelCommandError>[0],
+                error.domain.message,
+                {
+                  status: error.domain.status,
+                  ...(error.domain.appDetails?.path !== undefined
+                    ? { path: error.domain.appDetails.path }
+                    : {}),
+                  ...(error.domain.appDetails?.limit !== undefined
+                    ? { limit: error.domain.appDetails.limit }
+                    : {}),
+                  ...(error.domain.appDetails?.maximum !== undefined
+                    ? { maximum: error.domain.appDetails.maximum }
+                    : {}),
+                  ...(error.domain.appDetails?.expectedRevision !== undefined
+                    ? { expectedRevision: error.domain.appDetails.expectedRevision }
+                    : {}),
+                  ...(error.domain.appDetails?.currentRevision !== undefined
+                    ? { currentRevision: error.domain.appDetails.currentRevision }
+                    : {}),
+                }
+              );
+            }
+            throw error;
           }
-        );
-      }
-      throw error;
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        opening?.command
+      );
     } finally {
       if (preparedCapacity && !opening?.host.capacity.has(preparedCapacity))
         preparedCapacity.release();
@@ -3334,32 +3510,43 @@ class ControlStoreWorkerClient {
     database: string,
     input: ControlGenerativePresentation
   ): Promise<string> {
-    // The domain JSON may contain a 2-MiB data model; it uses the existing binary account, never a larger envelope.
-    const json = JSON.stringify(input);
-    const wire = {
-      workspaceId: input.presentation.workspaceId,
-      turnId: input.presentation.turnId,
-      byteLength: Buffer.byteLength(json),
-    };
-    try {
-      const reply = await this.request(
-        { operation: 'generative-presentation', database, input: wire },
-        [json]
-      );
-      return (reply as Extract<Success, { operation: 'generative-presentation' }>).presentationId;
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.domain?.operation === 'generative-presentation'
-      ) {
-        if (error.domain.code === 'idempotency_key_conflict')
-          throw new IdempotencyKeyConflictError();
-        throw new KernelCommandError('recovery_required', error.domain.message, {
-          status: error.domain.status,
-        });
-      }
-      throw error;
-    }
+    return this.runOperation(
+      async () => {
+        // The domain JSON may contain a 2-MiB data model; it uses the existing binary account, never a larger envelope.
+        const json = JSON.stringify(input);
+        const wire = {
+          workspaceId: input.presentation.workspaceId,
+          turnId: input.presentation.turnId,
+          byteLength: Buffer.byteLength(json),
+        };
+        try {
+          const reply = await this.request(
+            { operation: 'generative-presentation', database, input: wire },
+            [json]
+          );
+          return (reply as Extract<Success, { operation: 'generative-presentation' }>)
+            .presentationId;
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.domain?.operation === 'generative-presentation'
+          ) {
+            if (error.domain.code === 'idempotency_key_conflict')
+              throw new IdempotencyKeyConflictError();
+            throw new KernelCommandError('recovery_required', error.domain.message, {
+              status: error.domain.status,
+            });
+          }
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
+    );
   }
 
   /** Prepares exact WorkBody bytes in the native owner before its covering SQL acknowledgement. */
@@ -3469,93 +3656,113 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     value: ControlDiscordChannelInput
   ): Promise<Exclude<ControlDiscordChannelResult, { stage: 'refused' }>> {
-    const input = ControlDiscordChannelInputSchema.parse(value);
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    if (
-      admitted &&
-      (admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const command = { operation: 'discord-channel' as const, database, input };
-    const reply = admitted
-      ? await this.request(command)
-      : (
-          await Promise.all([
-            this.open({
-              database,
-              path: scope.path,
-              dataRoot: db.dataRoot,
-              create: false,
-              initialize: 'core',
-              productOwner: scope.owner,
-              contentMount: scope.contentMount,
-            }),
-            this.request(command),
-          ])
-        )[1];
-    if (reply.operation !== 'discord-channel')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlDiscordChannelResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    if (result.data.stage === 'refused')
-      throw new OperationError(result.data.code, result.data.message, result.data.status);
-    if (result.data.stage !== input.stage)
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return result.data;
+    return this.runOperation(
+      async () => {
+        const input = ControlDiscordChannelInputSchema.parse(value);
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        if (
+          admitted &&
+          (admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const command = { operation: 'discord-channel' as const, database, input };
+        const reply = admitted
+          ? await this.request(command)
+          : (
+              await Promise.all([
+                this.open({
+                  database,
+                  path: scope.path,
+                  dataRoot: db.dataRoot,
+                  create: false,
+                  initialize: 'core',
+                  productOwner: scope.owner,
+                  contentMount: scope.contentMount,
+                }),
+                this.request(command),
+              ])
+            )[1];
+        if (reply.operation !== 'discord-channel')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlDiscordChannelResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        if (result.data.stage === 'refused')
+          throw new OperationError(result.data.code, result.data.message, result.data.status);
+        if (result.data.stage !== input.stage)
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return result.data;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Returns the original deduplicated enqueue snapshot only after its Core FULL acknowledgement. */
   async attentionEnqueue(db: CoreDb, value: AttentionEnqueueCommand): Promise<AttentionDelivery> {
-    const admittedInput = AttentionEnqueueCommandSchema.parse(value);
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    if (
-      admitted &&
-      (admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    // JSON preserves every admitted JS identity for the unchanged SQLite boundary,
-    // including escaped scalar values. Existing binary capacity is checked before allocation.
-    const json = JSON.stringify(admittedInput);
-    const command = {
-      operation: 'attention-enqueue' as const,
-      database,
-      input: frameControlScalarText(json),
-      content: new ArrayBuffer(0),
-    };
-    const reply = admitted
-      ? await this.request(command, [json])
-      : (
-          await Promise.all([
-            this.open({
-              database,
-              path: scope.path,
-              dataRoot: db.dataRoot,
-              create: false,
-              initialize: 'core',
-              productOwner: scope.owner,
-              contentMount: scope.contentMount,
-            }),
-            this.request(command, [json]),
-          ])
-        )[1];
-    if (reply.operation !== 'attention-enqueue')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = AttentionEnqueueResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    if (result.data.status === 'refused') throw new AttentionError(result.data.code);
-    return result.data.delivery;
+    return this.runOperation(
+      async () => {
+        const admittedInput = AttentionEnqueueCommandSchema.parse(value);
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        if (
+          admitted &&
+          (admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner))
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        // JSON preserves every admitted JS identity for the unchanged SQLite boundary,
+        // including escaped scalar values. Existing binary capacity is checked before allocation.
+        const json = JSON.stringify(admittedInput);
+        const command = {
+          operation: 'attention-enqueue' as const,
+          database,
+          input: frameControlScalarText(json),
+          content: new ArrayBuffer(0),
+        };
+        const reply = admitted
+          ? await this.request(command, [json])
+          : (
+              await Promise.all([
+                this.open({
+                  database,
+                  path: scope.path,
+                  dataRoot: db.dataRoot,
+                  create: false,
+                  initialize: 'core',
+                  productOwner: scope.owner,
+                  contentMount: scope.contentMount,
+                }),
+                this.request(command, [json]),
+              ])
+            )[1];
+        if (reply.operation !== 'attention-enqueue')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = AttentionEnqueueResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        if (result.data.status === 'refused') throw new AttentionError(result.data.code);
+        return result.data.delivery;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Joins the complete original startup reconciliation under the native Core FULL boundary. */
@@ -3563,47 +3770,61 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     value: AttentionReconciliation
   ): Promise<number> {
-    const input = AttentionReconciliationSchema.parse(value);
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
+    return this.runOperation(
+      async () => {
+        const input = AttentionReconciliationSchema.parse(value);
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({
+                operation: 'attention-reconcile-incomplete-attempts',
+                database,
+                input,
+              }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({
+            operation: 'attention-reconcile-incomplete-attempts',
             database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'attention-reconcile-incomplete-attempts', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({
-        operation: 'attention-reconcile-incomplete-attempts',
-        database,
-        input,
-      });
-    }
-    if (reply.operation !== 'attention-reconcile-incomplete-attempts')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = AttentionReconciliationResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    if (result.data.status === 'refused') throw new AttentionError(result.data.code);
-    return result.data.changes;
+            input,
+          });
+        }
+        if (reply.operation !== 'attention-reconcile-incomplete-attempts')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = AttentionReconciliationResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        if (result.data.status === 'refused') throw new AttentionError(result.data.code);
+        return result.data.changes;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Returns only the original transaction's durable claim snapshot, never a later re-read. */
@@ -3611,51 +3832,61 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     value: ControlAttentionAttemptClaim
   ): Promise<AttentionDelivery> {
-    const input = ControlAttentionAttemptClaimSchema.parse(value);
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
-            database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'attention-attempt-claim', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'attention-attempt-claim', database, input });
-    }
-    if (reply.operation !== 'attention-attempt-claim')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlAttentionAttemptClaimResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    if (result.data.status === 'refused') throw new AttentionError(result.data.code);
-    const delivery = result.data.delivery;
-    if (
-      delivery.id !== input.deliveryId ||
-      delivery.recipientUserId !== input.recipientUserId ||
-      delivery.channel !== input.channel ||
-      delivery.attempt.startedAt !== input.startedAt
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return delivery;
+    return this.runOperation(
+      async () => {
+        const input = ControlAttentionAttemptClaimSchema.parse(value);
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({ operation: 'attention-attempt-claim', database, input }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({ operation: 'attention-attempt-claim', database, input });
+        }
+        if (reply.operation !== 'attention-attempt-claim')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlAttentionAttemptClaimResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        if (result.data.status === 'refused') throw new AttentionError(result.data.code);
+        const delivery = result.data.delivery;
+        if (
+          delivery.id !== input.deliveryId ||
+          delivery.recipientUserId !== input.recipientUserId ||
+          delivery.channel !== input.channel ||
+          delivery.attempt.startedAt !== input.startedAt
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return delivery;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Commits only the original attempt completion; Main's following projection stays separate. */
@@ -3663,81 +3894,105 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     value: ControlAttentionAttemptCompletion
   ): Promise<ControlAttentionAttemptCompletionResult> {
-    const input = ControlAttentionAttemptCompletionSchema.parse(value);
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
+    return this.runOperation(
+      async () => {
+        const input = ControlAttentionAttemptCompletionSchema.parse(value);
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({ operation: 'attention-attempt-completion', database, input }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({
+            operation: 'attention-attempt-completion',
             database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'attention-attempt-completion', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'attention-attempt-completion', database, input });
-    }
-    if (reply.operation !== 'attention-attempt-completion')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return result.data;
+            input,
+          });
+        }
+        if (reply.operation !== 'attention-attempt-completion')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlAttentionAttemptCompletionResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return result.data;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Initializes or reuses the canonical local User under captured fresh authority and FULL commit. */
   async localIdentity(db: CoreDb, input: ControlLocalIdentity): Promise<string> {
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
-            database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'local-identity', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'local-identity', database, input });
-    }
-    if (reply.operation !== 'local-identity')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlLocalIdentityResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return result.data;
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({ operation: 'local-identity', database, input }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({ operation: 'local-identity', database, input });
+        }
+        if (reply.operation !== 'local-identity')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlLocalIdentityResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return result.data;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Consumes exactly the original first-owner tuple through the admitted Core FULL writer. */
@@ -3745,41 +4000,51 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     input: ControlBootstrapConsume
   ): Promise<ControlBootstrapConsumeResult> {
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
-            database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'bootstrap-consume', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'bootstrap-consume', database, input });
-    }
-    if (reply.operation !== 'bootstrap-consume')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlBootstrapConsumeResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return result.data;
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({ operation: 'bootstrap-consume', database, input }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({ operation: 'bootstrap-consume', database, input });
+        }
+        if (reply.operation !== 'bootstrap-consume')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlBootstrapConsumeResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return result.data;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Ensures only the original startup Bootstrap setting through the admitted Core FULL writer. */
@@ -3787,41 +4052,51 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     input: ControlBootstrapEnsure
   ): Promise<ControlBootstrapEnsureResult> {
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
-            database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'bootstrap-ensure', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'bootstrap-ensure', database, input });
-    }
-    if (reply.operation !== 'bootstrap-ensure')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlBootstrapEnsureResultSchema.safeParse(reply.result);
-    if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return result.data;
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({ operation: 'bootstrap-ensure', database, input }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({ operation: 'bootstrap-ensure', database, input });
+        }
+        if (reply.operation !== 'bootstrap-ensure')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlBootstrapEnsureResultSchema.safeParse(reply.result);
+        if (!result.success) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return result.data;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Performs canonical issue/revoke/rotation through the existing admitted Core FULL writer. */
@@ -3829,59 +4104,69 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     input: ControlAccessTokenLifecycle
   ): Promise<ControlAccessTokenLifecycleResult> {
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (db.scope !== 'core' || db.sqlite.name !== scope.path)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
-            database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request({ operation: 'access-token-lifecycle', database, input }),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request({ operation: 'access-token-lifecycle', database, input });
-    }
-    if (reply.operation !== 'access-token-lifecycle')
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const result = ControlAccessTokenLifecycleResultSchema.safeParse(reply.result);
-    if (!result.success || (result.data.kind !== input.kind && result.data.kind !== 'denied'))
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    const value = result.data;
-    if (
-      (value.kind === 'issue' &&
-        input.kind === 'issue' &&
-        value.record.tokenId !== input.token.tokenId) ||
-      (value.kind === 'revoke' &&
-        input.kind === 'revoke' &&
-        value.record &&
-        value.record.tokenId !== input.tokenId) ||
-      (value.kind === 'rotate' &&
-        input.kind === 'rotate' &&
-        value.value &&
-        (value.value.tokenId !== input.successor.tokenId ||
-          value.value.record.tokenId !== input.successor.tokenId ||
-          value.value.rotatedRecord.tokenId !== input.tokenId))
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return value;
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
+        if (db.scope !== 'core' || db.sqlite.name !== scope.path)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: 'core',
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request({ operation: 'access-token-lifecycle', database, input }),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request({ operation: 'access-token-lifecycle', database, input });
+        }
+        if (reply.operation !== 'access-token-lifecycle')
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const result = ControlAccessTokenLifecycleResultSchema.safeParse(reply.result);
+        if (!result.success || (result.data.kind !== input.kind && result.data.kind !== 'denied'))
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        const value = result.data;
+        if (
+          (value.kind === 'issue' &&
+            input.kind === 'issue' &&
+            value.record.tokenId !== input.token.tokenId) ||
+          (value.kind === 'revoke' &&
+            input.kind === 'revoke' &&
+            value.record &&
+            value.record.tokenId !== input.tokenId) ||
+          (value.kind === 'rotate' &&
+            input.kind === 'rotate' &&
+            value.value &&
+            (value.value.tokenId !== input.successor.tokenId ||
+              value.value.record.tokenId !== input.successor.tokenId ||
+              value.value.rotatedRecord.tokenId !== input.tokenId))
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return value;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Executes the closed Server security family on the existing exact Core FULL owner. */
@@ -3889,53 +4174,63 @@ class ControlStoreWorkerClient {
     db: CoreDb,
     input: ControlSecurityTrigger
   ): Promise<ControlSecurityTriggerResult> {
-    const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
-    if (
-      db.scope !== 'core' ||
-      db.sqlite.name !== scope.path ||
-      !ControlSecurityTriggerSchema.safeParse(input).success
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `core:${scope.path}`;
-    const admitted = this.openings.get(database);
-    try {
-      let reply: Success;
-      if (!admitted) {
-        reply = (
-          await Promise.all([
-            this.open({
-              database,
-              path: scope.path,
-              dataRoot: db.dataRoot,
-              create: false,
-              initialize: 'core',
-              productOwner: scope.owner,
-              contentMount: scope.contentMount,
-            }),
-            this.request({ operation: 'security-trigger', database, input }),
-          ])
-        )[1];
-      } else {
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(db.dataRoot, { kind: 'server' });
         if (
-          admitted.command.path !== scope.path ||
-          admitted.command.dataRoot !== db.dataRoot ||
-          !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          db.scope !== 'core' ||
+          db.sqlite.name !== scope.path ||
+          !ControlSecurityTriggerSchema.safeParse(input).success
         )
           throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-        reply = await this.request({ operation: 'security-trigger', database, input });
-      }
-      if (reply.operation !== 'security-trigger')
-        throw new ControlStoreWorkerError('invalid-request', 'unknown');
-      return reply.result;
-    } catch (error) {
-      if (
-        error instanceof ControlStoreWorkerError &&
-        error.commit === 'not-committed' &&
-        error.domain?.operation === 'security-trigger'
-      )
-        throw new SecurityTriggerRefusal(error.domain.code);
-      throw error;
-    }
+        const database = `core:${scope.path}`;
+        const admitted = this.openings.get(database);
+        try {
+          let reply: Success;
+          if (!admitted) {
+            reply = (
+              await Promise.all([
+                this.open({
+                  database,
+                  path: scope.path,
+                  dataRoot: db.dataRoot,
+                  create: false,
+                  initialize: 'core',
+                  productOwner: scope.owner,
+                  contentMount: scope.contentMount,
+                }),
+                this.request({ operation: 'security-trigger', database, input }),
+              ])
+            )[1];
+          } else {
+            if (
+              admitted.command.path !== scope.path ||
+              admitted.command.dataRoot !== db.dataRoot ||
+              !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+            )
+              throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+            reply = await this.request({ operation: 'security-trigger', database, input });
+          }
+          if (reply.operation !== 'security-trigger')
+            throw new ControlStoreWorkerError('invalid-request', 'unknown');
+          return reply.result;
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.commit === 'not-committed' &&
+            error.domain?.operation === 'security-trigger'
+          )
+            throw new SecurityTriggerRefusal(error.domain.code);
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Sets only this admitted owner's personal default through the existing Core FULL writer. */
@@ -3983,57 +4278,69 @@ class ControlStoreWorkerClient {
     db: CoreDb | WorkspaceDb,
     input: ControlStandaloneAuditInput
   ): Promise<void> {
-    const scope = nativeProductScope(
-      db.dataRoot,
-      db.scope === 'core' ? { kind: 'server' } : { kind: 'workspace', workspaceId: db.workspaceId }
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(
+          db.dataRoot,
+          db.scope === 'core'
+            ? { kind: 'server' }
+            : { kind: 'workspace', workspaceId: db.workspaceId }
+        );
+        if (
+          (db.scope === 'core'
+            ? input.workspaceId !== undefined
+            : input.workspaceId !== db.workspaceId) ||
+          db.sqlite.name !== scope.path
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const parsed = ControlStandaloneAuditInputSchema.safeParse(input);
+        if (!parsed.success) throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        // The original shared-disable resource can exceed the structured envelope.
+        // Validate its closed stage first, then use the existing bounded scalar carrier.
+        const json = JSON.stringify(parsed.data);
+        const database = `${db.scope}:${scope.path}`;
+        const command = {
+          operation: 'standalone-audit' as const,
+          database,
+          input: frameControlScalarText(json),
+          content: new ArrayBuffer(0),
+        };
+        const admitted = this.openings.get(database);
+        let reply: Success;
+        if (!admitted) {
+          reply = (
+            await Promise.all([
+              this.open({
+                database,
+                path: scope.path,
+                dataRoot: db.dataRoot,
+                create: false,
+                initialize: db.scope,
+                productOwner: scope.owner,
+                contentMount: scope.contentMount,
+              }),
+              this.request(command, [json]),
+            ])
+          )[1];
+        } else {
+          if (
+            admitted.command.path !== scope.path ||
+            admitted.command.dataRoot !== db.dataRoot ||
+            !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
+          )
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          reply = await this.request(command, [json]);
+        }
+        if (reply.operation !== 'standalone-audit' || reply.result !== null)
+          throw new ControlStoreWorkerError('invalid-request', 'unknown');
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
     );
-    if (
-      (db.scope === 'core'
-        ? input.workspaceId !== undefined
-        : input.workspaceId !== db.workspaceId) ||
-      db.sqlite.name !== scope.path
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const parsed = ControlStandaloneAuditInputSchema.safeParse(input);
-    if (!parsed.success) throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    // The original shared-disable resource can exceed the structured envelope.
-    // Validate its closed stage first, then use the existing bounded scalar carrier.
-    const json = JSON.stringify(parsed.data);
-    const database = `${db.scope}:${scope.path}`;
-    const command = {
-      operation: 'standalone-audit' as const,
-      database,
-      input: frameControlScalarText(json),
-      content: new ArrayBuffer(0),
-    };
-    const admitted = this.openings.get(database);
-    let reply: Success;
-    if (!admitted) {
-      reply = (
-        await Promise.all([
-          this.open({
-            database,
-            path: scope.path,
-            dataRoot: db.dataRoot,
-            create: false,
-            initialize: db.scope,
-            productOwner: scope.owner,
-            contentMount: scope.contentMount,
-          }),
-          this.request(command, [json]),
-        ])
-      )[1];
-    } else {
-      if (
-        admitted.command.path !== scope.path ||
-        admitted.command.dataRoot !== db.dataRoot ||
-        !isDeepStrictEqual(admitted.command.productOwner, scope.owner)
-      )
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      reply = await this.request(command, [json]);
-    }
-    if (reply.operation !== 'standalone-audit' || reply.result !== null)
-      throw new ControlStoreWorkerError('invalid-request', 'unknown');
   }
 
   /**
@@ -4046,44 +4353,51 @@ class ControlStoreWorkerClient {
     workspaceDb: WorkspaceDb,
     input: RecordResolvedAgentSetupInput
   ): Promise<ResolvedAgentSetupRecord> {
-    // Retain the original early refusal order; the native guard repeats this decisively.
-    guardExistingResolvedAgentSetup(workspaceDb, input.recordId);
-    const setup = StoredResolvedAgentSetupV1Schema.parse(redactResolvedAgentSetup(input.setup));
     const scope = nativeProductScope(workspaceDb.dataRoot, {
       kind: 'workspace',
       workspaceId: workspaceDb.workspaceId,
     });
     const database = `workspace:${scope.path}`;
-    return this.runOperation(async () => {
-      await this.open({
-        database,
-        path: scope.path,
-        dataRoot: workspaceDb.dataRoot,
-        create: false,
-        initialize: 'workspace',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
-      try {
-        return await this.resolvedAgentSetup(database, workspaceDb.workspaceId, {
-          recordId: input.recordId,
-          workspaceId: input.workspaceId,
-          turnId: input.turnId ?? null,
-          requestId: input.requestId ?? null,
-          setup,
-          createdAt: input.createdAt,
+    return this.runOperation(
+      async () => {
+        guardExistingResolvedAgentSetup(workspaceDb, input.recordId);
+        const setup = StoredResolvedAgentSetupV1Schema.parse(redactResolvedAgentSetup(input.setup));
+        await this.open({
+          database,
+          path: scope.path,
+          dataRoot: workspaceDb.dataRoot,
+          create: false,
+          initialize: 'workspace',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
         });
-      } catch (error) {
-        if (
-          error instanceof ControlStoreWorkerError &&
-          error.commit === 'not-committed' &&
-          error.domain?.operation === 'resolved-agent-setup' &&
-          error.domain.code === 'unsupported_retained_format'
-        )
-          throw new TypeError('Unsupported retained record format.', { cause: error });
-        throw error;
-      }
-    });
+        try {
+          return await this.resolvedAgentSetup(database, workspaceDb.workspaceId, {
+            recordId: input.recordId,
+            workspaceId: input.workspaceId,
+            turnId: input.turnId ?? null,
+            requestId: input.requestId ?? null,
+            setup,
+            createdAt: input.createdAt,
+          });
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.commit === 'not-committed' &&
+            error.domain?.operation === 'resolved-agent-setup' &&
+            error.domain.code === 'unsupported_retained_format'
+          )
+            throw new TypeError('Unsupported retained record format.', { cause: error });
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      workspaceDb
+    );
   }
 
   /** Prepares the complete redacted row outside the wire and keeps its existing physical forecasts through ACK or cleanup. */
@@ -4301,58 +4615,69 @@ class ControlStoreWorkerClient {
 
   /** Preserves exact original post-effect receipts and the separate post-ACK FULL maintenance commit. */
   async recordCommandReceipt(owner: string | WorkspaceDb, value: CommandReceipt): Promise<void> {
-    const receipt = CommandReceiptSchema.parse(value);
-    if (
-      typeof owner !== 'string' &&
-      (!('workspaceId' in receipt.scope) || receipt.scope.workspaceId !== owner.workspaceId)
-    )
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const dataRoot = typeof owner === 'string' ? owner : owner.dataRoot;
-    let database: string;
-    if ('userId' in receipt.scope) {
-      const userId = receipt.scope.userId;
-      if (receipt.command === 'workspace.create') ensureUserLayout(dataRoot, userId);
-      const path = userDbPath(dataRoot, userId);
-      database = `user:${path}`;
-      const create =
-        receipt.command === 'workspace.create' &&
-        (this.openings.get(database)?.command.create ?? !statSync(path, { throwIfNoEntry: false }));
-      await this.open({ database, path, create, initialize: 'user' });
-    } else {
-      const scope = nativeProductScope(
-        dataRoot,
-        'coreId' in receipt.scope
-          ? { kind: 'server' }
-          : { kind: 'workspace', workspaceId: receipt.scope.workspaceId }
-      );
-      const path = scope.path;
-      if (typeof owner !== 'string' && owner.sqlite.name !== path)
-        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-      database = `${'coreId' in receipt.scope ? 'core' : 'workspace'}:${path}`;
-      await this.open({
-        database,
-        path,
-        dataRoot,
-        create: false,
-        initialize: 'coreId' in receipt.scope ? 'core' : 'workspace',
-        productOwner: scope.owner,
-        contentMount: scope.contentMount,
-      });
-    }
-    await this.transition(database, { kind: 'command-receipt', stage: 'record', receipt });
-    // Sample the maintenance clock only after the original record's FULL ACK.
-    const scope =
-      'userId' in receipt.scope
-        ? { userId: receipt.scope.userId }
-        : 'coreId' in receipt.scope
-          ? { coreId: 'server' as const }
-          : { workspaceId: receipt.scope.workspaceId };
-    await this.transition(database, {
-      kind: 'command-receipt',
-      stage: 'maintenance',
-      scope,
-      referenceTime: new Date().toISOString(),
-    });
+    return this.runOperation(
+      async () => {
+        const receipt = CommandReceiptSchema.parse(value);
+        if (
+          typeof owner !== 'string' &&
+          (!('workspaceId' in receipt.scope) || receipt.scope.workspaceId !== owner.workspaceId)
+        )
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const dataRoot = typeof owner === 'string' ? owner : owner.dataRoot;
+        let database: string;
+        if ('userId' in receipt.scope) {
+          const userId = receipt.scope.userId;
+          if (receipt.command === 'workspace.create') ensureUserLayout(dataRoot, userId);
+          const path = userDbPath(dataRoot, userId);
+          database = `user:${path}`;
+          const create =
+            receipt.command === 'workspace.create' &&
+            (this.openings.get(database)?.command.create ??
+              !statSync(path, { throwIfNoEntry: false }));
+          await this.open({ database, path, create, initialize: 'user' });
+        } else {
+          const scope = nativeProductScope(
+            dataRoot,
+            'coreId' in receipt.scope
+              ? { kind: 'server' }
+              : { kind: 'workspace', workspaceId: receipt.scope.workspaceId }
+          );
+          const path = scope.path;
+          if (typeof owner !== 'string' && owner.sqlite.name !== path)
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          database = `${'coreId' in receipt.scope ? 'core' : 'workspace'}:${path}`;
+          await this.open({
+            database,
+            path,
+            dataRoot,
+            create: false,
+            initialize: 'coreId' in receipt.scope ? 'core' : 'workspace',
+            productOwner: scope.owner,
+            contentMount: scope.contentMount,
+          });
+        }
+        await this.transition(database, { kind: 'command-receipt', stage: 'record', receipt });
+        // Sample the maintenance clock only after the original record's FULL ACK.
+        const scope =
+          'userId' in receipt.scope
+            ? { userId: receipt.scope.userId }
+            : 'coreId' in receipt.scope
+              ? { coreId: 'server' as const }
+              : { workspaceId: receipt.scope.workspaceId };
+        await this.transition(database, {
+          kind: 'command-receipt',
+          stage: 'maintenance',
+          scope,
+          referenceTime: new Date().toISOString(),
+        });
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      typeof owner === 'string' ? this.openings.get(owner)?.command : owner
+    );
   }
 
   /** Publishes only the original Server Notebook Audit; command receipts use transition. */
@@ -4370,14 +4695,24 @@ class ControlStoreWorkerClient {
       { kind: 'user-permission' | 'user-participant-audit' | 'user-audit' }
     >
   ): Promise<null> {
-    const path = nativeUserDatabasePath(db);
-    if (input.userId !== db.userId)
-      throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-    const database = `user:${path}`;
-    await this.open({ database, path, create: false, initialize: 'user' });
-    const result = await this.capability(database, input);
-    if (result !== null) throw new ControlStoreWorkerError('invalid-request', 'unknown');
-    return null;
+    return this.runOperation(
+      async () => {
+        const path = nativeUserDatabasePath(db);
+        if (input.userId !== db.userId)
+          throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+        const database = `user:${path}`;
+        await this.open({ database, path, create: false, initialize: 'user' });
+        const result = await this.capability(database, input);
+        if (result !== null) throw new ControlStoreWorkerError('invalid-request', 'unknown');
+        return null;
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Joins the exact lifecycle tuple to the existing Core writer after migrations, before close. */
@@ -4447,52 +4782,69 @@ class ControlStoreWorkerClient {
     input: ControlCapabilityCommandInput,
     options: { readonly immediate?: boolean } = {}
   ): Promise<ControlCapabilityCommandResult> {
-    try {
-      const text = controlCapabilityText(input);
-      if (
-        text !== undefined &&
-        (Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes ||
-          (!this.closeoutCredit(database, input) &&
-            Buffer.byteLength(text) >
-              CONTROL_WORKER_LIMITS.materialPendingBytes -
-                (this.backing.get(database)?.materialBytes ?? 0)))
-      )
-        throw new ControlStoreWorkerError('busy', 'not-committed');
-      const transfer = prepareControlCapabilityTransfer(input);
-      const reply = await this.request(
-        {
-          operation: 'capability',
-          database,
-          input: transfer.input,
-          immediate: options.immediate ?? false,
-        },
-        transfer.parts
-      );
-      return (reply as Extract<Success, { operation: 'capability' }>).result;
-    } catch (error) {
-      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'capability') {
-        if (error.domain.kind === 'ledger') throw new Error(error.domain.message);
-        if (error.domain.kind === 'pending')
-          throw new PendingRequestCommandError(
-            error.domain.code,
-            error.domain.message,
-            error.domain.status
+    return this.runOperation(
+      async () => {
+        try {
+          const text = controlCapabilityText(input);
+          if (
+            text !== undefined &&
+            (Buffer.byteLength(text) > CONTROL_WORKER_LIMITS.materialPendingBytes ||
+              (!this.closeoutCredit(database, input) &&
+                Buffer.byteLength(text) >
+                  CONTROL_WORKER_LIMITS.materialPendingBytes -
+                    (this.backing.get(database)?.materialBytes ?? 0)))
+          )
+            throw new ControlStoreWorkerError('busy', 'not-committed');
+          const transfer = prepareControlCapabilityTransfer(input);
+          const reply = await this.request(
+            {
+              operation: 'capability',
+              database,
+              input: transfer.input,
+              immediate: options.immediate ?? false,
+            },
+            transfer.parts
           );
-        if (error.domain.kind)
-          throw restoreControlCapabilityFailure({
-            kind: error.domain.kind,
-            code: error.domain.code,
-            message: error.domain.message,
-            status: error.domain.status,
-          });
-        if (error.domain.code === 'unsupported_retained_format')
-          throw new TypeError('Unsupported retained record format.');
-        if (error.domain.code === 'idempotency_key_conflict')
-          throw new IdempotencyKeyConflictError();
-        throw new GoalCommandError(error.domain.code, error.domain.message, error.domain.status);
-      }
-      throw error;
-    }
+          return (reply as Extract<Success, { operation: 'capability' }>).result;
+        } catch (error) {
+          if (
+            error instanceof ControlStoreWorkerError &&
+            error.domain?.operation === 'capability'
+          ) {
+            if (error.domain.kind === 'ledger') throw new Error(error.domain.message);
+            if (error.domain.kind === 'pending')
+              throw new PendingRequestCommandError(
+                error.domain.code,
+                error.domain.message,
+                error.domain.status
+              );
+            if (error.domain.kind)
+              throw restoreControlCapabilityFailure({
+                kind: error.domain.kind,
+                code: error.domain.code,
+                message: error.domain.message,
+                status: error.domain.status,
+              });
+            if (error.domain.code === 'unsupported_retained_format')
+              throw new TypeError('Unsupported retained record format.');
+            if (error.domain.code === 'idempotency_key_conflict')
+              throw new IdempotencyKeyConflictError();
+            throw new GoalCommandError(
+              error.domain.code,
+              error.domain.message,
+              error.domain.status
+            );
+          }
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
+    );
   }
 
   /** Only the exact call's schema preparation or serial closeout borrows its original credit. */
@@ -4546,84 +4898,95 @@ class ControlStoreWorkerClient {
     readonly captureFacts: () => ControlSchemaApplicationFacts;
   }): Promise<ApplyKnowledgeSchemaResponse> {
     const { workspaceDb: db } = input;
-    const scope = nativeProductScope(db.dataRoot, {
-      kind: 'workspace',
-      workspaceId: db.workspaceId,
-    });
-    if (
-      db.scope !== 'workspace' ||
-      !db.sqlite.open ||
-      db.sqlite.inTransaction ||
-      resolve(db.sqlite.name) !== resolve(scope.path) ||
-      input.request.workspaceId !== db.workspaceId ||
-      input.candidateHead.workspaceId !== db.workspaceId
-    )
-      throw new ControlStoreWorkerError('precondition', 'not-committed');
-    const database = `workspace:${scope.path}`;
-    await this.open({
-      database,
-      path: scope.path,
-      dataRoot: db.dataRoot,
-      create: false,
-      initialize: 'workspace',
-      productOwner: scope.owner,
-      contentMount: scope.contentMount,
-    });
-    // Only a proved, uncommitted administrative readset conflict permits one recomputation.
-    // The original reviewed input, candidate, timestamp and receipt remain exact on both attempts.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (!db.sqlite.open || db.sqlite.inTransaction)
-        throw new ControlStoreWorkerError('precondition', 'not-committed');
-      // Capture after opening. Posting recaptures synchronously with no await before postMessage.
-      // A hold may retain this exact bounded frame, but changed facts refuse before posting.
-      let captured: ControlSchemaApplicationFacts;
-      try {
-        captured = ControlSchemaApplicationFactsSchema.parse(input.captureFacts());
-      } catch {
-        throw new ControlStoreWorkerError('precondition', 'not-committed');
-      }
-      const owned = ControlSchemaApplicationInputSchema.parse({
-        request: input.request,
-        requestActor: input.requestActor,
-        producer: input.producer,
-        receipt: input.receipt,
-        candidateHead: input.candidateHead,
-        facts: captured,
-      });
-      const json = JSON.stringify(owned);
-      try {
-        const reply = await this.request(
-          {
-            operation: 'schema-application',
-            database,
-            input: { workspaceId: db.workspaceId, ...frameControlScalarText(json) },
-            content: new ArrayBuffer(0),
-          },
-          [json],
-          undefined,
-          false,
-          undefined,
-          [],
-          { captured, capture: input.captureFacts }
-        );
-        return (reply as Extract<Success, { operation: 'schema-application' }>).result;
-      } catch (error) {
+    return this.runOperation(
+      async () => {
+        const scope = nativeProductScope(db.dataRoot, {
+          kind: 'workspace',
+          workspaceId: db.workspaceId,
+        });
         if (
-          error instanceof ControlStoreWorkerError &&
-          error.domain?.operation === 'schema-application'
-        ) {
-          const refusal = ControlSchemaApplicationRefusalSchema.parse(error.domain);
-          if (refusal.code === 'schema_readset_changed' && error.commit === 'not-committed')
-            continue;
-          if (refusal.code === 'idempotency_key_conflict') throw new IdempotencyKeyConflictError();
-          throw new OperationError(refusal.code, refusal.message, refusal.status, {
-            ...(refusal.details ? { details: refusal.details } : {}),
+          db.scope !== 'workspace' ||
+          !db.sqlite.open ||
+          db.sqlite.inTransaction ||
+          resolve(db.sqlite.name) !== resolve(scope.path) ||
+          input.request.workspaceId !== db.workspaceId ||
+          input.candidateHead.workspaceId !== db.workspaceId
+        )
+          throw new ControlStoreWorkerError('precondition', 'not-committed');
+        const database = `workspace:${scope.path}`;
+        await this.open({
+          database,
+          path: scope.path,
+          dataRoot: db.dataRoot,
+          create: false,
+          initialize: 'workspace',
+          productOwner: scope.owner,
+          contentMount: scope.contentMount,
+        });
+        // Only a proved, uncommitted administrative readset conflict permits one recomputation.
+        // The original reviewed input, candidate, timestamp and receipt remain exact on both attempts.
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          if (!db.sqlite.open || db.sqlite.inTransaction)
+            throw new ControlStoreWorkerError('precondition', 'not-committed');
+          // Capture after opening. Posting recaptures synchronously with no await before postMessage.
+          // A hold may retain this exact bounded frame, but changed facts refuse before posting.
+          let captured: ControlSchemaApplicationFacts;
+          try {
+            captured = ControlSchemaApplicationFactsSchema.parse(input.captureFacts());
+          } catch {
+            throw new ControlStoreWorkerError('precondition', 'not-committed');
+          }
+          const owned = ControlSchemaApplicationInputSchema.parse({
+            request: input.request,
+            requestActor: input.requestActor,
+            producer: input.producer,
+            receipt: input.receipt,
+            candidateHead: input.candidateHead,
+            facts: captured,
           });
+          const json = JSON.stringify(owned);
+          try {
+            const reply = await this.request(
+              {
+                operation: 'schema-application',
+                database,
+                input: { workspaceId: db.workspaceId, ...frameControlScalarText(json) },
+                content: new ArrayBuffer(0),
+              },
+              [json],
+              undefined,
+              false,
+              undefined,
+              [],
+              { captured, capture: input.captureFacts }
+            );
+            return (reply as Extract<Success, { operation: 'schema-application' }>).result;
+          } catch (error) {
+            if (
+              error instanceof ControlStoreWorkerError &&
+              error.domain?.operation === 'schema-application'
+            ) {
+              const refusal = ControlSchemaApplicationRefusalSchema.parse(error.domain);
+              if (refusal.code === 'schema_readset_changed' && error.commit === 'not-committed')
+                continue;
+              if (refusal.code === 'idempotency_key_conflict')
+                throw new IdempotencyKeyConflictError();
+              throw new OperationError(refusal.code, refusal.message, refusal.status, {
+                ...(refusal.details ? { details: refusal.details } : {}),
+              });
+            }
+            throw error;
+          }
         }
-        throw error;
-      }
-    }
-    throw new ControlStoreWorkerError('busy', 'not-committed');
+        throw new ControlStoreWorkerError('busy', 'not-committed');
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      db
+    );
   }
 
   /** Executes one complete Material-family body; only its outer FULL commit acknowledges the result. */
@@ -4631,66 +4994,106 @@ class ControlStoreWorkerClient {
     database: string,
     input: ControlMaterialCommandInput
   ): Promise<ControlMaterialCommandResult> {
-    try {
-      const transfer = prepareControlMaterialTransfer(input);
-      const reply = await this.request(
-        { operation: 'material', database, input: transfer.input },
-        transfer.parts
-      );
-      return (reply as Extract<Success, { operation: 'material' }>).result;
-    } catch (error) {
-      if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'material') {
-        if (error.domain.code === 'idempotency_key_conflict')
-          throw new IdempotencyKeyConflictError();
-        throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
-      }
-      throw error;
-    }
+    return this.runOperation(
+      async () => {
+        try {
+          const transfer = prepareControlMaterialTransfer(input);
+          const reply = await this.request(
+            { operation: 'material', database, input: transfer.input },
+            transfer.parts
+          );
+          return (reply as Extract<Success, { operation: 'material' }>).result;
+        } catch (error) {
+          if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'material') {
+            if (error.domain.code === 'idempotency_key_conflict')
+              throw new IdempotencyKeyConflictError();
+            throw new OperationError(error.domain.code, error.domain.message, error.domain.status);
+          }
+          throw error;
+        }
+      },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
+    );
   }
 
   /** Commits both terminal streams and the attempt close inside one existing native savepoint. */
   async workerControlFinalStatus(database: string, command: ControlWorkerFinalStatusCommand) {
-    const { payload, ...metadata } = command;
-    const json = JSON.stringify(payload);
-    const reply = await this.request(
-      {
-        operation: 'worker-control-final-status',
-        database,
-        input: { ...metadata, byteLength: Buffer.byteLength(json) },
+    return this.runOperation(
+      async () => {
+        const { payload, ...metadata } = command;
+        const json = JSON.stringify(payload);
+        const reply = await this.request(
+          {
+            operation: 'worker-control-final-status',
+            database,
+            input: { ...metadata, byteLength: Buffer.byteLength(json) },
+          },
+          [json]
+        );
+        return (reply as Extract<Success, { operation: 'worker-control-final-status' }>).result;
       },
-      [json]
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
     );
-    return (reply as Extract<Success, { operation: 'worker-control-final-status' }>).result;
   }
 
   /** Commits heartbeat fingerprint and attempt liveness inside one existing native savepoint. */
   async workerControlHeartbeat(database: string, command: ControlWorkerHeartbeatCommand) {
-    const { payload, ...metadata } = command;
-    const json = JSON.stringify(payload);
-    const reply = await this.request(
-      {
-        operation: 'worker-control-heartbeat',
-        database,
-        input: { ...metadata, byteLength: Buffer.byteLength(json) },
+    return this.runOperation(
+      async () => {
+        const { payload, ...metadata } = command;
+        const json = JSON.stringify(payload);
+        const reply = await this.request(
+          {
+            operation: 'worker-control-heartbeat',
+            database,
+            input: { ...metadata, byteLength: Buffer.byteLength(json) },
+          },
+          [json]
+        );
+        return (reply as Extract<Success, { operation: 'worker-control-heartbeat' }>).result;
       },
-      [json]
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
     );
-    return (reply as Extract<Success, { operation: 'worker-control-heartbeat' }>).result;
   }
 
   /** Commits one original nonterminal control stage inside one existing native savepoint. */
   async workerControlRecord(database: string, command: ControlWorkerRecordCommand) {
-    const { payload, ...metadata } = command;
-    const json = JSON.stringify(payload);
-    const reply = await this.request(
-      {
-        operation: 'worker-control-record',
-        database,
-        input: { ...metadata, byteLength: Buffer.byteLength(json) },
+    return this.runOperation(
+      async () => {
+        const { payload, ...metadata } = command;
+        const json = JSON.stringify(payload);
+        const reply = await this.request(
+          {
+            operation: 'worker-control-record',
+            database,
+            input: { ...metadata, byteLength: Buffer.byteLength(json) },
+          },
+          [json]
+        );
+        return (reply as Extract<Success, { operation: 'worker-control-record' }>).result;
       },
-      [json]
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      this.openings.get(database)?.command
     );
-    return (reply as Extract<Success, { operation: 'worker-control-record' }>).result;
   }
 
   /** Returns only after the exact Core journal tuple is covered by FULL. */
@@ -5885,215 +6288,11 @@ class ControlStoreWorkerClient {
     }
     const database = 'database' in command ? command.database : undefined;
     const context = this.operationContext.getStore();
-    const progressCopy =
-      context?.active && context.reservation === database ? context.progressCopy : undefined;
-    const fundsProgress =
-      progressCopy?.active &&
-      !progressCopy.borrowing &&
-      ((command.operation === 'open' &&
-        !progressCopy.openUsed &&
-        commandInputHash({ ...command, operation: undefined }) === progressCopy.openingHash) ||
-        (command.operation === 'item' &&
-          !progressCopy.itemUsed &&
-          command.input.item.type === 'status' &&
-          command.input.item.id === progressCopy.itemId &&
-          command.input.item.turnId === progressCopy.turnId &&
-          command.input.category === progressCopy.category))
-        ? progressCopy
-        : undefined;
-    if (progressCopy && !fundsProgress)
-      return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
-    const closeout =
-      command.operation === 'capability'
-        ? this.closeoutCredit(command.database, command.input)
-        : undefined;
-    const borrowed =
-      closeout !== undefined ||
-      (database !== undefined && context?.active && context.reservation === database);
-    // The exact Item's preparation owns this serial borrow until its covering native ACK.
-    const creditedPublication =
-      !progressCopy &&
-      context?.active &&
-      context.reservation === database &&
-      context.closeout?.borrowing &&
-      context.closeout.database === database &&
-      (command.operation === 'products' ||
-        command.operation === 'publication' ||
-        command.operation === 'item');
     const opening = database === undefined ? undefined : this.openings.get(database);
     try {
       this.assertFrozenCall(command, recovery, opening);
     } catch (error) {
       return Promise.reject(error);
-    }
-    const host = target ?? opening?.host;
-    // An ACK may be validated before older scope reactions run. They keep their prefix.
-    const ready =
-      command.operation !== 'open' &&
-      opening &&
-      (!opening.acknowledged ||
-        [...this.pending.values()].some(
-          (entry) =>
-            !entry.ready && 'database' in entry.command && entry.command.database === database
-        ))
-        ? opening.promise
-        : undefined;
-    if (!host || host.failed)
-      return Promise.reject(
-        new ControlStoreWorkerError(host ? 'unavailable' : 'not-open', 'not-committed')
-      );
-    const nativeTurn = this.directNativeTurn(command);
-    if (
-      (database !== undefined &&
-        (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
-          CONTROL_WORKER_LIMITS.pendingTransitions) ||
-      (nativeTurn &&
-        opening &&
-        !borrowed &&
-        this.pendingTurnPublications(JSON.stringify([opening.path, nativeTurn.turnId])) >=
-          CONTROL_WORKER_LIMITS.pendingTurnTransitions)
-    ) {
-      return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
-    }
-    if (!Number.isSafeInteger(this.nextId)) {
-      return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
-    }
-    let inputBytes: number;
-    try {
-      inputBytes =
-        controlWorkerInputBytes({ ...command, version: CONTROL_WORKER_VERSION, id: this.nextId }) +
-        64;
-    } catch {
-      return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-    }
-    // A funded clone substitutes equal already-booked bytes. It cannot acquire a new
-    // aggregate refusal, including when an original exact MCP closeout uses its exemption.
-    // One fixed shutdown message per owned host still drains accepted work at saturation.
-    if (
-      command.operation !== 'shutdown' &&
-      !closeout &&
-      !creditedPublication &&
-      (fundsProgress
-        ? inputBytes > fundsProgress.remainingBytes
-        : this.reservedInputBytes(database) + inputBytes > CONTROL_WORKER_LIMITS.pendingBytes)
-    )
-      return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
-    let materialBytes = 0;
-    let posted = command;
-    if (
-      command.operation === 'material' ||
-      command.operation === 'capability' ||
-      command.operation === 'observation' ||
-      command.operation === 'generative-presentation' ||
-      command.operation === 'app-kernel' ||
-      command.operation === 'schema-application' ||
-      command.operation === 'attention-enqueue' ||
-      (command.operation === 'transition' &&
-        'kind' in command.transition &&
-        (command.transition.kind === 'command-receipt' ||
-          command.transition.kind === 'scheduler-work')) ||
-      command.operation === 'standalone-audit' ||
-      command.operation === 'thread-read-membership' ||
-      command.operation === 'worker-control-final-status' ||
-      command.operation === 'worker-control-heartbeat' ||
-      command.operation === 'worker-control-record' ||
-      (command.operation === 'execution-attempt' && command.input.kind === 'create')
-    ) {
-      const size =
-        command.operation === 'transition' &&
-        'kind' in command.transition &&
-        (command.transition.kind === 'command-receipt' ||
-          command.transition.kind === 'scheduler-work')
-          ? { byteLength: command.transition.input.byteLength, replyByteLength: 0 }
-          : command.operation === 'execution-attempt'
-            ? {
-                byteLength: command.input.kind === 'create' ? command.input.byteLength : 0,
-                replyByteLength: 0,
-              }
-            : command.operation === 'material'
-              ? controlMaterialTransferSize(command.input)
-              : command.operation === 'generative-presentation' ||
-                  command.operation === 'app-kernel' ||
-                  command.operation === 'schema-application' ||
-                  command.operation === 'attention-enqueue' ||
-                  command.operation === 'standalone-audit' ||
-                  command.operation === 'thread-read-membership' ||
-                  command.operation === 'worker-control-final-status' ||
-                  command.operation === 'worker-control-heartbeat' ||
-                  command.operation === 'worker-control-record'
-                ? { byteLength: command.input.byteLength, replyByteLength: 0 }
-                : command.operation === 'observation'
-                  ? {
-                      byteLength: controlWorkObservationTransferSize(command.input),
-                      replyByteLength: 0,
-                    }
-                  : command.operation === 'capability'
-                    ? {
-                        byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
-                        replyByteLength: 0,
-                      }
-                    : undefined;
-      if (!size || size.byteLength === undefined)
-        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-      materialBytes = size.byteLength + size.replyByteLength;
-      if (
-        !Number.isSafeInteger(materialBytes) ||
-        materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes ||
-        (!closeout &&
-          materialBytes >
-            CONTROL_WORKER_LIMITS.materialPendingBytes -
-              (this.backing.get(database)?.materialBytes ?? 0))
-      )
-        return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
-      if (materialParts?.length) {
-        // Admission precedes allocation and transfer. No escaped JSON or second payload buffer is made.
-        const content = new ArrayBuffer(size.byteLength);
-        let offset = 0;
-        for (const text of materialParts) {
-          if (text instanceof Uint8Array) {
-            if (text.byteLength > size.byteLength - offset)
-              return Promise.reject(
-                new ControlStoreWorkerError('invalid-request', 'not-committed')
-              );
-            new Uint8Array(content, offset, text.byteLength).set(text);
-            offset += text.byteLength;
-            continue;
-          }
-          const encoded = new TextEncoder().encodeInto(text, new Uint8Array(content, offset));
-          if (encoded.read !== text.length)
-            return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-          offset += encoded.written;
-        }
-        if (offset !== size.byteLength)
-          return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-        posted = { ...command, content };
-      }
-    } else if (materialParts !== undefined)
-      return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-    const request: ControlWorkerRequest = {
-      ...posted,
-      version: CONTROL_WORKER_VERSION,
-      id: this.nextId,
-    };
-    if (!isControlWorkerRequest(request)) {
-      return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-    }
-    // Posting normally transfers ownership immediately. A capture hold must take the same
-    // immutable input now, so its caller cannot change a bounded envelope before resume.
-    let admittedRequest = request;
-    if (
-      this.backupHold ||
-      (database !== undefined && this.databaseHolds.has(database)) ||
-      deferPost ||
-      ready !== undefined
-    ) {
-      try {
-        admittedRequest = structuredClone(request, {
-          transfer: 'content' in request && request.content ? [request.content] : [],
-        });
-      } catch {
-        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
-      }
     }
     const parentLeases = context?.active ? context.workspaceLeases : [];
     const scoped = command.operation === 'open' ? command : opening?.command;
@@ -6109,134 +6308,345 @@ class ControlStoreWorkerClient {
       if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
       workspaceLeases.push({ owner, workspaceId, release });
     };
+    let handedToPending = false;
     try {
       for (const parent of parentLeases) retainWorkspace(parent.owner, parent.workspaceId);
-      // Real frozen recovery/capture calls already retain their original exclusive owner.
-      if (!recovery && scoped?.dataRoot) {
-        const owner = this.workspaceMutations(scoped.dataRoot);
-        if (physical?.kind === 'workspace' || physical?.kind === 'app')
-          retainWorkspace(owner, physical.workspaceId);
-        if (command.operation === 'private-workspace') {
-          if ('workspaceId' in command.input) retainWorkspace(owner, command.input.workspaceId);
-          if ('expectedWorkspaceId' in command.input)
-            retainWorkspace(owner, command.input.expectedWorkspaceId);
-        }
-      }
-    } catch (error) {
-      for (const lease of workspaceLeases) lease.release();
-      return Promise.reject(error);
-    }
-    let capacity: readonly NativeCapacityReservation[];
-    try {
-      capacity = [
-        ...preparedCapacity,
-        ...this.reserveCapacity(
-          command,
-          opening,
-          inputBytes,
-          materialBytes,
-          closeout !== undefined || !!creditedPublication
-        ),
-      ];
-    } catch (error) {
-      for (const lease of workspaceLeases) lease.release();
-      return Promise.reject(
-        error instanceof FileAdmissionError
-          ? new ControlStoreWorkerError('no-space', 'not-committed')
-          : error
-      );
-    }
-    let worker: Worker;
-    try {
-      worker = this.startWorker(host);
-    } catch {
-      for (const reservation of capacity) reservation.release();
-      for (const lease of workspaceLeases) lease.release();
-      this.fail(host);
-      return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
-    }
-    const id = this.nextId++;
-    const result = new Promise<Success>((resolve, reject) => {
-      if (fundsProgress) {
-        fundsProgress.borrowing = true;
-        fundsProgress.remainingBytes -= inputBytes;
-        this.adjustProgressCopyBytes(fundsProgress.database, -inputBytes);
-        if (command.operation === 'open') fundsProgress.openUsed = true;
-        else fundsProgress.itemUsed = true;
-      }
-      this.adjustBacking(database, inputBytes, materialBytes, host);
-      host.pending += 1;
-      for (const reservation of capacity) host.capacity.add(reservation);
-      for (const lease of workspaceLeases) host.capacity.add(lease);
-      if (closeout) closeout.borrowing = true;
-      const entry: Pending = {
-        counted: !borrowed,
-        host,
-        command: admittedRequest,
-        request: admittedRequest,
-        ...(recovery ? { recovery } : {}),
-        posted: false,
-        ready: ready === undefined,
-        materialBytes,
-        inputBytes,
-        capacity: [...capacity],
-        workspaceLeases,
-        closeout,
-        ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
-        ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
-        ...(policyCall ? { policyCall } : {}),
-        resolve,
-        reject,
-      };
-      if (policyCall) policyCall.id = id;
-      this.pending.set(id, entry);
-      if (database !== undefined && !borrowed)
-        this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
-      if (policyCall) {
-        try {
-          this.retainPolicyCall(policyCall);
-        } catch (error) {
-          this.complete(id, undefined, error as ControlStoreWorkerError);
-          return; // Never posted: no native preparation or reader could exist.
-        }
-      }
-      worker.ref();
-      if (ready !== undefined) {
-        void ready.then(
-          () => {
-            if (this.pending.get(id) !== entry) return;
-            entry.ready = true;
-            if (!deferPost || entry.cohort) this.post(entry);
-          },
-          (error: unknown) => {
-            this.complete(
-              id,
-              undefined,
-              new ControlStoreWorkerError(
-                error instanceof ControlStoreWorkerError ? error.code : 'unavailable',
-                'not-committed'
-              )
-            );
-          }
+      if (
+        !recovery &&
+        scoped?.dataRoot &&
+        (physical?.kind === 'workspace' || physical?.kind === 'app')
+      )
+        retainWorkspace(this.workspaceMutations(scoped.dataRoot), physical.workspaceId);
+      const progressCopy =
+        context?.active && context.reservation === database ? context.progressCopy : undefined;
+      const fundsProgress =
+        progressCopy?.active &&
+        !progressCopy.borrowing &&
+        ((command.operation === 'open' &&
+          !progressCopy.openUsed &&
+          commandInputHash({ ...command, operation: undefined }) === progressCopy.openingHash) ||
+          (command.operation === 'item' &&
+            !progressCopy.itemUsed &&
+            command.input.item.type === 'status' &&
+            command.input.item.id === progressCopy.itemId &&
+            command.input.item.turnId === progressCopy.turnId &&
+            command.input.category === progressCopy.category))
+          ? progressCopy
+          : undefined;
+      if (progressCopy && !fundsProgress)
+        return Promise.reject(new ControlStoreWorkerError('precondition', 'not-committed'));
+      const closeout =
+        command.operation === 'capability'
+          ? this.closeoutCredit(command.database, command.input)
+          : undefined;
+      const borrowed =
+        closeout !== undefined ||
+        (database !== undefined && context?.active && context.reservation === database);
+      // The exact Item's preparation owns this serial borrow until its covering native ACK.
+      const creditedPublication =
+        !progressCopy &&
+        context?.active &&
+        context.reservation === database &&
+        context.closeout?.borrowing &&
+        context.closeout.database === database &&
+        (command.operation === 'products' ||
+          command.operation === 'publication' ||
+          command.operation === 'item');
+      const host = target ?? opening?.host;
+      // An ACK may be validated before older scope reactions run. They keep their prefix.
+      const ready =
+        command.operation !== 'open' &&
+        opening &&
+        (!opening.acknowledged ||
+          [...this.pending.values()].some(
+            (entry) =>
+              !entry.ready && 'database' in entry.command && entry.command.database === database
+          ))
+          ? opening.promise
+          : undefined;
+      if (!host || host.failed)
+        return Promise.reject(
+          new ControlStoreWorkerError(host ? 'unavailable' : 'not-open', 'not-committed')
         );
-      } else if (!deferPost) this.post(entry);
-    });
-    // Drain ordinary request settlement without promoting its caller-owned error to shutdown.
-    // Opening-dependent requests retain their original shutdown failure reporting.
-    const operation =
-      ready === undefined
-        ? result.then(
-            () => undefined,
-            () => undefined
-          )
-        : result;
-    this.operations.set(operation, {
-      publication: undefined,
-      workspaceLeases,
-    });
-    const release = () => this.operations.delete(operation);
-    void operation.then(release, release);
-    return result;
+      const nativeTurn = this.directNativeTurn(command);
+      if (
+        (database !== undefined &&
+          (this.outstanding.get(database) ?? 0) - (borrowed ? 1 : 0) >=
+            CONTROL_WORKER_LIMITS.pendingTransitions) ||
+        (nativeTurn &&
+          opening &&
+          !borrowed &&
+          this.pendingTurnPublications(JSON.stringify([opening.path, nativeTurn.turnId])) >=
+            CONTROL_WORKER_LIMITS.pendingTurnTransitions)
+      ) {
+        return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+      }
+      if (!Number.isSafeInteger(this.nextId)) {
+        return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
+      }
+      let inputBytes: number;
+      try {
+        inputBytes =
+          controlWorkerInputBytes({
+            ...command,
+            version: CONTROL_WORKER_VERSION,
+            id: this.nextId,
+          }) + 64;
+      } catch {
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      }
+      // A funded clone substitutes equal already-booked bytes. It cannot acquire a new
+      // aggregate refusal, including when an original exact MCP closeout uses its exemption.
+      // One fixed shutdown message per owned host still drains accepted work at saturation.
+      if (
+        command.operation !== 'shutdown' &&
+        !closeout &&
+        !creditedPublication &&
+        (fundsProgress
+          ? inputBytes > fundsProgress.remainingBytes
+          : this.reservedInputBytes(database) + inputBytes > CONTROL_WORKER_LIMITS.pendingBytes)
+      )
+        return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+      let materialBytes = 0;
+      let posted = command;
+      if (
+        command.operation === 'material' ||
+        command.operation === 'capability' ||
+        command.operation === 'observation' ||
+        command.operation === 'generative-presentation' ||
+        command.operation === 'app-kernel' ||
+        command.operation === 'schema-application' ||
+        command.operation === 'attention-enqueue' ||
+        (command.operation === 'transition' &&
+          'kind' in command.transition &&
+          (command.transition.kind === 'command-receipt' ||
+            command.transition.kind === 'scheduler-work')) ||
+        command.operation === 'standalone-audit' ||
+        command.operation === 'thread-read-membership' ||
+        command.operation === 'worker-control-final-status' ||
+        command.operation === 'worker-control-heartbeat' ||
+        command.operation === 'worker-control-record' ||
+        (command.operation === 'execution-attempt' && command.input.kind === 'create')
+      ) {
+        const size =
+          command.operation === 'transition' &&
+          'kind' in command.transition &&
+          (command.transition.kind === 'command-receipt' ||
+            command.transition.kind === 'scheduler-work')
+            ? { byteLength: command.transition.input.byteLength, replyByteLength: 0 }
+            : command.operation === 'execution-attempt'
+              ? {
+                  byteLength: command.input.kind === 'create' ? command.input.byteLength : 0,
+                  replyByteLength: 0,
+                }
+              : command.operation === 'material'
+                ? controlMaterialTransferSize(command.input)
+                : command.operation === 'generative-presentation' ||
+                    command.operation === 'app-kernel' ||
+                    command.operation === 'schema-application' ||
+                    command.operation === 'attention-enqueue' ||
+                    command.operation === 'standalone-audit' ||
+                    command.operation === 'thread-read-membership' ||
+                    command.operation === 'worker-control-final-status' ||
+                    command.operation === 'worker-control-heartbeat' ||
+                    command.operation === 'worker-control-record'
+                  ? { byteLength: command.input.byteLength, replyByteLength: 0 }
+                  : command.operation === 'observation'
+                    ? {
+                        byteLength: controlWorkObservationTransferSize(command.input),
+                        replyByteLength: 0,
+                      }
+                    : command.operation === 'capability'
+                      ? {
+                          byteLength: controlCapabilityText(command.input)?.byteLength ?? 0,
+                          replyByteLength: 0,
+                        }
+                      : undefined;
+        if (!size || size.byteLength === undefined)
+          return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+        materialBytes = size.byteLength + size.replyByteLength;
+        if (
+          !Number.isSafeInteger(materialBytes) ||
+          materialBytes > CONTROL_WORKER_LIMITS.materialPendingBytes ||
+          (!closeout &&
+            materialBytes >
+              CONTROL_WORKER_LIMITS.materialPendingBytes -
+                (this.backing.get(database)?.materialBytes ?? 0))
+        )
+          return Promise.reject(new ControlStoreWorkerError('busy', 'not-committed'));
+        if (materialParts?.length) {
+          // Admission precedes allocation and transfer. No escaped JSON or second payload buffer is made.
+          const content = new ArrayBuffer(size.byteLength);
+          let offset = 0;
+          for (const text of materialParts) {
+            if (text instanceof Uint8Array) {
+              if (text.byteLength > size.byteLength - offset)
+                return Promise.reject(
+                  new ControlStoreWorkerError('invalid-request', 'not-committed')
+                );
+              new Uint8Array(content, offset, text.byteLength).set(text);
+              offset += text.byteLength;
+              continue;
+            }
+            const encoded = new TextEncoder().encodeInto(text, new Uint8Array(content, offset));
+            if (encoded.read !== text.length)
+              return Promise.reject(
+                new ControlStoreWorkerError('invalid-request', 'not-committed')
+              );
+            offset += encoded.written;
+          }
+          if (offset !== size.byteLength)
+            return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+          posted = { ...command, content };
+        }
+      } else if (materialParts !== undefined)
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      const request: ControlWorkerRequest = {
+        ...posted,
+        version: CONTROL_WORKER_VERSION,
+        id: this.nextId,
+      };
+      if (!isControlWorkerRequest(request)) {
+        return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+      }
+      // Posting normally transfers ownership immediately. A capture hold must take the same
+      // immutable input now, so its caller cannot change a bounded envelope before resume.
+      let admittedRequest = request;
+      if (
+        this.backupHold ||
+        (database !== undefined && this.databaseHolds.has(database)) ||
+        deferPost ||
+        ready !== undefined
+      ) {
+        try {
+          admittedRequest = structuredClone(request, {
+            transfer: 'content' in request && request.content ? [request.content] : [],
+          });
+        } catch {
+          return Promise.reject(new ControlStoreWorkerError('invalid-request', 'not-committed'));
+        }
+      }
+      if (!recovery && scoped?.dataRoot && command.operation === 'private-workspace') {
+        const owner = this.workspaceMutations(scoped.dataRoot);
+        if ('workspaceId' in command.input) retainWorkspace(owner, command.input.workspaceId);
+        if ('expectedWorkspaceId' in command.input)
+          retainWorkspace(owner, command.input.expectedWorkspaceId);
+      }
+      let capacity: readonly NativeCapacityReservation[];
+      try {
+        capacity = [
+          ...preparedCapacity,
+          ...this.reserveCapacity(
+            command,
+            opening,
+            inputBytes,
+            materialBytes,
+            closeout !== undefined || !!creditedPublication
+          ),
+        ];
+      } catch (error) {
+        return Promise.reject(
+          error instanceof FileAdmissionError
+            ? new ControlStoreWorkerError('no-space', 'not-committed')
+            : error
+        );
+      }
+      let worker: Worker;
+      try {
+        worker = this.startWorker(host);
+      } catch {
+        for (const reservation of capacity) reservation.release();
+        this.fail(host);
+        return Promise.reject(new ControlStoreWorkerError('unavailable', 'not-committed'));
+      }
+      const id = this.nextId++;
+      const result = new Promise<Success>((resolve, reject) => {
+        if (fundsProgress) {
+          fundsProgress.borrowing = true;
+          fundsProgress.remainingBytes -= inputBytes;
+          this.adjustProgressCopyBytes(fundsProgress.database, -inputBytes);
+          if (command.operation === 'open') fundsProgress.openUsed = true;
+          else fundsProgress.itemUsed = true;
+        }
+        this.adjustBacking(database, inputBytes, materialBytes, host);
+        host.pending += 1;
+        for (const reservation of capacity) host.capacity.add(reservation);
+        for (const lease of workspaceLeases) host.capacity.add(lease);
+        if (closeout) closeout.borrowing = true;
+        const entry: Pending = {
+          counted: !borrowed,
+          host,
+          command: admittedRequest,
+          request: admittedRequest,
+          ...(recovery ? { recovery } : {}),
+          posted: false,
+          ready: ready === undefined,
+          materialBytes,
+          inputBytes,
+          capacity: [...capacity],
+          workspaceLeases,
+          closeout,
+          ...(fundsProgress ? { progressCopy: { credit: fundsProgress, bytes: inputBytes } } : {}),
+          ...(schemaApplicationFacts ? { schemaApplicationFacts } : {}),
+          ...(policyCall ? { policyCall } : {}),
+          resolve,
+          reject,
+        };
+        if (policyCall) policyCall.id = id;
+        this.pending.set(id, entry);
+        handedToPending = true;
+        if (database !== undefined && !borrowed)
+          this.outstanding.set(database, (this.outstanding.get(database) ?? 0) + 1);
+        if (policyCall) {
+          try {
+            this.retainPolicyCall(policyCall);
+          } catch (error) {
+            this.complete(id, undefined, error as ControlStoreWorkerError);
+            return; // Never posted: no native preparation or reader could exist.
+          }
+        }
+        worker.ref();
+        if (ready !== undefined) {
+          void ready.then(
+            () => {
+              if (this.pending.get(id) !== entry) return;
+              entry.ready = true;
+              if (!deferPost || entry.cohort) this.post(entry);
+            },
+            (error: unknown) => {
+              this.complete(
+                id,
+                undefined,
+                new ControlStoreWorkerError(
+                  error instanceof ControlStoreWorkerError ? error.code : 'unavailable',
+                  'not-committed'
+                )
+              );
+            }
+          );
+        } else if (!deferPost) this.post(entry);
+      });
+      // Drain ordinary request settlement without promoting its caller-owned error to shutdown.
+      // Opening-dependent requests retain their original shutdown failure reporting.
+      const operation =
+        ready === undefined
+          ? result.then(
+              () => undefined,
+              () => undefined
+            )
+          : result;
+      this.operations.set(operation, {
+        publication: undefined,
+        workspaceLeases,
+      });
+      const release = () => this.operations.delete(operation);
+      void operation.then(release, release);
+      return result;
+    } catch (error) {
+      return Promise.reject(error);
+    } finally {
+      if (!handedToPending) for (const lease of workspaceLeases) lease.release();
+    }
   }
 
   /** Async physical checks stay in the original finite request slot and precede native posting. */

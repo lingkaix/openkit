@@ -347,6 +347,87 @@ afterEach(async () => {
 });
 
 describe('control writer parent admission', () => {
+  it('owns the actual App producer before schema and JSON preparation', async () => {
+    const f = await productPoolFixture();
+    const workspaceId = f.workspaces[0]!.id;
+    const context: KernelCommandContext = {
+      store: f.store,
+      inflightCommands: new WeakMap(),
+      dataRoot: f.root,
+      workspaceId,
+      actor: { kind: 'user', id: f.userId },
+      requestId: randomUUID(),
+    };
+    const app = await createLightApp(context, {
+      format: 'openkit.light-app',
+      schemaVersion: 1,
+      title: 'Preparation ownership',
+      purpose: 'Retain the original native producer through preparation.',
+      collections: [
+        {
+          name: 'entries',
+          type: 'base',
+          description: 'Original entries.',
+          fields: [{ name: 'note', type: 'text', required: true, description: 'Retained text.' }],
+          indexes: [],
+        },
+      ],
+    });
+    const owner = f.client.workspaceMutations(f.root);
+    const cuts: string[] = [];
+    const appKernel = f.client.appKernel.bind(f.client);
+    const observed = vi
+      .spyOn(f.client, 'appKernel')
+      .mockImplementation((database, input, capacity) =>
+        appKernel(
+          database,
+          {
+            ...input,
+            get change() {
+              const cut = owner.tryFreeze(workspaceId, () => []);
+              cuts.push(cut.status);
+              if (cut.status === 'frozen') cut.release();
+              return input.change;
+            },
+          },
+          capacity
+        )
+      );
+    try {
+      const record = await createRecord(
+        { ...context, requestId: randomUUID() },
+        app.appId,
+        'entries',
+        app.schemaRevision,
+        { note: 'Original native preparation.' }
+      );
+      expect(record.data).toEqual({ note: 'Original native preparation.' });
+      expect(cuts.length).toBeGreaterThan(0);
+      expect(cuts.every((status) => status === 'busy')).toBe(true);
+      const after = owner.tryFreeze(workspaceId, () => []);
+      if (after.status === 'frozen') after.release();
+      expect(after.status).toBe('frozen');
+      const [database, prepared] = observed.mock.calls[0]!;
+      const capacity = f.client.reserveAppRollback(database, 64);
+      const released = vi.spyOn(capacity, 'release');
+      const cut = owner.tryFreeze(workspaceId, () => []);
+      expect(cut.status).toBe('frozen');
+      try {
+        await expect(appKernel(database, prepared, capacity)).rejects.toMatchObject({
+          code: 'workspace_frozen',
+          status: 409,
+        });
+        expect(released).toHaveBeenCalledTimes(1);
+      } finally {
+        if (cut.status === 'frozen') cut.release();
+        capacity.release();
+        released.mockRestore();
+      }
+    } finally {
+      observed.mockRestore();
+    }
+  });
+
   it('derives the Core journal target from the same single snapshot it posts', async () => {
     const f = await poolFixture(2);
     initializeTestCore(f.root);
