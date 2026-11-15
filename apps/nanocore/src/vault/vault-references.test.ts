@@ -192,6 +192,7 @@ describe('vault references', () => {
         secretKind: 'provider-subscription-oauth',
       });
       const equalVersion = await advanceActiveVaultReferenceVersion(coreDb, {
+        expectedWriterGeneration: 0,
         currentVersion: 1,
         now: () => '2026-07-23T00:10:00.000Z',
         referenceId: created.referenceId,
@@ -200,6 +201,7 @@ describe('vault references', () => {
       expect(equalVersion).toEqual(created);
 
       const advanced = await advanceActiveVaultReferenceVersion(coreDb, {
+        expectedWriterGeneration: 0,
         currentVersion: 2,
         now: () => '2026-07-23T00:20:00.000Z',
         referenceId: created.referenceId,
@@ -212,6 +214,7 @@ describe('vault references', () => {
       });
       await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
+          expectedWriterGeneration: 0,
           currentVersion: 1,
           now: () => '2026-07-23T00:30:00.000Z',
           referenceId: created.referenceId,
@@ -220,6 +223,7 @@ describe('vault references', () => {
       expect(getVaultReference(coreDb, created.referenceId)).toEqual(advanced);
       await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
+          expectedWriterGeneration: 0,
           currentVersion: 4,
           now: () => '2026-07-23T00:40:00.000Z',
           referenceId: created.referenceId,
@@ -228,6 +232,7 @@ describe('vault references', () => {
       expect(getVaultReference(coreDb, created.referenceId)).toEqual(advanced);
       await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
+          expectedWriterGeneration: 0,
           currentVersion: 1,
           referenceId: 'vault_00000000-0000-722b-b433-75d118b2149c',
         })
@@ -241,6 +246,7 @@ describe('vault references', () => {
 
       await expect(
         advanceActiveVaultReferenceVersion(coreDb, {
+          expectedWriterGeneration: 0,
           currentVersion: 2,
           now: () => '2026-07-23T01:00:00.000Z',
           referenceId: created.referenceId,

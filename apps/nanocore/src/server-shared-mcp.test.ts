@@ -1068,6 +1068,7 @@ describe('Server-shared MCP through governed Worker routes', () => {
             material: 'synthetic-rotated-shared-material',
           });
           await advanceActiveVaultReferenceVersion(f.coreDb, {
+            expectedWriterGeneration: 0,
             referenceId: reference.referenceId,
             currentVersion: rotated.currentVersion,
           });

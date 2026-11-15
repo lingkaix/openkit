@@ -97,6 +97,7 @@ import {
   prepareKnowledgeRetrievalTraceRead,
   resolveWorkspaceKnowledgeRetrievalPages,
 } from '../storage/index-rebuild.js';
+import { vaultCredentialWriterOf } from '../storage/vault-native-codecs.js';
 import { readWorkObservationTurnBinding } from '../storage/work-observations.js';
 import {
   AgentSessionRetainedStorageSchema,
@@ -2356,6 +2357,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         await this.revokeCredentialBindings(store, [original.scope.agentSessionId]);
         await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-receipts-complete', {
           planId: plan.planId,
+          removal: 'proven',
         });
         await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-plan-complete', {
           planId: plan.planId,
@@ -2637,6 +2639,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
                     {
                       referenceId: expectedReference.referenceId,
                       currentVersion: rotated.currentVersion,
+                      expectedWriterGeneration:
+                        vaultCredentialWriterOf(expectedReference).generation,
                       loginBinding: nativeBinding(expectedReference),
                       ...(this.now ? { now: this.now } : {}),
                     },
@@ -2799,6 +2803,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         await this.revokeCredentialBindings(store, [original.scope.agentSessionId]);
         await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-receipts-complete', {
           planId: plan.planId,
+          removal: 'proven',
         });
         await getControlStoreWorkerClient().vault(coreDb, 'binding-revoke-plan-complete', {
           planId: plan.planId,

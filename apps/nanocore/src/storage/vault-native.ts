@@ -79,6 +79,8 @@ import {
   requireVaultInjectionReceipt,
   requireVaultReference,
   requireVaultUseRecord,
+  type VaultCredentialWriter,
+  VaultCredentialWriterSchema,
   VaultGrantNarrowingError,
   type VaultGrantRecord,
   type VaultInjectionPlanRecord,
@@ -86,6 +88,7 @@ import {
   type VaultReferenceRecord,
   type VaultUseDb,
   type VaultUseRecord,
+  vaultCredentialWriterOf,
 } from './vault-native-codecs.js';
 import type {
   PreparedControlVaultRead,
@@ -167,11 +170,18 @@ function advanceActiveVaultReferenceVersion(
   input: AdvanceActiveVaultReferenceVersionInput
 ): VaultReferenceRecord {
   const reference = requireVaultReference(coreDb, input.referenceId);
+  const writer = vaultCredentialWriterOf(reference);
+  if (
+    writer.generation !== input.expectedWriterGeneration ||
+    (writer.mode !== 'core' && writer.state !== 'fenced')
+  )
+    throw credentialFamilyBusy();
 
   if (reference.status !== 'active') {
     throw new Error(`Vault reference is not active: ${input.referenceId}`);
   }
   if (input.currentVersion === reference.currentVersion) {
+    if (writer.state === 'fenced') throw credentialFamilyBusy();
     return reference;
   }
   if (input.currentVersion !== reference.currentVersion + 1) {
@@ -195,6 +205,19 @@ function advanceActiveVaultReferenceVersion(
     throw new Error(`Vault reference version changed concurrently: ${input.referenceId}`);
   }
 
+  if (writer.state === 'fenced')
+    writeVaultCredentialWriter(
+      coreDb,
+      reference.referenceId,
+      {
+        generation: nextWriterGeneration(writer),
+        mode: 'core',
+        holder: null,
+        state: 'active',
+      },
+      input.now?.()
+    );
+
   return requireVaultReference(coreDb, input.referenceId);
 }
 
@@ -211,7 +234,10 @@ function revokeVaultReference(
   input: RevokeVaultReferenceInput
 ): VaultReferenceRecord {
   return coreDb.sqlite.transaction(() => {
-    requireVaultReference(coreDb, input.referenceId);
+    const reference = requireVaultReference(coreDb, input.referenceId);
+    const writer = vaultCredentialWriterOf(reference);
+    if (writer.mode === 'gateway')
+      settleVaultCredentialWriter(coreDb, reference, writer.holder, 'fenced');
     const timestamp = input.now?.() ?? new Date().toISOString();
 
     coreDb.sqlite
@@ -695,6 +721,10 @@ function revokeVaultInjectionReceipts(coreDb: CoreDb, target: ReceiptRevocationT
   const predicate = byGrant
     ? 'grant_id = ?'
     : 'grant_id IN (SELECT grant_id FROM vault_grants WHERE vault_reference_id = ?)';
+  const receipts = coreDb.sqlite
+    .prepare(`SELECT receipt_id AS receiptId FROM vault_injection_receipts WHERE ${predicate}`)
+    .all(byGrant ? target.grantId : target.referenceId) as { receiptId: string }[];
+  fenceVaultCredentialWriterReceipts(coreDb, new Set(receipts.map((receipt) => receipt.receiptId)));
   coreDb.sqlite
     .prepare(
       `UPDATE vault_injection_receipts
@@ -707,6 +737,234 @@ function revokeVaultInjectionReceipts(coreDb: CoreDb, target: ReceiptRevocationT
        WHERE revocation_status = 'active' AND ${predicate}`
     )
     .run(byGrant ? target.grantId : target.referenceId);
+}
+
+/** Uses one fixed redacted domain refusal for failed writer compare-and-swap predicates. */
+function credentialFamilyBusy(): OperationError {
+  return new OperationError('credential_family_busy', 'Credential family is busy.', 409);
+}
+
+/** Refuses overflow before any writer transition can publish an unsupported generation. */
+function nextWriterGeneration(writer: VaultCredentialWriter): number {
+  if (writer.generation >= Number.MAX_SAFE_INTEGER) throw credentialFamilyBusy();
+  return writer.generation + 1;
+}
+
+/** Publishes only a strict v1 writer on the already-admitted native transaction. */
+function writeVaultCredentialWriter(
+  db: CoreDb,
+  referenceId: string,
+  writer: VaultCredentialWriter,
+  now = new Date().toISOString()
+): void {
+  assertControlProductWriter(db.sqlite);
+  const value = VaultCredentialWriterSchema.parse(writer);
+  db.sqlite
+    .prepare(
+      'UPDATE vault_references SET credential_writer_json = ?, updated_at = ? WHERE reference_id = ?'
+    )
+    .run(JSON.stringify(writeRetainedV1(value)), now, referenceId);
+}
+
+/** Reserves one family, or releases only Core's exact never-dispatched reservation. */
+function changeVaultCredentialWriter(
+  db: CoreDb,
+  input: Extract<ControlVaultInput, { kind: 'reference-writer' }>['record']
+): VaultReferenceRecord {
+  const reference = getVaultReference(db, input.referenceId);
+  if (
+    !reference ||
+    reference.status !== 'active' ||
+    reference.login !== undefined ||
+    reference.secretKind === 'provider-subscription-oauth' ||
+    reference.currentVersion !== input.expectedVersion
+  )
+    throw credentialFamilyBusy();
+  const writer = vaultCredentialWriterOf(reference);
+  if (writer.generation !== input.expectedGeneration) throw credentialFamilyBusy();
+  if (input.action === 'delegate') {
+    if (writer.mode !== 'core' || getVaultInjectionReceipt(db, input.receiptId))
+      throw credentialFamilyBusy();
+    writeVaultCredentialWriter(
+      db,
+      reference.referenceId,
+      {
+        generation: nextWriterGeneration(writer),
+        mode: 'gateway',
+        holder: input.receiptId,
+        state: 'pending',
+      },
+      input.now
+    );
+  } else {
+    if (
+      writer.mode !== 'gateway' ||
+      writer.state !== 'pending' ||
+      writer.holder !== input.receiptId ||
+      input.neverSent?.receiptId !== input.receiptId ||
+      getVaultInjectionReceipt(db, input.receiptId)
+    )
+      throw credentialFamilyBusy();
+    writeVaultCredentialWriter(
+      db,
+      reference.referenceId,
+      {
+        generation: nextWriterGeneration(writer),
+        mode: 'core',
+        holder: null,
+        state: 'active',
+      },
+      input.now
+    );
+  }
+  return requireVaultReference(db, reference.referenceId);
+}
+
+/** Settles the current holder once; an already-fenced copy requires a new root. */
+function settleVaultCredentialWriter(
+  db: CoreDb,
+  reference: VaultReferenceRecord,
+  receiptId: string,
+  removal: 'proven' | 'fenced'
+): void {
+  const writer = vaultCredentialWriterOf(reference);
+  if (writer.mode !== 'gateway' || writer.holder !== receiptId || writer.state === 'fenced') return;
+  writeVaultCredentialWriter(
+    db,
+    reference.referenceId,
+    removal === 'proven'
+      ? {
+          generation: nextWriterGeneration(writer),
+          mode: 'core',
+          holder: null,
+          state: 'active',
+        }
+      : {
+          generation: nextWriterGeneration(writer),
+          mode: 'gateway',
+          holder: receiptId,
+          state: 'fenced',
+        }
+  );
+}
+
+/** Applies unproved receipt revocation cascades without granting Core material authority. */
+function fenceVaultCredentialWriterReceipts(
+  db: CoreDb,
+  receiptIds: ReadonlySet<string>
+): ReadonlySet<string> {
+  const holders = new Set<string>();
+  const references = new Set<string>();
+  for (const receiptId of receiptIds) {
+    const receipt = getVaultInjectionReceipt(db, receiptId);
+    const grant = receipt && getVaultGrant(db, receipt.grantId);
+    if (grant) references.add(grant.vaultReferenceId);
+  }
+  for (const referenceId of references) {
+    const reference = requireVaultReference(db, referenceId);
+    const writer = vaultCredentialWriterOf(reference);
+    if (writer.mode === 'gateway' && receiptIds.has(writer.holder)) {
+      settleVaultCredentialWriter(db, reference, writer.holder, 'fenced');
+      holders.add(writer.holder);
+    }
+  }
+  return holders;
+}
+
+/** Settles holder receipts from one invalidated physical Epoch on the same Core transaction. */
+export function fenceVaultCredentialWritersForEpoch(
+  db: CoreDb,
+  targetId: string,
+  physicalEpoch: string
+): void {
+  assertControlProductWriter(db.sqlite);
+  const receipts = db.sqlite
+    .prepare(`SELECT r.receipt_id AS receiptId FROM vault_injection_receipts r
+      JOIN agent_session_runtime_bindings b ON b.agent_session_id = r.agent_session_id
+      JOIN harness_instance_records h ON h.harness_instance_id = b.harness_instance_id
+      JOIN sandbox_runtime_records s ON s.sandbox_runtime_id = h.sandbox_runtime_id
+      WHERE s.runtime_target_id = ? AND s.origin_physical_epoch = ?`)
+    .all(targetId, physicalEpoch) as { receiptId: string }[];
+  const receiptIds = new Set(receipts.map((receipt) => receipt.receiptId));
+  const holders = fenceVaultCredentialWriterReceipts(db, receiptIds);
+  const revoke = db.sqlite.prepare(
+    "UPDATE vault_injection_receipts SET revocation_status='stale-session' WHERE receipt_id=? AND revocation_status='active'"
+  );
+  for (const receiptId of holders) revoke.run(receiptId);
+}
+
+/** Repeats the exact pending holder and current use authority in the receipt transaction. */
+function activateVaultCredentialWriter(
+  db: CoreDb,
+  input: Extract<ControlVaultInput, { kind: 'receipt-create' }>['record']
+): void {
+  const plan = getVaultInjectionPlan(db, input.planId);
+  const grant = plan && getVaultGrant(db, plan.grantId);
+  const reference = grant && getVaultReference(db, grant.vaultReferenceId);
+  if (!reference) return; // The original receipt validation supplies its ordinary missing-lineage refusal.
+  const writer = vaultCredentialWriterOf(reference);
+  if (writer.mode === 'core') {
+    if (
+      (input.expectedVersion !== undefined && input.expectedVersion !== reference.currentVersion) ||
+      (input.expectedWriterGeneration !== undefined &&
+        input.expectedWriterGeneration !== writer.generation)
+    )
+      throw credentialFamilyBusy();
+    return;
+  }
+  if (
+    writer.state !== 'pending' ||
+    writer.holder !== input.receiptId ||
+    input.expectedVersion !== reference.currentVersion ||
+    input.expectedWriterGeneration !== writer.generation ||
+    reference.status !== 'active' ||
+    plan?.status !== 'active' ||
+    grant?.status !== 'active' ||
+    grant.issuance !== 'target' ||
+    grant.grantId !== input.grantId ||
+    input.revocationStatus !== 'active' ||
+    (grant.expiresAt !== null &&
+      (!Number.isFinite(Date.parse(grant.expiresAt)) ||
+        Date.parse(grant.expiresAt) <= Date.now())) ||
+    (grant.targetAgentSessionId !== null && grant.targetAgentSessionId !== input.agentSessionId) ||
+    getVaultInjectionReceipt(db, input.receiptId)
+  )
+    throw credentialFamilyBusy();
+  writeVaultCredentialWriter(db, reference.referenceId, { ...writer, state: 'active' });
+}
+
+/** Consumes exact completion coordinates; status-only evidence has no admitted removal value. */
+function completeVaultBindingRevocation(
+  db: CoreDb,
+  input: Extract<ControlVaultInput, { kind: 'binding-revoke-receipts-complete' }>['record']
+): void {
+  const plan = getVaultInjectionPlan(db, input.planId);
+  const grant = plan && getVaultGrant(db, plan.grantId);
+  const reference = grant && getVaultReference(db, grant.vaultReferenceId);
+  if (reference) {
+    const writer = vaultCredentialWriterOf(reference);
+    if (
+      (input.expectedVersion !== undefined && input.expectedVersion !== reference.currentVersion) ||
+      (input.expectedWriterGeneration !== undefined &&
+        input.expectedWriterGeneration !== writer.generation)
+    )
+      throw credentialFamilyBusy();
+    if (writer.mode === 'gateway') {
+      const receipt = input.receiptId && getVaultInjectionReceipt(db, input.receiptId);
+      if (
+        input.receiptId !== writer.holder ||
+        input.expectedVersion !== reference.currentVersion ||
+        input.expectedWriterGeneration !== writer.generation ||
+        writer.state === 'fenced' ||
+        (receipt && (receipt.planId !== input.planId || receipt.grantId !== plan?.grantId))
+      )
+        throw credentialFamilyBusy();
+      settleVaultCredentialWriter(db, reference, writer.holder, input.removal);
+    }
+  }
+  db.sqlite
+    .prepare("UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE plan_id=?")
+    .run(input.planId);
 }
 
 /** Runs one original Vault SQL stage inside its admitted savepoint; no material or external effect is owned here. */
@@ -833,11 +1091,7 @@ export function applyControlVault(
         break;
       }
       case 'binding-revoke-receipts-complete':
-        db.sqlite
-          .prepare(
-            "UPDATE vault_injection_receipts SET revocation_status='revoked' WHERE plan_id=?"
-          )
-          .run(request.record.planId);
+        completeVaultBindingRevocation(db, request.record);
         result = { kind: request.kind, value: null };
         break;
       case 'binding-revoke-plan-complete':
@@ -855,6 +1109,8 @@ export function applyControlVault(
           () => new Date().toISOString(),
           authority.declaration
         );
+        if (vaultCredentialWriterOf(current.reference).mode === 'gateway')
+          throw credentialFamilyBusy();
         if (current.reference.currentVersion !== authority.materialVersion)
           throw new Error('Credential material generation changed during replacement.');
         createVaultInjectionReceipt(db, definedFields(receipt));
@@ -927,6 +1183,9 @@ export function applyControlVault(
           kind: request.kind,
           value: createVaultReferenceWithInsertEvidence(db, withClock(request.record)),
         };
+        break;
+      case 'reference-writer':
+        result = { kind: request.kind, value: changeVaultCredentialWriter(db, request.record) };
         break;
       case 'reference-advance':
         if (request.record.loginBinding) {
@@ -1063,6 +1322,7 @@ export function applyControlVault(
               throw new ControlProductPreconditionError();
           }
         }
+        activateVaultCredentialWriter(db, request.record);
         result = {
           kind: request.kind,
           value: createVaultInjectionReceipt(db, definedFields(request.record)),

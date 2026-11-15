@@ -33,6 +33,7 @@ import { createDirectoryExclusive } from '@openkit/storage';
 import type { RecordServerAuditEventInput } from '../audit-events.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import type { CoreDb } from '../storage/db.js';
+import { vaultCredentialWriterOf } from '../storage/vault-native-codecs.js';
 import { ensureCanonicalDirectory } from '../storage/workspace-file-records.js';
 import { recordVaultAuditEvent } from '../vault/vault-admin-audit-events.js';
 import {
@@ -2062,6 +2063,7 @@ export class ProviderSubscriptionAccountManager {
     while (current.currentVersion < targetVersion) {
       current = await advanceActiveVaultReferenceVersion(this.coreDb, {
         currentVersion: current.currentVersion + 1,
+        expectedWriterGeneration: vaultCredentialWriterOf(current).generation,
         now: this.now,
         referenceId: current.referenceId,
       });

@@ -483,8 +483,13 @@ describe('vault use audited backend', () => {
           now = '2026-07-05T01:00:10.000Z';
           expect(backend.rotate({ referenceId, material: currentMaterial }).currentVersion).toBe(2);
           expect(
-            (await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: 2 }))
-              .currentVersion
+            (
+              await advanceActiveVaultReferenceVersion(coreDb, {
+                expectedWriterGeneration: 0,
+                referenceId,
+                currentVersion: 2,
+              })
+            ).currentVersion
           ).toBe(2);
         }
         now = '2026-07-05T01:00:10.500Z';
@@ -555,8 +560,13 @@ describe('vault use audited backend', () => {
         if (scenario === 'implicit-generation') {
           expect(backend.rotate({ referenceId, material: currentMaterial }).currentVersion).toBe(2);
           expect(
-            (await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: 2 }))
-              .currentVersion
+            (
+              await advanceActiveVaultReferenceVersion(coreDb, {
+                expectedWriterGeneration: 0,
+                referenceId,
+                currentVersion: 2,
+              })
+            ).currentVersion
           ).toBe(2);
         } else {
           now =
@@ -1303,6 +1313,7 @@ describe('reviewed Workspace grant to User Login material boundary', () => {
             material: randomBytes(32).toString('base64url'),
           });
           await advanceActiveVaultReferenceVersion(f.coreDb, {
+            expectedWriterGeneration: 0,
             referenceId: f.referenceId,
             currentVersion: rotated.currentVersion,
           });

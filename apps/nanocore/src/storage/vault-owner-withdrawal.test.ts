@@ -1089,6 +1089,7 @@ describe('personal Login metadata operations', () => {
           f.coreDb.sqlite.transaction(() => disableCanonicalUser(f.coreDb, f.owner.userId))();
         else if (change === 'version')
           await advanceActiveVaultReferenceVersion(f.coreDb, {
+            expectedWriterGeneration: 0,
             referenceId: f.login.referenceId,
             currentVersion: 2,
           });

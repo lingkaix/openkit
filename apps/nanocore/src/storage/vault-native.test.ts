@@ -464,6 +464,7 @@ describe('Vault native commit boundaries', () => {
     arm(f, 1);
     const pending = f.start(() =>
       advanceActiveVaultReferenceVersion(f.db, {
+        expectedWriterGeneration: 0,
         referenceId,
         currentVersion: 2,
         now: () => '2026-08-08T00:01:00.000Z',
@@ -844,6 +845,7 @@ it('joins Provider receipt generations at the actual sequential native decision'
     expect(rotated.currentVersion).toBe(2);
     const client = getControlStoreWorkerClient();
     const advanced = await client.vault(f.db, 'reference-advance', {
+      expectedWriterGeneration: 0,
       referenceId: originalReference.referenceId,
       currentVersion: 2,
       now: () => timestamp,

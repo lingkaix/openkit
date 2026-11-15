@@ -43,7 +43,10 @@ import {
 import type { SERVER_MCP_CORE_COMMAND_RECEIPTS } from '../storage/control-store-admission-codecs.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ControlStandaloneAuditInputSchema } from '../storage/standalone-audit-codecs.js';
-import { VAULT_SERVER_MCP_COMMANDS } from '../storage/vault-native-codecs.js';
+import {
+  VAULT_SERVER_MCP_COMMANDS,
+  vaultCredentialWriterOf,
+} from '../storage/vault-native-codecs.js';
 import {
   isCurrentServerMcpMaterial,
   isServerMcpGrant,
@@ -553,13 +556,14 @@ export function createServerMcpOperationImplementations(
         'vault.server-mcp-secret-rotate',
         'vault_reference',
         async () => {
-          const { vault } = currentBackendReference(input.referenceId);
+          const { vault, value: current } = currentBackendReference(input.referenceId);
           const result = vault.rotate({ referenceId: input.referenceId, material: input.material });
           const updated = projectReference(
             await getControlStoreWorkerClient().vault(coreDb!, 'reference-advance', {
               serverMcp: { actor: publicOperationActor(context) },
               referenceId: input.referenceId,
               currentVersion: result.currentVersion,
+              expectedWriterGeneration: vaultCredentialWriterOf(current).generation,
             })
           );
           await dependencies.closeServerMcpSessions?.();

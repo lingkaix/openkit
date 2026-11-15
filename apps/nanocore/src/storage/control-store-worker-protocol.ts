@@ -2376,6 +2376,7 @@ export function isControlWorkerRequest(value: unknown): value is ControlWorkerRe
       (value.policyRead !== undefined && value.policyRead !== true)
     )
       return false;
+    // The shared closed Vault schema includes writer CAS, receipt activation and proven/fenced removal.
     const parsed = ControlVaultInputSchema.safeParse(value.input);
     if (value.policyRead && (!parsed.success || parsed.data.kind !== 'thread-login-activate'))
       return false;
