@@ -16,7 +16,7 @@ This specification owns shared content references, the Storage boundary, Knowled
 
 Ablation: existing owners supply scope, permission, communication and retained-data constraints.
 
-- [Storage](../core/storage.md), [Knowledge](../core/knowledge.md), [Communication](../core/communication.md), [Permissions](../core/policy.md), [Contract Evolution](../core/contract-evolution.md), and [Vault](../core/vault.md).
+- [Storage](../core/storage.md), [Knowledge](../core/knowledge.md), [Communication](../core/communication.md), [Policy](../core/policy.md), [Contract Evolution](../core/contract-evolution.md), and [Vault](../core/vault.md).
 
 ## Related Docs
 
