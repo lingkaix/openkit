@@ -31,7 +31,7 @@ Effect uncertainty and any recovery requirement are expressed by the effect owne
 
 **Continue committed work without replaying unknown effects.** Normal progress and restart use the same execution owner and committed steps. An unsafe or unproved external continuation stops with a truthful state and requires deliberate new admission. Recovery never guesses, replays a lost native Worker, or adds a parallel workflow.
 
-**Contain failure to its owning scope.** Unreadable or unsupported Workspace authority quarantines that Workspace as recovery-required and inspectable; the server and healthy Workspaces can still boot. Untrustworthy server-scoped authority, including users, server Knowledge, configuration and Host state, refuses whole-server boot. This rule is storage-neutral and applies before and after the control-store replacement. A failed provider, MCP server, Worker or channel blocks its dependent operations. Shared authority, a shared writer or loss of containment can require a wider fence. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) records the failure-scope ruling.
+**Contain failure to its owning scope.** Unreadable or unsupported Workspace authority quarantines that Workspace as recovery-required and inspectable; the server and healthy Workspaces can still boot. Untrustworthy server-scoped authority, including users, server Knowledge, configuration and Host state, refuses whole-server boot. This rule is storage-neutral. A failed provider, MCP server, Worker or channel blocks its dependent operations. Shared authority, a shared writer or loss of containment can require a wider fence. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) records the failure-scope ruling.
 
 **Keep controls proportional to reachable loss.** Controls protect user content, authorization, secrets and scope isolation against failures that can actually happen. Operators are trusted, and model or Worker claims can be wrong without malice. Durable execution replaces its scattered state and bespoke recovery; it MUST NOT add a second proof, reconciliation or reliability ledger beside those owners.
 
@@ -89,7 +89,7 @@ These are observable properties of the whole system. They add no status values.
 
 ### OpenKit and storage
 
-[Storage](storage.md) owns the acknowledgement point: one mutable control transition commits in one owning-store transaction over already durable immutable content. A cross-scope or external effect has separately committed intent and outcome; it is not made atomic with that transaction. Pending replacement, existing file-backed publication still must acknowledge only synchronized content and report incomplete authority explicitly. OpenKit uses no distributed transaction.
+[Storage](storage.md) owns the acknowledgement point: one mutable control transition commits in one owning-store transaction over already durable immutable content. A cross-scope or external effect has separately committed intent and outcome; it is not made atomic with that transaction. File-backed publication must acknowledge only synchronized content and report incomplete authority explicitly. OpenKit uses no distributed transaction.
 
 Damaged, unreadable or unsupported authority-bearing storage fails closed within its owning scope. Missing authority-bearing storage that a durable record expects also fails closed there. Workspace quarantine preserves the original bytes and a typed owner/check diagnosis, blocks dependent effects, and never substitutes derived state. Recovery preserves what remains in place and never replaces lost authority with a fresh empty store. Derived indexes and caches are rebuilt only from intact authority; an index never substitutes for missing canonical content. A storage failure stops the affected writes and keeps readable history readable. A backup reports the Worker volumes and external references it does not cover.
 
@@ -111,7 +111,7 @@ Damaged, unreadable or unsupported authority-bearing storage fails closed within
 
 ## Boundaries And Non-Goals
 
-This document adds no public entity, protocol status value or separate recovery service. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) permits one replacement execution authority, not the duplicate universal Run or event ledger previously excluded. It does not authorize replay of an unknown effect or change a domain owner's retry rules. It does not make native histories or opaque Worker volumes a recovery prerequisite, and it does not authorize purging them; [Storage](storage.md) keeps its retained-volume protections.
+This document adds no public entity, protocol status value or separate recovery service. The [durable execution decision](../decisions/20261019-durable_execution_and_control_store.md) permits one replacement execution authority, not a duplicate universal Run or event ledger. It does not authorize replay of an unknown effect or change a domain owner's retry rules. It does not make native histories or opaque Worker volumes a recovery prerequisite, and it does not authorize purging them; [Storage](storage.md) keeps its retained-volume protections.
 
 ## Invariants
 
