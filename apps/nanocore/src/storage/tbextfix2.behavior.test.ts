@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ConversationTargetCatalogSchema } from '@openkit/app-api-schemas';
-import { allocateEntityId, type Item } from '@openkit/protocol';
+import { allocateEntityId, deriveEntityId, type Item } from '@openkit/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { readHumanAttention, readScopedHumanAttention } from '../action-center.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -13,7 +13,6 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
-import { commandRequestExpiresAt, commandRequestKey } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { commandInputHash } from '../runtime/idempotent-command.js';
 import { raiseRecordedPendingRequest } from '../runtime/pending-request-flow.js';
@@ -27,7 +26,10 @@ import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-supp
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { admitTestNativeEnvironment } from '../test-support/native-environment.js';
-import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import {
+  createNativeCommandTurn,
+  createNativeTaskAdmissionFixture,
+} from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
@@ -87,9 +89,15 @@ async function liveWorkerFixture() {
     await native.restore();
   });
   const requestId = randomUUID();
-  const turnId = allocateEntityId('tu');
   const actor = { kind: 'user', id: f.userId } as const;
-  const scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, actorId: f.userId };
+  const turnId = deriveEntityId('tu', [
+    JSON.stringify(actor),
+    DEMO_WORKSPACE_ID,
+    DEMO_THREAD_ID,
+    requestId,
+    null,
+  ]);
+  const _scope = { workspaceId: DEMO_WORKSPACE_ID, threadId: DEMO_THREAD_ID, actorId: f.userId };
   const entry = createSchedulerAdmissionEntry(f.coreDb, {
     backendId: 'nanohost',
     requestId,
@@ -101,24 +109,17 @@ async function liveWorkerFixture() {
     turnInput: 'Original admitted Task',
     triggerActor: actor,
   });
-  const timestamp = new Date().toISOString();
   // The original Store publisher owns the Turn and its command acknowledgement.
-  await f.store.createTurn(entry.workspaceId, entry.threadId, entry.turnInput, actor, undefined, {
-    turnId,
-    status: 'pending',
-    agentId: manifest.id,
-    executorKind: 'worker',
-    commandReceipt: {
-      key: commandRequestKey('turn.start', requestId, scope),
-      command: 'turn.start',
-      requestId,
-      scope,
-      inputHash: commandInputHash({ queueEntryId: entry.queueEntryId, turnInput: entry.turnInput }),
-      responseKind: 'turn',
-      createdAt: timestamp,
-      expiresAt: commandRequestExpiresAt(timestamp),
-    },
-  });
+  await createNativeCommandTurn(
+    f.store,
+    { requestId, agentId: manifest.id },
+    entry.workspaceId,
+    entry.threadId,
+    entry.turnInput,
+    actor,
+    undefined,
+    { turnId, status: 'pending', agentId: manifest.id, executorKind: 'worker' }
+  );
   const agentSessionId = allocateEntityId('as');
   admitted = await native.admitTurn(entry, {
     attemptId: testEntityId('attempt', `tbextfix2-${turnId}`),

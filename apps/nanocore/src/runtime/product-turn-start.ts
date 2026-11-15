@@ -312,6 +312,15 @@ export async function startProductTurn(input: StartProductTurnInput) {
   const existing = input.store
     .listThreadTurns(input.input.workspaceId, input.input.threadId)
     .find((turn) => turn.id === turnId);
+  // The initiating command owns this cause at publication; its later expiry cannot erase it.
+  // Other producers must supply their own cause rather than inherit an ordinary default.
+  const triggerSource =
+    input.triggerSource ??
+    (input.commandReceipt?.command === 'turn.start'
+      ? { kind: 'user-input' as const, summary: 'Direct Worker input.' }
+      : input.commandReceipt?.command === 'task.start'
+        ? { kind: 'handoff' as const, summary: 'Task Worker handoff.' }
+        : undefined);
   const turn =
     existing ??
     (await input.store.createTurn(
@@ -329,7 +338,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
         ...(input.commandReceiptResponse
           ? { commandReceiptResponse: input.commandReceiptResponse }
           : {}),
-        ...(input.triggerSource !== undefined ? { triggerSource: input.triggerSource } : {}),
+        ...(triggerSource !== undefined ? { triggerSource } : {}),
         ...(input.fileInputs?.length
           ? {
               fileInputs: input.fileInputs,

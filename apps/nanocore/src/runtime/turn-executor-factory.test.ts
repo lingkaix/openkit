@@ -1,3 +1,4 @@
+import { createNativeCommandTurn } from '../test-support/native-task-admission.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
@@ -33,6 +34,7 @@ import {
   WorkspaceConfigSchema,
 } from '@openkit/config-schema';
 import {
+  deriveEntityId,
   ENTITY_KINDS,
   entityIdPattern,
   isEntityId,
@@ -3466,18 +3468,34 @@ describe('createConfiguredTurnExecutor', () => {
           return wire;
         });
       restoreAccept = () => acceptObservation.mockRestore();
+      const commandRequestId = randomUUID();
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:${randomUUID()}`,
-        requestId: randomUUID(),
+        requestId: commandRequestId,
         requestedAgentId: authored.id,
         workspaceId,
         threadId: DEMO_THREAD_ID,
-        turnId: testEntityId('tu', randomUUID()),
+        turnId: deriveEntityId('tu', [
+          JSON.stringify({ kind: 'user', id: ownerUserId }),
+          workspaceId,
+          DEMO_THREAD_ID,
+          commandRequestId,
+          null,
+        ]),
         turnInput: 'Use the live static Provider.',
         triggerActor: { kind: 'user', id: ownerUserId },
       });
-      await publishFactoryAdmission(store, entry);
+      await createNativeCommandTurn(
+        store,
+        { requestId: commandRequestId, agentId: authored.id },
+        entry.workspaceId,
+        entry.threadId,
+        entry.turnInput,
+        entry.triggerActor,
+        undefined,
+        { turnId: entry.turnId, status: 'pending', executorKind: 'worker' }
+      );
       const agentSessionId = testEntityId('as', randomUUID());
       admission = f.admitTurn(entry, {
         attemptId: testEntityId('attempt', randomUUID()),
@@ -24520,7 +24538,10 @@ describe('inert initial private Login exchange through the concrete backend sess
           return;
         }
         const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Pending native Login startup');
-        const turn = await store.createTurn(
+        const requestId = randomUUID();
+        const { turn } = await createNativeCommandTurn(
+          store,
+          { requestId, agentId: setup.manifest.id },
           DEMO_WORKSPACE_ID,
           thread.id,
           'Prepare initial Login',
@@ -24533,7 +24554,6 @@ describe('inert initial private Login exchange through the concrete backend sess
           }
         );
         const agentSessionId = evidenceSessionId ?? testEntityId('as', randomUUID());
-        const requestId = randomUUID();
         const attemptId = testEntityId('attempt', randomUUID());
         const admissionEntry = createSchedulerAdmissionEntry(coreDb, {
           backendId: 'nanohost',
@@ -24732,12 +24752,21 @@ describe('inert initial private Login exchange through the concrete backend sess
             sameAccount ? accountId : randomUUID());
           expect(candidate.referenceId).not.toBe(login.referenceId);
           const nextThread = await store.createThread(DEMO_WORKSPACE_ID, 'Account evidence target');
-          const nextTurn = await store.createTurn(DEMO_WORKSPACE_ID, nextThread.id,
-            'Prepare independent Login B', { kind: 'user', id: ownerUserId }, null, {
-              executorKind: 'worker', agentId: setup.manifest.id,
-              captureCoverage: { scope: 'server', value: 'off' },
-            });
           const nextRequestId = randomUUID();
+          const { turn: nextTurn } = await createNativeCommandTurn(
+            store,
+            { requestId: nextRequestId, agentId: setup.manifest.id },
+            DEMO_WORKSPACE_ID,
+            nextThread.id,
+            'Prepare independent Login B',
+            { kind: 'user', id: ownerUserId },
+            null,
+            {
+              executorKind: 'worker',
+              agentId: setup.manifest.id,
+              captureCoverage: { scope: 'server', value: 'off' },
+            }
+          );
           const nextAdmission = createSchedulerAdmissionEntry(coreDb, {
             backendId: 'nanohost', queueEntryId: `queue:${nextTurn.id}`,
             requestId: nextRequestId, requestedAgentId: setup.manifest.id,
@@ -25944,12 +25973,22 @@ describe('inert initial private Login exchange through the concrete backend sess
             ? preferred.grantId : issued.grantId;
           const expectedReference = ending === 'new-turn-preference-preview-eligible'
             ? preferred.referenceId : login.referenceId;
-          const nextTurn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id,
-            'Preview the installed preferred Login', { kind: 'user', id: ownerUserId },
-            installedB.version, { executorKind: 'worker', agentId: authored.id,
-              captureCoverage: { scope: 'server', value: 'off' } });
-          expect(nextTurn.id).not.toBe(turn.id);
           const previewRequestId = randomUUID();
+          const { turn: nextTurn } = await createNativeCommandTurn(
+            store,
+            { requestId: previewRequestId, agentId: authored.id },
+            DEMO_WORKSPACE_ID,
+            thread.id,
+            'Preview the installed preferred Login',
+            { kind: 'user', id: ownerUserId },
+            installedB.version,
+            {
+              executorKind: 'worker',
+              agentId: authored.id,
+              captureCoverage: { scope: 'server', value: 'off' },
+            }
+          );
+          expect(nextTurn.id).not.toBe(turn.id);
           // Selection requires the next Turn's own admitted authority, not A's old admission.
           createSchedulerAdmissionEntry(coreDb, {
             backendId: 'nanohost', queueEntryId: `queue:${nextTurn.id}`,
@@ -27309,19 +27348,35 @@ it('fences same-account Login replacement until the actual shared survivor settl
       choice?: SchedulerWorkerStorageChoice
     ) => {
       if (closing) throw new Error('Shared fixture disposal blocks new admissions.');
+      const commandRequestId = randomUUID();
       const entry = createSchedulerAdmissionEntry(coreDb, {
         backendId: 'nanohost',
         queueEntryId: `queue:shared-login-${randomUUID()}`,
-        requestId: randomUUID(),
+        requestId: commandRequestId,
         requestedAgentId: authored.id,
         workspaceId,
         threadId,
-        turnId: testEntityId('tu', randomUUID()),
+        turnId: deriveEntityId('tu', [
+          JSON.stringify({ kind: 'user', id: ownerUserId }),
+          workspaceId,
+          threadId,
+          commandRequestId,
+          null,
+        ]),
         turnInput: label,
         ...(choice ? { workerStorageChoice: choice } : {}),
         triggerActor: { kind: 'user', id: ownerUserId },
       });
-      await publishFactoryAdmission(store, entry);
+      await createNativeCommandTurn(
+        store,
+        { requestId: commandRequestId, agentId: authored.id },
+        entry.workspaceId,
+        entry.threadId,
+        entry.turnInput,
+        entry.triggerActor,
+        undefined,
+        { turnId: entry.turnId, status: 'pending', executorKind: 'worker' }
+      );
       if (closing)
         throw new Error('Shared fixture disposal blocks admission progression after publication.');
       gates.set(entry.turnId, {

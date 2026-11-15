@@ -1,3 +1,4 @@
+import { createNativeCommandTurn } from './native-task-admission.js';
 /**
  * Test-only real MCP lifecycle fixture shared by all load profiles.
  * Core MCP admission, Policy, ledgers, usage and Item publication are production owners.
@@ -162,7 +163,10 @@ export async function createMeasurementEffectFixture(input: {
       ) {
         const workspaceId = w.workspace.id;
         const thread = await input.store.createThread(workspaceId, 'R1603 actual MCP effects');
-        const turn = await input.store.createTurn(
+        const commandRequestId = randomUUID();
+        const { turn } = await createNativeCommandTurn(
+          input.store,
+          { requestId: commandRequestId, agentId: setup.manifest.id },
           workspaceId,
           thread.id,
           'Measured echo effects',
@@ -176,7 +180,7 @@ export async function createMeasurementEffectFixture(input: {
           agentSessionId: protocol.allocateEntityId('as'),
           backend: { kind: 'openshell' },
           createdAt: turn.startedAt!,
-          requestId: randomUUID(),
+          requestId: commandRequestId,
           triggerActor: turn.triggerActor,
           turn,
           workspaceCwd: '/workspace',

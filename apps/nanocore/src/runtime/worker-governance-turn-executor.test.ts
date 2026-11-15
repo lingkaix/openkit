@@ -220,7 +220,10 @@ import {
   admitTestNativeEnvironment,
   recordTestNativeRuntimeTarget,
 } from '../test-support/native-environment.js';
-import { createNativeTaskAdmissionFixture } from '../test-support/native-task-admission.js';
+import {
+  createNativeCommandTurn,
+  createNativeTaskAdmissionFixture,
+} from '../test-support/native-task-admission.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { resolveAgentEnvironmentPackage } from '../test-support/prepared-agent-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
@@ -527,8 +530,23 @@ async function createAssignedTurn(
   threadId: string,
   input: string,
   turnId?: string,
-  commandReceipt?: IdempotentCommandReceipt
+  commandReceipt?: IdempotentCommandReceipt,
+  sourceRequestId?: string
 ) {
+  if (sourceRequestId) {
+    if (commandReceipt) throw new Error('The original command owner creates its receipt.');
+    const { turn } = await createNativeCommandTurn(
+      store,
+      { requestId: sourceRequestId, agentId: 'agent_codex_host' },
+      workspaceId,
+      threadId,
+      input,
+      { kind: 'user', id: LOCAL_USER_ID },
+      null,
+      { ...(turnId ? { turnId } : {}) }
+    );
+    return turn;
+  }
   const turn = await store.createTurn(
     workspaceId,
     threadId,
@@ -538,7 +556,26 @@ async function createAssignedTurn(
       id: 'usr_00000000-0000-7000-8000-000000000001',
     },
     null,
-    { ...(turnId ? { turnId } : {}), ...(commandReceipt ? { commandReceipt } : {}) }
+    {
+      ...(turnId ? { turnId } : {}),
+      ...(commandReceipt
+        ? {
+            commandReceipt,
+            triggerSource: { kind: 'user-input' as const, summary: 'Direct Worker input.' },
+            ...(!turnId
+              ? {
+                  turnId: deriveEntityId('tu', [
+                    JSON.stringify({ kind: 'user', id: LOCAL_USER_ID }),
+                    workspaceId,
+                    threadId,
+                    commandReceipt.requestId,
+                    null,
+                  ]),
+                }
+              : {}),
+          }
+        : {}),
+    }
   );
   return await store.updateTurn(turn.id, {
     agentId: 'agent_codex_host',
@@ -964,6 +1001,13 @@ it.each(['ordinary', 'task', 'unresolved', 'contradictory'] as const)(
           getWorkerCheckpoint(db, lineage.workspaceId, lineage.threadId, lineage.turnId)
         ).not.toBeNull();
         expect(readGoalTaskPolicyContext({ ...input, store: fixture.store })).toBeNull();
+        // Receipt retention is not the lifetime of this native ordinary Turn's cause.
+        vi.setSystemTime(new Date(Date.now() + 8 * 24 * 60 * 60 * 1000));
+        try {
+          expect(readGoalTaskPolicyContext({ ...input, store: fixture.store })).toBeNull();
+        } finally {
+          vi.useRealTimers();
+        }
       } else {
         if (cause === 'task') expect(requiredTaskTurn(input)?.turnId).toBe(lineage.turnId);
         if (cause === 'contradictory') expect(() => requiredTaskTurn(input)).toThrow();
@@ -12934,7 +12978,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
-        `Vault reuse ${index}`
+        `Vault reuse ${index}`,
+        undefined,
+        undefined,
+        `00000000-0000-4000-8000-00000000027${index}`
       );
       await startWithExecutorAttempt(
         coreDb,
@@ -13042,7 +13089,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
-        'Run GitHub MCP in OpenShell'
+        'Run GitHub MCP in OpenShell',
+        undefined,
+        undefined,
+        '00000000-0000-4000-8000-000000000215'
       );
       const providerAccessShape = {
         id: 'github_mcp',
@@ -13260,7 +13310,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
         store,
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001',
-        'Run Codex auth runtime file'
+        'Run Codex auth runtime file',
+        undefined,
+        undefined,
+        '00000000-0000-4000-8000-000000000216'
       );
       const backend = new FakeWorkerGovernanceBackend();
       const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
@@ -16842,7 +16895,13 @@ async function launchFinalReviewWorker(
   let turn: ReturnType<FsStore['getTurnById']>;
   let nativeEntry: ReturnType<typeof createSchedulerAdmissionEntry> | undefined;
   if (options.realNative) {
-    const turnId = testEntityId('tu', randomUUID());
+    const turnId = deriveEntityId('tu', [
+      JSON.stringify({ kind: 'user', id: LOCAL_USER_ID }),
+      'ws_00000000-0000-7000-8000-000000000001',
+      'th_00000000-0000-7000-8000-000000000001',
+      requestId,
+      null,
+    ]);
     nativeEntry = createSchedulerAdmissionEntry(coreDb, {
       backendId: 'nanohost',
       triggerActor: { kind: 'user', id: LOCAL_USER_ID },
@@ -16868,6 +16927,7 @@ async function launchFinalReviewWorker(
         status: 'pending',
         agentId: nativeEntry.requestedAgentId,
         executorKind: 'worker',
+        triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },
         commandReceipt: turnStartFixtureReceipt(
           nativeEntry.requestId,
           {
@@ -16887,7 +16947,10 @@ async function launchFinalReviewWorker(
       store,
       'ws_00000000-0000-7000-8000-000000000001',
       'th_00000000-0000-7000-8000-000000000001',
-      'Exercise worker closeout'
+      'Exercise worker closeout',
+      undefined,
+      undefined,
+      requestId
     );
   }
   const agentSessionId = testEntityId('as', `as_review_${suffix}`);

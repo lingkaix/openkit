@@ -52,6 +52,7 @@ import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from './test-support/local-use
 import { createMcpHttpStub } from './test-support/mcp-http-stub.js';
 import { admitTestMcpApproval } from './test-support/mcp-tool-policy.js';
 import { admitTestNativeEnvironment } from './test-support/native-environment.js';
+import { createNativeCommandTurn } from './test-support/native-task-admission.js';
 import { getVaultGrant, revokeVaultGrant } from './vault/vault-grants.js';
 import { advanceActiveVaultReferenceVersion } from './vault/vault-references.js';
 import { createVaultUnlockState } from './vault/vault-unlock-state.js';
@@ -243,11 +244,16 @@ async function fixture() {
         .current()
         .workspaceMcpServerCatalogs.find((entry) => entry.workspaceId === workspaceId)?.catalog;
     const thread = await store.createThread(workspaceId, 'Consume shared MCP');
-    const turn = await store.createTurn(workspaceId, thread.id, 'Call echo', {
-      kind: 'user',
-      id: FIXTURE_LOCAL_USER_ID,
-    });
     const setup = createTestAgentSetup({ mcpIds: [serverId] });
+    const commandRequestId = randomUUID();
+    const { turn } = await createNativeCommandTurn(
+      store,
+      { requestId: commandRequestId, agentId: setup.manifest.id },
+      workspaceId,
+      thread.id,
+      'Call echo',
+      { kind: 'user', id: FIXTURE_LOCAL_USER_ID }
+    );
     admitTestNativeEnvironment(coreDb, setup.manifest);
     const pkg = await resolveAgentEnvironmentPackage({
       coreDb,
@@ -255,7 +261,7 @@ async function fixture() {
       agentSessionId: testEntityId('as', `shared-mcp-${turn.id}`),
       backend: { kind: 'openshell' },
       captureCoverage: { scope: 'server', value: 'off' },
-      requestId: randomUUID(),
+      requestId: commandRequestId,
       turn,
       triggerActor: turn.triggerActor,
       workspaceCwd: '/workspace',
