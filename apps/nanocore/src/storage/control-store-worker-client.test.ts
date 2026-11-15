@@ -22,6 +22,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listSqliteAuditEvents, prepareAuditEvent } from '../audit-events.js';
 import { initializeDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
+import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import {
   createLightApp,
   createRecord,
@@ -346,6 +347,63 @@ afterEach(async () => {
 });
 
 describe('control writer parent admission', () => {
+  it('derives the Core journal target from the same single snapshot it posts', async () => {
+    const f = await poolFixture(2);
+    initializeTestCore(f.root);
+    const coreDb = openCoreDb(f.root);
+    nativeHandles.push(coreDb);
+    const manager = createRuntimeConfigManager({ dataRoot: f.root });
+    await manager.bindNativePolicyPublication(coreDb);
+    const owner = f.client.workspaceMutations(f.root);
+    const original = f.scope(0).productOwner.workspaceId;
+    const alternate = f.scope(1).productOwner.workspaceId;
+    const scope = nativeProductScope(f.root, { kind: 'server' });
+    const database = `core:${scope.path}`;
+    let reads = 0;
+    let postedWorkspace: string | undefined;
+    let postedStatus: string | undefined;
+    const post = Worker.prototype.postMessage;
+    const observed = vi.spyOn(Worker.prototype, 'postMessage').mockImplementation(function (
+      this: Worker,
+      ...args: Parameters<Worker['postMessage']>
+    ) {
+      const message = args[0];
+      if (message?.operation === 'core-journal' && message.input.kind === 'containment-intent') {
+        postedWorkspace = message.input.lineage.workspaceId;
+        const cut = owner.tryFreeze(message.input.lineage.workspaceId, () => []);
+        postedStatus = cut.status;
+        if (cut.status === 'frozen') cut.release();
+      }
+      return Reflect.apply(post, this, args);
+    });
+    try {
+      await expect(
+        f.client.coreJournal(database, {
+          kind: 'containment-intent',
+          policy: { schemaVersion: 1, statements: [] },
+          get lineage() {
+            reads++;
+            return {
+              workspaceId: reads === 1 ? original : alternate,
+              threadId: allocateEntityId('th'),
+              turnId: allocateEntityId('tu'),
+              agentSessionId: allocateEntityId('as'),
+              packageSnapshotId: 'journal-snapshot',
+            };
+          },
+        })
+      ).resolves.toBeNull();
+      expect(reads).toBe(1);
+      expect(postedWorkspace).toBe(original);
+      expect(postedStatus).toBe('busy');
+      const cut = owner.tryFreeze(original, () => []);
+      if (cut.status === 'frozen') cut.release();
+      expect(cut.status).toBe('frozen');
+    } finally {
+      observed.mockRestore();
+    }
+  });
+
   it('retains a native child ACK after its original closeout lease parent returns', async () => {
     const f = await poolFixture(1, 'before');
     const scope = f.scope(0);

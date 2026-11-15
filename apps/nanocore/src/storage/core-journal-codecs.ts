@@ -1,5 +1,5 @@
 import { ActorRefSchema, PolicyDocumentV1Schema, WorkspaceIdSchema } from '@openkit/protocol';
-import { WorkerLineageSchema } from '@openkit/worker-protocol';
+import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 
 const text = z.string().min(1);
@@ -157,6 +157,18 @@ export const ControlCoreJournalInputSchema = z.discriminatedUnion('kind', [
 ]);
 /** Exact existing Core tuple input, never a SQL or callback API. */
 export type ControlCoreJournalInput = z.infer<typeof ControlCoreJournalInputSchema>;
+
+/** Decodes the original containment step's one immutable lineage and matching Workspace. */
+export function readCoreJournalLineage(inputRefs: readonly string[]): WorkerLineage {
+  const lineages = inputRefs.filter((ref) => ref.startsWith('lineage:'));
+  const workspaces = inputRefs.filter((ref) => ref.startsWith('workspace:'));
+  if (lineages.length !== 1 || workspaces.length !== 1)
+    throw new CoreJournalRefusal('Containment original lineage is uncertain.');
+  const lineage = WorkerLineageSchema.parse(JSON.parse(lineages[0]!.slice(8)));
+  if (workspaces[0] !== `workspace:${lineage.workspaceId}`)
+    throw new CoreJournalRefusal('Containment original Workspace conflicts with its lineage.');
+  return lineage;
+}
 /** Closed owner refusal; database errors remain private native causes. */
 export class CoreJournalRefusal extends Error {
   constructor(

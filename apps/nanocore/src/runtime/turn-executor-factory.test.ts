@@ -20757,6 +20757,40 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     const dataRoot = coreDb.dataRoot;
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
+    const journalScopes: { kind: string; phase: string; status: string }[] = [];
+    const journalRequests = new Map<number, string>();
+    const observeJournalScope = (kind: string, phase: string) => {
+      const owner = getControlStoreWorkerClient().workspaceMutations(dataRoot);
+      const cut = owner.tryFreeze(DEMO_WORKSPACE_ID, () => []);
+      journalScopes.push({ kind, phase, status: cut.status });
+      if (cut.status === 'frozen') cut.release();
+    };
+    const postJournal = NativeWorker.prototype.postMessage;
+    const journalPosts = vi
+      .spyOn(NativeWorker.prototype, 'postMessage')
+      .mockImplementation(function (
+        this: NativeWorker,
+        ...args: Parameters<NativeWorker['postMessage']>
+      ) {
+        const message = args[0];
+        if (message?.operation === 'core-journal' && message.input.kind.startsWith('idle-')) {
+          journalRequests.set(message.id, message.input.kind);
+          observeJournalScope(message.input.kind, 'post');
+        }
+        return Reflect.apply(postJournal, this, args);
+      });
+    const emitJournal = NativeWorker.prototype.emit;
+    const journalAcks = vi.spyOn(NativeWorker.prototype, 'emit').mockImplementation(function (
+      this: NativeWorker,
+      event,
+      ...args
+    ) {
+      if (event === 'message' && args[0]?.operation === 'core-journal') {
+        const kind = journalRequests.get(args[0].id);
+        if (kind) observeJournalScope(kind, 'ack');
+      }
+      return emitJournal.call(this, event, ...args);
+    });
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
     const manifest = createTestAgentSetup({
       imageRef: `sha256:${'a'.repeat(64)}`,
@@ -21823,7 +21857,18 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
       expect(attempts.requireSchedulerExecutionAttempt(currentDb, attemptId)).toEqual(
         originalAttempt
       );
+      expect(journalScopes).toEqual(
+        expect.arrayContaining([
+          { kind: 'idle-intent', phase: 'post', status: 'busy' },
+          { kind: 'idle-intent', phase: 'ack', status: 'busy' },
+          { kind: 'idle-settle', phase: 'post', status: 'busy' },
+          { kind: 'idle-settle', phase: 'ack', status: 'busy' },
+        ])
+      );
+      expect(journalScopes.every(({ status }) => status === 'busy')).toBe(true);
     } finally {
+      journalPosts.mockRestore();
+      journalAcks.mockRestore();
       releaseCommit();
       const executionsStopped = Promise.allSettled([runtime.executionReconciler.stop()]);
       await maintenance?.stop();

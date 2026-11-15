@@ -3,7 +3,7 @@ import { hrtime } from 'node:process';
 import { isDeepStrictEqual } from 'node:util';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { allocateEntityId, compareCodeUnits } from '@openkit/protocol';
-import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
+import type { WorkerLineage } from '@openkit/worker-protocol';
 import { auditEventFromRow } from '../audit-events.js';
 import { verifyRunBoundSensorInDb } from '../auth/run-bound-access-token-native.js';
 import { recordProductPermissionDecisionInDb } from '../policy/permission-decisions.js';
@@ -36,6 +36,7 @@ import { assertControlProductWriter } from './control-store-products.js';
 import {
   type ControlCoreJournalInput,
   CoreJournalRefusal,
+  readCoreJournalLineage,
   SECURITY_CONTAINMENT_LIMITS,
 } from './core-journal-codecs.js';
 import type { CoreDb } from './db.js';
@@ -578,7 +579,7 @@ function applyContainmentJournal(
       references.length !== 1
     )
       throw new Error('Containment requires its original exact invocation.');
-    const lineage = WorkerLineageSchema.parse(JSON.parse(references[0]!.slice(8)));
+    const lineage = readCoreJournalLineage(control.inputRefs);
     const userId = control.actor.responsibleUserId;
     const expected = {
       id: original.ref.execution.executionId,
@@ -1021,9 +1022,7 @@ function applyContainmentJournal(
         .get(input.ref.execution.executionId, input.ref.stepId)
     )
       return null; // Never repeat possibly invoked work.
-    const references = quarantine.control.inputRefs.filter((ref) => ref.startsWith('lineage:'));
-    if (references.length !== 1) throw new CoreJournalRefusal('Containment lineage is uncertain.');
-    const lineage = WorkerLineageSchema.parse(JSON.parse(references[0]!.slice(8)));
+    const lineage = readCoreJournalLineage(quarantine.control.inputRefs);
     const attempts = db.sqlite
       .prepare(`SELECT attempt_id AS id FROM scheduler_execution_attempts
       WHERE input_ref=? AND workspace_id=? AND thread_id=? AND turn_id=? AND agent_session_id=? AND phase='open' LIMIT 2`)
@@ -1143,10 +1142,7 @@ function applyContainmentJournal(
       original.remainingMs <= 0
     )
       return null;
-    const reference = original.control.inputRefs.filter((ref) => ref.startsWith('lineage:'));
-    if (reference.length !== 1)
-      throw new CoreJournalRefusal('Containment original lineage is uncertain.');
-    const lineage = WorkerLineageSchema.parse(JSON.parse(reference[0]!.slice(8)));
+    const lineage = readCoreJournalLineage(original.control.inputRefs);
     const row = db.sqlite
       .prepare('SELECT * FROM audit_events WHERE audit_event_id=?')
       .get(original.control.workId);

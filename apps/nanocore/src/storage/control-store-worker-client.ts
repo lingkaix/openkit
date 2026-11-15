@@ -171,7 +171,12 @@ import {
   OperationError,
   restoreControlCapabilityFailure,
 } from '../operation-error.js';
-import type { ControlExecutionJournalInput } from '../runtime/execution-journal.js';
+import { requireSchedulerExecutionAttempt } from '../runtime/execution-attempt-records.js';
+import {
+  type ControlExecutionJournalInput,
+  decodeExecutionJournalIntent,
+  readExecutionJournalInvocation,
+} from '../runtime/execution-journal.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
 import { PendingRequestCommandError } from '../runtime/pending-request-error.js';
 import type { ControlPendingCommandResult } from '../runtime/pending-requests.js';
@@ -279,8 +284,14 @@ import {
   isControlWorkerReply,
   isControlWorkerRequest,
 } from './control-store-worker-protocol.js';
-import type { ControlCoreJournalInput } from './core-journal-codecs.js';
-import { type CoreDb, openUserReadDb, type UserDb, type WorkspaceDb } from './db.js';
+import { type ControlCoreJournalInput, readCoreJournalLineage } from './core-journal-codecs.js';
+import {
+  type CoreDb,
+  openCoreReadDb,
+  openUserReadDb,
+  type UserDb,
+  type WorkspaceDb,
+} from './db.js';
 import type { ControlEvaluationCandidate } from './evaluation-candidate-codecs.js';
 import type {
   ControlExecutionAttemptCommand,
@@ -4683,9 +4694,82 @@ class ControlStoreWorkerClient {
 
   /** Returns only after the exact Core journal tuple is covered by FULL. */
   async coreJournal(database: string, input: ControlCoreJournalInput): Promise<string | null> {
+    this.assertAccepting();
+    let release: (() => void) | undefined;
     try {
-      const reply = await this.request({ operation: 'core-journal', database, input });
-      return (reply as Extract<Success, { operation: 'core-journal' }>).result;
+      input = structuredClone(input);
+      const opening = this.openings.get(database);
+      if (!opening?.command.dataRoot || opening.command.productOwner?.kind !== 'server')
+        throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+      let workspaceId: string | undefined;
+      if (input.kind === 'containment-intent') workspaceId = input.lineage.workspaceId;
+      else if (input.kind === 'idle-intent') workspaceId = input.package.workspaceId;
+      else if (
+        input.kind !== 'containment-inspect' &&
+        input.kind !== 'image-intent' &&
+        input.kind !== 'image-abandon' &&
+        opening?.command.dataRoot
+      ) {
+        // These references address immutable originals, not caller-selected effect scopes.
+        // Resolve the posted snapshot synchronously before enrolling its original Workspace.
+        const reader = openCoreReadDb(opening.command.dataRoot);
+        try {
+          if (reader.sqlite.name !== opening.command.path)
+            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+          if (input.kind === 'idle-settle') {
+            const intent = decodeExecutionJournalIntent(input.intentJson);
+            const original = readExecutionJournalInvocation(reader, {
+              execution: intent.execution.ref,
+              stepId: intent.stepId,
+            });
+            if (!original.control.attemptId)
+              throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+            workspaceId = requireSchedulerExecutionAttempt(
+              reader,
+              original.control.attemptId
+            ).workspaceId;
+          } else {
+            const ref = { ...input.ref, stepId: 'quarantine' };
+            // Absent originals retain the native owner's existing null/refusal behavior.
+            if (
+              reader.sqlite
+                .prepare(
+                  'SELECT 1 FROM control_execution_steps WHERE execution_id = ? AND step_id = ?'
+                )
+                .get(ref.execution.executionId, ref.stepId)
+            ) {
+              workspaceId = readCoreJournalLineage(
+                readExecutionJournalInvocation(reader, ref).control.inputRefs
+              ).workspaceId;
+            }
+          }
+        } finally {
+          reader.sqlite.close();
+        }
+      }
+      const owner =
+        opening?.command.dataRoot && workspaceId
+          ? this.workspaceMutations(opening.command.dataRoot)
+          : undefined;
+      if (owner && workspaceId) {
+        release = owner.enter(workspaceId, 'capture') ?? undefined;
+        if (!release) throw new ControlStoreWorkerError('busy', 'not-committed');
+      }
+      return await this.runOperation(
+        async () => {
+          const reply = await this.request({
+            operation: 'core-journal',
+            database,
+            input,
+          });
+          return (reply as Extract<Success, { operation: 'core-journal' }>).result;
+        },
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        owner && workspaceId && release ? { owner, workspaceId, release } : undefined
+      );
     } catch (error) {
       if (error instanceof ControlStoreWorkerError && error.domain?.operation === 'core-journal') {
         const failure = new Error(error.domain.message);
@@ -4700,6 +4784,8 @@ class ControlStoreWorkerClient {
         throw failure;
       }
       throw error;
+    } finally {
+      release?.();
     }
   }
 
