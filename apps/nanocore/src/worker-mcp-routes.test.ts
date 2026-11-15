@@ -10149,7 +10149,8 @@ describe('MCP native admission and original closeout', () => {
     const progressAdmission = vi
       .spyOn(client, 'runTurnPublication')
       .mockImplementation((...args) => {
-        const before = state.outstanding.get(args[0]) ?? 0;
+        const database = args[0].database;
+        const before = state.outstanding.get(database) ?? 0;
         const result = Reflect.apply(originalPublication, client, args);
         try {
           const preview = args[5];
@@ -10159,17 +10160,18 @@ describe('MCP native admission and original closeout', () => {
               ? (owned[0] as (typeof progress)[number])
               : undefined;
           const selected = preview
-            ? preview.opening.database === args[0]
-              ? preview.input.item
+            ? database ===
+              `workspace:${join(f.dataRoot, 'workspaces', f.workspaceId, 'db', 'workspace.sqlite')}`
+              ? preview.item
               : undefined
             : caller;
           if (
             selected?.turnId === turnId &&
             progress.some((item) => item.id === selected.id) &&
-            (state.outstanding.get(args[0]) ?? 0) > before
+            (state.outstanding.get(database) ?? 0) > before
           ) {
             acceptedProgressIds.add(selected.id);
-            acceptedProgressBytes.push(aggregate(args[0]));
+            acceptedProgressBytes.push(aggregate(database));
           }
         } catch {
           observerErrors++;

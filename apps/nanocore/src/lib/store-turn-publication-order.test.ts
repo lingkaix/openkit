@@ -740,7 +740,8 @@ for (const pressure of [
     };
     const originalPublication = client.runTurnPublication;
     const publication = vi.spyOn(client, 'runTurnPublication').mockImplementation((...args) => {
-      const before = state.outstanding.get(args[0]) ?? 0;
+      const database = args[0].database;
+      const before = state.outstanding.get(database) ?? 0;
       const result = Reflect.apply(originalPublication, client, args);
       // Reservation and tail installation are synchronous before first preparation await.
       try {
@@ -751,16 +752,17 @@ for (const pressure of [
             ? (owned[0] as Item)
             : undefined;
         const selected = preview
-          ? preview.opening.database === args[0]
-            ? preview.input.item
+          ? database ===
+            `workspace:${join(f.root, 'workspaces', f.workspace.id, 'db', 'workspace.sqlite')}`
+            ? preview.item
             : undefined
           : caller;
         if (
           selected?.turnId === progressTurn.id &&
           progress.some((item) => item.id === selected.id) &&
-          (state.outstanding.get(args[0]) ?? 0) > before
+          (state.outstanding.get(database) ?? 0) > before
         ) {
-          acceptedProgressBytes.push(aggregate(args[0]));
+          acceptedProgressBytes.push(aggregate(database));
           acceptedProgressIds.add(selected.id);
         }
       } catch {
