@@ -8688,7 +8688,7 @@ describe('nanocore server', () => {
     );
     const restartedApp = await createApp({
       coreDb,
-      store: await createDemoStore(),
+      store: await createDemoStore({ dataRoot: coreDb.dataRoot }),
       turnExecutor: new FakeTurnExecutor(),
     });
     const persistedDetail = await restartedApp.request(

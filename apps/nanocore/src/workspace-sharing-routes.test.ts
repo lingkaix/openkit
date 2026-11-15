@@ -13,6 +13,7 @@ import {
   createOpenKitAccessTokenRecord,
   revokeOpenKitAccessTokenRecord,
 } from './auth/access-token-store.js';
+import { createBetterAuth } from './auth/better-auth.js';
 import type { Actor } from './auth/identity.js';
 import type { AuthVariables } from './auth/middleware.js';
 import { PUBLIC_OPERATION_ACCESS } from './auth/operation-access.js';
@@ -227,10 +228,13 @@ describe('Workspace sharing routes', () => {
       const { invitation } = (await created.json()) as {
         invitation: { invitationId: string; revision: number };
       };
+      const auth = createBetterAuth(fixture.coreDb, { env: {} });
+      const session = await (await auth.$context).internalAdapter.createSession(inviteeId);
+      expect(session).not.toBeNull();
       fixture.actorState.current = {
         kind: 'session',
         userId: inviteeId,
-        sessionId: 'auth_00000000-0000-7000-8000-000000000124',
+        sessionId: session!.id,
       };
       const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspaceId, () => []);
       expect(freeze.status).toBe('frozen');

@@ -1509,7 +1509,6 @@ describe('generic turn routes', () => {
         expiresAt: '2099-01-01T00:00:00.000Z',
         ownerUserId: 'usr_00000000-0000-79cf-b70a-b5595737412e',
         scope: 'server-admin',
-        tokenId: 'token_admin_direct_turn',
         workspaceIds: [],
       });
       const body = {

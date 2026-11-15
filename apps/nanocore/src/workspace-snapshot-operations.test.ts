@@ -2,6 +2,7 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import nodeFs, {
   chmodSync,
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -31,7 +32,7 @@ import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  type WorkspaceMutationAdmission,
+  WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import { openWorkspaceReadDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
@@ -381,7 +382,7 @@ describe('C-a composed snapshot App API', () => {
         });
       }
 
-      const differentOwner = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
+      const differentOwner = new WorkspaceMutationAdmission();
       expect(() =>
         createAppWithLocalIdentity({ ...f.appOptions, workspaceMutationAdmission: differentOwner })
       ).toThrow();
@@ -403,17 +404,22 @@ describe('C-a composed snapshot App API', () => {
       ).toHaveLength(0);
       expect(f.store.listThreads(workspaceId)).toEqual(beforeThreads);
 
-      // End the old process lifetime explicitly; no old App is invoked afterwards.
-      // There is no durable capture/deletion fact, so its transient freeze must not
-      // become the new process's default owner or be silently reopened by the helper.
+      // Host shutdown preserves logical exclusions. Copy the stopped canonical root to
+      // model a fresh process component while the original owner remains frozen.
       await shutdownControlStoreWorkerClient();
       closeTestCoreDb(f.coreDb);
-      reopenedCore = createTestCoreDb(f.dataRoot);
-      const reopenedStore = new FsStore({ dataRoot: f.dataRoot });
+      const restartRoot = mkdtempSync(join(tmpdir(), 'c-a-fresh-component-'));
+      roots.push(restartRoot);
+      cpSync(f.dataRoot, restartRoot, { recursive: true, verbatimSymlinks: true });
+      reopenedCore = createTestCoreDb(restartRoot);
+      const reopenedStore = new FsStore({ dataRoot: restartRoot });
       const restarted = createAppWithLocalIdentity({
         ...defaultOptions,
+        dataRoot: restartRoot,
         coreDb: reopenedCore,
         store: reopenedStore,
+        turnExecutor: new SimulatedTurnExecutor({ coreDb: reopenedCore }),
+        fileAdmission: new FileStorageAdmission(restartRoot, () => 0n),
       });
       expect(getControlStoreWorkerClient()).not.toBe(firstClient);
       expect(originalOwner.isClosed(workspaceId)).toBe(true);

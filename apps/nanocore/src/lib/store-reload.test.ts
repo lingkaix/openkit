@@ -2,6 +2,7 @@ import { refuseScope } from '../bootstrap/readiness.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
 } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
@@ -564,9 +565,7 @@ describe('FsStore canonical reload', () => {
     const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     store.setWorkspaceMutationAdmission(admission);
     const stale = admission.tryFreeze(target.id, () => []);
-    const foreign = getControlStoreWorkerClient()
-      .workspaceMutations(dataRoot)
-      .tryFreeze(target.id, () => []);
+    const foreign = new WorkspaceMutationAdmission().tryFreeze(target.id, () => []);
     const wrongTarget = admission.tryFreeze(sibling.id, () => []);
     if (stale.status !== 'frozen' || foreign.status !== 'frozen' || wrongTarget.status !== 'frozen')
       throw new Error('Fixture freeze was refused.');
