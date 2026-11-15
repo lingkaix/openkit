@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import { allocateEntityId, PolicySubjectV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
 import { createRuntimeConfigManager } from '../config/runtime-config.js';
@@ -19,12 +20,7 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { createGoalDomainPolicyService } from './goal-domains.js';
 import { PolicyInterception } from './interception.js';
-import {
-  EMPTY_POLICY_DOCUMENT,
-  type PolicyProposal,
-  policyDigest,
-  preparePolicyDocument,
-} from './statements.js';
+import { EMPTY_POLICY_DOCUMENT, type PolicyProposal, preparePolicyDocument } from './statements.js';
 import { evaluateGoalTaskAccess } from './workspace-access.js';
 
 const agentId = 'design-worker';

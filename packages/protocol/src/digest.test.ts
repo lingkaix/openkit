@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
-import { sha256CanonicalJson, sha256Hex } from './digest.js';
+import { policyDigest, sha256CanonicalJson, sha256Hex } from './digest.js';
 
 describe('SHA-256 digests', () => {
+  it('preserves tagged Policy identity digests without changing the accepted values', () => {
+    // Independent Python hashlib over these literal canonical bytes, not the moved implementation.
+    expect(policyDigest(null)).toBe(
+      'sha256:74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b'
+    );
+    expect(policyDigest({ b: 2, a: 1 })).toBe(
+      'sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777'
+    );
+    expect(policyDigest([1, 'x', null])).toBe(
+      'sha256:c3462050a94ca819b16ded452c5ac9dc70605f7e5c841ab7bff396cf60e2cc67'
+    );
+    expect(() => policyDigest({ absent: undefined })).toThrow();
+    expect(() => policyDigest(Number.NaN)).toThrow();
+  });
   // Fixed with Python hashlib over literal bytes, independently of the Protocol encoder.
   it.each([
     ['', 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'],

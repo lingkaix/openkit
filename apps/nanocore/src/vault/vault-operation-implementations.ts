@@ -18,6 +18,7 @@ import {
   PolicySubjectV1Schema,
   responsibleUserIdForActor,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { z } from 'zod';
 import { type Actor, isDeploymentAdminActor } from '../auth/identity.js';
 import {
@@ -43,7 +44,7 @@ import {
   type InterceptionInput,
   PolicyInterception,
 } from '../policy/interception.js';
-import { type PolicyProposal, policyDigest } from '../policy/statements.js';
+import type { PolicyProposal } from '../policy/statements.js';
 import { readVaultReferenceId } from '../providers/vault-credential-resolver.js';
 import { requireAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import { requireCoordinatorGoal } from '../runtime/goal-owner.js';

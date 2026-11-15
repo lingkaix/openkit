@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { allocateEntityId, PolicyDocumentV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { expect, it, onTestFinished } from 'vitest';
 import {
   createInMemoryRuntimeConfigSnapshot,
@@ -12,7 +13,7 @@ import {
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
 import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from '../policy/configuration.js';
-import { policyDigest, preparePolicyDocument } from '../policy/statements.js';
+import { preparePolicyDocument } from '../policy/statements.js';
 import { findSchedulerAdmissionForTurn } from '../scheduler-records.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createApp, prepareTestAppOptions } from '../test-support/app.js';

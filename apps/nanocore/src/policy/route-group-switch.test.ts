@@ -10,6 +10,7 @@ import {
   PolicyDocumentV1Schema,
   PolicyWriteProposalV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createApp } from '../app.js';
@@ -45,7 +46,7 @@ import {
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
-import { policyDigest, preparePolicyDocument, validatePolicyDocument } from './statements.js';
+import { preparePolicyDocument, validatePolicyDocument } from './statements.js';
 
 const BASE = 'http://localhost:3000';
 const GROUP = 'llm-gateway';

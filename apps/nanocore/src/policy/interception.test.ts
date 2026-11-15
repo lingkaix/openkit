@@ -7,6 +7,7 @@ import {
   PolicyDelegationV1Schema,
   type PolicyDocumentV1,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as audit from '../audit-events.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -21,7 +22,7 @@ import {
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './retained-records-v1.js';
-import { type PolicyProposal, policyDigest, selectHumanToolConditions } from './statements.js';
+import { type PolicyProposal, selectHumanToolConditions } from './statements.js';
 
 const userId = 'usr_00000000-0000-7000-8000-000000000001';
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';

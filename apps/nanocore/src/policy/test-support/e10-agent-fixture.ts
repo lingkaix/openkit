@@ -3,11 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import type { PolicyDocumentV1 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach } from 'vitest';
 import { shutdownControlStoreWorkerClient } from '../../storage/control-store-worker-client.js';
 import { openWorkspaceDb } from '../../storage/db.js';
 import { applyScopedMigrations } from '../../storage/migrate.js';
-import { type PolicyProposal, policyDigest, preparePolicyDocument } from '../statements.js';
+import { type PolicyProposal, preparePolicyDocument } from '../statements.js';
 
 export const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
 const userId = 'usr_00000000-0000-7000-8000-000000000001';

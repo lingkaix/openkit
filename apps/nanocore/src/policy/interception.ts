@@ -20,6 +20,7 @@ import {
   responsibleUserIdForActor,
   ThreadSchema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { z } from 'zod';
 import { prepareAuditEvent } from '../audit-events.js';
 import {
@@ -79,7 +80,6 @@ import { readAuditEventRowV1, readPermissionDecisionRowV1 } from './retained-rec
 import {
   EMPTY_POLICY_DOCUMENT,
   type PolicyProposal,
-  policyDigest,
   policyOperationDefinition,
   policyProposalDigest,
   policyResourceUser,

@@ -1,7 +1,7 @@
 import type { PolicyBindingV1, PolicyDocumentV1 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { describe, expect, it } from 'vitest';
 import {
-  policyDigest,
   preparePolicyDocument,
   selectHumanToolConditions,
   selectPolicyBindings,

@@ -7,6 +7,7 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
 import type { Worker as NativeWorker } from 'node:worker_threads';
 import { allocateEntityId } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -20,7 +21,6 @@ import {
   createInMemoryRuntimeConfigSnapshot,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
-import { policyDigest } from '../policy/statements.js';
 import { recordAgentEnvironmentPackageSnapshot } from '../runtime/aep-snapshot-ledger.js';
 import {
   assertCurrentWorkerCredentialAuthority,

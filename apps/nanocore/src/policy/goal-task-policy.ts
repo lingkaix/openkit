@@ -4,6 +4,7 @@ import {
   PolicyResourceV1Schema,
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import { readNativeGoalView } from '../runtime/goal-owner.js';
 import {
@@ -14,7 +15,6 @@ import type { SchedulerExecutionLineage } from '../scheduler-records.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import type { GoalDomainPolicyService } from './goal-domains.js';
 import type { PolicyUseDecision } from './permission-decisions.js';
-import { policyDigest } from './statements.js';
 import { evaluateGoalTaskAccess, evaluatePolicyKernel } from './workspace-access.js';
 
 /** Actual native Worker facts; the live and captured entry owners keep their own lifecycle guards. */

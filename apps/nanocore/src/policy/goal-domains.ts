@@ -11,6 +11,7 @@ import {
   PolicyWriteProposalV1Schema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
 import {
@@ -45,7 +46,6 @@ import {
 } from './permission-decisions.js';
 import {
   EMPTY_POLICY_DOCUMENT,
-  policyDigest,
   policyScopeContains,
   validatePolicyDocument,
 } from './statements.js';

@@ -3,13 +3,10 @@ import {
   type PolicyDocumentV1,
   PolicyPermissionV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { recordPolicyWriteDecision } from '../policy/configuration.js';
 import type { InterceptionInput } from '../policy/interception.js';
-import {
-  EMPTY_POLICY_DOCUMENT,
-  policyDigest,
-  preparePolicyDocument,
-} from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, preparePolicyDocument } from '../policy/statements.js';
 import type { CoreDb } from '../storage/db.js';
 
 /** Explicit synthetic condition for common pipeline tests; this does not admit native authority. */

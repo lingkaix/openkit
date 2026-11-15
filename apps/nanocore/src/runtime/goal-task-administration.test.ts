@@ -17,6 +17,7 @@ import {
   PolicyPermissionV1Schema,
   PROTOCOL_VERSION,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { evaluateProductAuthorization } from '../auth/operation-authorizer.js';
@@ -32,7 +33,7 @@ import { createOperationInvocation } from '../operation-composition.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import {

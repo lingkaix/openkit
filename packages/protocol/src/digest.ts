@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
-import { canonicalJsonText } from './common/canonical-json.js';
+import { canonicalIdentifierName, canonicalJsonText } from './common/canonical-json.js';
+
+/** Preserves the exact tagged Policy digest of the complete canonical identity value. */
+export function policyDigest(value: unknown): string {
+  return `sha256:${createHash('sha256').update(canonicalIdentifierName(value)).digest('hex')}`;
+}
 
 /** Hashes exact bytes, or exact UTF-8 string bytes, without parsing or normalizing them. */
 export function sha256Hex(value: string | Uint8Array): string {

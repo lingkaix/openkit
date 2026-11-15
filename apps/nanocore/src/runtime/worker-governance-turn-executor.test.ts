@@ -66,6 +66,7 @@ import {
   workspaceIdForOwner,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import {
   buildWorkerCanonicalTerminalEventRecord,
   type WorkerCanonicalEventRecord,
@@ -153,7 +154,7 @@ import {
   listUserPermissionDecisions,
   readPolicyStatementUseCount,
 } from '../policy/permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';

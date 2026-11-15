@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import {
@@ -9,7 +10,7 @@ import { PiAiGatewayClient } from '../llm/pi-ai-client.js';
 import { generateThreadTitle } from '../llm/title-generation.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { executeGoalOperation } from '../runtime/goal-owner.js';
 import { createCoordinatorTaskTool } from '../runtime/task-admission.js';
 import {

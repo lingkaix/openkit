@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { GoalDomainProposalSchema } from '@openkit/app-api-schemas';
 import { ProductOperationSchema } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -26,7 +27,7 @@ import { createGoalDomainPolicyService, type GoalDomainStatement } from './goal-
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
 import { listServerPermissionDecisions } from './permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from './statements.js';
+import { EMPTY_POLICY_DOCUMENT } from './statements.js';
 import { evaluateGoalTaskAccess, evaluatePolicyKernel } from './workspace-access.js';
 
 // Keep the actual native owner; hold only this family's exact acknowledged reply on Main.

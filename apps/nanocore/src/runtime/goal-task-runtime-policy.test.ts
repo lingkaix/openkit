@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { parseWorkspaceMcpServerCatalog, WorkspaceConfigSchema } from '@openkit/config-schema';
 import { allocateEntityId, deriveEntityId, PROTOCOL_VERSION } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { projectAgentCatalogEntries } from '../agents/catalog-projection.js';
@@ -43,7 +44,7 @@ import {
   listExportableWorkspacePermissionDecisions,
   readPolicyStatementUseCount,
 } from '../policy/permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';

@@ -1,5 +1,6 @@
 import { OpenKitConfigSchema, PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { compareCodeUnits, type PolicyDocumentV1 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { type WorkerLineage, WorkerLineageSchema } from '@openkit/worker-protocol';
 import { z } from 'zod';
 import type { Actor } from '../auth/identity.js';
@@ -9,7 +10,6 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import type { FsStore } from '../lib/store.js';
 import {
   EMPTY_POLICY_DOCUMENT,
-  policyDigest,
   preparePolicyDocument,
   validatePolicyDocument,
 } from '../policy/statements.js';

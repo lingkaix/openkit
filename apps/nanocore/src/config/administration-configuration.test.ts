@@ -9,6 +9,7 @@ import {
   PolicyDocumentV1Schema,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createAdministrationConfigurationTools } from '../administration/configuration-tools.js';
@@ -26,7 +27,7 @@ import { FsStore, quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import { listServerPermissionDecisions } from '../policy/permission-decisions.js';
-import { policyDigest, selectHumanToolConditions } from '../policy/statements.js';
+import { selectHumanToolConditions } from '../policy/statements.js';
 import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
 import {

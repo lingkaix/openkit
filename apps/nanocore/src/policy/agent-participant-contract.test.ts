@@ -9,6 +9,7 @@ import {
   type TranscriptContext,
 } from '@earendil-works/pi-ai';
 import { allocateEntityId, PolicyWriteProposalV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   listWorkspaceCapabilityCalls,
@@ -28,7 +29,7 @@ import {
 } from '../test-support/store.js';
 import { createAgentPolicyParticipant } from './agent-gate-provider.js';
 import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './configuration.js';
-import { type PolicyProposal, policyDigest, preparePolicyDocument } from './statements.js';
+import { type PolicyProposal, preparePolicyDocument } from './statements.js';
 
 const cleanup: (() => void)[] = [];
 afterEach(async () => {

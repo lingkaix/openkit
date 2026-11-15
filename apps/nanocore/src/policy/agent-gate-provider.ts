@@ -5,6 +5,7 @@ import {
   PolicySubjectV1Schema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { z } from 'zod';
 import type { RuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { assembleBuiltInSystemPrompt } from '../internal-agents/builtin-prompts.js';
@@ -26,7 +27,7 @@ import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { CoreDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import type { AgentPolicyParticipant } from './interception.js';
-import { type PolicyProposal, policyDigest } from './statements.js';
+import type { PolicyProposal } from './statements.js';
 
 /** Uses the existing Gateway, capture and capability owners only when an agent gate is invoked. */
 export function createAgentPolicyParticipant(deps: {

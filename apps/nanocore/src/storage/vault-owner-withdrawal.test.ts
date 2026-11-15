@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { type JsonOperationId, OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { allocateEntityId, type PolicyDocumentV1 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listSqliteAuditEvents } from '../audit-events.js';
 import {
@@ -24,7 +25,6 @@ import {
   listUserPermissionDecisions,
   readPolicyStatementUseCount,
 } from '../policy/permission-decisions.js';
-import { policyDigest } from '../policy/statements.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createVaultGrant, getVaultGrant, listVaultGrants } from '../vault/vault-grants.js';
 import {

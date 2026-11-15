@@ -14,6 +14,7 @@ import {
   PolicyDocumentV1Schema,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
@@ -24,11 +25,7 @@ import {
   readPolicyStatementUseCount,
   recordProductPermissionDecision,
 } from '../policy/permission-decisions.js';
-import {
-  EMPTY_POLICY_DOCUMENT,
-  policyDigest,
-  preparePolicyDocument,
-} from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, preparePolicyDocument } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';

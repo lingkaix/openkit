@@ -1,5 +1,6 @@
 import type { PolicyDecision } from '@openkit/policy-kernel';
 import type { PolicyBindingV1, PolicySubjectV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import { isCurrentServerPolicyAuthor } from '../auth/operation-authorizer.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
@@ -8,11 +9,7 @@ import {
   recordPermissionDecision,
   recordProductPermissionDecision,
 } from '../policy/permission-decisions.js';
-import {
-  EMPTY_POLICY_DOCUMENT,
-  policyDigest,
-  readPolicyAgentPrincipal,
-} from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, readPolicyAgentPrincipal } from '../policy/statements.js';
 import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import type { CoreDb } from '../storage/db.js';
 

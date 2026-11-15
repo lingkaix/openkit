@@ -8,6 +8,7 @@ import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { Worker } from 'node:worker_threads';
 import { allocateEntityId, ItemSchema, type TurnSchema, writeRetainedV1 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ArtifactReviewError, type ControlReviewCommandInput } from '../artifact-review-codecs.js';
 import { executeControlReviewCommand, getArtifactReview } from '../artifact-reviews.js';
@@ -17,7 +18,7 @@ import {
   diffRuntimeConfig,
   loadRuntimeConfig,
 } from '../config/runtime-config.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
 import type { WorkerArtifactCapture } from '../runtime/worker-governance-backend.js';

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { evaluateAccess, type PolicyState } from '@openkit/policy-kernel';
 import { allocateEntityId, type PolicyDocumentV1, PolicyDocumentV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { createAdministrationConfiguration } from '../config/administration-configuration.js';
@@ -27,7 +28,6 @@ import {
 } from './permission-decisions.js';
 import {
   type PolicyProposal,
-  policyDigest,
   preparePolicyDocument,
   selectHumanToolConditions,
 } from './statements.js';

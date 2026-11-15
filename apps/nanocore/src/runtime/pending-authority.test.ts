@@ -7,6 +7,7 @@ import { Worker, type WorkerOptions } from 'node:worker_threads';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import type { WorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { allocateEntityId, PolicyDocumentV1Schema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import Database from 'better-sqlite3';
 import { Hono } from 'hono';
 import { expect, it, onTestFinished, vi } from 'vitest';
@@ -17,11 +18,7 @@ import { FsStore } from '../lib/store.js';
 import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
 import { recordPolicyWriteDecision } from '../policy/configuration.js';
 import { PolicyInterception } from '../policy/interception.js';
-import {
-  EMPTY_POLICY_DOCUMENT,
-  policyDigest,
-  preparePolicyDocument,
-} from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, preparePolicyDocument } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import {
   getControlStoreWorkerClient,

@@ -17,6 +17,7 @@ import {
   allocateEntityId,
   type PolicyBindingV1,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createOpenKitAccessTokenRecord,
@@ -38,7 +39,7 @@ import { createAgentPolicyParticipant } from './policy/agent-gate-provider.js';
 import { readAdmittedPolicyDocument } from './policy/configuration.js';
 import { PolicyInterception } from './policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
-import { type PolicyProposal, policyDigest } from './policy/statements.js';
+import type { PolicyProposal } from './policy/statements.js';
 import { ProviderRegistry } from './providers/registry.js';
 import {
   listExportableMcpToolSchemaSnapshots,

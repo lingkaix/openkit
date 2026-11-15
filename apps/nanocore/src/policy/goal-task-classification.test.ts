@@ -8,6 +8,7 @@ import {
   type PolicyDocumentV1,
   PolicyPermissionV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import { openWorkspaceDb } from '../storage/db.js';
@@ -19,7 +20,7 @@ import {
   listExportableWorkspacePermissionDecisions,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
-import { type PolicyProposal, policyDigest, selectHumanToolConditions } from './statements.js';
+import { type PolicyProposal, selectHumanToolConditions } from './statements.js';
 import { evaluateGoalTaskAccess, type GoalTaskAccessInput } from './workspace-access.js';
 
 const workspaceId = testEntityId('ws', 'goal-classification');

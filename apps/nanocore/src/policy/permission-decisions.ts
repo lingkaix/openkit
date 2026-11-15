@@ -12,8 +12,8 @@ import {
   PolicyStatementReferenceV1Schema,
   writeRetainedV1,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { z } from 'zod';
-
 import {
   recordServerAuditEvent,
   recordUserAuditEvent,
@@ -39,7 +39,6 @@ import {
   readAuditEventRowV1,
   readPermissionDecisionRowV1,
 } from './retained-records-v1.js';
-import { policyDigest } from './statements.js';
 
 /** Supported storage owner scopes for the first permission decision recorder. */
 export type PermissionDecisionOwnerScope = 'server' | 'workspace' | 'user';

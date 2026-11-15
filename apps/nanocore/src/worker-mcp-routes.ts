@@ -26,6 +26,7 @@ import {
   responsibleUserIdForActor,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import Database from 'better-sqlite3';
 import type { Hono } from 'hono';
@@ -90,7 +91,6 @@ import {
 } from './policy/permission-decisions.js';
 import { readPermissionDecisionRowV1 } from './policy/retained-records-v1.js';
 import {
-  policyDigest,
   policyProposalDigest,
   readPolicyAgentPrincipal,
   selectHumanToolConditions,

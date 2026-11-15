@@ -24,11 +24,12 @@ import {
   PolicySubjectV1Schema,
   UserIdSchema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import type { OpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import type { ThreadPolicyActor } from '../auth/identity.js';
 import type { GoalDomainStatement } from './goal-domains.js';
-import { policyDigest, policyScopeContains } from './statements.js';
+import { policyScopeContains } from './statements.js';
 
 /** Trusted native input after current Goal-domain read and exact scheduler admission readback. */
 export interface GoalTaskAccessInput {

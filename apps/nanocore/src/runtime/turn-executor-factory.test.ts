@@ -84,11 +84,8 @@ import {
   listExportableWorkspacePermissionDecisions,
   listUserPermissionDecisions,
 } from '../policy/permission-decisions.js';
-import {
-  policyDigest,
-  policyOperationDefinition,
-  policyProposalDigest,
-} from '../policy/statements.js';
+import { policyOperationDefinition, policyProposalDigest } from '../policy/statements.js';
+import { policyDigest } from '@openkit/protocol/digest';
 import { ProviderRegistry } from '../providers/registry.js';
 import { createVaultProviderCredentialResolver } from '../providers/vault-credential-resolver.js';
 import { closeRetrievalServices } from '../retrieval-service.js';

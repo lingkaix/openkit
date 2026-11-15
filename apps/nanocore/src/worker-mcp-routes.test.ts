@@ -63,6 +63,7 @@ import {
   responsibleUserIdForActor,
   workspaceIdForOwner,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { applyEdits, modify, parse } from 'jsonc-parser';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -105,7 +106,7 @@ import { FsStore } from './lib/store.js';
 import { readAdmittedPolicyDocument, recordPolicyWriteDecision } from './policy/configuration.js';
 import { PolicyInterception } from './policy/interception.js';
 import { listExportableWorkspacePermissionDecisions } from './policy/permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest, preparePolicyDocument } from './policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT, preparePolicyDocument } from './policy/statements.js';
 import * as workspaceAccess from './policy/workspace-access.js';
 import { ProviderRegistry } from './providers/registry.js';
 import * as snapshotLedger from './runtime/aep-snapshot-ledger.js';

@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   type NativeOperationDefinition,
   NON_API_EXPOSURE_DEFINITIONS,
@@ -7,7 +6,6 @@ import {
 } from '@openkit/app-api-schemas';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import {
-  canonicalIdentifierName,
   compareCodeUnits,
   type PolicyAgentPrincipalV1,
   type PolicyBindingV1,
@@ -18,6 +16,7 @@ import {
   type PolicyStageV1Schema,
   type PolicySubjectV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import { SECURITY_CONTAINMENT_LIMITS } from '../storage/core-journal-codecs.js';
 import { evaluatePolicyKernel } from './workspace-access.js';
@@ -88,11 +87,6 @@ export function policyResourceUser(
     container.id === container.owner.userId
     ? container.owner.userId
     : null;
-}
-
-/** Uses the existing canonical JSON primitive without allocating another identity family. */
-export function policyDigest(value: unknown): string {
-  return `sha256:${createHash('sha256').update(canonicalIdentifierName(value)).digest('hex')}`;
 }
 
 /** Logical approval identity excludes the execution attempt's existing call identifier. */

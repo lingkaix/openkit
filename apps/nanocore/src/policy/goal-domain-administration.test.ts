@@ -18,6 +18,7 @@ import {
   PolicyPermissionV1Schema,
   PROTOCOL_VERSION,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { listServerAuditEvents } from '../audit-events.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
@@ -65,7 +66,7 @@ import {
   listServerPermissionDecisions,
   readPolicyStatementUseCount,
 } from './permission-decisions.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest, selectHumanToolConditions } from './statements.js';
+import { EMPTY_POLICY_DOCUMENT, selectHumanToolConditions } from './statements.js';
 import { evaluatePolicyKernel } from './workspace-access.js';
 
 /** Rebuilds a stopped private fixture through native history admission, without claiming a live Worker outcome. */

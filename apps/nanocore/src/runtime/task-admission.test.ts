@@ -9,6 +9,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { policyDigest } from '@openkit/protocol/digest';
 import { expect, it, vi } from 'vitest';
 import * as operationAuthorizer from '../auth/operation-authorizer.js';
 import {
@@ -24,7 +25,7 @@ import { FsStore } from '../lib/store.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { createGoalDomainPolicyService } from '../policy/goal-domains.js';
 import { createGoalTaskPolicyService } from '../policy/goal-task-policy.js';
-import { EMPTY_POLICY_DOCUMENT, policyDigest } from '../policy/statements.js';
+import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import {
   cancelSchedulerAdmissionEntry,

@@ -8,6 +8,7 @@ import { CallToolResultSchema, ListToolsResultSchema } from '@modelcontextprotoc
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { UserConfigSchema, type WorkspaceMcpServerCatalog } from '@openkit/config-schema';
 import { allocateEntityId, UserIdSchema } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createApp } from '../app.js';
@@ -51,7 +52,7 @@ import { readAdmittedPolicyDocument } from './configuration.js';
 import { createGoalTaskPolicyService } from './goal-task-policy.js';
 import { PolicyInterception } from './interception.js';
 import { listExportableWorkspacePermissionDecisions } from './permission-decisions.js';
-import { policyDigest, preparePolicyDocument } from './statements.js';
+import { preparePolicyDocument } from './statements.js';
 
 // The candidate is authored independently against accepted bfd. Only this file is copied
 // into apps/nanocore/src/policy/. No S11 module, qualification receipt or verdict stub.

@@ -3,11 +3,12 @@ import { hrtime } from 'node:process';
 import { isDeepStrictEqual } from 'node:util';
 import { PRODUCT_OPERATION_ACCESS_RIGHTS } from '@openkit/config-schema';
 import { allocateEntityId, compareCodeUnits } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type { WorkerLineage } from '@openkit/worker-protocol';
 import { auditEventFromRow } from '../audit-events.js';
 import { verifyRunBoundSensorInDb } from '../auth/run-bound-access-token-native.js';
 import { recordProductPermissionDecisionInDb } from '../policy/permission-decisions.js';
-import { policyDigest, validatePolicyDocument } from '../policy/statements.js';
+import { validatePolicyDocument } from '../policy/statements.js';
 import { abandonCoreImageJournal, settleCoreIdleJournal } from '../runtime/core-journal-records.js';
 import {
   requireSchedulerExecutionAttempt,

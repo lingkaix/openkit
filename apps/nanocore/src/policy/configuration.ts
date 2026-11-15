@@ -9,6 +9,7 @@ import {
   PolicyDocumentV1Schema,
   PolicyWriteProposalV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import type { z } from 'zod';
 import { listWorkspaceAuditEvents } from '../audit-events.js';
 import type { Actor } from '../auth/identity.js';
@@ -40,7 +41,6 @@ import {
 } from './permission-decisions.js';
 import {
   EMPTY_POLICY_DOCUMENT,
-  policyDigest,
   policyResourceUser,
   policyResourceWorkspace,
   policyScopeContains,

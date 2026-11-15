@@ -11,6 +11,7 @@ import {
   type PolicyDocumentV1,
   PolicyDocumentV1Schema,
 } from '@openkit/protocol';
+import { policyDigest } from '@openkit/protocol/digest';
 import { Hono } from 'hono';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { createApp } from '../app.js';
@@ -28,7 +29,6 @@ import { createRuntimeConfigManager } from '../config/runtime-config.js';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
-import { policyDigest } from '../policy/statements.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   getControlStoreWorkerClient,
