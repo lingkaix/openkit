@@ -23,7 +23,6 @@ it('ORACLE S7 owns explicit Core sharing before input preparation and through it
   const store = createTestStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   const client = getControlStoreWorkerClient();
-  const gate = client.workspaceMutations(dataRoot);
   const posts = vi.spyOn(Worker.prototype, 'postMessage');
   const emit = Worker.prototype.emit;
   const reached = Promise.withResolvers<void>();
@@ -89,7 +88,7 @@ it('ORACLE S7 owns explicit Core sharing before input preparation and through it
     Object.defineProperty(input, 'receipt', {
       enumerable: true,
       get: () => {
-        const cut = gate.tryFreeze(target.id, () => []);
+        const cut = client.tryFreezeWorkspace(dataRoot, target.id, () => []);
         preparation.push(cut.status);
         if (cut.status === 'frozen') cut.release();
         return receipt;
@@ -110,7 +109,7 @@ it('ORACLE S7 owns explicit Core sharing before input preparation and through it
       return emit.call(this, event, ...args);
     });
     coreDb.sqlite.pragma('query_only = ON');
-    const parent = gate.runWorkerCloseout(original.id, async () => {
+    const parent = client.runWorkerCloseout(dataRoot, original.id, async () => {
       publication = client.coreSharing(database, input);
       void publication.catch(reached.reject);
       await reached.promise;
@@ -120,7 +119,7 @@ it('ORACLE S7 owns explicit Core sharing before input preparation and through it
     expect(preparation.length).toBeGreaterThan(0);
     expect(preparation.every((status) => status === 'busy')).toBe(true);
     for (const workspaceId of [target.id, original.id]) {
-      const cut = gate.tryFreeze(workspaceId, () => []);
+      const cut = client.tryFreezeWorkspace(dataRoot, workspaceId, () => []);
       if (cut.status === 'frozen') cuts.push(cut.release);
       expect(cut.status).toBe('busy');
     }
@@ -148,11 +147,11 @@ it('ORACLE S7 owns explicit Core sharing before input preparation and through it
       commit: 'not-committed',
     });
     expect(posts.mock.calls).toHaveLength(postedBeforeRetarget);
-    const originalCut = gate.tryFreeze(original.id, () => []);
+    const originalCut = client.tryFreezeWorkspace(dataRoot, original.id, () => []);
     if (originalCut.status === 'frozen') cuts.push(originalCut.release);
     expect(originalCut.status).toBe('frozen');
     if (originalCut.status === 'frozen') originalCut.release();
-    const frozen = gate.tryFreeze(target.id, () => []);
+    const frozen = client.tryFreezeWorkspace(dataRoot, target.id, () => []);
     if (frozen.status === 'frozen') cuts.push(frozen.release);
     expect(frozen.status).toBe('frozen');
     const observedBeforeRefusal = preparation.length;
@@ -188,7 +187,6 @@ it('ORACLE S7 retains the immutable invitation target before preparation and thr
   const store = createTestStore({ dataRoot });
   const coreDb = openCoreDb(dataRoot);
   const client = getControlStoreWorkerClient();
-  const gate = client.workspaceMutations(dataRoot);
   const posts = vi.spyOn(Worker.prototype, 'postMessage');
   const emit = Worker.prototype.emit;
   const reached = Promise.withResolvers<void>();
@@ -279,7 +277,7 @@ it('ORACLE S7 retains the immutable invitation target before preparation and thr
     Object.defineProperty(input, 'receipt', {
       enumerable: true,
       get: () => {
-        const cut = gate.tryFreeze(target.id, () => []);
+        const cut = client.tryFreezeWorkspace(dataRoot, target.id, () => []);
         preparation.push(cut.status);
         if (cut.status === 'frozen') cut.release();
         return receipt;
@@ -302,7 +300,7 @@ it('ORACLE S7 retains the immutable invitation target before preparation and thr
       return emit.call(this, event, ...args);
     });
     coreDb.sqlite.pragma('query_only = ON');
-    const parent = gate.runWorkerCloseout(original.id, async () => {
+    const parent = client.runWorkerCloseout(dataRoot, original.id, async () => {
       publication = client.coreSharing(database, input);
       void publication.catch(reached.reject);
       await reached.promise;
@@ -312,7 +310,7 @@ it('ORACLE S7 retains the immutable invitation target before preparation and thr
     expect(preparation.length).toBeGreaterThan(0);
     expect(preparation.every((status) => status === 'busy')).toBe(true);
     for (const workspaceId of [original.id, target.id]) {
-      const cut = gate.tryFreeze(workspaceId, () => []);
+      const cut = client.tryFreezeWorkspace(dataRoot, workspaceId, () => []);
       if (cut.status === 'frozen') cuts.push(cut.release);
       expect(cut.status).toBe('busy');
     }
@@ -375,7 +373,7 @@ it('ORACLE S7 retains the immutable invitation target before preparation and thr
     });
     expect(posts.mock.calls).toHaveLength(beforeRetarget);
     for (const workspaceId of [original.id, target.id]) {
-      const cut = gate.tryFreeze(workspaceId, () => []);
+      const cut = client.tryFreezeWorkspace(dataRoot, workspaceId, () => []);
       if (cut.status === 'frozen') cuts.push(cut.release);
       expect(cut.status).toBe('frozen');
       if (workspaceId === original.id && cut.status === 'frozen') cut.release();

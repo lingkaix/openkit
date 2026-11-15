@@ -591,11 +591,7 @@ describe('scheduler dispatch loop', () => {
     const executor = await RecordingTurnExecutor.create(coreDb);
     const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Monthly existing target');
     const instant = '2026-10-28T09:30:00.000Z';
-    const schedules = new AutomationStore(
-      coreDb,
-      getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
-      () => instant
-    );
+    const schedules = new AutomationStore(coreDb, () => instant);
     const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,
@@ -693,11 +689,7 @@ describe('scheduler dispatch loop', () => {
       const executor = await RecordingTurnExecutor.create(coreDb);
       const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Retain canonical recurring Turn');
       const instant = '2026-10-16T00:00:00.000Z';
-      const schedules = new AutomationStore(
-        coreDb,
-        getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
-        () => instant
-      );
+      const schedules = new AutomationStore(coreDb, () => instant);
       const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: thread.id,
@@ -837,11 +829,7 @@ describe('scheduler dispatch loop', () => {
       const executor = await RecordingTurnExecutor.create(coreDb);
       const manifest = agentManifest();
       const pollThread = await store.createThread(DEMO_WORKSPACE_ID, 'Scheduled source poll');
-      const schedules = new AutomationStore(
-        coreDb,
-        getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
-        () => '2026-10-16T00:00:00.000Z'
-      );
+      const schedules = new AutomationStore(coreDb, () => '2026-10-16T00:00:00.000Z');
       const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: pollThread.id,
@@ -1029,9 +1017,8 @@ describe('scheduler dispatch loop', () => {
       const manifest = agentManifest();
       const initialExecutor = await RecordingTurnExecutor.create(coreDb);
       const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring worker');
-      const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       let instant = '2026-10-16T00:00:00.000Z';
-      const schedules = new AutomationStore(coreDb, mutationAdmission, () => instant);
+      const schedules = new AutomationStore(coreDb, () => instant);
       const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
         workspaceId: DEMO_WORKSPACE_ID,
         threadId: thread.id,
@@ -1101,7 +1088,7 @@ describe('scheduler dispatch loop', () => {
         coreDb = openCoreDb(root);
         const reopened = await createDemoStore({ dataRoot: root });
         const executor = await RecordingTurnExecutor.create(coreDb);
-        const restored = new AutomationStore(coreDb, mutationAdmission, () => instant);
+        const restored = new AutomationStore(coreDb, () => instant);
         const create = vi.spyOn(reopened, 'createTurn');
         const update = vi.spyOn(reopened, 'updateTurn');
         const projectRecoveredTurn = vi.fn();

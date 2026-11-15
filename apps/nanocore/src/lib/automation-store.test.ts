@@ -31,14 +31,12 @@ function fixture() {
   applyMigrations(db);
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
-  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
-  const store = new AutomationStore(db, gate, clock);
+  const store = new AutomationStore(db, clock);
   return {
     root,
     db,
     clock,
     store,
-    gate,
     setTime: (value: string) => {
       instant = value;
     },
@@ -261,13 +259,7 @@ describe('durable fixed-interval recurrence', () => {
     db.sqlite.close();
     const reopened = openCoreDb(root);
     fixtures.push({ root, db: reopened });
-    expect(
-      new AutomationStore(
-        reopened,
-        getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-        clock
-      ).getAutomation(schedule.id)
-    ).toEqual(schedule);
+    expect(new AutomationStore(reopened, clock).getAutomation(schedule.id)).toEqual(schedule);
     expect(
       reopened.sqlite
         .prepare('SELECT record_json FROM recurring_schedules WHERE id = ?')
@@ -765,7 +757,7 @@ it('does not advance the definition cursor when materialization rolls back', asy
 });
 
 it('uses the shared Workspace fence for definition changes and admission', async () => {
-  const { store, gate } = fixture();
+  const { store, db } = fixture();
   const schedule = await store.createAutomation(testEntityId('usr', 'user_creator'), definition);
   await store.updateAutomation(testEntityId('usr', 'user_creator'), schedule.id, {
     expectedRevision: 1,
@@ -773,7 +765,7 @@ it('uses the shared Workspace fence for definition changes and admission', async
     scheduledAt: '2026-10-16T00:00:00.000Z',
   });
   const [occurrence] = await store.collectScanCandidates('2026-10-16T00:00:00.000Z');
-  await gate.close(definition.workspaceId);
+  await getControlStoreWorkerClient().closeWorkspaceMutations(db.dataRoot, definition.workspaceId);
   await expect(store.commitAttempt(occurrence!.id, 2, { kind: 'ready', payload })).rejects.toThrow(
     'fenced'
   );
@@ -806,11 +798,7 @@ it('reopens pending work with its attempt count, immutable payload, and original
   db.sqlite.close();
   const reopened = openCoreDb(root);
   fixtures.push({ root, db: reopened });
-  const restarted = new AutomationStore(
-    reopened,
-    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-    clock
-  );
+  const restarted = new AutomationStore(reopened, clock);
   const [pending] = await restarted.collectScanCandidates('2026-10-16T00:00:00.000Z');
   expect(pending).toMatchObject({
     id: occurrence!.id,
@@ -917,7 +905,7 @@ const monthlyDefinition = {
 
 describe('monthly UTC recurrence lifecycle', () => {
   it('materializes the monthly nominal instant and advances its exact cursor', async () => {
-    const { db, store, gate, clock, setTime } = fixture();
+    const { db, store, clock, setTime } = fixture();
     setTime('2027-01-28T09:00:00.000Z');
     const paused = await store.createAutomation(
       testEntityId('usr', 'user_creator'),
@@ -941,7 +929,7 @@ describe('monthly UTC recurrence lifecycle', () => {
       nextScheduledAt: '2027-02-28T09:00:00.000Z',
       greatestAccountedScheduledAt: clock(),
     });
-    const secondStore = new AutomationStore(db, gate, clock);
+    const secondStore = new AutomationStore(db, clock);
     expect((await secondStore.collectScanCandidates(clock())).map((record) => record.id)).toEqual(
       candidates.map((record) => record.id)
     );
@@ -1167,11 +1155,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
     db = openCoreDb(state.root);
     fixtures.push({ root: state.root, db });
     files = createTestStore({ dataRoot: state.root });
-    schedules = new AutomationStore(
-      db,
-      getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-      state.clock
-    );
+    schedules = new AutomationStore(db, state.clock);
     state.setTime('2027-02-28T09:00:00.000Z');
     service = start();
     await service.runOnce();
@@ -1241,11 +1225,7 @@ it('admits Jan 28, Feb 28 and Mar 28 once through the native scanner across a Co
     db = openCoreDb(state.root);
     fixtures.push({ root: state.root, db });
     files = createTestStore({ dataRoot: state.root });
-    schedules = new AutomationStore(
-      db,
-      getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-      state.clock
-    );
+    schedules = new AutomationStore(db, state.clock);
     service = start();
     await service.runOnce();
     expect(schedules.listHistory(created.id).items).toEqual(history);
@@ -1409,11 +1389,7 @@ it('preserves one series waiting slot during explicit retry, including after res
   db.sqlite.close();
   const reopened = openCoreDb(root);
   fixtures.push({ root, db: reopened });
-  const restored = new AutomationStore(
-    reopened,
-    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-    clock
-  );
+  const restored = new AutomationStore(reopened, clock);
   expect(() =>
     retryDeniedSchedulerAdmissionEntry(reopened, {
       workspaceId: created.workspaceId,

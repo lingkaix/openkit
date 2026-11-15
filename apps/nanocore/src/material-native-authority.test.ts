@@ -100,7 +100,6 @@ async function fixture() {
       store,
       dataRoot: root,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
       repositoryWorkspaceDb: (id) => {
         const handle = openWorkspaceDb(root, id);
         if (readOnlyMain) {
@@ -894,7 +893,6 @@ it('recomputes schema impact when an absent named AEP becomes unreadable in anot
       dataRoot: f.root,
       captureCoverage: f.store,
     }),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.root),
     repositoryWorkspaceDb: (id) => openWorkspaceDb(f.root, id),
   });
   const entry = { kind: 'public', actor: { kind: 'session', userId: f.userId } } as const;

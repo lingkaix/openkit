@@ -176,7 +176,7 @@ async function executeCoreSharing<T>(
 export function createWorkspaceSharingOperationImplementations(
   input: Pick<
     OperationInvocationDependencies,
-    'inflightCommands' | 'coreDb' | 'store' | 'workspaceMutationAdmission' | 'afterUserDisabled'
+    'inflightCommands' | 'coreDb' | 'store' | 'afterUserDisabled'
   >
 ) {
   const inflightCommands = input.inflightCommands!;
@@ -252,13 +252,14 @@ export function createWorkspaceSharingOperationImplementations(
 
     'workspace.my-invitation-list': (_value, context) => {
       try {
+        const coreDb = requireCoreDb(input.coreDb);
         return ListWorkspaceInvitationsResponseSchema.parse({
-          items: listMyWorkspaceInvitations(
-            requireCoreDb(input.coreDb),
-            publicOperationActor(context).userId
-          ).filter(
+          items: listMyWorkspaceInvitations(coreDb, publicOperationActor(context).userId).filter(
             (invitation) =>
-              !input.workspaceMutationAdmission!.isLifecycleClosed(invitation.workspaceId)
+              !getControlStoreWorkerClient().isWorkspaceLifecycleClosed(
+                coreDb.dataRoot,
+                invitation.workspaceId
+              )
           ),
         });
       } catch (error) {
@@ -521,58 +522,72 @@ export function createWorkspaceSharingOperationImplementations(
             400
           );
         }
-        const admission = input.workspaceMutationAdmission;
-        if (!admission) throw recoveryRequired();
-        return await admission.runDeletionExclusive(request.workspaceId, async () => {
-          requireRetirementAdministrator(coreDb, actor);
-          const replay = readRetirementReceipt(coreDb, actor.userId, request);
-          if (replay) {
+        return await getControlStoreWorkerClient().runWorkspaceDeletionExclusive(
+          coreDb.dataRoot,
+          request.workspaceId,
+          async () => {
+            requireRetirementAdministrator(coreDb, actor);
+            const replay = readRetirementReceipt(coreDb, actor.userId, request);
+            if (replay) {
+              refuseScope(coreDb.dataRoot, {
+                scope: 'workspace',
+                id: request.workspaceId,
+                check: 'retired',
+              });
+              getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+                coreDb.dataRoot,
+                request.workspaceId
+              );
+              return replay;
+            }
+            requireRetirableRegistry(coreDb, request);
+            await getControlStoreWorkerClient().closeWorkspaceMutations(
+              coreDb.dataRoot,
+              request.workspaceId
+            );
+            const nativeScope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
+            if (coreDb.scope !== 'core' || coreDb.sqlite.name !== nativeScope.path)
+              throw new ControlStoreWorkerError('invalid-request', 'not-committed');
+            const client = getControlStoreWorkerClient();
+            const database = `core:${nativeScope.path}`;
+            await client.open({
+              database,
+              path: nativeScope.path,
+              dataRoot: coreDb.dataRoot,
+              create: false,
+              initialize: 'core',
+              productOwner: nativeScope.owner,
+              contentMount: nativeScope.contentMount,
+            });
+            const recheck = () => {
+              if (
+                !getControlStoreWorkerClient().isWorkspaceMutationClosed(
+                  coreDb.dataRoot,
+                  request.workspaceId
+                )
+              )
+                throw recoveryRequired();
+              requireRetirableRegistry(coreDb, request);
+            };
+            recheck();
+            const prepared = ControlCoreSharingSchema.parse({
+              command: 'workspace.retire-quarantined',
+              actor,
+              request,
+            });
+            const published = await client.coreSharing(database, prepared, recheck);
+            if (published.kind !== 'retirement')
+              throw new ControlStoreWorkerError('invalid-request', 'unknown');
+            const result = published.value;
+            // This projection cannot release anything; the gate already drained before Core committed.
             refuseScope(coreDb.dataRoot, {
               scope: 'workspace',
               id: request.workspaceId,
               check: 'retired',
             });
-            admission.restoreClosed(request.workspaceId);
-            return replay;
+            return result;
           }
-          requireRetirableRegistry(coreDb, request);
-          await admission.close(request.workspaceId);
-          const nativeScope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
-          if (coreDb.scope !== 'core' || coreDb.sqlite.name !== nativeScope.path)
-            throw new ControlStoreWorkerError('invalid-request', 'not-committed');
-          const client = getControlStoreWorkerClient(admission);
-          const database = `core:${nativeScope.path}`;
-          await client.open({
-            database,
-            path: nativeScope.path,
-            dataRoot: coreDb.dataRoot,
-            create: false,
-            initialize: 'core',
-            productOwner: nativeScope.owner,
-            contentMount: nativeScope.contentMount,
-          });
-          const recheck = () => {
-            if (!admission.isClosed(request.workspaceId)) throw recoveryRequired();
-            requireRetirableRegistry(coreDb, request);
-          };
-          recheck();
-          const prepared = ControlCoreSharingSchema.parse({
-            command: 'workspace.retire-quarantined',
-            actor,
-            request,
-          });
-          const published = await client.coreSharing(database, prepared, recheck);
-          if (published.kind !== 'retirement')
-            throw new ControlStoreWorkerError('invalid-request', 'unknown');
-          const result = published.value;
-          // This projection cannot release anything; the gate already drained before Core committed.
-          refuseScope(coreDb.dataRoot, {
-            scope: 'workspace',
-            id: request.workspaceId,
-            check: 'retired',
-          });
-          return result;
-        });
+        );
       } catch (error) {
         if (
           error instanceof OperationError ||

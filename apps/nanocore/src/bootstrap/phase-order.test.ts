@@ -213,7 +213,6 @@ function evaluateEntrypointShutdown(effects: {
     AttentionNotifications: class {
       reconcileIncompleteAttempts = reconcileIncompleteAttempts;
     },
-    workspaceMutationAdmission: {},
     restoreWorkspaceRetirementAdmission: vi.fn(),
     restoreWorkspaceRecoveryAdmission: vi.fn(),
     recoverRunningCapabilityCalls,
@@ -223,7 +222,6 @@ function evaluateEntrypointShutdown(effects: {
       validate(),
     FsStore: class {
       static validateFileAuthority() {}
-      setWorkspaceMutationAdmission() {}
     },
     sharedStore: undefined,
     rebuildInvalidExistingWorkspaceDerivedIndexes: () => [],

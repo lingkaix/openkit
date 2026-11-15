@@ -30,10 +30,7 @@ import { listServerPermissionDecisions } from '../policy/permission-decisions.js
 import { selectHumanToolConditions } from '../policy/statements.js';
 import { evaluatePolicyKernel } from '../policy/workspace-access.js';
 import { recordMcpToolSchemaSnapshot } from '../runtime/mcp-tool-schema-snapshots.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -1184,9 +1181,6 @@ describe('administration catalog configuration', () => {
       coreDb: f.coreDb,
       store: f.store,
       requestStore: () => f.store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-        f.coreDb.dataRoot
-      ),
       administrationServices: {
         coreDb: f.coreDb,
         runtimeConfigFiles: () => f.files,

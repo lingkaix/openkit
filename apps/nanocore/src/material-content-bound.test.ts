@@ -9,10 +9,7 @@ import { initializeDefaultKnowledgeBaseId } from './config/knowledge-base.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -44,7 +41,6 @@ async function fixture() {
       store,
       dataRoot: root,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
       repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
     });
   let invoke = compose();

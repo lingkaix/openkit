@@ -136,7 +136,6 @@ it('admits Server history only with current Server authority and never through a
   const invoke = createOperationInvocation({
     coreDb,
     store,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   });
   const session = {
     kind: 'public' as const,

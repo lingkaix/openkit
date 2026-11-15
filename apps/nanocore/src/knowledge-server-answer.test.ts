@@ -11,10 +11,7 @@ import { initializeScopedNotebook } from './knowledge/scoped-notebook-owner.js';
 import { publishScopedNotebook } from './knowledge/scoped-notebook-publication.js';
 import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -97,7 +94,6 @@ Release after the shared gate passes.
     coreDb,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(db);

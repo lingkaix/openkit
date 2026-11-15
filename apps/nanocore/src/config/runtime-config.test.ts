@@ -10,7 +10,6 @@ import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
 } from '../storage/control-store-worker-client.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -310,11 +309,10 @@ describe('runtime config loading and reload planning', () => {
     writeServerConfig(dataRoot, '{ invalid unrelated Server');
     writeWorkspaceConfig(dataRoot, sibling, '{ invalid unrelated Workspace');
     writeFileSync(join(dataRoot, 'config', 'agents', 'runtime.agent.jsonc'), '{ invalid Agent');
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    const frozen = gate.tryFreeze(target, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, target, () => []);
     if (frozen.status !== 'frozen') throw new Error('Expected the target freeze.');
     refuseScope(dataRoot, { scope: 'workspace', id: target, check: 'recovery' });
-    const after = manager.reloadRecoveredWorkspace(target, gate, frozen);
+    const after = manager.reloadRecoveredWorkspace(target, frozen);
     expect(manager.current()).toBe(after);
     expect(after.version).toBe(before.version + 1);
     expect(after.contentHash).not.toBe(before.contentHash);
@@ -355,8 +353,14 @@ describe('runtime config loading and reload planning', () => {
     expect(manager.status().lastReload).toEqual(status.lastReload);
     expect(manager.status().lastFailedReload).toEqual(status.lastFailedReload);
     expect(store.getLiveCaptureCoverage()).toEqual(capture);
-    expect(gate.ownsFreeze(target, frozen)).toBe(true);
-    expect(gate.enterLatePublisher(target, 'worker-turn-closeout')).toBeNull();
+    expect(getControlStoreWorkerClient().ownsWorkspaceFreeze(dataRoot, target, frozen)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        dataRoot,
+        target,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
     expect(isScopeAdmitted(dataRoot, 'workspace', target)).toBe(false);
     frozen.release();
   });
@@ -369,8 +373,7 @@ describe('runtime config loading and reload planning', () => {
     writeWorkspaceMcpServers(dataRoot, target, '{"schemaVersion":1,"servers":[]}');
     const manager = createRuntimeConfigManager({ dataRoot });
     const before = manager.current();
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    const frozen = gate.tryFreeze(target, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, target, () => []);
     if (frozen.status !== 'frozen') throw new Error('Expected the target freeze.');
     for (const relativePath of [
       'config/workspace.jsonc',
@@ -380,12 +383,12 @@ describe('runtime config loading and reload planning', () => {
       const path = join(dataRoot, 'workspaces', target, relativePath);
       const bytes = readFileSync(path);
       writeFileSync(path, '{ invalid recovered input');
-      expect(() => manager.reloadRecoveredWorkspace(target, gate, frozen)).toThrow();
+      expect(() => manager.reloadRecoveredWorkspace(target, frozen)).toThrow();
       expect(manager.current()).toBe(before);
       writeFileSync(path, bytes);
     }
     rmSync(join(dataRoot, 'workspaces', target, 'config', 'workspace.jsonc'));
-    expect(() => manager.reloadRecoveredWorkspace(target, gate, frozen)).toThrow();
+    expect(() => manager.reloadRecoveredWorkspace(target, frozen)).toThrow();
     expect(manager.current()).toBe(before);
     frozen.release();
   });
@@ -405,24 +408,26 @@ describe('runtime config loading and reload planning', () => {
     }
     const manager = createRuntimeConfigManager({ dataRoot });
     const before = manager.current();
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    const foreignGate = new WorkspaceMutationAdmission();
-    const frozen = gate.tryFreeze(target, () => []);
-    const foreign = foreignGate.tryFreeze(target, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, target, () => []);
+    const foreign = getControlStoreWorkerClient().tryFreezeWorkspace(
+      join(dataRoot, 'foreign-native-scope'),
+      target,
+      () => []
+    );
     if (frozen.status !== 'frozen' || foreign.status !== 'frozen')
       throw new Error('Expected exact freezes.');
-    expect(() => manager.reloadRecoveredWorkspace(target, gate, foreign)).toThrow();
-    expect(() => manager.reloadRecoveredWorkspace(sibling, gate, frozen)).toThrow();
+    expect(() => manager.reloadRecoveredWorkspace(target, foreign)).toThrow();
+    expect(() => manager.reloadRecoveredWorkspace(sibling, frozen)).toThrow();
     expect(manager.current()).toBe(before);
     rmSync(join(dataRoot, 'workspaces', target, 'config', 'data-sources.jsonc'));
     rmSync(join(dataRoot, 'workspaces', target, 'catalog', 'catalog.json'));
-    const after = manager.reloadRecoveredWorkspace(target, gate, frozen);
+    const after = manager.reloadRecoveredWorkspace(target, frozen);
     for (const key of ['workspaceDataSourceCatalogs', 'workspaceMcpServerCatalogs'] as const) {
       expect(after[key].map((entry) => entry.workspaceId)).toEqual([sibling]);
       expect(after[key][0]).toBe(before[key].find((entry) => entry.workspaceId === sibling));
     }
     frozen.release();
-    expect(() => manager.reloadRecoveredWorkspace(target, gate, frozen)).toThrow();
+    expect(() => manager.reloadRecoveredWorkspace(target, frozen)).toThrow();
     expect(manager.current()).toBe(after);
     foreign.release();
   });

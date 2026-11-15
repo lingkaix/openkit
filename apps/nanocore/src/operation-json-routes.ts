@@ -37,7 +37,7 @@ import {
 import type { OperationInvocationContext } from './operation-contract.js';
 import { OperationError, projectOperationError } from './operation-error.js';
 import { parseOperationInput } from './operation-resolvers.js';
-import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 
 /** Operation framing selects JSON or conversation file bodies; native invocation owns complete parsing and admission. */
@@ -241,8 +241,6 @@ export function registerRetainedOperationRoutes(input: {
   readonly quickChatWorkspaceIdForUser: (userId: string) => string;
   /** Existing Workspace record owner used for opaque child lineage. */
   readonly store: FsStore;
-  /** Process-local owner that fences ordinary Workspace mutations during deletion. */
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
 }): void {
   const routesByPath = new Map<string, Map<string, OperationRoute>>();
 
@@ -290,7 +288,9 @@ export function registerRetainedOperationRoutes(input: {
         throw error;
       }
       // Capture keeps the Workspace visible and readable. Deletion close still hides it.
-      if (input.workspaceMutationAdmission.isLifecycleClosed(workspaceId)) {
+      if (
+        getControlStoreWorkerClient().isWorkspaceLifecycleClosed(input.coreDb.dataRoot, workspaceId)
+      ) {
         if (route.access.mutating) return frozenWorkspace(workspaceId);
         return asApiError('Workspace access denied.', 'workspace_access_denied', 403);
       }
@@ -298,12 +298,15 @@ export function registerRetainedOperationRoutes(input: {
         await next();
         return;
       }
-      const release = input.workspaceMutationAdmission.enter(workspaceId);
+      const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+        input.coreDb.dataRoot,
+        workspaceId
+      );
       if (!release)
         return frozenWorkspace(
           workspaceId,
           context.get('actor'),
-          input.workspaceMutationAdmission.isCaptureActive(workspaceId)
+          getControlStoreWorkerClient().isWorkspaceCaptureActive(input.coreDb.dataRoot, workspaceId)
         );
       try {
         await next();
@@ -421,7 +424,7 @@ async function authorizeWorkspaceOperation(
       input.coreDb,
       actor,
       route.access,
-      input.workspaceMutationAdmission
+      getControlStoreWorkerClient()
     );
     context.set('workspaceAccess', {
       kind: 'workspace-set',

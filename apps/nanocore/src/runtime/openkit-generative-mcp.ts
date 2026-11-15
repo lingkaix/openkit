@@ -6,7 +6,6 @@ import type { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { OperationError } from '../operation-error.js';
 import type { InflightIdempotentCommand } from '../runtime/idempotent-command.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from '../storage/db.js';
 import type { VaultUnlockState } from '../vault/vault-unlock-state.js';
 import {
@@ -29,7 +28,6 @@ export interface OpenkitGenerativeMcpContext {
   readonly vaultUnlockState?: VaultUnlockState;
   /** Current record and mutation owners, required for migrated operations. */
   readonly coreDb?: CoreDb;
-  readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
   /** Immutable selected package identity proved at the relay boundary. */
   readonly packageSnapshotId?: string;
   /** Store that owns Thread/Turn/Item history. */
@@ -76,7 +74,7 @@ export async function dispatchOpenkitGenerativeTool(
   const operationId = OPENKIT_GENERATIVE_TOOL_OPERATIONS[toolName];
   if (!operationId)
     throw new OperationError('unsupported_operation', 'Unknown generative tool.', 400);
-  if (!context.coreDb || !context.workspaceMutationAdmission || !context.packageSnapshotId)
+  if (!context.coreDb || !context.packageSnapshotId)
     throw new OperationError('unavailable', 'Invocation authority is unavailable.', 503);
   if (!operationMcpEligible(OPERATION_DEFINITIONS[operationId]))
     throw new OperationError(
@@ -89,7 +87,6 @@ export async function dispatchOpenkitGenerativeTool(
     ...(context.vaultUnlockState ? { vaultUnlockState: context.vaultUnlockState } : {}),
     store: context.store,
     inflightCommands: context.inflightCommands,
-    workspaceMutationAdmission: context.workspaceMutationAdmission,
     ...(context.readRuntimePolicy ? { readRuntimePolicy: context.readRuntimePolicy } : {}),
     repositoryWorkspaceDb: (workspaceId) =>
       openAdmittedWorkspaceReadDb(context.dataRoot, workspaceId),

@@ -11,7 +11,6 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb, type WorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -138,7 +137,6 @@ describe('scheduler admission routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
@@ -250,7 +248,6 @@ describe('scheduler admission routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,
@@ -357,7 +354,6 @@ describe('scheduler admission routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,

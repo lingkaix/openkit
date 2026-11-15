@@ -402,7 +402,6 @@ describe('worker MCP routes', () => {
         workerControlGateway: {
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       // Raw Worker requests keep output compilation inside the actual Gateway SDK client.
       const call = async (id: number, name: string) => {
@@ -808,7 +807,6 @@ describe('worker MCP routes', () => {
         store,
         interception,
         vaultUnlockState,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         workerControlGateway: {
           authenticatePackageToken: vi.fn(() => environmentPackage),
         } as unknown as WorkerControlGateway,
@@ -1291,7 +1289,6 @@ describe('worker MCP routes', () => {
         sessionAuthority: authority,
         fileAdmission,
       });
-      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const gateway = createDefaultWorkerMcpGateway(coreDb);
       const client = new Client({ name: 'capture-wait', version: '1.0.0' });
       let nativeClient: ReturnType<typeof connectHttp2> | undefined;
@@ -1325,7 +1322,6 @@ describe('worker MCP routes', () => {
         app,
         coreDb,
         store,
-        workspaceMutationAdmission: admission,
         runtimeConfig: () =>
           createInMemoryRuntimeConfigSnapshot({
             dataRoot,
@@ -1405,9 +1401,11 @@ describe('worker MCP routes', () => {
           requestId: effectRequest.requestId,
         });
         accepted = true;
-        closing = admission.close('ws_00000000-0000-7000-8000-000000000001').then(() => {
-          closed = true;
-        });
+        closing = getControlStoreWorkerClient()
+          .closeWorkspaceMutations(dataRoot, 'ws_00000000-0000-7000-8000-000000000001')
+          .then(() => {
+            closed = true;
+          });
         expect(closed).toBe(false);
         if (ending === 'abort') abort.abort();
         else await vi.advanceTimersByTimeAsync(300_000);
@@ -1473,7 +1471,10 @@ describe('worker MCP routes', () => {
         } finally {
           db.sqlite.close();
         }
-        admission.reopen('ws_00000000-0000-7000-8000-000000000001');
+        getControlStoreWorkerClient().reopenWorkspaceMutations(
+          dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
         expect(
           (await client.listTools()).tools.some((tool) => tool.name === 'work_artifact_submit')
         ).toBe(true);
@@ -1646,7 +1647,6 @@ describe('worker MCP routes', () => {
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     });
     const rpcErrors: unknown[] = [];
     const nativeRequests: { update?: Request } = {};
@@ -2220,7 +2220,6 @@ describe('worker MCP routes', () => {
         workerMcpGateway,
         workerControlGateway: native.workerControlGateway,
         runtimeConfig: () => snapshot,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       const workspaceDb = openWorkspaceDb(dataRoot, workspaceId);
       const client = new Client({ name: 'work-peers', version: '1.0.0' });
@@ -2945,8 +2944,6 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const threadId = 'th_00000000-0000-7000-8000-000000000001';
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-      const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-      store.setWorkspaceMutationAdmission(mutation);
       const setup = createTestAgentSetup({
         mcpIds: selected ? ['openkit-security'] : [],
         requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -2968,7 +2965,6 @@ describe('worker MCP routes', () => {
       });
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => configuration,
-        workspaceMutationAdmission: mutation,
       });
       admitTestNativeEnvironment(coreDb, setup.manifest);
       const app = createApp({
@@ -2977,7 +2973,6 @@ describe('worker MCP routes', () => {
         fileAdmission: native.fileAdmission,
         turnExecutor: native.executor,
         workerControlGateway: native.workerControlGateway,
-        workspaceMutationAdmission: mutation,
         runtimeConfigManager: createRuntimeConfigManager({
           dataRoot: null,
           initialSnapshot: configuration,
@@ -3113,8 +3108,6 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const threadId = 'th_00000000-0000-7000-8000-000000000001';
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-      const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-      store.setWorkspaceMutationAdmission(mutation);
       const setup = createTestAgentSetup({
         mcpIds: ['openkit-security'],
         requiredCapabilities: ['trusted-worker-inference-relay'],
@@ -3136,7 +3129,6 @@ describe('worker MCP routes', () => {
       });
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: () => configuration,
-        workspaceMutationAdmission: mutation,
       });
       admitTestNativeEnvironment(coreDb, setup.manifest);
       const app = createApp({
@@ -3145,7 +3137,6 @@ describe('worker MCP routes', () => {
         fileAdmission: native.fileAdmission,
         turnExecutor: native.executor,
         workerControlGateway: native.workerControlGateway,
-        workspaceMutationAdmission: mutation,
         runtimeConfigManager: createRuntimeConfigManager({
           dataRoot: null,
           initialSnapshot: configuration,
@@ -3370,8 +3361,6 @@ describe('worker MCP routes', () => {
       const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
       const threadId = 'th_00000000-0000-7000-8000-000000000001';
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId });
-      const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-      store.setWorkspaceMutationAdmission(mutation);
       const selected = scenario !== 'source-unselected';
       const setup = createTestAgentSetup({
         mcpIds: selected ? ['openkit-security'] : [],
@@ -3397,7 +3386,6 @@ describe('worker MCP routes', () => {
         });
       const native = await createNativeTaskAdmissionFixture(coreDb, store, {
         readRuntimeConfig: readConfiguration,
-        workspaceMutationAdmission: mutation,
       });
       admitTestNativeEnvironment(coreDb, setup.manifest);
       if (scenario === 'containment-check' || consumer) {
@@ -3437,7 +3425,6 @@ describe('worker MCP routes', () => {
         fileAdmission: native.fileAdmission,
         turnExecutor: native.executor,
         workerControlGateway: native.workerControlGateway,
-        workspaceMutationAdmission: mutation,
         runtimeConfigManager: runtimeManager,
         ...(consumer ? { workerMcpGateway: gateway } : {}),
       });
@@ -3449,7 +3436,6 @@ describe('worker MCP routes', () => {
         store,
         workerMcpGateway: gateway,
         workerControlGateway: native.workerControlGateway,
-        workspaceMutationAdmission: mutation,
         fileAdmission: native.fileAdmission,
         runtimeConfig: readConfiguration,
       });
@@ -4799,7 +4785,6 @@ describe('worker MCP routes', () => {
         store,
         workerMcpGateway,
         workerControlGateway: native.workerControlGateway,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       return app;
     };
@@ -6015,8 +6000,6 @@ describe('worker MCP routes', () => {
                       vaultUnlockState,
                       workerControlGateway: native.workerControlGateway,
                       runtimeConfig: () => snapshot,
-                      workspaceMutationAdmission:
-                        getControlStoreWorkerClient().workspaceMutations(dataRoot),
                     },
                   }),
               });
@@ -6493,7 +6476,6 @@ describe('worker MCP routes', () => {
       listTools,
     } satisfies WorkerMcpGateway;
     const app = new Hono();
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     registerWorkerMcpRoutes({
       goalTaskPolicy: () => createGoalTaskPolicyService({ coreDb, store }),
       app,
@@ -6515,7 +6497,6 @@ describe('worker MCP routes', () => {
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
       workerMcpGateway,
-      workspaceMutationAdmission,
     });
     const clients: Client[] = [];
     const connect = async (serverId: string) => {
@@ -6652,8 +6633,14 @@ describe('worker MCP routes', () => {
       await expect(cancelled).rejects.toThrow(/AbortError/);
       expect(callTool.mock.calls.length).toBe(callsBeforeCancellation + 1);
       // Client cancellation precedes server publication; drain its existing admission before the next call.
-      await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
-      workspaceMutationAdmission.reopen('ws_00000000-0000-7000-8000-000000000001');
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       const callsBeforePreCancellation = callTool.mock.calls.length;
       await expect(
         echo.callTool({ arguments: { message: 'pre-cancelled' }, name: 'echo' })
@@ -6720,8 +6707,14 @@ describe('worker MCP routes', () => {
       schemaCancelBarrier.release();
       expect(String(await schemaCancelledOutcome)).toMatch(/AbortError/);
       // Client cancellation precedes server publication; drain its existing admission before the next call.
-      await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
-      workspaceMutationAdmission.reopen('ws_00000000-0000-7000-8000-000000000001');
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       await vi.waitFor(() => {
         const workspaceDb = openWorkspaceDb(dataRoot, 'ws_00000000-0000-7000-8000-000000000001');
         try {
@@ -7005,7 +6998,10 @@ describe('worker MCP routes', () => {
           .get()
       ).toEqual({ error_code: null, status: 'succeeded' });
       nearLimitDb.sqlite.close();
-      await workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       const workspaceRoot = join(dataRoot, 'workspaces', 'ws_00000000-0000-7000-8000-000000000001');
       await shutdownControlStoreWorkerClient();
       rmSync(workspaceRoot, { recursive: true });
@@ -7562,7 +7558,6 @@ describe('worker MCP routes', () => {
         vaultUnlockState,
         workerControlGateway,
         workerMcpGateway,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       const client = new Client({ name: 'vault-route-test', version: '1.0.0' });
       const transport = new StreamableHTTPClientTransport(
@@ -8727,11 +8722,7 @@ async function createMcpCommitFixture(
   let commandRequestId: string;
   if (options.recurring) {
     const now = new Date().toISOString();
-    const schedules = new AutomationStore(
-      coreDb,
-      getControlStoreWorkerClient().workspaceMutations(dataRoot),
-      () => now
-    );
+    const schedules = new AutomationStore(coreDb, () => now);
     const created = await schedules.createAutomation(actor.id, {
       name: 'Recurring MCP witness',
       workspaceId,
@@ -8942,7 +8933,6 @@ async function createMcpCommitFixture(
       workerControlGateway: {
         authenticatePackageToken: vi.fn(() => environmentPackage),
       } as unknown as WorkerControlGateway,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     });
     return app;
   };

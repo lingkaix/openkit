@@ -127,7 +127,6 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     workspaceIds: [workspaceId, siblingId],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   const executor = new SimulatedTurnExecutor({ coreDb });
   const app = createApp({
@@ -135,7 +134,6 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     dataRoot,
     store,
     mode: 'server',
-    workspaceMutationAdmission: admission,
     workerMcpGateway: gateway,
     turnExecutor: executor,
   });
@@ -236,7 +234,6 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records' | 'index' | 'hea
     workspaceRoot,
     admin,
     member,
-    admission,
     gateway,
     executor,
     app,
@@ -402,7 +399,9 @@ describe('retained-only quarantine retirement: native operation and Core authori
       )
     ).toHaveLength(1);
     expect(retainedTree(f.workspaceRoot)).toEqual(retained);
-    expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      true
+    );
     await shutdownControlStoreWorkerClient();
     f.coreDb.sqlite.close();
     const reopened = databases.openCoreDb(f.dataRoot);
@@ -433,7 +432,7 @@ describe('retained-only quarantine retirement: native operation and Core authori
         receipts: rows(f, 'idempotency_requests'),
       };
       const retained = retainedTree(f.workspaceRoot);
-      const client = getControlStoreWorkerClient(f.admission);
+      const client = getControlStoreWorkerClient();
       const original = client.coreSharing.bind(client);
       let release = () => {};
       let entered!: () => void;
@@ -480,7 +479,9 @@ describe('retained-only quarantine retirement: native operation and Core authori
         expect(rows(f, 'audit_events')).toEqual(before.audit);
         expect(rows(f, 'idempotency_requests')).toEqual(before.receipts);
         expect(retainedTree(f.workspaceRoot)).toEqual(retained);
-        expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)
+        ).toBe(true);
         expect(
           post.mock.calls.filter(
             ([frame]) => frame?.operation === 'core-sharing' && frame.input?.command === OPERATION
@@ -553,7 +554,9 @@ describe('retained-only quarantine retirement: native operation and Core authori
       expect(
         tuple.receipts.filter((row) => (row as { command_name: string }).command_name === OPERATION)
       ).toHaveLength(1);
-      expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)
+      ).toBe(true);
       expect(retainedTree(f.workspaceRoot)).toEqual(retained);
       await selectedWorker!.terminate();
       await expectRefused(await pending, 409, 'recovery_required');
@@ -569,7 +572,9 @@ describe('retained-only quarantine retirement: native operation and Core authori
       expect(rows(f, 'audit_events')).toEqual(tuple.audit);
       expect(rows(f, 'idempotency_requests')).toEqual(tuple.receipts);
       expect(retainedTree(f.workspaceRoot)).toEqual(retained);
-      expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)
+      ).toBe(true);
       await shutdownControlStoreWorkerClient();
       f.coreDb.sqlite.close();
       const reopened = databases.openCoreDb(f.dataRoot);
@@ -677,8 +682,12 @@ describe('retained-only quarantine retirement: native operation and Core authori
         revision: 2,
         owner_user_id: FIXTURE_LOCAL_USER_ID,
       });
-      expect(f.admission.isClosed(f.workspaceId)).toBe(true);
-      expect(f.admission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)
+      ).toBe(true);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       const sibling = await f.call(
         'workspace.member-list',
         { workspaceId: f.siblingId },
@@ -717,7 +726,9 @@ describe('retained-only quarantine retirement: native operation and Core authori
       await expectRefused(await f.call(OPERATION, f.request), 409, 'recovery_required');
       expect(registry(f)).toEqual(before);
       expect(retainedTree(f.workspaceRoot)).toEqual(tree);
-      expect(f.admission.isClosed(f.workspaceId)).toBe(false);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)
+      ).toBe(false);
     }
   );
 
@@ -873,20 +884,36 @@ describe('retained-only quarantine retirement: native operation and Core authori
     'closes and drains ordinary mutations and late publishers, then rechecks %s',
     async (outcome) => {
       const f = await fixture();
-      const leave = f.admission.enter(f.workspaceId)!;
-      const leavePublisher = f.admission.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')!;
+      const leave = getControlStoreWorkerClient().enterWorkspaceMutation(
+        f.dataRoot,
+        f.workspaceId
+      )!;
+      const leavePublisher = getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        f.dataRoot,
+        f.workspaceId,
+        'worker-turn-closeout'
+      )!;
       let settled = false;
       const pending = Promise.resolve(f.call(OPERATION, f.request)).then((response) => {
         settled = true;
         return response;
       });
       try {
-        await vi.waitFor(() => expect(f.admission.isClosed(f.workspaceId)).toBe(true), {
-          timeout: 15_000,
-        });
+        await vi.waitFor(
+          () =>
+            expect(
+              getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)
+            ).toBe(true),
+          {
+            timeout: 15_000,
+          }
+        );
         expect(settled).toBe(false);
         expect(registry(f)).toMatchObject({ status: 'active', revision: 1 });
-        const siblingLeave = f.admission.enter(f.siblingId);
+        const siblingLeave = getControlStoreWorkerClient().enterWorkspaceMutation(
+          f.dataRoot,
+          f.siblingId
+        );
         expect(siblingLeave).not.toBeNull();
         siblingLeave?.();
         leave();

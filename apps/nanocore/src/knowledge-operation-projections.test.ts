@@ -21,10 +21,7 @@ import * as sourcePublication from './knowledge/source-publication.js';
 import { createTaskKnowledgePreparation } from './knowledge-operations.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { closeRetrievalServices } from './retrieval-service.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import * as retrieval from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -80,7 +77,6 @@ async function fixture(member = true, citedAnswer = false) {
     coreDb,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     repositoryWorkspaceDb: (workspaceId: string) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(db);

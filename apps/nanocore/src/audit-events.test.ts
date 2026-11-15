@@ -10,10 +10,7 @@ import {
   recordWorkspaceAuditEvent,
 } from './audit-events.js';
 import { AutomationStore } from './lib/automation-store.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -158,11 +155,7 @@ describe('workspace audit events', () => {
     try {
       applyMigrations(coreDb);
       applyScopedMigrations(workspaceDb);
-      const schedules = new AutomationStore(
-        coreDb,
-        getControlStoreWorkerClient().workspaceMutations(dataRoot),
-        () => '2026-10-16T00:00:00.000Z'
-      );
+      const schedules = new AutomationStore(coreDb, () => '2026-10-16T00:00:00.000Z');
       const schedule = await schedules.createAutomation(testEntityId('usr', 'audit-user'), {
         workspaceId,
         threadId: testEntityId('th', 'audit-thread'),

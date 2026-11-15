@@ -79,13 +79,11 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
   mkdirSync(join(sourceFile, '..'), { recursive: true });
   writeFileSync(sourceFile, 'Retain these source bytes across recovery.');
   const sourceBytes = readFileSync(sourceFile);
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const source = {
     kind: 'live-workspace' as const,
     dataRoot,
     coreDb,
     store,
-    mutationAdmission,
     actor: { kind: 'local' as const, userId },
   };
   const stagingParent = join(root, 'staging');
@@ -106,7 +104,7 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
   if (sqlOnly) {
     await shutdownControlStoreWorkerClient();
     protectCapture(db, workspaceId, backupId);
-    restoreWorkspaceRecoveryAdmission(coreDb, mutationAdmission);
+    restoreWorkspaceRecoveryAdmission(coreDb);
   } else {
     const captureInput = {
       ...verification,
@@ -120,13 +118,13 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
     if (sealedBackup || missingMoveProof) {
       await interruptCaptureBeforeCoreDecision(captureInput);
       await shutdownControlStoreWorkerClient();
-      restoreWorkspaceRecoveryAdmission(coreDb, mutationAdmission);
+      restoreWorkspaceRecoveryAdmission(coreDb);
     } else {
       const captured = await createWorkspaceBackup(captureInput);
       expect(captured.disposition).toBe('prepared');
     }
   }
-  const freeze = resumeWorkspaceCaptureOwner(coreDb, workspaceId, backupId, mutationAdmission, () =>
+  const freeze = resumeWorkspaceCaptureOwner(coreDb, workspaceId, backupId, () =>
     readWorkspaceRecoveryBlockers(
       { ...source, workspaceId, operation: 'move-out' },
       { captureId: backupId }
@@ -160,7 +158,6 @@ async function fixture(sqlOnly = false, sealedBackup = false, missingMoveProof =
     bundleRoot,
     sourceFile,
     sourceBytes,
-    mutationAdmission,
     freeze,
     state,
     marker,
@@ -249,7 +246,9 @@ describe('exact live source capture finalization', () => {
       });
       expect(finished.pin?.state).toBe('finished');
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       await shutdownControlStoreWorkerClient();
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
@@ -299,7 +298,9 @@ describe('exact live source capture finalization', () => {
       expect(finished.audit).toHaveLength(1);
       expect(existsSync(f.marker)).toBe(true);
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       await shutdownControlStoreWorkerClient();
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
@@ -315,7 +316,7 @@ describe('exact live source capture finalization', () => {
     async (loss) => {
       const f = await fixture(false, false, true);
       const before = f.state();
-      const client = getControlStoreWorkerClient(f.mutationAdmission);
+      const client = getControlStoreWorkerClient();
       const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
       const database = `core:${scope.path}`;
       await client.open({
@@ -399,7 +400,7 @@ describe('exact live source capture finalization', () => {
       currentAuthority: () => requireAdministratorOperation(f.owned.coreDb, actor, 'api.call'),
     };
     owned.currentAuthority();
-    const client = getControlStoreWorkerClient(f.mutationAdmission);
+    const client = getControlStoreWorkerClient();
     const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
     const database = `core:${scope.path}`;
     await client.open({
@@ -450,7 +451,6 @@ describe('exact live source capture finalization', () => {
       coreDb: f.owned.coreDb,
       dataRoot: f.dataRoot,
       store: f.owned.store,
-      workspaceMutationAdmission: f.mutationAdmission,
       mode: 'local',
     });
     const disabling = invoke(
@@ -492,7 +492,9 @@ describe('exact live source capture finalization', () => {
       expect(f.state()).toEqual(before);
       expect(existsSync(f.marker)).toBe(false);
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       expect(order).toEqual(['user.disable', 'source-prepare']);
       expect(sourceOutcome).toMatchObject({
         error: {
@@ -618,7 +620,9 @@ describe('exact live source capture finalization', () => {
         if (stage === 'source-abandon-preseal') expect(generationSyncs).toBe(0);
         if (stage === 'source-abandon-final') expect(generationSyncs).toBe(1);
         expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-        expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+        expect(
+          getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+        ).toBeNull();
         const selectedPosts = post.mock.calls.filter(
           ([frame]) =>
             frame?.operation === 'recovery-target-preparation' &&
@@ -650,9 +654,10 @@ describe('exact live source capture finalization', () => {
         expect(readRecoveryExecution(reopened, f.backupId)).toEqual(retained.core);
         expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
         if (stage !== 'source-abandon-final') {
-          const coldAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-          restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
-          expect(coldAdmission.enter(f.workspaceId)).toBeNull();
+          restoreWorkspaceRecoveryAdmission(reopened);
+          expect(
+            getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+          ).toBeNull();
         }
       } finally {
         crossing.mockRestore();
@@ -689,16 +694,19 @@ describe('exact live source capture finalization', () => {
       expect(before.record.movedOut).toBeUndefined();
       expect(existsSync(f.marker)).toBe(false);
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       f.owned.coreDb.sqlite.exec('DROP TRIGGER refuse_source_prepare');
       await shutdownControlStoreWorkerClient();
       f.owned.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
       expect(readRecoveryExecution(reopened, f.backupId)).toBeUndefined();
-      const coldAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-      restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
-      expect(coldAdmission.enter(f.workspaceId)).toBeNull();
+      restoreWorkspaceRecoveryAdmission(reopened);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
     } finally {
       if (f.owned.coreDb.sqlite.open)
         f.owned.coreDb.sqlite.exec('DROP TRIGGER IF EXISTS refuse_source_prepare');
@@ -751,7 +759,9 @@ describe('exact live source capture finalization', () => {
       expect(failed.audit).toHaveLength(1);
       expect(existsSync(f.marker)).toBe(true);
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       expect(
         post.mock.calls.filter(
           ([frame]) =>
@@ -764,9 +774,10 @@ describe('exact live source capture finalization', () => {
       const reopened = openCoreDb(f.dataRoot);
       handles.push(reopened);
       expect(readRecoveryExecution(reopened, f.backupId)).toEqual(before.core);
-      const coldAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-      restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
-      expect(coldAdmission.enter(f.workspaceId)).toBeNull();
+      restoreWorkspaceRecoveryAdmission(reopened);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
     } finally {
       f.freeze.release();
     }
@@ -806,7 +817,9 @@ describe('exact live source capture finalization', () => {
       expect(refused.record.movedOut).toBeUndefined();
       expect(existsSync(f.marker)).toBe(false);
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
       expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual({
         scope: 'workspace',
         id: f.workspaceId,
@@ -864,7 +877,9 @@ describe('exact live source capture finalization', () => {
         expect(failed.pin?.state).toBe(stage === 'finish' ? 'finished' : 'abandoned');
         expect(existsSync(f.marker)).toBe(stage === 'finish');
         expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-        expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+        expect(
+          getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+        ).toBeNull();
         f.owned.coreDb.sqlite.exec('DROP TRIGGER refuse_source_report');
         await shutdownControlStoreWorkerClient();
         f.owned.coreDb.sqlite.close();
@@ -940,9 +955,9 @@ describe('exact live source capture finalization', () => {
         const { isScopeAdmitted, scopeAdmissionFailures } = await import(${JSON.stringify(new URL('../bootstrap/readiness.ts', import.meta.url).href)});
         const root = ${JSON.stringify(f.dataRoot)}, workspaceId = ${JSON.stringify(f.workspaceId)};
         const lock = acquireDataRootLock(root, { bootId: 'source-retirement-census' });
-        const core = openCoreDb(root), gate = getControlStoreWorkerClient().workspaceMutations(root);
+        const core = openCoreDb(root);
         try {
-          restoreWorkspaceRecoveryAdmission(core, gate);
+          restoreWorkspaceRecoveryAdmission(core);
           const admitted = isScopeAdmitted(root, 'workspace', workspaceId);
           let rejoin = null, censusRead = false, scopeRefusedAfterRejoin = null;
           if (${JSON.stringify(failSync)}) {
@@ -950,9 +965,8 @@ describe('exact live source capture finalization', () => {
             const { readWorkspaceRecoveryBlockers } = await import(${JSON.stringify(new URL('./workspace-backup.ts', import.meta.url).href)});
             const { resumeWorkspaceCaptureOwner } = await import(${JSON.stringify(new URL('./workspace-recovery-journal.ts', import.meta.url).href)});
             const store = new FsStore({ dataRoot: root });
-            store.setWorkspaceMutationAdmission(gate);
             const selected = { captureId: ${JSON.stringify(f.backupId)} };
-            const resumed = resumeWorkspaceCaptureOwner(core, workspaceId, selected.captureId, gate, () => {
+            const resumed = resumeWorkspaceCaptureOwner(core, workspaceId, selected.captureId, () => {
               censusRead = true;
               return readWorkspaceRecoveryBlockers({ coreDb: core, store, workspaceId }, selected);
             });
@@ -960,7 +974,7 @@ describe('exact live source capture finalization', () => {
             scopeRefusedAfterRejoin = !isScopeAdmitted(root, 'workspace', workspaceId);
             if (resumed.status === 'frozen') resumed.release();
           }
-          const release = gate.enter(workspaceId);
+          const release = getControlStoreWorkerClient().enterWorkspaceMutation(root, workspaceId);
           process.stdout.write(JSON.stringify({ syncAttempted, syncSucceeded, admitted,
             gateOpen: !!release, check: scopeAdmissionFailures(root).find(row => row.id === workspaceId)?.check ?? null,
             rejoin, censusRead, scopeRefusedAfterRejoin }));
@@ -1035,28 +1049,30 @@ describe('exact live source capture finalization', () => {
       expect(existsSync(f.marker)).toBe(true);
       f.freeze.release();
       await shutdownControlStoreWorkerClient();
-      const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-      restoreWorkspaceRecoveryAdmission(f.owned.coreDb, gate);
+      restoreWorkspaceRecoveryAdmission(f.owned.coreDb);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
-      expect(gate.enter(f.workspaceId)).toBeNull();
-      expect(gate.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')).toBeNull();
-      const resumed = resumeWorkspaceCaptureOwner(
-        f.owned.coreDb,
-        f.workspaceId,
-        f.backupId,
-        gate,
-        () =>
-          readWorkspaceRecoveryBlockers(
-            { ...f.owned, workspaceId: f.workspaceId },
-            { captureId: f.backupId }
-          )
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+          f.dataRoot,
+          f.workspaceId,
+          'worker-turn-closeout'
+        )
+      ).toBeNull();
+      const resumed = resumeWorkspaceCaptureOwner(f.owned.coreDb, f.workspaceId, f.backupId, () =>
+        readWorkspaceRecoveryBlockers(
+          { ...f.owned, workspaceId: f.workspaceId },
+          { captureId: f.backupId }
+        )
       );
       expect(resumed.status).toBe('frozen');
       if (resumed.status !== 'frozen') throw new Error('Expected exact pending seal retirement.');
       retry = resumed;
       chmodSync(f.bundleRoot, mode);
       await expect(
-        abandonWorkspaceCaptureAtCore({ ...f.owned, mutationAdmission: gate }, f.input, retry)
+        abandonWorkspaceCaptureAtCore({ ...f.owned }, f.input, retry)
       ).resolves.toMatchObject({
         command: 'abandon',
         disposition: 'abandoned',
@@ -1079,7 +1095,7 @@ describe('exact live source capture finalization', () => {
     const digest = `sha256:${createHash('sha256')
       .update(readFileSync(join(f.bundleRoot, 'manifest.json')))
       .digest('hex')}`;
-    const client = getControlStoreWorkerClient(f.mutationAdmission);
+    const client = getControlStoreWorkerClient();
     const moveOut = client.recoveryMoveOut.bind(client);
     const terminal = client.recoveryCapture.bind(client);
     let sourceAcknowledged = false;
@@ -1125,7 +1141,9 @@ describe('exact live source capture finalization', () => {
       expect(f.state().core?.state).toBe('finished');
       await expect(abandonWorkspaceCaptureAtCore(f.owned, f.input, f.freeze)).rejects.toThrow();
       expect(readFileSync(f.sourceFile)).toEqual(f.sourceBytes);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
     } finally {
       f.freeze.release();
     }
@@ -1184,9 +1202,15 @@ describe('exact live source capture finalization', () => {
       expect(committed.core?.state).toBe('prepared');
       expect(existsSync(f.marker)).toBe(false);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
-      expect(f.mutationAdmission.enter(f.workspaceId)).toBeNull();
       expect(
-        f.mutationAdmission.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+      ).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+          f.dataRoot,
+          f.workspaceId,
+          'worker-turn-closeout'
+        )
       ).toBeNull();
       await expect(finishWorkspaceCaptureAtCore(f.owned, f.input, f.freeze)).resolves.toMatchObject(
         {

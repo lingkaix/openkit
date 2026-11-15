@@ -30,10 +30,7 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { createOperationEngine } from '../operation-invocation.js';
 import { readAdmittedPolicyDocument } from '../policy/configuration.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -307,7 +304,6 @@ async function fixture() {
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -315,9 +311,8 @@ async function fixture() {
       store,
       auth,
       runtimeConfigManager: manager,
-      workspaceMutationAdmission,
     });
-    return { coreDb, dataRoot, workspaceMutationAdmission, store, manager, accounts, app };
+    return { coreDb, dataRoot, store, manager, accounts, app };
   }
   let current = await graph();
   const workspaceResponse = await current.app.request(
@@ -547,7 +542,6 @@ describe('E13 native current resource availability', () => {
       coreDb: g.coreDb,
       dataRoot: g.dataRoot,
       store: g.store,
-      workspaceMutationAdmission: g.workspaceMutationAdmission,
       runtimeConfigManager: g.manager,
       readRuntimePolicy: () => g.manager.current().openKitConfig.policy?.mediation,
       inflightCommands: new WeakMap(),

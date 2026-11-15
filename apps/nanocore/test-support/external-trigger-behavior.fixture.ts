@@ -17,10 +17,7 @@ import {
 import type { TurnExecutor } from '../src/runtime/types.js';
 import { prepareWorkerTurnJournalIntents } from '../src/runtime/worker-governance-turn-executor.js';
 import { requireSchedulerAdmissionEntry } from '../src/scheduler-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../src/storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../src/storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../src/storage/db.js';
 import { corruptExternalTriggerSourceTurn } from '../src/storage/external-trigger-fault.test-support.js';
 import { applyMigrations } from '../src/storage/migrate.js';
@@ -50,11 +47,7 @@ export async function externalTriggerFixture() {
   const workspace = await store.createWorkspace('External event identity');
   let thread = await store.createThread(workspace.id, 'Scheduled source poll');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  let schedules = new AutomationStore(
-    coreDb,
-    getControlStoreWorkerClient().workspaceMutations(root),
-    () => instant
-  );
+  let schedules = new AutomationStore(coreDb, () => instant);
   const agentSetup = createTestAgentSetup();
   const manifest = agentSetup.manifest;
   const created = await schedules.createAutomation(userId, {
@@ -232,7 +225,6 @@ export async function externalTriggerFixture() {
         coreDb,
         store,
         dataRoot: root,
-        workspaceMutationAdmission: schedules.mutationAdmission,
       });
       const response = await app.request(
         ...operationRequest(
@@ -257,11 +249,7 @@ export async function externalTriggerFixture() {
       coreDb.sqlite.close();
       coreDb = openCoreDb(root);
       store = new FsStore({ dataRoot: root });
-      schedules = new AutomationStore(
-        coreDb,
-        getControlStoreWorkerClient().workspaceMutations(root),
-        () => instant
-      );
+      schedules = new AutomationStore(coreDb, () => instant);
     },
   };
 }

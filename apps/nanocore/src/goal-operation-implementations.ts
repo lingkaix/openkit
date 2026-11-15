@@ -22,6 +22,7 @@ import {
   requireCoordinatorGoal,
 } from './runtime/goal-owner.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 
 /** Supplies exact Goal identity facts and only the bindings declared by the selected operation. */
 export function coordinatorOperationBindings(
@@ -49,20 +50,16 @@ export function coordinatorOperationBindings(
 
 /** Revalidates the live Goal, Thread, credential and mutation fence before collection discovery. */
 export function resolveCoordinatorWorkspaceCandidates(
-  dependencies: Pick<
-    OperationInvocationDependencies,
-    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'workspaceMutationAdmission'
-  >,
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>,
   entry: Extract<OperationInvocationContext, { kind: 'coordinator' }>,
   definition: OperationDefinition
 ): readonly string[] | null {
-  const { coreDb, store, repositoryWorkspaceDb, workspaceMutationAdmission } = dependencies;
+  const { coreDb, store, repositoryWorkspaceDb } = dependencies;
   if (
     !coreDb ||
     !store ||
     !repositoryWorkspaceDb ||
-    !workspaceMutationAdmission ||
-    workspaceMutationAdmission.isClosed(entry.workspaceId) ||
+    getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, entry.workspaceId) ||
     !authorizeWorkspace(coreDb, entry.actor, entry.workspaceId, definition)
   )
     return null;

@@ -27,7 +27,6 @@ import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
 } from './control-store-worker-client.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
@@ -71,8 +70,7 @@ function fixture(competing = false) {
   const captureId = randomUUID();
   const selected = protectCapture(db, workspaceId, captureId);
   const competitor = competing ? protectCapture(db, workspaceId, randomUUID()) : undefined;
-  const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-  restoreWorkspaceRecoveryAdmission(core, gate);
+  restoreWorkspaceRecoveryAdmission(core);
   return {
     dataRoot,
     core,
@@ -83,7 +81,6 @@ function fixture(competing = false) {
     captureId,
     selected,
     competitor,
-    gate,
   };
 }
 
@@ -101,13 +98,11 @@ describe('retained capture exclusion rejoin', () => {
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
     const db = openWorkspaceDb(dataRoot, workspaceId);
     handles.push(db);
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const source = {
       kind: 'live-workspace' as const,
       dataRoot,
       coreDb,
       store,
-      mutationAdmission,
       actor: { kind: 'local' as const, userId },
     };
     const stagingParent = join(root, 'staging');
@@ -127,13 +122,7 @@ describe('retained capture exclusion rejoin', () => {
     const census = () =>
       readWorkspaceRecoveryBlockers({ ...source, workspaceId, operation: 'move-out' }, selected);
     const resume = () =>
-      recovery.resumeWorkspaceCaptureOwner(
-        coreDb,
-        workspaceId,
-        captureId,
-        mutationAdmission,
-        census
-      );
+      recovery.resumeWorkspaceCaptureOwner(coreDb, workspaceId, captureId, census);
     const owned = { ...source, currentAuthority: () => {}, verification };
     const input = { workspaceId, backupId: captureId };
     let worker: Worker | undefined;
@@ -166,7 +155,9 @@ describe('retained capture exclusion rejoin', () => {
     try {
       await exitRequested;
       expect(worker!.threadId).not.toBe(-1);
-      expect(mutationAdmission.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(dataRoot, workspaceId)
+      ).toBeNull();
       let beforeExit: string;
       try {
         beforeExit = resume().status;
@@ -183,8 +174,14 @@ describe('retained capture exclusion rejoin', () => {
     expect(worker!.threadId).toBe(-1);
     expect(captured.disposition).toBe('prepared');
     expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
-    expect(mutationAdmission.enter(workspaceId)).toBeNull();
-    expect(mutationAdmission.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(getControlStoreWorkerClient().enterWorkspaceMutation(dataRoot, workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        dataRoot,
+        workspaceId,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
     expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
     expect(
       readWorkspaceRecoveryBlockers({ ...source, workspaceId }, { captureId: randomUUID() })
@@ -194,7 +191,11 @@ describe('retained capture exclusion rejoin', () => {
     expect(freeze.status).toBe('frozen');
     if (freeze.status !== 'frozen')
       throw new Error('Expected the original live capture exclusion.');
-    const foreign = new WorkspaceMutationAdmission().tryFreeze(workspaceId, () => []);
+    const foreign = getControlStoreWorkerClient().tryFreezeWorkspace(
+      join(dataRoot, 'foreign-native-scope'),
+      workspaceId,
+      () => []
+    );
     if (foreign.status !== 'frozen') throw new Error('Expected an unrelated freeze.');
     try {
       await expect(inspectWorkspaceSnapshot(input, owned)).rejects.toThrow();
@@ -236,7 +237,9 @@ describe('retained capture exclusion rejoin', () => {
     const retry = resume();
     if (retry.status !== 'frozen') throw new Error('Expected an explicit selected-capture retry.');
     freeze.release();
-    expect(mutationAdmission.ownsFreeze(workspaceId, retry)).toBe(true);
+    expect(getControlStoreWorkerClient().ownsWorkspaceFreeze(dataRoot, workspaceId, retry)).toBe(
+      true
+    );
     retry.release();
     // An unrelated retained publication is still a blocker for the selected capture.
     protectCapture(db, workspaceId, randomUUID());
@@ -248,46 +251,61 @@ describe('retained capture exclusion rejoin', () => {
       competing = 'refused';
     }
     expect(competing).not.toBe('frozen');
-    expect(mutationAdmission.enter(workspaceId)).toBeNull();
-    expect(mutationAdmission.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(getControlStoreWorkerClient().enterWorkspaceMutation(dataRoot, workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        dataRoot,
+        workspaceId,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
     expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
   }, 30_000);
 
   it('rejoins a SQL-only boot capture for exact native recovery while publishers remain fenced', async () => {
     const f = fixture();
-    const client = getControlStoreWorkerClient(f.gate);
+    const client = getControlStoreWorkerClient();
     expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
-    expect(f.gate.enter(f.workspaceId)).toBeNull();
-    expect(f.gate.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+    ).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        f.dataRoot,
+        f.workspaceId,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
     await openTestNativeWorkspace(f.sibling);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', f.siblingId)).toBe(true);
-    const releaseSibling = f.gate.enter(f.siblingId);
+    const releaseSibling = getControlStoreWorkerClient().enterWorkspaceMutation(
+      f.dataRoot,
+      f.siblingId
+    );
     expect(releaseSibling).toBeTypeOf('function');
     releaseSibling!();
     expect(() =>
-      recovery.resumeWorkspaceCaptureOwner(f.core, f.workspaceId, randomUUID(), f.gate, () => [])
+      recovery.resumeWorkspaceCaptureOwner(f.core, f.workspaceId, randomUUID(), () => [])
     ).toThrow();
     const resume = () =>
-      recovery.resumeWorkspaceCaptureOwner(f.core, f.workspaceId, f.captureId, f.gate, () => []);
+      recovery.resumeWorkspaceCaptureOwner(f.core, f.workspaceId, f.captureId, () => []);
     const first = resume();
     if (first.status !== 'frozen') throw new Error('Expected the retained capture owner.');
     const stale = recovery.bindWorkspaceCaptureNativeOwner(
       f.core,
       f.workspaceId,
       f.captureId,
-      f.gate,
       first
     );
     first.release();
     await expect(client.open(stale.binding.command, stale)).rejects.toThrow();
-    restoreWorkspaceRecoveryAdmission(f.core, f.gate);
+    restoreWorkspaceRecoveryAdmission(f.core);
     const freeze = resume();
     if (freeze.status !== 'frozen') throw new Error('Expected an explicit selected-capture retry.');
     const call = recovery.bindWorkspaceCaptureNativeOwner(
       f.core,
       f.workspaceId,
       f.captureId,
-      f.gate,
       freeze
     );
     // The physical file is replaced after valid owner selection: pathname equality grants nothing.
@@ -312,17 +330,29 @@ describe('retained capture exclusion rejoin', () => {
     expect(inspectCapture(f.db, f.workspaceId, f.captureId)).toEqual(f.selected);
     await client.recoveryCapture(call.binding.command.database, terminal, call);
     expect(inspectCapture(f.db, f.workspaceId, f.captureId)?.state).toBe('abandoned');
-    expect(f.gate.enter(f.workspaceId)).toBeNull();
-    expect(f.gate.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+    ).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        f.dataRoot,
+        f.workspaceId,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
     freeze.release();
-    expect(f.gate.enter(f.workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+    ).toBeNull();
     expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
     // A retained first-terminal result can outlive its ACK; explicit retry keeps the same quarantine.
     const terminalRetry = resume();
     expect(terminalRetry.status).toBe('frozen');
     if (terminalRetry.status !== 'frozen') throw new Error('Expected an exact terminal retry.');
     terminalRetry.release();
-    expect(f.gate.enter(f.workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+    ).toBeNull();
   }, 30_000);
 
   it('preserves a real source capture exclusion across its Core terminal revision', async () => {
@@ -359,27 +389,32 @@ describe('retained capture exclusion rejoin', () => {
     expect(prepared?.state).toBe('prepared');
     const db = openWorkspaceDb(dataRoot, workspaceId);
     handles.push(db);
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    restoreWorkspaceRecoveryAdmission(core, gate);
+    restoreWorkspaceRecoveryAdmission(core);
     const resume = () =>
-      recovery.resumeWorkspaceCaptureOwner(core, workspaceId, captureId, gate, () => []);
+      recovery.resumeWorkspaceCaptureOwner(core, workspaceId, captureId, () => []);
     const first = resume();
     if (first.status !== 'frozen') throw new Error('Expected the prepared source capture owner.');
     completeCapture(db, workspaceId, captureId);
     recovery.finishRecoveryExecution(core, captureId, 'finished');
     expect(recovery.readRecoveryExecution(core, captureId)?.revision).toBe(prepared!.revision + 1);
     expect(() =>
-      recovery.bindWorkspaceCaptureNativeOwner(core, workspaceId, captureId, gate, first)
+      recovery.bindWorkspaceCaptureNativeOwner(core, workspaceId, captureId, first)
     ).not.toThrow();
     first.release();
     const terminal = resume();
     expect(terminal.status).toBe('frozen');
     if (terminal.status !== 'frozen')
       throw new Error('Expected the same source capture exclusion.');
-    expect(gate.enter(workspaceId)).toBeNull();
-    expect(gate.enterLatePublisher(workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(getControlStoreWorkerClient().enterWorkspaceMutation(dataRoot, workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        dataRoot,
+        workspaceId,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
     terminal.release();
-    expect(gate.enter(workspaceId)).toBeNull();
+    expect(getControlStoreWorkerClient().enterWorkspaceMutation(dataRoot, workspaceId)).toBeNull();
     expect(isScopeAdmitted(dataRoot, 'workspace', workspaceId)).toBe(false);
   }, 30_000);
 
@@ -388,13 +423,21 @@ describe('retained capture exclusion rejoin', () => {
     const inspect = vi.fn(() => []);
     for (const captureId of [f.captureId, f.competitor!.captureId]) {
       expect(() =>
-        recovery.resumeWorkspaceCaptureOwner(f.core, f.workspaceId, captureId, f.gate, inspect)
+        recovery.resumeWorkspaceCaptureOwner(f.core, f.workspaceId, captureId, inspect)
       ).toThrow();
     }
     expect(inspect).not.toHaveBeenCalled();
     expect(inspectCapture(f.db, f.workspaceId, f.captureId)).toEqual(f.selected);
     expect(inspectCapture(f.db, f.workspaceId, f.competitor!.captureId)).toEqual(f.competitor);
-    expect(f.gate.enter(f.workspaceId)).toBeNull();
-    expect(f.gate.enterLatePublisher(f.workspaceId, 'worker-turn-closeout')).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, f.workspaceId)
+    ).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceLatePublisher(
+        f.dataRoot,
+        f.workspaceId,
+        'worker-turn-closeout'
+      )
+    ).toBeNull();
   });
 });

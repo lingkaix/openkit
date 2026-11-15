@@ -17,7 +17,6 @@ import {
   denySchedulerAdmissionEntry,
   requireSchedulerAdmissionEntry,
 } from './scheduler-records.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
@@ -43,9 +42,7 @@ describe('execution operation authority', () => {
           workspaceId: DEMO_WORKSPACE_ID,
           ownerUserId: localUserId,
         });
-        const workspaceMutationAdmission =
-          getControlStoreWorkerClient().workspaceMutations(dataRoot);
-        const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
+        const automationStore = new AutomationStore(coreDb);
         const automation = await automationStore.createAutomation(
           testEntityId('usr', 'user_other'),
           {
@@ -91,7 +88,6 @@ describe('execution operation authority', () => {
           coreDb,
           automationStore,
           requestStore: () => store,
-          workspaceMutationAdmission,
           inflightCommands: new WeakMap(),
           repositoryWorkspaceDb: (id) => {
             const db = openWorkspaceDb(dataRoot, id);

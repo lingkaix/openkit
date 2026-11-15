@@ -41,10 +41,7 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { recordTestExecutionAttempt } from '../test-support/execution-attempt.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -297,7 +294,6 @@ async function fixture(
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -305,13 +301,11 @@ async function fixture(
       store,
       auth,
       runtimeConfigManager: manager,
-      workspaceMutationAdmission,
       ...createOptions(coreDb),
     });
     return {
       coreDb,
       dataRoot,
-      workspaceMutationAdmission,
       store,
       manager,
       accounts,

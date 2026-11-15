@@ -6,10 +6,7 @@ import type { LightAppSchemaInput } from '@openkit/app-api-schemas';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -135,7 +132,6 @@ describe('openkit-generative MCP', () => {
     const context = {
       coreDb,
       packageSnapshotId: 'package_test',
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       protocolRequestId: randomUUID(),
       store,
       inflightCommands: new WeakMap(),
@@ -284,7 +280,6 @@ describe('openkit-generative MCP', () => {
     const context = {
       coreDb,
       packageSnapshotId: 'package_test',
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       protocolRequestId: randomUUID(),
       store,
       inflightCommands: new WeakMap(),

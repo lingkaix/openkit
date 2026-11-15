@@ -12,7 +12,6 @@ import {
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
@@ -68,7 +67,6 @@ it.each([
       store,
       goalServices: services,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
       repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
     });
     try {

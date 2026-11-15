@@ -348,7 +348,6 @@ async function fixture(
     workspaceIds: options.administrator ? [] : ['ws_00000000-0000-7000-8000-000000000001'],
     expiresAt: '2099-01-01T00:00:00.000Z',
   });
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const app = createApp({
     coreDb,
     store,
@@ -366,7 +365,6 @@ async function fixture(
           }),
         }
       : {}),
-    workspaceMutationAdmission: mutationAdmission,
     ...(options.accepting === false
       ? {
           getBootReadiness: () => ({
@@ -429,7 +427,7 @@ async function fixture(
     coreDb.sqlite.close();
     rmSync(dataRoot, { recursive: true, force: true });
   });
-  return { app, coreDb, db, store, item, http, mcp, client, observed, issued, mutationAdmission };
+  return { app, coreDb, db, store, item, http, mcp, client, observed, issued };
 }
 
 /** All complete selectors share the existing closed input schemas. */
@@ -620,7 +618,6 @@ describe('Workspace synchronization native projections', () => {
         coreDb: f.coreDb,
         store: f.store,
         inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: f.mutationAdmission,
         repositoryWorkspaceDb,
       });
       const actor = {
@@ -706,7 +703,6 @@ describe('Workspace synchronization native projections', () => {
             coreDb: f.coreDb,
             store: coldStore,
             inflightCommands: new WeakMap(),
-            workspaceMutationAdmission: f.mutationAdmission,
             repositoryWorkspaceDb,
           });
           expect(await replay('sync.recovery-decide', input, context)).toEqual(response);
@@ -947,8 +943,8 @@ describe('Workspace synchronization native projections', () => {
       });
       f.app.onError(errorHandler);
       // Reads consult the lifecycle close, mutations the full gate; both must propagate.
-      for (const gate of ['isClosed', 'isLifecycleClosed'] as const) {
-        vi.spyOn(f.mutationAdmission, gate).mockImplementation(() => {
+      for (const gate of ['isWorkspaceMutationClosed', 'isWorkspaceLifecycleClosed'] as const) {
+        vi.spyOn(getControlStoreWorkerClient(), gate).mockImplementation(() => {
           throw fault;
         });
       }
@@ -971,7 +967,6 @@ describe('Workspace synchronization native projections', () => {
         coreDb: f.coreDb,
         store: f.store,
         inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: f.mutationAdmission,
         repositoryWorkspaceDb: (workspaceId) =>
           openWorkspaceDb(f.store.getDataRoot()!, workspaceId),
       });
@@ -1167,13 +1162,16 @@ describe('Workspace synchronization native projections', () => {
       const credentials = session?.credentials ?? { authorization: `Bearer ${issued.secret}` };
       const before = f.observedFilesystem();
       const ownership = workspaceOwnership(f);
-      const enter = f.mutationAdmission.enter.bind(f.mutationAdmission);
-      const admission = vi.spyOn(f.mutationAdmission, 'enter').mockImplementation((workspaceId) => {
-        const release = enter(workspaceId);
-        expect(release).not.toBeNull();
-        revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
-        return release;
-      });
+      const client = getControlStoreWorkerClient();
+      const enter = client.enterWorkspaceMutation.bind(client);
+      const admission = vi
+        .spyOn(client, 'enterWorkspaceMutation')
+        .mockImplementation((dataRoot, workspaceId) => {
+          const release = enter(dataRoot, workspaceId);
+          expect(release).not.toBeNull();
+          revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
+          return release;
+        });
       const owner = vi.spyOn(workspaceReviewApplication, 'decideWorkspaceSyncReview');
       const response = await f.http(
         'sync.review-decide',
@@ -1187,7 +1185,10 @@ describe('Workspace synchronization native projections', () => {
       );
       expect(response.status).toBe(403);
       expect(await response.json()).toMatchObject({ code: 'workspace_access_denied' });
-      expect(admission).toHaveBeenCalledExactlyOnceWith('ws_00000000-0000-7000-8000-000000000001');
+      expect(admission).toHaveBeenCalledExactlyOnceWith(
+        f.coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       expect(owner).toHaveBeenCalledOnce();
       expect(f.observedFilesystem()).toEqual(before);
       expect(workspaceOwnership(f)).toEqual(ownership);
@@ -1464,7 +1465,10 @@ describe('Workspace synchronization native projections', () => {
       else input.reconciliationRecordId = 'missing';
     }
     if (condition === 'deletion fence')
-      await f.mutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        f.coreDb.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
     if (condition === 'revoked') {
       revokeOpenKitAccessTokenRecord(f.coreDb, f.issued.record.tokenId);
       const before = f.observed();

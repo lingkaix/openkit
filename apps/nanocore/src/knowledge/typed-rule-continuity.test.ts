@@ -20,10 +20,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { createOperationInvocation } from '../operation-composition.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -233,7 +230,6 @@ async function fixture() {
     coreDb,
     store,
     runtimeConfigManager: createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot }),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,

@@ -24,13 +24,11 @@ it('ORACLE S7 refuses logical Workspace effects in Core while sibling Core publi
     const ownerUserId = ensureLocalUser(coreDb);
     const target = await store.createWorkspace('Frozen target');
     const sibling = await store.createWorkspace('Unfrozen sibling');
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    store.setWorkspaceMutationAdmission(gate);
     const before = coreDb.sqlite
       .prepare('SELECT * FROM workspace_registry WHERE workspace_id=?')
       .get(target.id);
     expect(before).toBeUndefined();
-    const frozen = gate.tryFreeze(target.id, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, target.id, () => []);
     expect(frozen.status).toBe('frozen');
     if (frozen.status !== 'frozen') throw new Error('Expected actual target freeze.');
     releaseFreeze = frozen.release;
@@ -74,7 +72,7 @@ it('ORACLE S7 refuses logical Workspace effects in Core while sibling Core publi
     expect(
       coreDb.sqlite.prepare('SELECT * FROM workspace_members WHERE workspace_id=?').all(target.id)
     ).toEqual([]);
-    expect(gate.isClosed(target.id)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, target.id)).toBe(true);
     releaseFreeze();
     releaseFreeze = undefined;
     await publishWorkspaceOwnerMembership({ coreDb, workspaceId: target.id, ownerUserId });
@@ -109,7 +107,6 @@ it('ORACLE S7 retains the logical Core target and its distinct original parent t
     const ownerUserId = ensureLocalUser(coreDb);
     const target = await store.createWorkspace('Logical target');
     const original = await store.createWorkspace('Original accepted scope');
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     replies = vi.spyOn(Worker.prototype, 'emit').mockImplementation(function (event, ...args) {
       const request = posts.mock.calls.find(
         ([message]) =>
@@ -126,14 +123,22 @@ it('ORACLE S7 retains the logical Core target and its distinct original parent t
     });
     coreDb.sqlite.pragma('query_only = ON');
     // The original scope lease is accounting, not authority for the real Core membership command.
-    const parent = gate.runWorkerCloseout(original.id, async () => {
-      published = publishWorkspaceOwnerMembership({ coreDb, workspaceId: target.id, ownerUserId });
-      await reached.promise;
-    });
+    const parent = getControlStoreWorkerClient().runWorkerCloseout(
+      dataRoot,
+      original.id,
+      async () => {
+        published = publishWorkspaceOwnerMembership({
+          coreDb,
+          workspaceId: target.id,
+          ownerUserId,
+        });
+        await reached.promise;
+      }
+    );
     expect(parent).not.toBeNull();
     await parent;
     for (const workspaceId of [target.id, original.id]) {
-      const cut = gate.tryFreeze(workspaceId, () => []);
+      const cut = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, workspaceId, () => []);
       if (cut.status === 'frozen') cuts.push(cut.release);
       expect(cut.status).toBe('busy');
     }
@@ -146,7 +151,7 @@ it('ORACLE S7 retains the logical Core target and its distinct original parent t
         .get(target.id)
     ).toBe('active');
     for (const workspaceId of [target.id, original.id]) {
-      const cut = gate.tryFreeze(workspaceId, () => []);
+      const cut = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, workspaceId, () => []);
       if (cut.status === 'frozen') cuts.push(cut.release);
       expect(cut.status).toBe('frozen');
     }

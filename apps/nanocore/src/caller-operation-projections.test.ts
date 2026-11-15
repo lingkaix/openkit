@@ -15,10 +15,7 @@ import { FsStore } from './lib/store.js';
 import { createOperationInvocation } from './operation-composition.js';
 import { OperationError } from './operation-error.js';
 import * as goalCoordinator from './runtime/goal-coordinator.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -341,7 +338,6 @@ describe('caller operation projections', () => {
     const invoke = createOperationInvocation({
       coreDb: f.coreDb,
       store: f.store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
     });
     const native = await invoke(operationId, input as never, {
       kind: 'public',
@@ -617,9 +613,6 @@ describe('caller operation projections', () => {
     const invoke = createOperationInvocation({
       coreDb: f.coreDb,
       store: f.store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-        f.coreDb.dataRoot
-      ),
     });
     const admin = f.token();
     const actor = {
@@ -663,9 +656,6 @@ describe('caller operation projections', () => {
     const invoke = createOperationInvocation({
       coreDb: f.coreDb,
       store: f.store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-        f.coreDb.dataRoot
-      ),
     });
     await expect(
       invoke(operationId, {} as never, {

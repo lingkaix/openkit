@@ -208,9 +208,6 @@ describe('shared family contract', () => {
       coreDb: f.coreDb,
       store: f.store,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-        f.coreDb.dataRoot
-      ),
       conversationService: {
         submit: async (_store, input) => {
           if (input.input === 'first') {
@@ -587,9 +584,6 @@ async function operationProjections(f: Awaited<ReturnType<typeof operationFixtur
     app: mcp,
     coreDb: f.coreDb,
     store: f.store,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-      f.command.dataRoot
-    ),
     runtimeConfig: () =>
       createInMemoryRuntimeConfigSnapshot({
         dataRoot: f.command.dataRoot,
@@ -678,9 +672,6 @@ describe('operation projection cutover', () => {
                 actor: f.command.actor,
                 inflightCommands: new WeakMap(),
                 packageSnapshotId: 'package_fixture',
-                workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-                  db.dataRoot
-                ),
                 scope: {
                   workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
                   threadId: 'th_00000000-0000-7000-8000-000000000001',
@@ -856,9 +847,6 @@ describe('operation projection cutover', () => {
       const owners = {
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          f.command.dataRoot
-        ),
       };
       const invoke = createOperationInvocation(owners);
       await expect(
@@ -881,8 +869,14 @@ describe('operation projection cutover', () => {
         code: 'invalid_operation_output',
         message: expect.stringContaining('does not undo committed effects'),
       });
-      await owners.workspaceMutationAdmission.close('ws_00000000-0000-7000-8000-000000000001');
-      owners.workspaceMutationAdmission.reopen('ws_00000000-0000-7000-8000-000000000001');
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        owners.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        owners.dataRoot,
+        'ws_00000000-0000-7000-8000-000000000001'
+      );
       const corrupt = await f.app.request('/api/app/operations/kernel.records.create', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-openkit-request-id': randomUUID() },
@@ -991,9 +985,6 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          f.command.dataRoot
-        ),
       });
       const context = {
         kind: 'public' as const,
@@ -1065,9 +1056,6 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          f.command.dataRoot
-        ),
       });
       const selector = {
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1114,9 +1102,6 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          f.command.dataRoot
-        ),
       });
       const context = {
         kind: 'worker' as const,
@@ -1183,9 +1168,6 @@ describe('operation projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          f.command.dataRoot
-        ),
       });
       const context = {
         kind: 'public' as const,
@@ -1762,9 +1744,6 @@ describe('Workspace Thread Turn projection cutover', () => {
       const invoke = createOperationInvocation({
         ...f.command,
         coreDb: f.coreDb,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          f.coreDb.dataRoot
-        ),
       });
       expect(
         await invoke(
@@ -1909,9 +1888,6 @@ describe('Goal definition projections', () => {
               return db;
             },
             inflightCommands: new WeakMap(),
-            workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-              db.dataRoot
-            ),
           }),
         });
         expect(tools.map((tool) => tool.name).sort()).toEqual(
@@ -1943,7 +1919,6 @@ describe('Goal definition projections', () => {
           coreDb: f.coreDb,
           store: f.store,
           inflightCommands: new WeakMap(),
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
         });
         const acquisitionHttp = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
           throw new Error('Coordinator acquisition crossed the human-only refusal.');
@@ -2770,7 +2745,6 @@ describe('trusted entry currentness through real operation admission', () => {
       connected.resolve(physical);
       response.end();
     });
-    const admission = getControlStoreWorkerClient().workspaceMutations(f.command.dataRoot);
     const handlerEntered = Promise.withResolvers<void>();
     const releaseHandler = Promise.withResolvers<void>();
     let client: ReturnType<typeof connectHttp2> | undefined;
@@ -2778,20 +2752,23 @@ describe('trusted entry currentness through real operation admission', () => {
     let entries = 0;
     let effectEntered = false;
     let observedHandler = false;
-    const enter = admission.enter.bind(admission);
-    const enteredAdmission = vi.spyOn(admission, 'enter').mockImplementation((...args) => {
-      const release = enter(...args);
-      // Native ACK retention is not another public authority check; the final freeze checks all leases.
-      if (release && args[1] !== 'capture') {
-        entries += 1;
-        if (
-          (loss === 'after-initial-admission' && entries === 1) ||
-          (loss === 'after-repeated-admission' && entries === 2)
-        )
-          authority.fenceAuthoritative(identityId);
-      }
-      return release;
-    });
+    const nativeClient = getControlStoreWorkerClient();
+    const enter = nativeClient.enterWorkspaceMutation.bind(nativeClient);
+    const enteredAdmission = vi
+      .spyOn(nativeClient, 'enterWorkspaceMutation')
+      .mockImplementation((...args) => {
+        const release = enter(...args);
+        // Native ACK retention is not another public authority check; the final freeze checks all leases.
+        if (release && args[2] !== 'capture') {
+          entries += 1;
+          if (
+            (loss === 'after-initial-admission' && entries === 1) ||
+            (loss === 'after-repeated-admission' && entries === 2)
+          )
+            authority.fenceAuthoritative(identityId);
+        }
+        return release;
+      });
     try {
       server.listen(0, '127.0.0.1');
       await once(server, 'listening');
@@ -2840,7 +2817,7 @@ describe('trusted entry currentness through real operation admission', () => {
             return family['kernel.records.create'](input, context);
           },
         },
-        { coreDb: f.coreDb, store: f.store, workspaceMutationAdmission: admission }
+        { coreDb: f.coreDb, store: f.store }
       );
       if (loss === 'before-initial-admission') authority.fenceAuthoritative(identityId);
       if (loss === 'before-initial-admission' || loss === 'after-initial-admission')
@@ -2872,7 +2849,13 @@ describe('trusted entry currentness through real operation admission', () => {
             result.then(() => 'returned'),
           ])
         ).toBe('handler-entered');
-        expect(admission.tryFreeze(f.command.workspaceId, () => [])).toEqual({ status: 'busy' });
+        expect(
+          getControlStoreWorkerClient().tryFreezeWorkspace(
+            f.command.dataRoot,
+            f.command.workspaceId,
+            () => []
+          )
+        ).toEqual({ status: 'busy' });
         if (loss === 'before-repeated-admission') authority.fenceAuthoritative(identityId);
         releaseHandler.resolve();
       }
@@ -2898,7 +2881,11 @@ describe('trusted entry currentness through real operation admission', () => {
         }).totalItems
       ).toBe(loss === 'current' ? 1 : 0);
       // The real gate can freeze only after authorization and native ACK admissions have released.
-      const frozen = admission.tryFreeze(f.command.workspaceId, () => []);
+      const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.command.dataRoot,
+        f.command.workspaceId,
+        () => []
+      );
       expect(frozen.status).toBe('frozen');
       if (frozen.status === 'frozen') frozen.release();
     } finally {
@@ -2915,11 +2902,9 @@ describe('trusted entry currentness through real operation admission', () => {
   it('does not accept an entry callback from submitted operation input', async () => {
     const f = await operationFixture();
     let submittedCallbackEntered = false;
-    const admission = getControlStoreWorkerClient().workspaceMutations(f.command.dataRoot);
     const invoke = createOperationInvocation({
       ...f.command,
       coreDb: f.coreDb,
-      workspaceMutationAdmission: admission,
     });
     try {
       for (const supplied of [
@@ -2950,7 +2935,11 @@ describe('trusted entry currentness through real operation admission', () => {
           schemaRevision: 1,
         }).totalItems
       ).toBe(0);
-      const frozen = admission.tryFreeze(f.command.workspaceId, () => []);
+      const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.command.dataRoot,
+        f.command.workspaceId,
+        () => []
+      );
       expect(frozen.status).toBe('frozen');
       if (frozen.status === 'frozen') frozen.release();
     } finally {

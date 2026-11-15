@@ -648,7 +648,6 @@ async function capturedFixture() {
     coreDb: f.coreDb,
     store: f.store,
     interception,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.coreDb.dataRoot),
     workerMcpGateway: gateway,
     workerControlGateway: {
       authenticatePackageToken: () => environmentPackage,

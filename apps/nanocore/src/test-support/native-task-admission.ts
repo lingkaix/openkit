@@ -53,7 +53,6 @@ export async function createNativeTaskAdmissionFixture(
     | 'readRuntimeConfig'
     | 'releaseIdentity'
     | 'vaultBackend'
-    | 'workspaceMutationAdmission'
     | 'policyInterception'
     | 'goalTaskPolicy'
     | 'nanoHostSessionDispatch'
@@ -309,9 +308,6 @@ export async function createNativeTaskAdmissionFixture(
     ...(options.goalTaskPolicy ? { goalTaskPolicy: options.goalTaskPolicy } : {}),
     ...(options.policyInterception ? { policyInterception: options.policyInterception } : {}),
     ...(options.vaultBackend ? { vaultBackend: options.vaultBackend } : {}),
-    ...(options.workspaceMutationAdmission
-      ? { workspaceMutationAdmission: options.workspaceMutationAdmission }
-      : {}),
     env: {},
     readRuntimeConfig:
       options.readRuntimeConfig ??

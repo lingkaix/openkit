@@ -114,14 +114,11 @@ import {
   getWorkspaceProductReadHandle,
   openControlStoreProductReadHandle,
 } from './control-store-product-records.js';
-import type {
-  WorkspaceFreezeAdmission,
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from './control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
+  type WorkspaceFreezeAdmission,
+  type WorkspaceFrozenAdmission,
 } from './control-store-worker-client.js';
 import {
   DATA_ROOT_BACKUP_MANIFEST_FILE,
@@ -189,7 +186,6 @@ export type WorkspaceBackupSource =
       readonly dataRoot: string;
       readonly coreDb: CoreDb;
       readonly store: FsStore;
-      readonly mutationAdmission: WorkspaceMutationAdmission;
       /** Borrows the caller's exact current fence for a fresh manual backup; capture never releases it. */
       readonly freezeOwner?: WorkspaceFrozenAdmission;
       readonly deletionRequest?: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord;
@@ -1766,12 +1762,17 @@ async function runWorkspaceCapture(
       !automatic &&
       (existsSync(input.bundleRoot) ||
         (live.freezeOwner &&
-          !live.mutationAdmission.ownsFreeze(input.workspaceId, live.freezeOwner)))
+          !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+            live.dataRoot,
+            input.workspaceId,
+            live.freezeOwner
+          )))
     ) {
       // A new lifecycle fence neither admits a foreign owner nor proves an older sealed cut current.
       releaseReplayRead = live.freezeOwner
         ? undefined
-        : (live.mutationAdmission.enter(input.workspaceId) ?? undefined);
+        : (getControlStoreWorkerClient().enterWorkspaceMutation(live.dataRoot, input.workspaceId) ??
+          undefined);
       if (!releaseReplayRead)
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
           details: { workspaceId: input.workspaceId, retryable: true },
@@ -1845,8 +1846,11 @@ async function runWorkspaceCapture(
               captureWorkerActive!.workspaceId = targetWorkspaceId;
               reply = 0;
               if (isScopeAdmitted(live.dataRoot, 'workspace', targetWorkspaceId)) {
-                const candidate = live.mutationAdmission.tryFreeze(targetWorkspaceId, () =>
-                  readBlockers({ ...live, workspaceId: targetWorkspaceId, operation: 'capture' })
+                const candidate = getControlStoreWorkerClient().tryFreezeWorkspace(
+                  live.dataRoot,
+                  targetWorkspaceId,
+                  () =>
+                    readBlockers({ ...live, workspaceId: targetWorkspaceId, operation: 'capture' })
                 );
                 if (candidate.status === 'frozen') {
                   candidate.release();
@@ -1860,7 +1864,11 @@ async function runWorkspaceCapture(
                   input.purpose !== 'move' ||
                   !live.actor ||
                   !captureFreeze ||
-                  !live.mutationAdmission.ownsFreeze(targetWorkspaceId, captureFreeze)
+                  !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+                    live.dataRoot,
+                    targetWorkspaceId,
+                    captureFreeze
+                  )
                 )
                   refuse('recovery-required');
               };
@@ -1868,7 +1876,7 @@ async function runWorkspaceCapture(
               const scope = nativeProductScope(live.dataRoot, { kind: 'server' });
               if (live.coreDb.scope !== 'core' || live.coreDb.sqlite.name !== scope.path)
                 refuse('recovery-required');
-              const client = getControlStoreWorkerClient(live.mutationAdmission);
+              const client = getControlStoreWorkerClient();
               const database = `core:${scope.path}`;
               await client.open({
                 database,
@@ -1911,17 +1919,26 @@ async function runWorkspaceCapture(
                 live.currentAuthority?.();
                 if (
                   live.freezeOwner &&
-                  !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
+                  !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+                    live.dataRoot,
+                    targetWorkspaceId,
+                    live.freezeOwner
+                  )
                 )
                   refuse('recovery-required');
               }
               if (value.phase === 'freeze') {
-                live.store.setWorkspaceMutationAdmission(live.mutationAdmission);
+                const storeRoot = live.store.getDataRoot();
+                if (!storeRoot || resolve(storeRoot) !== resolve(live.dataRoot))
+                  throw new Error('Store Workspace mutations must use their native scope owner.');
                 // Freeze closes admission synchronously; the existing drain rendezvous
                 // joins admitted preparation and native ACKs before the Worker can cut.
                 drained = (async () => {
                   let hold: Promise<() => void> | null = null;
-                  const wasClosed = live.mutationAdmission.isClosed(targetWorkspaceId);
+                  const wasClosed = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+                    live.dataRoot,
+                    targetWorkspaceId
+                  );
                   const workspaceBlockers = (): readonly WorkspaceBlocker[] =>
                     readBlockers({
                       ...live,
@@ -1943,8 +1960,7 @@ async function runWorkspaceCapture(
                     if (blockers.length) return blockers;
                     nativeCaptureClient = getControlStoreWorkerClient();
                     hold = nativeCaptureClient.tryPauseForWorkspaceCapture(
-                      `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`,
-                      live.mutationAdmission
+                      `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`
                     );
                     return hold
                       ? []
@@ -1974,7 +1990,8 @@ async function runWorkspaceCapture(
                     const priorBlockers = workspaceBlockers();
                     admission = priorBlockers.length
                       ? { status: 'blocked', blockers: priorBlockers }
-                      : await live.mutationAdmission.tryFreezeAfterDrain(
+                      : await getControlStoreWorkerClient().tryFreezeWorkspaceAfterDrain(
+                          live.dataRoot,
                           targetWorkspaceId,
                           async () => {
                             const blockers = workspaceBlockers();
@@ -1986,7 +2003,8 @@ async function runWorkspaceCapture(
                           captureBlockers
                         );
                   } else {
-                    admission = live.mutationAdmission.tryFreeze(
+                    admission = getControlStoreWorkerClient().tryFreezeWorkspace(
+                      live.dataRoot,
                       targetWorkspaceId,
                       captureBlockers
                     );
@@ -2030,7 +2048,11 @@ async function runWorkspaceCapture(
                 live.currentAuthority?.();
                 if (
                   live.freezeOwner &&
-                  !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner)
+                  !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+                    live.dataRoot,
+                    targetWorkspaceId,
+                    live.freezeOwner
+                  )
                 )
                   refuse('recovery-required');
               }
@@ -2056,7 +2078,7 @@ async function runWorkspaceCapture(
               if (value.phase === 'finish' && input.purpose === 'backup' && !live.freezeOwner) {
                 // The fresh capture released its freeze at cut. Reuse the native
                 // first-terminal owner after the Worker verified and published its seal.
-                const client = getControlStoreWorkerClient(live.mutationAdmission);
+                const client = getControlStoreWorkerClient();
                 const scope = nativeProductScope(live.dataRoot, {
                   kind: 'workspace',
                   workspaceId: targetWorkspaceId,
@@ -2189,7 +2211,11 @@ async function runWorkspaceCapture(
               captureFreeze.release();
             else if (
               !cleanupFailure &&
-              live.mutationAdmission.ownsFreeze(targetWorkspaceId, captureFreeze)
+              getControlStoreWorkerClient().ownsWorkspaceFreeze(
+                live.dataRoot,
+                targetWorkspaceId,
+                captureFreeze
+              )
             ) {
               // The original capture Worker has exited. Preserve exclusion, but let the exact
               // retained capture rejoin it for an explicit finish or abandon decision.
@@ -2198,9 +2224,13 @@ async function runWorkspaceCapture(
                 id: targetWorkspaceId,
                 check: 'recovery',
               });
-              live.mutationAdmission.restoreRecoveryClosed(targetWorkspaceId, {
-                captureId: input.backupId,
-              });
+              getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(
+                live.dataRoot,
+                targetWorkspaceId,
+                {
+                  captureId: input.backupId,
+                }
+              );
             }
           } finally {
             retained.sqlite.close();
@@ -2224,7 +2254,14 @@ async function runWorkspaceCapture(
     authorityError ??= cleanupFailure;
   }
   if (authorityError) throw authorityError;
-  if (live.freezeOwner && !live.mutationAdmission.ownsFreeze(targetWorkspaceId, live.freezeOwner))
+  if (
+    live.freezeOwner &&
+    !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+      live.dataRoot,
+      targetWorkspaceId,
+      live.freezeOwner
+    )
+  )
     refuse('recovery-required');
   if (result === null) return undefined;
   if (!result) refuse('recovery-required');
@@ -3026,10 +3063,10 @@ export function workspaceSnapshotOperationPolicy(
   dependencies: OperationInvocationDependencies,
   context: AdmittedOperationContext
 ) {
-  const { coreDb, dataRoot, fileAdmission, store, workspaceMutationAdmission } = dependencies;
+  const { coreDb, dataRoot, fileAdmission, store } = dependencies;
   if (!coreDb)
     throw new OperationError('recovery_required', 'Administrator authority is unavailable.', 503);
-  if (!dataRoot || !fileAdmission || !store || !workspaceMutationAdmission)
+  if (!dataRoot || !fileAdmission || !store)
     throw new OperationError(
       'operation_storage_unavailable',
       'Workspace snapshot storage is unavailable.',
@@ -3071,7 +3108,6 @@ export function workspaceSnapshotOperationPolicy(
     coreDb,
     dataRoot,
     store,
-    mutationAdmission: workspaceMutationAdmission,
     actor: publicOperationActor(context),
     currentAuthority,
     verification: {
@@ -3096,7 +3132,10 @@ function workspaceSnapshotLocalSource(
     dataRoot: owned.dataRoot,
     source: { kind: 'local-snapshot' as const, ...input },
     acquireSource: () => {
-      let release = owned.mutationAdmission.enter(input.workspaceId);
+      let release = getControlStoreWorkerClient().enterWorkspaceMutation(
+        owned.dataRoot,
+        input.workspaceId
+      );
       if (!release) {
         // A finished MOVE retains its exact source exclusion while supplying the sealed bundle.
         owned.currentAuthority();
@@ -3128,7 +3167,6 @@ function workspaceSnapshotLocalSource(
           owned.coreDb,
           input.workspaceId,
           input.backupId,
-          owned.mutationAdmission,
           () =>
             readWorkspaceRecoveryBlockers(
               { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
@@ -3174,7 +3212,8 @@ export async function inspectWorkspaceSnapshot(
     owned.currentAuthority();
     if (
       freeze &&
-      !owned.mutationAdmission.ownsRecoveryOrigin(
+      !getControlStoreWorkerClient().ownsWorkspaceRecoveryOrigin(
+        owned.dataRoot,
         input.workspaceId,
         freeze,
         captureRecoveryOrigin(owned.coreDb, input.workspaceId, input.backupId)

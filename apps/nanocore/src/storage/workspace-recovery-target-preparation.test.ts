@@ -211,21 +211,26 @@ async function closeCanonicalAtBoundary(
   const binding = bindWorkspaceRecoveryNativeOwner(
     f.owner.core,
     owned,
-    f.owner.native.gate,
     f.owner.native.freeze
   ).canonical;
   if (!binding) throw new Error('The existing canonical recovery owner is required.');
-  const client = getControlStoreWorkerClient(f.owner.native.gate);
+  const client = getControlStoreWorkerClient();
   await client.open(binding.binding.command, binding);
   currentAuthority();
   await client.close(binding.binding.command.database, binding);
   currentAuthority();
-  expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(true);
+  expect(
+    getControlStoreWorkerClient().ownsWorkspaceFreeze(
+      f.owner.core.dataRoot,
+      f.input.workspaceId,
+      f.owner.native.freeze
+    )
+  ).toBe(true);
 }
 
 /** A real candidate failure leaves the original prepared row without inventing recovery state. */
 async function partialPreparation(f: Awaited<ReturnType<typeof fixture>>) {
-  const client = getControlStoreWorkerClient(f.owner.native.gate);
+  const client = getControlStoreWorkerClient();
   const stopped = new Error('Interrupt actual private candidate preparation.');
   const cleanup = vi.spyOn(client, 'recoveryCleanup').mockRejectedValueOnce(stopped);
   try {
@@ -278,21 +283,23 @@ async function fixture() {
   await shutdownControlStoreWorkerClient();
   const selectedCore = openCoreDb(dataRoot);
   const lock = acquireDataRootLock(dataRoot, { bootId: randomUUID() });
-  const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-  const freeze = gate.tryFreeze(DEMO_WORKSPACE_ID, () => []);
+  const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+    dataRoot,
+    DEMO_WORKSPACE_ID,
+    () => []
+  );
   if (freeze.status !== 'frozen') throw new Error('The actual target freeze was not acquired.');
   owners.push(() => {
     selectedCore.sqlite.close();
     freeze.release();
     lock.release();
   });
-  store.setWorkspaceMutationAdmission(gate);
   const actor = { kind: 'local' as const, userId };
   const owner = {
     core: selectedCore,
     fileAdmission,
     actor,
-    native: { gate, freeze },
+    native: { freeze },
     currentAuthority: () => requireAdministratorOperation(selectedCore, actor, 'api.call'),
   };
   const input = {
@@ -352,19 +359,20 @@ describe('Target admission original preparation boundaries', () => {
     expect(readFileSync(workspaceDbPath(f.dataRoot, f.input.workspaceId))).toEqual(source);
     expect(rows(coreDbPath(f.dataRoot), 'workspace_registry')).toEqual(registry);
     expect(existsSync(admission.candidate_ref)).toBe(true);
-    expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().ownsWorkspaceFreeze(
+        f.owner.core.dataRoot,
+        f.input.workspaceId,
+        f.owner.native.freeze
+      )
+    ).toBe(true);
   }, 120_000);
 
   it('joins the actual unsealed native writer before either partial-abandon Core effect', async () => {
     const f = await fixture();
     const owned = await partialPreparation(f);
-    const binding = bindWorkspaceRecoveryNativeOwner(
-      f.owner.core,
-      owned,
-      f.owner.native.gate,
-      f.owner.native.freeze
-    );
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
+    const binding = bindWorkspaceRecoveryNativeOwner(f.owner.core, owned, f.owner.native.freeze);
+    const client = getControlStoreWorkerClient();
     await client.open(binding.candidate.binding.command, binding.candidate);
     const candidate = inventoryRegularFiles(owned.candidate_ref);
     const closeFailure = new Error('The actual candidate close is unavailable.');
@@ -385,7 +393,13 @@ describe('Target admission original preparation boundaries', () => {
       expect(stages).not.toHaveBeenCalled();
       expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(owned);
       expect(inventoryRegularFiles(owned.candidate_ref)).toEqual(candidate);
-      expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(
+          f.owner.core.dataRoot,
+          f.input.workspaceId,
+          f.owner.native.freeze
+        )
+      ).toBe(true);
     } finally {
       closing.mockRestore();
       stages.mockRestore();
@@ -408,7 +422,7 @@ describe('Target admission original preparation boundaries', () => {
         kind,
         gate: gate.buffer as SharedArrayBuffer,
       };
-      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const client = getControlStoreWorkerClient();
       const actual = client.recoveryTargetPreparation.bind(client);
       let nativeFailure: unknown;
       const publication = vi
@@ -472,9 +486,13 @@ describe('Target admission original preparation boundaries', () => {
         expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
           canonical
         );
-        expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(
-          true
-        );
+        expect(
+          getControlStoreWorkerClient().ownsWorkspaceFreeze(
+            f.owner.core.dataRoot,
+            f.input.workspaceId,
+            f.owner.native.freeze
+          )
+        ).toBe(true);
         interception.selected = undefined;
         await shutdownControlStoreWorkerClient();
         expect(inspectWorkspaceRecoveryAtCore(f.owner.core, selection(f))).toMatchObject({
@@ -565,7 +583,7 @@ describe('Target admission original preparation boundaries', () => {
       WHEN json_extract(NEW.control_json,'$.definitionVersion')='core-workspace-recovery/v1' AND json_extract(NEW.control_json,'$.kind')='admit'
       BEGIN SELECT RAISE(ABORT, 'TARGET_PREPARE_LATE_FAULT'); END`);
     f.owner.core.sqlite.pragma('query_only = ON');
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
+    const client = getControlStoreWorkerClient();
     const calls = vi.spyOn(client, 'recoveryTargetPreparation');
     await expect(admitWorkspaceBackupAtCore(f.owner, f.input)).rejects.toBeInstanceOf(Error);
     expect(calls.mock.calls.filter(([, input]) => input.kind === 'prepare')).toHaveLength(1);
@@ -574,7 +592,13 @@ describe('Target admission original preparation boundaries', () => {
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId))).toEqual(
       source
     );
-    expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().ownsWorkspaceFreeze(
+        f.owner.core.dataRoot,
+        f.input.workspaceId,
+        f.owner.native.freeze
+      )
+    ).toBe(true);
     // Already staged private bytes are not falsely described as a filesystem rollback.
     const container = `${f.dataRoot}.workspace-recovery-${f.input.requestId}`;
     expect(existsSync(join(container, 'workspaces', f.input.workspaceId))).toBe(true);
@@ -595,7 +619,7 @@ describe('Target admission original preparation boundaries', () => {
         AND json_extract(NEW.control_json,'$.authorityRefs[1]')='1'
       BEGIN SELECT RAISE(ABORT, 'TARGET_PROOF_LATE_FAULT'); END`);
     f.owner.core.sqlite.pragma('query_only = ON');
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
+    const client = getControlStoreWorkerClient();
     const actual = client.recoveryTargetPreparation.bind(client);
     let beforeProof: ReturnType<typeof readRecoveryExecution>;
     const calls = vi
@@ -655,7 +679,7 @@ describe('Target admission original preparation boundaries', () => {
         BEGIN SELECT RAISE(ABORT, 'TARGET_ABANDON_LATE_FAULT'); END`
       );
       f.owner.core.sqlite.pragma('query_only = ON');
-      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const client = getControlStoreWorkerClient();
       const actual = client.recoveryTargetPreparation.bind(client);
       const publication = vi
         .spyOn(client, 'recoveryTargetPreparation')
@@ -768,7 +792,7 @@ describe('Target admission original preparation boundaries', () => {
         actor,
         currentAuthority: () => requireAdministratorOperation(f.owner.core, actor, 'api.call'),
       };
-      const client = getControlStoreWorkerClient(owner.native.gate);
+      const client = getControlStoreWorkerClient();
       const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
       const database = `core:${scope.path}`;
       const actual = client.recoveryTargetPreparation.bind(client);
@@ -867,7 +891,7 @@ describe('Target admission original preparation boundaries', () => {
     'refuses actual native immutable input with %s before creating admission authority',
     async (fault) => {
       const f = await fixture();
-      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const client = getControlStoreWorkerClient();
       const actual = client.recoveryTargetPreparation.bind(client);
       const container = join(f.dataRoot, 'server/evidence/backend');
       const displaced = `${container}-retained`;
@@ -941,7 +965,7 @@ describe('Target admission original preparation boundaries', () => {
 
   it('transports a scaled proof larger than 64 MiB through the real immutable file and native SQL owner', async () => {
     const f = await fixture();
-    const client = getControlStoreWorkerClient(f.owner.native.gate);
+    const client = getControlStoreWorkerClient();
     const actual = client.recoveryTargetPreparation.bind(client);
     const stopped = new Error('Observe scaled native transport before candidate preparation.');
     let expectedDigest = '';
@@ -1027,16 +1051,33 @@ describe('ORACLE S6 exact recovery authority', () => {
       expect(original).toMatchObject({ state: 'prepared', revision: 1, purpose: 'backup' });
       // Boot recovery follows the prior live owner's end, not a second same-root gate.
       f.owner.native.freeze.release();
-      expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(
-        false
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(
+          f.owner.core.dataRoot,
+          f.input.workspaceId,
+          f.owner.native.freeze
+        )
+      ).toBe(false);
+      const closedBeforeDisposal = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        f.dataRoot,
+        f.input.workspaceId,
+        'capture'
       );
       await shutdownControlStoreWorkerClient();
       const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
       const privateCandidate = inventoryRegularFiles(original.candidate_ref);
-      const bootGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-      expect(bootGate).toBe(f.owner.native.gate);
-      restoreWorkspaceRecoveryAdmission(f.owner.core, bootGate);
-      expect(bootGate.isClosed(f.input.workspaceId)).toBe(true);
+      // The physical Root keeps its one native scope across host disposal.
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(
+          f.dataRoot,
+          f.input.workspaceId,
+          'capture'
+        )
+      ).toBe(closedBeforeDisposal);
+      restoreWorkspaceRecoveryAdmission(f.owner.core);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.input.workspaceId)
+      ).toBe(true);
       expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
       const changed = structuredClone(original);
       if (field === 'request') Object.assign(changed, { admission_id: randomUUID() });
@@ -1049,16 +1090,16 @@ describe('ORACLE S6 exact recovery authority', () => {
       if (field === 'proof')
         Object.assign(changed, { proof: { ...original.proof, candidateDigest: '0'.repeat(64) } });
       const blockers = vi.fn(() => []);
-      expect(() =>
-        resumeWorkspaceRecoveryOwner(f.owner.core, changed, bootGate, blockers)
-      ).toThrow();
+      expect(() => resumeWorkspaceRecoveryOwner(f.owner.core, changed, blockers)).toThrow();
       expect(blockers).not.toHaveBeenCalled();
-      expect(bootGate.isClosed(f.input.workspaceId)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.input.workspaceId)
+      ).toBe(true);
       expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(original);
       expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
       // A positive control on the SAME boot state proves rejection was exactness, not an
       // incapable fixture, missing scope failure, or a gate that can never resume.
-      const resumed = resumeWorkspaceRecoveryOwner(f.owner.core, original, bootGate, blockers);
+      const resumed = resumeWorkspaceRecoveryOwner(f.owner.core, original, blockers);
       expect(resumed.status).toBe('frozen');
       expect(blockers).toHaveBeenCalledOnce();
       if (resumed.status === 'frozen') resumed.release();
@@ -1086,12 +1127,11 @@ describe('ORACLE S6 exact recovery authority', () => {
       const bindings = bindWorkspaceRecoveryNativeOwner(
         f.owner.core,
         original,
-        f.owner.native.gate,
         f.owner.native.freeze
       );
       const binding = bindings[selected];
       if (!binding) throw new Error('The real selected physical binding is missing.');
-      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const client = getControlStoreWorkerClient();
       await client.open(binding.binding.command, binding);
       await client.close(binding.binding.command.database, binding);
       const path = binding.binding.path;
@@ -1106,9 +1146,13 @@ describe('ORACLE S6 exact recovery authority', () => {
         await expect(client.open(binding.binding.command, binding)).rejects.toBeInstanceOf(Error);
         expect(readFileSync(path).equals(bytes)).toBe(true);
         expect(readRecoveryExecution(f.owner.core, f.input.requestId)).toEqual(original);
-        expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(
-          true
-        );
+        expect(
+          getControlStoreWorkerClient().ownsWorkspaceFreeze(
+            f.owner.core.dataRoot,
+            f.input.workspaceId,
+            f.owner.native.freeze
+          )
+        ).toBe(true);
         expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
       } finally {
         rmSync(path);
@@ -1129,11 +1173,28 @@ describe('ORACLE S6 exact recovery authority', () => {
     ).rejects.toBe(stop);
     const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
     f.owner.native.freeze.release();
-    expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(false);
+    expect(
+      getControlStoreWorkerClient().ownsWorkspaceFreeze(
+        f.owner.core.dataRoot,
+        f.input.workspaceId,
+        f.owner.native.freeze
+      )
+    ).toBe(false);
+    const closedBeforeDisposal = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+      f.owner.core.dataRoot,
+      f.input.workspaceId,
+      'capture'
+    );
     await shutdownControlStoreWorkerClient();
-    const gate = getControlStoreWorkerClient().workspaceMutations(f.owner.core.dataRoot);
-    expect(gate).toBe(f.owner.native.gate);
-    restoreWorkspaceRecoveryAdmission(f.owner.core, gate);
+    // The physical Root keeps its one native scope across host disposal.
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        f.owner.core.dataRoot,
+        f.input.workspaceId,
+        'capture'
+      )
+    ).toBe(closedBeforeDisposal);
+    restoreWorkspaceRecoveryAdmission(f.owner.core);
     const origin = {
       admissionId: original.admission_id,
       revision: original.revision,
@@ -1145,7 +1206,14 @@ describe('ORACLE S6 exact recovery authority', () => {
       { ...origin, revision: origin.revision + 1 },
       { ...origin, candidateRef: `${origin.candidateRef}-other` },
     ])
-      expect(gate.tryResumeRecovery(f.input.workspaceId, changed, inspect)).toEqual({
+      expect(
+        getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+          f.owner.core.dataRoot,
+          f.input.workspaceId,
+          changed,
+          inspect
+        )
+      ).toEqual({
         status: 'busy',
       });
     expect(inspect).not.toHaveBeenCalled();
@@ -1154,12 +1222,18 @@ describe('ORACLE S6 exact recovery authority', () => {
       reason: 'unavailable' as const,
       actions: [],
     };
-    expect(resumeWorkspaceRecoveryOwner(f.owner.core, original, gate, () => [unavailable])).toEqual(
-      { status: 'blocked', blockers: [unavailable] }
-    );
-    expect(gate.isClosed(f.input.workspaceId)).toBe(true);
+    expect(resumeWorkspaceRecoveryOwner(f.owner.core, original, () => [unavailable])).toEqual({
+      status: 'blocked',
+      blockers: [unavailable],
+    });
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        f.owner.core.dataRoot,
+        f.input.workspaceId
+      )
+    ).toBe(true);
     expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
-    const exact = resumeWorkspaceRecoveryOwner(f.owner.core, original, gate, inspect);
+    const exact = resumeWorkspaceRecoveryOwner(f.owner.core, original, inspect);
     expect(exact.status).toBe('frozen');
     expect(inspect).toHaveBeenCalledOnce();
     if (exact.status === 'frozen') exact.release();

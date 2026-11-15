@@ -725,7 +725,6 @@ async function fixture() {
     repositoryWorkspaceDb: (id) => createTestWorkspaceDb(root, id),
     runtimeConfigManager: manager,
     policyInterception: new PolicyInterception(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(root),
     inflightCommands: new WeakMap(),
     turnExecutor: placement as TurnExecutor,
   });

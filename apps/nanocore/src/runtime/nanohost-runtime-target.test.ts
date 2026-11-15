@@ -572,7 +572,6 @@ function evaluateRuntimeTargetBootFence(coreDb: CoreDb) {
   const bindings = {
     coreDb,
     dataRoot: coreDb.dataRoot,
-    workspaceMutationAdmission: {},
     requireBootValue: (value: unknown) => value,
     restoreWorkspaceDeletionMutationAdmission: () => undefined,
     fenceNanoHostRuntimeTargetAfterRestart: nativeFence,

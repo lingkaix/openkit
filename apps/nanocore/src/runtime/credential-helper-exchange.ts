@@ -118,7 +118,6 @@ export function createCredentialHelperHandler(input: {
         !workspaceDb ||
         !operations.store ||
         !vault ||
-        !operations.workspaceMutationAdmission ||
         (!operations.readRuntimePolicy && !operations.runtimeConfigManager)
       )
         throw new OperationError(

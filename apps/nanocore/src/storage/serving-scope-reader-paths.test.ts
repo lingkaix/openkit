@@ -36,10 +36,7 @@ import { registerWorkerMcpRoutes } from '../worker-mcp-routes.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { bindCoreSqlite, openSupportedScopeReadOnlySqlite, openWorkspaceReadDb } from './db.js';
 import { coreDbPath, workspaceDbPath } from './fs-layout.js';
 import { readWorkObservations } from './work-observations.js';
@@ -222,7 +219,6 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
   const aep = listExportableAgentEnvironmentPackageSnapshots(db, f.workspace.id)[0]!.snapshot;
   const gateway = createDefaultWorkerMcpGateway(f.coreDb);
   const app = new Hono();
-  const admission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   const runtime = createInMemoryRuntimeConfigSnapshot({ dataRoot: f.dataRoot });
   registerWorkerMcpRoutes({
     app,
@@ -230,7 +226,6 @@ it('keeps cold remote MCP and built-in Tool serving opens read-only while retain
     store: f.store,
     runtimeConfig: () => runtime,
     workerMcpGateway: gateway,
-    workspaceMutationAdmission: admission,
     // Existing fixture boundary supplies an authenticated outside AEP; every durable/current
     // Turn, Workspace, policy and capability predicate remains in the actual Tool route.
     workerControlGateway: {

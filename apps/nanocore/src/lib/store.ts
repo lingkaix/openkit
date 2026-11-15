@@ -31,7 +31,6 @@ import {
   readWorkspaceNotebookSelection,
   type WorkspaceNotebookSelection,
 } from '../knowledge/notebook-workspace-selection.js';
-import { bindMcpCaptureAdmission } from '../runtime/worker-mcp-capture.js';
 import { prepareWorkspaceKnowledgeProposal } from '../storage/control-store-knowledge.js';
 import {
   type ControlKnowledgeHead,
@@ -42,10 +41,7 @@ import {
   controlKnowledgeReviewStatement,
   readControlKnowledgeProposal,
 } from '../storage/control-store-knowledge-heads.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../storage/control-store-worker-client.js';
+import type { WorkspaceFrozenAdmission } from '../storage/control-store-worker-client.js';
 import { readImmutableContentBytes } from '../storage/immutable-content-read.js';
 import {
   ActorRefReaderSchema,
@@ -1157,12 +1153,6 @@ export class FsStore {
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private pendingRequestServices: PendingAdmissionDependencies | null = null;
   private pendingWakeDepth = 0;
-  private inMemoryMutationAdmission?: WorkspaceMutationAdmission;
-  private get workspaceMutationAdmission(): WorkspaceMutationAdmission | undefined {
-    return this.dataRoot
-      ? getControlStoreWorkerClient().workspaceMutations(this.dataRoot)
-      : this.inMemoryMutationAdmission;
-  }
   private readonly dataRoot: string | null;
   /** A request-scoped existing owner binding; never an owned connection or a second Store. */
   private readonly borrowedProductScope?: NativeProductScope;
@@ -2822,8 +2812,10 @@ export class FsStore {
   /** Revalidates and installs one restored target while its existing recovery freeze stays closed. */
   public reloadRecoveredWorkspace(workspaceId: string, freeze: WorkspaceFrozenAdmission): void {
     WorkspaceIdSchema.parse(workspaceId);
-    const gate = this.workspaceMutationAdmission;
-    if (!this.dataRoot || !gate?.ownsFreeze(workspaceId, freeze))
+    if (
+      !this.dataRoot ||
+      !getControlStoreWorkerClient().ownsWorkspaceFreeze(this.dataRoot, workspaceId, freeze)
+    )
       throw new Error('Workspace recovery freeze is not current.');
     const root = join(this.dataRoot, 'workspaces', workspaceId);
     closeWorkspaceProductReadHandles(root);
@@ -2889,7 +2881,7 @@ export class FsStore {
     } finally {
       db.sqlite.close();
     }
-    if (!gate.ownsFreeze(workspaceId, freeze))
+    if (!getControlStoreWorkerClient().ownsWorkspaceFreeze(this.dataRoot, workspaceId, freeze))
       throw new Error('Workspace recovery freeze is not current.');
     this.evictWorkspaceProjection(workspaceId, root);
     this.installWorkspaceProjection(records, versions);
@@ -2902,7 +2894,8 @@ export class FsStore {
     freeze: WorkspaceFrozenAdmission
   ): void {
     if (
-      !this.workspaceMutationAdmission?.ownsFreeze(workspaceId, freeze) ||
+      !this.dataRoot ||
+      !getControlStoreWorkerClient().ownsWorkspaceFreeze(this.dataRoot, workspaceId, freeze) ||
       !this.workspaces.has(workspaceId)
     )
       throw new Error('Workspace recovery freeze is not current.');
@@ -3258,24 +3251,14 @@ export class FsStore {
     }));
   }
 
-  /** Joins every native publisher to the same application-owned Workspace gate, including background admissions. */
-  public setWorkspaceMutationAdmission(admission: WorkspaceMutationAdmission): void {
-    if (this.workspaceMutationAdmission && this.workspaceMutationAdmission !== admission)
-      throw new Error('Store already has a different Workspace mutation owner.');
-    if (this.dataRoot) {
-      if (getControlStoreWorkerClient().workspaceMutations(this.dataRoot) !== admission)
-        throw new Error('Store Workspace mutations must use their native scope owner.');
-      bindMcpCaptureAdmission(this.dataRoot, admission);
-    }
-    if (!this.dataRoot) this.inMemoryMutationAdmission = admission;
-  }
-
   /** Acquires the existing gate for a direct producer; this creates no separate writer registry. */
   public enterWorkspaceMutation(
     workspaceId: string,
     exclusion: 'ordinary' | 'capture' = 'ordinary'
   ): () => void {
-    const release = this.workspaceMutationAdmission?.enter(workspaceId, exclusion);
+    const release = this.dataRoot
+      ? getControlStoreWorkerClient().enterWorkspaceMutation(this.dataRoot, workspaceId, exclusion)
+      : undefined;
     if (release === null)
       throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
         details: {

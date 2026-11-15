@@ -8,10 +8,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { FsStore } from '../lib/store.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -130,7 +127,6 @@ async function fixture() {
   const actor = { kind: 'user' as const, id: userId };
   const requestActor = { kind: 'local' as const, userId };
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const access = { store, coreDb, actor, requestActor };
   const dependencies = {
     store,
@@ -151,7 +147,6 @@ async function fixture() {
         requestActor,
         actor,
         runtimeConfigManager: { current: () => snapshot },
-        workspaceMutationAdmission,
       }),
   };
   onTestFinished(async () => {

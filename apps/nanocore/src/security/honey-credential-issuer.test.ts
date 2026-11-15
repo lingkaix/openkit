@@ -25,10 +25,7 @@ import {
 import { PolicyInterception } from '../policy/interception.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import * as dispatch from '../runtime/scheduler-dispatch-loop.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   createTestAgentSetup,
   createTestGatewayConfig,
@@ -57,8 +54,6 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
   const userId = await ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot });
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
-  const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-  store.setWorkspaceMutationAdmission(mutation);
   const agentSessionId = allocateEntityId('as');
   const grantId = allocateEntityId('grant');
   const referenceId = allocateEntityId('vault');
@@ -123,7 +118,6 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
       readRuntimeConfig,
       policyInterception: () => interception,
       vaultBackend: () => vault.backend(),
-      workspaceMutationAdmission: mutation,
     });
     admitTestNativeEnvironment(coreDb, setup.manifest);
     // The existing scheduler ID factory allocates only an identity; all preparation,
@@ -139,7 +133,6 @@ it('issues a zero-grant ordinary inbound identity for the exact selected native 
       fileAdmission: native.fileAdmission,
       turnExecutor: native.executor,
       workerControlGateway: native.workerControlGateway,
-      workspaceMutationAdmission: mutation,
       runtimeConfigManager: manager,
       policyInterception: interception,
       vaultUnlockState: vault,

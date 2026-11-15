@@ -72,7 +72,6 @@ import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
 } from './control-store-worker-client.js';
 import {
   inventoryRegularFiles,
@@ -804,19 +803,17 @@ async function readmissionFixture(
   readmissionCleanups.push(() => core.sqlite.close());
   const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
   readmissionCleanups.push(() => lock.release());
-  const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-  restoreWorkspaceRecoveryAdmission(core, gate);
-  f.store.setWorkspaceMutationAdmission(gate);
+  restoreWorkspaceRecoveryAdmission(core);
   const prepared = readRecoveryExecution(core, f.requestId)!;
   expect(prepared.state).toBe('prepared');
-  const freeze = resumeWorkspaceRecoveryOwner(core, prepared, gate, () => []);
+  const freeze = resumeWorkspaceRecoveryOwner(core, prepared, () => []);
   if (freeze.status !== 'frozen') throw new Error('Expected the boot-restored recovery freeze.');
   readmissionCleanups.push(() => freeze.release());
   const owner = {
     core,
     actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
     fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
-    native: { gate, freeze },
+    native: { freeze },
   };
   const activation = {
     requestId: f.requestId,
@@ -831,7 +828,6 @@ async function readmissionFixture(
     runtimeConfigManager,
     configPath,
     input,
-    gate,
     freeze,
     owner,
     activation,
@@ -851,7 +847,7 @@ describe('D0-2 same-deployment restore', () => {
       workspaceId,
       gate: gate.buffer as SharedArrayBuffer,
     };
-    const client = getControlStoreWorkerClient(f.gate);
+    const client = getControlStoreWorkerClient();
     const publish = client.recoveryTargetRegistration.bind(client);
     let nativeFailure: unknown;
     const publication = vi
@@ -922,7 +918,9 @@ describe('D0-2 same-deployment restore', () => {
       expect(registrationInterception.replied).toBe(false);
       expect(tuple()).toEqual(committed);
       expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
-      expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+      ).toBe(true);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       registrationInterception.selected = undefined;
       await shutdownControlStoreWorkerClient();
@@ -933,7 +931,7 @@ describe('D0-2 same-deployment restore', () => {
         selection: selected.selection,
       });
       const replayPublication = vi.spyOn(
-        getControlStoreWorkerClient(f.gate),
+        getControlStoreWorkerClient(),
         'recoveryTargetRegistration'
       );
       try {
@@ -984,7 +982,7 @@ describe('D0-2 same-deployment restore', () => {
         currentAuthority: () => requireAdministratorOperation(core, actor, 'api.call'),
       };
       owner.currentAuthority();
-      const client = getControlStoreWorkerClient(f.gate);
+      const client = getControlStoreWorkerClient();
       const scope = nativeProductScope(f.dataRoot, { kind: 'server' });
       const database = `core:${scope.path}`;
       await client.open({
@@ -1204,7 +1202,7 @@ describe('D0-2 same-deployment restore', () => {
         futureReportDescription: { label: 'Original retained report description' },
       });
       expect(installed.proof).toEqual(injected);
-      const client = getControlStoreWorkerClient(f.owner.native.gate);
+      const client = getControlStoreWorkerClient();
       const publish = client.recoveryTargetRegistration.bind(client);
       let selectedCalls = 0;
       let nativeRefusal: unknown;
@@ -1307,11 +1305,7 @@ describe('D0-2 same-deployment restore', () => {
       const core = openCoreDb(current.dataRoot);
       try {
         const instant = new Date(Date.now() - 30 * 60_000).toISOString();
-        const schedules = new AutomationStore(
-          core,
-          getControlStoreWorkerClient().workspaceMutations(current.dataRoot),
-          () => instant
-        );
+        const schedules = new AutomationStore(core, () => instant);
         const schedule = await schedules.createAutomation(current.ownerId, {
           name: 'Current overdue definition',
           workspaceId,
@@ -1393,7 +1387,9 @@ describe('D0-2 same-deployment restore', () => {
     expect(readRecoveryExecution(core, f.requestId)).toEqual(prepared);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.sibling.id))).toEqual(sibling);
-    expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+    ).toBe(true);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
     core.sqlite.exec('DROP TRIGGER restore_terminal_failure');
     core.sqlite.pragma('query_only = ON');
@@ -1495,7 +1491,9 @@ describe('D0-2 same-deployment restore', () => {
     expect(rows(corePath, 'workspace_members')).toEqual(members);
     expect(rows(workspaceDbPath(f.dataRoot, f.sibling.id), 'control_workspaces')).toEqual(sibling);
     expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(placed);
-    expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+    ).toBe(true);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
     await expect(
       finishWorkspaceRecoveryAtCore(f.owner, { dataRoot: f.dataRoot, workspaceId, selection })
@@ -1509,17 +1507,20 @@ describe('D0-2 same-deployment restore', () => {
     readmissionCleanups.push(() => core.sqlite.close());
     const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
     readmissionCleanups.push(() => lock.release());
-    const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-    const freeze = gate.tryFreeze(workspaceId, () => []);
+    const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     if (freeze.status !== 'frozen') throw new Error('Expected the original target freeze.');
     readmissionCleanups.push(() => freeze.release());
     const owner = {
       core,
       actor: { kind: 'local' as const, userId: ensureLocalUser(core) },
       fileAdmission: new FileStorageAdmission(f.dataRoot, () => 128n * 1024n * 1024n),
-      native: { gate, freeze },
+      native: { freeze },
     };
-    const client = getControlStoreWorkerClient(gate);
+    const client = getControlStoreWorkerClient();
     const preparationFailure = new Error('Interrupted candidate preparation.');
     const closeFailure = new Error('Candidate native close is unavailable.');
     let candidateDatabase = '';
@@ -1572,7 +1573,9 @@ describe('D0-2 same-deployment restore', () => {
       expect(readRecoveryExecution(core, f.requestId)).toEqual(prepared);
       expect(inventoryRegularFiles(prepared.candidate_ref)).toEqual(candidateBefore);
       expect(closed).toBe(false);
-      expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, freeze)
+      ).toBe(true);
       refuseClose = false;
       await expect(abandonWorkspaceRecoveryAtCore(owner, selected)).resolves.toMatchObject({
         disposition: 'abandoned',
@@ -1630,7 +1633,9 @@ describe('D0-2 same-deployment restore', () => {
           ...f.activation,
           currentAuthority: () => {
             checkedAuthority = true;
-            expect(f.gate.enter(workspaceId)).toBeNull();
+            expect(
+              getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+            ).toBeNull();
             expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
           },
         })
@@ -1666,7 +1671,9 @@ describe('D0-2 same-deployment restore', () => {
     });
     const assertClosed = () => {
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-      expect(f.gate.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+      ).toBeNull();
       expect(() => f.store.getWorkspace(workspaceId)).toThrow();
     };
     // Same-Deployment Restore step 5 requires actual canonical Store validation after abandon.
@@ -1722,7 +1729,9 @@ describe('D0-2 same-deployment restore', () => {
       ...f.activation,
       currentAuthority: () => {
         checkedAuthority = true;
-        expect(f.gate.enter(workspaceId)).toBeNull();
+        expect(
+          getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+        ).toBeNull();
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       },
     });
@@ -1746,7 +1755,7 @@ describe('D0-2 same-deployment restore', () => {
     ).toEqual(configBefore.workspaceConfigs.find((entry) => entry.workspaceId === f.sibling.id));
     expect(f.store.getWorkspace(f.sibling.id)).toEqual(siblingBefore);
     f.freeze.release();
-    const ordinary = f.gate.enter(workspaceId);
+    const ordinary = getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId);
     expect(ordinary).toBeTypeOf('function');
     ordinary!();
     await expect(
@@ -1761,7 +1770,9 @@ describe('D0-2 same-deployment restore', () => {
     const f = await readmissionFixture(true);
     const assertClosed = () => {
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-      expect(f.gate.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+      ).toBeNull();
       expect(() => f.store.getWorkspace(workspaceId)).toThrow();
     };
     expect(() => activateWorkspaceRecoveryAtCore(f.owner, f.activation)).toThrow(
@@ -1787,15 +1798,15 @@ describe('D0-2 same-deployment restore', () => {
     expect(() =>
       activateWorkspaceRecoveryAtCore(f.owner, { ...f.activation, requestId: randomUUID() })
     ).toThrow(WorkspaceRecoveryError);
-    const foreignGate = new WorkspaceMutationAdmission();
-    const foreign = foreignGate.tryFreeze(workspaceId, () => []);
+    const foreign = getControlStoreWorkerClient().tryFreezeWorkspace(
+      join(f.dataRoot, 'foreign-native-scope'),
+      workspaceId,
+      () => []
+    );
     if (foreign.status !== 'frozen') throw new Error('Expected the independent foreign freeze.');
     try {
       expect(() =>
-        activateWorkspaceRecoveryAtCore(
-          { ...f.owner, native: { gate: f.gate, freeze: foreign } },
-          f.activation
-        )
+        activateWorkspaceRecoveryAtCore({ ...f.owner, native: { freeze: foreign } }, f.activation)
       ).toThrow(WorkspaceRecoveryError);
     } finally {
       foreign.release();
@@ -1849,13 +1860,16 @@ describe('D0-2 same-deployment restore', () => {
 
   it('prepares an admitted frozen target under the existing root lock without publishing it', async () => {
     const f = await fixture();
-    const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-    const freeze = gate.tryFreeze(workspaceId, () => []);
+    const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     if (freeze.status !== 'frozen') throw new Error('Expected an admitted target freeze.');
     const core = openCoreDb(f.dataRoot);
     const lock = acquireDataRootLock(f.dataRoot, { bootId: randomUUID() });
     try {
-      getControlStoreWorkerClient(gate);
+      getControlStoreWorkerClient();
       let preparedCapacityChecks = 0;
       const owner = {
         core,
@@ -1869,7 +1883,7 @@ describe('D0-2 same-deployment restore', () => {
             return 512n * 1024n * 1024n;
           }
         ),
-        native: { gate, freeze },
+        native: { freeze },
       };
       const input = {
         command: 'restore' as const,
@@ -1908,7 +1922,9 @@ describe('D0-2 same-deployment restore', () => {
       expect(reachedPlacement).toBe(true);
       expect(capacityChecksBeforePlacement).toBeGreaterThan(0);
       expect(await ordinary).toMatchObject({ code: 'workspace_frozen' });
-      expect(gate.ownsFreeze(workspaceId, freeze)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, freeze)
+      ).toBe(true);
       const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned).toMatchObject({ state: 'prepared', workspace_id: workspaceId });
       expect(owned.proof.manifest).toEqual(f.manifest);
@@ -1956,17 +1972,20 @@ describe('D0-2 same-deployment restore', () => {
     try {
       const owned = readRecoveryExecution(core, f.requestId)!;
       expect(owned.state).toBe('prepared');
-      const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-      restoreWorkspaceRecoveryAdmission(core, gate);
+      restoreWorkspaceRecoveryAdmission(core);
       const failures = scopeAdmissionFailures(f.dataRoot);
       expect(failures).toContainEqual({ scope: 'workspace', id: workspaceId, check: 'recovery' });
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       const inspect = vi.fn(() => {
-        expect(gate.enter(workspaceId)).toBeNull();
+        expect(
+          getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+        ).toBeNull();
         return [];
       });
-      expect(gate.tryFreeze(workspaceId, inspect)).toEqual({ status: 'busy' });
-      const client = getControlStoreWorkerClient(gate);
+      expect(
+        getControlStoreWorkerClient().tryFreezeWorkspace(f.dataRoot, workspaceId, inspect)
+      ).toEqual({ status: 'busy' });
+      const client = getControlStoreWorkerClient();
       const scope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId });
       const command = {
         database: `workspace:${scope.path}`,
@@ -1979,40 +1998,41 @@ describe('D0-2 same-deployment restore', () => {
       };
       await expect(client.open(command)).rejects.toMatchObject({ code: 'workspace_frozen' });
       expect(() =>
-        resumeWorkspaceRecoveryOwner(
-          core,
-          { ...owned, revision: owned.revision + 1 },
-          gate,
-          inspect
-        )
+        resumeWorkspaceRecoveryOwner(core, { ...owned, revision: owned.revision + 1 }, inspect)
       ).toThrow(WorkspaceRecoveryError);
       expect(() =>
-        resumeWorkspaceRecoveryOwner(core, { ...owned, admission_id: randomUUID() }, gate, inspect)
+        resumeWorkspaceRecoveryOwner(core, { ...owned, admission_id: randomUUID() }, inspect)
       ).toThrow(WorkspaceRecoveryError);
       expect(inspect).not.toHaveBeenCalled();
-      const resumed = resumeWorkspaceRecoveryOwner(core, owned, gate, inspect);
+      const resumed = resumeWorkspaceRecoveryOwner(core, owned, inspect);
       if (resumed.status !== 'frozen') throw new Error('Expected the exact boot recovery owner.');
-      const native = bindWorkspaceRecoveryNativeOwner(core, owned, gate, resumed);
+      const native = bindWorkspaceRecoveryNativeOwner(core, owned, resumed);
       expect(native.candidate.freeze).toBe(resumed);
       expect(native.canonical?.freeze).toBe(resumed);
       expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       const siblingId = allocateEntityId('ws');
-      const sibling = gate.enter(siblingId);
+      const sibling = getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, siblingId);
       expect(sibling).toBeTypeOf('function');
       sibling!();
       expect(isScopeAdmitted(f.dataRoot, 'workspace', siblingId)).toBe(true);
       resumed.release();
-      expect(gate.ownsFreeze(workspaceId, resumed)).toBe(false);
-      expect(gate.enter(workspaceId)).toBeNull();
-      const retried = resumeWorkspaceRecoveryOwner(core, owned, gate, inspect);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, resumed)
+      ).toBe(false);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+      ).toBeNull();
+      const retried = resumeWorkspaceRecoveryOwner(core, owned, inspect);
       if (retried.status !== 'frozen') throw new Error('Expected an explicit exact-owner retry.');
       resumed.release();
-      expect(gate.ownsFreeze(workspaceId, retried)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, retried)
+      ).toBe(true);
       retried.release();
       // A superseding independent refusal is a negative fault, never recovery authority.
       refuseScope(f.dataRoot, { scope: 'workspace', id: workspaceId, check: 'retired' });
-      expect(() => resumeWorkspaceRecoveryOwner(core, owned, gate, inspect)).toThrow(
+      expect(() => resumeWorkspaceRecoveryOwner(core, owned, inspect)).toThrow(
         WorkspaceRecoveryError
       );
       expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual({
@@ -2020,7 +2040,9 @@ describe('D0-2 same-deployment restore', () => {
         id: workspaceId,
         check: 'retired',
       });
-      expect(gate.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+      ).toBeNull();
       expect(readRecoveryExecution(core, f.requestId)).toEqual(owned);
     } finally {
       core.sqlite.close();
@@ -2055,10 +2077,9 @@ describe('D0-2 same-deployment restore', () => {
     const core = openCoreDb(f.dataRoot);
     const owned = readRecoveryExecution(core, f.requestId)!;
     expect(owned.state).toBe('prepared');
-    const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-    const otherGate = new WorkspaceMutationAdmission();
-    restoreWorkspaceRecoveryAdmission(core, gate);
-    const frozen = gate.tryResumeRecovery(
+    restoreWorkspaceRecoveryAdmission(core);
+    const frozen = getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+      f.dataRoot,
       workspaceId,
       {
         admissionId: owned.admission_id,
@@ -2067,10 +2088,14 @@ describe('D0-2 same-deployment restore', () => {
       },
       () => []
     );
-    const other = otherGate.tryFreeze(workspaceId, () => []);
+    const other = getControlStoreWorkerClient().tryFreezeWorkspace(
+      join(f.dataRoot, 'foreign-native-scope'),
+      workspaceId,
+      () => []
+    );
     if (frozen.status !== 'frozen' || other.status !== 'frozen')
       throw new Error('Expected independent admitted freezes.');
-    const client = getControlStoreWorkerClient(gate);
+    const client = getControlStoreWorkerClient();
     const canonicalScope = nativeProductScope(f.dataRoot, { kind: 'workspace', workspaceId });
     const privateRoot = dirname(dirname(owned.candidate_ref));
     const candidateScope = nativeProductScope(
@@ -2100,7 +2125,7 @@ describe('D0-2 same-deployment restore', () => {
     const threadsBefore = rows(canonicalScope.path, 'control_threads');
     const candidateBefore = rows(candidateScope.path, 'control_workspaces');
     try {
-      const native = bindWorkspaceRecoveryNativeOwner(core, owned, gate, frozen);
+      const native = bindWorkspaceRecoveryNativeOwner(core, owned, frozen);
       if (!native.canonical) throw new Error('Restore must retain its canonical native binding.');
       await client.open(canonicalCommand, native.canonical);
       await client.close(canonicalCommand.database, native.canonical);
@@ -2116,17 +2141,17 @@ describe('D0-2 same-deployment restore', () => {
         code: 'workspace_frozen',
       });
       await expect(client.open(canonicalCommand, native.candidate)).rejects.toBeInstanceOf(Error);
-      const foreign = bindWorkspaceRecoveryNativeOwner(core, owned, otherGate, other);
-      await expect(client.open(candidateCommand, foreign.candidate)).rejects.toBeInstanceOf(Error);
+      // The Core Root names the native scope, so another Root's freeze cannot bind or open the candidate.
+      expect(() => bindWorkspaceRecoveryNativeOwner(core, owned, other)).toThrow(
+        WorkspaceRecoveryError
+      );
+      await expect(
+        client.open(candidateCommand, { freeze: other, binding: native.candidate.binding })
+      ).rejects.toBeInstanceOf(Error);
       expect(() =>
-        bindWorkspaceRecoveryNativeOwner(
-          core,
-          { ...owned, revision: owned.revision + 1 },
-          gate,
-          frozen
-        )
+        bindWorkspaceRecoveryNativeOwner(core, { ...owned, revision: owned.revision + 1 }, frozen)
       ).toThrow(WorkspaceRecoveryError);
-      const replacement = bindWorkspaceRecoveryNativeOwner(core, owned, gate, frozen);
+      const replacement = bindWorkspaceRecoveryNativeOwner(core, owned, frozen);
       await expect(client.open(candidateCommand, native.candidate)).rejects.toBeInstanceOf(Error);
       await client.open(candidateCommand, replacement.candidate);
       const resume = await client.pauseForDataRootBackup(candidateCommand.database);
@@ -2750,11 +2775,7 @@ describe('D0-2 same-deployment restore', () => {
     const f = await fixture(true);
     const core = openCoreDb(f.dataRoot);
     const instant = new Date().toISOString();
-    const schedules = new AutomationStore(
-      core,
-      getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
-      () => instant
-    );
+    const schedules = new AutomationStore(core, () => instant);
     const schedule = await schedules.createAutomation(f.ownerId, {
       name: 'Current automation',
       workspaceId,
@@ -2873,7 +2894,7 @@ describe('Recovery readmission joins bound native Policy publication', () => {
       const sibling = f.store.getWorkspace(f.sibling.id);
       const previous = f.runtimeConfigManager.current();
       await f.runtimeConfigManager.bindNativePolicyPublication(core);
-      const client = getControlStoreWorkerClient(f.gate);
+      const client = getControlStoreWorkerClient();
       const publish = client.runtimePolicyPublication.bind(client);
       expect((await publish(core, { kind: 'inspect' })).state).toBe('active');
       let releaseInspect!: () => void;
@@ -2922,8 +2943,12 @@ describe('Recovery readmission joins bound native Policy publication', () => {
         ).toBe('native-reply-held');
         expect(held).toBe(true);
         expect(settled).toBe(false);
-        expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
-        expect(f.gate.enter(workspaceId)).toBeNull();
+        expect(
+          getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+        ).toBe(true);
+        expect(
+          getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+        ).toBeNull();
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
         expect(() => f.store.getWorkspace(workspaceId)).toThrow();
         expect(f.runtimeConfigManager.current()).toBe(previous);
@@ -2963,7 +2988,10 @@ describe('Recovery readmission joins bound native Policy publication', () => {
             )
           );
           f.freeze.release();
-          const admission = f.gate.enter(workspaceId);
+          const admission = getControlStoreWorkerClient().enterWorkspaceMutation(
+            f.dataRoot,
+            workspaceId
+          );
           expect(admission).toBeTypeOf('function');
           admission!();
         } else {
@@ -2973,10 +3001,14 @@ describe('Recovery readmission joins bound native Policy publication', () => {
           if (result.status !== 'rejected') throw new Error('Recovery unexpectedly completed.');
           expect(result.error).toBeInstanceOf(Error);
           expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-          expect(f.gate.enter(workspaceId)).toBeNull();
+          expect(
+            getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+          ).toBeNull();
           expect(() => f.store.getWorkspace(workspaceId)).toThrow();
           expect(scopeAdmissionFailures(f.dataRoot)).toEqual(failures);
-          expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(fault !== 'released-freeze');
+          expect(
+            getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+          ).toBe(fault !== 'released-freeze');
           if (fault === 'released-freeze') {
             expect(f.runtimeConfigManager.current()).toBe(previous);
           }
@@ -3344,7 +3376,9 @@ describe('Q05 live selected recovery inspection policy', () => {
       expect(existsSync(before.candidate_ref)).toBe(!placed);
       expect(selectedPath === canonical).toBe(placed);
       expect(selectedInode === canonicalBeforeInode).toBe(placed);
-      expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+      ).toBe(true);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       const retained = q05RetainedRows(f.root, selectedPath, 'selected-before');
       const predecessor = !placed
@@ -3463,7 +3497,9 @@ describe('Q05 live selected recovery inspection policy', () => {
           sibling
         );
         retainedRowsVerified = true;
-        expect(f.gate.ownsFreeze(workspaceId, f.freeze)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().ownsWorkspaceFreeze(f.dataRoot, workspaceId, f.freeze)
+        ).toBe(true);
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
         expect(recoveryInspectionObservation.posts).toHaveLength(1);
         expect(recoveryInspectionObservation.replies).toEqual([

@@ -4,7 +4,7 @@ import { isEntityId, WorkspaceIdSchema } from '@openkit/protocol';
 import { syncCanonicalDirectory } from '@openkit/storage';
 import Database from 'better-sqlite3';
 import { configureOwnedSqlite } from '../storage/control-store.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest } from '../storage/data-root-backup.js';
 import type { CoreDb } from '../storage/db.js';
 import { bindWorkspaceSqlite } from '../storage/db.js';
@@ -59,11 +59,27 @@ function captureSealIsAbsent(
   }
 }
 
+/**
+ * Restores registry-owned retirement exclusion before any scoped migration, content load or recovery.
+ * @param input Verified Core authority; its Root owns the native mutation scope.
+ * @throws When retired registry identity cannot be established; no retained Workspace is opened.
+ */
+export function restoreWorkspaceRetirementAdmission(input: { readonly coreDb: CoreDb }): void {
+  const rows = input.coreDb.sqlite
+    .prepare("SELECT workspace_id AS workspaceId FROM workspace_registry WHERE status = 'retired'")
+    .all() as Array<{ workspaceId: string }>;
+  for (const row of rows) {
+    const workspaceId = WorkspaceIdSchema.parse(row.workspaceId);
+    refuseScope(input.coreDb.dataRoot, { scope: 'workspace', id: workspaceId, check: 'retired' });
+    getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+      input.coreDb.dataRoot,
+      workspaceId
+    );
+  }
+}
+
 /** Rebuilds quarantine and the same mutation fence from retained recovery before scoped opens or scanners. */
-export function restoreWorkspaceRecoveryAdmission(
-  core: CoreDb,
-  mutationAdmission?: WorkspaceMutationAdmission
-): void {
+export function restoreWorkspaceRecoveryAdmission(core: CoreDb): void {
   const registered = new Set(
     core.sqlite
       .prepare("SELECT workspace_id FROM workspace_registry WHERE status='active'")
@@ -203,13 +219,18 @@ export function restoreWorkspaceRecoveryAdmission(
   for (const failure of scopeAdmissionFailures(core.dataRoot)) {
     if (failure.scope !== 'workspace' || failure.check === 'index') continue;
     if (opaque.has(failure.id)) {
-      mutationAdmission?.restoreClosed(failure.id, 'capture');
+      getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+        core.dataRoot,
+        failure.id,
+        'capture'
+      );
       continue;
     }
     const owners = unresolved.filter((row) => row.workspace_id === failure.id);
     if (failure.check === 'recovery' && owners.length === 1) {
       const owner = owners[0]!;
-      mutationAdmission?.restoreRecoveryClosed(
+      getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(
+        core.dataRoot,
         failure.id,
         owner.admission_id.startsWith('wsbak_')
           ? { captureId: owner.admission_id }
@@ -224,7 +245,7 @@ export function restoreWorkspaceRecoveryAdmission(
       owners.length === 0 &&
       captureOrigins.has(failure.id)
     ) {
-      mutationAdmission?.restoreRecoveryClosed(failure.id, {
+      getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(core.dataRoot, failure.id, {
         captureId: captureOrigins.get(failure.id)!,
       });
     } else if (failure.check === 'recovery' && owners.length === 0) {
@@ -233,16 +254,30 @@ export function restoreWorkspaceRecoveryAdmission(
       const finished = finishedDeletedRecoveries(failure.id);
       if (finished.length === 1) {
         const owner = finished[0]!;
-        mutationAdmission?.restoreRecoveryClosed(failure.id, {
+        getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(core.dataRoot, failure.id, {
           admissionId: owner.admission_id,
           revision: owner.revision - 1,
           candidateRef: owner.candidate_ref,
         });
-      } else if (!mutationAdmission?.isClosed(failure.id, 'capture'))
-        mutationAdmission?.restoreClosed(failure.id, 'capture');
-    } else if (failure.check === 'recovery' && mutationAdmission?.isClosed(failure.id, 'capture')) {
+      } else if (
+        !getControlStoreWorkerClient().isWorkspaceMutationClosed(
+          core.dataRoot,
+          failure.id,
+          'capture'
+        )
+      )
+        getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+          core.dataRoot,
+          failure.id,
+          'capture'
+        );
+    } else if (
+      failure.check === 'recovery' &&
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(core.dataRoot, failure.id, 'capture')
+    ) {
     } else
-      mutationAdmission?.restoreClosed(
+      getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+        core.dataRoot,
         failure.id,
         failure.check === 'retired' ? 'ordinary' : 'capture'
       );

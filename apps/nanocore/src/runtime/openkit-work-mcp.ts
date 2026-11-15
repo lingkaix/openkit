@@ -165,7 +165,6 @@ export async function dispatchOpenkitWorkTool(
       store: input.store,
       automationStore: input.automationStore,
       turnStartServices: input.turnStartServices,
-      workspaceMutationAdmission: input.automationStore.mutationAdmission,
     });
     const result = await invoke('automation.event-admit', args, {
       kind: 'worker',

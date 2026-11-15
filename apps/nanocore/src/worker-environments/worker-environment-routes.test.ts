@@ -5,10 +5,7 @@ import { Hono } from 'hono';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -53,7 +50,6 @@ async function registerFamilyFixture(input: {
     coreDb,
     store,
     requestStore: () => store,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     workerEnvironmentServices: { operations: input.operations, prepare: input.prepare },
   });
 }

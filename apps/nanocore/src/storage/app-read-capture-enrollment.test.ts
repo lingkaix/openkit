@@ -1,4 +1,3 @@
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 // Independent outside-repository draft. UNRUN / not type-qualified.
@@ -588,7 +587,6 @@ async function exercise(mode: Mode) {
     const parentOpen = requests(`workspace:${workspaceDbPath(dataRoot, workspaceId)}`, 'open');
     expect(parentOpen).toHaveLength(1);
     successful(parentOpen[0]!);
-    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const dependencies = {
       coreDb: core,
       store,
@@ -602,7 +600,6 @@ async function exercise(mode: Mode) {
         coreDb: core,
         store,
         dataRoot,
-        workspaceMutationAdmission: admission,
         repositoryWorkspaceDb: dependencies.repositoryWorkspaceDb,
       }
     );
@@ -669,7 +666,6 @@ async function exercise(mode: Mode) {
           dataRoot,
           coreDb: core!,
           store,
-          mutationAdmission: admission,
           actor,
         },
         workspaceId,

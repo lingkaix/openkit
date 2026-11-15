@@ -589,13 +589,11 @@ it('applies only a reviewed complete schema report and respects an existing exte
   let store = createTestStore({ dataRoot });
   const workspace = await store.createWorkspace('Reviewed schema application');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: userId });
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   let app = createAppWithLocalIdentity({
     mode: 'server',
     coreDb,
     dataRoot,
     store,
-    workspaceMutationAdmission: admission,
   });
   let db = openWorkspaceDb(dataRoot, workspace.id);
   onTestFinished(async () => {
@@ -760,7 +758,11 @@ it('applies only a reviewed complete schema report and respects an existing exte
   const unauthorized = await call('knowledge.schema.apply', reader, applyInput);
   expect(unauthorized.response.status).toBe(403);
 
-  const competing = admission.tryFreeze(workspace.id, () => []);
+  const competing = getControlStoreWorkerClient().tryFreezeWorkspace(
+    dataRoot,
+    workspace.id,
+    () => []
+  );
   expect(competing.status).toBe('frozen');
   if (competing.status !== 'frozen') throw new Error('Expected a real competing freeze.');
   const busy = await call('knowledge.schema.apply', owner, applyInput);
@@ -844,7 +846,6 @@ it('applies only a reviewed complete schema report and respects an existing exte
     coreDb,
     dataRoot,
     store,
-    workspaceMutationAdmission: admission,
   });
   db = openWorkspaceDb(dataRoot, workspace.id);
   const replay = await call('knowledge.schema.apply', owner, applyInput);
@@ -889,7 +890,6 @@ interface NativeSchemaReviewFixtureInput {
 function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
   const { dataRoot, coreDb, userId, workspace, store: appStore } = input;
   const sourceRef = { pin: input.sourcePin, path: input.sourcePath };
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const runtimeConfigManager = createRuntimeConfigManager({
     dataRoot,
     captureCoverage: appStore,
@@ -904,7 +904,6 @@ function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
     coreDb,
     dataRoot,
     store: appStore,
-    workspaceMutationAdmission: admission,
     runtimeConfigManager,
     fileAdmission,
   });
@@ -994,10 +993,10 @@ function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
     closeWorkspaceProductReadHandles(dataRoot);
   };
   return {
+    dataRoot,
     store: appStore,
     workspace,
     userId,
-    admission,
     workspaceRoot,
     select,
     call,
@@ -1007,7 +1006,6 @@ function openNativeSchemaReviewFixture(input: NativeSchemaReviewFixtureInput) {
     audits,
     sourcePath: input.sourcePath,
     sourcePin: input.sourcePin,
-    dataRoot,
     coreDb,
     workspaceDb,
     runtimeConfigManager,
@@ -3115,7 +3113,7 @@ it('applies a compatible review while real native pending work remains live', as
   const candidate = `${f.select().scopeSchemaText.trimEnd()}\n# Compatible with live work.\n`;
   const reviewed = await f.preview(candidate);
   // This is the actual lifecycle owner. Observe it without replacing its behavior.
-  const freeze = vi.spyOn(f.admission, 'tryFreeze');
+  const freeze = vi.spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace');
   onTestFinished(() => freeze.mockRestore());
   const requestId = randomUUID();
   const applied = await f.call('knowledge.schema.apply', {
@@ -3129,7 +3127,9 @@ it('applies a compatible review while real native pending work remains live', as
   expect(applied.status, JSON.stringify(applied.body)).toBe(200);
   expect(freeze).not.toHaveBeenCalled();
   expect(f.store.getTurn(f.workspace.id, thread.id, turn.id)).toEqual(before);
-  expect(f.admission.isClosed(f.workspace.id)).toBe(false);
+  expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspace.id)).toBe(
+    false
+  );
   expect(f.select().scopeSchemaText).toBe(candidate);
   expect(f.receipt(requestId)?.response).toEqual({
     kind: 'knowledge_schema_report',

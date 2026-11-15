@@ -508,24 +508,34 @@ describe('Stopped source reactivation ownership and durable prefixes', () => {
         ).toHaveLength(2);
         expect(() => admissions.readRecoveryExecution(core, f.backupId)).toThrowError();
         expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
-        const gate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
         // Repeated census must neither reopen the opaque scope nor infer a recovery origin.
         for (let pass = 0; pass < 2; pass++) {
-          expect(() => restoreWorkspaceRecoveryAdmission(core, gate)).not.toThrow();
+          expect(() => restoreWorkspaceRecoveryAdmission(core)).not.toThrow();
           expect(scopeAdmissionFailures(f.dataRoot)).toEqual([
             { scope: 'workspace', id: workspaceId, check: 'recovery' },
           ]);
           expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-          expect(gate.enter(workspaceId)).toBeNull();
-          expect(gate.tryResumeRecovery(workspaceId, { captureId: f.backupId }, () => [])).toEqual({
+          expect(
+            getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+          ).toBeNull();
+          expect(
+            getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+              f.dataRoot,
+              workspaceId,
+              { captureId: f.backupId },
+              () => []
+            )
+          ).toEqual({
             status: 'busy',
           });
           expect(isScopeAdmitted(f.dataRoot, 'workspace', healthy.id)).toBe(true);
-          const release = gate.enter(healthy.id);
+          const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+            f.dataRoot,
+            healthy.id
+          );
           expect(release).toBeTypeOf('function');
           release?.();
         }
-        store.setWorkspaceMutationAdmission(gate);
         await expect(store.createThread(workspaceId, 'Must stay refused')).rejects.toThrow();
         await expect(
           store.createThread(healthy.id, 'Healthy native publication')

@@ -30,7 +30,6 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from '../test-support/release-identity.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb } from './db.js';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -54,7 +53,6 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
   }).manifest;
   manifest.runtime.version = runtime.version;
   admitTestNativeEnvironment(coreDb, manifest);
-  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(root),
     agentManifests: [manifest],
@@ -73,13 +71,12 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     coreDb,
     store,
     dataRoot: root,
-    workspaceMutationAdmission: admission,
     agentManifests: [manifest],
     gatewayConfig: configuration.gatewayConfig,
     providerRegistry: configuration.providerRegistry,
     openKitConfig: configuration.openKitConfig,
   };
-  return { root, coreDb, userId, store, manifest, admission, configuration, options };
+  return { root, coreDb, userId, store, manifest, configuration, options };
 }
 
 /** Uses the original native scheduler/adoption fixture. Its external peer does not qualify a real adapter release. */
@@ -87,7 +84,6 @@ async function liveFixture(runtime: { adapter: string; version: string }) {
   const f = await fixture(runtime);
   const native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
     readRuntimeConfig: () => f.configuration,
-    workspaceMutationAdmission: f.admission,
   });
   let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
   cleanups.push(async () => {
@@ -285,7 +281,6 @@ describe('Conversation target live-steer availability', () => {
       store: f.store,
       workerControlGateway: f.native.workerControlGateway,
       readRuntimeConfig: () => f.configuration,
-      workspaceMutationAdmission: f.admission,
     });
     const app = createAppWithLocalIdentity({ ...f.options, turnExecutor: cold.turnExecutor });
     const before = f.store.getTurnById(f.turnId);

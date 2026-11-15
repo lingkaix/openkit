@@ -28,10 +28,7 @@ import {
 } from './worker-recovery.js';
 /** Joins recovery listing and release to the unchanged checkpoint, receipt and cleanup owners. */
 export function createRecoveryOperationImplementations(
-  dependencies: Pick<
-    OperationInvocationDependencies,
-    'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'workspaceMutationAdmission'
-  >
+  dependencies: Pick<OperationInvocationDependencies, 'coreDb' | 'store' | 'repositoryWorkspaceDb'>
 ) {
   const { repositoryWorkspaceDb } = dependencies;
   // Native invocation admits Core storage before entering this family.
@@ -80,7 +77,10 @@ export function createRecoveryOperationImplementations(
         if (
           context.kind !== 'public' ||
           !authorizeWorkspace(coreDb, context.actor, input.workspaceId, definition) ||
-          dependencies.workspaceMutationAdmission?.isClosed(input.workspaceId)
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(
+            coreDb.dataRoot,
+            input.workspaceId
+          )
         )
           throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
         resolveTarget(

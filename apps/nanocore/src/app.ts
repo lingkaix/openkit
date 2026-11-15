@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { HttpBindings } from '@hono/node-server';
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response';
 import {
@@ -70,11 +70,8 @@ import {
   requireAdministratorOperation,
 } from './auth/operation-authorizer.js';
 import { isCanonicalUserActive } from './auth/user-lifecycle.js';
-import {
-  createBootReadinessSnapshot,
-  restoreWorkspaceRetirementAdmission,
-  scopeAdmissionFailures,
-} from './bootstrap/readiness.js';
+import { createBootReadinessSnapshot, scopeAdmissionFailures } from './bootstrap/readiness.js';
+import { restoreWorkspaceRetirementAdmission } from './bootstrap/workspace-recovery.js';
 import { composeWorkspaceMcpCatalog } from './catalog/resource-catalog.js';
 import {
   type ChannelServices,
@@ -251,10 +248,7 @@ import {
 } from './scheduler-records.js';
 import { registerServiceRoutes } from './service-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import {
-  getControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
-} from './storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
@@ -483,8 +477,6 @@ export interface CreateAppOptions {
   coreDb?: CoreDb;
   dataRoot?: string;
   store?: FsStore;
-  /** Process-local gate coordinating ordinary Workspace mutation with deletion. */
-  workspaceMutationAdmission?: WorkspaceMutationAdmission;
   turnExecutor?: TurnExecutor;
   /** Optional Pi AI client override for tests and embedded deployments. */
   llmPiAiClient?: PiAiGatewayClient;
@@ -644,24 +636,20 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const mode = options.mode ?? 'local';
   const auth = options.auth;
   const dataRoot = options.dataRoot ?? null;
-  const mutationDataRoot = dataRoot ?? options.coreDb?.dataRoot ?? options.store?.getDataRoot();
-  const workspaceMutationAdmission =
-    options.workspaceMutationAdmission ??
-    options.automationStore?.mutationAdmission ??
-    (mutationDataRoot
-      ? getControlStoreWorkerClient().workspaceMutations(mutationDataRoot)
-      : new WorkspaceMutationAdmission());
+  const sharedStore =
+    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
+  const storeDataRoot = sharedStore.getDataRoot();
+  const mutationDataRoot = dataRoot ?? options.coreDb?.dataRoot ?? storeDataRoot;
+  // Every rooted Workspace writer, including the fallback Store, resolves its native scope from its
+  // physical Root; one App shares one Root.
   if (
     mutationDataRoot &&
-    workspaceMutationAdmission !==
-      getControlStoreWorkerClient().workspaceMutations(mutationDataRoot)
+    [options.coreDb?.dataRoot, storeDataRoot].some(
+      (root) => root && resolve(root) !== resolve(mutationDataRoot)
+    )
   )
     throw new Error('Application Workspace mutations must use their native scope owner.');
-  if (
-    options.automationStore &&
-    (options.automationStore.coreDb !== options.coreDb ||
-      options.automationStore.mutationAdmission !== workspaceMutationAdmission)
-  )
+  if (options.automationStore && options.automationStore.coreDb !== options.coreDb)
     throw new Error(
       'Recurring schedules require the application Core database and Workspace mutation fence.'
     );
@@ -669,12 +657,9 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     createLocalAiSupervisor({ dataRoot });
     restoreWorkspaceDeletionMutationAdmission({
       dataRoot,
-      workspaceMutationAdmission,
       ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     });
   }
-  const sharedStore =
-    options.store ?? new FsStore(options.dataRoot ? { dataRoot: options.dataRoot } : {});
   let localUserId: string | undefined;
   if (mode === 'local') {
     localUserId = options.coreDb ? getLocalUserId(options.coreDb) : options.localUserId;
@@ -689,7 +674,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     options.runtimeConfigManager?.current().openKitConfig ??
     options.openKitConfig ??
     (dataRoot ? loadOpenKitConfig(dataRoot) : {});
-  sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
   sharedStore.setLiveCaptureCoverage(captureCoverageBindingFromOpenKitConfig(startupOpenKitConfig));
   const publicBaseUrl = startupOpenKitConfig.server?.publicBaseUrl;
   const browserCors = createBrowserCors(mode, [
@@ -885,8 +869,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     return readCurrentWorkspacePolicy({ coreDb: options.coreDb, workspaceId, policy });
   });
   const automationStore =
-    options.automationStore ??
-    (options.coreDb ? new AutomationStore(options.coreDb, workspaceMutationAdmission) : undefined);
+    options.automationStore ?? (options.coreDb ? new AutomationStore(options.coreDb) : undefined);
   const workerControlGateway =
     options.workerControlGateway ?? createDefaultWorkerControlGateway(options.coreDb);
   const workerMcpGateway =
@@ -1190,7 +1173,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           ...(vaultUnlockState ? { vaultBackend: () => vaultUnlockState.backend() } : {}),
           nanoHostSessionDispatch,
           workerControlGateway,
-          workspaceMutationAdmission,
         }));
   const turnExecutor =
     options.turnExecutor ??
@@ -1200,7 +1182,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       fileAdmission,
       coreDb: options.coreDb,
       workerControlGateway,
-      workspaceMutationAdmission,
     });
   const workerPlacement = options.workerPlacement ?? 'local';
   app.use(async (c, next) => {
@@ -1630,7 +1611,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           store: sharedStore,
           coreDb: options.coreDb,
           runtimeConfigManager,
-          workspaceMutationAdmission,
           openWorkspace: repositoryWorkspaceDb,
           inflightCommands,
           pin: async (run) => {
@@ -1711,7 +1691,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
               store: sharedStore,
               coreDb,
               runtimeConfigManager,
-              workspaceMutationAdmission,
               openWorkspace: repositoryWorkspaceDb,
               inflightCommands,
               pin: async (run) => {
@@ -1752,7 +1731,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
                     actor: { kind: 'user', id: owner },
                     currentAuthority,
                     runtimeConfigManager,
-                    workspaceMutationAdmission,
                     notebook: selection.notebook,
                     preparedSelection: preparedSelection ? selection : undefined,
                     scopeSchemaText: selection.scopeSchemaText,
@@ -1924,7 +1902,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       coreDb: options.coreDb,
       store: sharedStore,
       repositoryWorkspaceDb,
-      workspaceMutationAdmission,
       ...(vaultUnlockState ? { vaultUnlockState } : {}),
       ...(runtimeConfigManager ? { runtimeConfigManager } : {}),
       policyInterception,
@@ -1996,7 +1973,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     vaultUnlockState,
     workerControlGateway,
     workerMcpGateway,
-    workspaceMutationAdmission,
   };
   registerWorkerMcpRoutes(workerMcpRouteInput);
 
@@ -2059,7 +2035,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
       quickChatWorkspaceIdForUser: (userId) =>
         quickChatWorkspaceIdForUser(userId, options.coreDb!.dataRoot),
       store: sharedStore,
-      workspaceMutationAdmission,
     });
   }
 
@@ -2143,7 +2118,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         dataRoot,
         fileAdmission,
         store: requestStore(c),
-        workspaceMutationAdmission,
         diagnosticsServices,
       })['workspace.backup-download'](parsed.data, {
         kind: 'public',
@@ -2304,7 +2278,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     goalTaskPolicy,
     turnExecutor,
     knowledgeAgent,
-    workspaceMutationAdmission,
     store: sharedStore,
     coreDb: options.coreDb,
     openWorkspace: repositoryWorkspaceDb,
@@ -2340,7 +2313,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         openWorkspace: repositoryWorkspaceDb,
         inflightCommands,
         startWorker: startModeWorkerTurn,
-        workspaceMutationAdmission,
         goalId,
         coordinatorTurnId,
         goalTaskPolicy,
@@ -2425,7 +2397,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     providerCredentialConfigured,
     coreDb: options.coreDb,
     inflightCommands,
-    workspaceMutationAdmission,
     llmGatewayDispatcher,
     ...(providerSubscriptionAccountManager ? { providerSubscriptionAccountManager } : {}),
     repositoryWorkspaceDb,
@@ -2442,7 +2413,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const taskStart = createTaskStartOperation({
     coreDb: options.coreDb,
     inflightCommands,
-    workspaceMutationAdmission,
     repositoryWorkspaceDb,
     startModeWorkerTurn,
     workerCoordinatorCandidates: currentWorkerCoordinatorCandidates,
@@ -2667,7 +2637,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           repositoryWorkspaceDb,
           inflightCommands,
           pendingRequestServices,
-          workspaceMutationAdmission,
           fileAdmission,
           mode,
         })(id, value, { kind: 'public', actor, delivery: 'human' }),
@@ -2682,7 +2651,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
     repositoryWorkspaceDb,
     inflightCommands,
-    workspaceMutationAdmission,
     dataRoot,
     fileAdmission,
     runtimeConfigManager,
@@ -2694,7 +2662,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     requestStore,
     repositoryWorkspaceDb,
     inflightCommands,
-    workspaceMutationAdmission,
     dataRoot,
     fileAdmission,
   });
@@ -2727,7 +2694,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           afterUserDisabled: (userId: string) =>
             reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled({
               dataRoot,
-              workspaceMutationAdmission,
               ...(options.coreDb ? { coreDb: options.coreDb } : {}),
               userId,
             }),
@@ -2752,7 +2718,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     ...(channelServices ? { channelServices } : {}),
     startModeWorkerTurn,
     coreDb: options.coreDb,
-    workspaceMutationAdmission,
     inflightCommands,
     runtimeConfigManager,
     runtimeConfigOperations,
@@ -2798,7 +2763,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           afterUserDisabled: (userId: string) =>
             reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled({
               dataRoot,
-              workspaceMutationAdmission,
               ...(options.coreDb ? { coreDb: options.coreDb } : {}),
               userId,
             }),
@@ -2832,7 +2796,6 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     coreDb: options.coreDb,
     store: sharedStore,
     inflightCommands,
-    workspaceMutationAdmission,
     mode,
     ...(startupOpenKitConfig.nanohost ? { nanoHostConfig: startupOpenKitConfig.nanohost } : {}),
     dataRoot,
@@ -2854,14 +2817,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 export function restoreWorkspaceDeletionMutationAdmission(input: {
   coreDb?: CoreDb;
   dataRoot: string;
-  workspaceMutationAdmission: WorkspaceMutationAdmission;
 }): void {
   const deletionRequests = listAllWorkspaceDeletionRequests(input.dataRoot);
   if (input.coreDb) {
-    restoreWorkspaceRetirementAdmission({
-      coreDb: input.coreDb,
-      workspaceMutationAdmission: input.workspaceMutationAdmission,
-    });
+    restoreWorkspaceRetirementAdmission({ coreDb: input.coreDb });
     const lifecycleRows = input.coreDb.sqlite
       .prepare(
         `SELECT workspace_id AS workspaceId
@@ -2870,7 +2829,14 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       )
       .all() as Array<{ workspaceId: string }>;
     for (const { workspaceId } of lifecycleRows) {
-      if (input.workspaceMutationAdmission.isClosed(workspaceId, 'capture')) continue;
+      if (
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(
+          input.dataRoot,
+          workspaceId,
+          'capture'
+        )
+      )
+        continue;
       const registry = getWorkspaceRegistryLifecycleFact(input.coreDb, workspaceId);
       const requests = deletionRequests.filter(
         (row) =>
@@ -2887,11 +2853,12 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
         (registry.registryRevision === request.expectedRegistryRevision + 1 ||
           registry.registryRevision === request.expectedRegistryRevision + 2)
       )
-        input.workspaceMutationAdmission.restoreRecoveryClosed(workspaceId, {
+        getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(input.dataRoot, workspaceId, {
           deletionRequestId: request.requestId,
           revision: request.expectedRegistryRevision,
         });
-      else input.workspaceMutationAdmission.restoreClosed(workspaceId);
+      else
+        getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(input.dataRoot, workspaceId);
     }
   }
   const requestsByWorkspace = new Map<
@@ -2916,13 +2883,20 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       )
         continue;
     }
-    if (!input.workspaceMutationAdmission.isClosed(workspaceId, 'capture')) {
+    if (
+      !getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        input.dataRoot,
+        workspaceId,
+        'capture'
+      )
+    ) {
       if (nonterminal.length === 1)
-        input.workspaceMutationAdmission.restoreRecoveryClosed(workspaceId, {
+        getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(input.dataRoot, workspaceId, {
           deletionRequestId: nonterminal[0]!.requestId,
           revision: nonterminal[0]!.expectedRegistryRevision,
         });
-      else input.workspaceMutationAdmission.restoreClosed(workspaceId);
+      else
+        getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(input.dataRoot, workspaceId);
     }
     if (!input.coreDb || nonterminal.length !== 1) {
       continue;
@@ -2938,8 +2912,12 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       !isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)
     ) {
       writeWorkspaceDeletionRequest(input.dataRoot, { ...request, phase: 'blocked' });
-      input.workspaceMutationAdmission.reopen(workspaceId, 'capture');
-      input.workspaceMutationAdmission.reopen(workspaceId);
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        input.dataRoot,
+        workspaceId,
+        'capture'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(input.dataRoot, workspaceId);
     }
   }
   // Bootstrap owns durable reconstruction; its existing authority refusal also excludes direct producers.
@@ -2949,9 +2927,14 @@ export function restoreWorkspaceDeletionMutationAdmission(input: {
       failure.check !== 'index' &&
       // Generic refusal must not replace bootstrap's exact capture/recovery closure.
       (failure.check === 'retired' ||
-        !input.workspaceMutationAdmission.isClosed(failure.id, 'capture'))
+        !getControlStoreWorkerClient().isWorkspaceMutationClosed(
+          input.dataRoot,
+          failure.id,
+          'capture'
+        ))
     )
-      input.workspaceMutationAdmission.restoreClosed(
+      getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+        input.dataRoot,
         failure.id,
         failure.check === 'retired' ? 'ordinary' : 'capture'
       );
@@ -2963,7 +2946,6 @@ async function reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled(inpu
   coreDb?: CoreDb;
   dataRoot: string;
   userId: string;
-  workspaceMutationAdmission: WorkspaceMutationAdmission;
 }): Promise<void> {
   const workspaceIds = new Set(
     listAllWorkspaceDeletionRequests(input.dataRoot)
@@ -2975,7 +2957,9 @@ async function reconcileWorkspaceDeletionMutationAdmissionAfterUserDisabled(inpu
       .map((request) => request.workspaceId)
   );
   await Promise.all(
-    [...workspaceIds].map((workspaceId) => input.workspaceMutationAdmission.close(workspaceId))
+    [...workspaceIds].map((workspaceId) =>
+      getControlStoreWorkerClient().closeWorkspaceMutations(input.dataRoot, workspaceId)
+    )
   );
   restoreWorkspaceDeletionMutationAdmission(input);
 }

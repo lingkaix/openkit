@@ -10,7 +10,6 @@ import {
 } from '../scheduler-records.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { disposeTestStore } from '../test-support/store.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import {
   findExternalTriggerAdmission,
@@ -29,10 +28,7 @@ async function fixture() {
   const db = openCoreDb(root);
   applyMigrations(db);
   fixtures.push({ root, db });
-  const schedules = new AutomationStore(
-    db,
-    getControlStoreWorkerClient().workspaceMutations(db.dataRoot)
-  );
+  const schedules = new AutomationStore(db);
   const schedule = await schedules.createAutomation(testEntityId('usr', 'owner'), {
     workspaceId,
     threadId: testEntityId('th', 'poll'),

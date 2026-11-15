@@ -182,7 +182,6 @@ import {
   type FileStorageAdmission,
 } from './storage/artifacts/file-admission.js';
 import { readArtifactFileText } from './storage/artifacts/file-records.js';
-import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import { ControlStoreWorkerError } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { resolveDataRootPath } from './storage/fs-layout.js';
@@ -2430,7 +2429,6 @@ function taskModeEvidenceForTurn(
 export function createConversationService({
   coreDb,
   inflightCommands,
-  workspaceMutationAdmission,
   llmGatewayDispatcher,
   providerSubscriptionAccountManager,
   providerCredentialConfigured,
@@ -2445,7 +2443,6 @@ export function createConversationService({
   knowledgeAgent,
 }: {
   readonly coreDb: CoreDb | undefined;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly llmGatewayDispatcher: Pick<
     LLMGatewayProviderDispatcher,
@@ -3266,7 +3263,6 @@ export function createConversationService({
           store,
           inflightCommands,
           repositoryWorkspaceDb,
-          workspaceMutationAdmission,
           knowledgeAgent,
         })(
           'knowledge.ask',
@@ -3557,7 +3553,6 @@ export function createConversationService({
                   coreDb,
                   store,
                   repositoryWorkspaceDb,
-                  workspaceMutationAdmission,
                 })(
                   { workspaceId, query: chatInput.input },
                   {
@@ -3944,7 +3939,6 @@ export function createConversationService({
                 store,
                 inflightCommands,
                 repositoryWorkspaceDb,
-                workspaceMutationAdmission,
                 knowledgeAgent,
                 runtimeConfigManager,
                 ...(goalServices ? { goalServices: goalServices() } : {}),
@@ -4908,7 +4902,6 @@ export function createConversationService({
               store,
               inflightCommands,
               repositoryWorkspaceDb,
-              workspaceMutationAdmission,
               knowledgeAgent,
               runtimeConfigManager,
               ...(goalServices ? { goalServices: goalServices() } : {}),
@@ -5100,13 +5093,11 @@ export function createConversationService({
 export function createTaskStartOperation({
   coreDb,
   inflightCommands,
-  workspaceMutationAdmission,
   repositoryWorkspaceDb,
   startModeWorkerTurn,
   workerCoordinatorCandidates,
 }: {
   readonly coreDb: CoreDb | undefined;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   readonly startModeWorkerTurn: (input: {
@@ -5350,7 +5341,6 @@ export function createTaskStartOperation({
                   coreDb,
                   store,
                   repositoryWorkspaceDb,
-                  workspaceMutationAdmission,
                 })(
                   { workspaceId, query: taskInput.input },
                   {

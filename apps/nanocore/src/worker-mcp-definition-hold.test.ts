@@ -368,7 +368,6 @@ describe('MCP changed-definition exposure through real Core and native capture',
           workerControlGateway: restoredControl,
           workerMcpGateway: reopenedGateway,
           runtimeConfig: () => snapshot,
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         });
         const listAfterReopen = await reopenedApp.request('/api/worker-capabilities/mcp/echo', {
           method: 'POST',

@@ -51,18 +51,13 @@ export function createAppWithLocalIdentity(
     !options.coreDb.sqlite.prepare('SELECT 1 FROM users LIMIT 1').get()
   )
     ensureLocalUser(options.coreDb);
-  let admission = options.workspaceMutationAdmission ?? options.automationStore?.mutationAdmission;
   const dataRoot = options.dataRoot ?? options.store?.getDataRoot() ?? options.coreDb?.dataRoot;
-  if (dataRoot) {
-    fixtureNativeClient = getControlStoreWorkerClient();
-    // The physical Root selects its actual component, including across native restart.
-    // Explicit competing components still reach the production refusal unchanged.
-    admission ??= fixtureNativeClient.workspaceMutations(dataRoot);
-  }
+  // The physical Root selects its actual component, including across native restart.
+  // Explicit competing components still reach the production refusal unchanged.
+  if (dataRoot) fixtureNativeClient = getControlStoreWorkerClient();
   return createNanoCoreApp({
     ...(!options.coreDb && options.mode !== 'server' ? { localUserId: FIXTURE_LOCAL_USER_ID } : {}),
     ...options,
-    ...(admission ? { workspaceMutationAdmission: admission } : {}),
   });
 }
 

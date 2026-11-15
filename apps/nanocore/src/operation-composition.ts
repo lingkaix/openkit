@@ -75,7 +75,6 @@ import { createRecoveryOperationImplementations } from './runtime/worker-recover
 import { createWorkspaceSyncOperationImplementations } from './runtime/workspace-sync-operations.js';
 import { createServerThreadOperations } from './server-thread-operations.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import { createDataRootAdminOperationImplementations } from './storage/data-root-admin-operations.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
@@ -196,7 +195,6 @@ export interface OperationInvocationDependencies {
   ) => import('./storage/db.js').UserDb | Promise<import('./storage/db.js').UserDb>;
   readonly store?: FsStore;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
   /** Existing app-owned worker starter used only by Artifact Review refinement and redo. */
   readonly startModeWorkerTurn?: (input: {
     readonly store: FsStore;

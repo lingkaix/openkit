@@ -41,10 +41,9 @@ async function fixture() {
     workspaceId: workspace.id,
     ownerUserId: localUserId,
   });
-  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   let instant = '2026-10-16T00:00:00.000Z';
   const clock = () => instant;
-  const schedules = new AutomationStore(db, gate, clock);
+  const schedules = new AutomationStore(db, clock);
   const created = await schedules.createAutomation(localUserId, {
     name: 'Poll',
     workspaceId: workspace.id,
@@ -87,7 +86,6 @@ async function fixture() {
     store,
     schedules,
     schedule,
-    gate,
     workspace,
     thread,
     clock,
@@ -106,7 +104,7 @@ afterEach(async () => {
 
 describe('serialized recurring scanner', () => {
   it('commits one terminal attempt through the native owner while Main stays read-only', async () => {
-    const { root, db, store, schedules, schedule, gate, clock, start } = await fixture();
+    const { root, db, store, schedules, schedule, clock, start } = await fixture();
     const createTurn = vi.spyOn(store, 'createTurn');
     const prepare = vi.fn(async () => {
       db.sqlite.pragma('query_only = ON');
@@ -126,7 +124,7 @@ describe('serialized recurring scanner', () => {
 
     service.stop();
     const reopenedDb = openCoreDb(root);
-    const reopenedSchedules = new AutomationStore(reopenedDb, gate, clock);
+    const reopenedSchedules = new AutomationStore(reopenedDb, clock);
     const replayPreparation = vi.fn(async () => structuredClone(ready));
     const reopened = startRecurringScheduleService({
       schedules: reopenedSchedules,
@@ -436,8 +434,8 @@ describe('serialized recurring scanner', () => {
   });
 
   it('honors the existing Workspace mutation fence before materialization', async () => {
-    const { db, gate, workspace, start } = await fixture();
-    await gate.close(workspace.id);
+    const { db, workspace, start } = await fixture();
+    await getControlStoreWorkerClient().closeWorkspaceMutations(db.dataRoot, workspace.id);
     const prepare = vi.fn(async () => structuredClone(ready));
     const { service } = start(prepare);
     await service.runOnce();
@@ -498,7 +496,7 @@ it('does not accept into a private Thread owned by another responsible user', as
 });
 
 it('holds mutation admission through bounded preparation so backup waits for the scanner to leave', async () => {
-  const { db, gate, workspace, start } = await fixture();
+  const { db, workspace, start } = await fixture();
   const preparationEntered = Promise.withResolvers<void>();
   let release!: (value: RecurringPreparation) => void;
   const { service } = start(
@@ -511,9 +509,11 @@ it('holds mutation admission through bounded preparation so backup waits for the
   const scan = service.runOnce();
   await preparationEntered.promise;
   let closed = false;
-  const closing = gate.close(workspace.id).then(() => {
-    closed = true;
-  });
+  const closing = getControlStoreWorkerClient()
+    .closeWorkspaceMutations(db.dataRoot, workspace.id)
+    .then(() => {
+      closed = true;
+    });
   await Promise.resolve();
   expect(closed).toBe(false);
   release(structuredClone(ready));
@@ -526,7 +526,7 @@ it('holds mutation admission through bounded preparation so backup waits for the
 });
 
 it('owns one scanner across distinct Core handles for the same data root', async () => {
-  const { root, store, gate, start } = await fixture();
+  const { root, store, start } = await fixture();
   const first = start();
   await first.service.runOnce();
   const otherDb = openCoreDb(root);
@@ -534,7 +534,7 @@ it('owns one scanner across distinct Core handles for the same data root', async
   try {
     expect(() => {
       duplicate = startRecurringScheduleService({
-        schedules: new AutomationStore(otherDb, gate),
+        schedules: new AutomationStore(otherDb),
         store,
         prepare: async () => structuredClone(ready),
         setInterval: () => 'duplicate',

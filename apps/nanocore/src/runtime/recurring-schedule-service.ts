@@ -4,6 +4,7 @@ import { isThreadIdVisible } from '../auth/thread-visibility.js';
 import type { AutomationStore } from '../lib/automation-store.js';
 import { type FsStore, StoreRecordNotFoundError } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   RecurringAdmissionPayloadSchema,
   type RecurringOccurrence,
@@ -45,7 +46,10 @@ export function startRecurringScheduleService(
     const candidates = await input.schedules.collectScanCandidates(now(), input.onError);
     for (const occurrence of candidates) {
       if (stopped) return;
-      const release = input.schedules.mutationAdmission.enter(occurrence.workspaceId);
+      const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+        input.schedules.coreDb.dataRoot,
+        occurrence.workspaceId
+      );
       if (!release) continue;
       try {
         let preparation = validateCurrent(occurrence);

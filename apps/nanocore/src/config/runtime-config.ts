@@ -48,11 +48,10 @@ import { loadProviderRegistryFromDataRoot } from '../providers/data-root.js';
 import type { ProviderDiagnosticsSnapshot } from '../providers/diagnostics.js';
 import { createProviderDiagnostics } from '../providers/diagnostics.js';
 import { type ProviderCredentialConfigured, ProviderRegistry } from '../providers/registry.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
+import {
+  getControlStoreWorkerClient,
+  type WorkspaceFrozenAdmission,
 } from '../storage/control-store-worker-client.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
   runtimePolicyIdentityForSnapshot,
@@ -298,7 +297,6 @@ export interface RuntimeConfigManager {
   /** Validates and replaces only a restored target while its exact recovery freeze remains closed. */
   reloadRecoveredWorkspace(
     workspaceId: string,
-    admission: WorkspaceMutationAdmission,
     freeze: WorkspaceFrozenAdmission
   ): RuntimeConfigSnapshot | Promise<RuntimeConfigSnapshot>;
   /** Reloads runtime config from the configured data root. */
@@ -646,12 +644,12 @@ export function createRuntimeConfigManager(
     current: () => current,
     bindNativePolicyPublication,
     getDataRoot: () => options.dataRoot,
-    reloadRecoveredWorkspace: (workspaceId, admission, freeze) => {
+    reloadRecoveredWorkspace: (workspaceId, freeze) => {
       if (installation) throw new Error('Runtime Policy publication is still pending.');
       WorkspaceIdSchema.parse(workspaceId);
-      if (!admission.ownsFreeze(workspaceId, freeze))
-        throw new Error('Workspace recovery freeze is not current.');
       const dataRoot = requireDataRoot(options.dataRoot);
+      if (!getControlStoreWorkerClient().ownsWorkspaceFreeze(dataRoot, workspaceId, freeze))
+        throw new Error('Workspace recovery freeze is not current.');
       const diagnostics: RuntimeConfigDiagnostic[] = [];
       const configs = loadWorkspaceConfigs(dataRoot, diagnostics, workspaceId);
       if (configs.length !== 1) throw new Error('Restored Workspace configuration is unavailable.');
@@ -688,7 +686,7 @@ export function createRuntimeConfigManager(
         ],
       });
       const ready = installSnapshot(next, () => {
-        if (!admission.ownsFreeze(workspaceId, freeze))
+        if (!getControlStoreWorkerClient().ownsWorkspaceFreeze(dataRoot, workspaceId, freeze))
           throw new Error('Workspace recovery freeze is not current.');
       });
       return ready instanceof Promise ? ready.then(() => current) : current;

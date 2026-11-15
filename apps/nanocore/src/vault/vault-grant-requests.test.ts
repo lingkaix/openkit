@@ -944,7 +944,6 @@ it.each(['workspace', 'server', 'revoked-agent'] as const)(
         workspaceDb,
         dataRoot: f.dataRoot,
         vaultUnlockState: f.vaultUnlockState,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
         packageSnapshotId: pkg.snapshotId,
         protocolRequestId: randomUUID(),
         inflightCommands: new WeakMap(),
@@ -2689,7 +2688,6 @@ it.each(['live', 'revoked-agent'] as const)(
         workspaceDb,
         dataRoot: f.dataRoot,
         vaultUnlockState: f.vaultUnlockState,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
         packageSnapshotId: pkg.snapshotId,
         protocolRequestId: randomUUID(),
         inflightCommands: new WeakMap(),
@@ -3383,7 +3381,6 @@ it('retains the real signup Session identity through Login request, approval and
       repositoryWorkspaceDb,
       repositoryUserDb: (userId) => openUserDb(f.dataRoot, userId),
       inflightCommands,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
       pendingRequestServices: {
         coreDb: f.coreDb,
         repositoryWorkspaceDb,

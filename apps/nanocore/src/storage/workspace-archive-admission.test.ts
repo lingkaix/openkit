@@ -30,7 +30,6 @@ async function archiveFixture(fileAdmission?: FileStorageAdmission) {
   fixtures.push({ coreDb, dataRoot });
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const store = new FsStore({ dataRoot });
   const workspace = await store.createWorkspace('Archive admission');
   recordWorkspaceOwnerMembership({
@@ -53,7 +52,6 @@ async function archiveFixture(fileAdmission?: FileStorageAdmission) {
     ...(fileAdmission ? { fileAdmission } : {}),
     mode: 'server',
     store,
-    workspaceMutationAdmission,
   });
   const token = (scope: 'workspace' | 'workspace-readonly' | 'server-admin') =>
     createOpenKitAccessTokenRecord(coreDb, {
@@ -62,7 +60,7 @@ async function archiveFixture(fileAdmission?: FileStorageAdmission) {
       workspaceIds: scope === 'server-admin' ? [] : [workspace.id],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-  return { app, coreDb, dataRoot, store, token, workspace, workspaceMutationAdmission };
+  return { app, coreDb, dataRoot, store, token, workspace };
 }
 
 /** Produces verified archive bytes through the retained download route, without fabricating archive authority. */
@@ -142,7 +140,10 @@ describe('retained archive primary admission', () => {
         actor === 'administrator'
           ? { authorization: `Bearer ${fixture.token('server-admin').secret}` }
           : {};
-      await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        fixture.dataRoot,
+        fixture.workspace.id
+      );
       const response = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
       expect(response.status).toBe(403);
       expect(await response.json()).toEqual({
@@ -150,7 +151,10 @@ describe('retained archive primary admission', () => {
         message: 'Workspace access denied.',
         protocolVersion: PROTOCOL_VERSION,
       });
-      fixture.workspaceMutationAdmission.reopen(fixture.workspace.id);
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        fixture.dataRoot,
+        fixture.workspace.id
+      );
       const resumed = await fixture.app.request(`http://127.0.0.1${archive.path}`, { headers });
       expect(resumed.status).toBe(200);
       expect(await resumed.arrayBuffer()).toEqual(archive.bytes);

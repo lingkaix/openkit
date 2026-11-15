@@ -29,7 +29,6 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import { prepareWorkspaceKnowledgeSelection } from './control-store-knowledge.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { retrieveWorkspaceKnowledge } from './index-rebuild.js';
@@ -222,7 +221,6 @@ describe('workspace portable file state', () => {
       workspaceId: sourceWorkspaceId,
       workspaceRoot: sourceRoot,
     } = await workspaceFixture();
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const sourceKnowledgeBaseId = readDefaultKnowledgeBaseId({
       dataRoot,
       scope: { kind: 'workspace', workspaceId: sourceWorkspaceId },
@@ -408,7 +406,7 @@ describe('workspace portable file state', () => {
       producer: { kind: 'agent', id: 'agent_knowledge', responsibleUserId: LOCAL_USER_ID },
       createdAt: firstTimestamp,
     });
-    const app = createApp({ coreDb, dataRoot, store, workspaceMutationAdmission });
+    const app = createApp({ coreDb, dataRoot, store });
     const review = await app.request(
       ...knowledgeOperationRequest(
         'knowledge.proposal.decide',

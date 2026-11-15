@@ -21,10 +21,7 @@ import { readCommandRequestRecordsFromSqlite } from '../storage/command-request-
 import type { ControlAdmission } from '../storage/control-store-admission-codecs.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import type { ControlPendingTransition } from '../storage/control-store-pending.js';
-import {
-  getControlStoreWorkerClient,
-  type WorkspaceMutationAdmission,
-} from '../storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { listSchedulerExecutionAttemptsForTurn } from './execution-attempt-records.js';
 import { TurnStartValidationError } from './orchestrator.js';
@@ -159,8 +156,6 @@ export interface PendingWorkerDelivery {
 
 /** Dependencies for admission and boot. */
 export interface PendingAdmissionDependencies extends PendingRequestDatabase {
-  /** Existing lifecycle exclusion restored before boot recovery; closed targets remain inspect-only. */
-  workspaceMutationAdmission?: Pick<WorkspaceMutationAdmission, 'isClosed'>;
   /** Core authority used while re-evaluating a grant. */
   coreDb?: CoreDb;
   /** Current configured Agent authority, independent of historical Turns. */
@@ -359,10 +354,13 @@ export async function recoverPendingRequestsAtBoot(
   dependencies: PendingAdmissionDependencies
 ): Promise<void> {
   const now = new Date().toISOString();
+  const dataRoot = store.getDataRoot();
   for (const workspace of store.listWorkspaces()) {
     // A retained deletion or recovery fence belongs to its original lifecycle continuation.
     // Ordinary Pending settlement must not write through it or prevent the App from listening.
-    if (dependencies.workspaceMutationAdmission?.isClosed(workspace.id)) continue;
+    // The rooted boot Store names the native scope; optional services never decide it.
+    if (dataRoot && getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id))
+      continue;
     const db = dependencies.openWorkspace(workspace.id);
     try {
       assertPendingAssociations(store, db.sqlite, workspace.id);

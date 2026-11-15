@@ -109,14 +109,12 @@ it.each(['workspace', 'server-admin'] as const)(
         workspaceIds: scope === 'workspace' ? [workspaceId] : [],
         expiresAt: '2999-01-01T00:00:00.000Z',
       });
-      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const app = createApp({
         coreDb,
         dataRoot,
         mode: 'server',
         store,
         workerMcpGateway: gateway,
-        workspaceMutationAdmission: admission,
       });
       const headers = {
         authorization: `Bearer ${token.secret}`,
@@ -169,7 +167,9 @@ it.each(['workspace', 'server-admin'] as const)(
         parseWorkspaceSharingError(new ApiCallError(response.status, error.message, error))
       ).not.toBeNull();
       expect(close).not.toHaveBeenCalled();
-      expect(admission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspaceId)).toBe(
+        false
+      );
       expect(authority()).toEqual(beforeAuthority);
       expect(homeBytes()).toEqual(beforeBytes);
       expect(
@@ -221,7 +221,6 @@ it.each([
       workspaceIds: phase === 'requested' ? [workspace.id] : [],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     gateway = createDefaultWorkerMcpGateway(coreDb);
     const closeWorkspace = gateway.closeWorkspace.bind(gateway);
     const heldClose = new Promise<void>((resolve) => {
@@ -238,7 +237,6 @@ it.each([
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workerMcpGateway: gateway,
-      workspaceMutationAdmission: admission,
     });
     // Admission must be idle so the real public freeze reaches the awaited MCP boundary.
     const request = createWorkspaceDeletionRequest(dataRoot, {
@@ -279,7 +277,9 @@ it.each([
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ code: 'recovery_required' });
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, request.requestId)).toEqual(before);
-    expect(admission.isClosed(workspace.id)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)).toBe(
+      true
+    );
     expect(
       coreDb.sqlite
         .prepare(
@@ -323,7 +323,6 @@ it('resumes an exact fenced request after its registry transition without ordina
       workspaceIds: [workspace.id],
       expiresAt: '2999-01-01T00:00:00.000Z',
     });
-    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       coreDb,
       dataRoot,
@@ -331,7 +330,6 @@ it('resumes an exact fenced request after its registry transition without ordina
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       workerMcpGateway: gateway,
-      workspaceMutationAdmission: admission,
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -447,7 +445,9 @@ it('resumes an exact fenced request after its registry transition without ordina
     expect(readFileSync(retainedPath)).toEqual(substitutedBytes);
     expect(terminalFacts()).toEqual(beforeTerminalFacts);
     expect(backupBytes()).toEqual(beforeBackupBytes);
-    expect(admission.isClosed(workspace.id)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)).toBe(
+      true
+    );
     writeWorkspaceDeletionRequest(dataRoot, request);
     const response = await app.request(
       ...operationRequest(
@@ -469,7 +469,9 @@ it('resumes an exact fenced request after its registry transition without ordina
       originalOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
       phase: 'cleaned',
     });
-    expect(admission.isClosed(workspace.id)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)).toBe(
+      true
+    );
     expect(existsSync(join(dataRoot, 'workspaces', workspace.id))).toBe(false);
   } finally {
     await closeRetrievalServices();
@@ -1631,7 +1633,6 @@ it('terminates a pre-transition deletion request when its original owner is disa
     coreDb.sqlite.transaction(() =>
       disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
     )();
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 
     createApp({
       coreDb,
@@ -1639,11 +1640,12 @@ it('terminates a pre-transition deletion request when its original owner is disa
       mode: 'server',
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-      workspaceMutationAdmission: mutationAdmission,
     });
 
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('blocked');
-    expect(mutationAdmission.isClosed(workspace.id)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)).toBe(
+      false
+    );
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -1687,14 +1689,12 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
     });
     const requestId = '00000000-0000-4000-8000-000000000023';
     const deletingRequestId = '00000000-0000-4000-8000-000000000025';
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       coreDb,
       dataRoot,
       mode: 'server',
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-      workspaceMutationAdmission: mutationAdmission,
       releaseIdentity: {
         releaseTag: null,
         sourceCommit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
@@ -1750,7 +1750,10 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
         .prepare('SELECT status, revision FROM workspace_registry WHERE workspace_id = ?')
         .get(deletingWorkspace.id)
     ).toEqual({ status: 'deleting', revision: 2 });
-    const releaseMutation = mutationAdmission.enter(workspace.id);
+    const releaseMutation = getControlStoreWorkerClient().enterWorkspaceMutation(
+      dataRoot,
+      workspace.id
+    );
     if (!releaseMutation) {
       throw new Error('Expected the active Workspace mutation to be admitted.');
     }
@@ -1779,7 +1782,11 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
       )
     );
     try {
-      await vi.waitFor(() => expect(mutationAdmission.isClosed(workspace.id)).toBe(true));
+      await vi.waitFor(() =>
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)
+        ).toBe(true)
+      );
       expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe(
         'requested'
       );
@@ -1790,11 +1797,15 @@ it('terminates a pre-transition deletion request when its owner is disabled in t
 
     expect(response.status, await response.clone().text()).toBe(200);
     expect(readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase).toBe('blocked');
-    expect(mutationAdmission.isClosed(workspace.id)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)).toBe(
+      false
+    );
     expect(readWorkspaceDeletionRequest(dataRoot, deletingWorkspace.id, deletingRequestId)).toEqual(
       deletingRequest
     );
-    expect(mutationAdmission.isClosed(deletingWorkspace.id)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, deletingWorkspace.id)
+    ).toBe(true);
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -1834,7 +1845,6 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
     coreDb.sqlite.transaction(() =>
       disableCanonicalUser(coreDb, 'usr_00000000-0000-7000-8000-000000000001')
     )();
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 
     createApp({
       coreDb,
@@ -1842,7 +1852,6 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
       mode: 'server',
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-      workspaceMutationAdmission: mutationAdmission,
     });
 
     expect(
@@ -1850,7 +1859,9 @@ it('keeps the mutation fence closed without rewriting conflicting deletion reque
         (requestId) => readWorkspaceDeletionRequest(dataRoot, workspace.id, requestId).phase
       )
     ).toEqual(['requested', 'requested']);
-    expect(mutationAdmission.isClosed(workspace.id)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)).toBe(
+      true
+    );
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -1913,7 +1924,6 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       stagingRelativePath: workspaceDeletionStagingRelativePath(deletedWorkspace.id, requestId),
       terminalAuditEventId: testEntityId('aud', 'workspace-delete-audit'),
     });
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 
     createApp({
       coreDb,
@@ -1921,11 +1931,14 @@ it('restores registry-owned boot fences without relying on a nonterminal request
       mode: 'server',
       store,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
-      workspaceMutationAdmission: mutationAdmission,
     });
 
-    expect(mutationAdmission.isClosed(deletingWorkspace.id)).toBe(true);
-    expect(mutationAdmission.isClosed(deletedWorkspace.id)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, deletingWorkspace.id)
+    ).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, deletedWorkspace.id)
+    ).toBe(true);
   } finally {
     coreDb.sqlite.close();
     await shutdownControlStoreWorkerClient();
@@ -2841,16 +2854,13 @@ async function nativeDeletionRouteFixture() {
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
   const actorId = ensureLocalUser(coreDb);
-  const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const store = new FsStore({ dataRoot });
-  store.setWorkspaceMutationAdmission(gate);
   const workspace = await store.createWorkspace('Native deletion route');
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: actorId, workspaceId: workspace.id });
   const app = createApp({
     coreDb,
     dataRoot,
     store,
-    workspaceMutationAdmission: gate,
     mode: 'local',
     releaseIdentity: {
       releaseTag: null,
@@ -2876,7 +2886,7 @@ async function nativeDeletionRouteFixture() {
         }
       )
     );
-  return { dataRoot, coreDb, workspace, requestId, invoke, app, store, actorId, gate };
+  return { dataRoot, coreDb, workspace, requestId, invoke, app, store, actorId };
 }
 
 /** Exact regular-file bytes after native close and rename; no live WAL/SHM exclusions. */
@@ -2969,7 +2979,7 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
     // The original public admission already fenced this empty fixture's runtime.
     // Rejoin its exact owner for the SQL tuple; physical digest/integrity checks
     // still run in the real selected producer, without another public census.
-    const freeze = resumeWorkspaceRecoveryOwner(f.coreDb, owned, f.gate, () => []);
+    const freeze = resumeWorkspaceRecoveryOwner(f.coreDb, owned, () => []);
     if (freeze.status !== 'frozen')
       throw new Error('Expected exact deleted target recovery owner.');
     releaseRecovery = freeze.release;
@@ -2977,7 +2987,7 @@ it('rolls deleted target reactivation, Audit and result back together on late ad
     const owner = {
       core: f.coreDb,
       actor,
-      native: { gate: f.gate, freeze },
+      native: { freeze },
       currentAuthority: () => {
         requireAdministratorOperation(f.coreDb, actor, 'api.call');
         expect(readWorkspaceDeletionRequest(f.dataRoot, f.workspace.id, f.requestId)).toEqual(

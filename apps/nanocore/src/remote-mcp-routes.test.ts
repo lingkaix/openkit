@@ -30,10 +30,7 @@ import {
 } from './scheduler-records.js';
 import { openExistingAppDb } from './storage/app-db.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { users } from './storage/schema/index.js';
@@ -123,11 +120,9 @@ async function fixture(
       workspaceIds: [DEMO_WORKSPACE_ID],
       expiresAt: '2099-01-01T00:00:00.000Z',
     });
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-  const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
+  const automationStore = new AutomationStore(coreDb);
   const app = createApp({
     automationStore,
-    workspaceMutationAdmission,
     coreDb,
     dataRoot,
     store,

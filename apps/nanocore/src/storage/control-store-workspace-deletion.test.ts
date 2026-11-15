@@ -178,8 +178,7 @@ async function fixture(lostAck = false) {
     throw new Error('Owner fixture could not create a pending invitation.');
 
   let instant = '2026-10-16T00:00:00.000Z';
-  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-  const schedules = new AutomationStore(coreDb, admission, () => instant);
+  const schedules = new AutomationStore(coreDb, () => instant);
   const schedule = await schedules.createAutomation(actorId, {
     workspaceId,
     threadId,
@@ -243,10 +242,14 @@ async function fixture(lostAck = false) {
     interception.gate = new SharedArrayBuffer(12);
     interception.path = scope.path;
   }
-  const freeze = admission.tryFreeze(workspaceId, () => []);
+  const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+    coreDb.dataRoot,
+    workspaceId,
+    () => []
+  );
   if (freeze.status !== 'frozen') throw new Error('Expected the existing target freeze.');
   freezeReleases.push(freeze.release);
-  const client = getControlStoreWorkerClient(admission);
+  const client = getControlStoreWorkerClient();
   const database = `core:${scope.path}`;
   const open = {
     database,
@@ -304,7 +307,6 @@ async function fixture(lostAck = false) {
     complete,
     key,
     receiptScope,
-    admission,
     freeze,
     snapshot: () => retained(scope.path, workspaceId),
   };
@@ -460,7 +462,7 @@ describe('native Core Workspace deletion tuple', () => {
     interception.gate = undefined;
     f.coreDb.sqlite.close();
     expect(retained(f.path, f.workspaceId)).toEqual(committed);
-    const next = getControlStoreWorkerClient(f.admission);
+    const next = getControlStoreWorkerClient();
     await next.open(f.open);
     expect(retained(f.path, f.workspaceId)).toEqual(committed);
   }, 30_000);
@@ -470,9 +472,8 @@ describe('native Core Workspace deletion tuple', () => {
 describe('native Core Workspace deletion tuple', () => {
   it('refuses deferred terminal posting after the exact lifecycle freeze is released without changing any SQL tuple member', async () => {
     const f = await fixture();
-    const admission = f.admission;
     const frozen = f.freeze;
-    const client = getControlStoreWorkerClient(admission);
+    const client = getControlStoreWorkerClient();
     expect(client).toBe(f.client);
     try {
       await client.workspaceDeletion(f.database, f.begin, frozen);
@@ -500,7 +501,7 @@ describe('native Core Workspace deletion tuple', () => {
         expect(posted).not.toHaveBeenCalled();
         expect(f.snapshot()).toEqual(before);
         frozen.release();
-        expect(admission.ownsFreeze(f.workspaceId, frozen)).toBe(false);
+        expect(client.ownsWorkspaceFreeze(f.root, f.workspaceId, frozen)).toBe(false);
         resume();
         expect(await pending).toMatchObject({ code: 'precondition', commit: 'not-committed' });
         expect(posted).not.toHaveBeenCalled();
@@ -590,14 +591,26 @@ describe('native Core Workspace deletion current administrator credential', () =
           expect(revokeOpenKitAccessTokenRecord(owner, issued.tokenId)?.status).toBe('revoked');
           expect(isCurrentDeploymentAdministrator(f.coreDb, actor)).toBe(false);
           expect(isCanonicalUserActive(f.coreDb, f.actorId)).toBe(true);
-          expect(f.admission.ownsFreeze(f.workspaceId, f.freeze)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().ownsWorkspaceFreeze(
+              f.coreDb.dataRoot,
+              f.workspaceId,
+              f.freeze
+            )
+          ).toBe(true);
           resume();
           const outcome = await pending;
           // Establish the actual native crossing before the refusal oracle, including on the wire-only red candidate.
           expect(posted).toHaveBeenCalled();
           expect(outcome).toMatchObject({ commit: 'not-committed' });
           expect(f.snapshot()).toEqual(before);
-          expect(f.admission.ownsFreeze(f.workspaceId, f.freeze)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().ownsWorkspaceFreeze(
+              f.coreDb.dataRoot,
+              f.workspaceId,
+              f.freeze
+            )
+          ).toBe(true);
         } finally {
           resume();
           if (pending) await pending;

@@ -36,10 +36,7 @@ import { listServerPermissionDecisions } from '../policy/permission-decisions.js
 import { EMPTY_POLICY_DOCUMENT } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   openCoreDb,
   openWorkspaceDb,
@@ -504,7 +501,6 @@ async function fixture() {
     store,
     repositoryWorkspaceDb: () => db,
     goalServices: services,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
   });
   const toolsFor = (goalId = goal.goalId, turnId = coordinator.id) =>
     createGoalTools({

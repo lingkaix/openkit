@@ -19,10 +19,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { ProviderRegistry } from '../providers/registry.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { IdempotencyKeyConflictError } from '../runtime/idempotent-command.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -63,7 +60,6 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
   });
   const selectNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const notebook = selectNotebook().notebook;
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const bootstrap = createRuntimeConfigManager({
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
@@ -107,7 +103,6 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
           requestActor: { kind: 'local', userId },
           actor,
           runtimeConfigManager: bootstrap,
-          workspaceMutationAdmission,
         }),
     },
     publicationRequest
@@ -267,7 +262,6 @@ async function fixture(reviewRequired = false, failAfterPublication = false) {
     store,
     coreDb,
     runtimeConfigManager,
-    workspaceMutationAdmission,
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     pin: async (run) => {

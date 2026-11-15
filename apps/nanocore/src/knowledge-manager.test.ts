@@ -29,10 +29,7 @@ import { readManagedSourceText } from './knowledge/source-reading.js';
 import * as knowledgeManager from './knowledge-manager.js';
 import { FsStore } from './lib/store.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { rebuildWorkspaceDerivedIndexes } from './storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
@@ -90,7 +87,6 @@ async function importedStore(
   const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
   const requestActor = { kind: 'local' as const, userId: actor.id };
   const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   try {
     for (const { source, content } of sources) {
       const sourceRequestId = randomUUID();
@@ -114,7 +110,6 @@ async function importedStore(
               actor,
               requestActor,
               runtimeConfigManager: { current: () => snapshot },
-              workspaceMutationAdmission,
               request: {
                 workspaceId: demo.workspace.id,
                 requestId: sourceRequestId,
@@ -266,7 +261,6 @@ describe('Knowledge proposal decision lineage', () => {
     const actor = { kind: 'user' as const, id: 'usr_00000000-0000-7000-8000-000000000001' };
     const requestActor = { kind: 'local' as const, userId: actor.id };
     const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     let registered: Awaited<ReturnType<typeof publishCapturedSource>>['source'];
     try {
       registered = (
@@ -293,7 +287,6 @@ describe('Knowledge proposal decision lineage', () => {
                 actor,
                 requestActor,
                 runtimeConfigManager: { current: () => snapshot },
-                workspaceMutationAdmission,
                 request: {
                   workspaceId: foreignWorkspace.id,
                   requestId: randomUUID(),

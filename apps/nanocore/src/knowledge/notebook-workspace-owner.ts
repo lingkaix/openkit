@@ -14,7 +14,7 @@ import {
 } from '../knowledge-source-authority.js';
 import type { FsStore } from '../lib/store.js';
 import { OperationError, WORKSPACE_ACCESS_DENIED } from '../operation-error.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import type { NotebookPublicationDependencies, NotebookUpdate } from './notebook-publication.js';
@@ -59,14 +59,17 @@ export function assertWorkspaceNotebookWrite(
     'coreDb' | 'requestActor' | 'currentAuthority' | 'actor'
   > & {
     readonly request: Pick<NotebookUpdate, 'workspaceId'>;
-    readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
+    readonly runtimeConfigManager?: Pick<RuntimeConfigManager, 'current'>;
   }
 ): void {
   const { workspaceId } = input.request;
   input.currentAuthority?.();
   if (
-    ('workspaceMutationAdmission' in input &&
-      input.workspaceMutationAdmission!.isClosed(workspaceId)) ||
+    ('runtimeConfigManager' in input &&
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        input.coreDb.dataRoot,
+        workspaceId
+      )) ||
     (input.requestActor
       ? input.actor.id !== input.requestActor.userId ||
         !isWorkspaceOperationAuthorized(input.coreDb, input.requestActor, workspaceId, {
@@ -88,7 +91,6 @@ export function readWorkspaceNotebookPublicationFacts(
     (
       | {
           readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
-          readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
         }
       | { readonly reviewRequiredPageIds: readonly string[] }
     )
@@ -106,7 +108,6 @@ export function* readWorkspaceNotebookPublicationSteps(
     (
       | {
           readonly runtimeConfigManager: Pick<RuntimeConfigManager, 'current'>;
-          readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
         }
       | { readonly reviewRequiredPageIds: readonly string[] }
     ),

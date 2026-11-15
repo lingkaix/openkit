@@ -28,7 +28,6 @@ import {
 } from '../policy/permission-decisions.js';
 import { EMPTY_POLICY_DOCUMENT, preparePolicyDocument } from '../policy/statements.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -656,9 +655,6 @@ describe('captured pending MCP schema identity at grant', () => {
       coreDb: f.coreDb,
       store: f.store,
       interception,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-        f.coreDb.dataRoot
-      ),
       workerMcpGateway: f.gateway,
       workerControlGateway: {
         authenticatePackageToken: () => f.environmentPackage,

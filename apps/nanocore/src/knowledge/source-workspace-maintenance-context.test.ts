@@ -21,10 +21,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -65,7 +62,6 @@ it('captures native Workspace tell during execution and publishes from the exact
   const selection = () =>
     readWorkspaceNotebookSelection({ workspaceDb, workspaceRoot, knowledgeBaseId });
   const initialRevision = selection().head.notebookCommit;
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const providerRegistry = new ProviderRegistry([
     {
       id: 'fixture',
@@ -125,7 +121,6 @@ it('captures native Workspace tell during execution and publishes from the exact
       workspaceDb,
       notebook: selection().notebook,
       scopeSchemaText: selection().scopeSchemaText,
-      workspaceMutationAdmission,
       runtimeConfigManager,
       currentAuthority,
       actor: { kind: 'user', id: userId },
@@ -214,7 +209,6 @@ it('captures native Workspace tell during execution and publishes from the exact
     store,
     coreDb,
     runtimeConfigManager,
-    workspaceMutationAdmission,
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     pin: (input) => pinKnowledgeManagerExecution(roleDependencies, input),

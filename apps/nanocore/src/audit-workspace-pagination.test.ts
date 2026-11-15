@@ -16,10 +16,7 @@ import {
 import { recordUsage, startCapabilityCall } from './capability/usage-ledger.js';
 import { AutomationStore } from './lib/automation-store.js';
 import { recordProductPermissionDecision } from './policy/permission-decisions.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
 import { testEntityId } from './test-support/entity-ids.js';
@@ -254,11 +251,7 @@ describe('audit.workspace-list pagination', () => {
       threadId: privateThread.id,
       summary: 'Owner private audit.',
     });
-    const schedules = new AutomationStore(
-      fixture.coreDb,
-      getControlStoreWorkerClient().workspaceMutations(fixture.coreDb.dataRoot),
-      () => '2099-01-01T00:00:02.500Z'
-    );
+    const schedules = new AutomationStore(fixture.coreDb, () => '2099-01-01T00:00:02.500Z');
     const schedule = await schedules.createAutomation(OWNER_ID, {
       workspaceId: fixture.workspace.id,
       threadId: shared.id,

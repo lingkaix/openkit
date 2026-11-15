@@ -385,7 +385,6 @@ export function createKnowledgeOperationImplementations(
     | 'inflightCommands'
     | 'repositoryWorkspaceDb'
     | 'runtimeConfigManager'
-    | 'workspaceMutationAdmission'
     | 'knowledgeAgent'
   >
 ) {
@@ -403,15 +402,9 @@ export function createKnowledgeOperationImplementations(
     run: (dependencies: NotebookPublicationDependencies) => T | Promise<T>
   ): Promise<T> => {
     const dataRoot = store.getDataRoot();
-    const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
+    const { runtimeConfigManager } = dependencies;
     const actor = context.actorRef;
-    if (
-      !coreDb ||
-      !dataRoot ||
-      !runtimeConfigManager ||
-      !workspaceMutationAdmission ||
-      actor.kind !== 'user'
-    )
+    if (!coreDb || !dataRoot || !runtimeConfigManager || actor.kind !== 'user')
       throw new OperationError(
         'workspace_access_denied',
         'Notebook publication access denied.',
@@ -450,7 +443,6 @@ export function createKnowledgeOperationImplementations(
             requestActor: publicOperationActor(context),
             actor,
             runtimeConfigManager,
-            workspaceMutationAdmission,
           });
         },
       });
@@ -567,7 +559,6 @@ export function createKnowledgeOperationImplementations(
             actor: owner.actor!,
             requestActor: publicOperationActor(context),
             runtimeConfigManager: dependencies.runtimeConfigManager!,
-            workspaceMutationAdmission: dependencies.workspaceMutationAdmission!,
             request: {
               workspaceId: input.workspaceId,
               requestId: candidate.metadata.changeRequest.requestId,
@@ -597,7 +588,10 @@ export function createKnowledgeOperationImplementations(
         (owner) => inspectSchema(input, context, owner)
       ),
     'knowledge.schema.apply': async (input, context) => {
-      if (dependencies.workspaceMutationAdmission?.isClosed(input.workspaceId))
+      if (
+        coreDb &&
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, input.workspaceId)
+      )
         throw new OperationError('workspace_frozen', 'Workspace is temporarily frozen.', 409, {
           details: {
             workspaceId: input.workspaceId,
@@ -679,9 +673,7 @@ export function createKnowledgeOperationImplementations(
                     )
                   ),
               });
-              return getControlStoreWorkerClient(
-                dependencies.workspaceMutationAdmission!
-              ).applyWorkspaceSchema({
+              return getControlStoreWorkerClient().applyWorkspaceSchema({
                 workspaceDb: owner.workspaceDb,
                 request: input,
                 requestActor,
@@ -697,8 +689,8 @@ export function createKnowledgeOperationImplementations(
     },
     'knowledge.notebook.update': async (input, context) => {
       const dataRoot = store.getDataRoot();
-      const { runtimeConfigManager, workspaceMutationAdmission } = dependencies;
-      if (!coreDb || !dataRoot || !runtimeConfigManager || !workspaceMutationAdmission)
+      const { runtimeConfigManager } = dependencies;
+      if (!coreDb || !dataRoot || !runtimeConfigManager)
         throw new OperationError(
           'operation_storage_unavailable',
           'Notebook publication storage is unavailable.',
@@ -743,7 +735,6 @@ export function createKnowledgeOperationImplementations(
                 requestActor,
                 actor,
                 runtimeConfigManager,
-                workspaceMutationAdmission,
               });
             },
           },
@@ -1892,10 +1883,7 @@ export function createKnowledgeOperationImplementations(
 
 /** Knowledge-owned private Task entry shares public preparation's parsing, knowledge.read admission and retrieval owner. */
 export function createTaskKnowledgePreparation(
-  dependencies: Pick<
-    OperationInvocationDependencies,
-    'store' | 'coreDb' | 'repositoryWorkspaceDb' | 'workspaceMutationAdmission'
-  >
+  dependencies: Pick<OperationInvocationDependencies, 'store' | 'coreDb' | 'repositoryWorkspaceDb'>
 ) {
   return async (
     value: unknown,

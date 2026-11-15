@@ -11,7 +11,6 @@ import {
 import { testEntityId } from '../test-support/entity-ids.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { disposeTestStore } from '../test-support/store.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './db.js';
 import { insertExternalTriggerAdmission } from './external-trigger-admissions.js';
 import { applyMigrations } from './migrate.js';
@@ -41,11 +40,7 @@ describe('recurring portable history', () => {
     workspace = await files.createWorkspace('Portable history');
     thread = await files.createThread(workspace.id, 'Existing target');
     instant = '2026-10-16T00:00:00.000Z';
-    store = new AutomationStore(
-      coreDb,
-      getControlStoreWorkerClient().workspaceMutations(dataRoot),
-      () => instant
-    );
+    store = new AutomationStore(coreDb, () => instant);
   });
   afterEach(async () => {
     await disposeTestStore(dataRoot, coreDb);

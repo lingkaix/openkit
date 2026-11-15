@@ -304,11 +304,7 @@ describe('Workspace JSON transfer cutover', () => {
     const { root, db, store, app } = await fixture();
     const thread = store.listThreads(DEMO_WORKSPACE_ID)[0]!;
     const instant = '2026-10-16T00:00:00.000Z';
-    const schedules = new AutomationStore(
-      db,
-      getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-      () => instant
-    );
+    const schedules = new AutomationStore(db, () => instant);
     const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
       workspaceId: DEMO_WORKSPACE_ID,
       threadId: thread.id,

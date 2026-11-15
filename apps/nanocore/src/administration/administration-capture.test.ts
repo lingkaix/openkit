@@ -13,10 +13,7 @@ import { quickChatWorkspaceIdForUser } from '../lib/store.js';
 import { digestLlmSystemPrompt } from '../llm/system-prompt-digest.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -129,7 +126,6 @@ it('binds the actual Administration prompt and ordered tools before model access
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () =>

@@ -32,10 +32,7 @@ import {
   NANO_HOST_EFFECT_OPERATIONS,
 } from '../runtime/nanohost-session-dispatch.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import {
@@ -285,7 +282,6 @@ async function fixture(
       ).effect
     ).toBe('allow');
     expect(accounts[2]!.actor.adminTokenId).toBeUndefined();
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const app = createApp({
       mode: 'server',
       coreDb,
@@ -293,13 +289,11 @@ async function fixture(
       store,
       auth,
       runtimeConfigManager: manager,
-      workspaceMutationAdmission,
       ...createOptions(coreDb),
     });
     return {
       coreDb,
       dataRoot,
-      workspaceMutationAdmission,
       store,
       manager,
       accounts,

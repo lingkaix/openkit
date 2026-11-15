@@ -57,7 +57,6 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
   const coreDb = openCoreDb(root);
   applyMigrations(coreDb);
   const userId = ensureLocalUser(coreDb);
-  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const manifest = createTestAgentSetup({
     adapter: runtime.adapter,
     imageRef: `sha256:${'a'.repeat(64)}`,
@@ -82,7 +81,6 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
   });
   const native = await createNativeTaskAdmissionFixture(coreDb, store, {
     readRuntimeConfig: () => configuration,
-    workspaceMutationAdmission: admission,
   });
   const handles: ReturnType<typeof openWorkspaceDb>[] = [];
   let cleanupTurn: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
@@ -138,7 +136,6 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     store,
     turnExecutor: native.executor,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: admission,
     repositoryWorkspaceDb: (workspaceId: string) => {
       const db = openWorkspaceDb(root, workspaceId);
       handles.push(db);
@@ -175,7 +172,6 @@ async function fixture(runtime = { adapter: 'codex', version: '0.166.0' }) {
     entry,
     userId,
     manifest,
-    admission,
     configuration,
     inflightCommands: dependencies.inflightCommands,
   };
@@ -191,13 +187,11 @@ describe('Task steer through the existing native Harness slot', () => {
       store: f.store,
       workerControlGateway: f.native.workerControlGateway,
       readRuntimeConfig: () => f.configuration,
-      workspaceMutationAdmission: f.admission,
     });
     const dependencies = {
       coreDb: f.coreDb,
       store: f.store,
       turnExecutor: cold.turnExecutor,
-      workspaceMutationAdmission: f.admission,
       inflightCommands: new WeakMap(),
       repositoryWorkspaceDb: (workspaceId: string) => openWorkspaceDb(f.root, workspaceId),
     };
@@ -226,9 +220,10 @@ describe('Task steer through the existing native Harness slot', () => {
         itemCommitted = true;
       return result;
     });
-    const enter = f.admission.enter.bind(f.admission);
-    vi.spyOn(f.admission, 'enter').mockImplementation((...args) => {
-      if (itemCommitted && (args[1] ?? 'ordinary') === 'ordinary')
+    const client = getControlStoreWorkerClient();
+    const enter = client.enterWorkspaceMutation.bind(client);
+    vi.spyOn(client, 'enterWorkspaceMutation').mockImplementation((...args) => {
+      if (itemCommitted && (args[2] ?? 'ordinary') === 'ordinary')
         throw new OperationError(
           'operation_storage_unavailable',
           'Current authority storage is unavailable.',
@@ -508,7 +503,6 @@ describe('Task steer through the existing native Harness slot', () => {
         coreDb: f.coreDb,
         store: f.store,
         turnExecutor: f.native.executor,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.root),
         inflightCommands: new WeakMap(),
         repositoryWorkspaceDb: (workspaceId: string) => openWorkspaceDb(f.root, workspaceId),
       };
@@ -687,7 +681,6 @@ describe('Task steer through the existing native Harness slot', () => {
       mode: 'local',
       localUserId: f.userId,
       turnExecutor: f.native.executor,
-      workspaceMutationAdmission: f.admission,
       agentManifests: [f.manifest],
       gatewayConfig: createTestGatewayConfig(),
       providerRegistry: f.configuration.providerRegistry,

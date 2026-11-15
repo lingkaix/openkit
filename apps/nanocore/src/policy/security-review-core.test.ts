@@ -31,7 +31,6 @@ import { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { getSchedulerPreparationClaims } from '../runtime/scheduler-dispatch-loop.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { findSchedulerAdmissionForTurn } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
@@ -451,7 +450,6 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
       };
     },
   });
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const sdkCall = vi.spyOn(Client.prototype, 'callTool'); // passive: the real SDK/HTTP peer still runs
   let taskApp: ReturnType<typeof createApp> | undefined;
   let mcpApp: Hono | undefined;
@@ -461,7 +459,6 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
   async function start() {
     native = await createNativeTaskAdmissionFixture(coreDb, store, {
       readRuntimeConfig: () => manager.current(),
-      workspaceMutationAdmission: admission,
     });
     // Existing image/placement/Harness metadata peers do NOT prove physical execution.
     admitTestNativeEnvironment(coreDb, setup.manifest);
@@ -474,7 +471,6 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
       dataRoot,
       store,
       runtimeConfigManager: manager,
-      workspaceMutationAdmission: admission,
       fileAdmission: native.fileAdmission,
       turnExecutor: native.executor,
       workerLifecycleRuntime: native.runtime,
@@ -490,7 +486,6 @@ async function fixture(agentId: 'security-review' | 'ordinary-reviewer') {
       runtimeConfig: () => manager.current(),
       workerControlGateway: native.workerControlGateway,
       workerMcpGateway: gateway,
-      workspaceMutationAdmission: admission,
       interception: new PolicyInterception(undefined, participant),
     });
     const response = await taskApp.request(

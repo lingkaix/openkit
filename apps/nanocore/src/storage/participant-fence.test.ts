@@ -187,8 +187,6 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
         ownerUserId: ownerId,
       })
     );
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    store.setWorkspaceMutationAdmission(gate);
     const created = start(() =>
       createMcpConfig({
         dataRoot,
@@ -252,7 +250,6 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
         dataRoot,
         coreDb: core,
         store,
-        mutationAdmission: gate,
         actor: { kind: 'local' as const, userId: ownerId },
       },
       workspaceId: DEMO_WORKSPACE_ID,
@@ -291,7 +288,8 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
           if (phaseReleased) return;
           if (releaseTimer) clearTimeout(releaseTimer);
           try {
-            facts.gateClosedBeforePhaseRelease = gate.isClosed(DEMO_WORKSPACE_ID);
+            facts.gateClosedBeforePhaseRelease =
+              getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, DEMO_WORKSPACE_ID);
             facts.bytesBeforePhaseRelease = readFileSync(log, 'utf8');
             facts.phaseReleasedByCleanup = stopped;
           } catch (error) {
@@ -310,11 +308,17 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
         // Install the independent release BEFORE evaluating the original producer.
         releaseTimer = setTimeout(releasePhase, OBSERVATION_WINDOW_MS);
         try {
-          facts.gateClosedAtOffer = gate.isClosed(DEMO_WORKSPACE_ID);
+          facts.gateClosedAtOffer = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+            dataRoot,
+            DEMO_WORKSPACE_ID
+          );
           facts.duringOfferBytes = readFileSync(log, 'utf8');
           duringObservation = outcome(call('during-cut')).then((observed) => {
             during = observed;
-            facts.gateClosedAtSettlement = gate.isClosed(DEMO_WORKSPACE_ID);
+            facts.gateClosedAtSettlement = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+              dataRoot,
+              DEMO_WORKSPACE_ID
+            );
             facts.phaseReleasedAtSettlement = phaseReleased;
             facts.duringSettlementBytes = readFileSync(log, 'utf8');
             facts.during = during;
@@ -418,7 +422,9 @@ it('excludes the original gateway-owned MCP file publisher from the capture cut 
         facts.observation = 'success-after-release-no-in-cut-effect-observed';
       }
     }
-    expect(gate.isClosed(DEMO_WORKSPACE_ID)).toBe(false);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, DEMO_WORKSPACE_ID)
+    ).toBe(false);
     const after = await call('after-cut');
     expect(after.structuredContent).toMatchObject({
       message: 'after-cut',

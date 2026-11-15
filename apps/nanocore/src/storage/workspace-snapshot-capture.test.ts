@@ -110,7 +110,6 @@ import type { ControlTerminalTransition } from './control-store-products.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
 } from './control-store-worker-client.js';
 import * as databaseOwner from './db.js';
 import { bindWorkspaceSqlite, openCoreDb, openWorkspaceDb, openWorkspaceReadDb } from './db.js';
@@ -652,7 +651,6 @@ async function fixture() {
   await openTestNativeWorkspace(nativeWorkspaceDb);
   nativeWorkspaceDb.sqlite.close();
   const ownerId = base.ownerId;
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const stagingParent = join(root, 'staging');
   mkdirSync(stagingParent);
   const policy = {
@@ -666,7 +664,6 @@ async function fixture() {
     dataRoot,
     coreDb,
     store,
-    mutationAdmission,
     actor: { kind: 'local' as const, userId: ownerId },
   };
   const deploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
@@ -694,7 +691,6 @@ async function fixture() {
     store,
     coreDb,
     ownerId,
-    mutationAdmission,
     policy,
     source,
     input,
@@ -732,7 +728,9 @@ async function refusal(f: Fixture, input = f.input()) {
   } finally {
     db.sqlite.close();
   }
-  expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+  expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+    false
+  );
   return result;
 }
 
@@ -956,7 +954,7 @@ describe('C-a snapshot authoritative blockers', () => {
         }
       } else if (family === 'recurring-occurrence') {
         const now = '2026-10-27T01:00:00.000Z';
-        const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
+        const schedules = new AutomationStore(f.coreDb, () => now);
         const schedule = await schedules.createAutomation(f.ownerId, {
           workspaceId,
           threadId: DEMO_THREAD_ID,
@@ -994,7 +992,6 @@ describe('C-a snapshot authoritative blockers', () => {
         source = {
           ...f.source,
           store: new FsStore({ dataRoot: f.dataRoot }),
-          mutationAdmission: getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
         };
         expect(readBlockers({ ...source, workspaceId })).toEqual([]);
         f.coreDb.sqlite.pragma('ignore_check_constraints = ON');
@@ -1021,10 +1018,7 @@ describe('C-a snapshot authoritative blockers', () => {
       expect(readBlockers({ ...source, workspaceId })).toEqual(
         expect.arrayContaining([unavailable])
       );
-      await refusal(
-        { ...f, store: source.store, mutationAdmission: source.mutationAdmission },
-        { ...f.input(), source }
-      );
+      await refusal({ ...f, store: source.store }, { ...f.input(), source });
     },
     120_000
   );
@@ -1058,7 +1052,9 @@ describe('C-a snapshot authoritative blockers', () => {
     const input = f.input();
     await expect(createWorkspaceBackup(input)).rejects.toThrow();
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     await f.read(previous.manifest.backupId, async (bundle) =>
       expect(bundle.manifestDigest).toBe(previous.report.manifestDigest)
     );
@@ -1276,7 +1272,7 @@ describe('C-a manual recovery closure after restart', () => {
       });
       const beforeTime = '2026-10-27T00:00:00.000Z';
       const due = '2099-01-01T00:00:00.000Z';
-      const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => beforeTime);
+      const schedules = new AutomationStore(f.coreDb, () => beforeTime);
       const target = await schedules.createAutomation(f.ownerId, {
         workspaceId,
         threadId: DEMO_THREAD_ID,
@@ -1333,26 +1329,25 @@ describe('C-a manual recovery closure after restart', () => {
       f.coreDb.sqlite.close();
       const coreDb = openCoreDb(f.dataRoot);
       databaseHandles.push(coreDb);
-      const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       const store = new FsStore({ dataRoot: f.dataRoot });
-      store.setWorkspaceMutationAdmission(mutationAdmission);
-      // Existing recovery census owns quarantine and the reconstructed process-local gate.
-      (
-        restoreWorkspaceRecoveryAdmission as (
-          core: typeof coreDb,
-          gate?: WorkspaceMutationAdmission
-        ) => void
-      )(coreDb, mutationAdmission);
+      // Existing recovery census owns quarantine and the Root's native mutation scope.
+      restoreWorkspaceRecoveryAdmission(coreDb);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       expect(scopeAdmissionFailures(f.dataRoot)).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ scope: 'workspace', id: workspaceId, check: 'recovery' }),
         ])
       );
-      expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
-      expect(mutationAdmission.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+      ).toBe(true);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(coreDb.dataRoot, workspaceId)
+      ).toBeNull();
       expect(isScopeAdmitted(f.dataRoot, 'workspace', sibling.id)).toBe(true);
-      expect(mutationAdmission.isClosed(sibling.id)).toBe(false);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, sibling.id)
+      ).toBe(false);
       const targetCoreRows = () =>
         Object.fromEntries(
           Object.entries(databaseRows(coreDb.sqlite.name, f.root)).map(([table, rows]) => [
@@ -1411,7 +1406,7 @@ describe('C-a manual recovery closure after restart', () => {
       expect(siblingOperations).toContain('open');
       expect(siblingOperations).toContain('checkpoint');
       expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-      const restartedSchedules = new AutomationStore(coreDb, mutationAdmission, () => due);
+      const restartedSchedules = new AutomationStore(coreDb, () => due);
       await expect(
         restartedSchedules.createAutomation(f.ownerId, {
           workspaceId,
@@ -1442,9 +1437,14 @@ describe('C-a manual recovery closure after restart', () => {
       );
       databaseHandles.push(retainedDb);
       expect(inspectCapture(retainedDb, workspaceId, input.backupId)).toEqual(beforePin);
-      expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+      ).toBe(true);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-      const siblingRelease = mutationAdmission.enter(sibling.id);
+      const siblingRelease = getControlStoreWorkerClient().enterWorkspaceMutation(
+        coreDb.dataRoot,
+        sibling.id
+      );
       expect(siblingRelease).not.toBeNull();
       siblingRelease!();
     }
@@ -1455,7 +1455,7 @@ describe('C-a additional owner families', () => {
   it('treats future timers and queued occurrences as inert under the dispatch fence', async () => {
     const f = await fixture();
     const now = '2026-10-27T01:00:00.000Z';
-    const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
+    const schedules = new AutomationStore(f.coreDb, () => now);
     const schedule = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
@@ -1485,7 +1485,7 @@ describe('C-a additional owner families', () => {
     expect(await schedules.collectScanCandidates(now)).toHaveLength(1);
     expect(readBlockers({ ...f, workspaceId })).toEqual([]);
 
-    const release = f.mutationAdmission.enter(workspaceId)!;
+    const release = getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)!;
     const capture = f.input();
     try {
       const error = await createWorkspaceBackup(capture).then(
@@ -1503,7 +1503,7 @@ describe('C-a additional owner families', () => {
   it('refuses active recurring preparation without waiting for or interrupting its publisher', async () => {
     const f = await fixture();
     const now = '2026-10-27T01:00:00.000Z';
-    const schedules = new AutomationStore(f.coreDb, f.mutationAdmission, () => now);
+    const schedules = new AutomationStore(f.coreDb, () => now);
     const created = await schedules.createAutomation(f.ownerId, {
       workspaceId,
       threadId: DEMO_THREAD_ID,
@@ -1558,7 +1558,9 @@ describe('C-a additional owner families', () => {
       service.stop();
       await running;
     }
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
   });
 
   it('keeps physical residency blocked after terminal work until cleanup is proved', async () => {
@@ -1748,7 +1750,6 @@ describe('C-a frozen scheduler pre-post ordering', () => {
           user: { userId: f.ownerId, status: 'disabled' },
         });
       }
-      f.store.setWorkspaceMutationAdmission(f.mutationAdmission);
       const claims = getSchedulerPreparationClaims(f.coreDb);
       expect(claims.size).toBe(0);
       const claim = vi.spyOn(claims, 'set');
@@ -1775,7 +1776,11 @@ describe('C-a frozen scheduler pre-post ordering', () => {
         callerQueueEntryId: entry.queueEntryId,
         maxDispatches: 1,
       };
-      const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+      const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.dataRoot,
+        workspaceId,
+        () => []
+      );
       expect(frozen.status).toBe('frozen');
       if (frozen.status !== 'frozen') throw new Error('Fixture did not acquire its target freeze.');
       try {
@@ -1795,7 +1800,9 @@ describe('C-a frozen scheduler pre-post ordering', () => {
         for (const effect of backend) expect(effect).not.toHaveBeenCalled();
         expect(claims.size).toBe(0);
         expect(claim).not.toHaveBeenCalled();
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(true);
       } finally {
         frozen.release();
       }
@@ -1839,8 +1846,14 @@ describe('C-a frozen scheduler pre-post ordering', () => {
       expect(start).not.toHaveBeenCalled();
       for (const effect of backend) expect(effect).not.toHaveBeenCalled();
       expect(claims.size).toBe(0);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
-      const released = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
+      const released = getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.dataRoot,
+        workspaceId,
+        () => []
+      );
       expect(released.status).toBe('frozen');
       if (released.status === 'frozen') released.release();
     }
@@ -1879,7 +1892,6 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
       requestedAgentId: agentId,
       triggerActor: { kind: 'user', id: f.ownerId },
     });
-    f.store.setWorkspaceMutationAdmission(f.mutationAdmission);
     const claims = getSchedulerPreparationClaims(f.coreDb);
     expect(claims.size).toBe(0);
     const claim = vi.spyOn(claims, 'set');
@@ -1904,7 +1916,11 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
     const backend = (['submit', 'inspect', 'cancel', 'release'] as const).map((method) =>
       vi.spyOn(executor, method)
     );
-    const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     expect(frozen.status).toBe('frozen');
     if (frozen.status !== 'frozen') throw new Error('Fixture did not freeze A.');
     try {
@@ -1944,8 +1960,14 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
       for (const effect of backend) expect(effect).not.toHaveBeenCalled();
       expect(claim).not.toHaveBeenCalled();
       expect(claims.size).toBe(0);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-      const availableB = f.mutationAdmission.tryFreeze(sibling.id, () => []);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
+      const availableB = getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.dataRoot,
+        sibling.id,
+        () => []
+      );
       expect(availableB.status).toBe('frozen');
       if (availableB.status === 'frozen') availableB.release();
     } finally {
@@ -1984,7 +2006,6 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
     };
     const receivingDb = databaseOwner.openWorkspaceReadDb(f.dataRoot, sibling.id);
     databaseHandles.push(receivingDb);
-    f.store.setWorkspaceMutationAdmission(f.mutationAdmission);
     const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
     const beforeA = tree(f.workspaceRoot);
     const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
@@ -2001,7 +2022,11 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
       });
       return db;
     });
-    const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     expect(frozen.status).toBe('frozen');
     if (frozen.status !== 'frozen') throw new Error('Fixture did not freeze source A.');
     try {
@@ -2016,7 +2041,9 @@ describe('C-a observational cross-Workspace scheduler probes', () => {
       expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
       expect(databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root)).toEqual(beforeRows);
       expect(tree(f.workspaceRoot)).toEqual(beforeA);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
     } finally {
       frozen.release();
     }
@@ -2092,7 +2119,6 @@ describe('C-a private target refusal ordering', () => {
       dataRoot: f.dataRoot,
       store: f.store,
       fileAdmission: f.policy.admission,
-      workspaceMutationAdmission: f.mutationAdmission,
       inflightCommands: new WeakMap(),
     });
     const context = (userId: string) => ({
@@ -2124,7 +2150,11 @@ describe('C-a private target refusal ordering', () => {
     const beforeTarget = tree(f.workspaceRoot);
     const beforePrivateTurn = f.store.getTurnById(privateTurn.id);
     const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
-    const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     expect(frozen.status).toBe('frozen');
     if (frozen.status !== 'frozen') throw new Error('Fixture did not freeze the private target.');
     try {
@@ -2152,7 +2182,9 @@ describe('C-a private target refusal ordering', () => {
         rating: 'good',
         note: 'Sibling remains authorized while private target is frozen',
       });
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       expect(tree(f.workspaceRoot)).toEqual(beforeTarget);
     } finally {
       frozen.release();
@@ -2164,23 +2196,23 @@ describe('C-a private target refusal ordering', () => {
 
 describe('C-a nonwaiting native holds', () => {
   it('releases only capture ownership when deletion independently closes the same gate', async () => {
-    const admission = new WorkspaceMutationAdmission();
-    const freeze = admission.tryFreeze(workspaceId, () => []);
+    const client = getControlStoreWorkerClient();
+    const root = join(tmpdir(), `c-a-native-scope-${allocateEntityId('ws')}`);
+    const freeze = client.tryFreezeWorkspace(root, workspaceId, () => []);
     expect(freeze.status).toBe('frozen');
     if (freeze.status !== 'frozen') throw new Error('Expected idle capture admission.');
-    await admission.close(workspaceId);
+    await client.closeWorkspaceMutations(root, workspaceId);
     freeze.release();
     freeze.release();
-    expect(admission.isClosed(workspaceId)).toBe(true);
-    expect(admission.enter(workspaceId)).toBeNull();
-    const siblingRelease = admission.enter(allocateEntityId('ws'));
+    expect(client.isWorkspaceMutationClosed(root, workspaceId)).toBe(true);
+    expect(client.enterWorkspaceMutation(root, workspaceId)).toBeNull();
+    const siblingRelease = client.enterWorkspaceMutation(root, allocateEntityId('ws'));
     expect(siblingRelease).not.toBeNull();
     siblingRelease!();
   });
 
   it('preserves pre-existing native session and terminal settlement under an ordinary deletion closure', async () => {
     const f = await fixture();
-    f.store.setWorkspaceMutationAdmission(f.mutationAdmission);
     const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Already admitted work', {
       kind: 'user',
       id: f.ownerId,
@@ -2196,7 +2228,7 @@ describe('C-a nonwaiting native holds', () => {
       updatedAt: turn.startedAt!,
     });
     const artifacts = f.store.listArtifacts(workspaceId);
-    await f.mutationAdmission.close(workspaceId);
+    await getControlStoreWorkerClient().closeWorkspaceMutations(f.dataRoot, workspaceId);
     await expect(
       f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'No new ordinary work', {
         kind: 'user',
@@ -2227,7 +2259,9 @@ describe('C-a nonwaiting native holds', () => {
       )
     ).resolves.toBeDefined();
     expect(f.store.listArtifacts(workspaceId)).toEqual(artifacts);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      true
+    );
     await shutdownControlStoreWorkerClient();
     const reopened = new FsStore({ dataRoot: f.dataRoot });
     expect(reopened.getAgentSession(session.id)).toEqual(settled);
@@ -2235,7 +2269,9 @@ describe('C-a nonwaiting native holds', () => {
       status: 'interrupted',
       error: { code: 'workspace_access_denied' },
     });
-    expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+    ).toBeNull();
   });
 
   it('refuses a direct native checkpoint during capture without posting or deferred replay', async () => {
@@ -2287,7 +2323,9 @@ describe('C-a nonwaiting native holds', () => {
           throw new Error('Capture did not reach its native copy boundary.');
         }),
       ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const beforeSessionRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
       const beforeSessionWrite = tree(f.workspaceRoot);
       // This bypasses every Store wrapper and reaches the existing native client owner.
@@ -2324,7 +2362,9 @@ describe('C-a nonwaiting native holds', () => {
       expect(afterSessionWrite).toEqual(beforeSessionWrite);
       expect(checkpointPosts(database)).toHaveLength(0);
       expect(checkpointPosts(siblingDatabase)).toHaveLength(1);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
     } finally {
       resume();
       copy.mockRestore();
@@ -2333,7 +2373,9 @@ describe('C-a nonwaiting native holds', () => {
       await attemptedSession;
     }
     expect(captured.disposition).toBe('sealed');
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     // Release must not retry the refused request or retain its finite admission slot.
     expect(checkpointPosts(database)).toHaveLength(0);
     expect(f.store.getAgentSession(retainedSession.id)).toEqual(retainedSession);
@@ -2390,7 +2432,6 @@ function deletionOperations(
     dataRoot: f.dataRoot,
     store: f.store,
     fileAdmission: f.policy.admission,
-    workspaceMutationAdmission: f.mutationAdmission,
     closeWorkspaceMcpSessions: cleanup,
     ...(releaseIdentity
       ? {
@@ -2511,7 +2552,9 @@ describe('C-a capture and existing deletion ownership', () => {
         }),
       ]);
       expect(intercepted).toBe(true);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({ state: 'active' });
       const beforeSource = tree(f.workspaceRoot);
       const sourceInode = lstatSync(f.workspaceRoot).ino;
@@ -2530,7 +2573,9 @@ describe('C-a capture and existing deletion ownership', () => {
       expect(lstatSync(f.workspaceRoot).ino).toBe(sourceInode);
       expect(tree(f.workspaceRoot)).toEqual(beforeSource);
       expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({ state: 'active' });
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
     } finally {
       resume();
       copy.mockRestore();
@@ -2653,7 +2698,10 @@ describe('C-a capture and existing deletion ownership', () => {
       let deleting: Promise<{ error?: unknown; result?: unknown }> | undefined;
       if (order === 'publisher-before-freeze') {
         // A live ordinary mutation lease makes lifecycle freeze refuse without waiting.
-        const releasePublisher = f.mutationAdmission.enter(workspaceId);
+        const releasePublisher = getControlStoreWorkerClient().enterWorkspaceMutation(
+          f.dataRoot,
+          workspaceId
+        );
         try {
           expect(releasePublisher).not.toBeNull();
           const beforeCore = databaseRows(f.coreDb.sqlite.name, f.root);
@@ -2679,7 +2727,9 @@ describe('C-a capture and existing deletion ownership', () => {
           expect(databaseRows(f.coreDb.sqlite.name, f.root)).toEqual(beforeCore);
           expect(lstatSync(f.workspaceRoot).ino).toBe(sourceInode);
           expect(tree(f.workspaceRoot)).toEqual(beforeSource);
-          expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+          ).toBe(false);
         } finally {
           releasePublisher?.();
         }
@@ -2706,7 +2756,9 @@ describe('C-a capture and existing deletion ownership', () => {
             throw new Error('Capture did not reach its native copy boundary.');
           }),
         ]);
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(true);
         if (!deleting)
           deleting = deletion.invoke('workspace.delete', deletion.request, deletion.context).then(
             (result) => ({ result }),
@@ -2722,8 +2774,12 @@ describe('C-a capture and existing deletion ownership', () => {
         expect(deletion.cleanup).not.toHaveBeenCalled();
         expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
         expect(getWorkspaceRegistryLifecycleFact(f.coreDb, workspaceId)).toEqual(deletion.registry);
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-        expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(true);
+        expect(
+          getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+        ).toBeNull();
         const siblingThread = await deletion.invoke(
           'thread.create',
           {
@@ -2751,7 +2807,9 @@ describe('C-a capture and existing deletion ownership', () => {
       }
       expect(captureFailure).toBeUndefined();
       expect(captured?.disposition).toBe('sealed');
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual([]);
     },
     120_000
@@ -2773,11 +2831,12 @@ describe('C-a capture and existing deletion ownership', () => {
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
     const store = new FsStore({ dataRoot: f.dataRoot });
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    const input = { ...f.input(), source: { ...f.source, coreDb, store, mutationAdmission } };
+    const input = { ...f.input(), source: { ...f.source, coreDb, store } };
     expect(readBlockers({ coreDb, store, workspaceId }).length).toBeGreaterThan(0);
     // Native disposal is not a new logical owner and cannot discard the unfinished deletion fence.
-    expect(mutationAdmission).toBe(f.mutationAdmission);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+    ).toBe(true);
     await expect(createWorkspaceBackup(input)).rejects.toMatchObject({ code: 'workspace_frozen' });
     expect(listWorkspaceDeletionRequests(f.dataRoot, workspaceId)).toEqual(requests);
     expect(getWorkspaceRegistryLifecycleFact(coreDb, workspaceId)).toEqual(deletion.registry);
@@ -2787,14 +2846,18 @@ describe('C-a capture and existing deletion ownership', () => {
     } finally {
       db.sqlite.close();
     }
-    expect(mutationAdmission.isClosed(workspaceId)).toBe(true);
-    expect(mutationAdmission.enter(workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+    ).toBe(true);
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(coreDb.dataRoot, workspaceId)
+    ).toBeNull();
   });
 });
 
 /** Evaluates the shipped automatic callback against the existing real capture fixture. */
 function entrypointSnapshotMaintenance(
-  f: Pick<Fixture, 'dataRoot' | 'coreDb' | 'store' | 'mutationAdmission'> & {
+  f: Pick<Fixture, 'dataRoot' | 'coreDb' | 'store'> & {
     policy: Pick<Fixture['policy'], 'admission'>;
   },
   processShutdownAbort = new AbortController()
@@ -2833,7 +2896,6 @@ function entrypointSnapshotMaintenance(
     dataRoot: f.dataRoot,
     activeCoreDb: f.coreDb,
     store: f.store,
-    workspaceMutationAdmission: f.mutationAdmission,
     fileAdmission: f.policy.admission,
     WORKSPACE_BACKUP_POLICY,
     join,
@@ -2929,7 +2991,6 @@ describe('C-b daily snapshot policy and retention', () => {
       dataRoot,
       store,
       coreDb,
-      mutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       policy: { admission: new FileStorageAdmission(root, () => 0n) },
     };
     task.meta.freshWorkspaceSetupMs = performance.now() - setupStarted;
@@ -3000,12 +3061,14 @@ describe('C-b daily snapshot policy and retention', () => {
       expect
         .soft(rows)
         .toEqual([{ capture_id: expect.any(String), state: 'active', origin: 'automatic' }]);
-      restoreWorkspaceRecoveryAdmission(f.coreDb, f.mutationAdmission);
+      restoreWorkspaceRecoveryAdmission(f.coreDb);
       expect.soft(inspectCapture(db, workspaceId, rows[0]!.capture_id)).toMatchObject({
         state: 'abandoned',
         origin: 'automatic',
       });
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
     } finally {
       captureWorkerProbe.onPhase = undefined;
       await service.stop().catch(() => undefined);
@@ -3038,7 +3101,10 @@ describe('C-b daily snapshot policy and retention', () => {
     expect(sealed()).toHaveLength(1);
     const selected = first.manifest.workspaceId;
     const blocked = selected === workspaceId ? sibling.id : workspaceId;
-    const releaseBlocked = f.mutationAdmission.enter(blocked);
+    const releaseBlocked = getControlStoreWorkerClient().enterWorkspaceMutation(
+      f.dataRoot,
+      blocked
+    );
     if (!releaseBlocked) throw new Error('The other Workspace was not initially admitted.');
     const blockedRoot = join(f.dataRoot, 'workspaces', blocked);
     const beforeBlocked = tree(blockedRoot);
@@ -3097,7 +3163,6 @@ describe('C-b daily snapshot policy and retention', () => {
       instructionReference: 'test:automatic-snapshot-retention',
     });
     recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const stagingParent = join(root, 'staging');
     mkdirSync(stagingParent);
     const policy = {
@@ -3106,7 +3171,7 @@ describe('C-b daily snapshot policy and retention', () => {
       expectedRelease: release,
       supportedDatabaseFormats: formats,
     };
-    const source = { kind: 'live-workspace' as const, dataRoot, coreDb, store, mutationAdmission };
+    const source = { kind: 'live-workspace' as const, dataRoot, coreDb, store };
     const deploymentId = readDataRootLayoutMarker(dataRoot).deploymentId;
     const f = {
       dataRoot,
@@ -3234,7 +3299,11 @@ describe('C-b original-byte acquisition protection', () => {
     let duringAcquisition: string | undefined;
     const reserve = vi.fn((...args: Parameters<typeof f.policy.admission.reserve>) => {
       if (duringAcquisition === undefined) {
-        const attempt = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+        const attempt = getControlStoreWorkerClient().tryFreezeWorkspace(
+          f.dataRoot,
+          workspaceId,
+          () => []
+        );
         duringAcquisition = attempt.status;
         if (attempt.status === 'frozen') attempt.release();
       }
@@ -3250,14 +3319,21 @@ describe('C-b original-byte acquisition protection', () => {
       },
       admission: { reserve },
       acquireSource: () => {
-        const release = f.mutationAdmission.enter(workspaceId);
+        const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+          f.dataRoot,
+          workspaceId
+        );
         if (!release) throw refusal;
         return release;
       },
     };
     await withVerifiedWorkspaceSnapshotSource(input, async (bundle) => {
       // Online Snapshot Policy makes an independent verified stream inert after acquisition.
-      const attempt = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+      const attempt = getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.dataRoot,
+        workspaceId,
+        () => []
+      );
       expect(attempt.status).toBe('frozen');
       if (attempt.status !== 'frozen') throw new Error('Acquisition admission was not released.');
       try {
@@ -3271,7 +3347,11 @@ describe('C-b original-byte acquisition protection', () => {
     // The real gate must exclude retention while original bytes still require the local pool.
     expect(duringAcquisition).toBe('busy');
 
-    const frozen = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     expect(frozen.status).toBe('frozen');
     if (frozen.status !== 'frozen') throw new Error('Control freeze was not admitted.');
     const sourceOpen = vi.spyOn(await import('node:fs/promises'), 'open');
@@ -3315,7 +3395,11 @@ describe('C-b original-byte acquisition protection', () => {
     // A valid owner-created generation is damaged only to prove failure releases admission.
     writeFileSync(join(captured.bundleRoot, 'manifest.json'), '{');
     await expect(withVerifiedWorkspaceSnapshotSource(input, consume)).rejects.toThrow();
-    const afterFailure = f.mutationAdmission.tryFreeze(workspaceId, () => []);
+    const afterFailure = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.dataRoot,
+      workspaceId,
+      () => []
+    );
     expect(afterFailure.status).toBe('frozen');
     if (afterFailure.status === 'frozen') afterFailure.release();
   });
@@ -3398,7 +3482,9 @@ describe('C-a independent sealed generations', () => {
     });
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
     expect(readFileSync(sourceFile)).toEqual(sourceBytes);
-    expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+    ).toBeNull();
     await shutdownControlStoreWorkerClient();
     f.coreDb.sqlite.close();
     const reopened = openCoreDb(f.dataRoot);
@@ -3472,7 +3558,9 @@ describe('C-a independent sealed generations', () => {
       }
       expect(existsSync(join(input.bundleRoot, 'manifest.json'))).toBe(true);
       expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-      expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+      ).toBeNull();
       await selectedWorker!.terminate();
       const outcome = await pending;
       expect(outcome).toMatchObject({ error: expect.any(Error) });
@@ -3487,16 +3575,19 @@ describe('C-a independent sealed generations', () => {
       expect(readRecoveryExecution(f.coreDb, input.backupId)).toEqual(retained);
       expect(existsSync(join(input.bundleRoot, 'manifest.json'))).toBe(true);
       expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-      expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+      ).toBeNull();
       await shutdownControlStoreWorkerClient();
       f.coreDb.sqlite.close();
       const reopened = openCoreDb(f.dataRoot);
       databaseHandles.push(reopened);
       expect(readRecoveryExecution(reopened, input.backupId)).toEqual(retained);
       expect(readFileSync(sourceFile)).toEqual(sourceBytes);
-      const coldAdmission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
-      restoreWorkspaceRecoveryAdmission(reopened, coldAdmission);
-      expect(coldAdmission.enter(workspaceId)).toBeNull();
+      restoreWorkspaceRecoveryAdmission(reopened);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(db.dataRoot, workspaceId)
+      ).toBeNull();
     } finally {
       captureWorkerProbe.onNativeMessage = undefined;
       if (selectedWorker && selectedWorker.threadId !== -1) await selectedWorker.terminate();
@@ -3522,7 +3613,6 @@ describe('C-a independent sealed generations', () => {
           ...f.source,
           coreDb,
           store: new FsStore({ dataRoot: f.dataRoot }),
-          mutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
         };
       }
       // Neither branch performs a product mutation or native open to warm the source.
@@ -3543,7 +3633,9 @@ describe('C-a independent sealed generations', () => {
       expect(captured.manifest.backupId).toBe(input.backupId);
       expect(captured.manifest.capture.consistency).toBe('workspace-consistent');
       expect(inspectCapture(db, workspaceId, input.backupId)).toMatchObject({ state: 'finished' });
-      expect(source.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(source.dataRoot, workspaceId)
+      ).toBe(false);
       await f.read(input.backupId, async (bundle) =>
         expect(bundle.manifestDigest).toBe(captured.report.manifestDigest)
       );
@@ -3559,7 +3651,9 @@ describe('C-a independent sealed generations', () => {
       expect(message.captureId).toBe(input.backupId);
       expect(message.workspaceId).toBe(workspaceId);
       calls += 1;
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const db = openWorkspaceDb(f.dataRoot, workspaceId);
       try {
         expect(inspectCapture(db, workspaceId, input.backupId)?.state).toBe('active');
@@ -3573,8 +3667,12 @@ describe('C-a independent sealed generations', () => {
       pin.mockRestore();
     }
     expect(calls).toBe(1);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-    expect(f.mutationAdmission.enter(workspaceId)).toBeNull();
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      true
+    );
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(f.dataRoot, workspaceId)
+    ).toBeNull();
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
     const db = openWorkspaceReadDb(f.dataRoot, workspaceId);
     databaseHandles.push(db);
@@ -3589,7 +3687,9 @@ describe('C-a independent sealed generations', () => {
     expect(
       readWorkspaceRecoveryBlockers({ ...f, workspaceId }, { captureId: input.backupId })
     ).toEqual([]);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      true
+    );
   });
 
   it('joins admitted sealed-Turn display preparation through its real native ACK before the capture cut', async () => {
@@ -3678,8 +3778,12 @@ describe('C-a independent sealed generations', () => {
         }),
       ]);
       expect(published).toBe(false);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
-      expect(f.mutationAdmission.isClosed(workspaceId, 'capture')).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId, 'capture')
+      ).toBe(false);
       resumePreparation.resolve();
       expect((await publication).title).toBe('After admitted preparation');
       expect((await capture).disposition).toBe('sealed');
@@ -3822,7 +3926,9 @@ describe('C-a independent sealed generations', () => {
           throw new Error('Capture did not drain the already-posted terminal ACK.');
         }),
       ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       expect(acknowledged).toBe(false);
       expect(cutReached).toBe(false);
       expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
@@ -3846,7 +3952,9 @@ describe('C-a independent sealed generations', () => {
           throw new Error('Capture did not reach its target cut after the real terminal ACK.');
         }),
       ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const terminalPosts = () =>
         post.mock.calls.filter(
           ([message]) => message?.operation === 'terminal' && message.database === targetDatabase
@@ -3855,7 +3963,9 @@ describe('C-a independent sealed generations', () => {
       resume();
       const captured = await capturing;
       expect(captured.disposition).toBe('sealed');
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       await f.store.createThread(workspaceId, 'Only in the later live source');
       expect(terminalPosts()).toHaveLength(1);
       await shutdownControlStoreWorkerClient();
@@ -3953,7 +4063,9 @@ describe('C-a independent sealed generations', () => {
           }) ?? null
         );
       });
-      const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
+      const tryFreeze = getControlStoreWorkerClient().tryFreezeWorkspace.bind(
+        getControlStoreWorkerClient()
+      );
       const observeFreeze = (result: ReturnType<typeof tryFreeze>) => {
         if (result.status !== 'frozen') return result;
         return {
@@ -3966,12 +4078,14 @@ describe('C-a independent sealed generations', () => {
         };
       };
       const gate = vi
-        .spyOn(f.mutationAdmission, 'tryFreeze')
+        .spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace')
         .mockImplementation((...args) => observeFreeze(tryFreeze(...args)));
       // A counted native Pending now selects the real accepted-preparation drain entry.
-      const tryFreezeAfterDrain = f.mutationAdmission.tryFreezeAfterDrain.bind(f.mutationAdmission);
+      const tryFreezeAfterDrain = getControlStoreWorkerClient().tryFreezeWorkspaceAfterDrain.bind(
+        getControlStoreWorkerClient()
+      );
       const drainingGate = vi
-        .spyOn(f.mutationAdmission, 'tryFreezeAfterDrain')
+        .spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspaceAfterDrain')
         .mockImplementation(async (...args) => observeFreeze(await tryFreezeAfterDrain(...args)));
       let worker: Worker | undefined;
       let entered!: () => void;
@@ -4005,12 +4119,16 @@ describe('C-a independent sealed generations', () => {
             throw new Error('Capture did not reach real target ACK drain.');
           }),
         ]);
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(true);
         if (failure === 'capture-worker-loss') {
           await worker!.terminate();
           await expect(client.checkpoint(siblingDatabase)).resolves.toBeDefined();
           expect(settled).toBe(false);
-          expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+          ).toBe(true);
           expect(releaseOrder).toEqual([]);
           forwardAck!();
           expect(await pendingAck).toHaveProperty('result');
@@ -4030,7 +4148,9 @@ describe('C-a independent sealed generations', () => {
           expect(releaseOrder.filter((value) => value === 'gate')).toHaveLength(1);
           expect(releaseOrder.filter((value) => value === 'hold').length).toBeLessThanOrEqual(1);
         }
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(false);
         expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
       } finally {
         captureWorkerProbe.onPhase = undefined;
@@ -4122,7 +4242,9 @@ describe('C-a independent sealed generations', () => {
           }),
         ]);
         expect(capturedWorker).toBeDefined();
-        expect(f.mutationAdmission.isClosed(workspaceId)).toBe(phase === 'cut');
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(phase === 'cut');
         if (phase === 'cut') {
           const siblingInput = f.input();
           retrySibling = {
@@ -4151,8 +4273,12 @@ describe('C-a independent sealed generations', () => {
             ])
           ).toMatchObject({ error: { code: 'capacity-exceeded' } });
           await expect(ack).resolves.toBeDefined();
-          expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
-          expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, sibling.id)
+          ).toBe(false);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+          ).toBe(true);
           const siblingDb = openWorkspaceDb(f.dataRoot, sibling.id);
           try {
             expect(inspectCapture(siblingDb, sibling.id, siblingInput.backupId)).toBeNull();
@@ -4196,7 +4322,9 @@ describe('C-a independent sealed generations', () => {
               `workspace:${workspaceDbPath(f.dataRoot, sibling.id)}`
             )
           ).resolves.toBeDefined();
-          expect(f.mutationAdmission.isClosed(sibling.id)).toBe(false);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, sibling.id)
+          ).toBe(false);
         }
         await capturedWorker!.terminate();
         expect(await capturing).toMatchObject({ error: expect.any(Error) });
@@ -4239,7 +4367,9 @@ describe('C-a independent sealed generations', () => {
       } finally {
         db.sqlite.close();
       }
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
         `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
       );
@@ -4290,32 +4420,36 @@ describe('C-a independent sealed generations', () => {
         if (
           (typeof data === 'string' || Buffer.isBuffer(data)) &&
           Buffer.from(data).equals(original) &&
-          f.mutationAdmission.isClosed(workspaceId)
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
         )
           frozenHashes += 1;
         return Reflect.apply(update, this, [data, ...args]);
       });
     namespaceSyncFault.beforeSync = (fd) => {
       if (
-        f.mutationAdmission.isClosed(workspaceId) &&
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId) &&
         fstatSync(fd).isFile() &&
         realpathSync(`/proc/self/fd/${fd}`).endsWith(`/${captureWorkerProbe.payloadName}`)
       )
         frozenSyncs += 1;
     };
-    const tryFreeze = f.mutationAdmission.tryFreeze.bind(f.mutationAdmission);
-    const freeze = vi.spyOn(f.mutationAdmission, 'tryFreeze').mockImplementation((...args) => {
-      const result = tryFreeze(...args);
-      if (result.status !== 'frozen') return result;
-      return {
-        ...result,
-        release: () => {
-          result.release();
-          released = true;
-          writeFileSync(authored, 'A live source change after the cut.');
-        },
-      };
-    });
+    const tryFreeze = getControlStoreWorkerClient().tryFreezeWorkspace.bind(
+      getControlStoreWorkerClient()
+    );
+    const freeze = vi
+      .spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace')
+      .mockImplementation((...args) => {
+        const result = tryFreeze(...args);
+        if (result.status !== 'frozen') return result;
+        return {
+          ...result,
+          release: () => {
+            result.release();
+            released = true;
+            writeFileSync(authored, 'A live source change after the cut.');
+          },
+        };
+      });
     let captured: Awaited<ReturnType<typeof createWorkspaceBackup>>;
     try {
       captured = await createWorkspaceBackup(f.input());
@@ -4977,7 +5111,9 @@ describe('C-a independent sealed generations', () => {
     databaseHandles.push(db);
     expect(inspectCapture(db, workspaceId, input.backupId)).toEqual(committedPin ?? null);
     if (committedPin) expect(committedPin.state).toBe('active');
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
       `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
     );
@@ -5007,7 +5143,7 @@ describe('C-a independent sealed generations', () => {
       const input = f.input();
       const before = tree(f.workspaceRoot);
       const beforeRows = databaseRows(workspaceDbPath(f.dataRoot, workspaceId), f.root);
-      const freeze = vi.spyOn(f.mutationAdmission, 'tryFreeze');
+      const freeze = vi.spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace');
       const pending = createWorkspaceBackup({
         ...input,
         ...(fault === 'capacity'
@@ -5047,7 +5183,9 @@ describe('C-a independent sealed generations', () => {
         kind: 'workspace',
         workspaceId: sibling.id,
       });
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
     }
   );
 
@@ -5067,7 +5205,9 @@ describe('C-a independent sealed generations', () => {
       ).rejects.toThrow();
       expect(check.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
     } finally {
       intercept.mockRestore();
     }
@@ -5159,7 +5299,9 @@ describe('C-a independent sealed generations', () => {
     } finally {
       db.sqlite.close();
     }
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     const hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
       `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
     );
@@ -5215,7 +5357,9 @@ describe('C-a independent sealed generations', () => {
       return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
     });
     expect(afterRows).toEqual(beforeRows);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     const nextHold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
       `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
     );
@@ -5293,7 +5437,9 @@ describe('C-a independent sealed generations', () => {
         return capture.capture_id !== input.backupId || capture.workspace_id !== workspaceId;
       });
       expect(afterRows).toEqual(beforeRows);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       const held = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
         `workspace:${workspaceDbPath(f.dataRoot, workspaceId)}`
       );
@@ -5394,7 +5540,6 @@ describe('C-a independent sealed generations', () => {
           requestActor: { kind: 'local', userId: f.ownerId },
           request,
           runtimeConfigManager: { current: () => config },
-          workspaceMutationAdmission: f.mutationAdmission,
         }),
     };
     const heads = Object.entries(tree(f.workspaceRoot)).filter(
@@ -5423,7 +5568,9 @@ describe('C-a independent sealed generations', () => {
           throw new Error('Capture did not reach the native mutable-copy boundary.');
         }),
       ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const before = tree(join(f.workspaceRoot, 'knowledge', 'notebook.git'));
       await expect(publishWorkspaceNotebook(dependencies, request)).rejects.toThrow();
       expect(
@@ -5441,7 +5588,9 @@ describe('C-a independent sealed generations', () => {
     }
     try {
       expect(captured.disposition).toBe('sealed');
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       const published = await publishWorkspaceNotebook(dependencies, request);
       expect(published.outcome).toBe('published');
       expect(
@@ -5560,9 +5709,15 @@ describe('C-a independent sealed generations', () => {
     try {
       // Native ACK leases drain before the transport pause, with ordinary target entry closed.
       await Promise.race([
-        vi.waitFor(() => expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true), {
-          timeout: 10_000,
-        }),
+        vi.waitFor(
+          () =>
+            expect(
+              getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+            ).toBe(true),
+          {
+            timeout: 10_000,
+          }
+        ),
         capturing.then(() => {
           throw new Error('Capture did not wait for the posted App acknowledgement.');
         }),
@@ -5575,7 +5730,9 @@ describe('C-a independent sealed generations', () => {
           throw new Error('Capture did not reach its App database-copy boundary.');
         }),
       ]);
-      expect(f.mutationAdmission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       postedRecord = await posted;
       await expect(
         createRecord(
@@ -5606,7 +5763,9 @@ describe('C-a independent sealed generations', () => {
       captured = await capturing;
     }
     expect(captured.disposition).toBe('sealed');
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     await f.read(captured.manifest.backupId, async (bundle) => {
       const rows = databaseRows(await bytes(bundle, `light-apps/${app.appId}/data.sqlite`), f.root);
       expect(JSON.stringify(rows)).toContain(postedRecord.id);
@@ -5650,7 +5809,9 @@ describe('C-a independent sealed generations', () => {
     const rejected = f.input();
     await expect(createWorkspaceBackup(rejected)).rejects.toThrow();
     expect(existsSync(join(rejected.bundleRoot, 'seal.json'))).toBe(false);
-    expect(f.mutationAdmission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
     expect(readFileSync(outside, 'utf8')).toBe('Never capture outside authority');
     await f.read(first.manifest.backupId, async (bundle) =>
       expect(bundle.manifestDigest).toBe(first.report.manifestDigest)
@@ -5692,17 +5853,21 @@ describe('C-b automatic capture origin after restart', () => {
     f.coreDb.sqlite.close();
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
-    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     const generations = tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId));
-    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    restoreWorkspaceRecoveryAdmission(coreDb);
     const abandoned = inspectCapture(inspectDb, workspaceId, input.backupId);
     expect(abandoned).toMatchObject({ state: 'abandoned', origin: 'automatic' });
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
-    expect(gate.isClosed(workspaceId)).toBe(false);
-    const release = gate.enter(workspaceId);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+    ).toBe(false);
+    const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+      coreDb.dataRoot,
+      workspaceId
+    );
     expect(release).not.toBeNull();
     release!();
-    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    restoreWorkspaceRecoveryAdmission(coreDb);
     expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(abandoned);
     expect(readRecoveryExecution(coreDb, input.backupId)).toBeUndefined();
     expect(tree(join(f.dataRoot, 'server', 'backups', 'workspaces', workspaceId))).toEqual(
@@ -5761,12 +5926,13 @@ describe('C-b automatic capture origin after restart', () => {
     f.coreDb.sqlite.close();
     const coreDb = openCoreDb(f.dataRoot);
     databaseHandles.push(coreDb);
-    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    restoreWorkspaceRecoveryAdmission(coreDb);
     expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(capture);
     expect(tree(input.bundleRoot)).toEqual(generation);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-    expect(gate.isClosed(workspaceId)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+    ).toBe(true);
     await f.read(input.backupId, async (bundle) => {
       expect(bundle.seal?.backupId).toBe(input.backupId);
       for (const entry of bundle.manifest.inventory)
@@ -5811,13 +5977,16 @@ describe('C-b automatic capture origin after restart', () => {
     refuseScope(f.dataRoot, databaseFailure);
     const capture = inspectCapture(inspectDb, workspaceId, input.backupId);
     const before = tree(input.bundleRoot);
-    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    restoreWorkspaceRecoveryAdmission(coreDb, gate);
+    restoreWorkspaceRecoveryAdmission(coreDb);
     expect(scopeAdmissionFailures(f.dataRoot)).toContainEqual(databaseFailure);
     expect(inspectCapture(inspectDb, workspaceId, input.backupId)).toEqual(capture);
     expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-    expect(gate.isClosed(workspaceId)).toBe(true);
-    expect(gate.enter(workspaceId)).toBeNull();
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(coreDb.dataRoot, workspaceId)
+    ).toBe(true);
+    expect(
+      getControlStoreWorkerClient().enterWorkspaceMutation(coreDb.dataRoot, workspaceId)
+    ).toBeNull();
     expect(tree(input.bundleRoot)).toEqual(before);
     expect(existsSync(join(input.bundleRoot, 'seal.json'))).toBe(false);
   });

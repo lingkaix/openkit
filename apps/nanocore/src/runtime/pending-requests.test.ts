@@ -9,7 +9,10 @@ import { FsStore } from '../lib/store.js';
 import { ProviderRegistry } from '../providers/registry.js';
 import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
-import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  shutdownControlStoreWorkerClient,
+} from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -867,6 +870,22 @@ describe('pending requests', () => {
       expect(record.canonicalArgumentsJson).toBe(input.call!.canonicalArgumentsJson);
     } finally {
       db.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
+  it('keeps a natively closed rooted Workspace out of Core-less boot settlement', async () => {
+    const { coreDb, store, dataRoot } = await openPendingApp();
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    expect(store.listWorkspaces().map((workspace) => workspace.id)).toContain(workspaceId);
+    // The rooted Store names the native scope; the supported dependencies carry no Core.
+    await getControlStoreWorkerClient().closeWorkspaceMutations(dataRoot, workspaceId);
+    const openWorkspace = vi.fn((id: string) => openWorkspaceDb(dataRoot, id));
+    try {
+      await recoverPendingRequestsAtBoot(store, { openWorkspace });
+      expect(openWorkspace).not.toHaveBeenCalledWith(workspaceId);
+    } finally {
+      getControlStoreWorkerClient().reopenWorkspaceMutations(dataRoot, workspaceId);
       coreDb.sqlite.close();
     }
   });

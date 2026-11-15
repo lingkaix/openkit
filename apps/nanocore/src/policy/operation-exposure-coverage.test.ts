@@ -7,7 +7,6 @@ import { expect, it, onTestFinished } from 'vitest';
 import { createApp } from '../app.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { createAppOpenApiDocument, getRegisteredAppApiOperationIds } from '../openapi.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { createTestCoreDb, createTestStore, disposeTestStore } from '../test-support/store.js';
 
@@ -217,7 +216,6 @@ async function fixture() {
     dataRoot,
     store,
     auth,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   });
   return { app, ids: getRegisteredAppApiOperationIds(app) };
 }

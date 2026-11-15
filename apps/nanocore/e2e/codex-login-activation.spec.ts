@@ -72,7 +72,6 @@ import { createVaultUnlockState } from '../src/vault/vault-unlock-state.js';
 import { listVaultUseRecords } from '../src/vault/vault-use-records.js';
 import { getVaultInjectionPlan } from '../src/vault-injection-plans.js';
 import { listVaultInjectionReceipts } from '../src/vault-injection-receipts.js';
-import { WorkspaceMutationAdmission } from '../src/workspace-mutation-admission.js';
 
 /*
  * Conditional component gate: actual Core authority, Worker Harness and pinned
@@ -415,7 +414,6 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')(
         await writeFile(join(coreDb.dataRoot, 'config/server.jsonc'), '{"schemaVersion":1}');
         const manager = createRuntimeConfigManager({ dataRoot: coreDb.dataRoot });
         const policy = new PolicyInterception();
-        const mutationAdmission = new WorkspaceMutationAdmission();
         let app = createApp({
           coreDb,
           dataRoot: coreDb.dataRoot,
@@ -423,7 +421,6 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')(
           vaultUnlockState: unlock,
           runtimeConfigManager: manager,
           policyInterception: policy,
-          workspaceMutationAdmission: mutationAdmission,
         });
         const oauth = await syntheticCoreOAuthPeer();
         oauthPeer = oauth;
@@ -619,7 +616,6 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')(
             readRuntimeConfig: () => runtimeManager.current(),
             vaultBackend: () => unlock.backend(),
             policyInterception: () => policy,
-            workspaceMutationAdmission: mutationAdmission,
             actualWorker: component.delegate,
           });
           app = createApp({
@@ -629,7 +625,6 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')(
             vaultUnlockState: unlock,
             runtimeConfigManager: runtimeManager,
             policyInterception: policy,
-            workspaceMutationAdmission: mutationAdmission,
             workerLifecycleRuntime: native.runtime,
             turnExecutor: native.executor,
             workerControlGateway: native.workerControlGateway,

@@ -62,7 +62,10 @@ export async function admitExternalTriggerEvent(
   const coreDb = input.schedules.coreDb;
   const client = getControlStoreWorkerClient();
   const owner = { dataRoot: realpathSync(coreDb.dataRoot), workspaceId: input.source.workspaceId };
-  const release = input.schedules.mutationAdmission.enter(input.source.workspaceId);
+  const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+    input.schedules.coreDb.dataRoot,
+    input.source.workspaceId
+  );
   if (!release) throw denied();
   try {
     const eventKey = z.string().min(1).max(1024).safeParse(input.eventKey);

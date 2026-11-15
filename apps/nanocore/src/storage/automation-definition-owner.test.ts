@@ -64,12 +64,10 @@ function fixture() {
     ownerUserId: userId,
   });
   let timestamp = start;
-  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
-  const store = new AutomationStore(db, gate, () => timestamp);
+  const store = new AutomationStore(db, () => timestamp);
   return {
     db,
     userId,
-    gate,
     store,
     setTime: (value: string) => {
       timestamp = value;
@@ -508,7 +506,11 @@ it('preserves every Core row on frozen, stale-revision and audit-failed definiti
   await prohibitMainWrites(f.db);
   f.setTime(sealedAt);
   const before = coreRows(f.db);
-  const freeze = f.gate.tryFreeze(definition.workspaceId, () => []);
+  const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+    f.db.dataRoot,
+    definition.workspaceId,
+    () => []
+  );
   expect(freeze.status).toBe('frozen');
   if (freeze.status !== 'frozen') throw new Error('Fixture did not freeze the Workspace.');
   try {

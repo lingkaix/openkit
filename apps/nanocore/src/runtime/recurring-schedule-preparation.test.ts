@@ -5,7 +5,6 @@ import { afterEach, expect, it } from 'vitest';
 import { createInMemoryRuntimeConfigSnapshot } from '../config/runtime-config.js';
 import { AutomationStore } from '../lib/automation-store.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import {
@@ -30,11 +29,7 @@ async function fixture() {
   applyMigrations(db);
   const store = await createDemoStore({ dataRoot: root });
   const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Recurring preparation');
-  const schedules = new AutomationStore(
-    db,
-    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-    () => '2026-10-16T00:00:00.000Z'
-  );
+  const schedules = new AutomationStore(db, () => '2026-10-16T00:00:00.000Z');
   const schedule = await schedules.createAutomation(FIXTURE_LOCAL_USER_ID, {
     workspaceId: DEMO_WORKSPACE_ID,
     threadId: thread.id,

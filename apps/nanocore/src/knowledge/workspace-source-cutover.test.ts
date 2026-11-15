@@ -1,4 +1,3 @@
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 // openkit-test-platform: posix
 // The contract composes actual Notebook Git publication with managed LocalStorage originals.
 
@@ -57,7 +56,6 @@ async function fixture() {
     coreDb,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(dataRoot, workspaceId);
       applyScopedMigrations(db);

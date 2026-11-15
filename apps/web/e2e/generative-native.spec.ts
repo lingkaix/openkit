@@ -132,7 +132,6 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       { createDefaultWorkerControlGateway },
       { createDefaultWorkerMcpGateway },
       { registerWorkerMcpRoutes },
-      { WorkspaceMutationAdmission },
     ] = await Promise.all([
       import(requireCore.resolve('hono')),
       import(requireCore.resolve('@modelcontextprotocol/client')),
@@ -147,7 +146,6 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       import('../../nanocore/dist/app.js'),
       import('../../nanocore/dist/runtime/worker-mcp-gateway.js'),
       import('../../nanocore/dist/worker-mcp-routes.js'),
-      import('../../nanocore/dist/workspace-mutation-admission.js'),
     ]);
     const runtime = loadRuntimeConfig(fixtureRoot);
     const resolved = resolveAgentSetup(runtime.agentManifests[0]!, runtime);
@@ -256,7 +254,6 @@ test('edits and refreshes native Kernel data, reopens after restart and groups a
       runtimeConfig: () => runtime,
       workerControlGateway,
       workerMcpGateway,
-      workspaceMutationAdmission: new WorkspaceMutationAdmission(),
     });
     const deniedWorker = await route.request('/api/worker-capabilities/mcp/openkit-generative', {
       method: 'POST',

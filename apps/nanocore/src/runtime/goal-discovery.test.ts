@@ -7,7 +7,6 @@ import { expect, it, vi } from 'vitest';
 import { projectAgentCatalogEntries } from '../agents/catalog-projection.js';
 import { disableCanonicalUser } from '../auth/user-lifecycle.js';
 import { createOperationInvocation } from '../operation-composition.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -61,7 +60,6 @@ async function fixture(actorKind: 'session' | 'local' = 'session') {
     coreDb,
     store,
     repositoryWorkspaceDb: (id) => openWorkspaceDb(root, id),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
   });
   const tools = createGoalTools({
     store,

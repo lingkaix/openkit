@@ -18,10 +18,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import { createConversationService } from '../mode-entry-routes.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -324,7 +321,6 @@ async function fixture(
     gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
   });
   const inflightCommands = new WeakMap();
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const runtimeConfig = () => manager.current();
   const repositoryWorkspaceDb = (id: string) => {
     const db = openWorkspaceDb(dataRoot, id);
@@ -337,7 +333,6 @@ async function fixture(
   const conversationService = createConversationService({
     coreDb,
     inflightCommands,
-    workspaceMutationAdmission,
     llmGatewayDispatcher: { createResponses, createChatCompletion: unexpectedWorker },
     repositoryWorkspaceDb,
     resolveGatewayProvider,
@@ -357,7 +352,6 @@ async function fixture(
     store,
     requestStore: () => store,
     inflightCommands,
-    workspaceMutationAdmission,
     repositoryWorkspaceDb,
     conversationService,
     administrationServices: {

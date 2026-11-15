@@ -33,7 +33,6 @@ import {
 import { operationRequest } from '../test-support/operation-request.js';
 import { createTestCoreDb, disposeTestStore } from '../test-support/store.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openWorkspaceDb, type WorkspaceDb } from './db.js';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -64,7 +63,6 @@ async function liveWorkerFixture() {
   }).manifest;
   manifest.runtime.version = '0.166.0';
   admitTestNativeEnvironment(f.coreDb, manifest);
-  const admission = getControlStoreWorkerClient().workspaceMutations(f.root);
   const configuration = createInMemoryRuntimeConfigSnapshot({
     ...loadRuntimeConfig(f.root),
     agentManifests: [manifest],
@@ -81,7 +79,6 @@ async function liveWorkerFixture() {
   });
   const native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
     readRuntimeConfig: () => configuration,
-    workspaceMutationAdmission: admission,
   });
   let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
   cleanups.push(async () => {
@@ -131,7 +128,6 @@ async function liveWorkerFixture() {
     store: f.store,
     dataRoot: f.root,
     mode: 'server',
-    workspaceMutationAdmission: admission,
     agentManifests: [manifest],
     gatewayConfig: configuration.gatewayConfig,
     providerRegistry: configuration.providerRegistry,

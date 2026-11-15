@@ -551,25 +551,27 @@ function sourceCaptureOwner(
     input.workspaceId,
     captureId
   );
-  const call = bindWorkspaceCaptureNativeOwner(
-    policy.coreDb,
-    input.workspaceId,
-    captureId,
-    policy.mutationAdmission,
-    freeze
-  );
+  const call = bindWorkspaceCaptureNativeOwner(policy.coreDb, input.workspaceId, captureId, freeze);
   let proof = readRecoveryExecution(policy.coreDb, captureId);
   const current = () => {
     policy.currentAuthority();
     if (
-      !policy.mutationAdmission.ownsRecoveryOrigin(
+      !getControlStoreWorkerClient().ownsWorkspaceRecoveryOrigin(
+        policy.dataRoot,
         input.workspaceId,
         freeze,
         captureRecoveryOrigin(policy.coreDb, input.workspaceId, captureId)
       )
     )
       refuseRecovery('recovery-required');
-    if (!policy.mutationAdmission.isRecoveryBinding(input.workspaceId, freeze, call.binding))
+    if (
+      !getControlStoreWorkerClient().isWorkspaceRecoveryBinding(
+        policy.dataRoot,
+        input.workspaceId,
+        freeze,
+        call.binding
+      )
+    )
       refuseRecovery('recovery-required');
     const facts = readWorkspaceCaptureRecoveryAtCore(policy.coreDb, input);
     if (
@@ -579,7 +581,7 @@ function sourceCaptureOwner(
       refuseRecovery('recovery-required');
     return facts;
   };
-  const client = getControlStoreWorkerClient(policy.mutationAdmission);
+  const client = getControlStoreWorkerClient();
   /** Keeps the four original Core stages separate from source SQL and intervening durable file effects. */
   const publishCore = async (
     kind: ControlRecoverySourcePreparationInput['kind'],

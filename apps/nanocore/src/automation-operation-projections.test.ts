@@ -4,7 +4,6 @@ import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, it } from 'vitest';
 import { AutomationStore } from './lib/automation-store.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp, createLoopbackAppFetch } from './test-support/app.js';
@@ -21,10 +20,7 @@ it('projects the same durable lifecycle through HTTP and the derived Core Client
   const workspace = await store.createWorkspace('Recurring');
   const thread = await store.createThread(workspace.id, 'Target');
   recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId: localUserId });
-  const automationStore = new AutomationStore(
-    coreDb,
-    getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot)
-  );
+  const automationStore = new AutomationStore(coreDb);
   const app = createApp({ store, coreDb, dataRoot: root, automationStore });
   const responses: Response[] = [];
   const client = createCoreClient({

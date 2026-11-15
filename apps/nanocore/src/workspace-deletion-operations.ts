@@ -36,11 +36,10 @@ import { OperationError } from './operation-error.js';
 import { commandInputHash } from './runtime/idempotent-command.js';
 import type { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { closeWorkspaceProductReadHandles } from './storage/control-store-product-records.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
+import {
+  getControlStoreWorkerClient,
+  type WorkspaceFrozenAdmission,
 } from './storage/control-store-worker-client.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { workspaceRecoveryCandidateDigest } from './storage/data-root-backup.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readDataRootLayoutMarker } from './storage/fs-layout.js';
@@ -99,7 +98,6 @@ export function createWorkspaceDeletionOperationImplementations(
     | 'coreDb'
     | 'dataRoot'
     | 'fileAdmission'
-    | 'workspaceMutationAdmission'
     | 'closeWorkspaceMcpSessions'
     | 'repositoryWorkspaceDb'
     | 'store'
@@ -130,7 +128,6 @@ export function createWorkspaceDeletionOperationImplementations(
       if (context.kind !== 'public')
         throw new OperationError('workspace_access_denied', 'Workspace access denied.', 403);
       try {
-        const gate = input.workspaceMutationAdmission!;
         const deletionInput = {
           actorId: context.actor.userId,
           actor: context.actor,
@@ -138,7 +135,6 @@ export function createWorkspaceDeletionOperationImplementations(
           closeWorkspaceMcpSessions: input.closeWorkspaceMcpSessions!,
           coreDb,
           dataRoot,
-          mutationAdmission: input.workspaceMutationAdmission!,
           fileAdmission,
           repositoryWorkspaceDb: input.repositoryWorkspaceDb!,
           request: {
@@ -183,8 +179,14 @@ export function createWorkspaceDeletionOperationImplementations(
             });
           };
           const admitted =
-            existing && gate.isClosed(value.workspaceId, 'capture')
-              ? gate.tryResumeRecovery(
+            existing &&
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(
+              dataRoot,
+              value.workspaceId,
+              'capture'
+            )
+              ? getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+                  dataRoot,
                   value.workspaceId,
                   {
                     deletionRequestId: existing.requestId,
@@ -192,7 +194,11 @@ export function createWorkspaceDeletionOperationImplementations(
                   },
                   inspect
                 )
-              : gate.tryFreeze(value.workspaceId, inspect);
+              : getControlStoreWorkerClient().tryFreezeWorkspace(
+                  dataRoot,
+                  value.workspaceId,
+                  inspect
+                );
           if (admitted.status !== 'frozen')
             throw new OperationError(
               admitted.status === 'busy' ? 'workspace_frozen' : 'workspace_blocked',
@@ -228,15 +234,22 @@ export function createWorkspaceDeletionOperationImplementations(
           context.observeSuccessStatus?.(result.status);
           return result.body;
         } finally {
-          if (freeze && gate.ownsFreeze(value.workspaceId, freeze)) {
+          if (
+            freeze &&
+            getControlStoreWorkerClient().ownsWorkspaceFreeze(dataRoot, value.workspaceId, freeze)
+          ) {
             const retained = listWorkspaceDeletionRequests(dataRoot, value.workspaceId).find(
               (r) => r.requestId === value.requestId
             );
             if (retained && retained.phase !== 'blocked')
-              gate.restoreRecoveryClosed(value.workspaceId, {
-                deletionRequestId: retained.requestId,
-                revision: retained.expectedRegistryRevision,
-              });
+              getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(
+                dataRoot,
+                value.workspaceId,
+                {
+                  deletionRequestId: retained.requestId,
+                  revision: retained.expectedRegistryRevision,
+                }
+              );
             freeze.release();
           }
         }
@@ -295,15 +308,8 @@ async function recoverOriginalDeletedWorkspace(
   }
 ) {
   const { actor, workspaceId, requestId } = value;
-  const {
-    coreDb: core,
-    dataRoot,
-    store,
-    fileAdmission,
-    workspaceMutationAdmission: gate,
-    runtimeConfigManager: manager,
-  } = input;
-  if (!core || !dataRoot || !store || !fileAdmission || !gate || !manager) throw recoveryRequired();
+  const { coreDb: core, dataRoot, store, fileAdmission, runtimeConfigManager: manager } = input;
+  if (!core || !dataRoot || !store || !fileAdmission || !manager) throw recoveryRequired();
   const deletion = readWorkspaceDeletionRequest(dataRoot, workspaceId, value.deletionRequestId);
   if (!['deleted', 'cleaned'].includes(deletion.phase)) throw recoveryRequired();
   const currentAuthority = () => {
@@ -353,7 +359,7 @@ async function recoverOriginalDeletedWorkspace(
   if (
     previous?.state === 'finished' &&
     isScopeAdmitted(dataRoot, 'workspace', workspaceId) &&
-    !gate.isClosed(workspaceId)
+    !getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspaceId)
   )
     return project(previous.proof.result);
   // A resumed native open may normalize SQLite sidecars, never unreviewed candidate bytes.
@@ -376,9 +382,8 @@ async function recoverOriginalDeletedWorkspace(
   const inspectAndHold = () => {
     const blockers = inspect();
     if (blockers.length) return blockers;
-    hold = getControlStoreWorkerClient(gate).tryPauseForWorkspaceCapture(
-      `workspace:${join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite')}`,
-      gate
+    hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+      `workspace:${join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite')}`
     );
     return hold
       ? []
@@ -396,8 +401,13 @@ async function recoverOriginalDeletedWorkspace(
     revision: deletion.expectedRegistryRevision,
   };
   const freeze = previous
-    ? resumeWorkspaceRecoveryOwner(core, previous, gate, inspectAndHold)
-    : gate.tryResumeRecovery(workspaceId, deletionOrigin, inspectAndHold);
+    ? resumeWorkspaceRecoveryOwner(core, previous, inspectAndHold)
+    : getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+        dataRoot,
+        workspaceId,
+        deletionOrigin,
+        inspectAndHold
+      );
   if (freeze.status !== 'frozen')
     throw new OperationError(
       freeze.status === 'busy' ? 'workspace_frozen' : 'workspace_blocked',
@@ -436,7 +446,7 @@ async function recoverOriginalDeletedWorkspace(
       fileAdmission,
       currentAuthority,
       actor,
-      native: { gate, freeze },
+      native: { freeze },
       deletedRecovery: { deletion, actorId: actor.userId },
     };
     refuseScope(dataRoot, { scope: 'workspace', id: workspaceId, check: 'recovery' });
@@ -461,15 +471,21 @@ async function recoverOriginalDeletedWorkspace(
     currentAuthority();
     const completed = readRecoveryExecution(core, requestId)!;
     if (!previous)
-      gate.transferDeletionRecovery(workspaceId, freeze, deletionOrigin, {
-        admissionId: requestId,
-        revision: completed.revision - 1,
-        candidateRef: completed.candidate_ref,
-      });
+      getControlStoreWorkerClient().transferWorkspaceDeletionRecovery(
+        dataRoot,
+        workspaceId,
+        freeze,
+        deletionOrigin,
+        {
+          admissionId: requestId,
+          revision: completed.revision - 1,
+          candidateRef: completed.candidate_ref,
+        }
+      );
     if (previous) {
       // A resumed census can leave WAL readers. Reuse the native close boundary before the byte seal.
-      const binding = bindWorkspaceRecoveryReadmissionNativeOwner(core, completed, gate, freeze);
-      const client = getControlStoreWorkerClient(gate);
+      const binding = bindWorkspaceRecoveryReadmissionNativeOwner(core, completed, freeze);
+      const client = getControlStoreWorkerClient();
       await client.open(binding.binding.command, binding);
       try {
         currentAuthority();
@@ -495,7 +511,7 @@ async function recoverOriginalDeletedWorkspace(
       retained.proof.capture.manifestDigest === deletion.recoveryBackupManifestDigest &&
       retained.state !== 'abandoned'
     ) {
-      gate.restoreRecoveryClosed(workspaceId, {
+      getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(dataRoot, workspaceId, {
         admissionId: requestId,
         revision: retained.revision - (retained.state === 'finished' ? 1 : 0),
         candidateRef: retained.candidate_ref,
@@ -536,7 +552,6 @@ async function advanceWorkspaceDeletion(input: {
   closeWorkspaceMcpSessions: (workspaceId: string) => Promise<void>;
   coreDb: CoreDb;
   dataRoot: string;
-  mutationAdmission: WorkspaceMutationAdmission;
   fileAdmission: FileStorageAdmission;
   repositoryWorkspaceDb: (workspaceId: string) => WorkspaceDb;
   request: { confirmation: string; expectedRegistryRevision: number; requestId: string };
@@ -561,13 +576,17 @@ async function advanceWorkspaceDeletion(input: {
   }
   if (
     !input.freezeOwner ||
-    !input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner)
+    !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+      input.dataRoot,
+      input.workspaceId,
+      input.freezeOwner
+    )
   )
     throw recoveryRequired();
   await input.closeWorkspaceMcpSessions(input.workspaceId);
   const coreScope = nativeProductScope(input.dataRoot, { kind: 'server' });
   const coreDatabase = `core:${coreScope.path}`;
-  const coreClient = getControlStoreWorkerClient(input.mutationAdmission);
+  const coreClient = getControlStoreWorkerClient();
   await coreClient.open({
     database: coreDatabase,
     path: coreScope.path,
@@ -577,7 +596,13 @@ async function advanceWorkspaceDeletion(input: {
     productOwner: coreScope.owner,
     contentMount: coreScope.contentMount,
   });
-  if (!input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner))
+  if (
+    !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+      input.dataRoot,
+      input.workspaceId,
+      input.freezeOwner
+    )
+  )
     throw recoveryRequired();
   // Cleanup can yield to revocation, so check authority before advancing the request.
   if (request.phase === 'requested' || request.phase === 'fenced') {
@@ -610,8 +635,12 @@ async function advanceWorkspaceDeletion(input: {
   if (!isCanonicalUserActive(input.coreDb, request.originalOwnerUserId)) {
     if (['requested', 'fenced'].includes(request.phase)) {
       request = persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
-      input.mutationAdmission.reopen(input.workspaceId, 'capture');
-      input.mutationAdmission.reopen(input.workspaceId);
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        input.dataRoot,
+        input.workspaceId,
+        'capture'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(input.dataRoot, input.workspaceId);
       return { body: deletionResponse(request), status: 200 };
     }
     throw recoveryRequired();
@@ -650,8 +679,12 @@ async function advanceWorkspaceDeletion(input: {
     const holdRecordIds = deletionHoldRecordIds(input.repositoryWorkspaceDb, input.workspaceId);
     if (holdRecordIds.length > 0) {
       persistDeletionPhase(input.dataRoot, request, { phase: 'blocked' });
-      input.mutationAdmission.reopen(input.workspaceId, 'capture');
-      input.mutationAdmission.reopen(input.workspaceId);
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        input.dataRoot,
+        input.workspaceId,
+        'capture'
+      );
+      getControlStoreWorkerClient().reopenWorkspaceMutations(input.dataRoot, input.workspaceId);
       throw new OperationError(
         'workspace_deletion_blocked',
         'Workspace deletion is blocked by legal hold.',
@@ -671,7 +704,11 @@ async function advanceWorkspaceDeletion(input: {
     const currentAuthority = () => {
       const row = getWorkspaceRegistryLifecycleFact(input.coreDb, input.workspaceId);
       if (
-        !input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner!) ||
+        !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+          input.dataRoot,
+          input.workspaceId,
+          input.freezeOwner!
+        ) ||
         row?.status !== 'active' ||
         row.ownerUserId !== request.originalOwnerUserId ||
         row.registryRevision !== request.expectedRegistryRevision ||
@@ -711,7 +748,6 @@ async function advanceWorkspaceDeletion(input: {
           dataRoot: input.dataRoot,
           coreDb: input.coreDb,
           store: input.store,
-          mutationAdmission: input.mutationAdmission,
           freezeOwner: input.freezeOwner,
           deletionRequest: request,
           currentAuthority,
@@ -745,7 +781,11 @@ async function advanceWorkspaceDeletion(input: {
         phase: 'blocked',
         recoveryBackupManifestDigest: null,
       });
-      input.mutationAdmission.reopen(input.workspaceId, 'capture');
+      getControlStoreWorkerClient().reopenWorkspaceMutations(
+        input.dataRoot,
+        input.workspaceId,
+        'capture'
+      );
       throw new OperationError(
         'workspace_deletion_blocked',
         'Workspace deletion is blocked.',
@@ -841,17 +881,16 @@ async function advanceWorkspaceDeletion(input: {
     }
     if (sourceExists) {
       requireWorkspaceRootIdentity(source, input.workspaceId);
-      const native = bindWorkspaceDeletionNativeOwner(
-        input.coreDb,
-        request,
-        input.mutationAdmission,
-        input.freezeOwner!
-      );
-      const client = getControlStoreWorkerClient(input.mutationAdmission);
+      const native = bindWorkspaceDeletionNativeOwner(input.coreDb, request, input.freezeOwner!);
+      const client = getControlStoreWorkerClient();
       await client.open(native.binding.command, native);
       await client.close(native.binding.command.database, native);
       if (
-        !input.mutationAdmission.ownsFreeze(input.workspaceId, input.freezeOwner!) ||
+        !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+          input.dataRoot,
+          input.workspaceId,
+          input.freezeOwner!
+        ) ||
         !hasWorkspaceDeletionRetryAuthority(input.coreDb, input.actor, input.workspaceId, {
           dataRoot: input.dataRoot,
           requestId: request.requestId,

@@ -395,7 +395,6 @@ describe('administration conversation route', () => {
         coreDb,
         store,
         requestStore: () => store,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         administrationServices: {
           coreDb,
           environmentToolsForTurn: () => environmentTools,
@@ -567,7 +566,6 @@ describe('administration conversation route', () => {
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () => inertEnvironmentTools(),
@@ -735,7 +733,6 @@ describe('administration conversation route', () => {
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () => inertEnvironmentTools(),
@@ -997,7 +994,6 @@ describe('administration conversation route', () => {
       coreDb,
       store,
       requestStore: () => store,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       administrationServices: {
         coreDb,
         environmentToolsForTurn: () => inertEnvironmentTools(),
@@ -1234,7 +1230,6 @@ async function postAdministrationAdmissionTurn(options: {
     coreDb,
     store,
     requestStore: () => store,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     administrationServices: {
       coreDb,
       environmentToolsForTurn: () => inertEnvironmentTools(),

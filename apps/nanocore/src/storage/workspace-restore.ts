@@ -15,6 +15,7 @@ import type { Actor } from '../auth/identity.js';
 import {
   isScopeAdmitted,
   refuseScope,
+  type ScopeAdmissionFailure,
   scopeAdmissionFailures,
   settleWorkspaceRecoveryScope,
 } from '../bootstrap/readiness.js';
@@ -28,10 +29,7 @@ import type { WorkspaceDeletionRequestRecord } from '../workspace-deletion-reque
 import { getWorkspaceRegistryLifecycleFact } from '../workspace-sharing.js';
 import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from './control-store-worker-client.js';
+import type { WorkspaceFrozenAdmission } from './control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -122,7 +120,6 @@ interface TargetRecoveryOwner {
     readonly actorId: string;
   };
   readonly native?: {
-    readonly gate: WorkspaceMutationAdmission;
     readonly freeze: WorkspaceFrozenAdmission;
   };
 }
@@ -150,7 +147,11 @@ function assertTargetRecoveryOwner(
     resolve(owner.core.dataRoot) !== resolve(dataRoot) ||
     (owner.native &&
       workspaceId !== undefined &&
-      !owner.native.gate.ownsFreeze(workspaceId, owner.native.freeze))
+      !getControlStoreWorkerClient().ownsWorkspaceFreeze(
+        dataRoot,
+        workspaceId,
+        owner.native.freeze
+      ))
   )
     refuseRecovery('recovery-required');
   owner.currentAuthority?.();
@@ -332,7 +333,7 @@ async function withTargetCore<T>(
   workspaceId: string,
   body: (client: ReturnType<typeof getControlStoreWorkerClient>, database: string) => Promise<T>
 ): Promise<T> {
-  const client = getControlStoreWorkerClient(owner.native?.gate);
+  const client = getControlStoreWorkerClient();
   const core = owner.core;
   const dataRoot = resolve(core.dataRoot);
   const scope = nativeProductScope(dataRoot, { kind: 'server' });
@@ -458,6 +459,17 @@ export async function admitWorkspaceBackupAtCore(
   return admitTarget(owner, input, deps);
 }
 
+/** Ends the exact recovery diagnosis only while this freeze still owns the Root's native scope. */
+function settleOwnedRecoveryScope(
+  dataRoot: string,
+  failure: ScopeAdmissionFailure,
+  freeze: WorkspaceFrozenAdmission
+): void {
+  if (!getControlStoreWorkerClient().ownsWorkspaceFreeze(dataRoot, failure.id, freeze))
+    throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);
+  settleWorkspaceRecoveryScope({ dataRoot, failure });
+}
+
 /**
  * Revalidates a placed target or restored predecessor before its exact recovery exclusion can end.
  * A terminal result proves the lifecycle decision, never serving validity.
@@ -474,7 +486,7 @@ export function activateWorkspaceRecoveryAtCore(
   const { core, native } = owner;
   if (!native) refuseRecovery('recovery-required');
   input.currentAuthority();
-  const owned = readWorkspaceRecoveryReadmission(core, input.requestId, native.gate, native.freeze);
+  const owned = readWorkspaceRecoveryReadmission(core, input.requestId, native.freeze);
   if (
     !['restore', 'move-in'].includes(owned.proof.input.command) ||
     owned.proof.result.disposition !==
@@ -518,17 +530,13 @@ export function activateWorkspaceRecoveryAtCore(
   if (failure?.check !== 'recovery') refuseRecovery('recovery-required');
   // Both loaders retain their owning checks and leave public authority refused on any failure.
   input.store.reloadRecoveredWorkspace(workspaceId, native.freeze);
-  const ready = input.runtimeConfigManager.reloadRecoveredWorkspace(
-    workspaceId,
-    native.gate,
-    native.freeze
-  );
+  const ready = input.runtimeConfigManager.reloadRecoveredWorkspace(workspaceId, native.freeze);
   const finish = (): WorkspaceRecoveryCliReport => {
     input.currentAuthority();
     assertTargetRecoveryOwner(owner, core.dataRoot, workspaceId);
     if (
       !isDeepStrictEqual(
-        readWorkspaceRecoveryReadmission(core, input.requestId, native.gate, native.freeze),
+        readWorkspaceRecoveryReadmission(core, input.requestId, native.freeze),
         owned
       ) ||
       !scopeAdmissionFailures(core.dataRoot).includes(failure)
@@ -536,13 +544,8 @@ export function activateWorkspaceRecoveryAtCore(
       refuseRecovery('recovery-required');
     // Synchronous settlement has no I/O, callback or await between validation and serving admission.
     input.store.settleRecoveredWorkspacePublication(workspaceId, native.freeze);
-    settleWorkspaceRecoveryScope({
-      dataRoot: core.dataRoot,
-      failure,
-      admission: native.gate,
-      freeze: native.freeze,
-    });
-    native.gate.reopen(workspaceId, 'capture');
+    settleOwnedRecoveryScope(core.dataRoot, failure, native.freeze);
+    getControlStoreWorkerClient().reopenWorkspaceMutations(core.dataRoot, workspaceId, 'capture');
     return owned.proof.result;
   };
   return ready instanceof Promise ? ready.then(finish) : finish();
@@ -775,13 +778,8 @@ async function abandonSelectedTarget(
   if (owner.native && owned.state === 'prepared' && !owned.proof.candidateDigest) {
     // A digest is published only after native seal/close. Partial preparation can instead
     // leave a real writer open: freeze alone cannot authorize retiring that database.
-    const bindings = bindWorkspaceRecoveryNativeOwner(
-      core,
-      owned,
-      owner.native.gate,
-      owner.native.freeze
-    );
-    const client = getControlStoreWorkerClient(owner.native.gate);
+    const bindings = bindWorkspaceRecoveryNativeOwner(core, owned, owner.native.freeze);
+    const client = getControlStoreWorkerClient();
     for (const binding of [bindings.canonical, bindings.candidate]) {
       if (!binding) continue;
       await client.open(binding.binding.command, binding);
@@ -858,11 +856,9 @@ async function bindTargetCandidate(
   const manifest = owned.proof.manifest;
   const now = new Date().toISOString();
   const live = admitted.native;
-  const client = getControlStoreWorkerClient(live?.gate);
+  const client = getControlStoreWorkerClient();
   if (live) client.setFileStorageAdmission(dataRoot, admitted.fileAdmission.forPath(root));
-  const native = live
-    ? bindWorkspaceRecoveryNativeOwner(core, owned, live.gate, live.freeze)
-    : undefined;
+  const native = live ? bindWorkspaceRecoveryNativeOwner(core, owned, live.freeze) : undefined;
   const {
     owner,
     path,
@@ -957,7 +953,10 @@ async function bindTargetCandidate(
     assertTargetRecoveryOwner(admitted, core.dataRoot, workspaceId);
     if (manifest.requiredFeatures.includes('workspace.recurring-triggers.v1')) {
       // The admitted coordinator retires transfer inputs only after durable native preparation.
-      if (live && !live.gate.ownsFreeze(workspaceId, live.freeze))
+      if (
+        live &&
+        !getControlStoreWorkerClient().ownsWorkspaceFreeze(core.dataRoot, workspaceId, live.freeze)
+      )
         refuseRecovery('recovery-required');
       for (const path of Object.values(RECURRING_PORTABLE_PATHS)) unlinkSync(join(root, path));
     }
@@ -988,9 +987,14 @@ function activateSourceCapture(
   if (
     before.movedOut ||
     before.capture.state === 'active' ||
-    !owned.mutationAdmission.ownsRecoveryOrigin(input.workspaceId, freeze, {
-      captureId: before.capture.captureId,
-    }) ||
+    !getControlStoreWorkerClient().ownsWorkspaceRecoveryOrigin(
+      owned.dataRoot,
+      input.workspaceId,
+      freeze,
+      {
+        captureId: before.capture.captureId,
+      }
+    ) ||
     (before.owned && before.owned.state !== 'abandoned')
   )
     refuseRecovery('recovery-required');
@@ -1009,7 +1013,7 @@ function activateSourceCapture(
   };
   try {
     owned.store.reloadRecoveredWorkspace(input.workspaceId, freeze);
-    ready = manager.reloadRecoveredWorkspace(input.workspaceId, owned.mutationAdmission, freeze);
+    ready = manager.reloadRecoveredWorkspace(input.workspaceId, freeze);
   } catch (error) {
     return validationFailed(error);
   }
@@ -1029,14 +1033,12 @@ function activateSourceCapture(
     )
       refuseRecovery('recovery-required');
     owned.store.settleRecoveredWorkspacePublication(input.workspaceId, freeze);
-    if (failure)
-      settleWorkspaceRecoveryScope({
-        dataRoot: owned.dataRoot,
-        failure,
-        admission: owned.mutationAdmission,
-        freeze,
-      });
-    owned.mutationAdmission.reopen(input.workspaceId, 'capture');
+    if (failure) settleOwnedRecoveryScope(owned.dataRoot, failure, freeze);
+    getControlStoreWorkerClient().reopenWorkspaceMutations(
+      owned.dataRoot,
+      input.workspaceId,
+      'capture'
+    );
   };
   return ready instanceof Promise ? ready.then(finish, validationFailed) : finish();
 }
@@ -1098,7 +1100,7 @@ async function decideWorkspaceRecovery(
     // A committed replay never reloads or replaces the target's later healthy work.
     if (
       isScopeAdmitted(owned.dataRoot, 'workspace', input.workspaceId) &&
-      !owned.mutationAdmission.isClosed(input.workspaceId) &&
+      !getControlStoreWorkerClient().isWorkspaceMutationClosed(owned.dataRoot, input.workspaceId) &&
       terminal !== 'prepared' &&
       terminal !== 'active'
     ) {
@@ -1131,7 +1133,9 @@ async function decideWorkspaceRecovery(
         currentRevision: source!.revision,
       });
     }
-    owned.store.setWorkspaceMutationAdmission(owned.mutationAdmission);
+    const storeRoot = owned.store.getDataRoot();
+    if (!storeRoot || resolve(storeRoot) !== resolve(owned.dataRoot))
+      throw new Error('Store Workspace mutations must use their native scope owner.');
     const inspect = () =>
       readWorkspaceRecoveryBlockers(
         { ...owned, workspaceId: input.workspaceId, operation: 'restore' },
@@ -1141,9 +1145,8 @@ async function decideWorkspaceRecovery(
     const inspectAndHold = () => {
       const blockers = inspect();
       if (blockers.length) return blockers;
-      hold = getControlStoreWorkerClient(owned.mutationAdmission).tryPauseForWorkspaceCapture(
-        `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`,
-        owned.mutationAdmission
+      hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+        `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`
       );
       return hold
         ? []
@@ -1156,23 +1159,24 @@ async function decideWorkspaceRecovery(
             },
           ];
     };
-    const wasClosed = owned.mutationAdmission.isClosed(input.workspaceId);
+    const wasClosed = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+      owned.dataRoot,
+      input.workspaceId
+    );
     const freeze = wasClosed
       ? target
-        ? resumeWorkspaceRecoveryOwner(
-            owned.coreDb,
-            target,
-            owned.mutationAdmission,
-            inspectAndHold
-          )
+        ? resumeWorkspaceRecoveryOwner(owned.coreDb, target, inspectAndHold)
         : resumeWorkspaceCaptureOwner(
             owned.coreDb,
             input.workspaceId,
             source!.capture.captureId,
-            owned.mutationAdmission,
             inspectAndHold
           )
-      : owned.mutationAdmission.tryFreeze(input.workspaceId, inspectAndHold);
+      : getControlStoreWorkerClient().tryFreezeWorkspace(
+          owned.dataRoot,
+          input.workspaceId,
+          inspectAndHold
+        );
     if (freeze.status !== 'frozen')
       throw new OperationError(
         freeze.status === 'busy' && wasClosed ? 'workspace_frozen' : 'workspace_blocked',
@@ -1231,7 +1235,7 @@ async function decideWorkspaceRecovery(
       const owner = {
         core: owned.coreDb,
         fileAdmission: owned.verification.admission,
-        native: { gate: owned.mutationAdmission, freeze },
+        native: { freeze },
         currentAuthority: owned.currentAuthority,
         actor: publicOperationActor(context),
       };
@@ -1262,15 +1266,23 @@ async function decideWorkspaceRecovery(
     } catch (error) {
       refuseScope(owned.dataRoot, { scope: 'workspace', id: input.workspaceId, check: 'recovery' });
       if (target)
-        owned.mutationAdmission.restoreRecoveryClosed(input.workspaceId, {
-          admissionId: target.admission_id,
-          revision: target.revision - (target.state === 'prepared' ? 0 : 1),
-          candidateRef: target.candidate_ref,
-        });
+        getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(
+          owned.dataRoot,
+          input.workspaceId,
+          {
+            admissionId: target.admission_id,
+            revision: target.revision - (target.state === 'prepared' ? 0 : 1),
+            candidateRef: target.candidate_ref,
+          }
+        );
       else
-        owned.mutationAdmission.restoreRecoveryClosed(input.workspaceId, {
-          captureId: source!.capture.captureId,
-        });
+        getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(
+          owned.dataRoot,
+          input.workspaceId,
+          {
+            captureId: source!.capture.captureId,
+          }
+        );
       throw error;
     } finally {
       freeze.release();
@@ -1387,7 +1399,9 @@ export function createWorkspaceRestoreOperationImplementations(
           owned.currentAuthority();
           return WorkspaceSnapshotReportSchema.parse(previous.proof.result);
         }
-        owned.store.setWorkspaceMutationAdmission(owned.mutationAdmission);
+        const storeRoot = owned.store.getDataRoot();
+        if (!storeRoot || resolve(storeRoot) !== resolve(owned.dataRoot))
+          throw new Error('Store Workspace mutations must use their native scope owner.');
         const inspect = () =>
           previous
             ? readWorkspaceRecoveryBlockers(
@@ -1409,9 +1423,8 @@ export function createWorkspaceRestoreOperationImplementations(
         const inspectAndHold = () => {
           const blockers = inspect();
           if (blockers.length) return blockers;
-          hold = getControlStoreWorkerClient(owned.mutationAdmission).tryPauseForWorkspaceCapture(
-            `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`,
-            owned.mutationAdmission
+          hold = getControlStoreWorkerClient().tryPauseForWorkspaceCapture(
+            `workspace:${join(owned.dataRoot, 'workspaces', input.workspaceId, 'db/workspace.sqlite')}`
           );
           return hold
             ? []
@@ -1424,15 +1437,17 @@ export function createWorkspaceRestoreOperationImplementations(
                 },
               ];
         };
-        const wasClosed = owned.mutationAdmission.isClosed(input.workspaceId);
+        const wasClosed = getControlStoreWorkerClient().isWorkspaceMutationClosed(
+          owned.dataRoot,
+          input.workspaceId
+        );
         const freeze = previous
-          ? resumeWorkspaceRecoveryOwner(
-              owned.coreDb,
-              previous,
-              owned.mutationAdmission,
+          ? resumeWorkspaceRecoveryOwner(owned.coreDb, previous, inspectAndHold)
+          : getControlStoreWorkerClient().tryFreezeWorkspace(
+              owned.dataRoot,
+              input.workspaceId,
               inspectAndHold
-            )
-          : owned.mutationAdmission.tryFreeze(input.workspaceId, inspectAndHold);
+            );
         if (freeze.status !== 'frozen')
           throw new OperationError(
             freeze.status === 'busy' && wasClosed ? 'workspace_frozen' : 'workspace_blocked',
@@ -1492,7 +1507,7 @@ export function createWorkspaceRestoreOperationImplementations(
           const owner = {
             core: owned.coreDb,
             fileAdmission: owned.verification.admission,
-            native: { gate: owned.mutationAdmission, freeze },
+            native: { freeze },
             currentAuthority: owned.currentAuthority,
             actor: publicOperationActor(context),
           };
@@ -1517,11 +1532,15 @@ export function createWorkspaceRestoreOperationImplementations(
               id: input.workspaceId,
               check: 'recovery',
             });
-            owned.mutationAdmission.restoreRecoveryClosed(input.workspaceId, {
-              admissionId: current.admission_id,
-              revision: current.revision - (current.state === 'finished' ? 1 : 0),
-              candidateRef: current.candidate_ref,
-            });
+            getControlStoreWorkerClient().restoreWorkspaceRecoveryClosed(
+              owned.dataRoot,
+              input.workspaceId,
+              {
+                admissionId: current.admission_id,
+                revision: current.revision - (current.state === 'finished' ? 1 : 0),
+                candidateRef: current.candidate_ref,
+              }
+            );
           }
           throw error;
         } finally {

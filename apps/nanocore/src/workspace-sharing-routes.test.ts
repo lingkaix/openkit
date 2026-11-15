@@ -24,7 +24,6 @@ import { closeWorkspaceProductReadHandles } from './storage/control-store-produc
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  type WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import type { CoreDb } from './storage/db.js';
 import { openCoreDb } from './storage/db.js';
@@ -74,7 +73,6 @@ interface RouteFixture {
   /** Canonical shared Workspace store. */
   store: FsStore;
   /** Process-local deletion admission used by the route fixture. */
-  workspaceMutationAdmission: WorkspaceMutationAdmission;
   /** Primary shared Workspace id. */
   workspaceId: string;
   /** Second Workspace used for lineage denial. */
@@ -160,7 +158,6 @@ async function createFixture(): Promise<RouteFixture> {
   const actorState: ActorState = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7011-88df-c2b1e8466b6f' },
   };
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const app = new Hono<{ Variables: AuthVariables }>();
   app.use('*', async (context, next) => {
     context.set('actor', actorState.current);
@@ -186,7 +183,6 @@ async function createFixture(): Promise<RouteFixture> {
     coreDb,
     inflightCommands: new WeakMap(),
     requestStore: () => store,
-    workspaceMutationAdmission,
   });
 
   return {
@@ -196,7 +192,6 @@ async function createFixture(): Promise<RouteFixture> {
     foreignWorkspaceId,
     store,
     workspaceId,
-    workspaceMutationAdmission,
   };
 }
 
@@ -236,7 +231,11 @@ describe('Workspace sharing routes', () => {
         userId: inviteeId,
         sessionId: session!.id,
       };
-      const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspaceId, () => []);
+      const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+        fixture.coreDb.dataRoot,
+        fixture.workspaceId,
+        () => []
+      );
       expect(freeze.status).toBe('frozen');
       const bodies: unknown[] = [];
       const client = createCoreClient({
@@ -520,7 +519,10 @@ describe('Workspace sharing routes', () => {
         )
         .run(invitationId, workspaceId, '2026-07-26T00:00:00.000Z', now, now);
     }
-    await fixture.workspaceMutationAdmission.close(fixture.workspaceId);
+    await getControlStoreWorkerClient().closeWorkspaceMutations(
+      fixture.coreDb.dataRoot,
+      fixture.workspaceId
+    );
     fixture.coreDb.sqlite
       .prepare(
         `UPDATE workspace_registry

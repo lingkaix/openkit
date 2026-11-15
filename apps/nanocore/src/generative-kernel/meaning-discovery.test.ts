@@ -13,10 +13,7 @@ import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import type { OperationInvocationContext } from '../operation-contract.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createTestAgentSetup } from '../test-support/agent-environment.js';
@@ -63,7 +60,6 @@ async function fixture() {
     store,
     coreDb,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   });
   onTestFinished(async () => {
     coreDb.sqlite.close();

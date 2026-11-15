@@ -779,7 +779,6 @@ async function admitTask(installation: TitleInstallation) {
       return connection;
     },
     inflightCommands,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
     goalId: goal.goalId,
     coordinatorTurnId: coordinator.id,
     startWorker: async (input) => {

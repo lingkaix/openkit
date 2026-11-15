@@ -8,7 +8,6 @@ import {
 import { allocateEntityId, readRetainedV1 } from '@openkit/protocol';
 import type { Actor } from '../auth/identity.js';
 import { selectAutomationScan } from '../storage/automation-scanner-selection.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import {
@@ -43,7 +42,6 @@ import {
 export class AutomationStore {
   public constructor(
     public readonly coreDb: CoreDb,
-    public readonly mutationAdmission: WorkspaceMutationAdmission,
     private readonly now: () => string = () => new Date().toISOString()
   ) {}
 
@@ -146,7 +144,10 @@ export class AutomationStore {
     try {
       for (const record of [...plan.pending, ...plan.due, ...plan.stale, ...plan.expired]) {
         if (releases.has(record.workspaceId)) continue;
-        const release = this.mutationAdmission.enter(record.workspaceId);
+        const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+          this.coreDb.dataRoot,
+          record.workspaceId
+        );
         if (release) releases.set(record.workspaceId, release);
       }
       const workspaceIds = [...releases.keys()];
@@ -171,7 +172,10 @@ export class AutomationStore {
     preparation: RecurringPreparation,
     revalidate?: () => RecurringPreparation | undefined
   ): Promise<RecurringOccurrence | null> {
-    const release = this.mutationAdmission.enter(this.getOccurrence(occurrenceId).workspaceId);
+    const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+      this.coreDb.dataRoot,
+      this.getOccurrence(occurrenceId).workspaceId
+    );
     if (!release) throw new AutomationMutationError('Workspace mutations are fenced.');
     try {
       const result = await admitCoreScheduler(
@@ -259,7 +263,10 @@ export class AutomationStore {
     mutation: AutomationDefinitionMutation,
     authorization?: { readonly actor: Actor; readonly revalidate?: () => Promise<void> }
   ): Promise<AutomationRecord | null> {
-    const release = this.mutationAdmission.enter(workspaceId);
+    const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+      this.coreDb.dataRoot,
+      workspaceId
+    );
     if (!release) throw new AutomationMutationError('Workspace mutations are fenced.');
     try {
       const result = await admitCoreScheduler(

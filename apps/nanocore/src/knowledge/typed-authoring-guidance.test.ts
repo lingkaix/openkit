@@ -18,10 +18,7 @@ import type {
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { serializeKnowledgePageFixture } from '../test-support/knowledge-page.js';
@@ -201,8 +198,6 @@ async function fixture(scope: Scope, enabled = false) {
       ],
     }),
   });
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-  store.setWorkspaceMutationAdmission(workspaceMutationAdmission);
   const finish = async (run: Run) => {
     expect(
       run.validateResult('{"summary":"Finished the native notebook operation."}')
@@ -221,7 +216,6 @@ async function fixture(scope: Scope, enabled = false) {
     userDb,
     store,
     runtimeConfigManager,
-    workspaceMutationAdmission,
     openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,

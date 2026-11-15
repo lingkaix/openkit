@@ -14,7 +14,6 @@ import type { AuthVariables } from './auth/middleware.js';
 import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { registerOperationJsonRoutes } from './operation-json-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -861,7 +860,6 @@ describe('Artifact definition projections', () => {
           app,
           coreDb: f.coreDb,
           store: f.store,
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
           requestStore: () => f.store,
           inflightCommands: new WeakMap(),
           repositoryWorkspaceDb: () => {

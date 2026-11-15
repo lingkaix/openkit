@@ -24,10 +24,7 @@ import { SecurityTriggerStore } from '../security/trigger.js';
 import { createWorkspaceOperationImplementations } from '../workspace-operation-implementations.js';
 import { createWorkspaceSharingOperationImplementations } from '../workspace-sharing-operations.js';
 import { closeWorkspaceProductReadHandles } from './control-store-product-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -308,7 +305,6 @@ function sharing(f: Fixture, store = new FsStore({ dataRoot: f.dataRoot })) {
     coreDb: f.db,
     store,
     inflightCommands: new Map(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(f.dataRoot),
   });
 }
 async function disable(f: Fixture, actor: Actor, userId: string) {

@@ -1,13 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { BootReadinessSnapshot } from '@openkit/app-api-schemas';
-import { WorkspaceIdSchema } from '@openkit/protocol';
 import { OperationError } from '../operation-error-core.js';
-import type {
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-} from '../storage/control-store-worker-client.js';
-import type { CoreDb } from '../storage/db.js';
 
 /** A refused authority or unavailable projection; never persisted or used as replacement truth. */
 export interface ScopeAdmissionFailure {
@@ -33,36 +27,18 @@ export function refuseScope(dataRoot: string, failure: ScopeAdmissionFailure): v
   if (failure.check === 'retired' || !failures.has(key)) failures.set(key, failure);
 }
 
-/**
- * Restores registry-owned retirement exclusion before any scoped migration, content load or recovery.
- * @param input Verified Core authority and the existing process-local mutation gate.
- * @throws When retired registry identity cannot be established; no retained Workspace is opened.
- */
-export function restoreWorkspaceRetirementAdmission(input: {
-  readonly coreDb: CoreDb;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
-}): void {
-  const rows = input.coreDb.sqlite
-    .prepare("SELECT workspace_id AS workspaceId FROM workspace_registry WHERE status = 'retired'")
-    .all() as Array<{ workspaceId: string }>;
-  for (const row of rows) {
-    const workspaceId = WorkspaceIdSchema.parse(row.workspaceId);
-    refuseScope(input.coreDb.dataRoot, { scope: 'workspace', id: workspaceId, check: 'retired' });
-    input.workspaceMutationAdmission.restoreClosed(workspaceId);
-  }
-}
-
 /** Returns bounded, owner-authored diagnoses for the existing authorized readiness projection. */
 export function scopeAdmissionFailures(dataRoot: string): readonly ScopeAdmissionFailure[] {
   return [...(scopeFailures.get(resolve(dataRoot))?.values() ?? [])];
 }
 
-/** Removes only the exact recovery diagnosis after its owner validates the target under this freeze. */
+/**
+ * Removes only the exact recovery diagnosis after its owner validates the target.
+ * The caller proves its current native freeze first; this leaf module never loads the native client.
+ */
 export function settleWorkspaceRecoveryScope(input: {
   readonly dataRoot: string;
   readonly failure: ScopeAdmissionFailure;
-  readonly admission: WorkspaceMutationAdmission;
-  readonly freeze: WorkspaceFrozenAdmission;
 }): void {
   const { failure } = input;
   const failures = scopeFailures.get(resolve(input.dataRoot));
@@ -70,8 +46,7 @@ export function settleWorkspaceRecoveryScope(input: {
   if (
     failure.scope !== 'workspace' ||
     failure.check !== 'recovery' ||
-    failures?.get(key) !== failure ||
-    !input.admission.ownsFreeze(failure.id, input.freeze)
+    failures?.get(key) !== failure
   )
     throw new OperationError('recovery_required', 'Workspace recovery is not current.', 409);
   failures.delete(key);

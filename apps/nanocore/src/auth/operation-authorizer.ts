@@ -26,7 +26,7 @@ import {
   type SchedulerExecutionLineage,
 } from '../scheduler-records.js';
 import { ControlProductPreconditionError } from '../storage/control-store-product-records.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
+import type { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb } from '../storage/db.js';
 import type { ControlVaultInput } from '../storage/vault-native-codecs.js';
 import { isTargetIssuedEffectAuthority } from '../storage/workspace-import-authority.js';
@@ -1319,14 +1319,14 @@ export function authorizedWorkspaceSet(
   coreDb: CoreDb,
   actor: Actor,
   access: Pick<PublicOperationAccess, 'mutating' | 'policyOperation'>,
-  admission: WorkspaceMutationAdmission
+  nativeScope: Pick<ReturnType<typeof getControlStoreWorkerClient>, 'isWorkspaceLifecycleClosed'>
 ): string[] {
   const candidates = isCurrentDeploymentAdministrator(coreDb, actor)
     ? listActiveWorkspaceIds(coreDb)
     : listActiveWorkspaceIdsForActor(coreDb, actor.userId);
   return candidates.filter(
     (workspaceId) =>
-      !admission.isLifecycleClosed(workspaceId) &&
+      !nativeScope.isWorkspaceLifecycleClosed(coreDb.dataRoot, workspaceId) &&
       isScopeAdmitted(coreDb.dataRoot, 'workspace', workspaceId) &&
       authorizeWorkspace(coreDb, actor, workspaceId, access) !== null
   );

@@ -18,6 +18,7 @@ import { admitOperation, type OperationAdmissionDependencies } from '../../opera
 import type { InflightIdempotentCommand } from '../../runtime/idempotent-command.js';
 import { IdempotencyKeyConflictError } from '../../runtime/idempotent-command.js';
 import type { FileStorageAdmission } from '../artifacts/file-admission.js';
+import { getControlStoreWorkerClient } from '../control-store-worker-client.js';
 import type { WorkspaceDb } from '../db.js';
 import {
   createKnowledgePackageStaging,
@@ -81,7 +82,10 @@ export function registerKnowledgePackageRoutes(
               workspaceId,
               definition
             ) ||
-            dependencies.workspaceMutationAdmission?.isClosed(workspaceId)
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(
+              dependencies.coreDb!.dataRoot,
+              workspaceId
+            )
           )
             throw new OperationError(
               'workspace_access_denied',

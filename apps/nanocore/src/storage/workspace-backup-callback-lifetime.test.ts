@@ -443,16 +443,12 @@ async function exercise(fault: boolean) {
     const stagingParent = join(root, 'staging');
     start(() => mkdirSync(stagingParent));
     const admission = start(() => new FileStorageAdmission(root, () => 0n));
-    const mutationAdmission = start(() =>
-      getControlStoreWorkerClient().workspaceMutations(dataRoot)
-    );
     const input: Parameters<typeof createWorkspaceBackup>[0] = {
       source: {
         kind: 'live-workspace',
         dataRoot,
         coreDb: core,
         store,
-        mutationAdmission,
         actor: { kind: 'local', userId: ownerId },
       },
       workspaceId: DEMO_WORKSPACE_ID,

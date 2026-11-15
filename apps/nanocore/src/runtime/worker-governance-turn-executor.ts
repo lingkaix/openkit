@@ -85,7 +85,6 @@ import {
 } from '../scheduler-records.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
@@ -1021,8 +1020,6 @@ export interface WorkerGovernanceTurnExecutorOptions {
   vaultBackend?: (() => VaultBackend) | undefined;
   /** Optional shared worker-control gateway used to enqueue live-session interrupts. */
   workerControlGateway?: WorkerControlGateway | undefined;
-  /** Optional shared Workspace deletion fence for late transcript publication. */
-  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined;
 }
 
 /** Process-local refresh exclusion across executor instances; no queue or cached material. */
@@ -1078,7 +1075,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
   private readonly runtimeProvenanceImporter: typeof importWorkerRuntimeProvenance;
   private readonly vaultBackend: (() => VaultBackend) | null;
   private readonly workerControlGateway: WorkerControlGateway | null;
-  private readonly workspaceMutationAdmission: WorkspaceMutationAdmission | null;
   /** Live lifecycle ownership through cleanup and terminal publication; never restored. */
   private readonly activeTurnExecutions = new Map<string, Promise<unknown>>();
 
@@ -1112,7 +1108,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       options.runtimeProvenanceImporter ?? importWorkerRuntimeProvenance;
     this.vaultBackend = options.vaultBackend ?? null;
     this.workerControlGateway = options.workerControlGateway ?? null;
-    this.workspaceMutationAdmission = options.workspaceMutationAdmission ?? null;
   }
 
   /** Samples Main observations while keeping an absent override absent for native deciding clocks. */
@@ -3855,9 +3850,6 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
             : {}),
           repositoryWorkspaceDb: (workspaceId: string) =>
             openAdmittedWorkspaceReadDb(this.coreDb!.dataRoot, workspaceId),
-          ...(this.workspaceMutationAdmission
-            ? { workspaceMutationAdmission: this.workspaceMutationAdmission }
-            : {}),
         };
         const invoke = createOperationEngine(
           createVaultOperationImplementations(dependencies),
@@ -5021,8 +5013,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           backendCapabilities
         );
       };
-      const running = this.workspaceMutationAdmission
-        ? this.workspaceMutationAdmission.runWorkerCloseout(
+      const running = this.coreDb
+        ? getControlStoreWorkerClient().runWorkerCloseout(
+            this.coreDb.dataRoot,
             environmentPackage.scope.workspaceId,
             closeout
           )
@@ -5078,8 +5071,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         db.sqlite.close();
       }
     };
-    const running = this.workspaceMutationAdmission
-      ? this.workspaceMutationAdmission.runWorkerCloseout(
+    const running = this.coreDb
+      ? getControlStoreWorkerClient().runWorkerCloseout(
+          this.coreDb.dataRoot,
           environmentPackage.scope.workspaceId,
           closeout
         )

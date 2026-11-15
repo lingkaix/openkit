@@ -119,8 +119,6 @@ async function fixture(
   const coreDb = createTestCoreDb(root);
   const userId = ensureLocalUser(coreDb);
   const store = await createDemoStore({ dataRoot: root });
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-  store.setWorkspaceMutationAdmission(mutationAdmission);
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
   const material = randomBytes(48).toString('base64url');
   const targetPath = `/sandbox/${randomUUID()}/${randomUUID()}`;
@@ -325,7 +323,6 @@ async function fixture(
   return {
     coreDb,
     store,
-    mutationAdmission,
     helper: options.helper === true,
     material,
     targetPath,
@@ -427,7 +424,6 @@ async function start(
     f.store,
     {
       vaultBackend: () => f.vault.backend(),
-      workspaceMutationAdmission: f.mutationAdmission,
       policyInterception: () => interception,
       readRuntimeConfig:
         runtimeOptions.readRuntimeConfig ?? (() => loadRuntimeConfig(f.coreDb.dataRoot)),
@@ -685,7 +681,6 @@ describe('credential carrier slice 1: Core acceptance', () => {
       coreDb: f.coreDb,
       dataRoot: f.coreDb.dataRoot,
       store: f.store,
-      workspaceMutationAdmission: f.mutationAdmission,
       vaultUnlockState: f.vault,
       policyInterception: interception,
       agentManifests: [f.agentSetup.manifest],
@@ -766,7 +761,6 @@ describe('credential carrier slice 1: Core acceptance', () => {
       coreDb: f.coreDb,
       dataRoot: f.coreDb.dataRoot,
       store: f.store,
-      workspaceMutationAdmission: f.mutationAdmission,
       vaultUnlockState: f.vault,
       agentManifests: [f.agentSetup.manifest],
     });
@@ -1105,7 +1099,6 @@ describe('credential carrier slice 1: Core acceptance', () => {
       coreDb: f.coreDb,
       dataRoot: f.coreDb.dataRoot,
       store: f.store,
-      workspaceMutationAdmission: f.mutationAdmission,
       vaultUnlockState: f.vault,
       policyInterception: policy,
       runtimeConfigManager,
@@ -1489,7 +1482,6 @@ describe('typed native helper admission owner boundaries', () => {
     async ({ bound }) => {
       const f = await fixture(['runtime-token'], 'workspace', { helper: true });
       const native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
-        workspaceMutationAdmission: f.mutationAdmission,
         vaultBackend: () => f.vault.backend(),
       });
       try {
@@ -1568,7 +1560,6 @@ describe('typed native helper admission owner boundaries', () => {
       coreDb: f.coreDb,
       dataRoot: f.coreDb.dataRoot,
       store: f.store,
-      workspaceMutationAdmission: f.mutationAdmission,
       openKitConfig: {},
       agentManifests: [f.agentSetup.manifest],
       gatewayConfig,
@@ -1656,8 +1647,6 @@ it.each(['other', 'empty', 'vault'] as const)(
     const coreDb = createTestCoreDb(root);
     const userId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: root });
-    const mutation = getControlStoreWorkerClient().workspaceMutations(root);
-    store.setWorkspaceMutationAdmission(mutation);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId: userId, workspaceId: DEMO_WORKSPACE_ID });
     const agentSessionId = testEntityId('as', randomUUID());
     const referenceId = testEntityId('vault', randomUUID());
@@ -1726,7 +1715,6 @@ it.each(['other', 'empty', 'vault'] as const)(
         readRuntimeConfig,
         policyInterception: () => interception,
         vaultBackend: () => vault.backend(),
-        workspaceMutationAdmission: mutation,
       });
       admitTestNativeEnvironment(coreDb, setup.manifest);
       const run = dispatch.runSchedulerDispatchLoop;
@@ -1744,7 +1732,6 @@ it.each(['other', 'empty', 'vault'] as const)(
         turnExecutor: native.executor,
         workerControlGateway: native.workerControlGateway,
         workerLifecycleRuntime: native.runtime,
-        workspaceMutationAdmission: mutation,
         runtimeConfigManager: manager,
         policyInterception: interception,
         vaultUnlockState: vault,
@@ -1827,7 +1814,6 @@ it.each(['other', 'empty', 'vault'] as const)(
                 coreDb,
                 store,
                 repositoryWorkspaceDb: (id) => createTestWorkspaceDb(root, id),
-                workspaceMutationAdmission: mutation,
               })(
                 { workspaceId: DEMO_WORKSPACE_ID, query: request.objective },
                 {

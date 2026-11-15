@@ -262,7 +262,6 @@ async function productPoolFixture() {
     store,
     dataRoot: root,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot),
     repositoryWorkspaceDb: (id) => {
       if (!workspaces.some((workspace) => workspace.id === id))
         throw new Error('Fixture Workspace is not admitted.');
@@ -373,7 +372,6 @@ describe('control writer parent admission', () => {
         },
       ],
     });
-    const owner = f.client.workspaceMutations(f.root);
     const cuts: string[] = [];
     const appKernel = f.client.appKernel.bind(f.client);
     const observed = vi
@@ -384,7 +382,7 @@ describe('control writer parent admission', () => {
           {
             ...input,
             get change() {
-              const cut = owner.tryFreeze(workspaceId, () => []);
+              const cut = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
               cuts.push(cut.status);
               if (cut.status === 'frozen') cut.release();
               return input.change;
@@ -404,13 +402,13 @@ describe('control writer parent admission', () => {
       expect(record.data).toEqual({ note: 'Original native preparation.' });
       expect(cuts.length).toBeGreaterThan(0);
       expect(cuts.every((status) => status === 'busy')).toBe(true);
-      const after = owner.tryFreeze(workspaceId, () => []);
+      const after = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
       if (after.status === 'frozen') after.release();
       expect(after.status).toBe('frozen');
       const [database, prepared] = observed.mock.calls[0]!;
       const capacity = f.client.reserveAppRollback(database, 64);
       const released = vi.spyOn(capacity, 'release');
-      const cut = owner.tryFreeze(workspaceId, () => []);
+      const cut = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
       expect(cut.status).toBe('frozen');
       try {
         await expect(appKernel(database, prepared, capacity)).rejects.toMatchObject({
@@ -435,7 +433,6 @@ describe('control writer parent admission', () => {
     nativeHandles.push(coreDb);
     const manager = createRuntimeConfigManager({ dataRoot: f.root });
     await manager.bindNativePolicyPublication(coreDb);
-    const owner = f.client.workspaceMutations(f.root);
     const original = f.scope(0).productOwner.workspaceId;
     const alternate = f.scope(1).productOwner.workspaceId;
     const scope = nativeProductScope(f.root, { kind: 'server' });
@@ -451,7 +448,11 @@ describe('control writer parent admission', () => {
       const message = args[0];
       if (message?.operation === 'core-journal' && message.input.kind === 'containment-intent') {
         postedWorkspace = message.input.lineage.workspaceId;
-        const cut = owner.tryFreeze(message.input.lineage.workspaceId, () => []);
+        const cut = f.client.tryFreezeWorkspace(
+          f.root,
+          message.input.lineage.workspaceId,
+          () => []
+        );
         postedStatus = cut.status;
         if (cut.status === 'frozen') cut.release();
       }
@@ -477,7 +478,7 @@ describe('control writer parent admission', () => {
       expect(reads).toBe(1);
       expect(postedWorkspace).toBe(original);
       expect(postedStatus).toBe('busy');
-      const cut = owner.tryFreeze(original, () => []);
+      const cut = f.client.tryFreezeWorkspace(f.root, original, () => []);
       if (cut.status === 'frozen') cut.release();
       expect(cut.status).toBe('frozen');
     } finally {
@@ -488,20 +489,23 @@ describe('control writer parent admission', () => {
   it('retains a native child ACK after its original closeout lease parent returns', async () => {
     const f = await poolFixture(1, 'before');
     const scope = f.scope(0);
-    const owner = f.client.workspaceMutations(f.root);
     let child: Promise<unknown> | undefined;
-    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    let cut: ReturnType<typeof f.client.tryFreezeWorkspace> | undefined;
     try {
       // Isolate lease bookkeeping with an existing transport journal write, not Worker permission.
-      const parent = owner.runWorkerCloseout(scope.productOwner.workspaceId, async () => {
-        Atomics.store(f.gate!, 0, 0);
-        child = f.client.write(scope.database, nativeRequest('unawaited-native-child'));
-        await waitForHold(f.gate!);
-      });
+      const parent = f.client.runWorkerCloseout(
+        f.root,
+        scope.productOwner.workspaceId,
+        async () => {
+          Atomics.store(f.gate!, 0, 0);
+          child = f.client.write(scope.database, nativeRequest('unawaited-native-child'));
+          await waitForHold(f.gate!);
+        }
+      );
       expect(parent).not.toBeNull();
       await parent;
       expect(nativeRequests(scope.path)).toEqual([]);
-      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      cut = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
       expect(cut.status).toBe('busy');
     } finally {
       if (cut?.status === 'frozen') cut.release();
@@ -509,7 +513,7 @@ describe('control writer parent admission', () => {
       await child;
     }
     expect(nativeRequests(scope.path)).toEqual(['unawaited-native-child']);
-    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    const afterAck = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
     expect(afterAck.status).toBe('frozen');
     if (afterAck.status === 'frozen') afterAck.release();
   });
@@ -517,14 +521,13 @@ describe('control writer parent admission', () => {
   it('owns a standalone Workspace write through its original native ACK', async () => {
     const f = await poolFixture(1, 'before');
     const scope = f.scope(0);
-    const owner = f.client.workspaceMutations(f.root);
     Atomics.store(f.gate!, 0, 0);
     const write = f.client.write(scope.database, nativeRequest('standalone-native-write'));
-    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    let cut: ReturnType<typeof f.client.tryFreezeWorkspace> | undefined;
     try {
       await waitForHold(f.gate!);
       expect(nativeRequests(scope.path)).toEqual([]);
-      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      cut = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
       expect(cut.status).toBe('busy');
     } finally {
       if (cut?.status === 'frozen') cut.release();
@@ -532,7 +535,7 @@ describe('control writer parent admission', () => {
       await write;
     }
     expect(nativeRequests(scope.path)).toEqual(['standalone-native-write']);
-    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    const afterAck = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
     expect(afterAck.status).toBe('frozen');
     if (afterAck.status === 'frozen') afterAck.release();
   });
@@ -540,7 +543,6 @@ describe('control writer parent admission', () => {
   it('owns a standalone physical close until its real native ACK is delivered', async () => {
     const f = await poolFixture(1);
     const scope = f.scope(0);
-    const owner = f.client.workspaceMutations(f.root);
     const reached = Promise.withResolvers<void>();
     const emit = Worker.prototype.emit;
     let resume: (() => void) | undefined;
@@ -558,10 +560,10 @@ describe('control writer parent admission', () => {
       return emit.call(this, event, ...args);
     });
     const closing = f.client.close(scope.database);
-    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    let cut: ReturnType<typeof f.client.tryFreezeWorkspace> | undefined;
     try {
       await reached.promise;
-      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      cut = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
       expect(cut.status).toBe('busy');
     } finally {
       if (cut?.status === 'frozen') cut.release();
@@ -569,7 +571,7 @@ describe('control writer parent admission', () => {
       await closing;
       replies.mockRestore();
     }
-    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    const afterAck = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
     expect(afterAck.status).toBe('frozen');
     if (afterAck.status === 'frozen') afterAck.release();
   });
@@ -577,13 +579,12 @@ describe('control writer parent admission', () => {
   it('owns direct Turn publication before JSON and before its first native post', async () => {
     const f = await poolFixture(1);
     const scope = f.scope(0);
-    const owner = f.client.workspaceMutations(f.root);
     const reached = Promise.withResolvers<void>();
     const resume = Promise.withResolvers<void>();
     let jsonCut: string | undefined;
     const input = {
       toJSON() {
-        const cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+        const cut = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
         jsonCut = cut.status;
         if (cut.status === 'frozen') cut.release();
         return { id: 'native-preparation-owner' };
@@ -599,12 +600,12 @@ describe('control writer parent admission', () => {
         return f.client.write(scope.database, nativeRequest('native-preparation-owner'));
       }
     );
-    let cut: ReturnType<typeof owner.tryFreeze> | undefined;
+    let cut: ReturnType<typeof f.client.tryFreezeWorkspace> | undefined;
     try {
       await reached.promise;
       expect(jsonCut).toBe('busy');
       expect(nativeRequests(scope.path)).toEqual([]);
-      cut = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+      cut = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
       expect(cut.status).toBe('busy');
     } finally {
       if (cut?.status === 'frozen') cut.release();
@@ -612,7 +613,7 @@ describe('control writer parent admission', () => {
       await publication;
     }
     expect(nativeRequests(scope.path)).toEqual(['native-preparation-owner']);
-    const afterAck = owner.tryFreeze(scope.productOwner.workspaceId, () => []);
+    const afterAck = f.client.tryFreezeWorkspace(f.root, scope.productOwner.workspaceId, () => []);
     expect(afterAck.status).toBe('frozen');
     if (afterAck.status === 'frozen') afterAck.release();
   });
@@ -621,33 +622,36 @@ describe('control writer parent admission', () => {
     const f = await poolFixture(2, 'before');
     const original = f.scope(0);
     const target = f.scope(1);
-    const owner = f.client.workspaceMutations(f.root);
     const reached = Promise.withResolvers<void>();
     const resumePreparation = Promise.withResolvers<void>();
     const cuts: (() => void)[] = [];
     let publication: Promise<unknown> | undefined;
     Atomics.store(f.gate!, 0, 0);
     try {
-      const parent = owner.runWorkerCloseout(original.productOwner.workspaceId, async () => {
-        publication = f.client.runTurnPublication(
-          target,
-          [allocateEntityId('tu')],
-          {},
-          async () => {
-            reached.resolve();
-            await resumePreparation.promise;
-            return f.client.write(target.database, nativeRequest('distinct-publication-target'));
-          }
-        );
-        await reached.promise;
-      });
+      const parent = f.client.runWorkerCloseout(
+        f.root,
+        original.productOwner.workspaceId,
+        async () => {
+          publication = f.client.runTurnPublication(
+            target,
+            [allocateEntityId('tu')],
+            {},
+            async () => {
+              reached.resolve();
+              await resumePreparation.promise;
+              return f.client.write(target.database, nativeRequest('distinct-publication-target'));
+            }
+          );
+          await reached.promise;
+        }
+      );
       expect(parent).not.toBeNull();
       await parent;
       for (const workspaceId of [
         original.productOwner.workspaceId,
         target.productOwner.workspaceId,
       ]) {
-        const cut = owner.tryFreeze(workspaceId, () => []);
+        const cut = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
         if (cut.status === 'frozen') cuts.push(cut.release);
         expect(cut.status).toBe('busy');
       }
@@ -657,7 +661,7 @@ describe('control writer parent admission', () => {
         original.productOwner.workspaceId,
         target.productOwner.workspaceId,
       ]) {
-        const cut = owner.tryFreeze(workspaceId, () => []);
+        const cut = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
         if (cut.status === 'frozen') cuts.push(cut.release);
         expect(cut.status).toBe('busy');
       }
@@ -668,7 +672,7 @@ describe('control writer parent admission', () => {
         original.productOwner.workspaceId,
         target.productOwner.workspaceId,
       ]) {
-        const cut = owner.tryFreeze(workspaceId, () => []);
+        const cut = f.client.tryFreezeWorkspace(f.root, workspaceId, () => []);
         if (cut.status === 'frozen') cuts.push(cut.release);
         expect(cut.status).toBe('frozen');
       }
@@ -684,24 +688,29 @@ describe('control writer parent admission', () => {
     const posts = vi.spyOn(Worker.prototype, 'postMessage');
     const f = await poolFixture(1, 'after');
     const scope = f.scope(0);
-    const owner = f.client.workspaceMutations(f.root);
     let outcome: Promise<unknown> | undefined;
     let deletion: Promise<void> | undefined;
     let closed = false;
     try {
-      const parent = owner.runWorkerCloseout(scope.productOwner.workspaceId, async () => {
-        Atomics.store(f.gate!, 0, 0);
-        outcome = f.client.write(scope.database, nativeRequest('unknown-native-child')).then(
-          () => ({ accepted: true }),
-          (error: unknown) => error
-        );
-        await waitForHold(f.gate!);
-      });
+      const parent = f.client.runWorkerCloseout(
+        f.root,
+        scope.productOwner.workspaceId,
+        async () => {
+          Atomics.store(f.gate!, 0, 0);
+          outcome = f.client.write(scope.database, nativeRequest('unknown-native-child')).then(
+            () => ({ accepted: true }),
+            (error: unknown) => error
+          );
+          await waitForHold(f.gate!);
+        }
+      );
       expect(parent).not.toBeNull();
       await parent;
-      deletion = owner.close(scope.productOwner.workspaceId).then(() => {
-        closed = true;
-      });
+      deletion = f.client
+        .closeWorkspaceMutations(f.root, scope.productOwner.workspaceId)
+        .then(() => {
+          closed = true;
+        });
       const call = posts.mock.calls.findIndex(
         ([message]) => message.operation === 'write' && message.database === scope.database
       );
@@ -716,8 +725,10 @@ describe('control writer parent admission', () => {
       await f.client.shutdown();
       const restarted = getControlStoreWorkerClient();
       client = restarted;
-      expect(restarted.workspaceMutations(f.root)).toBe(owner);
-      expect(owner.enter(scope.productOwner.workspaceId)).toBeNull();
+      expect(restarted.isWorkspaceLifecycleClosed(f.root, scope.productOwner.workspaceId)).toBe(
+        true
+      );
+      expect(restarted.enterWorkspaceMutation(f.root, scope.productOwner.workspaceId)).toBeNull();
       expect(nativeRequests(scope.path)).toEqual(['unknown-native-child']);
     } finally {
       release(f.gate);

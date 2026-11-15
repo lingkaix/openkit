@@ -40,10 +40,7 @@ import {
 } from '../retrieval-knowledge-adapter.js';
 import { closeRetrievalServices } from '../retrieval-service.js';
 import { dispatchOpenkitWorkTool } from '../runtime/openkit-work-mcp.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openUserDb, openWorkspaceDb } from '../storage/db.js';
 import { retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
@@ -120,7 +117,6 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
   };
   const selectWorkspaceNotebook = () => readTestWorkspaceNotebookSelection(dataRoot, workspace.id);
   const publicationConfig = createInMemoryRuntimeConfigSnapshot({ dataRoot });
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const admitPublication = (
     notebook: KnowledgeNotebook,
     scopeSchemaText: string,
@@ -147,7 +143,6 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
       requestActor: { kind: 'local', userId },
       actor,
       runtimeConfigManager: { current: () => publicationConfig },
-      workspaceMutationAdmission,
     });
   const sourceRequestId = randomUUID();
   const sourceSelection = selectWorkspaceNotebook();
@@ -457,7 +452,6 @@ async function fixture(withServerKnowledge = false, emptyOverview = false) {
     createResponses,
     dependencies,
     publicationConfig,
-    workspaceMutationAdmission,
     ask,
   };
 }
@@ -1576,7 +1570,6 @@ it('exposes and forwards exact narrowing type/applicability arguments through th
           requestActor: { kind: 'local', userId: f.userId },
           actor: f.actor,
           runtimeConfigManager: { current: () => f.publicationConfig },
-          workspaceMutationAdmission: f.workspaceMutationAdmission,
         }),
     },
     publicationRequest
@@ -1712,7 +1705,6 @@ it.each(['trace-revision', 'index.md', 'log.md'] as const)(
             requestActor: { kind: 'local', userId: f.userId },
             actor: f.actor,
             runtimeConfigManager: { current: () => f.publicationConfig },
-            workspaceMutationAdmission: f.workspaceMutationAdmission,
           }),
       },
       publicationRequest

@@ -16,7 +16,6 @@ import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from '../mode-entry-routes.js';
 import { OperationError } from '../operation-error.js';
 import type { GoalTaskPolicyService } from '../policy/goal-task-policy.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { GoalCommandError } from './goal-error.js';
 import { goalActor, readGoalView } from './goal-owner.js';
@@ -71,7 +70,6 @@ export function createCoordinatorTaskTool(options: {
   readonly coreDb: CoreDb | undefined;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly startWorker: TaskWorkerStarter;
   readonly goalId: string;
   readonly coordinatorTurnId: string;
@@ -228,7 +226,6 @@ export function createCoordinatorTaskTool(options: {
                   coreDb: options.coreDb,
                   store: options.store,
                   repositoryWorkspaceDb: options.openWorkspace,
-                  workspaceMutationAdmission: options.workspaceMutationAdmission,
                 })(
                   { workspaceId: goal.workspaceId, query: workerRequest.objective },
                   { actor, traceId: deriveEntityId('krt', requestId), threadId }

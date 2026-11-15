@@ -26,12 +26,7 @@ import { parseSourcePointer } from './source-pointers.js';
 /** Existing native authority and publication dependencies; no history-owned state is retained. */
 type Dependencies = Pick<
   OperationInvocationDependencies,
-  | 'store'
-  | 'coreDb'
-  | 'repositoryWorkspaceDb'
-  | 'inflightCommands'
-  | 'runtimeConfigManager'
-  | 'workspaceMutationAdmission'
+  'store' | 'coreDb' | 'repositoryWorkspaceDb' | 'inflightCommands' | 'runtimeConfigManager'
 >;
 type Handlers = Pick<
   FamilyImplementations<typeof KNOWLEDGE_NOTEBOOK_OPERATION_DEFINITIONS>,
@@ -286,17 +281,11 @@ export function createNotebookHistoryOperations(
         const history = open(input.workspaceId, context);
         const { changes } = boundedNotebookDiff(history.diff(input, true), true);
         const actor = context.actorRef;
-        const {
-          runtimeConfigManager,
-          workspaceMutationAdmission,
-          repositoryWorkspaceDb,
-          inflightCommands,
-        } = dependencies;
+        const { runtimeConfigManager, repositoryWorkspaceDb, inflightCommands } = dependencies;
         if (
           !store ||
           !coreDb ||
           !runtimeConfigManager ||
-          !workspaceMutationAdmission ||
           !repositoryWorkspaceDb ||
           !inflightCommands ||
           actor.kind !== 'user'
@@ -346,7 +335,6 @@ export function createNotebookHistoryOperations(
                     requestActor: publicOperationActor(context),
                     actor,
                     runtimeConfigManager,
-                    workspaceMutationAdmission,
                   });
                 },
               },

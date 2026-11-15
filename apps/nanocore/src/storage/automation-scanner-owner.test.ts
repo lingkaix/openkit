@@ -47,12 +47,10 @@ function fixture() {
     ownerUserId: userId,
   });
   let instant = start;
-  const gate = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
-  const store = new AutomationStore(db, gate, () => instant);
+  const store = new AutomationStore(db, () => instant);
   return {
     db,
     userId,
-    gate,
     store,
     setTime: (value: string) => {
       instant = value;
@@ -207,11 +205,19 @@ it.each(['refusal', 'unknown'] as const)(
     const committed = coreRows(f.db);
     expect(settled).toBe(false);
     // These are the real public gate operations; no spy supplies admission or release.
-    expect(f.gate.tryFreeze(definition.workspaceId, () => []).status).toBe('busy');
+    expect(
+      getControlStoreWorkerClient().tryFreezeWorkspace(
+        f.db.dataRoot,
+        definition.workspaceId,
+        () => []
+      ).status
+    ).toBe('busy');
     let closed = false;
-    const closing = f.gate.close(definition.workspaceId).then(() => {
-      closed = true;
-    });
+    const closing = getControlStoreWorkerClient()
+      .closeWorkspaceMutations(f.db.dataRoot, definition.workspaceId)
+      .then(() => {
+        closed = true;
+      });
     await nextTurn();
     expect(closed).toBe(false);
     if (outcome === 'unknown') {
@@ -238,8 +244,12 @@ it.each(['refusal', 'unknown'] as const)(
     expect(f.db.sqlite.pragma('query_only', { simple: true })).toBe(1);
     await closing;
     expect(closed).toBe(true);
-    f.gate.reopen(definition.workspaceId);
-    const freeze = f.gate.tryFreeze(definition.workspaceId, () => []);
+    getControlStoreWorkerClient().reopenWorkspaceMutations(f.db.dataRoot, definition.workspaceId);
+    const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.db.dataRoot,
+      definition.workspaceId,
+      () => []
+    );
     expect(freeze.status).toBe('frozen');
     if (freeze.status === 'frozen') freeze.release();
   }

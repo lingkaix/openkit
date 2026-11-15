@@ -178,7 +178,6 @@ async function fixture(
         ],
       }),
     } as unknown as RuntimeConfigManager,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
     inflightCommands: new WeakMap(),
     run,
@@ -263,7 +262,6 @@ async function publishHumanEdit(
             requestActor: f.input.requestActor,
             actor: f.input.actor,
             runtimeConfigManager: f.dependencies.runtimeConfigManager,
-            workspaceMutationAdmission: f.dependencies.workspaceMutationAdmission,
           });
         },
       },

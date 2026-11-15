@@ -538,9 +538,6 @@ describe('N3 original owed-alarm Thread destination producer and trusted native 
           coreDb: f.db,
           store: f.store,
           inflightCommands: new Map(),
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-            f.db.dataRoot
-          ),
         });
         const disabled = await operations['user.disable'](
           { requestId: randomUUID(), targetUserId: backup.userId },

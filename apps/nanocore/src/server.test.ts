@@ -192,10 +192,7 @@ import {
   listSchedulerAdmissionEntriesForWorkspace,
 } from './scheduler-records.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import {
   type CoreDb,
   openCoreDb,
@@ -4547,9 +4544,6 @@ describe('nanocore server', () => {
         store,
         requestStore: () => store,
         inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-          coreDb.dataRoot
-        ),
         turnStartServices: {
           coreDb: undefined,
           inflightCommands: new WeakMap(),

@@ -82,13 +82,11 @@ it.each(operations)(
         workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
         expiresAt: '2099-01-01T00:00:00.000Z',
       });
-      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const app = createApp({
         coreDb,
         dataRoot,
         store,
         mode: 'server',
-        workspaceMutationAdmission: admission,
       });
       const failure = new Error(`Private unexpected admission sentinel: ${id}`);
       const observed: Error[] = [];
@@ -97,8 +95,8 @@ it.each(operations)(
         return context.text('Internal Server Error', 500);
       });
       // Reads consult the lifecycle close, mutations the full gate; both must propagate.
-      for (const gate of ['isClosed', 'isLifecycleClosed'] as const) {
-        vi.spyOn(admission, gate).mockImplementation(() => {
+      for (const gate of ['isWorkspaceMutationClosed', 'isWorkspaceLifecycleClosed'] as const) {
+        vi.spyOn(getControlStoreWorkerClient(), gate).mockImplementation(() => {
           throw failure;
         });
       }

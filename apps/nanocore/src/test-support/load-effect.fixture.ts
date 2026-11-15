@@ -21,7 +21,6 @@ import {
 import type { WorkerControlGateway } from '../runtime/worker-control-gateway.js';
 import { createDefaultWorkerMcpGateway } from '../runtime/worker-mcp-gateway.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { readImmutableProductJson } from '../storage/immutable-content.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -139,9 +138,6 @@ export async function createMeasurementEffectFixture(input: {
     coreDb: input.coreDb,
     store: input.store,
     runtimeConfig: () => runtime,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-      input.coreDb.dataRoot
-    ),
     workerMcpGateway: gateway,
     workerControlGateway: {
       authenticatePackageToken: (authorization: string) => {

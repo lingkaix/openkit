@@ -33,13 +33,12 @@ describe('quarantined Workspace native admission', () => {
     const workspace = await store.createWorkspace('Unreadable authority');
     recordWorkspaceOwnerMembership({ coreDb, workspaceId: workspace.id, ownerUserId });
     const thread = await store.createThread(workspace.id, 'Do not disclose this history');
-    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const invoke = (userId: string) =>
       admitOperation(
         OPERATION_DEFINITIONS['thread.read'],
         { workspaceId: workspace.id, threadId: thread.id },
         { kind: 'public', actor: { kind: 'session', userId } },
-        { coreDb, store, dataRoot, workspaceMutationAdmission: admission }
+        { coreDb, store, dataRoot }
       );
     const refusal = async (userId: string) => {
       try {
@@ -66,14 +65,20 @@ describe('quarantined Workspace native admission', () => {
       expect(ownerFailure.message).not.toContain(thread.name);
       expect(await refusal(outsiderId)).toBe(outsiderBefore);
       expect(reads).not.toHaveBeenCalled();
-      const frozen = admission.tryFreeze(workspace.id, () => []);
+      const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+        dataRoot,
+        workspace.id,
+        () => []
+      );
       expect(frozen.status).toBe('frozen');
       if (frozen.status !== 'frozen') throw new Error('Expected real target capture exclusion.');
       try {
         expect(JSON.parse((await refusal(ownerUserId))!)).toEqual(ownerFailure);
         expect(await refusal(outsiderId)).toBe(outsiderBefore);
         expect(reads).not.toHaveBeenCalled();
-        expect(admission.isClosed(workspace.id)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(dataRoot, workspace.id)
+        ).toBe(true);
       } finally {
         frozen.release();
       }

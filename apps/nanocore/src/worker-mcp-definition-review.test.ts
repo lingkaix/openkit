@@ -299,13 +299,11 @@ describe('MCP definition review through real Pending and native admission', () =
       store: FsStore,
       outside?: Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>['outside']
     ) => {
-      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const native = await createNativeTaskAdmissionFixture(
         coreDb,
         store,
         {
           readRuntimeConfig: () => configuration,
-          workspaceMutationAdmission: admission,
         },
         outside
       );
@@ -314,7 +312,6 @@ describe('MCP definition review through real Pending and native admission', () =
       const app = createApp({
         coreDb,
         store,
-        workspaceMutationAdmission: admission,
         fileAdmission: native.fileAdmission,
         turnExecutor: native.executor,
         workerLifecycleRuntime: native.runtime,

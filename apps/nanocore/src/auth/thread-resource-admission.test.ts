@@ -19,10 +19,7 @@ import { FsStore } from '../lib/store.js';
 import { registerRetainedOperationRoutes } from '../operation-json-routes.js';
 import { admitOperation } from '../operation-resolvers.js';
 import { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -88,7 +85,6 @@ describe('managed Thread native admission', () => {
         coreDb: db,
         store,
         quickChatWorkspaceIdForUser: () => workspace.id,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       retained.get('/api/workspaces/:workspaceId/threads/:threadId/events', (context) =>
         context.json({ admitted: true })
@@ -229,7 +225,6 @@ it('preserves the exact admitted Worker Agent in concrete Thread resource decisi
       {
         coreDb: db,
         store,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       }
     );
     admitted.release?.();
@@ -277,7 +272,6 @@ it('preserves the exact admitted Worker Agent in concrete Thread resource decisi
       {
         coreDb: db,
         store,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       }
     );
     lightApp.release?.();
@@ -299,7 +293,6 @@ it('preserves the exact admitted Worker Agent in concrete Thread resource decisi
         {
           coreDb: db,
           store,
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         }
       )
     ).rejects.toThrow('Thread not found.');

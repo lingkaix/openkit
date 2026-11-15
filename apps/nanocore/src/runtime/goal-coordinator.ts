@@ -47,7 +47,6 @@ import {
 import { OperationError, projectOperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import {
   ControlStoreWorkerShutdownError,
   getControlStoreWorkerClient,
@@ -108,7 +107,6 @@ export interface GoalCoordinatorOptions {
   ) => ResolvedLLMProviderConfig | Promise<ResolvedLLMProviderConfig>;
   readonly providerSubscriptionAccountManager?: ProviderSubscriptionAccountManager;
   readonly providerCredentialConfigured?: ProviderCredentialConfigured;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly taskTool: (goalId: string, turnId: string) => AgentTool;
   readonly services: () => GoalOwnerServices;
   /** Existing bounded KM service; Goal Tools retain the responsible actor and shared audience. */
@@ -677,7 +675,6 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
             goalServices: options.services(),
             repositoryWorkspaceDb: options.openWorkspace,
             inflightCommands: options.services().inflightCommands!,
-            workspaceMutationAdmission: options.workspaceMutationAdmission,
             knowledgeAgent: options.knowledgeAgent,
             ...(options.turnExecutor ? { turnExecutor: options.turnExecutor } : {}),
             ...(options.policyInterception

@@ -15,10 +15,7 @@ import type { Actor } from '../auth/identity.js';
 import { loadResourceCatalog } from '../catalog/resource-catalog.js';
 import { FsStore } from '../lib/store.js';
 import { createOperationInvocation } from '../operation-composition.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
@@ -138,7 +135,6 @@ function fixture() {
     dataRoot,
     store,
     repositoryWorkspaceDb,
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     inflightCommands: new WeakMap(),
     vaultUnlockState,
   });

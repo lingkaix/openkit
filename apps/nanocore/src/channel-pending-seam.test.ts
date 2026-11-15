@@ -23,7 +23,6 @@ import {
 import { readPendingRequest } from './runtime/pending-requests.js';
 import {
   ControlStoreWorkerError,
-  getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb, openWorkspaceDb } from './storage/db.js';
@@ -238,7 +237,6 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
       repositoryWorkspaceDb,
       inflightCommands,
       pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
     });
     return createChannelServices({
       publicBaseUrl: 'https://openkit.invalid',
@@ -343,7 +341,6 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
         store,
         mode: 'server',
         channelServices: unconfigured,
-        workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       });
       return async (id: 'channel.discord.status' | 'credential.revoke') => {
         const context = { kind: 'public' as const, actor, delivery: 'human' as const };
@@ -728,9 +725,6 @@ describe('Discord to native Pending Request seam', () => {
       coreDb: f.coreDb,
       store: f.store,
       mode: 'server',
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(
-        f.coreDb.dataRoot
-      ),
     });
     // Ordinary authenticated session administration remains valid for this same user.
     await expect(

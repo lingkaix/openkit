@@ -32,7 +32,6 @@ import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import { openWorkspaceReadDb } from './storage/db.js';
 import { coreDbPath } from './storage/fs-layout.js';
@@ -87,20 +86,18 @@ async function fixture(
   const coreDb = createTestCoreDb(dataRoot);
   const ownerId = ensureLocalUser(coreDb);
   recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: ownerId });
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const fileAdmission = new FileStorageAdmission(dataRoot, () => 0n);
   const appOptions = {
     mode,
     dataRoot,
     store,
     coreDb,
-    workspaceMutationAdmission: admission,
     turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     fileAdmission,
     releaseIdentity,
   };
   const app = createAppWithLocalIdentity(appOptions);
-  return { dataRoot, store, coreDb, ownerId, admission, fileAdmission, appOptions, app };
+  return { dataRoot, store, coreDb, ownerId, fileAdmission, appOptions, app };
 }
 
 /** Observes retained snapshot bytes and canonical authority, allowing only bearer-use metadata to advance. */
@@ -186,7 +183,7 @@ describe('C-a composed snapshot App API', () => {
       // Local initial Server admission is real; the snapshot owner still needs Core facts.
       const missingCore = createAppWithLocalIdentity({ ...f.appOptions, coreDb: undefined });
       const effects = [
-        vi.spyOn(f.admission, 'tryFreeze'),
+        vi.spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace'),
         vi.spyOn(captureProtection, 'protectCapture'),
         vi.spyOn(f.fileAdmission, 'reserve'),
         vi.spyOn(durableBytes, 'copyVerifiedFile'),
@@ -207,7 +204,9 @@ describe('C-a composed snapshot App API', () => {
           code: 'recovery_required',
         });
         for (const effect of effects) expect(effect).not.toHaveBeenCalled();
-        expect(f.admission.isClosed(workspaceId)).toBe(false);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(false);
         expect(snapshotAuthorityState(f, true)).toEqual(before);
       }
       const verified = await request(f.app, 'workspace.backup-verify', { workspaceId, backupId });
@@ -299,7 +298,7 @@ describe('C-a composed snapshot App API', () => {
             return decision;
           });
         const effects = [
-          vi.spyOn(f.admission, 'tryFreeze'),
+          vi.spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace'),
           vi.spyOn(captureProtection, 'protectCapture'),
           vi.spyOn(f.fileAdmission, 'reserve'),
           vi.spyOn(durableBytes, 'copyVerifiedFile'),
@@ -337,7 +336,9 @@ describe('C-a composed snapshot App API', () => {
             /SQLITE|workspace_access_denied|deployment_admin_required|\bat .+\(/
           );
           for (const effect of effects) expect(effect).not.toHaveBeenCalled();
-          expect(f.admission.isClosed(workspaceId)).toBe(false);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+          ).toBe(false);
           expect(snapshotAuthorityState(f)).toEqual(before);
         }
         armAfterAuthentication = false;
@@ -358,13 +359,15 @@ describe('C-a composed snapshot App API', () => {
 
   it('shares the real fixture owner across views and starts a fresh owner only after native shutdown', async () => {
     const f = await fixture();
-    const { workspaceMutationAdmission: originalOwner, ...defaultOptions } = f.appOptions;
+    const defaultOptions = f.appOptions;
     const firstClient = getControlStoreWorkerClient();
-    let frozen: ReturnType<WorkspaceMutationAdmission['tryFreeze']> | undefined;
+    let frozen:
+      | ReturnType<ReturnType<typeof getControlStoreWorkerClient>['tryFreezeWorkspace']>
+      | undefined;
     let reopenedCore: ReturnType<typeof createTestCoreDb> | undefined;
     try {
       const view = createAppWithLocalIdentity(defaultOptions);
-      frozen = originalOwner.tryFreeze(workspaceId, () => []);
+      frozen = getControlStoreWorkerClient().tryFreezeWorkspace(f.dataRoot, workspaceId, () => []);
       expect(frozen.status).toBe('frozen');
       if (frozen.status !== 'frozen') throw new Error('Expected the original fixture freeze.');
       const beforeThreads = f.store.listThreads(workspaceId);
@@ -382,12 +385,30 @@ describe('C-a composed snapshot App API', () => {
         });
       }
 
-      const differentOwner = new WorkspaceMutationAdmission();
       expect(() =>
-        createAppWithLocalIdentity({ ...f.appOptions, workspaceMutationAdmission: differentOwner })
-      ).toThrow();
+        createAppWithLocalIdentity({
+          ...f.appOptions,
+          dataRoot: join(f.dataRoot, 'foreign-native-scope'),
+        })
+      ).toThrow('Application Workspace mutations must use their native scope owner.');
+      // The constructed fallback Store participates too: an environment Root is not this Core's scope.
+      const { dataRoot: _dataRoot, store: _store, ...coreOnly } = f.appOptions;
+      const environmentRoot = mkdtempSync(join(tmpdir(), 'c-a-environment-root-'));
+      roots.push(environmentRoot);
+      // An initialized, ordinary Root: only its physical identity differs from the Core's.
+      closeTestCoreDb(createTestCoreDb(environmentRoot));
+      vi.stubEnv('OPENKIT_DATA_ROOT', environmentRoot);
+      try {
+        expect(() => createAppWithLocalIdentity(coreOnly)).toThrow(
+          'Application Workspace mutations must use their native scope owner.'
+        );
+      } finally {
+        vi.unstubAllEnvs();
+      }
       expect(getControlStoreWorkerClient()).toBe(firstClient);
-      expect(originalOwner.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       await expect(
         f.store.createThread(workspaceId, 'The rejected App cannot replace the Store owner')
       ).rejects.toMatchObject({ code: 'workspace_frozen' });
@@ -422,7 +443,9 @@ describe('C-a composed snapshot App API', () => {
         fileAdmission: new FileStorageAdmission(restartRoot, () => 0n),
       });
       expect(getControlStoreWorkerClient()).not.toBe(firstClient);
-      expect(originalOwner.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const accepted = await request(restarted, 'thread.create', {
         workspaceId,
         name: 'Fresh owner after completed native shutdown',
@@ -434,7 +457,9 @@ describe('C-a composed snapshot App API', () => {
       expect(reopenedStore.getThread(workspaceId, thread.id).name).toBe(
         'Fresh owner after completed native shutdown'
       );
-      expect(originalOwner.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
     } finally {
       await shutdownControlStoreWorkerClient();
       if (frozen?.status === 'frozen') frozen.release();
@@ -458,7 +483,7 @@ describe('C-a composed snapshot App API', () => {
         ...f.appOptions,
         releaseIdentity: { releaseTag: null, sourceCommit: null },
       });
-      const freeze = vi.spyOn(f.admission, 'tryFreeze');
+      const freeze = vi.spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace');
       const pin = vi.spyOn(captureProtection, 'protectCapture');
       const reserve = vi.spyOn(f.fileAdmission, 'reserve');
       const retainedState = () =>
@@ -500,7 +525,9 @@ describe('C-a composed snapshot App API', () => {
         expect(freeze).not.toHaveBeenCalled();
         expect(pin).not.toHaveBeenCalled();
         expect(reserve).not.toHaveBeenCalled();
-        expect(f.admission.isClosed(workspaceId)).toBe(false);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(false);
         expect(retainedState()).toEqual(before);
       }
       const verified = await request(f.app, 'workspace.backup-verify', { workspaceId, backupId });
@@ -826,7 +853,9 @@ describe('C-a composed snapshot App API', () => {
         },
       });
       expect(f.store.getTurnById(turn.id)).toEqual(turn);
-      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
     } finally {
       closeTestCoreDb(f.coreDb);
     }
@@ -868,7 +897,9 @@ describe('C-a composed snapshot App API', () => {
         message.phase === 'db-backup'
       ) {
         first = false;
-        expect(f.admission.isClosed(workspaceId)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(true);
         entered();
         // Withhold the real acknowledged cut frame; native replies continue through unchanged.
         void barrier.then(() => Reflect.apply(emit, this, [event, ...args]));
@@ -920,7 +951,9 @@ describe('C-a composed snapshot App API', () => {
         workspaceId,
       });
     }
-    expect(f.admission.isClosed(workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+      false
+    );
   }, 120_000);
 
   it('inspects one sealed capture through its exact owner and keeps administrator and identity refusals', async () => {
@@ -1033,7 +1066,7 @@ describe('C-a composed snapshot App API', () => {
       } finally {
         closeTestCoreDb(db);
       }
-      restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
+      restoreWorkspaceRecoveryAdmission(f.coreDb);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
       const selection = { kind: 'capture', backupId };
       const response = await request(f.app, 'workspace.recovery-inspect', {
@@ -1063,7 +1096,9 @@ describe('C-a composed snapshot App API', () => {
         closeTestCoreDb(after);
       }
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-      expect(f.admission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const finish = await request(f.app, 'workspace.recovery-finish', { workspaceId, selection });
       expect(finish.status, await finish.clone().text()).toBe(409);
       expect(ApiErrorSchema.parse(await finish.json())).toMatchObject({
@@ -1078,7 +1113,9 @@ describe('C-a composed snapshot App API', () => {
       });
       expect(invalid.status, await invalid.clone().text()).toBe(409);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-      expect(f.admission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       writeFileSync(configPath, configBefore);
       // Local Hot Capture permits abandonment without inventing absent bundle facts.
       const abandoned = await request(f.app, 'workspace.recovery-abandon', {
@@ -1104,7 +1141,9 @@ describe('C-a composed snapshot App API', () => {
       expect(f.store.listThreads(workspaceId)).toEqual(historyBefore);
       expect(readFileSync(configPath)).toEqual(configBefore);
       expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
-      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       const opposite = await request(f.app, 'workspace.recovery-finish', {
         workspaceId,
         selection,
@@ -1248,7 +1287,9 @@ describe('C-a composed snapshot App API', () => {
       expect(
         `sha256:${createHash('sha256').update(files.get('manifest.json')!).digest('hex')}`
       ).toBe(prepared.capture!.manifestDigest);
-      expect(f.admission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
       const opposite = await request(f.app, 'workspace.recovery-abandon', {
         workspaceId,
         selection,
@@ -1261,7 +1302,9 @@ describe('C-a composed snapshot App API', () => {
         requestId: randomUUID(),
       });
       expect(write.status, await write.clone().text()).toBe(409);
-      expect(f.admission.isClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        true
+      );
     } finally {
       closeTestCoreDb(f.coreDb);
     }
@@ -1343,7 +1386,7 @@ describe('C-a composed snapshot App API', () => {
         });
         expect(owned.proof.candidateDigest).toBeDefined();
         expect(existsSync(owned.candidate_ref)).toBe(true);
-        restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
+        restoreWorkspaceRecoveryAdmission(f.coreDb);
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
         const selection = { kind: 'admission', requestId };
         const operation = `workspace.recovery-${decision}`;
@@ -1403,19 +1446,21 @@ describe('C-a composed snapshot App API', () => {
           });
           expect(readFileSync(candidateConfig)).toEqual(retainedConfig);
           expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-          expect(f.admission.isClosed(workspaceId)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+          ).toBe(true);
           await shutdownControlStoreWorkerClient();
-          f.admission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-          restoreWorkspaceRecoveryAdmission(f.coreDb, f.admission);
+          restoreWorkspaceRecoveryAdmission(f.coreDb);
           f.store = new FsStore({ dataRoot: f.dataRoot });
           f.appOptions = {
             ...f.appOptions,
             store: f.store,
-            workspaceMutationAdmission: f.admission,
           };
           f.app = createAppWithLocalIdentity(f.appOptions);
           expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(false);
-          expect(f.admission.isClosed(workspaceId)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+          ).toBe(true);
         }
         const response = await request(f.app, operation, { workspaceId, selection });
         expect(response.status, await response.clone().text()).toBe(200);
@@ -1434,8 +1479,12 @@ describe('C-a composed snapshot App API', () => {
         );
         expect(readFileSync(configPath)).toEqual(configBefore);
         expect(isScopeAdmitted(f.dataRoot, 'workspace', workspaceId)).toBe(true);
-        expect(f.admission.isClosed(workspaceId)).toBe(false);
-        expect(f.admission.isClosed(sibling.id)).toBe(false);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(false);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, sibling.id)
+        ).toBe(false);
         if (newer) {
           // Online Snapshot Policy makes a sealed generation independent of the restored source cut.
           const verified = await request(f.app, 'workspace.backup-verify', {
@@ -1622,7 +1671,9 @@ describe('C-a composed snapshot App API', () => {
         ownerUserId: registry!.ownerUserId,
         status: registry!.status,
       });
-      expect(f.admission.isClosed(workspaceId)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
       const after = await request(f.app, 'thread.create', {
         workspaceId,
         name: 'Fresh admission after restore',
@@ -1666,11 +1717,18 @@ describe('C-a composed snapshot App API', () => {
         expect(captured.status, await captured.clone().text()).toBe(200);
         let turn: Awaited<ReturnType<FsStore['createTurn']>> | undefined;
         if (blocker === 'admitted publisher') {
-          const admitted = f.admission.enter(workspaceId);
+          const admitted = getControlStoreWorkerClient().enterWorkspaceMutation(
+            f.dataRoot,
+            workspaceId
+          );
           expect(admitted).not.toBeNull();
           release = admitted!;
         } else if (blocker === 'current freeze') {
-          const frozen = f.admission.tryFreeze(workspaceId, () => []);
+          const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+            f.dataRoot,
+            workspaceId,
+            () => []
+          );
           expect(frozen.status).toBe('frozen');
           if (frozen.status !== 'frozen') throw new Error('Expected the existing target freeze.');
           release = frozen.release;
@@ -1719,7 +1777,9 @@ describe('C-a composed snapshot App API', () => {
           expect(f.store.getTurnById(turn.id)).toEqual(turn);
         }
         expect(f.store.listThreads(workspaceId)).toEqual(before);
-        expect(f.admission.isClosed(workspaceId)).toBe(frozen);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)
+        ).toBe(frozen);
       } finally {
         if (deadline) clearTimeout(deadline);
         release();
@@ -1817,8 +1877,12 @@ describe('C-a composed snapshot App API', () => {
       expect(accessTokens.getOpenKitAccessTokenRecord(f.coreDb, issued.tokenId)?.status).toBe(
         'revoked'
       );
-      expect(f.admission.isClosed(workspaceId)).toBe(false);
-      expect(f.admission.isClosed(sibling.id)).toBe(false);
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(
+        false
+      );
+      expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, sibling.id)).toBe(
+        false
+      );
     } finally {
       release();
       if (restoring) await restoring;

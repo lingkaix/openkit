@@ -1,7 +1,4 @@
-import {
-  getControlStoreWorkerClient,
-  WorkspaceMutationAdmission,
-} from './control-store-worker-client.js';
+import { getControlStoreWorkerClient } from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -439,16 +436,17 @@ describe('borrowed lifecycle capture freeze', () => {
   it('keeps the caller freeze through the cut, seal and real Worker exit until caller release', async () => {
     const f = await fixture();
     const coreDb = openCoreDb(f.dataRoot);
-    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    f.store.setWorkspaceMutationAdmission(gate);
-    const owner = gate.tryFreeze(workspaceId, () => []);
+    const owner = getControlStoreWorkerClient().tryFreezeWorkspace(
+      coreDb.dataRoot,
+      workspaceId,
+      () => []
+    );
     if (owner.status !== 'frozen') throw new Error('Expected the caller-owned freeze.');
     const input = inputFor(f, {
       kind: 'live-workspace',
       dataRoot: f.dataRoot,
       coreDb,
       store: f.store,
-      mutationAdmission: gate,
       freezeOwner: owner,
     });
     const bundleRoot = join(f.dataRoot, 'server/backups/workspaces', workspaceId, input.backupId);
@@ -471,7 +469,11 @@ describe('borrowed lifecycle capture freeze', () => {
         ) {
           observations.push({
             phase: message.phase,
-            owned: gate.ownsFreeze(workspaceId, owner),
+            owned: getControlStoreWorkerClient().ownsWorkspaceFreeze(
+              coreDb.dataRoot,
+              workspaceId,
+              owner
+            ),
             sealed: existsSync(join(bundleRoot, 'seal.json')),
           });
           if (message.phase === 'post-cut-validation')
@@ -484,7 +486,11 @@ describe('borrowed lifecycle capture freeze', () => {
       if (event === 'exit' && this === captureWorker)
         observations.push({
           phase: 'exit',
-          owned: gate.ownsFreeze(workspaceId, owner),
+          owned: getControlStoreWorkerClient().ownsWorkspaceFreeze(
+            coreDb.dataRoot,
+            workspaceId,
+            owner
+          ),
           sealed: existsSync(join(bundleRoot, 'seal.json')),
         });
       return emit.call(this, event, ...args);
@@ -502,7 +508,9 @@ describe('borrowed lifecycle capture freeze', () => {
       expect(observations.find((entry) => entry.phase === 'exit')?.sealed).toBe(true);
       expect(publisher).toBeDefined();
       await expect(publisher!).resolves.toMatchObject({ error: { code: 'workspace_frozen' } });
-      expect(gate.ownsFreeze(workspaceId, owner)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(coreDb.dataRoot, workspaceId, owner)
+      ).toBe(true);
       await expect(
         f.store.createThread(workspaceId, 'Publisher after capture return')
       ).rejects.toMatchObject({
@@ -524,12 +532,21 @@ describe('borrowed lifecycle capture freeze', () => {
   it('preserves caller ownership on a post-cut refusal and refuses foreign or released owners', async () => {
     const f = await fixture();
     const coreDb = openCoreDb(f.dataRoot);
-    const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    f.store.setWorkspaceMutationAdmission(gate);
-    const owner = gate.tryFreeze(workspaceId, () => []);
-    const otherGate = new WorkspaceMutationAdmission();
-    const foreignGate = otherGate.tryFreeze(workspaceId, () => []);
-    const foreignWorkspace = gate.tryFreeze(allocateEntityId('ws'), () => []);
+    const owner = getControlStoreWorkerClient().tryFreezeWorkspace(
+      coreDb.dataRoot,
+      workspaceId,
+      () => []
+    );
+    const foreignGate = getControlStoreWorkerClient().tryFreezeWorkspace(
+      join(f.dataRoot, 'foreign-native-scope'),
+      workspaceId,
+      () => []
+    );
+    const foreignWorkspace = getControlStoreWorkerClient().tryFreezeWorkspace(
+      coreDb.dataRoot,
+      allocateEntityId('ws'),
+      () => []
+    );
     if (
       owner.status !== 'frozen' ||
       foreignGate.status !== 'frozen' ||
@@ -543,7 +560,6 @@ describe('borrowed lifecycle capture freeze', () => {
       dataRoot: f.dataRoot,
       coreDb,
       store: f.store,
-      mutationAdmission: gate,
       currentAuthority: () => {
         if (!authorized) throw new Error('Test current authority refused.');
       },
@@ -573,7 +589,9 @@ describe('borrowed lifecycle capture freeze', () => {
       );
       expect(cutReached).toBe(true);
       expect(existsSync(join(bundleRoot, 'seal.json'))).toBe(false);
-      expect(gate.ownsFreeze(workspaceId, owner)).toBe(true);
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(coreDb.dataRoot, workspaceId, owner)
+      ).toBe(true);
       await expect(
         f.store.createThread(workspaceId, 'Publisher after capture refusal')
       ).rejects.toMatchObject({
@@ -586,10 +604,16 @@ describe('borrowed lifecycle capture freeze', () => {
         const output = join(f.dataRoot, 'server/backups/workspaces', workspaceId, refused.backupId);
         await expect(createWorkspaceBackup({ ...refused, bundleRoot: output })).rejects.toThrow();
         expect(existsSync(join(output, 'seal.json'))).toBe(false);
-        expect(gate.ownsFreeze(workspaceId, owner)).toBe(true);
+        expect(
+          getControlStoreWorkerClient().ownsWorkspaceFreeze(coreDb.dataRoot, workspaceId, owner)
+        ).toBe(true);
       }
       owner.release();
-      const next = gate.tryFreeze(workspaceId, () => []);
+      const next = getControlStoreWorkerClient().tryFreezeWorkspace(
+        coreDb.dataRoot,
+        workspaceId,
+        () => []
+      );
       if (next.status !== 'frozen') throw new Error('Expected the replacement caller freeze.');
       replacement = next;
       const stale = inputFor(f, { ...source, freezeOwner: owner });
@@ -601,8 +625,12 @@ describe('borrowed lifecycle capture freeze', () => {
       );
       await expect(createWorkspaceBackup({ ...stale, bundleRoot: staleOutput })).rejects.toThrow();
       expect(existsSync(join(staleOutput, 'seal.json'))).toBe(false);
-      expect(gate.ownsFreeze(workspaceId, replacement)).toBe(true);
-      expect(gate.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().ownsWorkspaceFreeze(coreDb.dataRoot, workspaceId, replacement)
+      ).toBe(true);
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(coreDb.dataRoot, workspaceId)
+      ).toBeNull();
       replacement.release();
       await expect(
         f.store.createThread(workspaceId, 'Publisher after replacement release')

@@ -45,10 +45,7 @@ import {
 } from './runtime/worker-backend-sessions.js';
 import { createWorkerStorageBinding as createLegacyWorkerStorageBinding } from './runtime/worker-storage-binding-records.js';
 import { createSchedulerAdmissionEntry } from './scheduler-records.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { verifyAndMigrateExistingScopedDatabases } from './storage/workspace-storage-migration.js';
@@ -173,7 +170,6 @@ async function fixture() {
     dataRoot,
     store,
     inflightCommands: new WeakMap(),
-    workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
   };
   const invoke = createOperationInvocation(dependencies);
   const app = new Hono<{ Variables: AuthVariables }>();

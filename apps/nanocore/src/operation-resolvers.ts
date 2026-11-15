@@ -40,7 +40,7 @@ import { OperationError, WorkspaceCaptureAdmissionError } from './operation-erro
 import { readPendingOperationLineage } from './pending-request-operations.js';
 import { PolicyInterception } from './policy/interception.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
-import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
 import { recheckCoreConfirmedLoginQuarantine } from './vault/codex-login-refresh.js';
@@ -56,7 +56,6 @@ export interface OperationAdmissionDependencies {
   readonly dataRoot?: string | null;
   readonly store?: FsStore;
   readonly automationStore?: AutomationStore;
-  readonly workspaceMutationAdmission?: WorkspaceMutationAdmission;
   readonly repositoryWorkspaceDb?: (workspaceId: string) => WorkspaceDb;
   readonly readRuntimePolicy?: () => unknown;
   readonly runtimeConfigManager?: Pick<
@@ -210,7 +209,7 @@ export async function admitOperation(
       );
     throw denied();
   }
-  const { coreDb, store, workspaceMutationAdmission: admission } = dependencies;
+  const { coreDb, store } = dependencies;
   let token: ReturnType<typeof getOpenKitAccessTokenRecord> = null;
   if (coreDb && entry.kind !== 'worker' && entry.actor.kind === 'token' && entry.actor.tokenId) {
     try {
@@ -325,7 +324,7 @@ export async function admitOperation(
       scope = { kind: 'server' };
       break;
     case 'authorized-workspace-set':
-      if (!coreDb || !admission) throw denied();
+      if (!coreDb) throw denied();
       if (entry.kind === 'coordinator') {
         const workspaceIds = resolveCoordinatorWorkspaceCandidates(dependencies, entry, definition);
         if (!workspaceIds) throw denied();
@@ -337,14 +336,19 @@ export async function admitOperation(
         if (entry.kind !== 'public') throw denied();
         scope = {
           kind: 'authorized-workspace-set',
-          workspaceIds: authorizedWorkspaceSet(coreDb, entry.actor, definition, admission),
+          workspaceIds: authorizedWorkspaceSet(
+            coreDb,
+            entry.actor,
+            definition,
+            getControlStoreWorkerClient()
+          ),
         };
       }
       break;
     case 'body-workspace':
     case 'opaque-child-workspace':
     case 'actor-quick-chat-workspace': {
-      if (!coreDb || !store || !admission) throw denied();
+      if (!coreDb || !store) throw denied();
       let workspaceId: string;
       switch (definition.scope.kind) {
         case 'body-workspace':
@@ -434,7 +438,7 @@ export async function admitOperation(
       if (
         definition.target.kind !== 'workspace-deletion' &&
         !definition.mutating &&
-        admission.isLifecycleClosed(workspaceId)
+        getControlStoreWorkerClient().isWorkspaceLifecycleClosed(coreDb.dataRoot, workspaceId)
       )
         throw denied();
       if (definition.scope.kind === 'opaque-child-workspace') {
@@ -513,18 +517,26 @@ export async function admitOperation(
     );
   let release: (() => void) | undefined;
   if (mutationWorkspaceId) {
-    if (!admission) throw denied();
-    if (admission.isClosed(mutationWorkspaceId))
+    const mutationRoot = coreDb?.dataRoot;
+    if (!mutationRoot) throw denied();
+    if (getControlStoreWorkerClient().isWorkspaceMutationClosed(mutationRoot, mutationWorkspaceId))
       throw frozenWorkspace(
         mutationWorkspaceId,
-        definition.mutating && admission.isCaptureActive(mutationWorkspaceId)
+        definition.mutating &&
+          getControlStoreWorkerClient().isWorkspaceCaptureActive(mutationRoot, mutationWorkspaceId)
       );
     if (definition.mutating) {
-      release = admission.enter(mutationWorkspaceId) ?? undefined;
+      release =
+        getControlStoreWorkerClient().enterWorkspaceMutation(mutationRoot, mutationWorkspaceId) ??
+        undefined;
       if (!release)
         throw frozenWorkspace(
           mutationWorkspaceId,
-          definition.mutating && admission.isCaptureActive(mutationWorkspaceId)
+          definition.mutating &&
+            getControlStoreWorkerClient().isWorkspaceCaptureActive(
+              mutationRoot,
+              mutationWorkspaceId
+            )
         );
     }
   }

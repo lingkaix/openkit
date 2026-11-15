@@ -32,7 +32,6 @@ import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
 import { openAssistantTimeline } from '../internal-agents/assistant-timeline.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { createTestGatewayConfig } from '../test-support/agent-environment.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { conversationBody } from '../test-support/mode-entry-fixture.js';
@@ -420,7 +419,6 @@ async function fixture(withReviewerDomain = false) {
     },
     inflightCommands: new WeakMap(),
   });
-  const mutation = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const app = createApp({
     mode: 'server',
     coreDb,
@@ -428,7 +426,6 @@ async function fixture(withReviewerDomain = false) {
     store,
     auth,
     runtimeConfigManager: manager,
-    workspaceMutationAdmission: mutation,
   });
   function request(proposed: PolicyDocumentV1) {
     return {
@@ -457,7 +454,6 @@ async function fixture(withReviewerDomain = false) {
     auth,
     store,
     app,
-    mutation,
     personal,
     reviewerDomain,
     service,
@@ -554,7 +550,6 @@ describe('E10 explicit context preset activation', () => {
         createResponses,
         createChatCompletion,
       } as unknown as LLMGatewayProviderDispatcher,
-      workspaceMutationAdmission: f.mutation,
     });
     expect(
       readAdmittedPolicyDocument(f.coreDb, manager.current().openKitConfig.policy?.mediation)

@@ -88,7 +88,6 @@ import { closeWorkspaceProductReadHandles } from './storage/control-store-produc
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
-  type WorkspaceMutationAdmission,
 } from './storage/control-store-worker-client.js';
 import {
   CONTROL_WORKER_VERSION,
@@ -230,11 +229,7 @@ async function createWorkerControlRouteFixture(
   lineage: WorkerControlLineage;
   store: Awaited<ReturnType<typeof createDemoStore>>;
   token: string;
-  workspaceMutationAdmission: WorkspaceMutationAdmission;
 }> {
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
-    coreDb.dataRoot
-  );
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   if (captureOn) store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
   const turn = await store.createTurn(
@@ -293,11 +288,9 @@ async function createWorkerControlRouteFixture(
       mode: 'server',
       store,
       workerControlGateway: gateway,
-      workspaceMutationAdmission,
       turnExecutor: new SimulatedTurnExecutor({ coreDb }),
     }),
     environmentPackage,
-    workspaceMutationAdmission,
     gateway,
     lineage: {
       agentSessionId: testEntityId('as', 'as_control_route_1'),
@@ -581,7 +574,6 @@ describe('worker control routes', () => {
       binding
     );
     const app = createApp({
-      workspaceMutationAdmission: fixture.workspaceMutationAdmission,
       coreDb,
       mode: 'server',
       store: fixture.store,
@@ -919,7 +911,6 @@ describe('worker control routes', () => {
         const firstGateway = createDefaultWorkerControlGateway(coreDb);
         registerDurableWorkerControlSession(firstGateway, fixture.environmentPackage, binding);
         const firstApp = createApp({
-          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
           coreDb,
           mode: 'server',
           store: fixture.store,
@@ -964,7 +955,6 @@ describe('worker control routes', () => {
         const restartedGateway = createDefaultWorkerControlGateway(coreDb);
         registerDurableWorkerControlSession(restartedGateway, fixture.environmentPackage, binding);
         const restartedApp = createApp({
-          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
           coreDb,
           mode: 'server',
           store: fixture.store,
@@ -1308,7 +1298,7 @@ describe('worker control routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const fixture = await createWorkerControlRouteFixture([], coreDb, true);
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } = fixture;
+    const { environmentPackage, lineage, store } = fixture;
     await store.createAgentSession({
       id: lineage.agentSessionId,
       agentId: environmentPackage.agent.agentId,
@@ -1338,7 +1328,6 @@ describe('worker control routes', () => {
       mode: 'server',
       store,
       workerControlGateway: gateway,
-      workspaceMutationAdmission,
     });
     const authorization = `Bearer ${registration.token}`;
     const send = (record: WorkerCanonicalEventRecord) =>
@@ -1435,7 +1424,6 @@ describe('worker control routes', () => {
       mode: 'server',
       store,
       workerControlGateway: gateway,
-      workspaceMutationAdmission,
     });
     const replay = await send(delivered[1]!);
     expect(replay.status).toBe(200);
@@ -1473,8 +1461,10 @@ describe('worker control routes', () => {
       });
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: lineage.workspaceId,
@@ -1497,7 +1487,6 @@ describe('worker control routes', () => {
         mode: 'server',
         store,
         workerControlGateway: gateway,
-        workspaceMutationAdmission,
       });
       const payload =
         operation === 'artifact_notice'
@@ -1573,7 +1562,6 @@ describe('worker control routes', () => {
         mode: 'server',
         store,
         workerControlGateway: gateway,
-        workspaceMutationAdmission,
       });
       const replay = await send();
       expect(replay.status).toBe(200);
@@ -1596,8 +1584,10 @@ describe('worker control routes', () => {
     });
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture([], coreDb);
+    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+      [],
+      coreDb
+    );
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: lineage.workspaceId,
@@ -1616,7 +1606,6 @@ describe('worker control routes', () => {
       mode: 'server',
       store,
       workerControlGateway: gateway,
-      workspaceMutationAdmission,
     });
     const record: WorkerCanonicalEventRecord = {
       schemaVersion: 1,
@@ -1726,8 +1715,10 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1741,7 +1732,6 @@ describe('worker control routes', () => {
       });
       gateway.registerSession(environmentPackage);
       const app = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -2375,8 +2365,10 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2389,7 +2381,6 @@ describe('worker control routes', () => {
         'lease-binding:missing_lease'
       );
       const app = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -2417,8 +2408,10 @@ describe('worker control routes', () => {
 
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
-    const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-      await createWorkerControlRouteFixture([], coreDb);
+    const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+      [],
+      coreDb
+    );
     recordWorkspaceOwnerMembership({
       coreDb,
       workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2429,7 +2422,6 @@ describe('worker control routes', () => {
       sandboxBindingRef: 'lease-binding:database_failure',
     });
     const app = createApp({
-      workspaceMutationAdmission,
       mode: 'server',
       store,
       workerControlGateway: gateway,
@@ -2933,8 +2925,10 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -2960,7 +2954,6 @@ describe('worker control routes', () => {
       });
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
       const app = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -3023,8 +3016,10 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3081,7 +3076,6 @@ describe('worker control routes', () => {
       });
       registerDurableWorkerControlSession(gateway, environmentPackage, binding);
       const app = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -3144,19 +3138,18 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture(
-          [
-            {
-              access: 'read-write',
-              id: 'repo_default',
-              sourceCommit,
-              sourceKind: 'remote-git',
-              workerPath: '/workspace/repo',
-            },
-          ],
-          coreDb
-        );
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [
+          {
+            access: 'read-write',
+            id: 'repo_default',
+            sourceCommit,
+            sourceKind: 'remote-git',
+            workerPath: '/workspace/repo',
+          },
+        ],
+        coreDb
+      );
       const workspaceDb = openWorkspaceDb(coreDb.dataRoot, lineage.workspaceId);
       preparedWorkspaceDb = workspaceDb;
       recordWorkspaceOwnerMembership({
@@ -3288,7 +3281,6 @@ describe('worker control routes', () => {
       });
       const gateway = createDefaultWorkerControlGateway(coreDb);
       const app = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -3318,7 +3310,6 @@ describe('worker control routes', () => {
 
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       const restartedApp = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -3451,8 +3442,10 @@ describe('worker control routes', () => {
     try {
       applyMigrations(coreDb);
       ensureLocalUser(coreDb);
-      const { environmentPackage, lineage, store, workspaceMutationAdmission } =
-        await createWorkerControlRouteFixture([], coreDb);
+      const { environmentPackage, lineage, store } = await createWorkerControlRouteFixture(
+        [],
+        coreDb
+      );
       recordWorkspaceOwnerMembership({
         coreDb,
         workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -3466,7 +3459,6 @@ describe('worker control routes', () => {
       );
       const gateway = createDefaultWorkerControlGateway(coreDb);
       const app = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -3500,7 +3492,6 @@ describe('worker control routes', () => {
       });
       const restartedGateway = createDefaultWorkerControlGateway(coreDb);
       const restartedApp = createApp({
-        workspaceMutationAdmission,
         coreDb,
         mode: 'server',
         store,
@@ -3953,7 +3944,6 @@ describe('worker control routes', () => {
         mode: 'server',
         store: fixture.store,
         workerControlGateway: gateway,
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
       });
       const client = new WorkerControlClient({
         baseUrl: 'http://core/api/worker-control',
@@ -3995,7 +3985,6 @@ describe('worker control routes', () => {
         mode: 'server',
         store: fixture.store,
         workerControlGateway: restartedGateway,
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
       });
       expect
         .soft(restartedGateway.getSessionSnapshot(fixture.lineage.packageSnapshotId)?.artifacts)
@@ -4464,7 +4453,6 @@ describe('worker control routes', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
-    const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
       'Rebuild worker session'
@@ -4562,7 +4550,6 @@ describe('worker control routes', () => {
         mode: 'server',
         store,
         workerControlGateway: firstGateway,
-        workspaceMutationAdmission,
       });
 
       const absoluteDeadline = absoluteAttemptDeadline(coreDb, lineage.turnId);
@@ -4643,7 +4630,6 @@ describe('worker control routes', () => {
         mode: 'server',
         store,
         workerControlGateway: rebuiltGateway,
-        workspaceMutationAdmission,
       });
       coreDb.sqlite.pragma('query_only = ON');
       expect(coreDb.sqlite.pragma('query_only', { simple: true })).toBe(1);

@@ -221,8 +221,7 @@ async function createFixture(prepared?: PreparedAuthBase) {
   const actorState: { current: Actor } = {
     current: { kind: 'session', userId: 'usr_00000000-0000-7000-8000-000000000001' },
   };
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-  const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
+  const automationStore = new AutomationStore(coreDb);
   const app = new Hono<{ Variables: AuthVariables }>();
   let administrationHandlerReads = 0;
   let deleteWorkspaceHandlerReads = 0;
@@ -237,7 +236,6 @@ async function createFixture(prepared?: PreparedAuthBase) {
     coreDb,
     quickChatWorkspaceIdForUser,
     store,
-    workspaceMutationAdmission,
   });
 
   registerOperationJsonRoutes({
@@ -305,7 +303,6 @@ async function createFixture(prepared?: PreparedAuthBase) {
       deleteWorkspaceHandlerReads += 1;
     },
     requestStore: () => store,
-    workspaceMutationAdmission,
     inflightCommands: new WeakMap(),
     runtimeConfigManager: createRuntimeConfigManager({
       initialSnapshot: createInMemoryRuntimeConfigSnapshot({ dataRoot }),
@@ -316,7 +313,6 @@ async function createFixture(prepared?: PreparedAuthBase) {
     coreDb,
     store,
     requestStore: () => store,
-    workspaceMutationAdmission,
     getBootReadiness: createBootReadinessSnapshot,
   });
   app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
@@ -341,7 +337,6 @@ async function createFixture(prepared?: PreparedAuthBase) {
     workspaceDbReads: () => workspaceDbReads,
     turn,
     workspace,
-    workspaceMutationAdmission,
   };
 }
 
@@ -410,7 +405,6 @@ describe('central Workspace operation authorizer', () => {
         coreDb: fixture.coreDb,
         store: fixture.store,
         quickChatWorkspaceIdForUser,
-        workspaceMutationAdmission: fixture.workspaceMutationAdmission,
       });
       app.post('/v1/responses', (c) => c.json(c.get('workspaceAccess') ?? null));
       app.get('/api/app/workspaces/:workspaceId/exports/:exportId/archive', (c) =>
@@ -470,7 +464,6 @@ describe('central Workspace operation authorizer', () => {
           coreDb: fixture.coreDb,
           store: fixture.store,
           quickChatWorkspaceIdForUser,
-          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         })
       ).toThrow(`Duplicate guarded public route: ${directAlias}.`);
     } finally {
@@ -1590,7 +1583,10 @@ describe('central Workspace operation authorizer', () => {
   });
 
   it('fences ordinary Workspace routes during deletion', async () => {
-    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+    await getControlStoreWorkerClient().closeWorkspaceMutations(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id
+    );
 
     const collection = await fixture.app.request('/api/app/operations/workspace.list', {
       method: 'POST',
@@ -1635,7 +1631,11 @@ describe('central Workspace operation authorizer', () => {
       ...fixture.actorState.current,
       sessionId: (await fixture.createSession()).id,
     };
-    const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
+    const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id,
+      () => []
+    );
     expect(freeze.status).toBe('frozen');
     try {
       const collection = await fixture.app.request('/api/app/operations/workspace.list', {
@@ -1694,7 +1694,11 @@ describe('central Workspace operation authorizer', () => {
           )
         ).id,
       };
-      const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
+      const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+        fixture.coreDb.dataRoot,
+        fixture.workspace.id,
+        () => []
+      );
       expect(freeze.status).toBe('frozen');
       const input = {
         workspaceId: fixture.workspace.id,
@@ -1782,7 +1786,11 @@ describe('central Workspace operation authorizer', () => {
   );
 
   it('does not advertise a timed retry for an unbound session or retained recovery fence', async () => {
-    const freeze = fixture.workspaceMutationAdmission.tryFreeze(fixture.workspace.id, () => []);
+    const freeze = getControlStoreWorkerClient().tryFreezeWorkspace(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id,
+      () => []
+    );
     expect(freeze.status).toBe('frozen');
     const request = () =>
       fixture.app.request(
@@ -1813,12 +1821,23 @@ describe('central Workspace operation authorizer', () => {
       ...fixture.actorState.current,
       sessionId: (await fixture.createSession()).id,
     };
-    fixture.workspaceMutationAdmission.restoreClosed(fixture.workspace.id, 'capture');
+    getControlStoreWorkerClient().restoreWorkspaceMutationsClosed(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id,
+      'capture'
+    );
     const recovery = await request();
     expect(recovery.status).toBe(409);
     expect(recovery.headers.get('Retry-After')).toBeNull();
-    fixture.workspaceMutationAdmission.reopen(fixture.workspace.id, 'capture');
-    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+    getControlStoreWorkerClient().reopenWorkspaceMutations(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id,
+      'capture'
+    );
+    await getControlStoreWorkerClient().closeWorkspaceMutations(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id
+    );
     const lifecycle = await request();
     expect(lifecycle.status).toBe(409);
     expect(lifecycle.headers.get('Retry-After')).toBeNull();
@@ -1844,7 +1863,10 @@ describe('central Workspace operation authorizer', () => {
     const baselineDenial = await deniedBefore.json();
     expect(baselineDenial).toMatchObject({ code: 'workspace_access_denied' });
 
-    await fixture.workspaceMutationAdmission.close(fixture.workspace.id);
+    await getControlStoreWorkerClient().closeWorkspaceMutations(
+      fixture.coreDb.dataRoot,
+      fixture.workspace.id
+    );
     const deniedFrozen = await gateway();
     expect(deniedFrozen.status).toBe(403);
     expect(await deniedFrozen.json()).toEqual(baselineDenial);
@@ -1860,7 +1882,12 @@ describe('central Workspace operation authorizer', () => {
       code: 'workspace_frozen',
       details: { workspaceId: fixture.workspace.id, retryable: true },
     });
-    expect(fixture.workspaceMutationAdmission.isClosed(fixture.workspace.id)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        fixture.coreDb.dataRoot,
+        fixture.workspace.id
+      )
+    ).toBe(true);
 
     refuseScope(fixture.dataRoot, {
       scope: 'workspace',
@@ -1884,7 +1911,12 @@ describe('central Workspace operation authorizer', () => {
     const deniedQuarantined = await gateway();
     expect(deniedQuarantined.status).toBe(403);
     expect(await deniedQuarantined.json()).toEqual(baselineDenial);
-    expect(fixture.workspaceMutationAdmission.isClosed(fixture.workspace.id)).toBe(true);
+    expect(
+      getControlStoreWorkerClient().isWorkspaceMutationClosed(
+        fixture.coreDb.dataRoot,
+        fixture.workspace.id
+      )
+    ).toBe(true);
   });
 
   it('lets usable server-admin bearer tokens receive Workspace administrator eligibility', async () => {
@@ -2606,7 +2638,6 @@ describe('canonical administration Workspace admission', () => {
           coreDb: fixture.coreDb,
           store: fixture.store,
           quickChatWorkspaceIdForUser,
-          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         });
         const dependencies = {
           app,
@@ -2614,7 +2645,6 @@ describe('canonical administration Workspace admission', () => {
           store: fixture.store,
           requestStore: () => fixture.store,
           inflightCommands: new WeakMap(),
-          workspaceMutationAdmission: fixture.workspaceMutationAdmission,
         };
         registerOperationJsonRoutes(dependencies);
         registerRemoteMcpRoutes({ ...dependencies, getBootReadiness: createBootReadinessSnapshot });

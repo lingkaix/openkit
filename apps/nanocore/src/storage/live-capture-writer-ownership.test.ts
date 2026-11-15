@@ -351,7 +351,6 @@ async function fixture(interruptFinish: boolean) {
     completedAt: new Date().toISOString(),
   });
   const sibling = await store.createWorkspace('Q06 sibling');
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const stagingParent = join(root, 'staging');
   mkdirSync(stagingParent);
   const policy = {
@@ -374,7 +373,6 @@ async function fixture(interruptFinish: boolean) {
       dataRoot,
       coreDb: core,
       store,
-      mutationAdmission,
       actor,
       currentAuthority: () => {
         authorityChecks += 1;
@@ -383,7 +381,7 @@ async function fixture(interruptFinish: boolean) {
       },
     },
   };
-  const client = getControlStoreWorkerClient(mutationAdmission);
+  const client = getControlStoreWorkerClient();
   const pause = client.tryPauseForWorkspaceCapture.bind(client);
   const canonical = workspaceDbPath(dataRoot, DEMO_WORKSPACE_ID);
   const database = `workspace:${canonical}`;
@@ -409,7 +407,6 @@ async function fixture(interruptFinish: boolean) {
     store,
     core,
     sibling,
-    mutationAdmission,
     historyThread,
     historyTurn,
     input,
@@ -451,7 +448,9 @@ describe('Q06 live capture finishing-write ownership', () => {
       probe.onPhase = async (phase) => {
         if (phase === 'pin-end') {
           expect(Atomics.load(f.gate, 1)).toBe(1);
-          expect(f.mutationAdmission.isClosed(DEMO_WORKSPACE_ID)).toBe(true);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, DEMO_WORKSPACE_ID)
+          ).toBe(true);
           active = selectedCapture(f.dataRoot, f.backupId);
           expect(active).toMatchObject({
             captureId: f.backupId,
@@ -466,7 +465,9 @@ describe('Q06 live capture finishing-write ownership', () => {
         }
         if (phase === 'post-cut-validation') {
           expect(Atomics.load(f.gate, 1)).toBe(0);
-          expect(f.mutationAdmission.isClosed(DEMO_WORKSPACE_ID)).toBe(false);
+          expect(
+            getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, DEMO_WORKSPACE_ID)
+          ).toBe(false);
           progressStart = record('post-cut-publication-start');
           postCutThreadId = (
             await f.store.createThread(DEMO_WORKSPACE_ID, 'Q06 native publication after cut')

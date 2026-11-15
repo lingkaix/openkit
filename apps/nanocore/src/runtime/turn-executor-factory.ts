@@ -58,7 +58,6 @@ import {
   openControlStoreProductReadHandle,
   readProduct,
 } from '../storage/control-store-product-records.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
   bindWorkspaceSqlite,
@@ -349,8 +348,6 @@ export interface CreateConfiguredTurnExecutorOptions {
   store?: FsStore | undefined;
   /** Authoritative fixed-effect dispatcher shared with the native NanoHost session. */
   nanoHostSessionDispatch?: NanoHostSessionDispatch | undefined;
-  /** Shared Workspace deletion fence for late worker publication. */
-  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined;
 }
 
 /** Shared real-worker lifecycle selected from NanoCore runtime configuration. */
@@ -490,7 +487,6 @@ export function createConfiguredWorkerLifecycleRuntime(
     options.workerControlGateway,
     options.vaultBackend,
     options.store,
-    options.workspaceMutationAdmission,
     options.readRuntimeConfig,
     options.fileAdmission,
     options.policyInterception,
@@ -519,7 +515,6 @@ function createNanoHostWorkerLifecycleRuntime(
   workerControlGateway?: WorkerControlGateway | undefined,
   vaultBackend?: (() => VaultBackend) | undefined,
   sharedStore?: FsStore | undefined,
-  workspaceMutationAdmission?: WorkspaceMutationAdmission | undefined,
   readRuntimeConfig?: (() => PublicNetworkConfiguration) | undefined,
   fileAdmission?: FileStorageAdmission | undefined,
   policyInterception?: (() => import('../policy/interception.js').PolicyInterception) | undefined,
@@ -588,7 +583,6 @@ function createNanoHostWorkerLifecycleRuntime(
             backend.resolveResidentWorkerStorageWorkSlotRef(environmentPackage),
           ...(vaultBackend ? { vaultBackend } : {}),
           ...(workerControlGateway ? { workerControlGateway } : {}),
-          ...(workspaceMutationAdmission ? { workspaceMutationAdmission } : {}),
         });
 
   if (turnExecutor instanceof WorkerGovernanceTurnExecutor) {

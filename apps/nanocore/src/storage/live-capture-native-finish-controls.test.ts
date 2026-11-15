@@ -295,8 +295,7 @@ async function fixture(holdFinish = false) {
     id: ownerId,
   });
   await store.completeTurn(turn.id, { status: 'completed', completedAt: new Date().toISOString() });
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot),
-    client = getControlStoreWorkerClient(mutationAdmission),
+  const client = getControlStoreWorkerClient(),
     database = `workspace:${path}`;
   const stagingParent = join(root, 'staging');
   mkdirSync(stagingParent);
@@ -323,7 +322,6 @@ async function fixture(holdFinish = false) {
       dataRoot,
       coreDb: core,
       store,
-      mutationAdmission,
       actor,
       currentAuthority: () => {
         requireAdministratorOperation(core, actor, 'api.call');
@@ -343,7 +341,6 @@ async function fixture(holdFinish = false) {
     core,
     thread,
     turn,
-    mutationAdmission,
     client,
     input,
     policy,
@@ -446,7 +443,9 @@ it('opens the genuinely cold existing Workspace native owner before acknowledgin
     if (phase === 'finish') {
       expect(existsSync(join(f.input.bundleRoot, 'seal.json'))).toBe(true);
       expect(posts('open', f.database)).toHaveLength(previousOffers);
-      expect(f.mutationAdmission.isClosed(DEMO_WORKSPACE_ID)).toBe(false);
+      expect(
+        getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, DEMO_WORKSPACE_ID)
+      ).toBe(false);
       sealedBefore = sealedMetadata(f);
       finishBoundary = ++probe.order;
     }

@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { listServerAuditEvents } from './audit-events.js';
 import { createAutomationOperationImplementations } from './automation-operations.js';
 import { AutomationStore } from './lib/automation-store.js';
-import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
 import { createApp } from './test-support/app.js';
@@ -30,11 +29,7 @@ async function fixture() {
     ownerUserId: localUserId,
   });
   let instant = '2026-10-16T00:00:00.000Z';
-  const automationStore = new AutomationStore(
-    db,
-    getControlStoreWorkerClient().workspaceMutations(db.dataRoot),
-    () => instant
-  );
+  const automationStore = new AutomationStore(db, () => instant);
   const app = createApp({ store, coreDb: db, dataRoot: root, automationStore });
   const request = (id: string, input: unknown) =>
     app.request(`/api/app/operations/automation.${id}`, {

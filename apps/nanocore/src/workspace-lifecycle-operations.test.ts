@@ -65,7 +65,6 @@ it('sends unexpected lifecycle admission-read failures to the HTTP error handler
     coreDb: f.coreDb,
     store: f.store,
     requestStore: () => f.store,
-    workspaceMutationAdmission: f.admission,
     inflightCommands: new WeakMap(),
   });
   const beforeInvitation = f.coreDb.sqlite.prepare('SELECT * FROM workspace_invitations').all();
@@ -136,7 +135,7 @@ it('allows the administrator recovery-state read through a closed mutation gate 
     const beforeMembers = f.coreDb.sqlite.prepare('SELECT * FROM workspace_members').all();
     const beforeReceipts = f.coreDb.sqlite.prepare('SELECT * FROM idempotency_requests').all();
     const beforeAudit = listServerAuditEvents(f.coreDb);
-    await f.admission.close(f.workspaceId);
+    await getControlStoreWorkerClient().closeWorkspaceMutations(f.dataRoot, f.workspaceId);
     const closedRead = await f.app.request(
       ...operationRequest(
         'workspace.access-recovery-read',
@@ -213,12 +212,10 @@ async function fixture(
       "INSERT INTO workspace_invitations (invitation_id, workspace_id, invitee_user_id, inviter_user_id, status, expires_at, revision, created_at, updated_at) VALUES ('inv_00000000-0000-79cc-be8a-99985c4c44e4', ?, 'usr_00000000-0000-7000-8000-000000000001', 'usr_00000000-0000-7000-8000-000000000001', 'pending', ?, 1, ?, ?)"
     )
     .run(workspaceId, new Date(Date.now() + 86400000).toISOString(), timestamp, timestamp);
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const releaseIdentityPath = join(dataRoot, 'fixture-release-identity.json');
   const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   writeFileSync(releaseIdentityPath, JSON.stringify({ releaseTag: null, sourceCommit }));
   const app = createApp({
-    workspaceMutationAdmission: admission,
     ...(getBootReadiness ? { getBootReadiness } : {}),
     ...(auth ? { auth } : {}),
     releaseIdentity: readReleaseIdentity(releaseIdentityPath),
@@ -233,7 +230,6 @@ async function fixture(
     coreDb,
     dataRoot,
     store,
-    admission,
     invoke: createOperationInvocation({
       repositoryWorkspaceDb: (id) => {
         const db = openWorkspaceDb(dataRoot, id);
@@ -243,7 +239,6 @@ async function fixture(
       coreDb,
       dataRoot,
       store,
-      workspaceMutationAdmission: admission,
       inflightCommands: new WeakMap(),
     }),
     workspaceId,
@@ -522,7 +517,7 @@ it.each([
   async (id) => {
     const f = await fixture();
     try {
-      await f.admission.close(f.workspaceId);
+      await getControlStoreWorkerClient().closeWorkspaceMutations(f.dataRoot, f.workspaceId);
       const requestId = randomUUID();
       const input =
         id === 'workspace.leave'
@@ -731,7 +726,9 @@ it('recovers a cleaned Workspace as its non-admin original owner and replays wit
       ...operationRequest('workspace.read', { workspaceId: f.workspaceId })
     );
     expect(readable.status, await readable.clone().text()).toBe(200);
-    expect(f.admission.isClosed(f.workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      false
+    );
     const later = await f.store.createThread(f.workspaceId, 'Healthy work after recovery');
     const audits = listServerAuditEvents(f.coreDb);
     const replay = await recover();
@@ -750,7 +747,9 @@ it('recovers a cleaned Workspace as its non-admin original owner and replays wit
     expect(f.store.getThread(f.workspaceId, later.id)).toEqual(later);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(registry);
     expect(listServerAuditEvents(f.coreDb)).toEqual(audits);
-    expect(f.admission.isClosed(f.workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      false
+    );
   } finally {
     await f.close();
   }
@@ -835,7 +834,9 @@ it('continues the original committed recovery after serving activation fails wit
     ).toEqual([
       expect.objectContaining({ actor: { kind: 'user', id: ownerId }, outcome: 'succeeded' }),
     ]);
-    expect(f.admission.isClosed(f.workspaceId)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      true
+    );
     expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
     for (const suffix of ['-wal', '-shm'])
       expect(
@@ -854,8 +855,7 @@ it('continues the original committed recovery after serving activation fails wit
     // Recompose the real App from retained owners; this is not a cold-process restart claim.
     // Drain the old process-local native owner before installing the reconstructed gate.
     await shutdownControlStoreWorkerClient();
-    const restartedGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-    restoreWorkspaceRecoveryAdmission(f.coreDb, restartedGate);
+    restoreWorkspaceRecoveryAdmission(f.coreDb);
     // Bootstrap must not reopen a placed target whose exact byte seal still owns activation.
     expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(
       committed!.proof.candidateDigest
@@ -867,11 +867,12 @@ it('continues the original committed recovery after serving activation fails wit
       store: restartedStore,
       mode: 'server',
       auth,
-      workspaceMutationAdmission: restartedGate,
       turnExecutor: new SimulatedTurnExecutor({ coreDb: f.coreDb }),
       releaseIdentity: readReleaseIdentity(join(f.dataRoot, 'fixture-release-identity.json')),
     });
-    expect(restartedGate.isClosed(f.workspaceId)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      true
+    );
     expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
     const unreviewed = join(f.dataRoot, 'workspaces', f.workspaceId, 'unreviewed-recovery.txt');
     writeFileSync(unreviewed, 'Unreviewed candidate bytes.');
@@ -882,7 +883,9 @@ it('continues the original committed recovery after serving activation fails wit
     expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(committed!);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
     expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
-    expect(restartedGate.isClosed(f.workspaceId)).toBe(true);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      true
+    );
     rmSync(unreviewed);
     expect(workspaceRecoveryCandidateDigest(join(f.dataRoot, 'workspaces', f.workspaceId))).toBe(
       committed!.proof.candidateDigest
@@ -902,7 +905,9 @@ it('continues the original committed recovery after serving activation fails wit
     expect(readRecoveryExecution(f.coreDb, requestId)).toEqual(committed!);
     expect(getWorkspaceRegistryLifecycleFact(f.coreDb, f.workspaceId)).toEqual(committedRegistry!);
     expect(listServerAuditEvents(f.coreDb)).toEqual(committedAudits);
-    expect(restartedGate.isClosed(f.workspaceId)).toBe(false);
+    expect(getControlStoreWorkerClient().isWorkspaceMutationClosed(f.dataRoot, f.workspaceId)).toBe(
+      false
+    );
     expect(isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(true);
     const later = await restartedStore.createThread(
       f.workspaceId,

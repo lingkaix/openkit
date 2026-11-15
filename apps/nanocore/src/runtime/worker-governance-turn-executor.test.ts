@@ -168,7 +168,6 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
   WORKSPACE_MUTATION_LATE_PUBLISHERS,
-  type WorkspaceMutationAdmission,
 } from '../storage/control-store-worker-client.js';
 import {
   type CoreDb,
@@ -336,7 +335,7 @@ import {
   prepareWorkerTurnContextPackage,
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
-import { bindMcpCaptureAdmission, enterMcpCaptureCall } from './worker-mcp-capture.js';
+import { enterMcpCaptureCall } from './worker-mcp-capture.js';
 import { createDefaultWorkerMcpGateway, WorkerMcpGatewayCallError } from './worker-mcp-gateway.js';
 import {
   createWorkerRuntimeOriginRef,
@@ -4217,7 +4216,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       const publicationDb = openWorkspaceDb(dataRoot, fixture.workspaceId);
       applyScopedMigrations(publicationDb);
       publicationDb.sqlite.close();
-      const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const authority = vi
         .spyOn(operationAuthorizer, 'currentWorkerLineageWorkspaceAuthority')
         .mockImplementation((_db, _lineage, operation) => (operation === mode ? null : 'owner'));
@@ -4228,7 +4226,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         backend: new FakeWorkerGovernanceBackend(),
         coreDb,
         environmentBackend: { kind: 'openshell' },
-        workspaceMutationAdmission: mutationAdmission,
       });
       // This test isolates publication authorization; the real Git handoff tests exercise ingress bytes and review staging.
       const publish = vi
@@ -4240,7 +4237,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         )
         .mockResolvedValue();
       try {
-        if (mode === 'deletion') await mutationAdmission.close(fixture.workspaceId);
+        if (mode === 'deletion')
+          await getControlStoreWorkerClient().closeWorkspaceMutations(
+            dataRoot,
+            fixture.workspaceId
+          );
         const run = executor.publishWorkspaceCollections(
           fixture.store,
           fixture.environmentPackage,
@@ -4255,7 +4256,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
             ['artifact.write', true],
           ]);
           // The publisher must release its admission after staging.
-          await expect(mutationAdmission.close(fixture.workspaceId)).resolves.toBeUndefined();
+          await expect(
+            getControlStoreWorkerClient().closeWorkspaceMutations(dataRoot, fixture.workspaceId)
+          ).resolves.toBeUndefined();
         } else {
           await expect(run).rejects.toMatchObject({ code: 'workspace_access_denied', status: 403 });
           expect(publish).not.toHaveBeenCalled();
@@ -4297,12 +4300,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
       turnInput: 'Finish already admitted work',
       workspaceId,
     });
-    const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    store.setWorkspaceMutationAdmission(gate);
     const workspaceDb = openAdmittedWorkspaceReadDb(dataRoot, workspaceId);
     const reached = Promise.withResolvers<void>();
     const releasePreparation = Promise.withResolvers<void>();
-    let freezing: ReturnType<WorkspaceMutationAdmission['tryFreezeAfterDrain']> | undefined;
+    let freezing:
+      | ReturnType<ReturnType<typeof getControlStoreWorkerClient>['tryFreezeWorkspaceAfterDrain']>
+      | undefined;
     let frozen: Awaited<NonNullable<typeof freezing>> | undefined;
     let refusal: unknown;
     const callId = allocateEntityId('cap');
@@ -4310,7 +4313,8 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const collect = backend.collectTranscript.bind(backend);
     const transcript = vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
       const result = await collect();
-      freezing = gate.tryFreezeAfterDrain(
+      freezing = getControlStoreWorkerClient().tryFreezeWorkspaceAfterDrain(
+        dataRoot,
         workspaceId,
         async () => {
           reached.resolve();
@@ -4319,7 +4323,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         () => []
       );
       await reached.promise;
-      expect(gate.enter(workspaceId)).toBeNull();
+      expect(
+        getControlStoreWorkerClient().enterWorkspaceMutation(dataRoot, workspaceId)
+      ).toBeNull();
       // This ordinary call is outside the executor's later worker-turn-closeout admission.
       let ordinary: Awaited<ReturnType<typeof startCapabilityCall>> | undefined;
       try {
@@ -4353,7 +4359,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       createAgentSessionId: () => agentSessionId,
       environmentBackend: { kind: 'openshell' },
       now: () => '2026-07-15T00:00:03.000Z',
-      workspaceMutationAdmission: gate,
     });
     try {
       await executor.startTurn(store, turn.id, 'Finish already admitted work', {
@@ -4438,9 +4443,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       workspaceId: workspaceIdForOwner(turn.owner),
     });
     const backend = new FakeWorkerGovernanceBackend();
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const workspaceId = workspaceIdForOwner(turn.owner);
-    bindMcpCaptureAdmission(dataRoot, mutationAdmission);
     const mcpGateway = createDefaultWorkerMcpGateway(coreDb);
     const mcpSpawnMarker = join(dataRoot, 'unexpected-late-mcp-spawn');
     const mcpInput = {
@@ -4479,7 +4482,10 @@ describe('WorkerGovernanceTurnExecutor', () => {
     const collectTranscript = backend.collectTranscript.bind(backend);
     vi.spyOn(backend, 'collectTranscript').mockImplementation(async () => {
       const transcript = await collectTranscript();
-      await mutationAdmission.close(workspaceIdForOwner(turn.owner));
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        dataRoot,
+        workspaceIdForOwner(turn.owner)
+      );
       return transcript;
     });
     const executor = new WorkerGovernanceTurnExecutor({
@@ -4489,7 +4495,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       createAgentSessionId: () => testEntityId('as', 'as_governance_deletion_fence_1'),
       environmentBackend: { kind: 'openshell' },
       now: () => '2026-07-15T00:00:03.000Z',
-      workspaceMutationAdmission: mutationAdmission,
     });
 
     try {
@@ -4516,7 +4521,9 @@ describe('WorkerGovernanceTurnExecutor', () => {
         status: 'interrupted',
       });
       expect(backend.collectTranscript).toHaveBeenCalledOnce();
-      expect(mutationAdmission.isLifecycleClosed(workspaceId)).toBe(true);
+      expect(getControlStoreWorkerClient().isWorkspaceLifecycleClosed(dataRoot, workspaceId)).toBe(
+        true
+      );
       const mcpData = join(dataRoot, 'workspaces', workspaceId, 'catalog', 'mcp-data');
       const beforeMcpData = existsSync(mcpData)
         ? readdirSync(mcpData, { recursive: true }).sort()
@@ -11125,7 +11132,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       fixture: Awaited<ReturnType<typeof createWorkerContextExecutorFixture>>;
       app: ReturnType<typeof createApp>;
       launchSpy: MockInstance<FakeWorkerGovernanceBackend['submit']>;
-      admission: WorkspaceMutationAdmission;
       selectedArtifact: ReturnType<FsStore['createArtifact']>;
       selectedArtifactBytes: string;
       journalRef: ExecutionJournalRef | null;
@@ -11175,9 +11181,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
           );
         },
       });
-      const admission = getControlStoreWorkerClient().workspaceMutations(fixture.coreDb.dataRoot);
       const app = createApp({
-        workspaceMutationAdmission: admission,
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         mode: 'local',
@@ -11377,7 +11381,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fixture,
         app,
         launchSpy,
-        admission,
         selectedArtifact,
         selectedArtifactBytes,
         journalRef: null,
@@ -11614,7 +11617,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
       sourceReferences: string[],
       candidatePageBytes: string
     ) {
-      const { fixture, admission, selectedArtifact, selectedArtifactBytes, journalRef } = completed;
+      const { fixture, selectedArtifact, selectedArtifactBytes, journalRef } = completed;
       const workspaceId = workspaceIdForOwner(fixture.turn.owner);
       const workspaceRoot = join(fixture.coreDb.dataRoot, 'workspaces', workspaceId);
       const db = openTestWorkspaceDb(fixture.coreDb);
@@ -11649,14 +11652,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         store: fixture.store,
-        workspaceMutationAdmission: admission,
         turnExecutor: executor,
         agentManifests: [setup.manifest],
         openKitConfig: { defaults: { defaultAgentId: setup.manifest.id } },
       });
       const thread = await fixture.store.createThread(workspaceId, 'Live schema history companion');
       let liveTurnId: string | undefined;
-      const freeze = vi.spyOn(admission, 'tryFreeze');
+      const freeze = vi.spyOn(getControlStoreWorkerClient(), 'tryFreezeWorkspace');
       try {
         const accepted = await app.request(
           ...operationRequest(
@@ -11925,7 +11927,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         expect(applied.status, await applied.clone().text()).toBe(200);
         const result = (await applied.json()) as { reportDigest: string };
         expect(freeze).not.toHaveBeenCalled();
-        expect(admission.isClosed(workspaceId)).toBe(false);
+        expect(
+          getControlStoreWorkerClient().isWorkspaceMutationClosed(
+            fixture.coreDb.dataRoot,
+            workspaceId
+          )
+        ).toBe(false);
         expect(await history(fixture.turn.id, journalRef!)).toEqual(before);
         expect(await history(liveTurnId, liveJournalRef)).toEqual(liveBefore);
         const after = readTestWorkspaceNotebookSelection(fixture.coreDb.dataRoot, workspaceId);
@@ -12937,9 +12944,7 @@ describe('WorkerGovernanceTurnExecutor', () => {
         providerAccessShapes: [providerAccessShape],
       },
     });
-    const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
     const interception = new PolicyInterception();
-    store.setWorkspaceMutationAdmission(admission);
     const backend = new FakeWorkerGovernanceBackend();
     // Each Turn has its own backend session record even when it reuses the AgentSession binding.
     const planSession = backend.planSession.bind(backend);
@@ -12952,7 +12957,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
       backend,
       coreDb,
       createAgentSessionId: () => agentSessionId,
-      workspaceMutationAdmission: admission,
       policyInterception: () => interception,
       readRuntimeConfig: () => configuration,
       now: () => timestamp,
@@ -13110,9 +13114,13 @@ describe('WorkerGovernanceTurnExecutor', () => {
           providerAccessShapes: [providerAccessShape],
         },
       });
-      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
       const interception = new PolicyInterception();
-      if (admitted) store.setWorkspaceMutationAdmission(admission);
+      // The native scope is owned by the Core Root; a refused admission is its closed Workspace.
+      if (!admitted)
+        await getControlStoreWorkerClient().closeWorkspaceMutations(
+          dataRoot,
+          'ws_00000000-0000-7000-8000-000000000001'
+        );
       const backend = new FakeWorkerGovernanceBackend();
       const resolve = vi.spyOn(vaultUnlockState.backend(), 'resolve');
       const supply = vi.spyOn(backend, 'deliverProviderCredentialBinding');
@@ -13121,7 +13129,6 @@ describe('WorkerGovernanceTurnExecutor', () => {
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
-        ...(admitted ? { workspaceMutationAdmission: admission } : {}),
         policyInterception: () => interception,
         createAgentSessionId: () => testEntityId('as', 'as_governance_vault_1'),
         readRuntimeConfig: () => configuration,
@@ -13185,10 +13192,11 @@ describe('WorkerGovernanceTurnExecutor', () => {
         );
 
         if (!admitted) {
+          // The refused native admission is the closed Workspace scope, not an absent component.
           await expect(run).rejects.toMatchObject({
-            code: 'workspace_access_denied',
-            message: 'Workspace access denied.',
-            status: 403,
+            code: 'workspace_frozen',
+            message: 'Workspace is temporarily frozen.',
+            status: 409,
           });
           expect(resolve).not.toHaveBeenCalled();
           expect(supply).not.toHaveBeenCalled();
@@ -13316,15 +13324,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         '00000000-0000-4000-8000-000000000216'
       );
       const backend = new FakeWorkerGovernanceBackend();
-      const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-      store.setWorkspaceMutationAdmission(admission);
       const interception = new PolicyInterception();
       const supply = vi.spyOn(backend, 'deliverCredentialBinding');
       const fixtureExecutor = new WorkerGovernanceTurnExecutor({
         fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
         backend,
         coreDb,
-        workspaceMutationAdmission: admission,
         policyInterception: () => interception,
         readRuntimeConfig: () => loadRuntimeConfig(dataRoot),
         createAgentSessionId: () => testEntityId('as', 'as_governance_runtime_file_1'),
@@ -14516,10 +14521,6 @@ describe('credential carrier neutral placement acceptance', () => {
           for (const db of handles) closeTestCoreDb(db);
         }
       }
-      const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(
-        fixture.coreDb.dataRoot
-      );
-      fixture.store.setWorkspaceMutationAdmission(mutationAdmission);
       let delivered = false;
       let deliveredOriginal = false;
       const backend = Object.assign(new FakeWorkerGovernanceBackend(), {
@@ -14639,7 +14640,6 @@ describe('credential carrier neutral placement acceptance', () => {
       const executor = new WorkerGovernanceTurnExecutor({
         fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
         backend,
-        workspaceMutationAdmission: mutationAdmission,
         coreDb: fixture.coreDb,
         policyInterception: () => interception,
         readRuntimeConfig: () => readConfiguration(),
@@ -14850,9 +14850,7 @@ it.each(['unchanged', 'other-grant-revoked'] as const)(
       material: randomUUID() + randomUUID(),
       targetPath: `/sandbox/synthetic-session-${index}`,
     }));
-    const admission = getControlStoreWorkerClient().workspaceMutations(fixture.coreDb.dataRoot);
     const interception = new PolicyInterception();
-    fixture.store.setWorkspaceMutationAdmission(admission);
     let submitted = false;
     let attemptedReceiptGrant: string | undefined;
     const nativeClient = getControlStoreWorkerClient();
@@ -14966,7 +14964,6 @@ it.each(['unchanged', 'other-grant-revoked'] as const)(
       const executor = new WorkerGovernanceTurnExecutor({
         backend,
         coreDb: fixture.coreDb,
-        workspaceMutationAdmission: admission,
         policyInterception: () => interception,
         readRuntimeConfig: () => loadRuntimeConfig(fixture.coreDb.dataRoot),
         fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
@@ -15054,8 +15051,6 @@ describe('credential carrier unified Vault operation acceptance', () => {
       const targetPath = `/sandbox/${randomUUID()}`;
       const referenceId = testEntityId('vault', randomUUID());
       const grantId = testEntityId('grant', randomUUID());
-      const admission = getControlStoreWorkerClient().workspaceMutations(fixture.coreDb.dataRoot);
-      fixture.store.setWorkspaceMutationAdmission(admission);
       const vault = createVaultUnlockState({
         backendKind: 'encrypted-file',
         storeDir: join(fixture.coreDb.dataRoot, 'vault'),
@@ -15255,7 +15250,6 @@ describe('credential carrier unified Vault operation acceptance', () => {
       const executor = new WorkerGovernanceTurnExecutor({
         backend,
         coreDb: fixture.coreDb,
-        workspaceMutationAdmission: admission,
         fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
         policyInterception: () => interception,
         readRuntimeConfig: () => manager.current(),
@@ -15406,7 +15400,6 @@ describe('credential carrier unified Vault operation acceptance', () => {
           turnExecutor: executor,
           policyInterception: interception,
           readRuntimePolicy: () => manager.current().openKitConfig.policy?.mediation,
-          workspaceMutationAdmission: admission,
           repositoryWorkspaceDb: (id: string) => openWorkspaceDb(fixture.coreDb.dataRoot, id),
         };
         const invoke = createOperationEngine(
@@ -15654,7 +15647,6 @@ describe('credential carrier unified Vault operation acceptance', () => {
               coreDb: fixture.coreDb,
               dataRoot: fixture.coreDb.dataRoot,
               store: fixture.store,
-              workspaceMutationAdmission: admission,
               turnExecutor: executor,
               vaultUnlockState: vault,
               runtimeConfigManager: manager,
@@ -15835,7 +15827,10 @@ describe('credential carrier unified Vault operation acceptance', () => {
         ).toBe(true);
         // The existing application fence applies to the same operation path.
         const frozenId = randomUUID();
-        await admission.close(workspaceId);
+        await getControlStoreWorkerClient().closeWorkspaceMutations(
+          fixture.coreDb.dataRoot,
+          workspaceId
+        );
         try {
           rejected = false;
           await invoke(
@@ -15850,7 +15845,10 @@ describe('credential carrier unified Vault operation acceptance', () => {
             'binding effect bypassed Workspace mutation closure'
           ).toBe(true);
         } finally {
-          admission.reopen(workspaceId);
+          getControlStoreWorkerClient().reopenWorkspaceMutations(
+            fixture.coreDb.dataRoot,
+            workspaceId
+          );
         }
         weakReplacement = ending === 'weak-replace';
         const replacementId = randomUUID();
@@ -16864,7 +16862,6 @@ type NativeFinalReviewWorkerFixture = Omit<
   launchContext: NonNullable<ReturnType<NativeAdmissionFixture['executionFor']>['launchContext']>;
   workerLifecycleRuntime: NativeAdmissionFixture['runtime'];
   runtimeConfigManager: ReturnType<typeof createRuntimeConfigManager>;
-  mutationAdmission: WorkspaceMutationAdmission;
   gatewayConfig: ReturnType<typeof createTestGatewayConfig>;
 };
 
@@ -16968,8 +16965,6 @@ async function launchFinalReviewWorker(
   if (options.realNative) {
     if (!prepared || !turn.triggerActor)
       throw new Error('Real native setup requires its actual admitted agent setup and actor.');
-    const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    store.setWorkspaceMutationAdmission(mutationAdmission);
     const gatewayConfig = createTestGatewayConfig();
     const configuration = loadRuntimeConfig(coreDb.dataRoot);
     const workspaceId = workspaceIdForOwner(turn.owner);
@@ -17024,7 +17019,6 @@ async function launchFinalReviewWorker(
       }),
     });
     const native = await createNativeTaskAdmissionFixture(coreDb, store, {
-      workspaceMutationAdmission: mutationAdmission,
       ...(prepared.vaultBackend ? { vaultBackend: prepared.vaultBackend } : {}),
       ...(prepared.policyInterception ? { policyInterception: prepared.policyInterception } : {}),
       readRuntimeConfig: () => runtimeConfigManager.current(),
@@ -17082,7 +17076,6 @@ async function launchFinalReviewWorker(
       launchContext,
       workerLifecycleRuntime: native.runtime,
       runtimeConfigManager,
-      mutationAdmission,
       gatewayConfig,
       execution,
       settled: () => settled,
@@ -17360,8 +17353,6 @@ describe('reviewed Login access through the neutral credential effect', () => {
       vault.unlock({ masterKey: Buffer.alloc(32, 47) });
       const materialResolution = vi.spyOn(vault.backend(), 'resolve');
       try {
-        const admission = getControlStoreWorkerClient().workspaceMutations(fixture.coreDb.dataRoot);
-        fixture.store.setWorkspaceMutationAdmission(admission);
         const configDir = join(fixture.coreDb.dataRoot, 'config');
         mkdirSync(configDir, { recursive: true });
         const serverConfig = join(configDir, 'server.jsonc');
@@ -17731,7 +17722,6 @@ describe('reviewed Login access through the neutral credential effect', () => {
           backend,
           now: () => executorClock ?? new Date().toISOString(),
           coreDb: fixture.coreDb,
-          workspaceMutationAdmission: admission,
           fileAdmission: new FileStorageAdmission(fixture.coreDb.dataRoot, () => 0n),
           policyInterception: () => interception,
           readRuntimeConfig: () => manager.current(),
@@ -17743,7 +17733,6 @@ describe('reviewed Login access through the neutral credential effect', () => {
           store: fixture.store,
           turnExecutor: executor,
           vaultUnlockState: vault,
-          workspaceMutationAdmission: admission,
           runtimeConfigManager: manager,
           policyInterception: interception,
         });
@@ -19571,8 +19560,6 @@ describe('Login publication under the original Goal Task decision', () => {
         });
       });
       try {
-        const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-        store.setWorkspaceMutationAdmission(admission);
         const configDir = join(coreDb.dataRoot, 'config');
         mkdirSync(configDir, { recursive: true });
         if (!existsSync(join(configDir, 'server.jsonc')))
@@ -19608,7 +19595,6 @@ describe('Login publication under the original Goal Task decision', () => {
           dataRoot: coreDb.dataRoot,
           store,
           vaultUnlockState: vault,
-          workspaceMutationAdmission: admission,
           runtimeConfigManager: manager,
         });
         let loginApp = app;
@@ -19641,7 +19627,6 @@ describe('Login publication under the original Goal Task decision', () => {
             mode: 'server',
             auth,
             vaultUnlockState: vault,
-            workspaceMutationAdmission: admission,
             runtimeConfigManager: manager,
           });
           const invited = await app.request(
@@ -20372,7 +20357,6 @@ describe('Login publication under the original Goal Task decision', () => {
         const executor = new WorkerGovernanceTurnExecutor({
           backend,
           coreDb,
-          workspaceMutationAdmission: admission,
           fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
           policyInterception: () => interception,
           readRuntimeConfig: () => manager.current(),
@@ -20383,7 +20367,6 @@ describe('Login publication under the original Goal Task decision', () => {
           dataRoot: coreDb.dataRoot,
           store,
           turnExecutor: executor,
-          workspaceMutationAdmission: admission,
           policyInterception: interception,
           readRuntimePolicy: () => manager.current().openKitConfig.policy?.mediation,
           repositoryWorkspaceDb: (id: string) => {
@@ -22219,7 +22202,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
       coreDb: fixture.coreDb,
       dataRoot: fixture.coreDb.dataRoot,
       store: fixture.store,
-      workspaceMutationAdmission: fixture.mutationAdmission,
       runtimeConfigManager,
       turnExecutor: fixture.executor,
       workerLifecycleRuntime: fixture.workerLifecycleRuntime,
@@ -22846,7 +22828,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
         coreDb: current.coreDb,
         dataRoot: current.coreDb.dataRoot,
         store: current.store,
-        workspaceMutationAdmission: current.mutationAdmission,
         runtimeConfigManager,
         turnExecutor: current.executor,
         workerLifecycleRuntime: current.workerLifecycleRuntime,
@@ -23337,9 +23318,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
         fixture.coreDb.dataRoot,
         fixture.lineage.workspaceId
       );
-      const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
-        fixture.coreDb.dataRoot
-      );
       const gatewayConfig = createTestGatewayConfig();
       const runtimeConfigManager = createRuntimeConfigManager({
         dataRoot: fixture.coreDb.dataRoot,
@@ -23355,7 +23333,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         store: fixture.store,
-        workspaceMutationAdmission,
         runtimeConfigManager,
         turnExecutor: fixture.executor,
         workerControlGateway: fixture.gateway,
@@ -23370,7 +23347,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
           coreDb: fixture.coreDb,
           dataRoot: fixture.coreDb.dataRoot,
           store: fixture.store,
-          workspaceMutationAdmission,
           runtimeConfigManager,
           turnExecutor: fixture.executor,
           vaultUnlockState: data.vault,
@@ -23499,9 +23475,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
           };
         }
       );
-      const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
-        fixture.coreDb.dataRoot
-      );
       const gatewayConfig = createTestGatewayConfig();
       const runtimeConfigManager = createRuntimeConfigManager({
         dataRoot: fixture.coreDb.dataRoot,
@@ -23517,7 +23490,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         store: fixture.store,
-        workspaceMutationAdmission,
         runtimeConfigManager,
         turnExecutor: fixture.executor,
         workerControlGateway: fixture.gateway,
@@ -23532,7 +23504,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
           coreDb: fixture.coreDb,
           dataRoot: fixture.coreDb.dataRoot,
           store: fixture.store,
-          workspaceMutationAdmission,
           runtimeConfigManager,
           turnExecutor: fixture.executor,
           vaultUnlockState: data.vault,
@@ -23616,9 +23587,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
         fixture.coreDb.dataRoot,
         fixture.lineage.workspaceId
       );
-      const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
-        fixture.coreDb.dataRoot
-      );
       const gatewayConfig = createTestGatewayConfig();
       const runtimeConfigManager = createRuntimeConfigManager({
         dataRoot: fixture.coreDb.dataRoot,
@@ -23634,7 +23602,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
         coreDb: fixture.coreDb,
         dataRoot: fixture.coreDb.dataRoot,
         store: fixture.store,
-        workspaceMutationAdmission,
         runtimeConfigManager,
         turnExecutor: fixture.executor,
         workerControlGateway: fixture.gateway,
@@ -23649,7 +23616,6 @@ describe('Core credential helpers through the actual App and durable fake-backen
           coreDb: fixture.coreDb,
           dataRoot: fixture.coreDb.dataRoot,
           store: fixture.store,
-          workspaceMutationAdmission,
           runtimeConfigManager,
           turnExecutor: fixture.executor,
           vaultUnlockState: data.vault,

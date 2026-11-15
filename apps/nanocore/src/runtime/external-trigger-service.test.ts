@@ -97,9 +97,8 @@ async function fixture(options: { privateSource?: boolean } = {}) {
     options.privateSource ? { visibility: 'private', privateOwnerUserId: userId } : undefined
   );
   recordWorkspaceOwnerMembership({ coreDb: db, workspaceId: workspace.id, ownerUserId: userId });
-  const mutationAdmission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot);
   let instant = '2026-10-18T00:00:00.000Z';
-  const schedules = new AutomationStore(db, mutationAdmission, () => instant);
+  const schedules = new AutomationStore(db, () => instant);
   const agentSetup = createTestAgentSetup();
   const manifest = agentSetup.manifest;
   const created = await schedules.createAutomation(userId, {
@@ -475,7 +474,6 @@ describe('bounded scheduled poll event admission', () => {
         store: f.store,
         automationStore: f.schedules,
         turnStartServices: services,
-        workspaceMutationAdmission: f.schedules.mutationAdmission,
       });
       await expect(
         invoke(
@@ -693,10 +691,7 @@ describe('bounded scheduled poll event admission', () => {
     owned.find((entry) => entry.root === f.root)!.db = db;
     applyMigrations(db);
     const store = new FsStore({ dataRoot: f.root });
-    const schedules = new AutomationStore(
-      db,
-      getControlStoreWorkerClient().workspaceMutations(db.dataRoot)
-    );
+    const schedules = new AutomationStore(db);
     const again = await f.admit({ schedules, store, source, input: 'Still the same event' });
     expect(again.admission).toEqual(first.admission);
     expect(again.entry).toEqual(first.entry);
@@ -1015,7 +1010,10 @@ describe('bounded scheduled poll event admission', () => {
     if (reason === 'missing-occurrence')
       f.db.sqlite.prepare('DELETE FROM recurring_occurrences').run();
     if (reason === 'closed-workspace')
-      await f.schedules.mutationAdmission.close(f.schedule.workspaceId);
+      await getControlStoreWorkerClient().closeWorkspaceMutations(
+        f.schedules.coreDb.dataRoot,
+        f.schedule.workspaceId
+      );
     const createThread = vi.spyOn(f.store, 'createThread');
     await expect(f.admit({ source })).rejects.toMatchObject({ code: 'external_event_denied' });
     expect(createThread).not.toHaveBeenCalled();

@@ -35,7 +35,6 @@ import {
   ControlKnowledgeAdmissionInputSchema,
   type ControlKnowledgeAdmissionResult,
 } from '../storage/control-store-admission-codecs.js';
-import type { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -132,7 +131,6 @@ export interface KnowledgeMaintenanceDependencies {
   readonly store: FsStore;
   readonly coreDb: CoreDb;
   readonly runtimeConfigManager: RuntimeConfigManager;
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   readonly openWorkspace: (workspaceId: string) => WorkspaceDb;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly pin: (input: Pick<KnowledgeManagerAgentRun, 'turn' | 'inputs'>) => void | Promise<void>;
@@ -730,7 +728,10 @@ export async function prepareKnowledgeMaintenance(
             // A narrow editor selection may omit unchanged base objects needed by the full candidate proof.
             await notebook.preloadRevisionAsync(baseRevision);
             assertCurrent();
-            const release = dependencies.workspaceMutationAdmission.enter(input.workspaceId);
+            const release = getControlStoreWorkerClient().enterWorkspaceMutation(
+              dependencies.coreDb.dataRoot,
+              input.workspaceId
+            );
             if (!release) throw new NotebookError('invalid_request');
             try {
               // Explain structural refusals before either native publisher or Proposal creation.

@@ -37,10 +37,7 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recordTestWorkspaceReviewMaterialization } from '../test-support/workspace-sync.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './db.js';
 import { applyMigrations } from './migrate.js';
 
@@ -362,7 +359,6 @@ async function fixture(kind: Kind) {
       store,
       dataRoot,
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
     });
   }

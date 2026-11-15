@@ -9,10 +9,7 @@ import { createBootReadinessSnapshot } from './bootstrap/readiness.js';
 import { FsStore } from './lib/store.js';
 import { registerRemoteMcpRoutes } from './remote-mcp-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from './storage/db.js';
 import { applyMigrations, applyScopedMigrations } from './storage/migrate.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -65,7 +62,6 @@ describe('Remote MCP Workspace export retained snapshot refusal', () => {
           fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
           repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
           inflightCommands: new WeakMap(),
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
           getBootReadiness: createBootReadinessSnapshot,
         });
         const snapshotsRoot = join(

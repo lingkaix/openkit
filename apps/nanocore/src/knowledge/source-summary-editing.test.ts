@@ -23,10 +23,7 @@ import {
 import { FsStore } from '../lib/store.js';
 import { OperationError } from '../operation-error.js';
 import { ProviderRegistry } from '../providers/registry.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from '../storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -264,9 +261,6 @@ describe('ordinary SourceSummary editing through native owners', () => {
         const actor = { kind: 'user', id: f.userId } as const;
         const snapshot = createInMemoryRuntimeConfigSnapshot({ dataRoot: null });
         const runtimeConfigManager = { current: () => snapshot };
-        const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(
-          f.dataRoot
-        );
         const currentAuthority = () => {
           if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
             throw new OperationError(
@@ -294,7 +288,6 @@ describe('ordinary SourceSummary editing through native owners', () => {
                 scopeSchemaText: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
                   .scopeSchemaText,
                 runtimeConfigManager,
-                workspaceMutationAdmission,
                 currentAuthority,
                 actor,
                 request,
@@ -683,7 +676,6 @@ async function runMaintenance(
     dataRoot: f.dataRoot,
     initialSnapshot: snapshot,
   });
-  const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
   const actor = { kind: 'user', id: f.userId } as const;
   const currentAuthority = () => {
     if (!currentWorkspaceAuthority(f.coreDb, f.workspace.id, actor, 'knowledge.write', true))
@@ -697,7 +689,6 @@ async function runMaintenance(
       notebook: f.notebook,
       scopeSchemaText: readTestWorkspaceNotebookSelection(f.dataRoot, f.workspace.id)
         .scopeSchemaText,
-      workspaceMutationAdmission,
       runtimeConfigManager,
       currentAuthority,
       actor,
@@ -830,7 +821,6 @@ async function runMaintenance(
       store: f.store,
       coreDb: f.coreDb,
       runtimeConfigManager,
-      workspaceMutationAdmission,
       openWorkspace: (id) => openWorkspaceDb(f.dataRoot, id),
       inflightCommands: new WeakMap(),
       run,

@@ -174,7 +174,6 @@ import {
   type ControlMcpItemCall,
 } from './storage/control-store-capability.js';
 import { getWorkspaceProductReadHandle } from './storage/control-store-product-records.js';
-import type { WorkspaceMutationAdmission } from './storage/control-store-worker-client.js';
 import {
   ControlStoreWorkerError,
   getControlStoreWorkerClient,
@@ -293,8 +292,6 @@ export interface RegisterWorkerMcpRoutesInput {
   readonly runtimeConfigManager?: RuntimeConfigManager;
   /** Item owner for product-safe tool-call projections. */
   readonly store: FsStore;
-  /** Shared gate fencing Workspace writes against deletion. */
-  readonly workspaceMutationAdmission: WorkspaceMutationAdmission;
   /** Worker token and package authority. */
   readonly workerControlGateway: WorkerControlGateway;
   /** NanoCore-owned upstream MCP client supervisor. */
@@ -342,7 +339,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         context.req.header('authorization') ?? null,
         { tokenFamily: 'capability' }
       );
-      releaseMutation = input.workspaceMutationAdmission.enter(
+      releaseMutation = getControlStoreWorkerClient().enterWorkspaceMutation(
+        input.coreDb.dataRoot,
         environmentPackage.scope.workspaceId
       );
       if (!releaseMutation) throw unavailableServer();
@@ -616,7 +614,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
               ctx.mcpReq.id,
               AbortSignal.any([ctx.mcpReq.signal, context.req.raw.signal])
             );
-            const releaseMutation = input.workspaceMutationAdmission.enter(
+            const releaseMutation = getControlStoreWorkerClient().enterWorkspaceMutation(
+              input.coreDb!.dataRoot,
               environmentPackage.scope.workspaceId
             );
             if (!releaseMutation) {
@@ -859,7 +858,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                             preparedSelection: selection,
                             scopeSchemaText: selection.scopeSchemaText,
                             runtimeConfigManager: { current: input.runtimeConfig },
-                            workspaceMutationAdmission: input.workspaceMutationAdmission,
                           });
                         },
                         ...(input.fileAdmission ? { fileAdmission: input.fileAdmission } : {}),
@@ -938,7 +936,6 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
                       ...(input.vaultUnlockState
                         ? { vaultUnlockState: input.vaultUnlockState }
                         : {}),
-                      workspaceMutationAdmission: input.workspaceMutationAdmission,
                       packageSnapshotId: environmentPackage.snapshotId,
                       store: input.store,
                       inflightCommands: builtinInflight,
@@ -1049,7 +1046,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
           ctx.mcpReq.id,
           AbortSignal.any([ctx.mcpReq.signal, context.req.raw.signal])
         );
-        const releaseMutation = input.workspaceMutationAdmission.enter(
+        const releaseMutation = getControlStoreWorkerClient().enterWorkspaceMutation(
+          input.coreDb!.dataRoot,
           environmentPackage.scope.workspaceId
         );
         if (!releaseMutation) {
@@ -1219,7 +1217,8 @@ export function registerWorkerMcpRoutes(input: RegisterWorkerMcpRoutesInput): vo
         );
         try {
           const call = async () => {
-            const releaseMutation = input.workspaceMutationAdmission.enter(
+            const releaseMutation = getControlStoreWorkerClient().enterWorkspaceMutation(
+              input.coreDb!.dataRoot,
               environmentPackage.scope.workspaceId
             );
             if (!releaseMutation) throw mcpDeniedError();

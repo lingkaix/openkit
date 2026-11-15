@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstatSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
+import type { WorkspaceBlocker } from '@openkit/app-api-schemas';
 import { isEntityId, RequestIdSchema, UserIdSchema, WorkspaceIdSchema } from '@openkit/protocol';
 import {
   assertCanonicalDirectory,
@@ -32,13 +33,13 @@ import {
   closeWorkspaceProductReadHandles,
   fileContentSchema,
 } from './control-store-product-records.js';
-import type {
-  ControlRecoveryNativeBinding,
-  ControlRecoveryNativeCall,
-  WorkspaceFreezeAdmission,
-  WorkspaceFrozenAdmission,
-  WorkspaceMutationAdmission,
-  WorkspaceRecoveryFreezeOrigin,
+import {
+  type ControlRecoveryNativeBinding,
+  type ControlRecoveryNativeCall,
+  getControlStoreWorkerClient,
+  type WorkspaceFreezeAdmission,
+  type WorkspaceFrozenAdmission,
+  type WorkspaceRecoveryFreezeOrigin,
 } from './control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck, openWorkspaceReadDb } from './db.js';
 import { coreDbPath } from './fs-layout.js';
@@ -90,8 +91,7 @@ export interface RecoveryExecution {
 export function resumeWorkspaceRecoveryOwner(
   core: CoreDb,
   owned: RecoveryExecution,
-  admission: WorkspaceMutationAdmission,
-  readBlockers: Parameters<WorkspaceMutationAdmission['tryFreeze']>[1]
+  readBlockers: () => readonly WorkspaceBlocker[]
 ): WorkspaceFreezeAdmission {
   const current = readRecoveryExecution(core, owned.admission_id);
   const failures = scopeAdmissionFailures(core.dataRoot).filter(
@@ -120,7 +120,8 @@ export function resumeWorkspaceRecoveryOwner(
     failures[0]!.check !== 'recovery'
   )
     refuseRecovery('recovery-required');
-  return admission.tryResumeRecovery(
+  return getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+    core.dataRoot,
     current.workspace_id,
     {
       admissionId: current.admission_id,
@@ -135,7 +136,6 @@ export function resumeWorkspaceRecoveryOwner(
 export function readWorkspaceRecoveryReadmission(
   core: CoreDb,
   id: string,
-  admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): RecoveryExecution {
   const owned = readRecoveryExecution(core, id);
@@ -150,11 +150,16 @@ export function readWorkspaceRecoveryReadmission(
     !RequestIdSchema.safeParse(id).success ||
     !['restore', 'move-in'].includes(owned.proof.input.command) ||
     unresolvedRecoveryExecutions(core, owned.workspace_id).length !== 0 ||
-    !admission.ownsRecoveryOrigin(owned.workspace_id, freeze, {
-      admissionId: owned.admission_id,
-      revision: owned.revision - 1,
-      candidateRef: owned.candidate_ref,
-    })
+    !getControlStoreWorkerClient().ownsWorkspaceRecoveryOrigin(
+      core.dataRoot,
+      owned.workspace_id,
+      freeze,
+      {
+        admissionId: owned.admission_id,
+        revision: owned.revision - 1,
+        candidateRef: owned.candidate_ref,
+      }
+    )
   )
     refuseRecovery('recovery-required');
   return owned;
@@ -226,7 +231,6 @@ export function readFinishedDeletedWorkspaceRecovery(
 export function bindWorkspaceRecoveryNativeOwner(
   core: CoreDb,
   owned: RecoveryExecution,
-  admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): {
   readonly canonical?: ControlRecoveryNativeCall;
@@ -245,7 +249,7 @@ export function bindWorkspaceRecoveryNativeOwner(
     !RequestIdSchema.safeParse(owned.admission_id).success ||
     !['restore', 'move-in'].includes(current.proof.input.command) ||
     current.candidate_ref !== join(privateDataRoot, 'workspaces', current.workspace_id) ||
-    !admission.ownsFreeze(current.workspace_id, freeze)
+    !getControlStoreWorkerClient().ownsWorkspaceFreeze(core.dataRoot, current.workspace_id, freeze)
   )
     refuseRecovery('recovery-required');
   assertCanonicalDirectory(privateDataRoot);
@@ -260,7 +264,7 @@ export function bindWorkspaceRecoveryNativeOwner(
   const canonical = lstatSync(root, { throwIfNoEntry: false })
     ? bindRecoveryDatabase(sourceDataRoot, sourceDataRoot, current.workspace_id, root)
     : undefined;
-  admission.bindRecovery(current.workspace_id, freeze, {
+  getControlStoreWorkerClient().bindWorkspaceRecovery(core.dataRoot, current.workspace_id, freeze, {
     ...(canonical ? { canonical } : {}),
     candidate,
   });
@@ -273,10 +277,9 @@ export function bindWorkspaceRecoveryNativeOwner(
 export function bindWorkspaceRecoveryReadmissionNativeOwner(
   core: CoreDb,
   owned: RecoveryExecution,
-  admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): ControlRecoveryNativeCall {
-  const current = readWorkspaceRecoveryReadmission(core, owned.admission_id, admission, freeze);
+  const current = readWorkspaceRecoveryReadmission(core, owned.admission_id, freeze);
   if (current.state !== 'finished' || !isDeepStrictEqual(current, owned))
     refuseRecovery('recovery-required');
   const sourceDataRoot = resolve(core.dataRoot);
@@ -286,14 +289,15 @@ export function bindWorkspaceRecoveryReadmissionNativeOwner(
     current.workspace_id,
     join(sourceDataRoot, 'workspaces', current.workspace_id)
   );
-  admission.bindRecovery(current.workspace_id, freeze, { canonical });
+  getControlStoreWorkerClient().bindWorkspaceRecovery(core.dataRoot, current.workspace_id, freeze, {
+    canonical,
+  });
   return Object.freeze({ freeze, binding: canonical });
 }
 /** Closes the final deletion source through the same exact physical recovery binding before rename. */
 export function bindWorkspaceDeletionNativeOwner(
   core: CoreDb,
   deletion: import('../workspace-deletion-request.js').WorkspaceDeletionRequestRecord,
-  admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): ControlRecoveryNativeCall {
   const registry = core.sqlite
@@ -308,7 +312,7 @@ export function bindWorkspaceDeletionNativeOwner(
     registry?.status !== 'deleting' ||
     registry.revision !== deletion.expectedRegistryRevision + 1 ||
     registry.owner_user_id !== deletion.originalOwnerUserId ||
-    !admission.ownsFreeze(deletion.workspaceId, freeze)
+    !getControlStoreWorkerClient().ownsWorkspaceFreeze(core.dataRoot, deletion.workspaceId, freeze)
   )
     refuseRecovery('recovery-required');
   const canonical = bindRecoveryDatabase(
@@ -317,7 +321,9 @@ export function bindWorkspaceDeletionNativeOwner(
     deletion.workspaceId,
     join(core.dataRoot, 'workspaces', deletion.workspaceId)
   );
-  admission.bindRecovery(deletion.workspaceId, freeze, { canonical });
+  getControlStoreWorkerClient().bindWorkspaceRecovery(core.dataRoot, deletion.workspaceId, freeze, {
+    canonical,
+  });
   return Object.freeze({ freeze, binding: canonical });
 }
 /** Binds an existing physical database without creating schema or bypassing native admission. */
@@ -402,8 +408,7 @@ export function resumeWorkspaceCaptureOwner(
   core: CoreDb,
   workspaceId: string,
   captureId: string,
-  admission: WorkspaceMutationAdmission,
-  readBlockers: Parameters<WorkspaceMutationAdmission['tryFreeze']>[1]
+  readBlockers: () => readonly WorkspaceBlocker[]
 ): WorkspaceFreezeAdmission {
   const origin = captureRecoveryOrigin(core, workspaceId, captureId);
   const failures = scopeAdmissionFailures(core.dataRoot).filter(
@@ -412,7 +417,12 @@ export function resumeWorkspaceCaptureOwner(
   );
   if (failures.length !== 1 || failures[0]!.check !== 'recovery')
     refuseRecovery('recovery-required');
-  return admission.tryResumeRecovery(workspaceId, origin, readBlockers);
+  return getControlStoreWorkerClient().tryResumeWorkspaceRecovery(
+    core.dataRoot,
+    workspaceId,
+    origin,
+    readBlockers
+  );
 }
 
 /** Selects only the canonical source under the exact capture's current lifecycle freeze. */
@@ -420,11 +430,17 @@ export function bindWorkspaceCaptureNativeOwner(
   core: CoreDb,
   workspaceId: string,
   captureId: string,
-  admission: WorkspaceMutationAdmission,
   freeze: WorkspaceFrozenAdmission
 ): ControlRecoveryNativeCall {
   const origin = captureRecoveryOrigin(core, workspaceId, captureId);
-  if (!admission.ownsRecoveryOrigin(workspaceId, freeze, origin))
+  if (
+    !getControlStoreWorkerClient().ownsWorkspaceRecoveryOrigin(
+      core.dataRoot,
+      workspaceId,
+      freeze,
+      origin
+    )
+  )
     refuseRecovery('recovery-required');
   const binding = bindRecoveryDatabase(
     resolve(core.dataRoot),
@@ -432,7 +448,9 @@ export function bindWorkspaceCaptureNativeOwner(
     workspaceId,
     join(core.dataRoot, 'workspaces', workspaceId)
   );
-  admission.bindRecovery(workspaceId, freeze, { canonical: binding });
+  getControlStoreWorkerClient().bindWorkspaceRecovery(core.dataRoot, workspaceId, freeze, {
+    canonical: binding,
+  });
   return Object.freeze({ freeze, binding });
 }
 

@@ -10,7 +10,6 @@ import {
   createSchedulerAdmissionEntry,
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -94,7 +93,6 @@ describe('scheduler admission thread audience', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       requestStore: () => store,

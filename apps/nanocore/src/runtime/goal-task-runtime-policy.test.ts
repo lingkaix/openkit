@@ -53,7 +53,6 @@ import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { closeWorkspaceProductReadHandles } from '../storage/control-store-product-records.js';
 import {
   ControlStoreWorkerError,
-  getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
 import {
@@ -534,7 +533,6 @@ async function fixture(
       coreDb,
       openWorkspace: (id) => openWorkspaceDb(dataRoot, id),
       inflightCommands: new WeakMap(),
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       startWorker,
       goalId: goal.goalId,
       coordinatorTurnId: coordinator.id,
@@ -960,7 +958,6 @@ async function fixture(
       interception,
       goalTaskPolicy,
       goalWake,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       workerControlGateway: {
         authenticatePackageToken: () => environmentPackage,
       } as unknown as WorkerControlGateway,
@@ -1993,7 +1990,6 @@ it.each([
     deadlineMs: 120000,
   };
   const inflightCommands = new WeakMap();
-  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
   const services = { ...f.services, inflightCommands };
   const runtimeConfig = () =>
     createInMemoryRuntimeConfigSnapshot({
@@ -2246,7 +2242,6 @@ it.each([
     coreDb,
     openWorkspace: (id) => openWorkspaceDb(f.dataRoot, id),
     inflightCommands,
-    workspaceMutationAdmission: admission,
     startWorker,
     goalId: scope.goalId,
     coordinatorTurnId: f.coordinator.id,
@@ -2269,7 +2264,6 @@ it.each([
       requiresApiKey: false,
       gatewayCapabilities: { chatCompletions: 'native', responses: 'native' },
     }),
-    workspaceMutationAdmission: admission,
     services: () => services,
     taskTool: () => taskTool,
     workerCandidates: () => [
@@ -2502,7 +2496,6 @@ it.each([
         store: reopened,
         repositoryWorkspaceDb: (id) => openWorkspaceDb(f.dataRoot, id),
         inflightCommands,
-        workspaceMutationAdmission: admission,
       });
       const read = await invoke(
         'turn.read',
@@ -2574,8 +2567,6 @@ describe('credential carrier Goal Tools and Task scope acceptance', () => {
       });
       const first = await f.setupMcp();
       const sibling = mode === 'scope' ? await f.setupMcp() : null;
-      const admission = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
-      f.store.setWorkspaceMutationAdmission(admission);
       const interception = new PolicyInterception();
       const resolve = vi.spyOn(f.fileVault!.backend(), 'resolve');
       const invoke = createOperationInvocation({
@@ -2583,7 +2574,6 @@ describe('credential carrier Goal Tools and Task scope acceptance', () => {
         store: f.store,
         repositoryWorkspaceDb: (id) => openWorkspaceDb(f.dataRoot, id),
         inflightCommands: new WeakMap(),
-        workspaceMutationAdmission: admission,
         policyInterception: interception,
         readRuntimePolicy: () => f.manager.current().openKitConfig.policy?.mediation,
         goalTaskPolicy: f.goalTaskPolicy,

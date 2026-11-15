@@ -13,10 +13,7 @@ import { operationRequest } from '../test-support/operation-request.js';
 import { verifyWorkspaceDeletionClosure } from '../workspace-deletion-evidence.js';
 import { readWorkspaceDeletionRequest } from '../workspace-deletion-request.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './control-store-worker-client.js';
 import { openCoreDb } from './db.js';
 import { ensureLayout } from './fs-layout.js';
 import { applyMigrations } from './migrate.js';
@@ -36,11 +33,7 @@ it('seals the complete recurring graph before deletion removes its Core rows and
     });
     const thread = await store.createThread(workspace.id, 'Historical worker');
     let instant = '2026-10-16T00:00:00.000Z';
-    const automationStore = new AutomationStore(
-      coreDb,
-      getControlStoreWorkerClient().workspaceMutations(dataRoot),
-      () => instant
-    );
+    const automationStore = new AutomationStore(coreDb, () => instant);
     const schedule = await automationStore.createAutomation(localUserId, {
       workspaceId: workspace.id,
       threadId: thread.id,

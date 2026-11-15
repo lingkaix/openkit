@@ -29,10 +29,7 @@ afterEach(async () => {
 });
 
 /** Opens an isolated candidate with the real identity, membership and operation owners. */
-function deployment(
-  root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-')),
-  admission = getControlStoreWorkerClient().workspaceMutations(root)
-) {
+function deployment(root = mkdtempSync(join(tmpdir(), 'openkit-id-reset-dry-run-'))) {
   if (!roots.includes(root)) roots.push(root);
   const coreDb = openCoreDb(root);
   databases.push(coreDb);
@@ -51,14 +48,13 @@ function deployment(
     store,
     dataRoot: root,
     mode: 'server',
-    workspaceMutationAdmission: admission,
     repositoryWorkspaceDb: (workspaceId) => {
       const db = openWorkspaceDb(root, workspaceId);
       applyScopedMigrations(db);
       return db;
     },
   });
-  return { app, auth, coreDb, store, root, admission };
+  return { app, auth, coreDb, store, root };
 }
 
 /** Uses public authentication with invented fixture identities; no host account is read. */
@@ -217,7 +213,8 @@ it('re-registers the protected synthetic account set on a clean candidate and re
   });
   expect(isEntityId('tok', admin.tokenId)).toBe(true);
   // Exercise the existing local Workspace fence; this is not proof of a deployment-wide writer fence.
-  for (const work of sourceWork) await source.admission.close(work.workspaceId);
+  for (const work of sourceWork)
+    await getControlStoreWorkerClient().closeWorkspaceMutations(source.root, work.workspaceId);
   const oldSession = await authenticate(source, subjects[0], false);
   const fencedQuery = new URLSearchParams({
     workspaceId: sourceWork[0]!.workspaceId,
@@ -246,7 +243,7 @@ it('re-registers the protected synthetic account set on a clean candidate and re
     )
   ).toEqual(oldArtifactBytes);
   candidate.coreDb.sqlite.close();
-  const reopened = deployment(candidate.root, candidate.admission);
+  const reopened = deployment(candidate.root);
   for (const [index, subject] of subjects.entries()) {
     const account = await authenticate(reopened, subject, false);
     expect(account.id).toBe(newIds[index]);

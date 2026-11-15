@@ -39,12 +39,14 @@ import {
   createBootId,
   createShutdownReadinessSnapshot,
   refuseScope,
-  restoreWorkspaceRetirementAdmission,
   withScopeAdmissionReadiness,
 } from './bootstrap/readiness.js';
 import { closeWithDeadline } from './bootstrap/shutdown.js';
 import { checkBootVaultBackend } from './bootstrap/vault.js';
-import { restoreWorkspaceRecoveryAdmission } from './bootstrap/workspace-recovery.js';
+import {
+  restoreWorkspaceRecoveryAdmission,
+  restoreWorkspaceRetirementAdmission,
+} from './bootstrap/workspace-recovery.js';
 import { recoverRunningCapabilityCalls } from './capability/usage-ledger.js';
 import { reconcileIncompleteDiscordInteractions } from './channels/discord.js';
 import { resolveBindHost, resolveBindPort } from './config/bind-host.js';
@@ -187,7 +189,6 @@ let runRecoveryMaintenance: SchedulerAttemptMaintenanceInput['runRecoveryMainten
 let sharedStore: FsStore | undefined;
 const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
-const workspaceMutationAdmission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
 // Recovery can stage files before the live configuration manager is assembled.
 let readFileReserveBytes = () =>
   runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
@@ -299,8 +300,8 @@ const bootResult = await runBootPhases({
         await new AttentionNotifications(coreDb.sqlite, {
           nativeCoreDb: coreDb,
         }).reconcileIncompleteAttempts();
-        restoreWorkspaceRetirementAdmission({ coreDb, workspaceMutationAdmission });
-        restoreWorkspaceRecoveryAdmission(coreDb, workspaceMutationAdmission);
+        restoreWorkspaceRetirementAdmission({ coreDb });
+        restoreWorkspaceRecoveryAdmission(coreDb);
         await recoverRunningCapabilityCalls({ workspaceDb: coreDb });
         // Only active server registry facts establish an expected Workspace; deletion may remove roots.
         for (const { workspaceId } of coreDb.sqlite
@@ -331,7 +332,6 @@ const bootResult = await runBootPhases({
           FsStore.validateFileAuthority(dataRoot);
         });
         sharedStore ??= new FsStore({ dataRoot });
-        sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
         const indexRebuildEvents = rebuildInvalidExistingWorkspaceDerivedIndexes(dataRoot);
         await recordBootStartAudit({
           coreDb,
@@ -416,7 +416,6 @@ const bootResult = await runBootPhases({
         restoreWorkspaceDeletionMutationAdmission({
           coreDb: recoveryCoreDb,
           dataRoot,
-          workspaceMutationAdmission,
         });
         // The instance lock is held and transport admission has not started. No target can
         // appear during this boot-only read; an empty set has no durable fence to publish.
@@ -428,7 +427,6 @@ const bootResult = await runBootPhases({
         // A later read-only Store construction must not remove another live request's bytes.
         discardAbandonedWorkspaceStaging(dataRoot);
         sharedStore ??= new FsStore({ dataRoot });
-        sharedStore.setWorkspaceMutationAdmission(workspaceMutationAdmission);
         await recoverServerKnowledgeManagerTurns(sharedStore);
         const recoveryStore = sharedStore;
         bootWorkerControlGateway = createDefaultWorkerControlGateway(
@@ -446,7 +444,6 @@ const bootResult = await runBootPhases({
           vaultBackend: () =>
             requireBootValue(vaultUnlockState, 'Vault unlock state was not initialized.').backend(),
           workerControlGateway: bootWorkerControlGateway,
-          workspaceMutationAdmission,
         });
         const recoveryRuntime = workerLifecycleRuntime;
         const recoveryInput = {
@@ -516,7 +513,6 @@ const bootResult = await runBootPhases({
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
           coreDb: recoveryCoreDb,
-          workspaceMutationAdmission,
           agentAuthority: (record: import('./runtime/pending-requests.js').PendingRequestRecord) =>
             runtimeConfigSnapshot!.agentManifests.some(
               (manifest) => manifest.id === record.agentId
@@ -695,7 +691,7 @@ const activeWorkerLifecycleRuntime = requireBootValue(
 );
 const workerPlacement = 'local' as const;
 const store = requireBootValue(sharedStore, 'Shared Workspace store was not initialized.');
-const automationStore = new AutomationStore(coreDb, workspaceMutationAdmission);
+const automationStore = new AutomationStore(coreDb);
 workerMcpGateway = createDefaultWorkerMcpGateway(coreDb);
 await reconcileWorkerMcpItems(coreDb.dataRoot, store);
 if (shutdownCompletion) await shutdownCompletion;
@@ -779,7 +775,6 @@ const app = createApp({
   workerMcpGateway,
   workerPlacement,
   releaseIdentity: requireBootValue(releaseIdentity, 'Release identity was not read.'),
-  workspaceMutationAdmission,
 });
 const hostname = requireBootValue(bindHost, 'HTTP bind host was not resolved.');
 const port = requireBootValue(bindPort, 'HTTP bind port was not resolved.');
@@ -925,7 +920,6 @@ schedulerAttemptMaintenance = startSchedulerAttemptMaintenanceService({
           dataRoot,
           coreDb: activeCoreDb,
           store,
-          mutationAdmission: workspaceMutationAdmission,
           // Refuse accepted work at its existing checkpoints, then join its owned cleanup.
           currentAuthority: () => processShutdownAbort.signal.throwIfAborted(),
         },

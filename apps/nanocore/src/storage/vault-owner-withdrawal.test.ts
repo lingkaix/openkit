@@ -103,8 +103,6 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
   mkdirSync(join(root, 'config'), { recursive: true });
   writeFileSync(join(root, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
   const manager = createRuntimeConfigManager({ dataRoot: root });
-  const admission = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-  store.setWorkspaceMutationAdmission(admission);
   const closeRuntime = vi.fn(async (_grantIds: readonly string[]) => undefined);
   const participant = vi.fn(
     async (input: Parameters<DeterministicPolicyParticipant['invoke']>[0]) =>
@@ -127,7 +125,6 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
     store,
     repositoryWorkspaceDb,
     repositoryUserDb: (id) => databases.openUserDb(root, id),
-    workspaceMutationAdmission: admission,
     inflightCommands: new WeakMap(),
     runtimeConfigManager: manager,
     policyInterception: interception,
@@ -212,7 +209,6 @@ async function fixture(options: { coldUserHome?: boolean } = {}) {
     otherWorkspace,
     repositoryWorkspaceDb,
     manager,
-    admission,
     participant,
     closeRuntime,
     invoke,
@@ -606,7 +602,11 @@ describe('departed User owner withdrawal', () => {
 
   it('retains the explicit Workspace mutation fence despite departed User admission', async () => {
     const f = await fixture();
-    const frozen = f.admission.tryFreeze(f.workspace.id, () => []);
+    const frozen = getControlStoreWorkerClient().tryFreezeWorkspace(
+      f.coreDb.dataRoot,
+      f.workspace.id,
+      () => []
+    );
     expect(frozen.status).toBe('frozen');
     try {
       await expect(f.withdraw()).rejects.toMatchObject({ status: 409 });

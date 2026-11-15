@@ -6,10 +6,7 @@ import { expect, it, vi } from 'vitest';
 import { createAppSearchOperationImplementations } from './app-search-operation-implementations.js';
 import { refuseScope } from './bootstrap/readiness.js';
 import { admitOperation } from './operation-resolvers.js';
-import {
-  getControlStoreWorkerClient,
-  shutdownControlStoreWorkerClient,
-} from './storage/control-store-worker-client.js';
+import { shutdownControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { workspaceDbPath } from './storage/fs-layout.js';
 import { applyMigrations } from './storage/migrate.js';
@@ -57,7 +54,6 @@ it.each(['before-admission', 'after-admission'] as const)(
           dataRoot,
           coreDb,
           store,
-          workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
         }
       );
       expect(admitted.context.scope).toMatchObject({ kind: 'authorized-workspace-set' });

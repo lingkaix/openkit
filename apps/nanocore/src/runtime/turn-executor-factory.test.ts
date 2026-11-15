@@ -167,7 +167,6 @@ import {
   listVaultInjectionReceipts,
 } from '../vault-injection-receipts.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { WorkspaceMutationAdmission } from '../storage/control-store-worker-client.js';
 import {
   recordAgentEnvironmentPackageSnapshot,
   requireAgentEnvironmentPackageSnapshot,
@@ -2443,7 +2442,6 @@ describe('createConfiguredTurnExecutor', () => {
       inspection?: 'unavailable' | 'stale';
       effects?: NanoHostSessionEffectRequest[];
       vaultBackend?: () => VaultBackend;
-      workspaceMutationAdmission?: (coreDb: ReturnType<typeof createFactoryCoreDb>) => WorkspaceMutationAdmission;
       policyInterception?: PolicyInterception;
       onImport?: (request: NanoHostSessionEffectRequest) => Promise<Record<string, unknown>>;
       materializationContext?: (input: {
@@ -2557,9 +2555,6 @@ describe('createConfiguredTurnExecutor', () => {
               }),
           }),
       ...(providerConfiguration === undefined ? {} : { readRuntimeConfig: providerConfiguration }),
-      ...(options.workspaceMutationAdmission
-        ? { workspaceMutationAdmission: options.workspaceMutationAdmission(coreDb) }
-        : {}),
       ...(options.policyInterception
         ? { policyInterception: () => options.policyInterception! }
         : {}),
@@ -2837,7 +2832,6 @@ describe('createConfiguredTurnExecutor', () => {
       const grantId = testEntityId('grant', randomUUID());
       const referenceId = testEntityId('vault', randomUUID());
       const effects: NanoHostSessionEffectRequest[] = [];
-      let mutation!: WorkspaceMutationAdmission;
       const entered = Promise.withResolvers<void>();
       const release = Promise.withResolvers<void>();
       const material = randomUUID() + randomUUID();
@@ -2868,7 +2862,6 @@ describe('createConfiguredTurnExecutor', () => {
         effects,
         localIdentity: true,
         wholeSandboxCleanup: fault === 'exact',
-        workspaceMutationAdmission: (db) => (mutation = getControlStoreWorkerClient().workspaceMutations(db.dataRoot)),
         providerAccessShapes: [shape],
         vaultBackend: () => vault!.backend(),
         onImport: async (request) => {
@@ -2916,7 +2909,6 @@ describe('createConfiguredTurnExecutor', () => {
         configurePackage: async (pkg, db) => {
           core = db;
           const store = new FsStore({ dataRoot: db.dataRoot });
-          store.setWorkspaceMutationAdmission(mutation);
           vault = createVaultUnlockState({
             backendKind: 'encrypted-file',
             storeDir: join(db.dataRoot, 'vault'),
@@ -3078,7 +3070,6 @@ describe('createConfiguredTurnExecutor', () => {
               providerAccessShapes: [shape],
             },
             policyInterception: new PolicyInterception(),
-            workspaceMutationAdmission: mutation,
           });
           const requestId = randomUUID();
           const delivery = Promise.resolve(
@@ -3194,8 +3185,6 @@ describe('createConfiguredTurnExecutor', () => {
     const ownerUserId = ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
     const workspaceId = DEMO_WORKSPACE_ID;
-    const mutation = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-    store.setWorkspaceMutationAdmission(mutation);
     recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
     const vault = createVaultUnlockState({
       backendKind: 'encrypted-file',
@@ -3347,7 +3336,6 @@ describe('createConfiguredTurnExecutor', () => {
         readRuntimeConfig: () => configuration,
         vaultBackend: () => vault.backend(),
         policyInterception: () => interception,
-        workspaceMutationAdmission: mutation,
       });
       const f = native;
       const app = createAppWithWorkspaceAuthority({
@@ -3360,7 +3348,6 @@ describe('createConfiguredTurnExecutor', () => {
         workerControlGateway: f.workerControlGateway,
         vaultUnlockState: vault,
         policyInterception: interception,
-        workspaceMutationAdmission: mutation,
       });
       // Double only the existing external placement effect; retain its original invocation and receiver.
       const effectOwner = f.sessionDispatch.effect;
@@ -3607,7 +3594,6 @@ describe('createConfiguredTurnExecutor', () => {
       const referenceId = testEntityId('vault', randomUUID());
       const grantId = testEntityId('grant', randomUUID());
       const label = `credential_capture_${mode}`;
-      let admission!: WorkspaceMutationAdmission;
       const interception = new PolicyInterception();
       const exportEntered = Promise.withResolvers<void>();
       const releaseExport = Promise.withResolvers<void>();
@@ -3663,14 +3649,12 @@ describe('createConfiguredTurnExecutor', () => {
       const f = await admitIdleSupplyResident(label, {
         effects,
         finishAfterLiveCheck: mode === 'unknown-restart',
-        workspaceMutationAdmission: (db) => (admission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot)),
         policyInterception: interception,
         vaultBackend: () => vault!.backend(),
         onImport: importResult,
         configurePackage: async (pkg, coreDb) => {
           core = coreDb;
           store = new FsStore({ dataRoot: coreDb.dataRoot });
-          store.setWorkspaceMutationAdmission(admission);
           const { workspaceId, threadId, turnId, agentSessionId, triggerActor } = pkg.scope;
           await store.createAgentSession({
             id: agentSessionId,
@@ -3914,7 +3898,6 @@ describe('createConfiguredTurnExecutor', () => {
                 turnExecutor,
                 repositoryWorkspaceDb: (id) => openWorkspaceDb(core.dataRoot, id),
                 inflightCommands: new WeakMap(),
-                workspaceMutationAdmission: admission,
                 policyInterception: interception,
                 readRuntimePolicy: () =>
                   loadRuntimeConfig(core.dataRoot).openKitConfig.policy?.mediation,
@@ -3980,7 +3963,6 @@ describe('createConfiguredTurnExecutor', () => {
                 releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
                 coreDb: core,
                 env: {},
-                workspaceMutationAdmission: admission,
                 vaultBackend: () => vault!.backend(),
                 nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, {
                   onImport: importResult,
@@ -7250,7 +7232,6 @@ describe('createConfiguredTurnExecutor', () => {
       const targetPath = `/sandbox/synthetic-${label}`;
       const referenceId = testEntityId('vault', label);
       const grantId = testEntityId('grant', label);
-      let admission!: WorkspaceMutationAdmission;
       const effects: NanoHostSessionEffectRequest[] = [];
       const pending: NonNullable<
         Parameters<WorkerGovernanceBackend['materialize']>[1]
@@ -7278,7 +7259,6 @@ describe('createConfiguredTurnExecutor', () => {
       const fixture = await admitIdleSupplyResident(label, {
         effects,
         finishAfterLiveCheck: true,
-        workspaceMutationAdmission: (db) => (admission = getControlStoreWorkerClient().workspaceMutations(db.dataRoot)),
         vaultBackend: () => vault!.backend(),
         onImport: async (request) => ({
           state: 'imported',
@@ -7288,7 +7268,6 @@ describe('createConfiguredTurnExecutor', () => {
         }),
         configurePackage: async (pkg, coreDb) => {
           store = new FsStore({ dataRoot: coreDb.dataRoot });
-          store.setWorkspaceMutationAdmission(admission);
           const { workspaceId, threadId, turnId, agentSessionId, triggerActor } = pkg.scope;
           await store.createAgentSession({
             id: agentSessionId,
@@ -7448,7 +7427,6 @@ describe('createConfiguredTurnExecutor', () => {
             releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             coreDb,
             env: {},
-            workspaceMutationAdmission: admission,
             vaultBackend: () => vault!.backend(),
             nanoHostSessionDispatch: createFactoryNanoHostDispatch(effects, {
               onExport: async () => {
@@ -16763,7 +16741,6 @@ describe('createConfiguredTurnExecutor', () => {
                   coreDb,
                   store,
                   dataRoot,
-                  workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
                   repositoryWorkspaceDb: (id) => openWorkspaceDb(dataRoot, id),
                 });
                 await expect(
@@ -20775,8 +20752,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     const journalScopes: { kind: string; phase: string; status: string }[] = [];
     const journalRequests = new Map<number, string>();
     const observeJournalScope = (kind: string, phase: string) => {
-      const owner = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-      const cut = owner.tryFreeze(DEMO_WORKSPACE_ID, () => []);
+      const cut = getControlStoreWorkerClient().tryFreezeWorkspace(dataRoot, DEMO_WORKSPACE_ID, () => []);
       journalScopes.push({ kind, phase, status: cut.status });
       if (cut.status === 'frozen') cut.release();
     };
@@ -23582,8 +23558,6 @@ describe('inert initial private Login exchange through the concrete backend sess
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
       recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: DEMO_WORKSPACE_ID });
-      const mutation = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-      store.setWorkspaceMutationAdmission(mutation);
       const interception = new PolicyInterception();
       const vault = createVaultUnlockState({
         backendKind: 'encrypted-file',
@@ -23762,7 +23736,6 @@ describe('inert initial private Login exchange through the concrete backend sess
           runtimeConfigManager: manager,
           policyInterception: interception,
           vaultUnlockState: vault,
-          workspaceMutationAdmission: mutation,
           inflightCommands,
           pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
         };
@@ -24002,7 +23975,6 @@ describe('inert initial private Login exchange through the concrete backend sess
             readRuntimeConfig: () => cold.current(),
             vaultBackend: () => vault.backend(),
             policyInterception: () => interception,
-            workspaceMutationAdmission: mutation,
             nanoHostSessionDispatch: dispatch,
           });
           expect(native.sessionDispatch).toBe(dispatch);
@@ -24571,7 +24543,6 @@ describe('inert initial private Login exchange through the concrete backend sess
           readRuntimeConfig: () => (preferenceManager ?? manager).current(),
           vaultBackend: () => vault.backend(),
           policyInterception: () => interception,
-          workspaceMutationAdmission: mutation,
           nanoHostSessionDispatch: dispatch,
         });
         expect(native.sessionDispatch).toBe(dispatch);
@@ -25284,7 +25255,6 @@ describe('inert initial private Login exchange through the concrete backend sess
           const app = appOwner.createApp({ coreDb, dataRoot: coreDb.dataRoot, store,
             mode: 'local', localUserId: ownerUserId, runtimeConfigManager: cold,
             turnExecutor: native.executor, workerControlGateway: native.workerControlGateway,
-            workspaceMutationAdmission: mutation,
           });
           const fileId = `workspaces/${DEMO_WORKSPACE_ID}/workspace.jsonc`;
           const readResponse = await app.request(...operationRequest('runtime.file-read', {
@@ -25557,7 +25527,7 @@ describe('inert initial private Login exchange through the concrete backend sess
             const successorDispatch = createNanoHostSessionDispatch({ coreDb, sessionAuthority: authority });
             native = await createNativeTaskAdmissionFixture(coreDb, store, {
               readRuntimeConfig: () => cold.current(), vaultBackend: () => vault.backend(),
-              policyInterception: () => interception, workspaceMutationAdmission: mutation,
+              policyInterception: () => interception,
               nanoHostSessionDispatch: successorDispatch,
             }, outside);
             const successorNative = native;
@@ -25623,8 +25593,7 @@ describe('inert initial private Login exchange through the concrete backend sess
               });
             const successorApp = appOwner.createApp({ coreDb, dataRoot: coreDb.dataRoot, store,
               mode: 'local', localUserId: ownerUserId, runtimeConfigManager: cold,
-              turnExecutor: native.executor, workerControlGateway: native.workerControlGateway,
-              workspaceMutationAdmission: mutation });
+              turnExecutor: native.executor, workerControlGateway: native.workerControlGateway });
             const readPreauthorizationBEffects = () => ({
               uses: listVaultUseRecords(db).filter((use) => use.grantId === preferred.grantId),
               receipts: listVaultInjectionReceipts(coreDb)
@@ -26986,8 +26955,6 @@ it('fences same-account Login replacement until the actual shared survivor settl
   const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
   const workspaceId = DEMO_WORKSPACE_ID;
   recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId });
-  const mutation = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
-  store.setWorkspaceMutationAdmission(mutation);
   const interception = new PolicyInterception();
   const vault = createVaultUnlockState({
     backendKind: 'encrypted-file',
@@ -27107,7 +27074,6 @@ it('fences same-account Login replacement until the actual shared survivor settl
       runtimeConfigManager: initial,
       policyInterception: interception,
       vaultUnlockState: vault,
-      workspaceMutationAdmission: mutation,
       inflightCommands,
       pendingRequestServices: { coreDb, repositoryWorkspaceDb, inflightCommands },
     };
@@ -27299,7 +27265,6 @@ it('fences same-account Login replacement until the actual shared survivor settl
       readRuntimeConfig: () => manager.current(),
       vaultBackend: () => vault.backend(),
       policyInterception: () => interception,
-      workspaceMutationAdmission: mutation,
       nanoHostSessionDispatch: dispatch,
     });
     const f = native;
@@ -27767,7 +27732,6 @@ it('fences same-account Login replacement until the actual shared survivor settl
       runtimeConfigManager: manager,
       turnExecutor: f.executor,
       workerControlGateway: f.workerControlGateway,
-      workspaceMutationAdmission: mutation,
     });
     const fileId = `workspaces/${workspaceId}/workspace.jsonc`;
     const read = await app.request(...operationRequest('runtime.file-read', { id: fileId }));

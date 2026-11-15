@@ -111,7 +111,6 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     workspaceIds: [workspaceId, siblingId],
     expiresAt: '2999-01-01T00:00:00.000Z',
   });
-  const admission = getControlStoreWorkerClient().workspaceMutations(dataRoot);
   const gateway = createDefaultWorkerMcpGateway(coreDb);
   const app = createApp({
     coreDb,
@@ -119,7 +118,6 @@ async function fixture(fault: 'corrupt' | 'missing' | 'records', personal = fals
     store,
     mode: 'server',
     workerMcpGateway: gateway,
-    workspaceMutationAdmission: admission,
     turnExecutor: new SimulatedTurnExecutor({ coreDb }),
   });
   disposals.push(async () => {
@@ -545,13 +543,15 @@ describe('retired registry consumers and retained Core migration', () => {
       disposals.push(() => {
         if (coreDb.sqlite.open) coreDb.sqlite.close();
       });
-      const admission = gateOwner.getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       appOwner.restoreWorkspaceDeletionMutationAdmission({
         coreDb,
         dataRoot: f.dataRoot,
-        workspaceMutationAdmission: admission,
       });
-      expect(admission.isClosed(f.workspaceId)).toBe(true);
+      expect(
+        gateOwner
+          .getControlStoreWorkerClient()
+          .isWorkspaceMutationClosed(coreDb.dataRoot, f.workspaceId)
+      ).toBe(true);
       expect(readiness.isScopeAdmitted(f.dataRoot, 'workspace', f.workspaceId)).toBe(false);
       await verifyAndMigrateExistingScopedDatabases(f.dataRoot, () =>
         storeOwner.FsStore.validateFileAuthority(f.dataRoot)
@@ -571,7 +571,6 @@ describe('retired registry consumers and retained Core migration', () => {
         dataRoot: f.dataRoot,
         store,
         mode: 'server',
-        workspaceMutationAdmission: admission,
         turnExecutor: new SimulatedTurnExecutor({ coreDb }),
       });
       const retry = (operation: string, input: Record<string, unknown>) =>

@@ -18,11 +18,7 @@ import { readWorkspaceNotebookSelection } from './notebook-workspace-selection.j
 /** Current publication/source owners reused only for a read; this feature retains no state. */
 type Dependencies = Pick<
   OperationInvocationDependencies,
-  | 'coreDb'
-  | 'store'
-  | 'repositoryWorkspaceDb'
-  | 'runtimeConfigManager'
-  | 'workspaceMutationAdmission'
+  'coreDb' | 'store' | 'repositoryWorkspaceDb' | 'runtimeConfigManager'
 >;
 
 /** Exact saved candidate preview, joined to the existing operation catalog and current human admission. */
@@ -31,24 +27,11 @@ export function createKnowledgeProposalPreviewOperationImplementations(
 ): Pick<OperationImplementations, 'knowledge.proposal.read'> {
   return {
     'knowledge.proposal.read': (input, context) => {
-      const {
-        coreDb,
-        store,
-        runtimeConfigManager,
-        workspaceMutationAdmission,
-        repositoryWorkspaceDb,
-      } = dependencies;
+      const { coreDb, store, runtimeConfigManager, repositoryWorkspaceDb } = dependencies;
       const dataRoot = store?.getDataRoot();
       const actor = context.actorRef;
       const requestActor = publicOperationActor(context);
-      if (
-        !coreDb ||
-        !store ||
-        !dataRoot ||
-        !runtimeConfigManager ||
-        !workspaceMutationAdmission ||
-        !repositoryWorkspaceDb
-      )
+      if (!coreDb || !store || !dataRoot || !runtimeConfigManager || !repositoryWorkspaceDb)
         throw new OperationError(
           'operation_storage_unavailable',
           'Proposal preview is unavailable.',
@@ -99,7 +82,6 @@ export function createKnowledgeProposalPreviewOperationImplementations(
             actor,
             requestActor,
             runtimeConfigManager,
-            workspaceMutationAdmission,
             scopeSchemaText: selection.scopeSchemaText,
             request: {
               workspaceId: input.workspaceId,

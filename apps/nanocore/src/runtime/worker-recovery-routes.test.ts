@@ -6,7 +6,6 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import type { AuthVariables } from '../auth/middleware.js';
 import { FsStore } from '../lib/store.js';
 import { registerOperationJsonRoutes } from '../operation-json-routes.js';
-import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -36,7 +35,6 @@ describe('worker recovery routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       repositoryWorkspaceDb,
@@ -108,7 +106,6 @@ describe('worker recovery routes', () => {
     });
     registerOperationJsonRoutes({
       app,
-      workspaceMutationAdmission: getControlStoreWorkerClient().workspaceMutations(dataRoot),
       inflightCommands: new WeakMap(),
       coreDb,
       repositoryWorkspaceDb,
