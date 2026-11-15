@@ -785,10 +785,30 @@ export const WORKSPACE_MUTATION_LATE_PUBLISHERS = [
 /** Registered canonical publisher that must name late mutation admission. */
 export type WorkspaceMutationLatePublisher = (typeof WORKSPACE_MUTATION_LATE_PUBLISHERS)[number];
 
+/** A live lease on the existing gate, never a command/retry authorization or serialized marker. */
+interface WorkspaceMutationLease {
+  readonly owner: WorkspaceMutationAdmission;
+  readonly workspaceId: string;
+  readonly release: () => void;
+}
+
 /** Coordinates ordinary Workspace mutations and exclusive lifecycle admission. */
 export class WorkspaceMutationAdmission {
   private readonly gates = new Map<string, WorkspaceMutationGateState>();
   private readonly deletionTails = new Map<string, Promise<void>>();
+
+  /** Owns the original verified Worker closeout body and its actual native operation lifetime. */
+  public runWorkerCloseout<T>(workspaceId: string, operation: () => Promise<T>): Promise<T> | null {
+    const release = this.enterLatePublisher(workspaceId, 'worker-turn-closeout');
+    if (!release) return null;
+    return getControlStoreWorkerClient()
+      .runOperation(operation, undefined, undefined, undefined, undefined, {
+        owner: this,
+        workspaceId,
+        release,
+      })
+      .finally(release);
+  }
 
   /** Fences an idle target before synchronous authoritative inspection, without draining live work. */
   public tryFreeze(
@@ -1119,7 +1139,13 @@ class ControlStoreWorkerClient {
       terminated: false,
     })
   );
-  private readonly operations = new Map<Promise<unknown>, ControlPublicationIdentity | undefined>();
+  private readonly operations = new Map<
+    Promise<unknown>,
+    {
+      publication: ControlPublicationIdentity | undefined;
+      workspaceLease: WorkspaceMutationLease | undefined;
+    }
+  >();
   private readonly turnTails = new Map<
     string,
     { tail: Promise<unknown>; pending: number; durablePending: number }
@@ -1134,6 +1160,7 @@ class ControlStoreWorkerClient {
     progressCopy: ProgressCopyCredit | undefined;
     reservation: string | undefined;
     closeout: CapabilityCloseoutCredit | undefined;
+    workspaceLease: WorkspaceMutationLease | undefined;
   }>();
   private readonly pending = new Map<number, Pending>();
   private readonly outstanding = new Map<string, number>();
@@ -1526,7 +1553,8 @@ class ControlStoreWorkerClient {
       | string
       | { readonly database: string; readonly closeout: CapabilityCloseoutCredit },
     closeout?: { readonly database: string; readonly callId: string },
-    progressCopy?: ProgressCopyCredit
+    progressCopy?: ProgressCopyCredit,
+    workspaceLease?: WorkspaceMutationLease
   ): Promise<T> {
     this.assertAccepting();
     const reservedDatabase = typeof reservation === 'string' ? reservation : reservation?.database;
@@ -1539,16 +1567,18 @@ class ControlStoreWorkerClient {
     const credit = closeout && { ...closeout, active: true, borrowing: false };
     if (credit)
       this.outstanding.set(credit.database, (this.outstanding.get(credit.database) ?? 0) + 1);
+    const inherited = this.operationContext.getStore();
     const context = {
       active: true,
       publication,
+      workspaceLease: workspaceLease ?? (inherited?.active ? inherited.workspaceLease : undefined),
       progressCopy,
       reservation: reservedDatabase,
       closeout: credit ?? (typeof reservation === 'object' ? reservation.closeout : undefined),
     };
     // Register before invoking the producer: its synchronous Core commit may expose this identity.
     const promise = this.operationContext.run(context, () => Promise.resolve().then(operation));
-    this.operations.set(promise, publication);
+    this.operations.set(promise, context);
     try {
       return await promise;
     } finally {
@@ -1770,8 +1800,8 @@ class ControlStoreWorkerClient {
       isDeepStrictEqual(this.operationContext.getStore()?.publication, publication)
     )
       throw new Error('A publication cannot join itself.');
-    const matches = [...this.operations].filter(([, identity]) =>
-      isDeepStrictEqual(identity, publication)
+    const matches = [...this.operations].filter(([, operation]) =>
+      isDeepStrictEqual(operation.publication, publication)
     );
     if (matches.length > 1) throw new Error('Publication identity is ambiguous.');
     // The caller must inspect canonical history even when the original acknowledgement was lost.
@@ -5345,14 +5375,36 @@ class ControlStoreWorkerClient {
       throw new Error('Workspace mutation component is not owned by this native coordinator.');
   }
 
-  /** Joins only this physical scope's existing Turn preparations and their covering ACKs. */
-  drainTurnPublications(database: string): Promise<void> | undefined {
+  /** Joins existing Turn preparation and live original Worker operations on this same component. */
+  drainWorkspacePreparations(dataRoot: string, workspaceId: string): Promise<void> | undefined {
+    const database = `workspace:${join(dataRoot, 'workspaces', workspaceId, 'db/workspace.sqlite')}`;
     const path =
       this.openings.get(database)?.path ?? resolve(database.slice(database.indexOf(':') + 1));
-    const current = () =>
-      [...this.turnTails]
+    const owner = this.workspaceMutations(dataRoot);
+    const context = this.operationContext.getStore();
+    if (
+      context?.active &&
+      (context.reservation === database ||
+        (context.workspaceLease?.owner === owner &&
+          context.workspaceLease.workspaceId === workspaceId))
+    )
+      throw new OperationError(
+        'workspace_blocked',
+        'A Workspace producer cannot join its own capture.',
+        409
+      );
+    const current = () => [
+      ...[...this.turnTails]
         .filter(([key]) => JSON.parse(key)[0] === path)
-        .map(([, entry]) => entry.tail);
+        .map(([, entry]) => entry.tail),
+      ...[...this.operations]
+        .filter(
+          ([, operation]) =>
+            operation.workspaceLease?.owner === owner &&
+            operation.workspaceLease.workspaceId === workspaceId
+        )
+        .map(([promise]) => promise),
+    ];
     const entered = current();
     if (entered.length === 0) return undefined;
     return (async () => {
@@ -5870,7 +5922,10 @@ class ControlStoreWorkerClient {
             () => undefined
           )
         : result;
-    this.operations.set(operation, undefined);
+    this.operations.set(operation, {
+      publication: undefined,
+      workspaceLease: context?.active ? context.workspaceLease : undefined,
+    });
     const release = () => this.operations.delete(operation);
     void operation.then(release, release);
     return result;

@@ -4814,18 +4814,8 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         packageSnapshotId: environmentPackage.snapshotId,
         triggerActor: environmentPackage.scope.triggerActor,
       };
-      const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
-        environmentPackage.scope.workspaceId,
-        'worker-turn-closeout'
-      );
-      if (this.workspaceMutationAdmission && !releaseMutation) {
-        throw new TurnStartValidationError(
-          'workspace_access_denied',
-          'Workspace access denied.',
-          403
-        );
-      }
-      try {
+      const transcriptJournal = collectionJournal;
+      const closeout = async () => {
         if (environmentPackage.control.transcript?.runtimeProvenance) {
           if (
             this.coreDb &&
@@ -4945,7 +4935,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         }
         await this.emitImportedRecords(store, environmentPackage, requestId, importResult);
         // Settle every transcript/evidence effect before admitting the separate capture invocation.
-        const importedJournal = collectionJournal;
+        const importedJournal = transcriptJournal;
         collectionJournal = null;
         await endWorkerTurnJournalStep(store, workspaceDb, importedJournal, 'completed', [
           ...importResult.itemIds,
@@ -5030,9 +5020,20 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
           environmentPackage,
           backendCapabilities
         );
-      } finally {
-        releaseMutation?.();
-      }
+      };
+      const running = this.workspaceMutationAdmission
+        ? this.workspaceMutationAdmission.runWorkerCloseout(
+            environmentPackage.scope.workspaceId,
+            closeout
+          )
+        : closeout();
+      if (running === null)
+        throw new TurnStartValidationError(
+          'workspace_access_denied',
+          'Workspace access denied.',
+          403
+        );
+      await running;
     } catch (error) {
       if (collectionJournal)
         await endWorkerTurnJournalStep(store, workspaceDb, collectionJournal, 'unknown');
@@ -5046,48 +5047,50 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     environmentPackage: AgentEnvironmentPackage,
     records: readonly WorkerGovernanceWorkspaceChangeRecord[]
   ): Promise<void> {
-    if (!this.coreDb || records.length === 0) return;
+    const coreDb = this.coreDb;
+    if (!coreDb || records.length === 0) return;
     const lineage = {
       ...environmentPackage.scope,
       packageSnapshotId: environmentPackage.snapshotId,
     };
     if (
-      !currentWorkerLineageWorkspaceAuthority(this.coreDb, lineage, 'workspace.write', true) ||
-      !currentWorkerLineageWorkspaceAuthority(this.coreDb, lineage, 'artifact.write', true)
+      !currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'workspace.write', true) ||
+      !currentWorkerLineageWorkspaceAuthority(coreDb, lineage, 'artifact.write', true)
     )
       throw new TurnStartValidationError(
         'workspace_access_denied',
         'Workspace access denied.',
         403
       );
-    const releaseMutation = this.workspaceMutationAdmission?.enterLatePublisher(
-      environmentPackage.scope.workspaceId,
-      'worker-turn-closeout'
-    );
-    if (this.workspaceMutationAdmission && !releaseMutation)
+    const closeout = async () => {
+      const db = openAdmittedWorkspaceReadDb(coreDb.dataRoot, environmentPackage.scope.workspaceId);
+      try {
+        await this.createWorkspaceChangeArtifacts(
+          store,
+          environmentPackage,
+          records,
+          db,
+          listWorkspaceInputSnapshots(db, environmentPackage.scope.workspaceId),
+          listWorkspaceMaterializationRecords(db, environmentPackage.scope.workspaceId),
+          records[0]!.review.createdAt
+        );
+      } finally {
+        db.sqlite.close();
+      }
+    };
+    const running = this.workspaceMutationAdmission
+      ? this.workspaceMutationAdmission.runWorkerCloseout(
+          environmentPackage.scope.workspaceId,
+          closeout
+        )
+      : closeout();
+    if (running === null)
       throw new TurnStartValidationError(
         'workspace_access_denied',
         'Workspace access denied.',
         403
       );
-    const db = openAdmittedWorkspaceReadDb(
-      this.coreDb.dataRoot,
-      environmentPackage.scope.workspaceId
-    );
-    try {
-      await this.createWorkspaceChangeArtifacts(
-        store,
-        environmentPackage,
-        records,
-        db,
-        listWorkspaceInputSnapshots(db, environmentPackage.scope.workspaceId),
-        listWorkspaceMaterializationRecords(db, environmentPackage.scope.workspaceId),
-        records[0]!.review.createdAt
-      );
-    } finally {
-      db.sqlite.close();
-      releaseMutation?.();
-    }
+    await running;
   }
 
   /**

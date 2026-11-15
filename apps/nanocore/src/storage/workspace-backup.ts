@@ -1957,8 +1957,9 @@ async function runWorkspaceCapture(
                           },
                         ];
                   };
-                  const turnDrain = getControlStoreWorkerClient().drainTurnPublications(
-                    `workspace:${join(live.dataRoot, 'workspaces', targetWorkspaceId, 'db/workspace.sqlite')}`
+                  const producerDrain = getControlStoreWorkerClient().drainWorkspacePreparations(
+                    live.dataRoot,
+                    targetWorkspaceId
                   );
                   let admission: WorkspaceFreezeAdmission;
                   if (live.freezeOwner) {
@@ -1966,7 +1967,10 @@ async function runWorkspaceCapture(
                     admission = blockers.length
                       ? { status: 'blocked', blockers }
                       : live.freezeOwner;
-                  } else if (turnDrain || hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId)) {
+                  } else if (
+                    producerDrain ||
+                    hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId)
+                  ) {
                     const priorBlockers = workspaceBlockers();
                     admission = priorBlockers.length
                       ? { status: 'blocked', blockers: priorBlockers }
@@ -1977,7 +1981,7 @@ async function runWorkspaceCapture(
                             if (blockers.length) return blockers;
                             if (hasWorkspaceMcpData(live.dataRoot, targetWorkspaceId))
                               await quiesceWorkspaceMcpData(live.dataRoot, targetWorkspaceId);
-                            await turnDrain;
+                            await producerDrain;
                           },
                           captureBlockers
                         );
