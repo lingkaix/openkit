@@ -53,6 +53,7 @@ import { createAppWithWorkspaceAuthority as createApp } from './test-support/app
 import { createDemoStore } from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import { ensureLocalUser } from './test-support/local-user.js';
+import { admitTestNativeEnvironment } from './test-support/native-environment.js';
 import { createNativeTaskAdmissionFixture } from './test-support/native-task-admission.js';
 import { operationRequest } from './test-support/operation-request.js';
 import { recordWorkspaceOwnerMembership } from './workspace-membership.js';
@@ -353,6 +354,8 @@ async function createSchedulerFixture(
   const dataRoot = mkdtempSync(join(tmpdir(), `openkit-turn-routes-${slug}-`));
   const coreDb = openCoreDb(dataRoot);
   applyMigrations(coreDb);
+  // Prepare fixture-owned image evidence before any asynchronous native Core writer can start.
+  admitTestNativeEnvironment(coreDb, manifest);
   const store = await createDemoStore({ dataRoot, ...(persist ? { coreDb } : {}) });
   executor.coreDb = coreDb;
   executor.executionBackend = new SimulatedTurnExecutor({ coreDb });

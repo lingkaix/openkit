@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { allocateEntityId } from '@openkit/protocol';
 import { canonicalNativeEnvironment } from '@openkit/worker-protocol';
 import { afterAll } from 'vitest';
@@ -15,6 +16,7 @@ import {
 } from '../runtime/nanohost-runtime-target.js';
 import {
   admitWorkerImageEnvironment,
+  readAdmittedWorkerImageEnvironment,
   readWorkerImageSettlement,
   writeWorkerImageSettlement,
 } from '../runtime/worker-image-settlements-records.js';
@@ -45,13 +47,21 @@ export function admitTestNativeEnvironment(
     authoredContentDigest: inputDigest,
     inputDigest,
   };
-  writeWorkerImageSettlement(coreDb, {
+  const settlement = {
     ...candidate,
     requestId,
-    operation: image.kind === 'build' ? 'image.build' : 'image.acquire',
-    outcome: { kind: 'success', imageDigest },
-  });
-  admitWorkerImageEnvironment(coreDb, candidate, { imageDigest, defaultsDigest, values });
+    operation: image.kind === 'build' ? ('image.build' as const) : ('image.acquire' as const),
+    outcome: { kind: 'success' as const, imageDigest },
+  };
+  const environment = { imageDigest, defaultsDigest, values };
+  // Prepared metadata reads must not acquire a Main writer beside active native Core work.
+  if (
+    isDeepStrictEqual(prior, settlement) &&
+    isDeepStrictEqual(readAdmittedWorkerImageEnvironment(coreDb, imageDigest), environment)
+  )
+    return;
+  writeWorkerImageSettlement(coreDb, settlement);
+  admitWorkerImageEnvironment(coreDb, candidate, environment);
 }
 
 /** A real migrated Core database for metadata-only tests that previously needed no image evidence. */
