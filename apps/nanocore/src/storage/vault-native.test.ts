@@ -3051,6 +3051,7 @@ describe('credential writer oracle', () => {
   /** Existing fixture plus real reference/grant/plan owners; no receipt or writer is fabricated. */
   async function prepared(version = 1) {
     const f = await fixture();
+    const store = await createDemoStore({ dataRoot: f.db.dataRoot });
     await createVaultReference(f.db, { ...createInput(), secretKind: 'opaque' });
     if (version === 2) {
       const input = { referenceId, currentVersion: 2, expectedWriterGeneration: 0 };
@@ -3076,10 +3077,26 @@ describe('credential writer oracle', () => {
         backendCapabilityRequirement: 'backend-provider',
         now: () => clock,
       });
+      // Real metadata Session lineage; the generic plan claims no admitted AEP or native completion.
+      const thread = await store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Credential writer receipt lineage'
+      );
+      const session = await store.createAgentSession({
+        id: allocateEntityId('as'),
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: thread.id,
+        agentId: 'agent_codex_host',
+        status: 'ready',
+        message: null,
+        createdAt: clock,
+        updatedAt: clock,
+      });
       receipts.push({
         receiptId: randomUUID(),
         planId: plan.planId,
         grantId: grant.grantId,
+        agentSessionId: session.id,
         backendSummary: 'Native owner metadata.',
         injectedAt: clock,
         revocationStatus: 'active' as const,
@@ -3258,7 +3275,7 @@ describe('credential writer oracle', () => {
   it.each([
     { state: 'available' },
     { expiresAt: '2000-01-01T00:00:00.000Z' },
-    { detached: true },
+    { state: 'detached' },
     { provider: { redacted: true } },
     { environment: { bearerOnly: true } },
   ])('O3 rejects status-only removal evidence %j and keeps the family busy', async (evidence) => {
