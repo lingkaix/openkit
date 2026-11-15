@@ -41,9 +41,14 @@ function commit(repoRoot, ref) {
 export function scanSecrets({ repoRoot, staged = false, snapshot = false, base, head = 'HEAD' }) {
   const selected = [];
   if (snapshot) {
+    // Read each entry by object id; the decoded name is only a diagnostic label.
     const revision = commit(repoRoot, head);
-    const files = names(git(repoRoot, ['ls-tree', '-r', '--name-only', '-z', revision]));
-    for (const file of files) selected.push({ file, object: `${revision}:${file}` });
+    for (const entry of git(repoRoot, ['ls-tree', '-r', '-z', revision]).split('\0')) {
+      if (!entry) continue;
+      const match = /^\d{6} (\w+) ([a-f0-9]{40,64})\t([\s\S]+)$/u.exec(entry);
+      if (match?.[1] !== 'blob') throw Error('Secret check could not read the selected Git input');
+      selected.push({ file: match[3], object: match[2] });
+    }
   } else if (staged) {
     const files = names(
       git(repoRoot, ['diff', '--cached', '--name-only', '--diff-filter=ACMR', '-z'])

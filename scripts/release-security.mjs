@@ -197,7 +197,6 @@ export async function scanPublishedImages({
     : await checkSecurity({
         repoRoot,
         release: true,
-        base: manifest.tag,
         head: manifest.sourceCommit,
         register,
       });
