@@ -10,7 +10,7 @@ The persistence smoke reads the post-restart Workspace collection through the de
 
 The App-update helper observes configured NanoHost readiness through `POST /api/app/operations/nanohost.runtime-target` with an empty JSON object, preserving bounded JSON HTTP error handling and configured identity checks. Its host fixtures use the canonical `workspace.list` binding for forbidden Workspace discovery, and its assertions retain the requirement that update admission never reads Workspace content.
 
-The App-update helper observes retained authentication through `POST /api/app/operations/token.list` with an empty JSON object. Its before/after fixed-key token comparison and last-use exclusions remain unchanged.
+The App-update helper observes retained authentication through `POST /api/app/operations/credential.list` with an empty JSON object. It requires the administrator inventory and compares only its `access-token` records. Its before/after fixed-key token comparison and last-use exclusions remain unchanged.
 
 The App-update helper compares staged and live Web digests before stopping the App when the candidate directory is already the live target. Matching trees reuse the live directory and pointer and remain subject to post-publication and post-boot digest verification; different trees refuse before interruption. Compatible recovery skips candidate stop and rename only when a successful all-container listing shows the active name is absent; a nonzero listing exit keeps the existing candidate path. Command timeouts require explicit host recovery, as elsewhere in the helper. Before starting the retained App, recovery checks running-container mount observations for writable Data Root users and refuses failed inspections or invalid JSON.
 

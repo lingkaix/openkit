@@ -114,6 +114,11 @@ TOKEN_IDENTITY_KEYS = frozenset(
 TOKEN_LAST_USED_KEYS = frozenset({"lastUsedAt", "lastUsedChannel", "lastUsedSource"})
 TOKEN_SCOPES = frozenset({"server-admin", "workspace", "workspace-readonly"})
 TOKEN_STATUSES = frozenset({"active", "expired", "revoked", "rotated"})
+# packages/app-api-schemas/src/inbound-credential-operations.ts and inbound-credentials.ts.
+CREDENTIAL_LIST_PATH = "/api/app/operations/credential.list"
+CREDENTIAL_LIST_KEYS = frozenset({"items", "canManageServerCredentials"})
+CREDENTIAL_KINDS = frozenset({"access-token", "auth-session", "discord-pairing", "worker-run", "nanohost-transport"})
+ACCESS_TOKEN_CREDENTIAL_KEYS = frozenset({"kind", "id", "record", "integrationId"})
 CONFIG_KEYS = {
     "schemaVersion",
     "containerName",
@@ -1477,22 +1482,52 @@ class AppUpdateHelper:
             )
 
     def _snapshot_retained_auth(self, receipt: Dict[str, Any]) -> None:
-        status, body = self._authorized_json("/api/app/operations/token.list", method="POST", body={})
+        status, body = self._authorized_json(CREDENTIAL_LIST_PATH, method="POST", body={})
         if status != 200:
             raise HelperError("app_update_unavailable", "Retained auth-store identity could not be read.")
         receipt["retainedAuthSnapshot"] = self._auth_store_identity(body)
 
     def _auth_store_identity(self, body: Any) -> List[Dict[str, Any]]:
-        if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+        """Project the access-token rows of the administrator credential.list inventory."""
+        if (
+            not isinstance(body, dict)
+            or set(body) != CREDENTIAL_LIST_KEYS
+            or not isinstance(body["items"], list)
+            or not isinstance(body["canManageServerCredentials"], bool)
+        ):
             raise HelperError(
                 "app_update_unavailable",
-                "Retained auth-store identity is not the public Token list.",
+                "Retained auth-store identity is not the public credential list.",
             )
-        if not body["items"]:
-            raise HelperError("app_update_unavailable", "Retained auth-store identity is empty.")
+        # Only the administrator inventory lists every retained access token.
+        if not body["canManageServerCredentials"]:
+            raise HelperError(
+                "app_update_unavailable",
+                "Retained auth-store identity needs the administrator credential inventory.",
+            )
         rows = []
         for item in body["items"]:
-            rows.append(self._token_identity_projection(item))
+            if not isinstance(item, dict) or item.get("kind") not in CREDENTIAL_KINDS:
+                raise HelperError(
+                    "app_update_unavailable",
+                    "Retained auth-store identity is not the public credential list.",
+                )
+            if item["kind"] != "access-token":
+                continue
+            integration_id = item.get("integrationId")
+            if (
+                set(item) != ACCESS_TOKEN_CREDENTIAL_KEYS
+                or not isinstance(item["record"], dict)
+                or item["id"] != item["record"].get("tokenId")
+                or (integration_id is not None and (not isinstance(integration_id, str) or not integration_id))
+            ):
+                raise HelperError(
+                    "app_update_unavailable",
+                    "Retained auth-store identity is not the public Token list.",
+                )
+            rows.append(self._token_identity_projection(item["record"]))
+        if not rows:
+            raise HelperError("app_update_unavailable", "Retained auth-store identity is empty.")
         rows.sort(key=lambda row: row["tokenId"])
         return rows
 
@@ -1555,7 +1590,7 @@ class AppUpdateHelper:
         }
 
     def _retained_auth_read(self, receipt: Mapping[str, Any]) -> bool:
-        status, body = self._authorized_json("/api/app/operations/token.list", method="POST", body={})
+        status, body = self._authorized_json(CREDENTIAL_LIST_PATH, method="POST", body={})
         if status != 200:
             return False
         try:

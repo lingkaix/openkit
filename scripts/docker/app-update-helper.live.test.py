@@ -102,8 +102,9 @@ def fixture_current_container_argv(
 
 
 def wait_fixture_auth_tokens(authorized_get, timeout: float = HTTP_READY_SECONDS) -> Dict[str, Any]:
-    """Bounded helper POST /api/app/operations/token.list. New observation; not a historical race claim."""
+    """Bounded helper POST /api/app/operations/credential.list. New observation; not a historical race claim."""
 
+    path = load_helper().CREDENTIAL_LIST_PATH
     deadline = time.time() + timeout
     last_status = 0
     last_body: Any = None
@@ -111,7 +112,7 @@ def wait_fixture_auth_tokens(authorized_get, timeout: float = HTTP_READY_SECONDS
     while time.time() < deadline:
         last_error = None
         try:
-            last_status, last_body = authorized_get("/api/app/operations/token.list", method="POST", body={})
+            last_status, last_body = authorized_get(path, method="POST", body={})
         except Exception as error:
             last_status = 0
             last_body = None
@@ -149,8 +150,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404)
     def do_POST(self):
-        if self.path == "/api/app/operations/token.list":
-            self._send(200, {"items": [fixture["token"]]})
+        if self.path == "/api/app/operations/credential.list":
+            self._send(200, fixture["credentials"])
         elif self.path == "/api/app/operations/diagnostics.app":
             self._send(200, {"boot": fixture["boot"]})
         elif self.path == "/api/app/operations/app-update.preflight":
@@ -183,8 +184,8 @@ ENTRYPOINT ["/usr/local/bin/openkit-app-entrypoint"]
 """
 
 FIXTURE_TOKEN = {
-    "tokenId": "tok_live_fixture",
-    "ownerUserId": "user_live_fixture",
+    "tokenId": "tok_00000000-0000-7000-8000-00000000000f",
+    "ownerUserId": "usr_00000000-0000-7000-8000-00000000000f",
     "scope": "server-admin",
     "workspaceIds": [],
     "status": "active",
@@ -197,6 +198,21 @@ FIXTURE_TOKEN = {
     "lastUsedChannel": None,
     "lastUsedSource": None,
 }
+# credential.list response (packages/app-api-schemas/src/inbound-credentials.ts).
+FIXTURE_CREDENTIALS = {
+    "items": [
+        {"kind": "access-token", "id": FIXTURE_TOKEN["tokenId"], "record": FIXTURE_TOKEN, "integrationId": None},
+        {
+            "kind": "auth-session",
+            "id": "auth_00000000-0000-7000-8000-00000000000f",
+            "issuedAt": "2026-09-10T00:00:00.000Z",
+            "expiresAt": "2026-09-11T00:00:00.000Z",
+            "status": "active",
+            "current": False,
+        },
+    ],
+    "canManageServerCredentials": True,
+}
 
 
 def load_helper():
@@ -206,6 +222,17 @@ def load_helper():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def load_operation_contract():
+    """The unit suite's bridge to the real NanoCore operation definitions."""
+    path = HELPER_PATH.with_name("app-update-helper.test.py")
+    spec = importlib.util.spec_from_file_location("app_update_helper_unit", path)
+    if spec is None or spec.loader is None:
+        raise FileNotFoundError(path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.assert_operation_contract
 
 
 def run_cmd(argv: List[str], cwd: Optional[Path] = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -272,7 +299,7 @@ def write_source_tree(root: Path, *, accepting: bool, boot_id: str, web_body: st
             {
                 "appliedMigrations": [MIGRATION],
                 "boot": fixture_boot_projection(boot_id=boot_id, product_ready=accepting),
-                "token": FIXTURE_TOKEN,
+                "credentials": FIXTURE_CREDENTIALS,
             },
             indent=2,
         )
@@ -547,7 +574,10 @@ class FixtureAdmissionTests(unittest.TestCase):
         module = load_helper()
         helper = object.__new__(module.AppUpdateHelper)
         helper.effects = module.CommandEffects()
-        payload = json.loads(json.dumps({"items": [FIXTURE_TOKEN]}))
+        payload = json.loads(json.dumps(FIXTURE_CREDENTIALS))
+        # The stub and generated entrypoint serve the helper's path with a schema-valid inventory.
+        self.assertIn('self.path == "%s"' % module.CREDENTIAL_LIST_PATH, ENTRYPOINT_PY)
+        load_operation_contract()(module.CREDENTIAL_LIST_PATH, {}, payload)
         self.assertEqual(helper._auth_store_identity(payload)[0]["tokenId"], FIXTURE_TOKEN["tokenId"])
 
         token_dir = Path(tempfile.mkdtemp(prefix="ok-fx-auth-"))
@@ -561,7 +591,7 @@ class FixtureAdmissionTests(unittest.TestCase):
                 return
 
             def do_POST(self):
-                if self.path.split("?", 1)[0] != "/api/app/operations/token.list":
+                if self.path.split("?", 1)[0] != module.CREDENTIAL_LIST_PATH:
                     self.send_response(404)
                     self.end_headers()
                     return
@@ -619,7 +649,7 @@ class FixtureAdmissionTests(unittest.TestCase):
                 err = proc.stderr.read() if proc.stderr else ""
                 self.fail("generated entrypoint exited before listen: rc=%s stderr=%s" % (proc.returncode, err))
             self.assertEqual(ready["status"], 200)
-            self.assertEqual((ready["body"] or {}).get("items"), [FIXTURE_TOKEN])
+            self.assertEqual(ready["body"], FIXTURE_CREDENTIALS)
             self.assertEqual(helper._auth_store_identity(ready["body"])[0]["tokenId"], FIXTURE_TOKEN["tokenId"])
             import urllib.error
             import urllib.request
@@ -906,7 +936,7 @@ class AppUpdateHelperLiveTests(unittest.TestCase):
             self._preserve_external_report({"httpWait": observed}, "fixture-http-not-ready")
             self.fail("fixture HTTP not ready: %s" % json.dumps(observed, default=str))
         identity = http_helper._auth_store_identity(observed["body"])
-        self.assertEqual((observed["body"] or {}).get("items"), [FIXTURE_TOKEN])
+        self.assertEqual(observed["body"], FIXTURE_CREDENTIALS)
         self.assertEqual(identity[0]["tokenId"], FIXTURE_TOKEN["tokenId"])
 
         prepared = invoke_helper(config_path, {"op": "prepare", "expectedCurrentImageId": current_image, "source": release_source})
