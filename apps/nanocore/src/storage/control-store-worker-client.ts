@@ -1909,8 +1909,7 @@ class ControlStoreWorkerClient {
       const workspaceId =
         logical.find((id) => admission?.isClosed(id, accepted ? 'capture' : 'ordinary')) ??
         ((owner?.kind === 'workspace' || owner?.kind === 'app') &&
-        (admission?.isLifecycleClosed(owner.workspaceId) ||
-          admission?.isClosed(owner.workspaceId, ordinary ? 'ordinary' : 'capture'))
+        admission?.isClosed(owner.workspaceId, ordinary ? 'ordinary' : 'capture')
           ? owner.workspaceId
           : undefined);
       if (workspaceId)
