@@ -158,7 +158,6 @@ import { turnStatusForCanonicalWorkerStopReason } from './runtime/worker-control
 import {
   cancelNeverAllocatedWorkerJournal,
   classifyClosedWorkerApprovalGate,
-  classifyClosedWorkerUserInputGate,
   clearWorkerCheckpointAfterTerminalState,
   hasWorkerCheckpointNeverSubmittedProof,
   recoverWorkerCheckpointStopReason,
@@ -948,9 +947,7 @@ async function replayTaskModeCommand(
       const initiatingItem = currentTurn.items.find(
         (item) => item.id === deriveEntityId('it', ['task-user', currentTurn.id])
       );
-      const closedGate =
-        classifyClosedWorkerApprovalGate(store, currentTurn) ??
-        classifyClosedWorkerUserInputGate(store, currentTurn);
+      const closedGate = classifyClosedWorkerApprovalGate(store, currentTurn);
       if (
         !closedGate &&
         currentTurn.items.some(
@@ -1167,9 +1164,7 @@ async function recoverDirectTaskModeCheckpoint(input: {
     throw directTaskModeRecoveryError('The Task checkpoint contradicts its terminal outcome.');
   }
 
-  const closedGate =
-    classifyClosedWorkerApprovalGate(input.store, turn) ??
-    classifyClosedWorkerUserInputGate(input.store, turn);
+  const closedGate = classifyClosedWorkerApprovalGate(input.store, turn);
   if (
     (!closedGate &&
       turn.items.some(
@@ -1910,40 +1905,29 @@ async function clearStaleDirectTaskCheckpointWithoutExactAttempt(
 }
 
 /**
- * Checks whether a closed direct Task Gate retained its exact response command receipt.
+ * Checks whether a closed direct Task approval Gate retained its exact response command receipt.
+ * Question answers are published on a later Turn, so a Task Turn never closes a question Gate itself.
  *
  * @param store Product store containing Gate receipts.
  * @param turn Direct Task Turn returned by owner recovery.
- * @returns True for a non-Gate outcome or one exact receipt-backed Gate closure.
+ * @returns True for a non-Gate outcome or one exact receipt-backed approval closure.
  */
 function hasClosedDirectTaskGateReceipt(store: FsStore, turn: z.infer<typeof TurnSchema>): boolean {
   const approval = classifyClosedWorkerApprovalGate(store, turn);
-  if (approval) {
-    const request = turn.items.find((item) => item.id === approval.requestItemId);
-    if (request?.type !== 'approval-request') {
-      return false;
-    }
-    const receipt = store.getCommandRequest('approval.respond', approval.responseRequestId, {
-      workspaceId: workspaceIdForOwner(turn.owner),
-      threadId: turn.threadId,
-      turnId: turn.id,
-      approvalRequestId: request.approvalRequestId,
-    });
-    return (
-      receipt?.response.kind === 'approval' && receipt.response.id === request.approvalRequestId
-    );
-  }
-
-  const userInput = classifyClosedWorkerUserInputGate(store, turn);
-  if (!userInput) {
+  if (!approval) {
     return true;
   }
-  const receipt = store.getCommandRequest('turn.input.submit', userInput.responseRequestId, {
+  const request = turn.items.find((item) => item.id === approval.requestItemId);
+  if (request?.type !== 'approval-request') {
+    return false;
+  }
+  const receipt = store.getCommandRequest('approval.respond', approval.responseRequestId, {
     workspaceId: workspaceIdForOwner(turn.owner),
     threadId: turn.threadId,
     turnId: turn.id,
+    approvalRequestId: request.approvalRequestId,
   });
-  return receipt?.response.kind === 'turn' && receipt.response.id === turn.id;
+  return receipt?.response.kind === 'approval' && receipt.response.id === request.approvalRequestId;
 }
 
 /**
@@ -5198,10 +5182,7 @@ export function createTaskStartOperation({
         turnId,
         checkpoint,
       });
-      if (
-        classifyClosedWorkerApprovalGate(store, TurnSchema.parse(recovered.turn)) ??
-        classifyClosedWorkerUserInputGate(store, TurnSchema.parse(recovered.turn))
-      ) {
+      if (classifyClosedWorkerApprovalGate(store, TurnSchema.parse(recovered.turn))) {
         throw directTaskModeRecoveryError('The Task Gate response receipt is not durable.');
       }
       if (

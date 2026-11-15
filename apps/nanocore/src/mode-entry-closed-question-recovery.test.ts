@@ -108,7 +108,6 @@ describe('direct Task boot recovery after a closed worker question', () => {
       const turn = store.getTurnById(turnId);
       expect(turn.items.map((item) => item.type)).toContain('user-input-request');
       expect(turn.items.map((item) => item.type)).not.toContain('user-input-response');
-      expect(recoveryOwners.classifyClosedWorkerUserInputGate(store, turn)).toBeNull();
       const checkpoint = getWorkerCheckpoint(workspaceDb, WORKSPACE_ID, THREAD_ID, turnId);
       expect(checkpoint).toMatchObject({ stage: 'completed', stopReason: 'completed' });
 

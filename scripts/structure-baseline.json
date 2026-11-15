@@ -96,7 +96,6 @@
     "apps/nanocore/src/runtime/worker-raw-output.ts :: createWorkerRawOutputCoalescer.observe :: digest-framing": 1,
     "apps/nanocore/src/runtime/worker-raw-output.ts :: observeWorkerRawOutput :: digest-framing": 1,
     "apps/nanocore/src/runtime/worker-recovery-operations.ts :: createRecoveryOperationImplementations.recovery.checkpoint-retry.assertCurrentHumanAuthority :: auth-code:workspace_access_denied": 1,
-    "apps/nanocore/src/runtime/worker-recovery.ts :: classifyClosedWorkerUserInputGate :: canonical-json": 1,
     "apps/nanocore/src/runtime/worker-transcript.ts :: stableJson :: canonical-json": 1,
     "apps/nanocore/src/runtime/worker-turn-loop.ts :: runWorkerTurnLoop :: auth-code:workspace_access_denied": 1,
     "apps/nanocore/src/runtime/workspace-materializer.ts :: digestPolicy :: digest-framing": 1,
