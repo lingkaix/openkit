@@ -1025,9 +1025,16 @@ describe('ORACLE S6 exact recovery authority', () => {
       ).rejects.toBe(stop);
       const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
       expect(original).toMatchObject({ state: 'prepared', revision: 1, purpose: 'backup' });
+      // Boot recovery follows the prior live owner's end, not a second same-root gate.
+      f.owner.native.freeze.release();
+      expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(
+        false
+      );
+      await shutdownControlStoreWorkerClient();
       const canonical = inventoryRegularFiles(join(f.dataRoot, 'workspaces', f.input.workspaceId));
       const privateCandidate = inventoryRegularFiles(original.candidate_ref);
       const bootGate = getControlStoreWorkerClient().workspaceMutations(f.dataRoot);
+      expect(bootGate).toBe(f.owner.native.gate);
       restoreWorkspaceRecoveryAdmission(f.owner.core, bootGate);
       expect(bootGate.isClosed(f.input.workspaceId)).toBe(true);
       expect(unresolvedRecoveryExecutions(f.owner.core, f.input.workspaceId)).toEqual([original]);
@@ -1121,7 +1128,11 @@ describe('ORACLE S6 exact recovery authority', () => {
       })
     ).rejects.toBe(stop);
     const original = readRecoveryExecution(f.owner.core, f.input.requestId)!;
+    f.owner.native.freeze.release();
+    expect(f.owner.native.gate.ownsFreeze(f.input.workspaceId, f.owner.native.freeze)).toBe(false);
+    await shutdownControlStoreWorkerClient();
     const gate = getControlStoreWorkerClient().workspaceMutations(f.owner.core.dataRoot);
+    expect(gate).toBe(f.owner.native.gate);
     restoreWorkspaceRecoveryAdmission(f.owner.core, gate);
     const origin = {
       admissionId: original.admission_id,
