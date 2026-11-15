@@ -235,7 +235,7 @@ describe('Task steer through the existing native Harness slot', () => {
     });
     const enter = f.admission.enter.bind(f.admission);
     vi.spyOn(f.admission, 'enter').mockImplementation((...args) => {
-      if (itemCommitted)
+      if (itemCommitted && (args[1] ?? 'ordinary') === 'ordinary')
         throw new OperationError(
           'operation_storage_unavailable',
           'Current authority storage is unavailable.',

@@ -1,4 +1,7 @@
-import { getControlStoreWorkerClient } from './control-store-worker-client.js';
+import {
+  getControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
+} from './control-store-worker-client.js';
 // openkit-test-platform: posix
 
 import { createHash, randomUUID } from 'node:crypto';
@@ -524,7 +527,7 @@ describe('borrowed lifecycle capture freeze', () => {
     const gate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
     f.store.setWorkspaceMutationAdmission(gate);
     const owner = gate.tryFreeze(workspaceId, () => []);
-    const otherGate = getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
+    const otherGate = new WorkspaceMutationAdmission();
     const foreignGate = otherGate.tryFreeze(workspaceId, () => []);
     const foreignWorkspace = gate.tryFreeze(allocateEntityId('ws'), () => []);
     if (

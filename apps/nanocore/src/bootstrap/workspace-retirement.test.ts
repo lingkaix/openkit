@@ -545,7 +545,7 @@ describe('retired registry consumers and retained Core migration', () => {
       disposals.push(() => {
         if (coreDb.sqlite.open) coreDb.sqlite.close();
       });
-      const admission = new gateOwner.WorkspaceMutationAdmission();
+      const admission = gateOwner.getControlStoreWorkerClient().workspaceMutations(coreDb.dataRoot);
       appOwner.restoreWorkspaceDeletionMutationAdmission({
         coreDb,
         dataRoot: f.dataRoot,

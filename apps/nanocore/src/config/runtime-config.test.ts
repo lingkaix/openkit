@@ -10,6 +10,7 @@ import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
 } from '../storage/control-store-worker-client.js';
 import { ensureConfigTemplateSurface } from '../storage/fs-layout.js';
 import { createDemoStore } from '../test-support/demo-store.js';
@@ -405,7 +406,7 @@ describe('runtime config loading and reload planning', () => {
     const manager = createRuntimeConfigManager({ dataRoot });
     const before = manager.current();
     const gate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
-    const foreignGate = getControlStoreWorkerClient().workspaceMutations(dataRoot);
+    const foreignGate = new WorkspaceMutationAdmission();
     const frozen = gate.tryFreeze(target, () => []);
     const foreign = foreignGate.tryFreeze(target, () => []);
     if (frozen.status !== 'frozen' || foreign.status !== 'frozen')

@@ -27,6 +27,7 @@ import { FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
+  WorkspaceMutationAdmission,
 } from './control-store-worker-client.js';
 import { type CoreDb, openWorkspaceDb, type WorkspaceDb } from './db.js';
 import { readDataRootLayoutMarker, workspaceDbPath } from './fs-layout.js';
@@ -193,9 +194,7 @@ describe('retained capture exclusion rejoin', () => {
     expect(freeze.status).toBe('frozen');
     if (freeze.status !== 'frozen')
       throw new Error('Expected the original live capture exclusion.');
-    const foreign = getControlStoreWorkerClient()
-      .workspaceMutations(dataRoot)
-      .tryFreeze(workspaceId, () => []);
+    const foreign = new WorkspaceMutationAdmission().tryFreeze(workspaceId, () => []);
     if (foreign.status !== 'frozen') throw new Error('Expected an unrelated freeze.');
     try {
       await expect(inspectWorkspaceSnapshot(input, owned)).rejects.toThrow();
