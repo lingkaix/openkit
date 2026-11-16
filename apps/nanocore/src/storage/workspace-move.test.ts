@@ -14,6 +14,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -29,7 +30,7 @@ import { createDemoStore, DEMO_WORKSPACE_ID } from '../test-support/demo-store.j
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { recoveryJournalFact } from '../test-support/recovery-journal.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
-import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { FileAdmissionError, FileStorageAdmission } from './artifacts/file-admission.js';
 import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
@@ -44,6 +45,7 @@ import {
   withVerifiedWorkspaceBackupBundle,
 } from './workspace-backup-bundle.js';
 import { nativeProductScope } from './workspace-file-records.js';
+import { moveOutWorkspace } from './workspace-move.js';
 import {
   runWorkspaceRecoveryCli,
   type WorkspaceRecoveryCliReport,
@@ -329,6 +331,89 @@ function refuseMemberCommit(dataRoot: string) {
 }
 
 describe('D0-2 identity-preserving MOVE target admission', () => {
+  it('uses the source server.fileReserveBytes before stopped MOVE verification', async () => {
+    const f = await fixture();
+    mkdirSync(join(f.sourceRoot, 'config'), { recursive: true });
+    writeFileSync(
+      join(f.sourceRoot, 'config/server.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        server: { fileReserveBytes: 2_000_000_000 },
+      })
+    );
+    // Source MOVE needs a prepared local capture, without a transferable seal yet.
+    rmSync(join(f.bundleRoot, 'seal.json'));
+    const fs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+    const original = fs.statfsSync;
+    const capacity = vi.spyOn(fs, 'statfsSync').mockImplementation((path, options) => ({
+      ...original(path, options as { bigint: true }),
+      bavail: 1_500_000_000n,
+      bsize: 1n,
+    }));
+    syncBuiltinESMExports();
+    const reserve = FileStorageAdmission.prototype.reserve;
+    let capacityRefused = false;
+    const observe = vi
+      .spyOn(FileStorageAdmission.prototype, 'reserve')
+      .mockImplementation(function (this: FileStorageAdmission, ...args) {
+        try {
+          return reserve.apply(this, args);
+        } catch (error) {
+          if (error instanceof FileAdmissionError && error.code === 'storage_capacity_unavailable')
+            capacityRefused = true;
+          throw error;
+        }
+      });
+    const before = rows(coreDbPath(f.sourceRoot), 'control_executions');
+    try {
+      await expect(
+        moveOutWorkspace({
+          dataRoot: f.sourceRoot,
+          workspaceId,
+          backupId: f.manifest.backupId,
+          bundleRoot: f.bundleRoot,
+          expectedRevision: f.manifest.capturedRevision,
+          expectedRelease: f.manifest.release,
+        })
+      ).rejects.toMatchObject({ code: 'capacity-exceeded' });
+      expect(capacityRefused).toBe(true);
+      expect(rows(coreDbPath(f.sourceRoot), 'control_executions')).toEqual(before);
+    } finally {
+      observe.mockRestore();
+      capacity.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
+  it('uses the target server.fileReserveBytes for stopped MOVE admission', async () => {
+    const f = await fixture();
+    mkdirSync(join(f.dataRoot, 'config'), { recursive: true });
+    writeFileSync(
+      join(f.dataRoot, 'config/server.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        server: { fileReserveBytes: 2_000_000_000 },
+      })
+    );
+    const fs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+    const original = fs.statfsSync;
+    const capacity = vi.spyOn(fs, 'statfsSync').mockImplementation((path, options) => ({
+      ...original(path, options as { bigint: true }),
+      bavail: 1_500_000_000n,
+      bsize: 1n,
+    }));
+    syncBuiltinESMExports();
+    try {
+      await expect(runCli(f.argv, () => {}, f)).rejects.toMatchObject({
+        code: 'capacity-exceeded',
+      });
+      expect(existsSync(workspaceDbPath(f.dataRoot, workspaceId))).toBe(false);
+    } finally {
+      capacity.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
   it('WM 405, 419–439: explicit owner/member mapping preserves identities, provenance and private audiences', async () => {
     const f = await fixture();
     const output: string[] = [];

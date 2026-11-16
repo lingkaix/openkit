@@ -8,7 +8,6 @@ import {
   removeDurableFile,
   syncCanonicalTree,
 } from '@openkit/storage';
-import { FileStorageAdmission } from './artifacts/file-admission.js';
 import { commandInputHash } from './control-store-input.js';
 import { applyControlRecoveryMoveOut } from './control-store-recovery.js';
 import type { WorkspaceFrozenAdmission } from './control-store-worker-client.js';
@@ -123,7 +122,7 @@ export async function moveOutWorkspace(
   input: WorkspaceMoveOutInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
-  return withRecoveryRoot(input.dataRoot, async (core) => {
+  return withRecoveryRoot(input.dataRoot, async (core, fileAdmission) => {
     let owned = readRecoveryExecution(core, input.backupId);
     const manifest = owned?.proof.manifest ?? readWorkspaceBackupManifest(input.bundleRoot);
     if (
@@ -161,7 +160,7 @@ export async function moveOutWorkspace(
           bundleRoot: input.bundleRoot,
           stagingParent: temporary,
           expectedRelease: input.expectedRelease ?? manifest.release,
-          admission: new FileStorageAdmission(input.dataRoot, () => 1_000_000_000n),
+          admission: fileAdmission,
           candidateRoot: join(temporary, 'candidate'),
           expectedWorkspaceId: input.workspaceId,
           expectedSourceDeploymentId: manifest.sourceDeploymentId,

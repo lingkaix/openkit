@@ -39,6 +39,7 @@ import {
   inventoryRegularFiles,
 } from './data-root-backup.js';
 import type { CoreDb } from './db.js';
+import { DEFAULT_FILE_RESERVE_BYTES } from './file-reserve.js';
 import { readDataRootLayoutMarker } from './fs-layout.js';
 import { RECURRING_PORTABLE_PATHS } from './recurring-portable-history.js';
 import {
@@ -276,7 +277,8 @@ async function inspectSelectedTarget(
       refuseRecovery('unsafe-path');
   }
   const admission =
-    owner.fileAdmission ?? new FileStorageAdmission(owner.core.dataRoot, () => 1_000_000_000n);
+    owner.fileAdmission ??
+    new FileStorageAdmission(owner.core.dataRoot, () => BigInt(DEFAULT_FILE_RESERVE_BYTES));
   const bytes = inputs.reduce((sum, { entry }) => sum + BigInt(entry.bytes), 0n);
   const reservation = admission.forPath(scratchParent).reserve({
     stagingBytes: bytes * 2n + 98_304n,
@@ -339,6 +341,7 @@ async function withTargetCore<T>(
   const scope = nativeProductScope(dataRoot, { kind: 'server' });
   const path = scope.path;
   const database = `core:${path}`;
+  if (owner.fileAdmission) client.setFileStorageAdmission(dataRoot, owner.fileAdmission);
   let result: { ok: true; report: T } | { ok: false; error: unknown };
   try {
     await client.open({
@@ -426,7 +429,8 @@ async function publishTargetProofStage(
 ): Promise<void> {
   assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
   const admission =
-    owner.fileAdmission ?? new FileStorageAdmission(owner.core.dataRoot, () => 1_000_000_000n);
+    owner.fileAdmission ??
+    new FileStorageAdmission(owner.core.dataRoot, () => BigInt(DEFAULT_FILE_RESERVE_BYTES));
   const file = await publishRecoveryProof(owner.core.dataRoot, proof, admission);
   assertTargetRecoveryOwner(owner, owner.core.dataRoot, input.workspaceId);
   await withTargetCore(owner, input.workspaceId, (client, database) =>
@@ -440,12 +444,8 @@ export async function admitWorkspaceBackup(
   input: WorkspaceTargetRecoveryInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
-  return withRecoveryRoot(input.dataRoot, (core) =>
-    admitTarget(
-      { core, fileAdmission: new FileStorageAdmission(input.dataRoot, () => 1_000_000_000n) },
-      input,
-      deps
-    )
+  return withRecoveryRoot(input.dataRoot, (core, fileAdmission) =>
+    admitTarget({ core, fileAdmission }, input, deps)
   );
 }
 
@@ -718,7 +718,9 @@ export async function finishWorkspaceRecovery(
   input: WorkspaceRecoverySelectedInput,
   deps: WorkspaceRecoveryDependencies = {}
 ): Promise<WorkspaceRecoveryCliReport> {
-  return withRecoveryRoot(input.dataRoot, (core) => finishSelectedTarget({ core }, input, deps));
+  return withRecoveryRoot(input.dataRoot, (core, fileAdmission) =>
+    finishSelectedTarget({ core, fileAdmission }, input, deps)
+  );
 }
 
 /** Finishes the original selected target under an already-owned Core and lifecycle exclusion. */
@@ -751,7 +753,9 @@ async function finishSelectedTarget(
 export async function abandonWorkspaceRecovery(
   input: WorkspaceRecoverySelectedInput
 ): Promise<WorkspaceRecoveryCliReport> {
-  return withRecoveryRoot(input.dataRoot, (core) => abandonSelectedTarget({ core }, input));
+  return withRecoveryRoot(input.dataRoot, (core, fileAdmission) =>
+    abandonSelectedTarget({ core, fileAdmission }, input)
+  );
 }
 
 /** Closes original finish rights and retires only its owned target under the supplied Core. */
@@ -857,7 +861,7 @@ async function bindTargetCandidate(
   const now = new Date().toISOString();
   const live = admitted.native;
   const client = getControlStoreWorkerClient();
-  if (live) client.setFileStorageAdmission(dataRoot, admitted.fileAdmission.forPath(root));
+  client.setFileStorageAdmission(dataRoot, admitted.fileAdmission.forPath(root));
   const native = live ? bindWorkspaceRecoveryNativeOwner(core, owned, live.freeze) : undefined;
   const {
     owner,

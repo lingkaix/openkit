@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { allocateEntityId, isEntityId } from '@openkit/protocol';
 import { RELEASE_IDENTITY_PATH, readReleaseIdentity } from '../diagnostics/release-identity.js';
-import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { configuredFileStorageAdmission } from './configured-file-admission.js';
 import type { WorkspaceBackupReport, WorkspaceBackupSource } from './workspace-backup.js';
 import {
   createWorkspaceBackup,
@@ -330,7 +330,13 @@ export async function runWorkspaceRecoveryCli(
       bundleRoot: args.bundleRoot,
       stagingParent: temporary,
       expectedRelease,
-      admission: new FileStorageAdmission(parent, () => 1_000_000_000n),
+      admission: configuredFileStorageAdmission(
+        args.command === 'capture'
+          ? args.source.kind === 'data-root-backup'
+            ? args.source.backupRoot
+            : args.source.dataRoot
+          : parent
+      ).forPath(parent),
     };
     let capture: WorkspaceBackupReport;
     let disposition: 'sealed' | 'prepared' | 'verified';

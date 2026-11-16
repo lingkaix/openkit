@@ -1,5 +1,6 @@
 import { writeCanonicalFileAtomic } from '@openkit/storage';
 import { FileStorageAdmission, type FileStorageReservation } from './artifacts/file-admission.js';
+import { DEFAULT_FILE_RESERVE_BYTES } from './file-reserve.js';
 
 let activeAdmission: FileStorageAdmission | undefined;
 
@@ -33,7 +34,8 @@ export function reserveCanonicalFileWrite(
     throw new Error('Canonical write length is invalid.');
   if (publication)
     return (
-      publication.admission ?? new FileStorageAdmission(publication.path, () => 1_000_000_000n)
+      publication.admission ??
+      new FileStorageAdmission(publication.path, () => BigInt(DEFAULT_FILE_RESERVE_BYTES))
     ).reserve(
       {
         stagingBytes: 0n,

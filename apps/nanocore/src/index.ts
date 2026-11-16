@@ -131,6 +131,7 @@ import {
   openCoreDbWithIntegrityCheck,
   openCoreReadDb,
 } from './storage/db.js';
+import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import {
   ensureConfigTemplateSurface,
   ensureLayout,
@@ -191,7 +192,7 @@ const restartCloseoutPackageSnapshots = new Set<string>();
 const nanohostTransportSessionAuthority = createNanoHostTransportSessionAuthority();
 // Recovery can stage files before the live configuration manager is assembled.
 let readFileReserveBytes = () =>
-  runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
+  runtimeConfigSnapshot?.openKitConfig.server?.fileReserveBytes ?? DEFAULT_FILE_RESERVE_BYTES;
 const fileAdmission = new FileStorageAdmission(dataRoot, () => BigInt(readFileReserveBytes()));
 getControlStoreWorkerClient().setFileStorageAdmission(dataRoot, fileAdmission);
 const nanoHostSessionDispatch = createNanoHostSessionDispatch({
@@ -715,7 +716,8 @@ const auth =
     : undefined;
 
 readFileReserveBytes = () =>
-  runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000;
+  runtimeConfigManager.current().openKitConfig.server?.fileReserveBytes ??
+  DEFAULT_FILE_RESERVE_BYTES;
 let prepareKnowledgeMaintenance: ((instant: string) => Promise<void>) | undefined;
 if (runtimeConfigSnapshot.openKitConfig.channels?.discord)
   await reconcileIncompleteDiscordInteractions(coreDb);

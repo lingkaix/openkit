@@ -7,6 +7,7 @@ import { copyFileForCut, createPrivateTree, removePrivateTree } from '@openkit/s
 import Database from 'better-sqlite3';
 
 import { FileStorageAdmission } from './artifacts/file-admission.js';
+import { DEFAULT_FILE_RESERVE_BYTES } from './file-reserve.js';
 import { coreDbPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import { listAppliedNativeMigrationIds, type StorageMigrationScope } from './migrate.js';
 
@@ -96,7 +97,7 @@ export interface StorageLayoutReport {
  */
 export async function createStorageLayoutReport(
   dataRoot: string,
-  fileAdmission = new FileStorageAdmission(dataRoot, () => 1_000_000_000n)
+  fileAdmission = new FileStorageAdmission(dataRoot, () => BigInt(DEFAULT_FILE_RESERVE_BYTES))
 ): Promise<StorageLayoutReport> {
   const users: StorageUserReport[] = [];
   const workspaces: StorageWorkspaceReport[] = [];

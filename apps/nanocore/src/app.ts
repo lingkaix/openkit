@@ -250,6 +250,7 @@ import { registerServiceRoutes } from './service-routes.js';
 import { FileStorageAdmission } from './storage/artifacts/file-admission.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { type CoreDb, openAdmittedWorkspaceReadDb, type WorkspaceDb } from './storage/db.js';
+import { DEFAULT_FILE_RESERVE_BYTES } from './storage/file-reserve.js';
 import { registerKnowledgePackageRoutes } from './storage/knowledge-package/routes.js';
 import { createWorkspaceSnapshotOperationImplementations } from './storage/workspace-backup.js';
 import { readFinishedDeletedWorkspaceRecovery } from './storage/workspace-recovery-journal.js';
@@ -931,12 +932,25 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     }
     return response;
   };
+  // An inferred physical root supplies file reserve policy without loading unrelated runtime settings.
+  const inferredFileReserveBytes =
+    mutationDataRoot &&
+    !dataRoot &&
+    !options.runtimeConfigManager &&
+    options.openKitConfig === undefined
+      ? loadOpenKitConfig(mutationDataRoot).server?.fileReserveBytes
+      : undefined;
   const fileAdmission =
     options.fileAdmission ??
-    new FileStorageAdmission(dataRoot ?? '.', () =>
-      BigInt(runtimeConfig().openKitConfig.server?.fileReserveBytes ?? 1_000_000_000)
+    new FileStorageAdmission(mutationDataRoot ?? '.', () =>
+      BigInt(
+        runtimeConfig().openKitConfig.server?.fileReserveBytes ??
+          inferredFileReserveBytes ??
+          DEFAULT_FILE_RESERVE_BYTES
+      )
     );
-  if (dataRoot) getControlStoreWorkerClient().setFileStorageAdmission(dataRoot, fileAdmission);
+  if (mutationDataRoot)
+    getControlStoreWorkerClient().setFileStorageAdmission(mutationDataRoot, fileAdmission);
   const nanoHostSessionDispatch =
     options.nanoHostSessionDispatch ??
     createNanoHostSessionDispatch({

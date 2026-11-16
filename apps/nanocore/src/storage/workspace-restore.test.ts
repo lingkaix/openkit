@@ -13,7 +13,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { createRequire } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { setImmediate as nextTurn } from 'node:timers/promises';
@@ -55,6 +55,7 @@ import {
   denySchedulerAdmissionEntry,
 } from '../scheduler-records.js';
 import { createDemoStore, DEMO_THREAD_ID, DEMO_WORKSPACE_ID } from '../test-support/demo-store.js';
+import { knowledgePageFixture } from '../test-support/knowledge-page.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import {
   recoveryJournalFact,
@@ -62,6 +63,7 @@ import {
 } from '../test-support/recovery-journal.js';
 import { managedThreadPolicy } from '../test-support/resource-policy.js';
 import { openTestNativeWorkspace } from '../test-support/store.js';
+import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   beginWorkspaceDeletion,
@@ -441,11 +443,29 @@ function copyInventory(source: string, target: string, relative = '') {
 }
 
 /** Makes a sealed input through existing native and hot-backup owners, independently of D0 capture. */
-async function fixture(channelHistory = false, unfinished = false) {
+async function fixture(channelHistory = false, unfinished = false, longPage = false) {
   const root = mkdtempSync(join(tmpdir(), 'd0-restore-'));
   roots.push(root);
   const dataRoot = join(root, 'source');
-  const store = await createDemoStore({ dataRoot });
+  const store = await createDemoStore({
+    dataRoot,
+    ...(longPage
+      ? {
+          knowledge: [
+            knowledgePageFixture(
+              {
+                id: `${'a'.repeat(60)}/${'b'.repeat(60)}/${'c'.repeat(60)}/${'d'.repeat(50)}`,
+                title: 'Long retained page',
+                content: 'Portable long page.',
+                createdAt: '2026-10-21T10:00:00.000Z',
+                updatedAt: '2026-10-21T10:00:00.000Z',
+              },
+              { kind: 'workspace', workspaceId }
+            ),
+          ],
+        }
+      : {}),
+  });
   const core = openCoreDb(dataRoot);
   const ownerId = ensureLocalUser(core);
   recordWorkspaceOwnerMembership({ coreDb: core, workspaceId, ownerUserId: ownerId });
@@ -837,6 +857,53 @@ async function readmissionFixture(
 }
 
 describe('D0-2 same-deployment restore', () => {
+  it('restores long Knowledge paths through the existing Notebook and backup readers', async () => {
+    const f = await fixture(false, false, true);
+    const path = `${'a'.repeat(60)}/${'b'.repeat(60)}/${'c'.repeat(60)}/${'d'.repeat(50)}.md`;
+    const original = readTestWorkspaceNotebookSelection(f.dataRoot, workspaceId);
+    const content = original.notebook.readRevision(original.head.notebookCommit).files[path];
+    expect(content).toContain('Portable long page.');
+    const result = await runCli(f.argv, () => {}, f);
+    expect(result.disposition).toBe('restored');
+    const restored = readTestWorkspaceNotebookSelection(f.dataRoot, workspaceId);
+    expect(restored.notebook.readRevision(restored.head.notebookCommit).files[path]).toBe(content);
+  });
+
+  it('uses server.fileReserveBytes for stopped restore before publishing any replacement', async () => {
+    const f = await fixture();
+    mkdirSync(join(f.dataRoot, 'config'), { recursive: true });
+    writeFileSync(
+      join(f.dataRoot, 'config/server.jsonc'),
+      JSON.stringify({
+        schemaVersion: 1,
+        server: { fileReserveBytes: 2_000_000_000 },
+      })
+    );
+    const fs = createRequire(import.meta.url)('node:fs') as typeof import('node:fs');
+    const original = fs.statfsSync;
+    const capacity = vi.spyOn(fs, 'statfsSync').mockImplementation((path, options) => {
+      const actual = original(path, options as { bigint: true });
+      return { ...actual, bavail: 1_500_000_000n, bsize: 1n };
+    });
+    syncBuiltinESMExports();
+    const before = inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId));
+    try {
+      await expect(runCli(f.argv, () => {}, f)).rejects.toMatchObject({
+        code: 'capacity-exceeded',
+      });
+      expect(inventoryRegularFiles(join(f.dataRoot, 'workspaces', workspaceId))).toEqual(before);
+      const core = openCoreDb(f.dataRoot);
+      try {
+        expect(readRecoveryExecution(core, f.requestId)).toBeUndefined();
+      } finally {
+        core.sqlite.close();
+      }
+    } finally {
+      capacity.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
   it('retains the actual committed registration after its native host loses the FULL reply, then resolves by explicit selected replay', async () => {
     const f = await readmissionFixture(false, 'after-target-rename');
     await shutdownControlStoreWorkerClient();

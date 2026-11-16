@@ -16,10 +16,13 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { zstdDecompressSync } from 'node:zlib';
 import { WORKSPACE_RESOURCE_POLICY_FEATURE } from '@openkit/config-schema';
 import { allocateEntityId } from '@openkit/protocol';
 import { parse as parseJsonc } from 'jsonc-parser';
+import { extract } from 'tar-stream';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ZodError } from 'zod';
 import { DEFAULT_SCOPE_KNOWLEDGE_SCHEMA_TEXT } from '../knowledge/okf.js';
@@ -283,29 +286,35 @@ describe('workspace export filesystem boundaries', () => {
     expect(existsSync(exportRoot)).toBe(false);
   });
 
-  it('rejects a basename that cannot fit strict USTAR before accepting the export', () => {
-    const parent = mkdtempSync(join(tmpdir(), 'openkit-export-ustar-path-'));
+  it('writes and verifies a Knowledge page beyond USTAR path limits', () => {
+    const parent = mkdtempSync(join(tmpdir(), 'openkit-export-pax-path-'));
     const exportRoot = join(parent, 'export');
     const input = minimalExportInput(exportRoot);
-
-    expect(() =>
-      writeWorkspaceExportTree({
-        ...input,
-        portableFileState: {
-          ...input.portableFileState!,
-          nativeKnowledgePages: new Map([
-            [
-              `knowledge/pages/${'a'.repeat(101)}.md`,
-              '---\ntype: "RepoConvention"\ntitle: "Too long for USTAR"\n---\nPortable.\n',
-            ],
-          ]),
-        },
-      })
-    ).toThrow(/POSIX USTAR/);
-    expect(existsSync(exportRoot)).toBe(false);
+    const path = `knowledge/pages/${'a'.repeat(130)}.md`;
+    const content = serializeKnowledgePageFixture(
+      {
+        title: 'Long path',
+        content: 'Portable.',
+        sourceReferences: [],
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      { kind: 'workspace', workspaceId: input.workspace.id }
+    );
+    const written = writeWorkspaceExportTree({
+      ...input,
+      portableFileState: {
+        ...input.portableFileState!,
+        nativeKnowledgePages: new Map([[path, content]]),
+      },
+    });
+    expect(written.fileContents.get(`workspace-files/${path}`)).toBe(content);
+    expect(
+      verifyWorkspaceExportTree({ exportRoot }).fileContents.get(`workspace-files/${path}`)
+    ).toBe(content);
   });
 
-  it('rejects an existing verified tree whose basename cannot fit strict USTAR', () => {
+  it('rejects traversal in a long inventory path', () => {
     const parent = mkdtempSync(join(tmpdir(), 'openkit-verify-ustar-path-'));
     const exportRoot = join(parent, 'export');
     writeWorkspaceExportTree(minimalExportInput(exportRoot));
@@ -320,14 +329,14 @@ describe('workspace export filesystem boundaries', () => {
     };
     const entry = manifest.contentInventory.find((candidate) => candidate.path === originalPath);
     if (!entry) throw new Error('Expected workspace config inventory entry.');
-    entry.path = longPath;
+    entry.path = `${longPath}/../../../../outside.md`;
     manifest.contentInventory.sort((left, right) => left.path.localeCompare(right.path));
     manifest.contentDigest = `sha256:${createHash('sha256')
       .update(JSON.stringify(manifest.contentInventory))
       .digest('hex')}`;
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
-    expect(() => verifyWorkspaceExportTree({ exportRoot })).toThrow(/POSIX USTAR/);
+    expect(() => verifyWorkspaceExportTree({ exportRoot })).toThrow();
   });
 
   it('rejects symlink and non-directory verifier roots before reading a manifest', () => {
@@ -453,7 +462,11 @@ describe('workspace export route boundaries', () => {
     }
   });
 
-  it('exports a knowledge page path that needs a USTAR prefix', async () => {
+  it.each([
+    `${'a'.repeat(60)}/${'b'.repeat(60)}.md`,
+    `${'a'.repeat(60)}/${'b'.repeat(60)}/${'c'.repeat(60)}/page.md`,
+    `${'a'.repeat(60)}/${'b'.repeat(60)}/${'c'.repeat(60)}/${'d'.repeat(50)}.md`,
+  ])('exports a Knowledge page path through standard TAR: %s', async (relativePagePath) => {
     const sourceDataRoot = mkdtempSync(join(tmpdir(), 'openkit-workspace-archive-ustar-source-'));
     const sourceStore = await createBoundaryStore(sourceDataRoot);
     const sourceApp = createApp({
@@ -461,7 +474,7 @@ describe('workspace export route boundaries', () => {
       dataRoot: sourceDataRoot,
       store: sourceStore,
     });
-    const pagePath = `knowledge/pages/${'a'.repeat(60)}/${'b'.repeat(60)}.md`;
+    const pagePath = `knowledge/pages/${relativePagePath}`;
     const pageContent = serializeKnowledgePageFixture(
       {
         title: 'USTAR prefix page',
@@ -504,9 +517,19 @@ describe('workspace export route boundaries', () => {
       `/api/app/workspaces/ws_00000000-0000-7000-8000-000000000001/exports/${exportId}/archive`
     );
     expect(archiveResponse.status, await archiveResponse.clone().text()).toBe(200);
-    const archived = readTarRegularFiles(
-      zstdDecompressSync(Buffer.from(await archiveResponse.arrayBuffer()))
-    );
+    const tar = zstdDecompressSync(Buffer.from(await archiveResponse.arrayBuffer()));
+    const reader = extract();
+    const feeding = pipeline(Readable.from([tar]), reader);
+    const archived = new Map<string, Buffer>();
+    for await (const stream of reader) {
+      const chunks: Buffer[] = [];
+      for await (const chunk of stream) chunks.push(chunk);
+      if (stream.header.type === 'file') {
+        expect(archived.has(stream.header.name)).toBe(false);
+        archived.set(stream.header.name, Buffer.concat(chunks));
+      }
+    }
+    await feeding;
     const archivedPath = `workspace-files/${pagePath}`;
     expect(archived.has(archivedPath)).toBe(true);
     expect(archived.get(archivedPath)).toEqual(Buffer.from(pageContent));

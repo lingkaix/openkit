@@ -26,7 +26,9 @@ import {
   writeExecutionJournalIntent,
 } from '../runtime/execution-journal.js';
 import type { ExecutionStepRef } from '../runtime/execution-step-journal.js';
+import type { FileStorageAdmission } from './artifacts/file-admission.js';
 import { reserveCanonicalFileWrite } from './canonical-write-capacity.js';
+import { configuredFileStorageAdmission } from './configured-file-admission.js';
 import { configureOwnedSqlite } from './control-store.js';
 import { commandInputHash } from './control-store-input.js';
 import {
@@ -509,7 +511,7 @@ export function openRecoveryDatabase(path: string): Database.Database {
 /** Holds the existing root lock throughout one explicit offline decision; never composes a server. */
 export async function withRecoveryRoot<T>(
   dataRoot: string,
-  body: (core: CoreDb) => Promise<T>
+  body: (core: CoreDb, fileAdmission: FileStorageAdmission) => Promise<T>
 ): Promise<T> {
   let lock: ReturnType<typeof acquireDataRootLock> | undefined;
   let core: CoreDb | undefined;
@@ -520,7 +522,9 @@ export async function withRecoveryRoot<T>(
     const stat = lstatSync(coreDbPath(dataRoot), { throwIfNoEntry: false });
     if (!stat?.isFile() || stat.size === 0) refuseRecovery('source-unavailable');
     core = openExistingCoreDbWithIntegrityCheck(dataRoot);
-    return await body(core);
+    const fileAdmission = configuredFileStorageAdmission(dataRoot);
+    getControlStoreWorkerClient().setFileStorageAdmission(dataRoot, fileAdmission);
+    return await body(core, fileAdmission);
   } catch (error) {
     if (error instanceof WorkspaceRecoveryError) throw error;
     if (error instanceof DataRootLockError) refuseRecovery('root-locked');
@@ -812,7 +816,11 @@ export function readRecoveryProofContent(
 
 /** Publishes proof before its journal reference inside the native/stopped Core decision. */
 function recoveryContent(core: CoreDb, proof: RecoveryProof): string {
-  const file = recoveryProofFile(core.dataRoot, proof);
+  const file = recoveryProofFile(
+    core.dataRoot,
+    proof,
+    configuredFileStorageAdmission(core.dataRoot)
+  );
   try {
     writeCanonicalFileAtomic(
       file.path,

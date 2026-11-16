@@ -203,6 +203,28 @@ afterEach(async () => {
 });
 
 describe('Workspace backup bundle: specification-derived structural verification', () => {
+  it('admits and stages a long Knowledge path through the shared restore manifest reader', async () => {
+    const fixture = await bundleFixture();
+    const member = `knowledge/pages/${'a'.repeat(130)}/${'b'.repeat(130)}.md`;
+    const bytes = Buffer.from('Portable long path.');
+    await mkdir(path.dirname(path.join(fixture.bundleRoot, member)), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await writeFile(path.join(fixture.bundleRoot, member), bytes, { mode: 0o600 });
+    fixture.manifest.inventory.push({
+      path: member,
+      bytes: bytes.length,
+      sha256: digest(bytes),
+      mode: 0o600,
+    });
+    fixture.manifest.inventoryDigest = digest(JSON.stringify(fixture.manifest.inventory));
+    await writeMetadata(fixture);
+    await withVerifiedWorkspaceBackupBundle(fixture.input, async (bundle) => {
+      expect(await consumeBytes(bundle, member)).toEqual(bytes);
+    });
+  });
+
   it.each(['backup', 'move'] as const)(
     'Bundle: "format version 1 ... purpose backup or move" — accepts %s and preserves exact bytes',
     async (purpose) => {

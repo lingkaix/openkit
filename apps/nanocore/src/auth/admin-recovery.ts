@@ -14,6 +14,7 @@ import { dirname, isAbsolute } from 'node:path';
 import { deriveEntityId, isEntityId, isRecord } from '@openkit/protocol';
 import { acquireDataRootLock, DataRootLockError } from '../bootstrap/lock.js';
 import { readAuditEventRowV1 } from '../policy/retained-records-v1.js';
+import { configuredFileStorageAdmission } from '../storage/configured-file-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type CoreDb, openExistingCoreDbWithIntegrityCheck } from '../storage/db.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
@@ -225,7 +226,8 @@ async function runLocked<T>(
       const scope = nativeProductScope(coreDb.dataRoot, { kind: 'server' });
       const database = `core:${scope.path}`;
       try {
-        if (native)
+        if (native) {
+          native.setFileStorageAdmission(dataRoot, configuredFileStorageAdmission(dataRoot));
           await native.open({
             database,
             path: scope.path,
@@ -233,6 +235,7 @@ async function runLocked<T>(
             create: false,
             productOwner: scope.owner,
           });
+        }
         result = await command(coreDb);
       } finally {
         if (native) {

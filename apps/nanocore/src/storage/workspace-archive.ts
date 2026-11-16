@@ -33,8 +33,7 @@ function validateTarPath(name: string, directory: boolean): string {
  * @param path Canonical relative entry path, including a directory suffix when applicable.
  * @returns Exact USTAR name and prefix fields.
  */
-export function splitWorkspaceArchivePath(path: string): { name: Buffer; prefix: Buffer } {
-  validateTarPath(path, path.endsWith('/'));
+function ustarPath(path: string): { name: Buffer; prefix: Buffer } | undefined {
   const direct = Buffer.from(path);
   if (direct.byteLength <= 100) {
     return { name: direct, prefix: Buffer.alloc(0) };
@@ -46,22 +45,12 @@ export function splitWorkspaceArchivePath(path: string): { name: Buffer; prefix:
       return { name, prefix };
     }
   }
-  throw new Error('Workspace export path cannot be represented by POSIX USTAR.');
+  return undefined;
 }
 
-/**
- * Requires one portable export file and every derived directory to fit strict POSIX USTAR.
- *
- * @param path Export-relative regular-file path.
- */
+/** Admits one safe canonical path, shared by export, verification and operational restore. */
 export function assertWorkspaceArchiveFilePath(path: string): void {
-  splitWorkspaceArchivePath(path);
-  const parts = path.split('/');
-  parts.pop();
-  while (parts.length > 0) {
-    splitWorkspaceArchivePath(`${parts.join('/')}/`);
-    parts.pop();
-  }
+  validateTarPath(path, false);
 }
 
 /** Writes one canonical NUL-terminated USTAR octal field. */
@@ -78,14 +67,50 @@ function writeWorkspaceArchiveOctal(
   header.write(encoded, offset, length, 'ascii');
 }
 
-/** Returns one deterministic strict POSIX USTAR header. */
+/** Returns deterministic entry framing; only paths beyond USTAR gain a standard PAX path record. */
 export function workspaceArchiveHeader(
   path: string,
   type: 'directory' | 'file',
   size: number,
   mode?: number
 ): Buffer {
-  const { name, prefix } = splitWorkspaceArchivePath(path);
+  validateTarPath(path, type === 'directory');
+  const fields = ustarPath(path);
+  if (fields) return ustarHeader(fields, type, size, mode);
+  // PAX length counts UTF-8 bytes, including its own decimal length and final newline.
+  const value = Buffer.from(` path=${path}\n`);
+  let length = value.length + 1;
+  while (length !== value.length + String(length).length)
+    length = value.length + String(length).length;
+  const record = Buffer.concat([Buffer.from(String(length)), value]);
+  return Buffer.concat([
+    ustarHeader(
+      { name: Buffer.from('PaxHeader'), prefix: Buffer.alloc(0) },
+      'pax',
+      record.length,
+      0o644
+    ),
+    record,
+    Buffer.alloc((512 - (record.length % 512)) % 512),
+    ustarHeader(
+      {
+        name: Buffer.from(type === 'directory' ? 'PaxEntry/' : 'PaxEntry'),
+        prefix: Buffer.alloc(0),
+      },
+      type,
+      size,
+      mode
+    ),
+  ]);
+}
+
+/** Encodes unchanged deterministic USTAR fields for a member or its local extended header. */
+function ustarHeader(
+  { name, prefix }: { name: Buffer; prefix: Buffer },
+  type: 'directory' | 'file' | 'pax',
+  size: number,
+  mode?: number
+): Buffer {
   const header = Buffer.alloc(512);
   name.copy(header, 0);
   writeWorkspaceArchiveOctal(header, 100, 8, mode ?? (type === 'directory' ? 0o755 : 0o644));
@@ -94,7 +119,7 @@ export function workspaceArchiveHeader(
   writeWorkspaceArchiveOctal(header, 124, 12, size);
   writeWorkspaceArchiveOctal(header, 136, 12, 0);
   header.fill(32, 148, 156);
-  header[156] = type === 'directory' ? 53 : 48;
+  header[156] = type === 'pax' ? 120 : type === 'directory' ? 53 : 48;
   header.write('ustar\0', 257, 6, 'ascii');
   header.write('00', 263, 2, 'ascii');
   writeWorkspaceArchiveOctal(header, 329, 8, 0);

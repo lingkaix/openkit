@@ -298,6 +298,7 @@ import type {
   ControlExecutionAttemptCommand,
   ControlExecutionAttemptResult,
 } from './execution-attempt-codecs.js';
+import { DEFAULT_FILE_RESERVE_BYTES } from './file-reserve.js';
 import { ensureUserLayout, resolveDataRootPath, userDbPath, workspaceDbPath } from './fs-layout.js';
 import type {
   ControlHarnessLifecycleInput,
@@ -1304,6 +1305,7 @@ class ControlStoreWorkerClient {
     }
   }
   private readonly fileAdmissions = new Map<string, FileStorageAdmission>();
+  private readonly explicitFileAdmissionRoots = new Set<string>();
   private readonly walCapacity = new Map<
     string,
     { reservation: FileStorageReservation; users: number }
@@ -1464,7 +1466,42 @@ class ControlStoreWorkerClient {
 
   /** Binds the existing live file policy before native admission, including cold scope opens. */
   setFileStorageAdmission(dataRoot: string, admission: FileStorageAdmission): void {
-    this.fileAdmissions.set(resolve(dataRoot), admission);
+    const root = resolve(dataRoot);
+    this.fileAdmissions.set(root, admission);
+    this.explicitFileAdmissionRoots.add(root);
+  }
+
+  /** Returns the existing selected owner for this exact root without creating a policy. */
+  getFileStorageAdmission(dataRoot: string): FileStorageAdmission | undefined {
+    return this.fileAdmissions.get(resolve(dataRoot));
+  }
+
+  /** Path-only User/private OPENs reuse the nearest explicitly configured root policy. */
+  private fileAdmissionForPath(path: string): FileStorageAdmission | undefined {
+    const candidate = resolve(path);
+    let selected: { root: string; admission: FileStorageAdmission; explicit: boolean } | undefined;
+    for (const [root, admission] of this.fileAdmissions) {
+      const explicit = this.explicitFileAdmissionRoots.has(root);
+      if (
+        (candidate === root || candidate.startsWith(`${root}/`)) &&
+        (!selected ||
+          (explicit && !selected.explicit) ||
+          (explicit === selected.explicit && root.length > selected.root.length))
+      )
+        selected = { root, admission, explicit };
+    }
+    return selected?.admission;
+  }
+
+  /** Retires only a superseded compatibility reserve; shared outstanding forecasts remain held. */
+  private compatibilityFileAdmission(dataRoot: string): FileStorageAdmission {
+    const root = resolve(dataRoot);
+    const admission: FileStorageAdmission = new FileStorageAdmission(root, () => {
+      return this.fileAdmissionForPath(root) === admission
+        ? BigInt(DEFAULT_FILE_RESERVE_BYTES)
+        : 0n;
+    });
+    return admission;
   }
 
   /** Holds actual filesystem capacity for native staging and its conservative bounded WAL growth. */
@@ -1483,9 +1520,14 @@ class ControlStoreWorkerClient {
       command.operation === 'open'
         ? (command.dataRoot ?? dirname(path))
         : (opening?.command.dataRoot ?? dirname(path));
-    let admission = this.fileAdmissions.get(resolve(root));
+    const explicitRoot =
+      command.operation === 'open' ? command.dataRoot : opening?.command.dataRoot;
+    let admission =
+      explicitRoot === undefined
+        ? this.fileAdmissionForPath(path)
+        : this.fileAdmissions.get(resolve(root));
     if (!admission) {
-      admission = new FileStorageAdmission(root, () => 1_000_000_000n);
+      admission = this.compatibilityFileAdmission(root);
       this.fileAdmissions.set(resolve(root), admission);
     }
     const entries: ControlProductEntry[] = [];
@@ -3490,7 +3532,7 @@ class ControlStoreWorkerClient {
     const root = resolve(opening.command.dataRoot);
     let admission = this.fileAdmissions.get(root);
     if (!admission) {
-      admission = new FileStorageAdmission(root, () => 1_000_000_000n);
+      admission = this.compatibilityFileAdmission(root);
       this.fileAdmissions.set(root, admission);
     }
     return admission.forPath(opening.path).reserve({
@@ -4518,7 +4560,7 @@ class ControlStoreWorkerClient {
     const root = resolve(opening.command.dataRoot);
     let admission = this.fileAdmissions.get(root);
     if (!admission) {
-      admission = new FileStorageAdmission(root, () => 1_000_000_000n);
+      admission = this.compatibilityFileAdmission(root);
       this.fileAdmissions.set(root, admission);
     }
     const stagedCapacity = admission.forPath(staging).reserve({
@@ -7012,7 +7054,10 @@ class ControlStoreWorkerClient {
           throw new ControlStoreWorkerError('precondition', 'not-committed');
       }
       const root = opening.command.dataRoot ?? dirname(opening.path);
-      const admission = this.fileAdmissions.get(resolve(root));
+      const admission =
+        opening.command.dataRoot === undefined
+          ? this.fileAdmissionForPath(opening.path)
+          : this.fileAdmissions.get(resolve(root));
       if (!admission) throw new Error('Missing native capacity owner.');
       const physicalRoot = dirname(opening.path);
       // The opening owns both roots. A forecast cannot name another Workspace or supply a root.

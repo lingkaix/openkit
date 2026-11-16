@@ -32,7 +32,8 @@ import { getWorkerCheckpoint } from '../runtime/worker-checkpoints.js';
 import { getWorkerControlAcceptedFinalStatus as readFinal } from '../runtime/worker-control-records.js';
 import { WorkerGovernanceCapacityUnavailableError } from '../runtime/worker-governance-backend.js';
 import type { createSchedulerAdmissionEntry } from '../scheduler-records.js';
-import { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
+import { configuredFileStorageAdmission } from '../storage/configured-file-admission.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { type openCoreDb, openWorkspaceDb } from '../storage/db.js';
 import { recordTestNativeRuntimeTarget } from './native-environment.js';
 import { TEST_WORKER_RELEASE_IDENTITY } from './release-identity.js';
@@ -93,8 +94,10 @@ export async function createNativeTaskAdmissionFixture(
   }
 ) {
   await recordTestNativeRuntimeTarget(coreDb);
+  const fileAdmission =
+    getControlStoreWorkerClient().getFileStorageAdmission(coreDb.dataRoot) ??
+    configuredFileStorageAdmission(coreDb.dataRoot);
   const startup = observeNativeTaskStartup(store);
-  const fileAdmission = new FileStorageAdmission(coreDb.dataRoot, () => 1_000_000_000n);
   const workerControlGateway = createDefaultWorkerControlGateway(coreDb);
   const steerCalls: import('../runtime/nanohost-harness.js').NanoHostHarnessCommand[] = [];
   const completion = Promise.withResolvers<void>();
