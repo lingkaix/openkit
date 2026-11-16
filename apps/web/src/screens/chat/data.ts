@@ -1526,6 +1526,13 @@ export function useSubmitTurnAnswers(workspaceId: string, threadId: string) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: chatKeys.items(workspaceId, threadId) });
       void queryClient.invalidateQueries({ queryKey: chatKeys.dashboard(workspaceId, threadId) });
+      // The visible window polls on an idle interval. The answer has to refresh that read now.
+      void queryClient.invalidateQueries({
+        queryKey: ['thread-timeline', workspaceId, threadId],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ['thread-timeline-items', workspaceId, threadId],
+      });
     },
   });
 }
