@@ -13,7 +13,6 @@ import {
   ProductTurnSchema,
   StopReasonSchema,
   ThreadIdSchema,
-  ThreadSchema,
   TimestampSchema,
   TurnIdSchema,
   TurnStatusSchema,
@@ -25,6 +24,7 @@ import { z } from 'zod';
 import { type HumanAttentionRow, HumanAttentionRowSchema } from './action-center.js';
 import { ApprovalEffectPreviewSchema } from './pending-request.js';
 import { TaskModeContextRefSchema } from './task-mode.js';
+import { ProductThreadSchema } from './thread-projection.js';
 import { type TimelineItem, TimelineItemSchema } from './thread-timeline.js';
 
 /** Current status for a thread workbench, including the idle no-turn state. */
@@ -205,7 +205,7 @@ export const ListSchedulerAdmissionsResponseSchema = z.object({
 export const ConversationNavigationResponseSchema = z.object({
   items: z.array(
     z.object({
-      thread: ThreadSchema,
+      thread: ProductThreadSchema,
       activity: z.enum(['chat', 'task', 'goal', 'unknown']),
       state: z.enum(['working', 'needs-you', 'idle']),
       lastActivityAt: TimestampSchema,
@@ -232,7 +232,7 @@ export const WorkspaceDashboardResponseSchema = z.object({
     agentId: z.string().min(1).nullable(),
   }),
   agentHealth: z.array(AgentHealthSchema.extend({ agentId: AgentIdSchema })),
-  recentThreads: z.array(ThreadSchema),
+  recentThreads: z.array(ProductThreadSchema),
   activeWork: z.array(WorkspaceActiveWorkSchema).default([]),
   recentCompletions: z.array(WorkspaceCompletionSchema).default([]),
   attentionNeeded: z.array(WorkspaceAttentionSchema).default([]),
@@ -323,7 +323,7 @@ export const ThreadDashboardResponseSchema = z
         )
       )
     ),
-    thread: ThreadSchema,
+    thread: ProductThreadSchema,
     turns: z.array(ProductTurnSchema),
     artifacts: z.array(DashboardArtifactSummarySchema),
     workStatus: ThreadWorkStatusSchema,

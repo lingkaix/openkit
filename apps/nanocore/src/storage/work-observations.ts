@@ -275,6 +275,16 @@ const payloadSchemas = {
         });
     }),
   'runtime.observed': WorkerObservationDataSchema,
+  // Reserved configured identity at shared dispatch; this does not assert provider delivery or a reported snapshot.
+  'config.model': z
+    .object({
+      attempt: z.number().int().nonnegative(),
+      providerRef: z.string().min(1),
+      model: z.string().min(1),
+      sampling: modelSamplingSchema,
+      cause: z.string().min(1).optional(),
+    })
+    .strip(),
   'model.observed': z.discriminatedUnion('direction', [
     z
       .object({
@@ -335,7 +345,7 @@ export function parseWorkObservationRecord(value: unknown): WorkObservationRecor
   }
   row.payload = schema.parse(row.payload);
   if (
-    (row.type.startsWith('model.') && row.obs !== 'llm-gateway') ||
+    ((row.type.startsWith('model.') || row.type === 'config.model') && row.obs !== 'llm-gateway') ||
     (row.type === 'runtime.observed' && row.obs !== 'worker-shim') ||
     ((row.type === 'env.bound' || row.type === 'turn.reap') && row.obs !== 'nanocore')
   )

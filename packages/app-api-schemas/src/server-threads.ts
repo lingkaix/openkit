@@ -3,7 +3,6 @@ import {
   KnowledgeServerOwnerScopeSchema,
   RequestIdSchema,
   ThreadIdSchema,
-  ThreadSchema,
   TurnIdSchema,
   TurnSchema,
 } from '@openkit/protocol';
@@ -18,6 +17,7 @@ import {
   ReadKnowledgeProposalRequestSchema,
   ReadKnowledgeProposalResponseSchema,
 } from './knowledge-proposal-preview.js';
+import { ProductThreadSchema } from './thread-projection.js';
 
 /** Server ownership comes from current administration admission, never a Workspace selector. */
 export const ServerKnowledgeMaintainRequestSchema = KnowledgeMaintainRequestSchema.omit({
@@ -30,7 +30,7 @@ export const ServerKnowledgeTellRequestSchema = KnowledgeTellRequestSchema.omit(
 /** General Server Thread history retains the same Turn and Item families without a Workspace anchor. */
 export const ReadServerThreadRequestSchema = z.object({ threadId: ThreadIdSchema }).strict();
 export const ReadServerThreadResponseSchema = z
-  .object({ thread: ThreadSchema, turns: z.array(TurnSchema) })
+  .object({ thread: ProductThreadSchema, turns: z.array(TurnSchema) })
   .strict()
   .refine(
     ({ thread, turns }) =>
@@ -38,7 +38,7 @@ export const ReadServerThreadResponseSchema = z
     'Server history requires Server-owned records.'
   );
 export const ListServerThreadsResponseSchema = z
-  .object({ items: z.array(ThreadSchema) })
+  .object({ items: z.array(ProductThreadSchema) })
   .strict()
   .refine(
     ({ items }) => items.every((thread) => thread.owner.kind === 'server'),

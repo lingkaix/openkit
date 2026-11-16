@@ -26,6 +26,21 @@ export const NotebookCommitMetadataSchema = KnowledgeNotebookCommitMetadataSchem
 /** Historical admission facts; the service adds the retained commit format marker. */
 export type NotebookCommitMetadata = z.infer<typeof NotebookCommitMetadataSchema>;
 
+/** Preserve historical message bytes and append only explicitly recorded E9 revision provenance. */
+function serializeCommitMetadata(metadata: NotebookCommitMetadata, marked: boolean): string {
+  return `${JSON.stringify({
+    ...(marked ? { schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION } : {}),
+    summary: metadata.summary,
+    changeRequest: metadata.changeRequest,
+    producer: metadata.producer,
+    authority: metadata.authority,
+    sourceReferences: metadata.sourceReferences,
+    ...(metadata.externallyInfluenced === undefined
+      ? {}
+      : { externallyInfluenced: metadata.externallyInfluenced }),
+  })}\n`;
+}
+
 /** Immutable notebook bytes and historical admission facts read from one Git commit. */
 export interface NotebookRevision {
   readonly revision: string;
@@ -476,12 +491,11 @@ export class KnowledgeNotebook {
       const parsed: unknown = JSON.parse(message);
       metadata = NotebookCommitMetadataSchema.parse(parsed);
       // Historical absence keeps its original canonical bytes; explicit markers remain closed.
-      const canonical =
-        typeof parsed === 'object' && parsed !== null && Object.hasOwn(parsed, 'schemaVersion')
-          ? { schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION, ...metadata }
-          : metadata;
+      const marked =
+        typeof parsed === 'object' && parsed !== null && Object.hasOwn(parsed, 'schemaVersion');
       // Service serialization also rejects duplicate keys and trailing JSON fragments.
-      if (message !== `${JSON.stringify(canonical)}\n`) throw new Error('Invalid metadata.');
+      if (message !== serializeCommitMetadata(metadata, marked))
+        throw new Error('Invalid metadata.');
     } catch {
       throw new NotebookError('recovery_required');
     }
@@ -1188,7 +1202,7 @@ export class KnowledgeNotebook {
     const root = yield* writeTree(tree);
     return (yield {
       args: ['commit-tree', root, ...(parent ? ['-p', parent] : []), '-F', '-'],
-      input: `${JSON.stringify({ schemaVersion: KNOWLEDGE_NOTEBOOK_COMMIT_SCHEMA_VERSION, ...metadata })}\n`,
+      input: serializeCommitMetadata(metadata, true),
       author: metadata.producer.id,
     }).trim();
   }

@@ -4,9 +4,7 @@ import {
   ItemIdSchema,
   ItemSchema,
   ListThreadItemsResponseSchema,
-  ListThreadsResponseSchema,
   ThreadIdSchema,
-  ThreadSchema,
   TurnIdSchema,
   UpdateThreadRequestSchema,
   WorkspaceIdSchema,
@@ -14,6 +12,7 @@ import {
 import { z } from 'zod';
 import { ThreadDashboardResponseSchema } from './dashboard.js';
 import type { OperationDefinition } from './operation-contract.js';
+import { ProductThreadSchema } from './thread-projection.js';
 import { ThreadTimelineInputSchema, ThreadTimelineResponseSchema } from './thread-timeline.js';
 
 /** Credentials already used by the public Workspace, Thread and Turn families. */
@@ -27,6 +26,12 @@ const publicCredentials = [
 const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 
 const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
+
+/** Public list view excludes retained segmentation reservations from Thread items. */
+export const ProductListThreadsResponseSchema = z.object({
+  items: z.array(ProductThreadSchema),
+  nextCursor: z.string().min(1).nullable().optional(),
+});
 
 /** Current User membership for the required bounded selection; never a complete Thread read. */
 export const ThreadReadStateResponseSchema = z.object({
@@ -53,7 +58,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'List visible Threads in one Workspace.',
     inputSchema: z.object(workspaceSelector).strict(),
-    outputSchema: ListThreadsResponseSchema,
+    outputSchema: ProductListThreadsResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
@@ -67,7 +72,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Update one visible Thread with exact command replay.',
     inputSchema: UpdateThreadRequestSchema,
-    outputSchema: ThreadSchema,
+    outputSchema: ProductThreadSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
@@ -81,7 +86,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Archive one visible Thread and close out its pending requests.',
     inputSchema: ArchiveThreadRequestSchema,
-    outputSchema: ThreadSchema,
+    outputSchema: ProductThreadSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },
@@ -96,7 +101,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     description:
       'Create one Thread; private by default, explicitly workspace-shared for formal work.',
     inputSchema: CreateThreadRequestSchema.strict(),
-    outputSchema: ThreadSchema,
+    outputSchema: ProductThreadSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },
@@ -110,7 +115,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'Read one visible Thread.',
     inputSchema: z.object(threadSelector).strict(),
-    outputSchema: ThreadSchema,
+    outputSchema: ProductThreadSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'addressed-thread', threadField: 'threadId', missing: 'not-found' },

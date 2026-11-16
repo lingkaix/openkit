@@ -21,6 +21,17 @@ export const ThreadSchema = z
     workspaceId: z.never().optional(),
     /** Immutable originating Thread of a separate receiving-Thread handoff. */
     parentThreadId: ThreadIdSchema.optional(),
+    /** Reserved zero-based segment ordinal; absence means no recorded segmentation ordinal. */
+    segment: z.number().int().nonnegative().optional(),
+    /** Reserved boundary-delayed cap; absence means no recorded cap, never a default. */
+    segmentation: z
+      .object({
+        maxObservationLines: z.number().int().positive(),
+        maxBytes: z.number().int().positive(),
+        boundaryDelayed: z.literal(true),
+      })
+      .strip()
+      .optional(),
     name: z.string().min(1).nullable(),
     preview: z.string().min(1),
     status: z.enum(['active', 'archived']),
