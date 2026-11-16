@@ -391,6 +391,11 @@ export interface ThreadStreamProps {
   /** Host for the new-updates control, outside the scrolling entries. */
   updatesHost?: HTMLElement | null;
   /**
+   * Phone chrome host above the timeline scroller.
+   * A sticky bar inside that scroller covers the steps control once the bar grows.
+   */
+  chromeHost?: HTMLElement | null;
+  /**
    * A stale dashboard is already cached. Hide runs until this mount's read succeeds.
    * A pending read with no cache still shows its own checking state.
    */
@@ -429,6 +434,7 @@ export function ThreadStream({
   narrativeOnly,
   sheets,
   updatesHost,
+  chromeHost,
   holdContent = false,
 }: ThreadStreamProps) {
   const phone = !usePersistentNavigation();
@@ -1233,11 +1239,11 @@ export function ThreadStream({
   }, [inspectedTurnId, panelHost, phone, phoneInspectId, portalNode]);
   const chromeRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (!phone || holdContent || narrativeOnly) return;
+    if (!phone || chromeHost || holdContent || narrativeOnly) return;
     const node = chromeRef.current;
     if (!node) return;
     return bindScrollPadding(node, 'top');
-  }, [holdContent, narrativeOnly, phone]);
+  }, [chromeHost, holdContent, narrativeOnly, phone]);
 
   if (holdContent) {
     return (
@@ -1412,10 +1418,13 @@ export function ThreadStream({
     ? decisionWalk.find((entry) => entry.key === remainingDecisions.nextKey)
     : undefined;
   const barTarget = barDecisionTarget(decisionWalk, openDecisionItemIds);
+  const chromeOutside = Boolean(phone && chromeHost);
   const chrome = narrativeOnly ? null : (
     <div
       ref={chromeRef}
-      className="ok-timeline-chrome sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2"
+      className={`ok-timeline-chrome flex min-w-0 flex-col gap-2 bg-layer-1 py-2${
+        chromeOutside ? '' : ' sticky top-0 z-10'
+      }`}
     >
       {phone ? (
         <>
@@ -1458,6 +1467,8 @@ export function ThreadStream({
       )}
     </div>
   );
+  const placedChrome =
+    chromeOutside && chromeHost && chrome ? createPortal(chrome, chromeHost) : chrome;
   const inlineLens: LensName = phone ? 'work' : lens;
 
   if (groups.length === 0 && !live.isError) {
@@ -1465,7 +1476,7 @@ export function ThreadStream({
       return <p className="text-sm text-fg-muted">{timelineCopy.runUnavailable}</p>;
     return (
       <TimelineNowProvider now={clock}>
-        {chrome}
+        {placedChrome}
         <div className="ok-timeline flex flex-col gap-5" data-timeline-lens={lens}>
           {lensProp === undefined ? (
             <fieldset
@@ -1789,7 +1800,7 @@ export function ThreadStream({
 
   return (
     <TimelineNowProvider now={clock}>
-      {chrome}
+      {placedChrome}
       <ThreadReadReceipts
         key={`${workspaceId}:${threadId}:${dashboard?.viewerUserId ?? ''}`}
         workspaceId={workspaceId}

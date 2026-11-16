@@ -80,6 +80,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const [updatesHost, setUpdatesHost] = useState<HTMLDivElement | null>(null);
+  const [chromeHost, setChromeHost] = useState<HTMLDivElement | null>(null);
   const { workspaceId: routeWorkspaceId = '', threadId = '' } = useParams();
   const workspaces = useWorkspaces();
   const workspaceId = useCurrentWorkspaceId(routeWorkspaceId);
@@ -615,6 +616,11 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
             </div>
           ) : null}
 
+          {phone ? (
+            <div className="bg-layer-1 px-6">
+              <div ref={setChromeHost} className="mx-auto w-full max-w-[760px]" />
+            </div>
+          ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
             <div className="mx-auto w-full max-w-[760px] px-6 py-6">
               {dashboard.isError && !dashboardAdmitted ? (
@@ -671,6 +677,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
                   }
                   sheets={sheets}
                   updatesHost={updatesHost}
+                  chromeHost={chromeHost}
                 />
               )}
               {feedbackTurn ? (
