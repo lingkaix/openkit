@@ -7542,6 +7542,7 @@ describe('createConfiguredTurnExecutor', () => {
             else
               await nativeClient.vault(coreDb, 'binding-revoke-receipts-complete', {
                 planId: originalPlan.planId,
+                removal: 'fenced',
               });
             expect(getVaultGrant(coreDb, grantId)?.status).toBe('active');
             expect(getVaultReference(coreDb, referenceId)?.status).toBe('active');
