@@ -69,6 +69,8 @@ export const KnowledgeNotebookCommitMetadataSchema = z
     producer: ActorRefSchema,
     authority: KnowledgeNotebookAuthoritySchema,
     sourceReferences: z.array(z.string().min(1)),
+    /** Reserved E9 revision provenance; absence means not marked, not proof of a clear context. */
+    externallyInfluenced: z.boolean().optional(),
   })
   .strict()
   .transform(({ schemaVersion: _schemaVersion, ...metadata }) => metadata);
