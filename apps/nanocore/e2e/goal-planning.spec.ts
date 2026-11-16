@@ -3,6 +3,7 @@ import type { GoalView, ThreadDashboardResponse } from '@openkit/app-api-schemas
 import { isSealedTurnTerminal } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { testGoalDomainProposal } from '../dist/test-support/goal-domain.js';
+import { fetchWhenCaptureAllows } from './_lib/capture-fence.js';
 import {
   type NanoCoreHarness,
   readTurnEventsUntil,
@@ -22,14 +23,17 @@ describe('Goal atomic cutover e2e', () => {
   it('uses derived commands for one continuous intent, exact proposed Plan, human resolution, cards and cancellation', async () => {
     harness = await startNanoCoreHarness({ useSimulator: false });
     async function operation<T = GoalView>(id: string, input: Record<string, unknown>): Promise<T> {
-      const response = await fetch(`${harness!.baseUrl}/api/app/operations/${id}`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          ...(id === 'goal.read' ? {} : { 'x-openkit-request-id': randomUUID() }),
-        },
-        body: JSON.stringify(input),
-      });
+      const response = await fetchWhenCaptureAllows(
+        `${harness!.baseUrl}/api/app/operations/${id}`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            ...(id === 'goal.read' ? {} : { 'x-openkit-request-id': randomUUID() }),
+          },
+          body: JSON.stringify(input),
+        }
+      );
       expect(response.status, await response.clone().text()).toBe(200);
       return (await response.json()) as T;
     }

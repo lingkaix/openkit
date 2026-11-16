@@ -105,7 +105,7 @@ describe('OpenKit administrator CLI e2e', () => {
     expect(doctor.data.nanocore).not.toHaveProperty('ready');
     expect(doctor.requestId).toMatch(/^[0-9a-f-]{36}$/);
 
-    const created = await runCli(
+    const created = await runCliThroughCaptureFence(
       harness.baseUrl,
       ['ops', 'call', 'workspace.create', '--input', '-'],
       JSON.stringify({ name: 'CLI E2E Workspace' })
@@ -125,7 +125,7 @@ describe('OpenKit administrator CLI e2e', () => {
       operation: 'workspace.list',
     });
     expect(listed.data.items).toContainEqual(expect.objectContaining({ workspace: created.data }));
-  }, 20_000);
+  }, 45_000);
 });
 
 /**
@@ -136,6 +136,26 @@ describe('OpenKit administrator CLI e2e', () => {
  * @param input Standard-input JSON.
  * @returns Parsed successful CLI envelope.
  */
+/** Resends the first workspace write while startup capture still refuses it. */
+async function runCliThroughCaptureFence(
+  baseUrl: string,
+  args: string[],
+  input: string
+): Promise<CliEnvelope> {
+  const deadline = Date.now() + 20_000;
+  for (;;) {
+    try {
+      return await runCli(baseUrl, args, input);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (!/workspace_frozen|temporarily frozen/.test(message) || Date.now() >= deadline) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+    }
+  }
+}
+
 function runCli(baseUrl: string, args: string[], input = '{}'): Promise<CliEnvelope> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliPath, ...args], {

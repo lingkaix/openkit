@@ -426,30 +426,44 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')(
         oauthPeer = oauth;
         /** Keeps public setup failures value-free, including one-time secret responses. */
         const call = async <T>(id: OperationId, input: Record<string, unknown>): Promise<T> => {
-          workController.signal.throwIfAborted();
-          const response = await boundedFixtureWait(
-            app.request(
-              ...operationRequest(
-                id,
-                {},
-                {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  signal: workController.signal,
-                  body: JSON.stringify(input),
-                }
-              )
-            ),
-            'public setup request',
-            15_000,
-            workController.signal
-          );
-          if (response.status >= 400) {
+          const deadline = Date.now() + 20_000;
+          for (;;) {
+            workController.signal.throwIfAborted();
+            const response = await boundedFixtureWait(
+              app.request(
+                ...operationRequest(
+                  id,
+                  {},
+                  {
+                    method: 'POST',
+                    headers: { 'content-type': 'application/json' },
+                    signal: workController.signal,
+                    body: JSON.stringify(input),
+                  }
+                )
+              ),
+              'public setup request',
+              15_000,
+              workController.signal
+            );
+            if (response.status < 400) return response.json() as Promise<T>;
             const value: unknown = await boundedFixtureWait(
               response.clone().json(),
               'closed public error-code observation',
               1_000
             ).catch(() => null);
+            const details = isRecord(value) && isRecord(value.details) ? value.details : undefined;
+            if (
+              response.status === 409 &&
+              isRecord(value) &&
+              value.code === 'workspace_frozen' &&
+              details?.retryable === true &&
+              details.operation === 'capture' &&
+              Date.now() < deadline
+            ) {
+              await new Promise((resolve) => setTimeout(resolve, 1_000));
+              continue;
+            }
             const code =
               isRecord(value) && typeof value.code === 'string' && publicSetupCodes.has(value.code)
                 ? value.code
@@ -458,7 +472,6 @@ describe.skipIf(process.env.OPENKIT_E2E_REAL_CODEX !== '1')(
             outcome = 'failed';
             throw new Error(`Login component setup ${id}: HTTP ${response.status}, code=${code}.`);
           }
-          return response.json() as Promise<T>;
         };
 
         expect(typeof userId).toBe('string');

@@ -1,3 +1,5 @@
+import { fetchWhenCaptureAllows } from './capture-fence.js';
+
 /**
  * Extracts cookie pairs from Set-Cookie headers for follow-up HTTP requests.
  */
@@ -15,13 +17,14 @@ export function cookieHeader(response: Response): string {
 
 /**
  * Posts a JSON request and returns the raw HTTP response.
+ * A startup capture fence is waited out; any other response is returned as-is.
  */
 export async function postJson(
   url: string,
   body: Record<string, unknown>,
   cookie?: string
 ): Promise<Response> {
-  return await fetch(url, {
+  return await fetchWhenCaptureAllows(url, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

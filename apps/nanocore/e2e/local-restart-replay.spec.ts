@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { fetchWhenCaptureAllows } from './_lib/capture-fence.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 let harness: NanoCoreHarness | null = null;
@@ -26,11 +27,14 @@ describe('nanocore e2e local restart replay', () => {
 
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
     const requestId = randomUUID();
-    const threadResponse = await fetch(`${harness.baseUrl}/api/app/operations/thread.create`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
-      body: JSON.stringify({ workspaceId, name: 'Restart replay e2e', requestId }),
-    });
+    const threadResponse = await fetchWhenCaptureAllows(
+      `${harness.baseUrl}/api/app/operations/thread.create`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-openkit-request-id': requestId },
+        body: JSON.stringify({ workspaceId, name: 'Restart replay e2e', requestId }),
+      }
+    );
     const thread = (await threadResponse.json()) as { id: string; name: string };
 
     expect(threadResponse.status).toBe(200);
@@ -39,7 +43,7 @@ describe('nanocore e2e local restart replay', () => {
     await harness.stop();
     harness = await startNanoCoreHarness({ dataRoot });
 
-    const dashboardResponse = await fetch(
+    const dashboardResponse = await fetchWhenCaptureAllows(
       `${harness.baseUrl}/api/app/operations/thread.dashboard`,
       {
         method: 'POST',

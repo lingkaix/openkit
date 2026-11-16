@@ -36,6 +36,7 @@ import {
 import { ItemIdSchema, ThreadSchema, TurnReadProjectionSchema } from '@openkit/protocol';
 import { describe, it } from 'vitest';
 import transportRevision from '../dist/auth/nanohost-transport-revision.json' with { type: 'json' };
+import { fetchWhenCaptureAllows } from './_lib/capture-fence.js';
 import {
   completeServerBootstrap,
   type NanoCoreHarness,
@@ -281,7 +282,7 @@ async function runPublicWorkerMcpLifecycle() {
       input: 'Implement the MCP verification by calling the echo tool.',
       requestId: smokeRequestId,
     };
-    const taskPromise = fetch(`${app.baseUrl}/api/app/operations/task.start`, {
+    const taskPromise = fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
       body: JSON.stringify(taskInput),
       headers: {
         authorization: `Bearer ${app.administratorToken}`,
@@ -655,7 +656,7 @@ async function runPublicWorkerMcpLifecycle() {
     while (task.state !== 'completed' && Date.now() < taskDeadline) {
       throwIfFailed(taskFailure);
       assert.notEqual(task.turn?.status, 'failed', 'The admitted Task failed before closeout.');
-      const replay = await fetch(`${app.baseUrl}/api/app/operations/task.start`, {
+      const replay = await fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/task.start`, {
         body: JSON.stringify(taskInput),
         headers: {
           authorization: `Bearer ${app.administratorToken}`,
@@ -721,7 +722,7 @@ async function publicOperation<T = unknown>(
   body: Record<string, unknown>,
   status = 200
 ): Promise<T> {
-  const response = await fetch(`${app.baseUrl}/api/app/operations/${operation}`, {
+  const response = await fetchWhenCaptureAllows(`${app.baseUrl}/api/app/operations/${operation}`, {
     method: 'POST',
     body: JSON.stringify(body),
     headers: {

@@ -8,6 +8,7 @@ import {
   seedDemoWorkspaceAuthority,
   seedDemoWorkspaceDataRoot,
 } from '../../../tests/support/demo-data.mjs';
+import { fetchWhenCaptureAllows } from './_lib/capture-fence.js';
 import { type NanoCoreHarness, removeDataRoot, startNanoCoreHarness } from './_lib/harness.js';
 
 const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -37,7 +38,7 @@ describe('nanocore e2e workspace archive download', () => {
     const localRoot = await mkdtemp(join(tmpdir(), 'openkit-admin-archive-'));
     try {
       const exported = (await expectJson(
-        await fetch(`${source.baseUrl}/api/app/operations/workspace.export`, {
+        await fetchWhenCaptureAllows(`${source.baseUrl}/api/app/operations/workspace.export`, {
           method: 'POST',
           headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
           body: JSON.stringify({ workspaceId }),
