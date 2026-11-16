@@ -435,24 +435,31 @@ for (const architecture of ['amd64', 'arm64']) {
 
     const verifier = join(process.cwd(), 'scripts', 'verify-nanohost-release.mjs');
     assert.ok(existsSync(verifier), 'shared NanoHost release verifier must exist');
-    const stagingRoot = join(fixture.repoRoot, 'verified-stage');
-    const verified = spawnSync(
-      process.execPath,
-      [
-        verifier,
-        '--archive',
-        firstArchive,
-        '--checksum-file',
-        join(firstOutput, 'SHA256SUMS'),
-        '--destdir',
-        stagingRoot,
-        '--repo-root',
-        fixture.repoRoot,
-      ],
-      { encoding: 'utf8' }
-    );
-    assert.equal(verified.status, 0, verified.stderr);
-    assert.match(verified.stdout, /staged-only/);
+    for (const umask of ['022', '077']) {
+      const stagingRoot = join(fixture.repoRoot, `verified-stage-${umask}`);
+      const verified = spawnSync(
+        'sh',
+        [
+          '-c',
+          'umask "$1"; shift; exec "$@"',
+          'nanohost-verifier-umask',
+          umask,
+          process.execPath,
+          verifier,
+          '--archive',
+          firstArchive,
+          '--checksum-file',
+          join(firstOutput, 'SHA256SUMS'),
+          '--destdir',
+          stagingRoot,
+          '--repo-root',
+          fixture.repoRoot,
+        ],
+        { encoding: 'utf8' }
+      );
+      assert.equal(verified.status, 0, `umask ${umask}: ${verified.stderr}`);
+      assert.match(verified.stdout, /staged-only/);
+    }
 
     const cargoTomlPath = join(fixture.repoRoot, 'apps', 'nanohost', 'Cargo.toml');
     const cargoToml = readFileSync(cargoTomlPath, 'utf8');

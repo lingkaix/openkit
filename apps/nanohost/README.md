@@ -2,6 +2,8 @@
 
 NanoHost is the OpenKit execution-host service: one Rust binary crate that owns one private Runtime Epoch at a time, talks to one stock OpenShell Gateway over a loopback client channel, and maintains one authenticated NanoCore transport session.
 
+Token slot selection opens each declared secret and companion without following its final symbolic link. It checks the opened descriptor for a regular file owned by the effective service account with mode exactly `0600`, then reads that descriptor. Unusable material remains empty under the existing A/B selection rule; companion bytes do not change.
+
 ## Scope
 
 - One binary crate named `nanohost` under `apps/nanohost`

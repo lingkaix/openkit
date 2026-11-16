@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Declared execution-host credential slot.
@@ -109,8 +110,9 @@ struct UsableSlotMaterial {
 ///
 /// Selection rules (accepted owner):
 /// - Read only the two declared slot paths; search nowhere else.
-/// - A slot is usable only when its secret and companion are present, mode
-///   `0600`, companion metadata parses, identity/deployment match context, and
+/// - A slot is usable only when its secret and companion are regular non-link
+///   files owned by the effective service user with mode exactly `0600`,
+///   companion metadata parses, identity/deployment match context, and
 ///   the secret is raw `okt_` material.
 /// - Missing, malformed, wrong-identity, wrong-deployment, or
 ///   generation-ambiguous companion metadata is treated as empty for that slot.
@@ -126,17 +128,23 @@ pub fn select_usable_credential(
     let Ok(_lock) = SlotPairLock::acquire(paths) else {
         return SelectedCredential::Empty;
     };
+    #[cfg(unix)]
+    let service_uid = unsafe { libc::geteuid() };
+    #[cfg(not(unix))]
+    let service_uid = 0;
     let slot_a = load_usable_slot(
         CredentialSlot::A,
         &paths.slot_a_secret,
         &paths.slot_a_companion,
         context,
+        service_uid,
     );
     let slot_b = load_usable_slot(
         CredentialSlot::B,
         &paths.slot_b_secret,
         &paths.slot_b_companion,
         context,
+        service_uid,
     );
     select_from_usable_slots(slot_a, slot_b)
 }
@@ -182,12 +190,14 @@ fn load_usable_slot(
     secret_path: &Path,
     companion_path: &Path,
     context: &CredentialSelectionContext,
+    service_uid: u32,
 ) -> Option<UsableSlotMaterial> {
-    if !is_exact_mode_0600(secret_path) || !is_exact_mode_0600(companion_path) {
+    let secret = read_service_slot_file(secret_path, service_uid)?;
+    if !usable_okt_secret(&secret) {
         return None;
     }
-    let secret = read_okt_secret(secret_path)?;
-    let companion = read_companion_metadata(companion_path)?;
+    let companion =
+        parse_companion_metadata(&read_service_slot_file(companion_path, service_uid)?)?;
     if companion.identity_id != context.identity_id
         || companion.deployment_id != context.deployment_id
     {
@@ -201,35 +211,35 @@ fn load_usable_slot(
     })
 }
 
-/// Returns true only when the path exists as a file with mode exactly `0600`.
-fn is_exact_mode_0600(path: &Path) -> bool {
+/// Opens only the declared regular service-owned `0600` inode and reads that descriptor.
+///
+/// No-follow opening prevents path substitution from redirecting the read. Nonblocking
+/// opening lets non-regular entries such as FIFOs fail validation without waiting for a writer.
+fn read_service_slot_file(path: &Path, service_uid: u32) -> Option<String> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let metadata = match fs::metadata(path) {
-            Ok(metadata) => metadata,
-            Err(_) => return false,
-        };
-        if !metadata.is_file() {
-            return false;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+            .open(path)
+            .ok()?;
+        let metadata = file.metadata().ok()?;
+        if !metadata.is_file()
+            || metadata.uid() != service_uid
+            || metadata.mode() & 0o7777 != REQUIRED_FILE_MODE
+        {
+            return None;
         }
-        metadata.permissions().mode() & 0o777 == REQUIRED_FILE_MODE
+        let mut contents = String::new();
+        file.read_to_string(&mut contents).ok()?;
+        Some(contents)
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
-        false
+        let _ = (path, service_uid);
+        None
     }
-}
-
-/// Reads raw `okt_` secret bytes as UTF-8.
-///
-/// A usable secret is `okt_` plus a token body and nothing else. Whitespace,
-/// control bytes, and a bare prefix cannot be presented as one header value,
-/// so they are empty rather than a higher-generation slot.
-fn read_okt_secret(path: &Path) -> Option<String> {
-    let secret = fs::read_to_string(path).ok()?;
-    usable_okt_secret(&secret).then_some(secret)
 }
 
 /// Returns whether `secret` is one presentable raw `okt_` token.
@@ -238,12 +248,6 @@ fn usable_okt_secret(secret: &str) -> bool {
         return false;
     };
     !body.is_empty() && secret.bytes().all(|byte| byte.is_ascii_graphic())
-}
-
-/// Parses companion `key=value` lines; malformed or incomplete companions are empty.
-fn read_companion_metadata(path: &Path) -> Option<CompanionMetadata> {
-    let contents = fs::read_to_string(path).ok()?;
-    parse_companion_metadata(&contents)
 }
 
 /// Parses the frozen std-only companion projection.
@@ -810,6 +814,64 @@ mod tests {
         let mut permissions = file.metadata().expect("metadata").permissions();
         permissions.set_mode(mode);
         fs::set_permissions(path, permissions).expect("chmod credential fixture");
+    }
+
+    #[test]
+    fn refuses_symbolic_links_for_secret_and_companion() {
+        use std::os::unix::fs::symlink;
+        for companion in [false, true] {
+            let fixture = Fixture::new();
+            fixture.write_usable_slot(CredentialSlot::A, "tok_a", 1, SECRET_A);
+            let path = if companion {
+                &fixture.paths.slot_a_companion
+            } else {
+                &fixture.paths.slot_a_secret
+            };
+            let target = fixture.root.join("linked-material");
+            fs::rename(path, &target).unwrap();
+            symlink(target, path).unwrap();
+            assert_eq!(
+                select_usable_credential(&fixture.paths, &fixture.context),
+                SelectedCredential::Empty
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_special_permission_bits_on_secret_and_companion() {
+        for companion in [false, true] {
+            let fixture = Fixture::new();
+            fixture.write_usable_slot(CredentialSlot::A, "tok_a", 1, SECRET_A);
+            let path = if companion {
+                &fixture.paths.slot_a_companion
+            } else {
+                &fixture.paths.slot_a_secret
+            };
+            fs::set_permissions(path, fs::Permissions::from_mode(0o4600)).unwrap();
+            assert_eq!(
+                select_usable_credential(&fixture.paths, &fixture.context),
+                SelectedCredential::Empty
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_slot_material_owned_by_another_service_account() {
+        use std::os::unix::fs::MetadataExt;
+        let fixture = Fixture::new();
+        fixture.write_usable_slot(CredentialSlot::A, "tok_a", 1, SECRET_A);
+        let actual_owner = fs::metadata(&fixture.paths.slot_a_secret).unwrap().uid();
+        // Compare a real file's owner with a distinct service identity without requiring root.
+        assert!(
+            load_usable_slot(
+                CredentialSlot::A,
+                &fixture.paths.slot_a_secret,
+                &fixture.paths.slot_a_companion,
+                &fixture.context,
+                actual_owner.wrapping_add(1)
+            )
+            .is_none()
+        );
     }
 
     #[test]

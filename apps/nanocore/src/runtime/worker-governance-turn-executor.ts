@@ -248,6 +248,7 @@ import { importWorkerRuntimeProvenance } from './worker-runtime-provenance.js';
 import {
   getWorkerStorageBinding,
   resolveWorkerStorageWorkSlotRef,
+  WorkerStorageBindingError,
   workerStorageDefaultWorkSlotRef,
 } from './worker-storage-bindings.js';
 import { importWorkerTranscript } from './worker-transcript.js';
@@ -1548,7 +1549,12 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
         checkLogin();
         return result;
       } catch (error) {
-        if (error instanceof WorkerGovernanceCapacityUnavailableError) throw error;
+        // Explicit selection is checked during retirement too; preserve its owner's typed refusal.
+        if (
+          error instanceof WorkerGovernanceCapacityUnavailableError ||
+          error instanceof WorkerStorageBindingError
+        )
+          throw error;
         throw new TurnStartValidationError(
           'recovery_required',
           'The AgentSession runtime binding changed after scheduler dispatch.',

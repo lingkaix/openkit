@@ -71,6 +71,7 @@ import { resolveLogicalModelCatalog } from './llm/logical-models.js';
 import { ProviderSubscriptionAccountManager } from './llm/provider-subscription-accounts.js';
 import { closeActiveLocalAiSupervisor } from './local-ai/supervisor.js';
 import { classifyDirectTaskCheckpointAfterSchedulerRecovery } from './mode-entry-routes.js';
+import { createListenerFetches } from './nanohost-listener.js';
 import { AttentionNotifications } from './notifications/attention.js';
 import { recordBootPolicySelfCheckDecisions } from './policy/permission-decisions.js';
 import { resolveEnvSecretRef } from './providers/registry.js';
@@ -787,25 +788,7 @@ if (
 ) {
   throw new Error('NanoCore listener configuration was not resolved during boot.');
 }
-/** Returns whether one request belongs exclusively to the private NanoHost listener. */
-const isNanoHostPrivateRequest = (request: Request) => {
-  const path = new URL(request.url).pathname;
-  return (
-    path.startsWith('/api/nanohost/transport/') ||
-    path.startsWith('/api/worker-capabilities/') ||
-    path.startsWith('/worker-control/') ||
-    path.startsWith('/inference/') ||
-    path.startsWith('/capabilities/')
-  );
-};
-const appFetch: typeof app.fetch = async (request, env, executionContext) =>
-  isNanoHostPrivateRequest(request)
-    ? new Response(null, { status: 404 })
-    : app.fetch(request, env, executionContext);
-const nanoHostFetch: typeof app.fetch = async (request, env, executionContext) =>
-  isNanoHostPrivateRequest(request)
-    ? app.fetch(request, env, executionContext)
-    : new Response(null, { status: 404 });
+const { appFetch, nanoHostFetch } = createListenerFetches(app.fetch);
 
 startTelemetry({
   bootId,

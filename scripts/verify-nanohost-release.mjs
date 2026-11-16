@@ -99,9 +99,10 @@ export function verifyNanoHostRelease(input) {
 
   const temporary = mkdtempSync(join(tmpdir(), 'openkit-nanohost-verify-'));
   try {
+    // Preserve the validated archive modes even under a restrictive caller umask.
     run(
       'tar',
-      ['-xzf', archive, '-C', temporary, '--no-same-owner'],
+      ['-xpzf', archive, '-C', temporary, '--no-same-owner'],
       'Unable to extract NanoHost archive'
     );
     const root = join(temporary, prefix);

@@ -196,6 +196,7 @@ import {
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import { runNanoHostAttemptRecoveryMaintenance } from './nanohost-attempt-recovery.js';
+import * as nanoHostEffectIdentity from './nanohost-effect-identity.js';
 import {
   createNanoHostEffectRequest,
   nanoHostSandboxIdFromBackendSessionId,
@@ -4447,15 +4448,164 @@ describe('createConfiguredTurnExecutor', () => {
     { authored: undefined, bound: 20 },
     { authored: 8, bound: 8 },
   ])(
-    'shares one Core Harness at the exact authored/default bound $bound and preserves command and release owners',
+    'refuses unproved co-residency before effects despite configured capacity $bound',
     async ({ authored, bound }) => {
+      const coreDb = createFactoryCoreDb();
+      const dataRoot = coreDb.dataRoot;
+      const store = await createDemoStore({ dataRoot });
+      const ownerUserId = ensureLocalUser(coreDb);
+      const workspaceId = DEMO_WORKSPACE_ID;
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
+      const threadIds = [0, 1].map((index) => testEntityId('th', `unproved-${bound}-${index}`));
+      for (const id of threadIds) await store.createThread(workspaceId, 'Isolation admission', id);
+      const manifest = createTestAgentSetup({
+        imageRef: `sha256:${'a'.repeat(64)}`,
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      }).manifest;
+      admitTestNativeEnvironment(coreDb, manifest);
+      const config = loadRuntimeConfig(dataRoot);
+      const configuration = createInMemoryRuntimeConfigSnapshot({
+        ...config,
+        ...(authored === undefined
+          ? {}
+          : {
+              openKitConfig: {
+                ...config.openKitConfig,
+                nanohost: { ...config.openKitConfig.nanohost, maxActiveTurnsPerSandbox: authored },
+              },
+            }),
+        agentManifests: [manifest],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: new ProviderRegistry([
+          {
+            id: 'agent-openrouter',
+            displayName: 'Isolation admission',
+            kind: 'local',
+            models: ['openai/gpt-5.2'],
+          },
+        ]),
+      });
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => configuration,
+      });
+      const backend = native.executor.executionBackend as WorkerGovernanceBackend;
+      let first: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+      let secondStarted = false;
+      const secondTurnId = testEntityId('tu', `unproved-${bound}-1`);
+      const commands = vi.spyOn(native.runtime, 'acceptNanoHostHarnessCommand');
+      try {
+        const firstSessionId = testEntityId('as', `unproved-${bound}-0`);
+        const firstEntry = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:unproved-${bound}-0`,
+          requestId: testEntityId('tu', `unproved-request-${bound}-0`).slice(3),
+          requestedAgentId: manifest.id,
+          workspaceId,
+          threadId: threadIds[0]!,
+          turnId: testEntityId('tu', `unproved-${bound}-0`),
+          turnInput: 'Hold the first admitted Turn.',
+          triggerActor: { kind: 'user', id: ownerUserId },
+        });
+        await publishFactoryAdmission(store, firstEntry);
+        first = await native.admitTurn(firstEntry, {
+          attemptId: testEntityId('attempt', `unproved-${bound}-0`),
+          agentSessionId: firstSessionId,
+          candidateAgentSessionId: firstSessionId,
+        });
+        const storage = getWorkerStorageBinding(
+          coreDb,
+          store.getAgentSession(firstSessionId).retainedStorage!
+        )!;
+        const second = createSchedulerAdmissionEntry(coreDb, {
+          backendId: 'nanohost',
+          queueEntryId: `queue:unproved-${bound}-1`,
+          requestId: testEntityId('tu', `unproved-request-${bound}-1`).slice(3),
+          requestedAgentId: manifest.id,
+          workspaceId,
+          threadId: threadIds[1]!,
+          turnId: secondTurnId,
+          turnInput: 'Request another binding without complete co-residency proof.',
+          triggerActor: { kind: 'user', id: ownerUserId },
+          workerStorageChoice: {
+            kind: 'selected',
+            storageRef: storage.storageRef,
+            expectedRevision: storage.revision,
+            purpose: 'work',
+            goalId: null,
+            taskId: null,
+          },
+        });
+        await publishFactoryAdmission(store, second);
+        const beforeEffects = native.effects.length;
+        const beforeCommands = commands.mock.calls.length;
+        const dispatch = runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          executionBackend: backend,
+          agentManifests: configuration.agentManifests,
+          gatewayConfig: configuration.gatewayConfig,
+          providerRegistry: configuration.providerRegistry,
+          workspaceConfigs: configuration.workspaceConfigs,
+          workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
+          maxDispatches: 1,
+          createAttemptId: () => testEntityId('attempt', `unproved-${bound}-1`),
+          createAgentSessionId: () => testEntityId('as', `unproved-${bound}-1`),
+        });
+        // A regression must fail on observed acceptance, not hang on uncompleted work.
+        const unexpectedStart = native.executionFor(secondTurnId).launched.promise.then(() => {
+          secondStarted = true;
+          native.executionFor(secondTurnId).completion.resolve();
+          return dispatch;
+        });
+        const result = await Promise.race([dispatch, unexpectedStart]);
+        secondStarted = result.startedTurns.length > 0;
+        expect(result.startedTurns).toEqual([]);
+        expect(result.terminalResult).toMatchObject({ status: 'queued', reason: 'backend-busy' });
+        expect(native.effects).toHaveLength(beforeEffects);
+        expect(commands.mock.calls).toHaveLength(beforeCommands);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
+            .get()
+        ).toEqual({ count: 1 });
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT max_active_turns AS capacity FROM sandbox_runtime_records')
+            .get()
+        ).toEqual({ capacity: bound });
+        expect(store.getTurnById(firstEntry.turnId).status).toBe('running');
+        expect(store.getTurnById(secondTurnId).status).toBe('pending');
+      } finally {
+        if (secondStarted) {
+          const work = native.executionFor(secondTurnId);
+          work.completion.resolve();
+          await work.execution.catch(() => undefined);
+        }
+        await first?.cleanup();
+        commands.mockRestore();
+        await native.restore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(
+    [
+      { authored: undefined, bound: 20 },
+      { authored: 8, bound: 8 },
+    ].flatMap((capacity) => ['pre-submit', 'closeout'].map((fault) => ({ ...capacity, fault })))
+  )(
+    'propagates authored/default capacity $bound through sequential Thread Turns and preserves command and release owners ($fault)',
+    async ({ authored, bound, fault }) => {
       const coreDb = createFactoryCoreDb();
       const dataRoot = coreDb.dataRoot;
       const ownerUserId = ensureLocalUser(coreDb);
       const store = await createDemoStore({ dataRoot });
       const workspaceId = DEMO_WORKSPACE_ID;
       recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId });
-      const threadIds = Array.from({ length: bound }, (_, i) =>
+      const threadIds = Array.from({ length: 1 }, (_, i) =>
         testEntityId('th', `bound_${bound}_${i}`)
       );
       for (const id of threadIds) await store.createThread(workspaceId, 'Bound cohort', id);
@@ -4503,13 +4653,10 @@ describe('createConfiguredTurnExecutor', () => {
       const firstReleasing = Promise.withResolvers<void>(),
         releaseFirst = Promise.withResolvers<void>();
       const releaseSiblings = Promise.withResolvers<void>();
-      let siblingsReleasing = Promise.withResolvers<void>();
       const lastReleasing = Promise.withResolvers<void>();
-      let siblingReleaseAttemptId: string | null = null;
       const heldReleases = new Set<string>();
       let holdSiblings = false;
       let firstProof: Parameters<typeof backend.release>[0]['proof'] | undefined;
-      let proofFault: { mockRestore(): void } | undefined;
       const materialize = backend.materialize.bind(backend);
       const materializations = vi
         .spyOn(backend, 'materialize')
@@ -4578,8 +4725,7 @@ describe('createConfiguredTurnExecutor', () => {
           await releaseFirst.promise;
         } else if (holdSiblings) {
           heldReleases.add(input.attemptId);
-          if (input.attemptId === siblingReleaseAttemptId) siblingsReleasing.resolve();
-          if (heldReleases.size === bound - 1) lastReleasing.resolve();
+          if (heldReleases.size === 1) lastReleasing.resolve();
           await releaseSiblings.promise;
         }
         return actualRelease(input);
@@ -4629,7 +4775,7 @@ describe('createConfiguredTurnExecutor', () => {
       const physicalEffects = () =>
         native.effects.filter((e) => e.kind === 'bridge.close' || e.kind === 'sandbox.delete');
       try {
-        for (let index = 0; index < bound; index += 1) {
+        for (let index = 0; index < 1; index += 1) {
           const input = await entryFor(index);
           const admitted = await native.admitTurn(input.entry, input);
           cohort.push(admitted);
@@ -4646,9 +4792,8 @@ describe('createConfiguredTurnExecutor', () => {
             backend.readThreadAgentSessionBinding?.({ workspaceId, threadId: input.entry.threadId })
           ).toMatchObject({ agentSessionId: input.agentSessionId });
         }
-        const first = cohort[0]!,
-          last = cohort.at(-1)!;
-        expect(occupancy()).toEqual({ count: 1, active: bound });
+        const first = cohort[0]!;
+        expect(occupancy()).toEqual({ count: 1, active: 1 });
         expect(
           coreDb.sqlite
             .prepare(
@@ -4660,15 +4805,15 @@ describe('createConfiguredTurnExecutor', () => {
           coreDb.sqlite
             .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
             .get()
-        ).toEqual({ count: bound });
+        ).toEqual({ count: 1 });
         expect(
           new Set(
             commands
               .filter((c) => c.operation === 'session.open')
               .map((c) => c.body.agentSessionRuntimeBindingId)
           ).size
-        ).toBe(bound);
-        expect(new Set(cohort.map((c) => c.pkg.control.transcript?.root)).size).toBe(bound);
+        ).toBe(1);
+        expect(new Set(cohort.map((c) => c.pkg.control.transcript?.root)).size).toBe(1);
         expect(native.effects.filter((e) => e.kind === 'sandbox.create')).toHaveLength(1);
         for (const open of commands.filter((c) => c.operation === 'session.open')) {
           expect(open.body.maxActiveTurns).toBe(bound);
@@ -4676,11 +4821,9 @@ describe('createConfiguredTurnExecutor', () => {
             maxActiveTurns: bound,
           });
         }
-        expect(await backend.inspectMaterializationCapacity?.(first.pkg)).toBe(
-          'capacity-saturated'
-        );
+        expect(await backend.inspectMaterializationCapacity?.(first.pkg)).toBe('available');
         // Deliberate missed-observation fault after real acceptance; restore its exact prior facts.
-        const inspected = cohort[1]!.attempt;
+        const inspected = first.attempt;
         const originalState = getWorkerBackendSession(coreDb, inspected.attemptId)!.state;
         coreDb.sqlite
           .prepare("UPDATE worker_backend_sessions SET state = 'launching' WHERE attempt_id = ?")
@@ -4739,108 +4882,112 @@ describe('createConfiguredTurnExecutor', () => {
         expect(
           attempts.requireSchedulerExecutionAttempt(coreDb, first.attempt.attemptId)
         ).toMatchObject({ phase: 'closing', fenceRef: null });
-        expect(occupancy()).toEqual({ count: 1, active: bound - 1 });
-        expect(await backend.inspectMaterializationCapacity?.(first.pkg)).toBe(
-          'capacity-saturated'
-        );
+        expect(occupancy()).toEqual({ count: 1, active: 0 });
+        // Configured capacity remains spare; the original Thread's closing attempt,
+        // rather than global occupancy, owns the exclusion until backend release.
+        expect(await backend.inspectMaterializationCapacity?.(first.pkg)).toBe('available');
+        const incoming = await entryFor(bound, 0);
+        const closingEffects = native.effects.length;
+        const closingCommands = commands.length;
+        const deferred = await runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          executionBackend: backend,
+          ...readRuntimeConfig(),
+          maxDispatches: 1,
+        });
+        expect(deferred).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'thread-busy' },
+        });
+        expect(native.effects).toHaveLength(closingEffects);
+        expect(commands).toHaveLength(closingCommands);
+        expect(store.getTurnById(incoming.entry.turnId).status).toBe('pending');
+        expect(
+          attempts.requireSchedulerExecutionAttempt(coreDb, first.attempt.attemptId)
+        ).toMatchObject({ phase: 'closing', fenceRef: null });
         releaseFirst.resolve();
         await firstFinished;
         expect(
           attempts.requireSchedulerExecutionAttempt(coreDb, first.attempt.attemptId)
         ).toMatchObject({ phase: 'closed', fenceRef: expect.any(String) });
         expect(await backend.inspectMaterializationCapacity?.(first.pkg)).toBe('available');
-        const completed = store.getTurnById(first.pkg.scope.turnId);
         const resident = store.getAgentSession(first.pkg.scope.agentSessionId);
-        const residentRows = coreDb.sqlite
-          .prepare(
-            'SELECT lifecycle_state, health_state, drain_state, cleanup_state FROM sandbox_runtime_records'
-          )
-          .all();
-        const incoming = await entryFor(bound, 0);
-        const refusal = new Error('Controlled pre-submit refusal.');
-        const incomingFailure = native.executionFor(incoming.entry.turnId).execution.then(
-          () => null,
-          (error: unknown) => error
-        );
-        let faultEffects = -1;
-        const beforeIncoming = commands.length;
-        const prepareFault = vi.spyOn(backend, 'prepareLaunch').mockImplementation(async () => {
-          faultEffects = native.effects.length;
-          throw refusal;
-        });
-        try {
-          await expect(
-            native.admitTurn(incoming.entry, { ...incoming, agentSessionId: resident.id })
-          ).rejects.toBe(refusal);
-        } finally {
-          prepareFault.mockRestore();
-        }
-        expect(faultEffects).toBeGreaterThanOrEqual(0);
-        expect(await incomingFailure).toBe(refusal);
-        expect(native.effects).toHaveLength(faultEffects);
-        expect(commands).toHaveLength(beforeIncoming);
-        expect(store.getTurnById(completed.id)).toEqual(completed);
-        expect(store.getAgentSession(resident.id)).toMatchObject({
-          id: resident.id,
-          status: 'idle',
-          nativeHandleDigest: resident.nativeHandleDigest,
-          retainedStorage: resident.retainedStorage,
-        });
-        expect(
-          coreDb.sqlite
+        // Preparation refusal and failed-final recovery are independent lifecycle
+        // predicates. A failed preparation has no completed capture baseline for a
+        // subsequent Turn, so exercise each from its own healthy resident.
+        if (fault === 'pre-submit') {
+          const completed = store.getTurnById(first.pkg.scope.turnId);
+          const residentRows = coreDb.sqlite
             .prepare(
               'SELECT lifecycle_state, health_state, drain_state, cleanup_state FROM sandbox_runtime_records'
             )
-            .all()
-        ).toEqual(residentRows);
-        expect(attempts.requireSchedulerExecutionAttempt(coreDb, incoming.attemptId)).toMatchObject(
-          {
+            .all();
+          const refusal = new Error('Controlled pre-submit refusal.');
+          const incomingFailure = native.executionFor(incoming.entry.turnId).execution.then(
+            () => null,
+            (error: unknown) => error
+          );
+          let faultEffects = -1;
+          const beforeIncoming = commands.length;
+          const prepareFault = vi.spyOn(backend, 'prepareLaunch').mockImplementation(async () => {
+            faultEffects = native.effects.length;
+            throw refusal;
+          });
+          try {
+            await expect(
+              native.admitTurn(incoming.entry, { ...incoming, agentSessionId: resident.id })
+            ).rejects.toBe(refusal);
+          } finally {
+            prepareFault.mockRestore();
+          }
+          expect(faultEffects).toBeGreaterThanOrEqual(0);
+          expect(await incomingFailure).toBe(refusal);
+          expect(native.effects).toHaveLength(faultEffects);
+          expect(commands).toHaveLength(beforeIncoming);
+          expect(store.getTurnById(completed.id)).toEqual(completed);
+          expect(store.getAgentSession(resident.id)).toMatchObject({
+            id: resident.id,
+            status: 'idle',
+            nativeHandleDigest: resident.nativeHandleDigest,
+            retainedStorage: resident.retainedStorage,
+          });
+          expect(
+            coreDb.sqlite
+              .prepare(
+                'SELECT lifecycle_state, health_state, drain_state, cleanup_state FROM sandbox_runtime_records'
+              )
+              .all()
+          ).toEqual(residentRows);
+          expect(
+            attempts.requireSchedulerExecutionAttempt(coreDb, incoming.attemptId)
+          ).toMatchObject({
             phase: 'closed',
             disposition: 'not_accepted',
             operationId: null,
             deadline: null,
-          }
-        );
-        expect(occupancy()).toEqual({ count: 1, active: bound - 1 });
-        expect(physicalEffects()).toEqual([]);
+          });
+          expect(occupancy()).toEqual({ count: 1, active: 0 });
+          expect(physicalEffects()).toEqual([]);
+
+          return;
+        }
 
         holdSiblings = true;
-        // Stage Main collection without releasing any original closeout or reducing peak occupancy.
-        for (const admitted of cohort.slice(1, -1)) {
-          siblingReleaseAttemptId = admitted.attempt.attemptId;
-          siblingsReleasing = Promise.withResolvers<void>();
-          const joined = admitted.complete();
-          joins.push(joined);
-          void joined.catch(() => undefined);
-          await Promise.race([
-            siblingsReleasing.promise,
-            joined.then(() => {
-              throw new Error('Native sibling completed before its held release observation.');
-            }),
-          ]);
-        }
-        siblingReleaseAttemptId = null;
-        const siblingsClosed = Promise.all(joins).then(() => {
-          throw new Error('Native siblings completed before their held release observations.');
+        // The Factory cannot admit another Thread into this partial-key Sandbox. Exercise
+        // the remaining closeout barriers with a second real Turn of the same AgentSession;
+        // multi-Thread accounting is checked by the harness-record owner at both exact bounds.
+        const last = await native.admitTurn(incoming.entry, {
+          ...incoming,
+          agentSessionId: resident.id,
         });
-        await Promise.race([siblingsReleasing.promise, siblingsClosed]);
-        expect(heldReleases.size).toBe(bound - 2);
-        // Every ordinary final and canonical publication is acknowledged before global peer faults.
-        for (const admitted of cohort.slice(0, -1))
-          expect(store.getTurnById(admitted.pkg.scope.turnId).status).toBe('completed');
+        cohort.push(last);
+        expect(store.getTurnById(first.pkg.scope.turnId).status).toBe('completed');
         expect(occupancy()).toEqual({ count: 1, active: 1 });
         const proofs = cohort.map((c) => store.getAgentSession(c.pkg.scope.agentSessionId));
-        const record = native.executor.recordNativeHandleDigest.bind(native.executor);
-        let refusedProof = false;
-        proofFault = vi
-          .spyOn(native.executor, 'recordNativeHandleDigest')
-          .mockImplementation(async (...args) => {
-            if (args[1] === resident.id) {
-              refusedProof = true;
-              throw new Error('Controlled native proof handoff refusal.');
-            }
-            return record(...args);
-          });
+        // Post-delete proof-handoff refusal is exercised separately by the cold
+        // durable cleanup owner, without this live session's acknowledged proof.
         native.peerFaults.failedFinal = true;
         native.peerFaults.failFileExport = true;
         native.peerFaults.closeRefusal = 'cleanup_required';
@@ -4848,7 +4995,6 @@ describe('createConfiguredTurnExecutor', () => {
         joins.push(lastFinished);
         void lastFinished.catch(() => undefined);
         await expect(lastFinished).rejects.toThrow();
-        expect(refusedProof).toBe(true);
         expect(native.peerFaults.failedExportPaths.length).toBeGreaterThan(0);
         const close = commands.find(
           (c) =>
@@ -4864,7 +5010,7 @@ describe('createConfiguredTurnExecutor', () => {
           coreDb.sqlite
             .prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings')
             .get()
-        ).toEqual({ count: bound });
+        ).toEqual({ count: 0 });
         for (const proof of proofs)
           expect(store.getAgentSession(proof.id)).toMatchObject({
             nativeHandleDigest: proof.nativeHandleDigest,
@@ -4876,14 +5022,10 @@ describe('createConfiguredTurnExecutor', () => {
         expect(await backend.inspectMaterializationCapacity?.(last.pkg)).toBe('capacity-saturated');
         const failed = store.getTurnById(last.pkg.scope.turnId);
         expect(failed.status).toBe('failed');
-        proofFault.mockRestore();
-        proofFault = undefined;
         native.peerFaults.failedFinal = false;
         native.peerFaults.closeRefusal = undefined;
-        // Keep export loss truthful after deletion; recovery finalizes absence, never fabricates bytes.
-        await native.runtime.reconcileAcceptedFinalStatus(
-          getWorkerBackendSession(coreDb, last.attempt.attemptId)!
-        );
+        // Cleanup completed despite transcript loss. Recovery must preserve that
+        // loss and the failed outcome, rather than collect or fabricate new bytes.
         expect(getWorkerBackendSession(coreDb, last.attempt.attemptId)!.state).toBe('cleaned');
         expect(
           coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
@@ -4925,12 +5067,11 @@ describe('createConfiguredTurnExecutor', () => {
         expect(await backend.inspectMaterializationCapacity?.(last.pkg)).toBe('available');
         expect(results).toHaveLength(commands.length);
         expect(new Set(commands.map((c) => c.harnessInstanceId)).size).toBe(1);
-        expect(commands.filter((c) => c.operation === 'turn.start')).toHaveLength(bound);
+        expect(commands.filter((c) => c.operation === 'turn.start')).toHaveLength(2);
       } finally {
         continueFirst.resolve();
         releaseFirst.resolve();
         releaseSiblings.resolve();
-        proofFault?.mockRestore();
         native.peerFaults.failedFinal = false;
         native.peerFaults.failFileExport = false;
         native.peerFaults.closeRefusal = undefined;
@@ -6511,7 +6652,7 @@ describe('createConfiguredTurnExecutor', () => {
         expect(original[0]!.state).toBe('completed');
         expect(JSON.parse(original[0]!.control_json).outputRefs).toEqual([
           fingerprint,
-          result.sha256,
+          ...(result.outcome === 'candidate' ? [result.sha256] : []),
         ]);
         expect(consumed).toHaveLength(1);
         expect(consumed[0]!.owner).toBe(original[0]!.owner);
@@ -6554,9 +6695,12 @@ describe('createConfiguredTurnExecutor', () => {
         ) {
           const gate = concurrentRelease[concurrentScans++];
           if (!gate) throw new Error('Concurrent idle close dispatched an extra scan.');
-          if (concurrentScans === 2) concurrentEntered.resolve();
+          if (concurrentScans === 1) concurrentEntered.resolve();
           await gate.promise;
-          return await effect(...args);
+          const result = (await effect(...args)) as Record<string, unknown>;
+          const { resourceSummary: _diagnostic, stagingPath: _temporary, ...retained } = result;
+          candidateResults.push({ requestId: request.requestId!, result: retained });
+          return result;
         }
         if (
           request.kind !== 'workspace.collect' ||
@@ -6652,32 +6796,17 @@ describe('createConfiguredTurnExecutor', () => {
         },
       });
       await publishFactoryAdmission(store, siblingEntry);
-      concurrentSibling = await native.admitTurn(siblingEntry, {
-        attemptId: siblingAttemptId,
-        agentSessionId: siblingAgentSessionId,
-        candidateAgentSessionId: siblingAgentSessionId,
-      });
-      await concurrentSibling.complete();
-      if (!journalRef) throw new Error('Sibling idle Turn has no acknowledged journal.');
-      expect(journalRef.executionId).not.toBe(firstRef.executionId);
-      const residents = [admitted, concurrentSibling];
-      const bindings = residents.map(({ pkg }) =>
-        harnessRecords.inspectNanoHostAgentSessionContinuity(coreDb, {
-          agentSessionId: pkg.scope.agentSessionId,
-          threadId: pkg.scope.threadId,
-          workspaceId: pkg.scope.workspaceId,
-        })
-      );
-      expect(bindings[0]?.harnessInstanceId).toBeTruthy();
-      expect(bindings[1]?.harnessInstanceId).toBe(bindings[0]!.harnessInstanceId);
-      const originals = await Promise.all(
-        [firstRef, journalRef].map(async (ref) => {
-          const reader = createExecutionStepJournalReader(db!, ref.owner);
-          const root = await reader.readExecution(ref);
-          expect(root.phase).toBe('closed');
-          return { ref, root, steps: await reader.readEndedSteps(ref) };
-        })
-      );
+      // Hold collection of the first idle owner. The real placement boundary must
+      // refuse another Thread until that owner's capture and close have settled.
+      const firstReader = createExecutionStepJournalReader(db!, firstRef.owner);
+      const originals = [
+        {
+          ref: firstRef,
+          root: await firstReader.readExecution(firstRef),
+          steps: await firstReader.readEndedSteps(firstRef),
+        },
+      ];
+      expect(originals[0]!.root.phase).toBe('closed');
       durableCore = openCoreDb(dataRoot);
       const durableOwner = createConfiguredWorkerLifecycleRuntime({
         releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
@@ -6687,50 +6816,97 @@ describe('createConfiguredTurnExecutor', () => {
       });
       durableCapacity = (durableOwner.turnExecutor as WorkerGovernanceTurnExecutor)
         .executionBackend as WorkerGovernanceBackend;
-      for (const { pkg } of residents)
-        expect(await durableCapacity.inspectMaterializationCapacity!(pkg)).toBe('available');
-      const closing: Array<Promise<number>> = [];
-      const finished: number[] = [];
-      let outcomes: PromiseSettledResult<number>[] = [];
+      const close = (pkg: AgentEnvironmentPackage) =>
+        backend.prepareAgentSessionContinuity!({
+          agentSessionId: pkg.scope.agentSessionId,
+          threadId: pkg.scope.threadId,
+          workspaceId: pkg.scope.workspaceId,
+          environmentPackage: pkg,
+          reuseAllowed: false,
+        });
+      const closing: Array<Promise<unknown>> = [];
       try {
         concurrentArmed = true;
-        for (const [index, { pkg }] of residents.entries()) {
-          closing.push(
-            backend.prepareAgentSessionContinuity!({
-              agentSessionId: pkg.scope.agentSessionId,
-              threadId: pkg.scope.threadId,
-              workspaceId: pkg.scope.workspaceId,
-              environmentPackage: pkg,
-              reuseAllowed: false,
-            }).then((disposition) => {
-              expect(disposition).toBe('closed');
-              finished.push(index);
-              return index;
-            })
-          );
-        }
+        const firstClose = close(admitted.pkg);
+        closing.push(firstClose);
         await Promise.race([
           concurrentEntered.promise,
-          Promise.all(closing).then(() => {
-            throw new Error('Both closes finished before both external scans arrived.');
+          firstClose.then(() => {
+            throw new Error('Idle close completed before its external scan.');
           }),
         ]);
+        expect(await durableCapacity.inspectMaterializationCapacity!(admitted.pkg)).toBe(
+          'capacity-saturated'
+        );
+        const beforeEffects = native.effects.length;
+        const deferred = await runSchedulerDispatchLoop({
+          coreDb,
+          store,
+          turnExecutor: native.executor,
+          executionBackend: backend,
+          agentManifests: configuration.agentManifests,
+          gatewayConfig: configuration.gatewayConfig,
+          providerRegistry: configuration.providerRegistry,
+          workspaceConfigs: configuration.workspaceConfigs,
+          workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
+          maxDispatches: 1,
+          createAttemptId: () => testEntityId('attempt', 'capture_held_refusal'),
+          createAgentSessionId: () => testEntityId('as', 'capture_held_refusal'),
+        });
+        expect(deferred).toMatchObject({
+          startedTurns: [],
+          terminalResult: { status: 'queued', reason: 'backend-busy' },
+        });
+        expect(native.effects).toHaveLength(beforeEffects);
+        expect(store.getTurnById(siblingEntry.turnId).status).toBe('pending');
         concurrentRelease[0]!.resolve();
-        const completed = await Promise.race(closing);
-        expect(finished).toEqual([completed]);
-        expect(
-          await durableCapacity.inspectMaterializationCapacity!(residents[1 - completed]!.pkg)
-        ).toBe('capacity-saturated');
+        expect(await firstClose).toBe('closed');
+        // Exact session close does not silently rebase the queued storage selection.
+        expect(getWorkerStorageBinding(coreDb, storage)!.revision).toBe(storage.revision);
+        concurrentArmed = false;
+        concurrentSibling = await native.admitTurn(siblingEntry, {
+          attemptId: siblingAttemptId,
+          agentSessionId: siblingAgentSessionId,
+          candidateAgentSessionId: siblingAgentSessionId,
+        });
+        await concurrentSibling.complete();
+        if (!journalRef) throw new Error('Successor idle Turn has no acknowledged journal.');
+        expect(journalRef.executionId).not.toBe(firstRef.executionId);
+        const secondReader = createExecutionStepJournalReader(db!, journalRef.owner);
+        originals.push({
+          ref: journalRef,
+          root: await secondReader.readExecution(journalRef),
+          steps: await secondReader.readEndedSteps(journalRef),
+        });
+        expect(originals[1]!.root.phase).toBe('closed');
+        concurrentArmed = true;
+        const secondClose = close(concurrentSibling.pkg);
+        closing.push(secondClose);
+        await vi.waitFor(() => expect(concurrentScans).toBe(2));
+        expect(await durableCapacity.inspectMaterializationCapacity!(concurrentSibling.pkg)).toBe(
+          'capacity-saturated'
+        );
         for (const original of originals) {
-          const reader = createExecutionStepJournalReader(db, original.ref.owner);
+          const reader = createExecutionStepJournalReader(db!, original.ref.owner);
           expect(await reader.readExecution(original.ref)).toStrictEqual(original.root);
           expect(await reader.readEndedSteps(original.ref)).toStrictEqual(original.steps);
         }
+        concurrentRelease[1]!.resolve();
+        expect(await secondClose).toBe('closed');
+        expect(candidateResults).toHaveLength(2);
+        expect(new Set(candidateResults.map(({ requestId }) => requestId)).size).toBe(2);
+        expect(candidateResults.map(({ result }) => result.outcome)).toEqual([
+          'no_new_head',
+          'no_new_head',
+        ]);
+        assertCandidateJournal();
+        expect(store.getTurnById(entry.turnId).status).toBe('completed');
+        expect(store.getTurnById(siblingEntry.turnId).status).toBe('completed');
       } finally {
         for (const gate of concurrentRelease) gate.resolve();
-        outcomes = await Promise.allSettled(closing);
+        const outcomes = await Promise.allSettled(closing);
+        for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
       }
-      for (const outcome of outcomes) if (outcome.status === 'rejected') throw outcome.reason;
       return;
     }
     if (idleCapture) {
@@ -8393,7 +8569,7 @@ describe('createConfiguredTurnExecutor', () => {
       'native',
     ],
     [
-      'materializes two adapter-keyed Harnesses without creating a second compatible Sandbox',
+      'replaces the Sandbox between AgentSessions when the declared Harness set is unprovable',
       'adapters',
     ],
   ] as const)('%s', async (_title, change) => {
@@ -8752,7 +8928,7 @@ describe('createConfiguredTurnExecutor', () => {
       const operations: Record<string, number> = {};
       for (const command of commands) {
         expect(
-          change === 'same' || sharedAdapters
+          change === 'same'
             ? ['session.open', 'session.inspect', 'turn.start']
             : ['session.open', 'session.inspect', 'session.close', 'turn.start']
         ).toContain(command.operation);
@@ -8769,7 +8945,7 @@ describe('createConfiguredTurnExecutor', () => {
       }
       expect(operations).toMatchObject(
         sharedAdapters
-          ? { 'session.open': 3, 'turn.start': 3 }
+          ? { 'session.open': 3, 'session.close': 2, 'turn.start': 3 }
           : change === 'same'
             ? { 'session.open': 1, 'turn.start': 2 }
             : { 'session.open': 2, 'session.close': 1, 'turn.start': 2 }
@@ -8784,7 +8960,7 @@ describe('createConfiguredTurnExecutor', () => {
       expect(new Set(commands.map((command) => command.operationId)).size).toBe(commands.length);
       if (sharedAdapters) {
         const starts = commands.filter((command) => command.operation === 'turn.start');
-        expect(starts[0]!.harnessInstanceId).toBe(starts[2]!.harnessInstanceId);
+        expect(new Set(starts.map((command) => command.harnessInstanceId)).size).toBe(3);
         expect(starts[1]!.harnessInstanceId).not.toBe(starts[0]!.harnessInstanceId);
       } else if (change !== 'mcp')
         expect(new Set(commands.map((command) => command.harnessInstanceId)).size).toBe(1);
@@ -8849,11 +9025,16 @@ describe('createConfiguredTurnExecutor', () => {
         'workspace.collect',
         'file.export',
       ].sort();
+      if (sharedAdapters) allowedEffects.push('bridge.close', 'sandbox.delete');
       if (sharedAdapters)
         for (const kind of Object.keys(counts)) expect(allowedEffects).toContain(kind);
-      else expect(Object.keys(counts).sort()).toEqual(allowedEffects);
+      else expect(Object.keys(counts).sort()).toEqual(allowedEffects.sort());
+      if (sharedAdapters) expect(counts['sandbox.delete']).toBe(2);
       expect(counts['image.acquire']).toBeGreaterThan(0);
-      expect(counts).toMatchObject({ 'sandbox.create': 1, 'bridge.open': 1 });
+      expect(counts).toMatchObject({
+        'sandbox.create': sharedAdapters ? 3 : 1,
+        'bridge.open': sharedAdapters ? 3 : 1,
+      });
       expect(new Set(native.effects.map((effect) => effect.requestId)).size).toBe(
         native.effects.length
       );
@@ -8865,7 +9046,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('reuses same-epoch idle AgentSession continuity after restart without process-local warmup', async () => {
+  it('reuses current same-epoch continuity but refuses an unproved previous compatibility descriptor', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -9259,6 +9440,50 @@ describe('createConfiguredTurnExecutor', () => {
       ).toEqual({ count: 1 });
       expect(effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
       expect(effects.some((effect) => effect.kind === 'sandbox.delete')).toBe(false);
+      expect(effects.slice(settledEffectCount)).toEqual([]);
+
+      // Reproduce the previous opaque digest without the new single-session boundary.
+      const serialize = nanoHostEffectIdentity.stableNanoHostEffectJson;
+      const legacySerialization = vi
+        .spyOn(nanoHostEffectIdentity, 'stableNanoHostEffectJson')
+        .mockImplementationOnce((value) => {
+          const { unprovedCoResidency: _isolation, ...legacy } = value as Record<string, unknown>;
+          return serialize(legacy);
+        });
+      const legacyKey = nanoHostSandboxCompatibilityKey(environmentPackage);
+      legacySerialization.mockRestore();
+      expect(legacyKey).not.toBe(idleBinding.sandboxCompatibilityKey);
+      coreDb.sqlite
+        .prepare('UPDATE sandbox_runtime_records SET sandbox_compatibility_key = ?')
+        .run(legacyKey);
+      const oldDescriptorBackend = (
+        createConfiguredWorkerLifecycleRuntime({
+          releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+          coreDb,
+          env: {},
+          nanoHostSessionDispatch: sessionDispatch,
+          workerControlGateway: new WorkerControlGateway(),
+        }).turnExecutor as unknown as {
+          readonly backend: WorkerGovernanceBackend & {
+            restoreSession(pkg: AgentEnvironmentPackage, attemptId: string): void;
+            resolveResidentWorkerStorageWorkSlotRef(pkg: AgentEnvironmentPackage): string | null;
+          };
+        }
+      ).backend;
+      expect(
+        oldDescriptorBackend.resolveResidentWorkerStorageWorkSlotRef(plannedPackage)
+      ).toBeNull();
+      expect(() =>
+        oldDescriptorBackend.restoreSession(
+          environmentPackage,
+          testEntityId('attempt', `lease-${environmentPackage.snapshotId}`)
+        )
+      ).toThrow(WorkerNativeProofValidationError);
+      expect(
+        coreDb.sqlite
+          .prepare('SELECT sandbox_compatibility_key AS key FROM sandbox_runtime_records')
+          .get()
+      ).toEqual({ key: legacyKey });
       expect(effects.slice(settledEffectCount)).toEqual([]);
     } finally {
       coreDb.sqlite.close();
@@ -10760,7 +10985,7 @@ describe('createConfiguredTurnExecutor', () => {
     }
   });
 
-  it('keys shared Sandboxes by static isolation inputs, with private Context and output namespaces', async () => {
+  it('isolates unproved co-residency while retaining static inputs and private Context namespaces', async () => {
     const coreDb = createFactoryCoreDb();
     try {
       coreDb.sqlite
@@ -10890,13 +11115,13 @@ describe('createConfiguredTurnExecutor', () => {
       const baselinePackage = await packageFor('a');
       const baseline = keyFor(baselinePackage);
 
-      expect(keyFor(await packageFor('b'))).toBe(baseline);
+      expect(keyFor(await packageFor('b'))).not.toBe(baseline);
       expect(planFor(await packageFor('b'))).not.toBe(planFor(baselinePackage));
       expect(
-        keyFor(await packageFor('c', { actorId: 'usr_00000000-0000-7de9-993f-8088d6e797b7' }))
+        keyFor(await packageFor('a', { actorId: 'usr_00000000-0000-7de9-993f-8088d6e797b7' }))
       ).not.toBe(baseline);
-      expect(keyFor(await packageFor('d', { mountLabel: 'secondary' }))).not.toBe(baseline);
-      expect(keyFor(await packageFor('e', { sensitivity: 'restricted' }))).not.toBe(baseline);
+      expect(keyFor(await packageFor('a', { mountLabel: 'secondary' }))).not.toBe(baseline);
+      expect(keyFor(await packageFor('a', { sensitivity: 'restricted' }))).not.toBe(baseline);
       expect(
         keyFor({ ...baselinePackage, resources: { cpu: { limitMillicores: 1000 } } })
       ).not.toBe(baseline);
@@ -11245,37 +11470,6 @@ describe('createConfiguredTurnExecutor', () => {
           )!;
           const siblingAgentSessionId = testEntityId('as', `${label}-sibling`);
           const siblingAttemptId = testEntityId('attempt', `${label}-sibling`);
-          const siblingReceiptSettled = Promise.withResolvers<void>();
-          if (siblingReceiptSettled) void siblingReceiptSettled.promise.catch(() => undefined);
-          const nativeClient = getControlStoreWorkerClient();
-          const nativeVault = nativeClient.vault.bind(nativeClient);
-          const receiptObservation = siblingReceiptSettled
-            ? vi.spyOn(nativeClient, 'vault').mockImplementation(((
-                db,
-                kind,
-                record,
-                beforeSubmit
-              ) => {
-                const result = nativeVault(db, kind, record, beforeSubmit);
-                const receipt = record as {
-                  readonly grantId?: string;
-                  readonly agentSessionId?: string;
-                };
-                if (
-                  db === coreDb &&
-                  kind === 'receipt-create' &&
-                  receipt.grantId === grantId &&
-                  receipt.agentSessionId === siblingAgentSessionId
-                ) {
-                  void result.then(
-                    () => siblingReceiptSettled.resolve(),
-                    siblingReceiptSettled.reject
-                  );
-                }
-                return result;
-              }) as typeof nativeClient.vault)
-            : undefined;
-          onTestFinished(() => receiptObservation?.mockRestore());
           const siblingEntry = createSchedulerAdmissionEntry(coreDb, {
             ...entry,
             queueEntryId: `queue:${label}-sibling`,
@@ -11294,29 +11488,37 @@ describe('createConfiguredTurnExecutor', () => {
             },
           });
           await publishFactoryAdmission(store, siblingEntry);
-          const sibling = await native.admitTurn(siblingEntry, {
-            attemptId: siblingAttemptId,
-            agentSessionId: siblingAgentSessionId,
-            candidateAgentSessionId: siblingAgentSessionId,
+          const beforeAdmissionEffects = native.effects.length;
+          const deferred = await runSchedulerDispatchLoop({
+            coreDb,
+            store,
+            turnExecutor: native.executor,
+            executionBackend: native.executor.executionBackend as WorkerGovernanceBackend,
+            agentManifests: configuration.agentManifests,
+            gatewayConfig: configuration.gatewayConfig,
+            providerRegistry: configuration.providerRegistry,
+            workspaceConfigs: configuration.workspaceConfigs,
+            workspaceMcpServerCatalogs: configuration.workspaceMcpServerCatalogs,
+            maxDispatches: 1,
+            createAttemptId: () => siblingAttemptId,
+            createAgentSessionId: () => siblingAgentSessionId,
           });
-          // Peer acceptance can precede the executor's startup ACK and credential receipt publication.
-          await native.waitForStartup(siblingEntry.turnId);
-          // This sibling has its own exposure receipt under the same grant.
-          if (siblingReceiptSettled) await siblingReceiptSettled.promise;
-          receiptObservation?.mockRestore();
+          expect(deferred).toMatchObject({
+            startedTurns: [],
+            terminalResult: { status: 'queued', reason: 'backend-busy' },
+          });
+          expect(native.effects).toHaveLength(beforeAdmissionEffects);
+          expect(
+            listVaultInjectionReceipts(coreDb).map((receipt) => receipt.agentSessionId)
+          ).toEqual([agentSessionId]);
+          expect(store.listThreadAgentSessions(workspaceId, siblingThread.id)).toEqual([]);
           const backend = native.executor.executionBackend as WorkerGovernanceBackend;
           const collect = backend.collectTranscript.bind(backend);
           const firstCloseoutPaused = Promise.withResolvers<void>();
-          const siblingCollecting = Promise.withResolvers<void>();
           const releaseFirst = Promise.withResolvers<void>();
-          const releaseSibling = Promise.withResolvers<void>();
           const collection = vi
             .spyOn(backend, 'collectTranscript')
             .mockImplementation(async (...args) => {
-              if (args[0] === sibling.pkg.snapshotId) {
-                siblingCollecting.resolve();
-                await releaseSibling.promise;
-              }
               const transcript = await collect(...args);
               if (!lateDrain && args[0] === admitted!.pkg.snapshotId) {
                 firstCloseoutPaused.resolve();
@@ -11378,18 +11580,15 @@ describe('createConfiguredTurnExecutor', () => {
             ORDER BY b.agent_session_id`)
                 .all()
             ).toEqual(
-              expect.arrayContaining([
-                { sandboxRuntimeId: expect.any(String), agentSessionId },
-                { sandboxRuntimeId: expect.any(String), agentSessionId: siblingAgentSessionId },
-              ])
+              expect.arrayContaining([{ sandboxRuntimeId: expect.any(String), agentSessionId }])
             );
             expect(
               coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
             ).toEqual({ count: 1 });
             const originalReceipts = listVaultInjectionReceipts(coreDb);
-            expect(originalReceipts.map((receipt) => receipt.agentSessionId).sort()).toEqual(
-              [agentSessionId, siblingAgentSessionId].sort()
-            );
+            expect(originalReceipts.map((receipt) => receipt.agentSessionId).sort()).toEqual([
+              agentSessionId,
+            ]);
             firstCloseout = admitted.complete();
             void firstCloseout.then(
               () => {
@@ -11401,15 +11600,12 @@ describe('createConfiguredTurnExecutor', () => {
             );
             await Promise.race([firstCloseoutPaused.promise, firstCloseout]);
             expect(firstSettled).toBe(false);
-            await native.executor.interruptTurn(store, siblingEntry.turnId);
-            await Promise.race([siblingCollecting.promise, sibling.execution]);
             const finalFor = (pkg: AgentEnvironmentPackage) =>
               getWorkerControlAcceptedFinalStatus(coreDb, {
                 ...pkg.scope,
                 packageSnapshotId: pkg.snapshotId,
               });
             expect(finalFor(admitted.pkg)).toMatchObject({ status: 'completed' });
-            expect(finalFor(sibling.pkg)).toMatchObject({ status: 'interrupted' });
             const effectsBefore = native.effects.length;
             revocation = app
               .request(
@@ -11438,9 +11634,9 @@ describe('createConfiguredTurnExecutor', () => {
                 true
               );
             });
-            releaseFirst.resolve();
-            await firstCloseout;
-            // Sandbox lifecycle and Scheduler cleanup retain every sibling's collection exclusion.
+            // The original owner is still collecting/publishing. Revocation must
+            // await that exact owner, despite the second Thread having no exposure.
+            expect(publicResponse).toBeUndefined();
             expect(
               native.effects
                 .slice(effectsBefore)
@@ -11448,19 +11644,16 @@ describe('createConfiguredTurnExecutor', () => {
                   (effect) => effect.kind === 'bridge.close' || effect.kind === 'sandbox.delete'
                 )
             ).toEqual([]);
-            expect(
-              attempts.requireSchedulerExecutionAttempt(coreDb, siblingAttemptId)
-            ).toMatchObject({
+            expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toMatchObject({
               phase: 'closing',
               fenceRef: null,
             });
-            releaseSibling.resolve();
-            await Promise.allSettled([firstCloseout, sibling.execution]);
+            releaseFirst.resolve();
+            await firstCloseout;
             const response = await revocation;
             expect(store.getTurnById(entry.turnId).status).toBe('completed');
-            expect(store.getTurnById(siblingEntry.turnId).status).toBe('interrupted');
+            expect(store.getTurnById(siblingEntry.turnId).status).toBe('pending');
             expect(finalFor(admitted.pkg)).toMatchObject({ status: 'completed' });
-            expect(finalFor(sibling.pkg)).toMatchObject({ status: 'interrupted' });
             // Vault Lifecycle And Failure Rules preserves runtime exposure as stale-session.
             expect(listVaultInjectionReceipts(coreDb)).toEqual(
               originalReceipts.map((receipt) => ({
@@ -11472,14 +11665,11 @@ describe('createConfiguredTurnExecutor', () => {
             expect(response.status, await response.clone().text()).toBe(200);
             expect(
               [...native.outside.bindings.values()].flatMap((sessions) => [...sessions.values()])
-            ).toEqual([
-              expect.objectContaining({ state: 'closed' }),
-              expect.objectContaining({ state: 'closed' }),
-            ]);
+            ).toEqual([expect.objectContaining({ state: 'closed' })]);
             expect(
               coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM sandbox_runtime_records').get()
             ).toEqual({ count: 0 });
-            for (const ownerAttemptId of [attemptId, siblingAttemptId])
+            for (const ownerAttemptId of [attemptId])
               expect(
                 attempts.requireSchedulerExecutionAttempt(coreDb, ownerAttemptId)
               ).toMatchObject({
@@ -11495,13 +11685,11 @@ describe('createConfiguredTurnExecutor', () => {
               store
                 .listThreadAgentSessions(workspaceId, siblingThread.id)
                 .map((session) => session.id)
-            ).toEqual([siblingAgentSessionId]);
+            ).toEqual([]);
             expect(JSON.stringify(await response.json())).not.toContain(secret);
           } finally {
             releaseFirst.resolve();
-            releaseSibling.resolve();
             await firstCloseout?.catch(() => undefined);
-            await sibling.cleanup();
             await revocation?.catch(() => undefined);
             publication?.mockRestore();
             collection.mockRestore();
@@ -14428,12 +14616,54 @@ describe('createConfiguredTurnExecutor', () => {
           return transcript;
         });
       const inspect = backend.inspectMaterializationCapacity!.bind(backend);
+      const continuity = backend.prepareAgentSessionContinuity!.bind(backend);
+      const delayedGuard =
+        scenario === 'late-capacity' || scenario === 'materialization-forced-retirement-guard';
+      let staleObservation = delayedGuard;
+      let secondCommitted = false;
+      const emptyContinuity = await continuity({
+        agentSessionId: testEntityId('as', 'busy-empty-observation'),
+        threadId: threadIds[1]!,
+        workspaceId,
+        reuseAllowed: true,
+      });
+      expect(emptyContinuity).toBe('absent');
+      // Bounded missed-observation fault: early checks see the pre-resident target.
+      // The materialization/retirement owner below remains real and must refuse
+      // against the actual first binding without opening or deleting anything.
+      const earlyContinuity = vi
+        .spyOn(backend, 'prepareAgentSessionContinuity')
+        .mockImplementation(async (input) => {
+          try {
+            return await continuity(input);
+          } catch (error) {
+            // Lose only this early busy observation; retain real continuity work
+            // and every other refusal. Final materialization receives no stale read.
+            if (
+              staleObservation &&
+              input.threadId === threadIds[1] &&
+              error instanceof WorkerGovernanceCapacityUnavailableError
+            )
+              return emptyContinuity;
+            throw error;
+          }
+        });
+      const earlyCapacity = vi
+        .spyOn(backend, 'inspectMaterializationCapacity')
+        .mockImplementation(async (pkg) =>
+          staleObservation &&
+          pkg.scope.threadId === threadIds[1] &&
+          (!secondCommitted || scenario === 'materialization-forced-retirement-guard')
+            ? 'available'
+            : inspect(pkg)
+        );
       const commit = executor.commitPreparedAgentSessionForTurn!.bind(executor);
       const commitObservation = vi
         .spyOn(executor, 'commitPreparedAgentSessionForTurn')
         .mockImplementation(async (...args) => {
           const result = await commit(...args);
           if (args[1].preparation.turn.threadId === threadIds[1]) {
+            secondCommitted = true;
             if (scenario === 'late-capacity') configuration = reduced;
           }
           return result;
@@ -14576,7 +14806,7 @@ describe('createConfiguredTurnExecutor', () => {
             WorkerGovernanceCapacityUnavailableError
           );
         if (scenario === 'late-capacity') expect(configuration).toBe(reduced);
-        expect(materializationCapacity).toEqual(finalGuard ? ['available'] : []);
+        expect(materializationCapacity).toEqual(finalGuard ? ['capacity-saturated'] : []);
         if (finalGuard)
           expect(configuration.openKitConfig.nanohost?.maxActiveTurnsPerSandbox).toBe(2);
         const retainedAttempt = attempts.requireSchedulerExecutionAttempt(
@@ -14651,6 +14881,7 @@ describe('createConfiguredTurnExecutor', () => {
         for (const [command] of commandObservation.mock.calls)
           expect(['session.open', 'session.inspect', 'turn.start']).toContain(command.operation);
         expect(executor.releaseResults).toEqual([]);
+        staleObservation = false;
         configuration = initial;
         release.resolve();
         firstWork.completion.resolve();
@@ -14771,6 +15002,7 @@ describe('createConfiguredTurnExecutor', () => {
             .map((attempt) => attempt.attemptId)
         ).toEqual([busy[0]!.attemptId, attemptId]);
       } finally {
+        staleObservation = false;
         configuration = initial;
         release.resolve();
         for (const threadId of threadIds)
@@ -14800,6 +15032,8 @@ describe('createConfiguredTurnExecutor', () => {
             .mock.results.filter((result) => result.type === 'return')
             .map((result) => result.value)
         );
+        earlyContinuity.mockRestore();
+        earlyCapacity.mockRestore();
         collection.mockRestore();
         commitObservation.mockRestore();
         materialization.mockRestore();
@@ -16069,7 +16303,7 @@ describe('createConfiguredTurnExecutor', () => {
   );
 
   // Four durable admissions need the same runner budget as adjacent lifecycle fixtures.
-  it('dispatches DeepSeek after OpenCode returns to a previously evicted Sandbox identity', async () => {
+  it('dispatches distinct Thread Sandboxes when OpenCode returns after DeepSeek eviction', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -16253,7 +16487,7 @@ describe('createConfiguredTurnExecutor', () => {
         const sandboxId = backend.sessions.get(environmentPackage.snapshotId)!.sharedHarness.sandbox
           .sandboxRuntimeId;
         if (index === 0) originalOpenCodeSandboxId = sandboxId;
-        if (index === 2) expect(sandboxId).toBe(originalOpenCodeSandboxId);
+        if (index === 2) expect(sandboxId).not.toBe(originalOpenCodeSandboxId);
         await backend.bindNativeHandleRecorder?.(environmentPackage.snapshotId, () => {});
         const launch = submitTestNanoHostTurn(coreDb, backend, materialized);
         await settleNext('session.open', {
@@ -16974,18 +17208,20 @@ describe('createConfiguredTurnExecutor', () => {
             });
             await publishFactoryAdmission(store, stale);
             const staleAttemptId = testEntityId('attempt', 'idle_eviction_stale');
-            await expect(
-              runSchedulerDispatchLoop({
-                coreDb,
-                store,
-                turnExecutor: native.executor,
-                executionBackend: backend,
-                ...readRuntimeConfig(),
-                maxDispatches: 1,
-                createAttemptId: () => staleAttemptId,
-                createAgentSessionId: () => testEntityId('as', 'idle_eviction_stale'),
-              })
-            ).rejects.toMatchObject({ code: 'recovery_required' });
+            const staleDispatch = runSchedulerDispatchLoop({
+              coreDb,
+              store,
+              turnExecutor: native.executor,
+              executionBackend: backend,
+              ...readRuntimeConfig(),
+              maxDispatches: 1,
+              createAttemptId: () => staleAttemptId,
+              createAgentSessionId: () => testEntityId('as', 'idle_eviction_stale'),
+            });
+            await expect(staleDispatch).rejects.toBeInstanceOf(
+              storageOwners.WorkerStorageBindingError
+            );
+            await expect(staleDispatch).rejects.toMatchObject({ code: 'revision_conflict' });
             expect(selection.mock.calls.at(-1)?.[1]).toMatchObject({
               storageRef: choice.storageRef,
               expectedRevision: selected.revision - 1,
@@ -17432,6 +17668,7 @@ describe('createConfiguredTurnExecutor', () => {
     60_000
   );
 
+  // Six durable admissions now prove incompatible physical retirement; measured47s under shared load.
   it('honors explicit selected and fresh storage on a shared resident contributor', async ({
     signal,
   }) => {
@@ -17608,8 +17845,8 @@ describe('createConfiguredTurnExecutor', () => {
         workSlotRef: peerSlot,
         attachmentGeneration: getWorkerStorageBinding(coreDb, original)!.attachmentGeneration,
       });
-      expect(native.effects.filter((e) => e.kind === 'sandbox.create')).toHaveLength(1);
-      expect(native.effects.filter((e) => e.kind === 'sandbox.delete')).toHaveLength(0);
+      expect(native.effects.filter((e) => e.kind === 'sandbox.create')).toHaveLength(2);
+      expect(native.effects.filter((e) => e.kind === 'sandbox.delete')).toHaveLength(1);
       // A different real resident makes an accidental warm-storage fallback observable.
       const q = await thread('q');
       const freshChoice = { kind: 'fresh' as const, goalId: null, taskId: null };
@@ -17795,7 +18032,7 @@ describe('createConfiguredTurnExecutor', () => {
         fixtureFinished.resolve();
       }
     }
-  });
+  }, 90_000);
 
   it('retains a committed native wake across a cold final-null drain and old restore', async () => {
     type Native = Awaited<ReturnType<typeof createNativeTaskAdmissionFixture>>;
@@ -19204,7 +19441,7 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     }
   );
 
-  it('replaces same-key idle Sandbox rows that a fresh backend cannot prove process-locally', async () => {
+  it('retires an unproved multi-Thread descriptor before a distinct Thread obtains physical placement', async () => {
     const coreDb = createFactoryCoreDb();
     const effects: NanoHostSessionEffectRequest[] = [];
     const sessionDispatch: NanoHostSessionDispatch = {
@@ -19570,7 +19807,16 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
       ).toEqual({ count: 0 });
 
-      expect(restartedBackend.planSession(secondPackage).backendSessionId.slice(0, 19)).toBe(
+      expect(restartedBackend.planSession(secondPackage).backendSessionId.slice(0, 19)).not.toBe(
+        firstBackend.planSession(firstPackage).backendSessionId.slice(0, 19)
+      );
+      const sameThreadSuccessor = await packageFor(
+        testEntityId('as', 'as_restart_unproved_same_thread'),
+        firstPackage.scope.threadId,
+        testEntityId('tu', 'turn_restart_unproved_same_thread'),
+        'snapshot_restart_unproved_same_thread'
+      );
+      expect(restartedBackend.planSession(sameThreadSuccessor).backendSessionId.slice(0, 19)).toBe(
         firstBackend.planSession(firstPackage).backendSessionId.slice(0, 19)
       );
       await anchorNanoHostMaterialization(coreDb, restartedBackend, secondPackage);
@@ -21887,6 +22133,180 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     await assertIdleResultConsumption('unknown');
   });
 
+  it('recovers an unacknowledged native proof after consumed idle deletion without repeating physical effects', async () => {
+    // This cleanup-owner fixture acknowledges accepted native output through a caller-owned
+    // consumer. Main therefore still needs the real durable handoff after the cold cut.
+    const f = await admitIdleSupplyResident('unacknowledged_idle_proof');
+    const { coreDb, environmentPackage: pkg } = f;
+    const store = new FsStore({ dataRoot: coreDb.dataRoot });
+    const attemptId = testEntityId('attempt', 'lease_unacknowledged_idle_proof');
+    const originalAttempt = attempts.requireSchedulerExecutionAttempt(coreDb, attemptId);
+    const originalSession = store.getAgentSession(pkg.scope.agentSessionId);
+    let cold: ReturnType<typeof createConfiguredWorkerLifecycleRuntime> | undefined;
+    let recorderFault: { mockRestore(): void } | undefined;
+    const physical = () =>
+      f.effects.filter(({ kind }) => kind === 'bridge.close' || kind === 'sandbox.delete');
+    const createOwner = () =>
+      createConfiguredWorkerLifecycleRuntime({
+        releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+        coreDb,
+        store,
+        fileAdmission: new FileStorageAdmission(coreDb.dataRoot, () => 0n),
+        env: {},
+        nanoHostSessionDispatch: createFactoryNanoHostDispatch(f.effects),
+        workerControlGateway: new WorkerControlGateway(),
+      });
+    try {
+      expect(originalAttempt.phase).toBe('closed');
+      expect(originalAttempt.fenceRef).not.toBeNull();
+      expect(originalSession.nativeHandleDigest).toBeNull();
+      expect(physical()).toEqual([]);
+      await f.runtime.executionReconciler.stop();
+      const restored = createOwner();
+      try {
+        const backend = (restored.turnExecutor as WorkerGovernanceTurnExecutor)
+          .executionBackend as WorkerGovernanceBackend & {
+          restoreSession(pkg: AgentEnvironmentPackage, attemptId: string): void;
+        };
+        backend.restoreSession(pkg, attemptId);
+        await expect(
+          backend.bindNativeHandleRecorder?.(pkg.snapshotId, () => {
+            throw new Error('Controlled restored proof consumer failure.');
+          })
+        ).rejects.toThrow(/restored proof consumer failure/);
+        await expect(backend.cleanupSession(backend.planSession(pkg))).rejects.toThrow(
+          /could not be recorded/
+        );
+        expect(physical()).toEqual([]);
+        expect(store.getAgentSession(pkg.scope.agentSessionId).nativeHandleDigest).toBeNull();
+      } finally {
+        await restored.executionReconciler.stop();
+      }
+      const attachment = getWorkerStorageBinding(coreDb, originalSession.retainedStorage!);
+      if (!attachment?.currentSandboxBindingRef)
+        throw new Error('Unacknowledged proof has no attached resident.');
+      await harnessRecords.drainNanoHostSandboxAdmission(coreDb, {
+        sandboxBindingRef: attachment.currentSandboxBindingRef,
+        originPhysicalEpoch: getWorkerBackendSession(coreDb, attemptId)!.originPhysicalEpoch,
+      });
+      cold = createOwner();
+      const executor = cold.turnExecutor as WorkerGovernanceTurnExecutor;
+      const backend = executor.executionBackend as WorkerGovernanceBackend;
+      const identity = backend.planSession(pkg);
+      const reader = createExecutionStepJournalReader(coreDb, { kind: 'server' });
+      const deleteProof = async () => {
+        const request = physical().find(({ kind }) => kind === 'sandbox.delete');
+        expect(request).toBeDefined();
+        const rows = coreDb.sqlite
+          .prepare(`SELECT execution_id, step_id FROM control_execution_steps
+          WHERE json_extract(invocation_json, '$.carriage.requestId') = ?
+          AND json_extract(control_json, '$.definitionVersion') = 'core-idle-cleanup/v1'
+          AND json_extract(control_json, '$.kind') <> 'consume-receipt'`)
+          .all(request!.requestId) as { execution_id: string; step_id: string }[];
+        expect(rows).toHaveLength(1);
+        const original = await reader.readInvocation({
+          execution: { owner: { kind: 'server' }, executionId: rows[0]!.execution_id },
+          stepId: rows[0]!.step_id,
+        });
+        expect(original.state).toBe('completed');
+        expect(original.carriage.operation).toBe('sandbox.delete');
+        expect(original.carriage.requestId).toBe(request!.requestId);
+        expect(original.control.outputRefs).toHaveLength(1);
+        expect(
+          (await reader.readLinkedInspections(original.ref)).some(
+            ({ inspection }) =>
+              inspection.state === 'completed' &&
+              inspection.control.kind === 'consume-receipt' &&
+              inspection.ref.stepId === `${original.ref.stepId}:consume` &&
+              inspection.control.operationId === original.carriage.requestId &&
+              JSON.stringify(inspection.control.inputRefs) ===
+                JSON.stringify(original.control.outputRefs) &&
+              JSON.stringify(inspection.control.outputRefs) ===
+                JSON.stringify(original.control.outputRefs)
+          )
+        ).toBe(true);
+        return original;
+      };
+      recorderFault = vi
+        .spyOn(executor, 'recordNativeHandleDigest')
+        .mockImplementation(async () => {
+          await deleteProof();
+          throw new Error('Controlled cold native proof recorder failure.');
+        });
+      const cleanupFailure = await backend
+        .cleanupSession(identity, { failedCloseout: false, wholeSandbox: true })
+        .catch((error: unknown) => error);
+      const failureMessages = (error: unknown, depth = 0): string[] => {
+        if (!(error instanceof Error) || depth === 3) return [typeof error];
+        return [
+          error.message.slice(0, 256),
+          ...(error instanceof AggregateError
+            ? error.errors.slice(0, 4).flatMap((cause) => failureMessages(cause, depth + 1))
+            : error.cause === undefined
+              ? []
+              : failureMessages(error.cause, depth + 1)),
+        ];
+      };
+      expect(cleanupFailure).toBeInstanceOf(Error);
+      expect(
+        recorderFault,
+        failureMessages(cleanupFailure).join(' | ').slice(0, 2048)
+      ).toHaveBeenCalled();
+      const originalDelete = await deleteProof();
+      const residentBinding = originalDelete.carriage.bindingRef!;
+      const retainedNative = coreDb.sqlite
+        .prepare(`SELECT native_handle_digest AS digest FROM agent_session_runtime_bindings`)
+        .all();
+      expect(retainedNative).toEqual([{ digest: f.readyDigest }]);
+      const retainedStorage = getWorkerStorageBindingForSandbox(coreDb, {
+        sandboxBindingRef: residentBinding,
+      });
+      expect(retainedStorage).toMatchObject({
+        state: 'unknown',
+        currentSandboxBindingRef: residentBinding,
+      });
+      expect(store.getAgentSession(pkg.scope.agentSessionId)).toMatchObject({
+        nativeHandleDigest: null,
+        retainedStorage: originalSession.retainedStorage,
+      });
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(originalAttempt);
+      await expect(cold.executionReconciler.reconcileIdleCleanup(identity)).rejects.toThrow();
+      expect(
+        coreDb.sqlite
+          .prepare(`SELECT native_handle_digest AS digest FROM agent_session_runtime_bindings`)
+          .all()
+      ).toEqual(retainedNative);
+      expect(
+        getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef: residentBinding })
+      ).toEqual(retainedStorage);
+      expect(physical().map(({ kind }) => kind)).toEqual(['bridge.close', 'sandbox.delete']);
+      recorderFault.mockRestore();
+      recorderFault = undefined;
+      await expect(
+        cold.executionReconciler.reconcileIdleCleanup(identity)
+      ).resolves.toBeUndefined();
+      expect(store.getAgentSession(pkg.scope.agentSessionId)).toMatchObject({
+        nativeHandleDigest: f.readyDigest,
+        retainedStorage: originalSession.retainedStorage,
+      });
+      expect(
+        coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM agent_session_runtime_bindings').get()
+      ).toEqual({ count: 0 });
+      expect(
+        getWorkerStorageBindingForSandbox(coreDb, { sandboxBindingRef: residentBinding })
+      ).toBeNull();
+      expect(await reader.readInvocation(originalDelete.ref)).toEqual(originalDelete);
+      expect(physical().map(({ kind }) => kind)).toEqual(['bridge.close', 'sandbox.delete']);
+      expect(attempts.requireSchedulerExecutionAttempt(coreDb, attemptId)).toEqual(originalAttempt);
+    } finally {
+      recorderFault?.mockRestore();
+      await cold?.executionReconciler.stop();
+      await f.runtime.executionReconciler.stop();
+      await shutdownControlStoreWorkerClient();
+      if (coreDb.sqlite.open) coreDb.sqlite.close();
+    }
+  });
+
   it('joins the addressed idle resident while a distinct anchor has failed storage release', async () => {
     const coreDb = createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);
@@ -21917,12 +22337,13 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     const intents = new Map<string, ExecutionInvocation['ref']>();
     let storageFault: { mockRestore(): void } | undefined;
     try {
+      const thread = await store.createThread(
+        DEMO_WORKSPACE_ID,
+        'Sequential idle resident join',
+        testEntityId('th', 'idle_resident_join')
+      );
+      const agentSessionId = testEntityId('as', 'idle_resident_join');
       for (const label of ['first', 'second']) {
-        const thread = await store.createThread(
-          DEMO_WORKSPACE_ID,
-          `Idle resident join ${label}`,
-          testEntityId('th', `idle_resident_join_${label}`)
-        );
         const storage = cohort.length
           ? getWorkerStorageBinding(
               coreDb,
@@ -21953,7 +22374,6 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             : {}),
         });
         await publishFactoryAdmission(store, entry);
-        const agentSessionId = testEntityId('as', `idle_resident_join_${label}`);
         cohort.push(
           await f.admitTurn(entry, {
             attemptId: testEntityId('attempt', `idle_resident_join_${label}`),
@@ -21961,12 +22381,12 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
             candidateAgentSessionId: agentSessionId,
           })
         );
+        await cohort.at(-1)!.complete();
       }
       expect(f.effects.filter(({ kind }) => kind === 'sandbox.create')).toHaveLength(1);
       const second = cohort[1]!;
       const backend = f.executor.executionBackend as WorkerGovernanceBackend;
       const identity = backend.planSession(second.pkg);
-      for (const admitted of cohort) await admitted.complete();
       const originalTurns = cohort.map(({ pkg }) => store.getTurnById(pkg.scope.turnId));
       const anchor = getWorkerBackendSession(coreDb, second.attempt.attemptId)!;
       for (const admitted of cohort)
@@ -27603,7 +28023,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
       .retainedStorage!;
     expect(survivorStorage).toMatchObject({
       storageRef: oldStorage.storageRef,
-      attachmentGeneration: oldStorage.attachmentGeneration,
+      attachmentGeneration: oldStorage.attachmentGeneration! + 1,
     });
     expect(survivorStorage.workSlotRef).not.toBe(oldStorage.workSlotRef);
     const nativeRows = () =>
@@ -27621,8 +28041,8 @@ it('fences same-account Login replacement until the actual shared survivor settl
         epoch: string;
       }>;
     const geometry = nativeRows();
-    expect(geometry).toHaveLength(2);
-    expect(new Set(geometry.map((row) => row.bindingId)).size).toBe(2);
+    expect(geometry).toHaveLength(1);
+    expect(new Set(geometry.map((row) => row.bindingId)).size).toBe(1);
     expect(new Set(geometry.map((row) => row.sandboxId)).size).toBe(1);
     expect(
       geometry.every(
@@ -27636,7 +28056,7 @@ it('fences same-account Login replacement until the actual shared survivor settl
       geometry.find((row) => row.sessionId === survivor.pkg.scope.agentSessionId)
     ).toMatchObject({ state: 'active', attemptId: survivor.attemptId });
     expect(f.runtime.isTurnExecutionActive(survivor.entry.turnId)).toBe(true);
-    expect(f.effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(1);
+    expect(f.effects.filter((effect) => effect.kind === 'sandbox.create')).toHaveLength(2);
     expect(first.pkg.credentials.declarations).toEqual(survivor.pkg.credentials.declarations);
     expect(first.pkg.extensions).toMatchObject({
       openkit: { workerStorage: { workSlotRef: oldStorage.workSlotRef } },
@@ -27668,7 +28088,8 @@ it('fences same-account Login replacement until the actual shared survivor settl
       disposition: 'accepted',
       inputRef: survivor.pkg.snapshotId,
     });
-    // Prove a real spare compatible operating slot, not only a configured value.
+    // Spare configured capacity does not prove cross-Thread compatibility. The sole
+    // resident belongs to S after exact physical retirement of A.
     const sandboxId = geometry[0]!.sandboxId;
     const operating = coreDb.sqlite
       .prepare(
@@ -27792,10 +28213,40 @@ it('fences same-account Login replacement until the actual shared survivor settl
       cohortStorage.contributors
         .filter(
           (contributor) =>
-            contributor.attachmentGeneration === oldGeneration &&
-            [threadA.id, threadS.id].includes(contributor.threadId)
+            contributor.storageRef === oldStorage.storageRef &&
+            contributor.workspaceId === workspaceId &&
+            contributor.responsibleUserId === ownerUserId &&
+            ((contributor.threadId === threadA.id &&
+              contributor.attachmentGeneration === oldGeneration &&
+              contributor.workSlotRef === oldStorage.workSlotRef) ||
+              (contributor.threadId === threadS.id &&
+                contributor.attachmentGeneration === survivorStorage.attachmentGeneration &&
+                contributor.workSlotRef === survivorStorage.workSlotRef))
         )
         .map((contributor) => contributor.contributorRef)
+    );
+    expect(requiredContributorRefs.size).toBe(2);
+    expect(
+      cohortStorage.contributors
+        .filter((contributor) => requiredContributorRefs.has(contributor.contributorRef))
+        .map((contributor) => ({
+          threadId: contributor.threadId,
+          attachmentGeneration: contributor.attachmentGeneration,
+          workSlotRef: contributor.workSlotRef,
+        }))
+    ).toEqual(
+      expect.arrayContaining([
+        {
+          threadId: threadA.id,
+          attachmentGeneration: oldGeneration,
+          workSlotRef: oldStorage.workSlotRef,
+        },
+        {
+          threadId: threadS.id,
+          attachmentGeneration: survivorStorage.attachmentGeneration,
+          workSlotRef: survivorStorage.workSlotRef,
+        },
+      ])
     );
     const requiredAttachment = () => {
       const storage = getWorkerStorageBinding(coreDb, oldStorage);
@@ -27905,46 +28356,13 @@ it('fences same-account Login replacement until the actual shared survivor settl
       ),
       material: getVaultReference(coreDb, b.referenceId),
     };
-    // The same queued request may earn A's close, then refuse its changed frozen affinity.
-    // This is a failed request, not activation or an automatic retry.
-    const retirementAttempt = testEntityId('attempt', randomUUID());
-    const retirement = schedulerOwners.runSchedulerDispatchLoop({
-      coreDb,
-      store,
-      turnExecutor: f.executor,
-      executionBackend: f.executor.executionBackend!,
-      ...manager.current(),
-      maxDispatches: 1,
-      createAttemptId: () => retirementAttempt,
-      createAgentSessionId: () => testEntityId('as', randomUUID()),
-    });
-    const retirementJob = dispatches.find(
-      (job) => job.queue === continuation.queueEntryId && job.claim && !usedClaims.has(job.claim)
-    );
-    if (!retirementJob?.claim)
-      throw new Error('Original retirement dispatch claim is unavailable.');
-    usedClaims.add(retirementJob.claim);
-    expect(retirementAttempt).not.toBe(busyAttempt);
-    expect(retirementJob.claim).not.toBe(busyJob.claim);
-    const refusal = await retirement.then(
-      () => undefined,
-      (error: unknown) => error
-    );
-    expect(refusal).toMatchObject({
-      code: 'recovery_required',
-      message: 'The AgentSession runtime binding changed after scheduler dispatch.',
-    });
-    await expect(retirementJob.claim).rejects.toBe(refusal);
-    await Promise.allSettled(
-      executions.filter((job) => job.attemptId === retirementAttempt).map((job) => job.promise)
-    );
-    expect(attempts.requireSchedulerExecutionAttempt(coreDb, retirementAttempt)).toMatchObject({
-      phase: 'closed',
-      queueEntryId: continuation.queueEntryId,
-      turnId: continuation.turnId,
-    });
-    expect(store.getTurnById(continuation.turnId).status).toBe('failed');
-    expect(startsSeen.has(continuation.turnId)).toBe(false);
+    // A already left when incompatible S obtained placement. Once S settles,
+    // the original queued explicit request can retire S and activate B. No
+    // intervening A close changes its frozen affinity or requires another request.
+    const next = await start(continuation);
+    expect(next.entry).toEqual(continuation);
+    expect(next.attemptId).not.toBe(busyAttempt);
+    expect(next.claim).not.toBe(busyJob.claim);
     expect(
       coreDb.sqlite
         .prepare('SELECT 1 FROM agent_session_runtime_bindings WHERE agent_session_id = ?')
@@ -27965,20 +28383,6 @@ it('fences same-account Login replacement until the actual shared survivor settl
       material: getVaultReference(coreDb, b.referenceId),
     }).toEqual(beforeRetirement);
     expect(replacements).toHaveLength(0);
-    // A genuinely new explicit request composes after the acknowledged departure.
-    const freshRequest = await createAdmission(
-      threadA.id,
-      'New explicit B request after A retirement'
-    );
-    expect(freshRequest.requestId).not.toBe(continuation.requestId);
-    expect(freshRequest.queueEntryId).not.toBe(continuation.queueEntryId);
-    expect(freshRequest.turnId).not.toBe(continuation.turnId);
-    expect(freshRequest.workerStorageChoice).toBeNull();
-    const next = await start(freshRequest);
-    expect(next.attemptId).not.toBe(busyAttempt);
-    expect(next.claim).not.toBe(busyJob.claim);
-    expect(next.attemptId).not.toBe(retirementAttempt);
-    expect(next.claim).not.toBe(retirementJob.claim);
     expect(next.pkg.scope.threadId).toBe(threadA.id);
     expect(next.pkg.credentials.declarations).toEqual([
       {

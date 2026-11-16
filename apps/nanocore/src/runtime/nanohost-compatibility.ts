@@ -9,10 +9,23 @@ import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type { AgentEnvironmentPackagePreview } from './agent-environment.js';
 import { stableNanoHostEffectJson } from './nanohost-effect-identity.js';
 
-/** Hashes only the exact inputs that decide physical Sandbox reuse. */
+/**
+ * Hashes the proved envelope and confines incomplete co-residency proof to one Thread.
+ *
+ * The retained AEP cannot prove the complete Harness set, Integration version,
+ * admitted trust class or sensitivity class. Different Threads must therefore
+ * never share a Sandbox through equal partial envelopes. Within one Thread,
+ * openNanoHostAgentSessionBinding refuses every prior binding until the native
+ * close owner deletes it after absence proof; sequential successors can retain
+ * the existing Sandbox without admitting co-resident AgentSessions.
+ * The opaque digest shape is unchanged; old descriptors mismatch without rewriting.
+ */
 export function nanoHostSandboxCompatibilityKey(
   environmentPackage: AgentEnvironmentPackagePreview
 ): string {
+  if (!environmentPackage.scope.agentSessionId || !environmentPackage.scope.threadId) {
+    throw new Error('Sandbox compatibility requires exact AgentSession and Thread identities.');
+  }
   const responsibleUserId = responsibleUserIdForActor(environmentPackage.scope.triggerActor);
   const {
     root: sessionRoot,
@@ -25,6 +38,7 @@ export function nanoHostSandboxCompatibilityKey(
   return createHash('sha256')
     .update(
       stableNanoHostEffectJson({
+        unprovedCoResidency: { threadId: environmentPackage.scope.threadId },
         backend: environmentPackage.backend,
         credentials: environmentPackage.credentials,
         ...(environmentPackage.credentials.declarations.some(

@@ -896,143 +896,148 @@ describe('private NanoHost Harness records', () => {
     }
   });
 
-  // Twenty durable Turn admissions need fixture time under parallel gates; capacity assertions stay exact.
-  it('runs twenty Thread-bound Turns in one Harness and releases only the inspected sibling', async () => {
-    const coreDb = await openActiveTurnDb('twenty-thread-turns-', 20);
-    try {
-      // Test the active bound separately from the independent open-resident bound.
-      coreDb.sqlite.exec('UPDATE harness_instance_records SET max_open_sessions = 21');
-      for (let index = 2; index <= 21; index += 1) {
-        await openNanoHostAgentSessionBinding(coreDb, {
-          agentSessionCompatibilityKey: 'b'.repeat(64),
-          agentSessionId: testEntityId('as', `agent-session-${index}`),
-          agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
-          effectiveSetupGeneration: 1,
-          harnessInstanceId: 'harness-1',
-          threadId: testEntityId('th', `thread-${index}`),
-          timestamp: now,
-          workspaceId: testEntityId('ws', 'workspace-1'),
-        });
-        await seedSubmittedAttempt(coreDb, index);
-        const start = async () =>
-          await queueNanoHostHarnessOperation(coreDb, {
-            body: concurrentTurnStartBody(index),
+  it.each([20, 8])(
+    'runs %i Thread-bound Turns in one Harness and releases only the inspected sibling',
+    async (bound) => {
+      const coreDb = await openActiveTurnDb(`bound-${bound}-thread-turns-`, bound);
+      try {
+        // Test the active bound separately from the independent open-resident bound.
+        coreDb.sqlite
+          .prepare('UPDATE harness_instance_records SET max_open_sessions = ?')
+          .run(bound + 1);
+        for (let index = 2; index <= bound + 1; index += 1) {
+          await openNanoHostAgentSessionBinding(coreDb, {
+            agentSessionCompatibilityKey: 'b'.repeat(64),
+            agentSessionId: testEntityId('as', `agent-session-${index}`),
+            agentSessionRuntimeBindingId: `agent-session-binding-${index}`,
+            effectiveSetupGeneration: 1,
             harnessInstanceId: 'harness-1',
-            operation: 'turn.start',
+            threadId: testEntityId('th', `thread-${index}`),
             timestamp: now,
+            workspaceId: testEntityId('ws', 'workspace-1'),
           });
-        if (index === 21) {
-          await expect(start()).rejects.toThrow('active-Turn capacity is exhausted');
-          break;
+          await seedSubmittedAttempt(coreDb, index);
+          const start = async () =>
+            await queueNanoHostHarnessOperation(coreDb, {
+              body: concurrentTurnStartBody(index),
+              harnessInstanceId: 'harness-1',
+              operation: 'turn.start',
+              timestamp: now,
+            });
+          if (index === bound + 1) {
+            await expect(start()).rejects.toThrow('active-Turn capacity is exhausted');
+            break;
+          }
+          const sequence = await start();
+          const command = (await dispatchNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            now: () => now,
+          }))!;
+          expect(sequence).toBe(command.sequence);
+          await settleNanoHostHarnessOperation(coreDb, {
+            sandboxIntegrationBindingRef: 'integration-binding-1',
+            timestamp: now,
+            result: {
+              schemaVersion: 2,
+              harnessInstanceId: 'harness-1',
+              operationId: command.operationId,
+              sequence: command.sequence,
+              disposition: 'succeeded',
+              body: { state: 'started', nativeHandleState: 'pending', nativeHandleDigest: null },
+            },
+          });
+          await consumeFixtureWorkspaceResult(coreDb, index);
         }
-        const sequence = await start();
-        const command = (await dispatchNanoHostHarnessOperation(coreDb, {
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
+            .get()
+        ).toEqual({ count: bound });
+        // The last start belongs to the final sibling, not the addressed Thread 1.
+        await queueNanoHostHarnessOperation(coreDb, {
+          body: { ...interruptBody(), purpose: 'interrupt' },
+          harnessInstanceId: 'harness-1',
+          operation: 'turn.interrupt',
+          timestamp: now,
+        });
+        const interrupted = (await dispatchNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
           now: () => now,
         }))!;
-        expect(sequence).toBe(command.sequence);
         await settleNanoHostHarnessOperation(coreDb, {
           sandboxIntegrationBindingRef: 'integration-binding-1',
           timestamp: now,
           result: {
             schemaVersion: 2,
             harnessInstanceId: 'harness-1',
-            operationId: command.operationId,
-            sequence: command.sequence,
+            operationId: interrupted.operationId,
+            sequence: interrupted.sequence,
             disposition: 'succeeded',
-            body: { state: 'started', nativeHandleState: 'pending', nativeHandleDigest: null },
+            body: { state: 'interrupted' },
           },
         });
-        await consumeFixtureWorkspaceResult(coreDb, index);
-      }
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
-          .get()
-      ).toEqual({ count: 20 });
-      // The last start belongs to Thread 20, not the addressed Thread 1.
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: { ...interruptBody(), purpose: 'interrupt' },
-        harnessInstanceId: 'harness-1',
-        operation: 'turn.interrupt',
-        timestamp: now,
-      });
-      const interrupted = (await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        now: () => now,
-      }))!;
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        timestamp: now,
-        result: {
-          schemaVersion: 2,
-          harnessInstanceId: 'harness-1',
-          operationId: interrupted.operationId,
-          sequence: interrupted.sequence,
-          disposition: 'succeeded',
-          body: { state: 'interrupted' },
-        },
-      });
-      await consumeFixtureWorkspaceResult(coreDb);
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
-          .get()
-      ).toEqual({ count: 20 });
-      await queueNanoHostHarnessOperation(coreDb, {
-        body: {
-          agentSessionId: testEntityId('as', 'agent-session-1'),
-          agentSessionRuntimeBindingId: 'agent-session-binding-1',
-        },
-        harnessInstanceId: 'harness-1',
-        operation: 'session.inspect',
-        timestamp: now,
-      });
-      const inspection = (await dispatchNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        now: () => now,
-      }))!;
-      await settleNanoHostHarnessOperation(coreDb, {
-        sandboxIntegrationBindingRef: 'integration-binding-1',
-        timestamp: now,
-        result: {
-          schemaVersion: 2,
-          harnessInstanceId: 'harness-1',
-          operationId: inspection.operationId,
-          sequence: inspection.sequence,
-          disposition: 'succeeded',
+        await consumeFixtureWorkspaceResult(coreDb);
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
+            .get()
+        ).toEqual({ count: bound });
+        await queueNanoHostHarnessOperation(coreDb, {
           body: {
-            state: 'open',
-            childState: 'running',
-            cleanupState: 'clean',
-            nativeHandleState: 'ready',
-            nativeHandleDigest: 'c'.repeat(64),
+            agentSessionId: testEntityId('as', 'agent-session-1'),
+            agentSessionRuntimeBindingId: 'agent-session-binding-1',
           },
-        },
-      });
-      expect(
-        coreDb.sqlite
-          .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
-          .get()
-      ).toEqual({ count: 19 });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            "SELECT COUNT(*) AS count FROM agent_session_runtime_bindings WHERE lifecycle_state = 'active'"
-          )
-          .get()
-      ).toEqual({ count: 19 });
-      expect(
-        coreDb.sqlite
-          .prepare(
-            'SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
-          )
-          .get(testEntityId('as', 'agent-session-20'))
-      ).toEqual({ attempt: testEntityId('attempt', 'lease-20') });
-    } finally {
-      coreDb.sqlite.close();
-    }
-  }, 60_000);
+          harnessInstanceId: 'harness-1',
+          operation: 'session.inspect',
+          timestamp: now,
+        });
+        const inspection = (await dispatchNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          now: () => now,
+        }))!;
+        await settleNanoHostHarnessOperation(coreDb, {
+          sandboxIntegrationBindingRef: 'integration-binding-1',
+          timestamp: now,
+          result: {
+            schemaVersion: 2,
+            harnessInstanceId: 'harness-1',
+            operationId: inspection.operationId,
+            sequence: inspection.sequence,
+            disposition: 'succeeded',
+            body: {
+              state: 'open',
+              childState: 'running',
+              cleanupState: 'clean',
+              nativeHandleState: 'ready',
+              nativeHandleDigest: 'c'.repeat(64),
+            },
+          },
+        });
+        expect(
+          coreDb.sqlite
+            .prepare('SELECT active_turn_count AS count FROM harness_instance_records')
+            .get()
+        ).toEqual({ count: bound - 1 });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              "SELECT COUNT(*) AS count FROM agent_session_runtime_bindings WHERE lifecycle_state = 'active'"
+            )
+            .get()
+        ).toEqual({ count: bound - 1 });
+        expect(
+          coreDb.sqlite
+            .prepare(
+              'SELECT current_attempt_id AS attempt FROM agent_session_runtime_bindings WHERE agent_session_id = ?'
+            )
+            .get(testEntityId('as', `agent-session-${bound}`))
+        ).toEqual({ attempt: testEntityId('attempt', `lease-${bound}`) });
+      } finally {
+        coreDb.sqlite.close();
+      }
+    },
+    60_000
+  );
 
   it('admits idle sibling continuity and keeps exact live-attempt refusal', async () => {
     const coreDb = await openActiveTurnDb('openkit-harness-idle-sibling-');
