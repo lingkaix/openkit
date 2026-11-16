@@ -1586,3 +1586,50 @@ function registerRetainedFormatMarkerTests() {
   });
 }
 registerRetainedFormatMarkerTests();
+
+// Runtime Security E9 Spread: reserve provenance without enabling a live producer.
+describe('reserved Notebook external-influence provenance', () => {
+  it.each([undefined, false, true])(
+    'round-trips %s through cold Git readers without changing canonical bytes',
+    async (externallyInfluenced) => {
+      const { notebook, repositoryPath, revision } = await fixture();
+      const facts = {
+        ...metadata(),
+        ...(externallyInfluenced === undefined ? {} : { externallyInfluenced }),
+      };
+      for (const marked of [false, true]) {
+        const message = `${JSON.stringify({ ...(marked ? { schemaVersion: 'openkit-knowledge-notebook-commit-v1' } : {}), ...facts })}\n`;
+        const retained = await rawCommit(repositoryPath, revision, message);
+        const before = await git(repositoryPath, ['cat-file', 'commit', retained]);
+        const reopened = new KnowledgeNotebook({ repositoryPath });
+        expect(reopened.inspectRevision(retained).metadata).toEqual(facts);
+        expect(reopened.readRevision(retained).metadata).toEqual(facts);
+        expect(await git(repositoryPath, ['cat-file', 'commit', retained])).toBe(before);
+      }
+      const written = notebook.prepareSourcePointers({
+        baseRevision: revision,
+        changes: {},
+        metadata: facts,
+      });
+      expect(notebook.inspectRevision(written).metadata).toEqual(facts);
+      const commit = await git(repositoryPath, ['cat-file', 'commit', written]);
+      expect(commit.slice(commit.indexOf('\n\n') + 2)).toBe(
+        JSON.stringify({ schemaVersion: 'openkit-knowledge-notebook-commit-v1', ...facts })
+      );
+    }
+  );
+
+  it.each([null, 1, 'true'])(
+    'refuses malformed influence %j in both metadata and cold history',
+    async (externallyInfluenced) => {
+      const { repositoryPath, revision } = await fixture();
+      const facts = { ...metadata(), externallyInfluenced };
+      expect(KnowledgeNotebookCommitMetadataSchema.safeParse(facts).success).toBe(false);
+      const retained = await rawCommit(repositoryPath, revision, `${JSON.stringify(facts)}\n`);
+      const reopened = new KnowledgeNotebook({ repositoryPath });
+      expect(() => reopened.inspectRevision(retained)).toThrowError(
+        expect.objectContaining({ code: 'recovery_required' })
+      );
+    }
+  );
+});

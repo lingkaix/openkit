@@ -1865,3 +1865,65 @@ vi.mock('../runtime/agent-environment.js', async (importOriginal) => {
   );
   return withTestPreparedNativeEnvironment(actual);
 });
+
+// Work-data retention Segmentation: the portable writer and verifier accept reserved fields without activating splitting.
+it.each([false, true])(
+  'round-trips reserved Thread segmentation through a verified export (present=%s)',
+  (present) => {
+    const exportRoot = freshExportRoot('openkit-segmentation-reservation-');
+    onTestFinished(() => rmSync(dirname(exportRoot), { recursive: true, force: true }));
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const thread = {
+      id: 'th_00000000-0000-7000-8000-000000000001',
+      owner: { kind: 'workspace', workspaceId },
+      ...(present
+        ? {
+            parentThreadId: 'th_00000000-0000-7000-8000-000000000002',
+            segment: 1,
+            segmentation: {
+              maxObservationLines: 10_000,
+              maxBytes: 100_000_000,
+              boundaryDelayed: true,
+            },
+          }
+        : {}),
+      name: 'Continuous history',
+      preview: 'History',
+      status: 'active',
+      entryPath: 'conversation',
+      visibility: 'workspace',
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+    writeWorkspaceExportTree({
+      exportRoot,
+      exportId: 'wsexp_00000000-0000-7000-8000-000000000001',
+      sourceDeploymentId: 'dep_00000000-0000-7000-8000-000000000001',
+      createdAt: timestamp,
+      workspace: {
+        id: workspaceId,
+        name: 'History',
+        kind: 'code',
+        status: 'active',
+        counts: { threadCount: 1, artifactCount: 0, knowledgeEntryCount: 0 },
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      },
+      threads: [thread],
+      turns: [],
+      knowledge: [],
+      itemRevisions: [],
+      artifacts: [],
+      artifactReviews: [],
+      agentSessions: [],
+      turnEvents: [],
+    });
+    const verified = verifyWorkspaceExportTree({ exportRoot });
+    const bytes = readFileSync(join(exportRoot, 'records', 'threads.jsonl'), 'utf8');
+    expect(verified.fileContents.get('records/threads.jsonl')).toBe(bytes);
+    expect(JSON.parse(bytes)).toEqual({
+      ...thread,
+      requiredFeatures: ['openkit.thread-entry.v1', 'openkit.thread-visibility.v1'],
+    });
+  }
+);

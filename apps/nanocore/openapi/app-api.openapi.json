@@ -50975,6 +50975,36 @@
                   "type": "string",
                   "pattern": "^th_[0-9a-f]{8}-[0-9a-f]{4}-[57][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
                 },
+                "segment": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "segmentation": {
+                  "type": "object",
+                  "properties": {
+                    "maxObservationLines": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "maxBytes": {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "boundaryDelayed": {
+                      "type": "boolean",
+                      "const": true
+                    }
+                  },
+                  "required": [
+                    "maxObservationLines",
+                    "maxBytes",
+                    "boundaryDelayed"
+                  ],
+                  "additionalProperties": false
+                },
                 "name": {
                   "anyOf": [
                     {
@@ -183277,5 +183307,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:bb4d2d89d9d5218f6c1373a911a80df2ad9c0ba0d049ac28b522b7bd6888c7ee"
+  "x-openkit-source-digest": "sha256:1693e852e63f8294428f90c512a2a3f320c3fd295d2935c0f190722e862b1d53"
 }
