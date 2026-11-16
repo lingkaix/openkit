@@ -343,6 +343,7 @@ import {
   importWorkerRuntimeProvenance,
 } from './worker-runtime-provenance.js';
 import {
+  activateWorkerStorageAttachment,
   createAndReserveWorkerStorageAttachment,
   getWorkerStorageBinding,
   releaseWorkerStorageAttachment,
@@ -4622,6 +4623,260 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
+  it('preserves one external native session across executor replacement with fresh Turn authority', async () => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-neutral-executor-replacement-'));
+    const coreDb = openCoreDb(dataRoot);
+    applyMigrations(coreDb);
+    const store = await createDemoStore({ dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: LOCAL_USER_ID,
+      workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
+    });
+    // This state belongs to the external native owner, outside both disposable executors.
+    const nativeSessionId = 'external-native-conversation-1';
+    const digest = createHash('sha256').update(nativeSessionId).digest('hex');
+    let nativeReference: { locator: string; digest: string } | null = null;
+    const nativeOperations: string[] = [];
+    const packages: AgentEnvironmentPackage[] = [];
+    const submitted: Parameters<WorkerGovernanceBackend['submit']>[0][] = [];
+    const registrations: ReturnType<WorkerControlGateway['registerSession']>[] = [];
+    const gateway = new WorkerControlGateway();
+    const backends = [
+      new FakeWorkerGovernanceBackend({ sandboxName: 'executor-A' }),
+      new FakeWorkerGovernanceBackend({ sandboxName: 'executor-B' }),
+    ];
+    const setup = createTestAgentSetup();
+    let binding: Awaited<ReturnType<typeof createAndReserveWorkerStorageAttachment>> | null = null;
+    const layout = {
+      family: 'openkit-worker',
+      version: '1',
+      uid: 1000,
+      gid: 1000,
+      workingDirectory: '/tmp/openkit-bootstrap',
+      platform: { architecture: 'amd64', os: 'linux' },
+      targets: [{ target: '/openkit/threads' }, { target: '/workspace' }],
+    };
+
+    try {
+      for (const [index, backend] of backends.entries()) {
+        const sessionId = testEntityId('as', `neutral-executor-${index}`);
+        const timestamp = `2026-07-15T00:0${index}:03.000Z`;
+        const input =
+          index === 0 ? 'Start an external conversation' : 'Continue the exact native conversation';
+        const turn = await createAssignedTurn(
+          store,
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001',
+          input
+        );
+        let storage!: NonNullable<WorkerGovernanceMaterializationRecord['retainedStorage']>;
+        let recordReady!: Parameters<
+          NonNullable<WorkerGovernanceBackend['bindNativeHandleRecorder']>
+        >[1];
+        const materialize = backend.materialize.bind(backend);
+        const transcript = vi.spyOn(backend, 'collectTranscript');
+        vi.spyOn(backend, 'materialize').mockImplementation(async (pkg, context) => {
+          expect(transcript).not.toHaveBeenCalled();
+          expect(context?.nativeResume ?? null).toEqual(nativeReference);
+          if (index === 1)
+            expect(backends[0]!.calls.filter((call) => call === 'collectTranscript')).toHaveLength(
+              1
+            );
+          const result = await materialize(pkg, context);
+          const selection = {
+            agentSessionId: sessionId,
+            layout,
+            purpose: 'work' as const,
+            responsibleUserId: LOCAL_USER_ID,
+            runtimeTargetId: 'runtime-target-test',
+            threadId: turn.threadId,
+            workspaceId: pkg.scope.workspaceId,
+            now: timestamp,
+            authorizeContributor: (contributor: {
+              responsibleUserId: string;
+              workspaceId: string;
+              threadId: string;
+            }) =>
+              contributor.responsibleUserId === LOCAL_USER_ID &&
+              contributor.threadId === turn.threadId &&
+              operationAuthorizer.currentScheduledTurnWorkspaceAuthority(
+                coreDb,
+                { ...pkg.scope, packageSnapshotId: pkg.snapshotId },
+                'runtime.launch',
+                true
+              ),
+          };
+          binding = binding
+            ? await reserveWorkerStorageAttachment(coreDb, {
+                ...selection,
+                storageRef: binding.storageRef,
+                expectedRevision: binding.revision,
+                reuseWorkSlotRef: nativeReference
+                  ? store.getAgentSession(nativeReference.locator).retainedStorage!.workSlotRef
+                  : undefined,
+              })
+            : await createAndReserveWorkerStorageAttachment(coreDb, {
+                ...selection,
+                deploymentId: 'deployment_fake_executor',
+              });
+          expect(context?.sandboxBindingRef).toEqual(expect.any(String));
+          binding = await activateWorkerStorageAttachment(coreDb, {
+            storageRef: binding.storageRef,
+            expectedRevision: binding.revision,
+            attachmentGeneration: binding.attachmentGeneration,
+            sandboxBindingRef: context!.sandboxBindingRef!,
+            targets: binding.targets.map((target) => ({ ...target, initialized: true })),
+            now: timestamp,
+          });
+          storage = {
+            storageRef: binding.storageRef,
+            workSlotRef: binding.currentWorkSlotRef!,
+            attachmentGeneration: binding.attachmentGeneration,
+          };
+          packages.push(pkg);
+          registrations.push(gateway.registerSession(pkg));
+          return { ...result, retainedStorage: storage };
+        });
+        Object.assign(backend, {
+          bindNativeHandleRecorder: async (_snapshotId: string, record: typeof recordReady) => {
+            recordReady = record;
+          },
+          prepareAgentSessionContinuity: async (
+            inspection: Parameters<
+              NonNullable<WorkerGovernanceBackend['prepareAgentSessionContinuity']>
+            >[0]
+          ) => {
+            if (inspection.agentSessionId !== packages[0]?.scope.agentSessionId)
+              return 'absent' as const;
+            return inspection.reuseAllowed
+              ? ('replacement-required' as const)
+              : ('closed' as const);
+          },
+        });
+        const cleanup = backend.cleanupSession.bind(backend);
+        vi.spyOn(backend, 'cleanupSession').mockImplementation(async (...args) => {
+          await cleanup(...args);
+          if (binding?.currentAgentSessionId === sessionId)
+            binding = await releaseWorkerStorageAttachment(coreDb, {
+              storageRef: binding.storageRef,
+              attachmentGeneration: binding.attachmentGeneration,
+              expectedRevision: binding.revision,
+              cleanupProved: true,
+              sandboxBindingRef: binding.currentSandboxBindingRef,
+              now: timestamp,
+            });
+        });
+        const submit = backend.submit.bind(backend);
+        vi.spyOn(backend, 'submit').mockImplementation(async (correlation) => {
+          nativeOperations.push(index === 0 ? 'create' : 'resume');
+          if (index === 0) nativeReference = { locator: sessionId, digest };
+          else {
+            expect(backend.lastContext?.nativeResume).toEqual(nativeReference);
+            expect(nativeReference).toEqual({ locator: packages[0]!.scope.agentSessionId, digest });
+            const lineage = turnRuntimeLineage(packages[1]!);
+            expect(() =>
+              gateway.authenticateRequest({
+                authorization: `Bearer ${registrations[0]!.token}`,
+                lineage,
+              })
+            ).toThrow(
+              'Worker control request lineage does not match the registered package snapshot.'
+            );
+            expect(
+              gateway.authenticateRequest({
+                authorization: `Bearer ${registrations[1]!.token}`,
+                lineage,
+              })
+            ).toMatchObject({ turnId: turn.id, agentSessionId: sessionId });
+          }
+          await recordReady(digest, storage);
+          submitted.push(correlation);
+          return submit(correlation);
+        });
+        const executor = new WorkerGovernanceTurnExecutor({
+          backend,
+          coreDb,
+          fileAdmission: new FileStorageAdmission(dataRoot, () => 0n),
+          now: () => timestamp,
+        });
+        const context = {
+          agentSetup: setup,
+          requestId: `00000000-0000-4000-8000-00000000028${index}`,
+          triggerActor: turn.triggerActor,
+          workspaceRoots: [],
+        };
+        if (index === 0) {
+          await startWithExecutorAttempt(
+            coreDb,
+            executor,
+            store,
+            turn,
+            sessionId,
+            '2026-07-15T00:00:00.000Z',
+            input,
+            context
+          );
+        } else {
+          const preparation = {
+            ...context,
+            freshAgentSessionId: sessionId,
+            turn,
+            turnInput: input,
+          };
+          const prepared = await executor.prepareAgentSessionForTurn(store, preparation);
+          expect(prepared).toMatchObject({ replacementRequired: true, agentSessionId: sessionId });
+          acquireCommitFixtureAttempt(
+            coreDb,
+            preparation,
+            testEntityId('attempt', `lease_${turn.id}`)
+          );
+          const workerStorageChoice = await executor.commitPreparedAgentSessionForTurn(store, {
+            attemptId: testEntityId('attempt', `lease_${turn.id}`),
+            prepared,
+            preparation,
+          });
+          expect(store.getAgentSession(packages[0]!.scope.agentSessionId).status).toBe('closed');
+          await executor.startTurn(store, turn.id, input, {
+            ...context,
+            agentSessionId: sessionId,
+            attemptId: testEntityId('attempt', `lease_${turn.id}`),
+            sandboxBindingRef: `attempt-binding:${testEntityId('attempt', `lease_${turn.id}`)}`,
+            workerStorageChoice,
+            sessionCompatibilityKey: prepared.sessionCompatibilityKey,
+          });
+        }
+        expect(store.getTurnById(turn.id).status).toBe('completed');
+        expect(store.getAgentSession(sessionId).nativeHandleDigest).toBe(digest);
+      }
+      expect(nativeOperations).toEqual(['create', 'resume']);
+      expect(backends[0]!.lastContext?.nativeResume ?? null).toBeNull();
+      expect(backends[1]!.lastContext?.nativeResume).toEqual(nativeReference);
+      expect(submitted[1]!.attemptId).not.toBe(submitted[0]!.attemptId);
+      expect(submitted[1]!.operationId).not.toBe(submitted[0]!.operationId);
+      expect(submitted[1]!.bindingRef).not.toBe(submitted[0]!.bindingRef);
+      expect(Date.parse(submitted[1]!.deadline)).toBeGreaterThan(
+        Date.parse(submitted[0]!.deadline)
+      );
+      expect(packages[1]!.snapshotId).not.toBe(packages[0]!.snapshotId);
+      expect(packages[1]!.scope.turnId).not.toBe(packages[0]!.scope.turnId);
+      expect(registrations[1]!.workerControlTokenHash).not.toBe(
+        registrations[0]!.workerControlTokenHash
+      );
+      expect(registrations[1]!.workerInferenceTokenHash).not.toBe(
+        registrations[0]!.workerInferenceTokenHash
+      );
+      expect(registrations[1]!.workerCapabilityTokenHash).not.toBe(
+        registrations[0]!.workerCapabilityTokenHash
+      );
+      expect(
+        backends.map((backend) => backend.planSession(backend.lastPackage!).backendSessionId)
+      ).toEqual(['executor-A', 'executor-B']);
+    } finally {
+      coreDb.sqlite.close();
+    }
+  });
+
   it('imports worker transcript records and tears down the materialized backend session', async () => {
     const coreDb = openCoreDb(mkdtempSync(join(tmpdir(), 'openkit-governance-records-')));
 
@@ -7112,13 +7367,15 @@ describe('WorkerGovernanceTurnExecutor', () => {
     }
   });
 
-  it.each(['missing', 'tampered', 'unmapped'] as const)(
+  it.each(['missing', 'tampered', 'unmapped', 'withheld-transcript'] as const)(
     'fails the outer turn while retaining %s runtime provenance quarantine evidence',
     async (failure) => {
       const dataRoot = mkdtempSync(join(tmpdir(), `openkit-governance-provenance-${failure}-`));
       const coreDb = openCoreDb(dataRoot);
       applyMigrations(coreDb);
       const store = await createDemoStore({ dataRoot });
+      if (failure === 'withheld-transcript')
+        store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
       recordWorkspaceOwnerMembership({
         coreDb,
         ownerUserId: LOCAL_USER_ID,
@@ -7192,6 +7449,12 @@ describe('WorkerGovernanceTurnExecutor', () => {
         ).rejects.toThrow();
 
         expect(runtimeProvenanceImporter).toHaveBeenCalledOnce();
+        await expect(runtimeProvenanceImporter.mock.results[0]!.value).resolves.toMatchObject({
+          complete: false,
+          indexBundleId: null,
+        });
+        if (failure === 'withheld-transcript')
+          expect(backend.lastPackage!.observability.captureCoverage).toMatchObject({ value: 'on' });
         expect(backend.calls.at(-1)).toBe('cleanupSession');
         expect(store.getTurnById(turn.id)).toMatchObject({ status: 'failed' });
         expect(
@@ -7222,6 +7485,32 @@ describe('WorkerGovernanceTurnExecutor', () => {
           }),
         ]);
         expect(runtimeEvidence[0]?.evidenceBundleIds).toHaveLength(1);
+        expect(runtimeEvidence[0]?.errorCode).toBe('worker_runtime_provenance_invalid');
+        expect(runtimeEvidence[0]?.workerImage).toBeNull();
+        if (failure === 'withheld-transcript') {
+          const bundles = listWorkspaceEvidenceBundles(
+            workspaceDb,
+            workspaceIdForOwner(turn.owner)
+          );
+          expect(bundles[0]!.rawEvidenceRefs).not.toContainEqual(
+            expect.objectContaining({ ref: 'raw/stream-0000.jsonl' })
+          );
+          expect(bundles[0]!.redactedEvidenceRefs).toEqual([]);
+          expect(
+            existsSync(
+              join(
+                dataRoot,
+                'workspaces',
+                workspaceIdForOwner(turn.owner),
+                'evidence',
+                'backend',
+                bundles[0]!.id,
+                'raw',
+                'stream-0000.jsonl'
+              )
+            )
+          ).toBe(false);
+        }
         workspaceDb.sqlite.close();
       } finally {
         coreDb.sqlite.close();
@@ -13681,7 +13970,7 @@ interface TurnRuntimeProvenanceCapture {
 function createTurnRuntimeProvenanceCapture(
   root: string,
   environmentPackage: AgentEnvironmentPackage,
-  failure: 'missing' | 'tampered' | 'unmapped' | null = null,
+  failure: 'missing' | 'tampered' | 'unmapped' | 'withheld-transcript' | null = null,
   streamLayout: 'per-stream' | 'shared-root' = 'shared-root'
 ): TurnRuntimeProvenanceCapture {
   const lineage = turnRuntimeLineage(environmentPackage);
@@ -13807,6 +14096,11 @@ function createTurnRuntimeProvenanceCapture(
 
   if (failure !== 'missing') {
     writeFileSync(streamManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  }
+
+  // The native owner still declares this stream, but the backend withholds its bytes.
+  if (failure === 'withheld-transcript') {
+    rmSync(rawStreamPaths['stream-0000.jsonl']!);
   }
 
   return {
