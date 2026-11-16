@@ -110200,6 +110200,7 @@
                         "tool.use",
                         "turn.run",
                         "vault.admin",
+                        "vault.delegate-refresh",
                         "vault.use",
                         "workspace.configure",
                         "workspace.export",
@@ -183277,5 +183278,5 @@
       }
     }
   },
-  "x-openkit-source-digest": "sha256:bb4d2d89d9d5218f6c1373a911a80df2ad9c0ba0d049ac28b522b7bd6888c7ee"
+  "x-openkit-source-digest": "sha256:5560adc662ef1d8ddccbf47d4a71b2313bf6edaec4386e2eaf6362b5568788e6"
 }
