@@ -11,6 +11,7 @@ import { imageIdentity, verifyIndex } from './release-candidate.mjs';
 import { parseVersionTag } from './release-preflight.mjs';
 import { readPublishedManifest } from './release-record.mjs';
 import { releaseFindingRecord } from './security-findings.mjs';
+import { readSecurityFindingRegister } from './security-register.mjs';
 
 const sha256 = /^sha256:[a-f0-9]{64}$/u;
 /** Capture only known public observations; raw failure output is never retained. */
@@ -237,7 +238,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
     const register =
       !values.diagnostic && process.env.OPENKIT_SECURITY_FINDINGS
-        ? JSON.parse(process.env.OPENKIT_SECURITY_FINDINGS)
+        ? readSecurityFindingRegister(process.env.OPENKIT_SECURITY_FINDINGS)
         : undefined;
     if (values.latest && (!values.diagnostic || values.directory || values.image))
       throw Error('Latest-release mode is diagnostic only');

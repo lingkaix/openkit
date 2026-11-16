@@ -10,6 +10,7 @@ import { gitCommit, gitNames, readGit, scanSecrets, secretDiagnostic } from './c
 import { changedFiles, checkWorkflows } from './check-workflows.mjs';
 import { CREDENTIAL_PATTERN } from './credential-patterns.mjs';
 import { assertReleaseFindingGate, releaseFindingRecord } from './security-findings.mjs';
+import { readSecurityFindingRegister } from './security-register.mjs';
 import {
   findingsFromOsvSource,
   kevIds,
@@ -223,7 +224,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     });
     const register =
       values.release && process.env.OPENKIT_SECURITY_FINDINGS
-        ? JSON.parse(process.env.OPENKIT_SECURITY_FINDINGS)
+        ? readSecurityFindingRegister(process.env.OPENKIT_SECURITY_FINDINGS)
         : undefined;
     if (values['public-record'] && (!values.release || values['images-only'] || values.image))
       throw Error('A public source record requires release admission');
