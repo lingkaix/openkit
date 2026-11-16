@@ -1204,7 +1204,10 @@ it.each(['workspace', 'server', 'revoked-agent'] as const)(
         await f.cleanup();
       }
     }
-  }
+  },
+  // Replacement runs two real native Workers through FULL-acknowledged cleanup.
+  // Give only this integration family headroom when CPU contention consumes the default 30 s.
+  45_000
 );
 
 it('reads only retained Server shared-MCP delivery lineage, separately from request/grant metadata', async () => {
