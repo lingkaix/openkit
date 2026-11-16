@@ -64,9 +64,15 @@ For R3, the proposed qualification distinguishes actual receiver receipts, scope
 
 ## Validation Status
 
-Only the paper mechanism-by-platform matrix has been completed. It examined retention, mediation, execution lifetime, storage, Gateway, telemetry, Knowledge and product workflows. Its conclusions are design evidence, not provider qualification.
+The paper mechanism-by-platform matrix is complete; the fake-backend results and remaining qualification limits are stated below. It examined retention, mediation, execution lifetime, storage, Gateway, telemetry, Knowledge and product workflows. Its conclusions are design evidence, not provider qualification.
 
-On commit bc3dca1c3ba497f92d2a7ea416ad7166fd953773, the lost-submit and provider-mutation-retry cases passed; the executor-replacement case is NOT EXPRESSIBLE with the existing fake backend; the withheld-identity case is open as PROD-SUSPECT; the stale-tool-call case passed on 5d959aea421ea709a981ff4ae17e5660a269c56c. The cases are:
+The lost-submit and provider-mutation-retry cases passed on `bc3dca1c3ba497f92d2a7ea416ad7166fd953773`; the stale-tool-call case passed on the landed commit `9c267c2258901236d1cdae6b8c4bc324016b505c`.
+
+The withheld-input case is proven for the native-transcript alternative against production commit `efeccc989c170f77fd30379546ae66d651fc6bf1`. The existing `worker-governance-turn-executor.test.ts` fake backend withholds a manifest-declared native stream while the immutable capture binding is on. The real collection owner retains failed transcript-collection evidence and a quarantined raw bundle, publishes no normalized index or reference to the withheld body, and fails the Turn. This is not qualification of the earlier measured-identity probe or an external adapter.
+
+The external-session/executor-replacement case is proven against production commit `efeccc989c170f77fd30379546ae66d651fc6bf1` in the same existing owner test. Two disposable fake executors share one backend-owned native conversation. The actual successor preparation, native storage binding and admission commit carry its exact locator/digest into a fresh Turn, package, attempt, deadline and route tokens; a predecessor token cannot authenticate the successor lineage. Transcript collection is not used to reconstruct the native session. This component proof extends the existing fake, without adding an executor-replacement capability, harness or retained format. It does not qualify a real external adapter.
+
+The five cases are:
 
 - Lose a submit reply, return an empty list, acknowledge kill and allow a late create. Expect unknown/closing, no replay or conflicting reattachment, and healthy sibling progress.
 - Preserve an external session across executor replacement. Expect exact native-owner identity and fresh authority, without transcript reconstruction.
