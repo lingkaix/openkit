@@ -89,6 +89,7 @@ import {
   runSeparatorCopy,
 } from './timeline/source';
 import {
+  bindScrollPadding,
   captureVisibleTextAnchor,
   measureVisibleTextAnchor,
   scrollParent,
@@ -1230,6 +1231,13 @@ export function ThreadStream({
     if (!phone && panelHost && !portalNode) return;
     panelRef.current?.focus();
   }, [inspectedTurnId, panelHost, phone, phoneInspectId, portalNode]);
+  const chromeRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (holdContent || narrativeOnly) return;
+    const node = chromeRef.current;
+    if (!node) return;
+    return bindScrollPadding(node, 'top');
+  }, [holdContent, narrativeOnly]);
 
   if (holdContent) {
     return (
@@ -1405,7 +1413,10 @@ export function ThreadStream({
     : undefined;
   const barTarget = barDecisionTarget(decisionWalk, openDecisionItemIds);
   const chrome = narrativeOnly ? null : (
-    <div className="ok-timeline-chrome sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2">
+    <div
+      ref={chromeRef}
+      className="ok-timeline-chrome sticky top-0 z-10 flex min-w-0 flex-col gap-2 bg-layer-1 py-2"
+    >
       {phone ? (
         <>
           {alignment?.objective ? <p className="ok-prose truncate">{alignment.objective}</p> : null}

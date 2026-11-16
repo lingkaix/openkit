@@ -5,6 +5,34 @@ import { fillCopy, timelineCopy } from './copy';
 import { writeTimelineHistory } from './navigation-state';
 import { isFollowing, scrollCorrection, sentinelDistancePx, shouldPageEdge } from './window';
 
+/**
+ * Reserves the sticky chrome's box in the timeline scroller.
+ * scrollIntoView then stops short of the bar instead of landing a control underneath it.
+ */
+export function bindScrollPadding(node: HTMLElement, edge: 'top' | 'bottom'): () => void {
+  const scroller = node.closest<HTMLElement>('[data-timeline-scroll]');
+  if (!scroller) return () => {};
+  const property = edge === 'top' ? 'scrollPaddingTop' : 'scrollPaddingBottom';
+  const apply = () => {
+    const stickyOffset =
+      edge === 'bottom' ? Number.parseFloat(getComputedStyle(node).bottom) || 0 : 0;
+    const height = node.offsetHeight + stickyOffset;
+    scroller.style[property] = height > 0 ? `${height}px` : '';
+  };
+  apply();
+  if (typeof ResizeObserver === 'undefined') {
+    return () => {
+      scroller.style[property] = '';
+    };
+  }
+  const observer = new ResizeObserver(apply);
+  observer.observe(node);
+  return () => {
+    observer.disconnect();
+    scroller.style[property] = '';
+  };
+}
+
 /** The thread window scroller, or the nearest ancestor that actually scrolls. */
 export function scrollParent(node: HTMLElement | null): HTMLElement {
   const marked = node?.closest<HTMLElement>('[data-timeline-scroll]');
@@ -275,6 +303,7 @@ export function TimelineScroll({
   pinRef.current = pinDivider;
   const restored = useRef(false);
   const earlierRef = useRef<HTMLButtonElement>(null);
+  const jumpRef = useRef<HTMLButtonElement>(null);
   const restoreEarlierFocus = useRef(false);
   // The edge sentinel must not page while a saved offset is still waiting for height.
   const [restoreSettled, setRestoreSettled] = useState(restoreTop == null);
@@ -290,6 +319,13 @@ export function TimelineScroll({
     setFollowing(next);
     onFollowChange(next);
   }
+
+  useLayoutEffect(() => {
+    if (!showJump) return;
+    const node = jumpRef.current;
+    if (!node) return;
+    return bindScrollPadding(node, 'bottom');
+  }, [showJump]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the scroll listener stays on the scroller and reads the latest follow callback through setFollow.
   useLayoutEffect(() => {
@@ -571,6 +607,7 @@ export function TimelineScroll({
       <div ref={bottomSentinel} aria-hidden="true" />
       {showJump ? (
         <Button
+          ref={jumpRef}
           variant="quiet"
           size="sm"
           className="sticky bottom-3 z-10 self-center"
