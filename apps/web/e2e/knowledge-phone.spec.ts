@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { waitForSupersededNotebookList } from './_lib/notebook-list.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 /**
@@ -159,8 +160,10 @@ test('reviews a structured Knowledge page from the phone sections bar', async ({
       new URL(response.url()).pathname === '/api/app/operations/knowledge.notebook.update' &&
       response.request().method() === 'POST'
   );
+  const listed = waitForSupersededNotebookList(page);
   await apply.click();
   const supersededResponse = await superseded;
+  await listed;
   expect(supersededResponse.status()).toBe(200);
   expect(updates).toBe(2);
   const published = supersededResponse.request().postDataJSON() as {

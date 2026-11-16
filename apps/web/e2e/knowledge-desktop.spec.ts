@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { waitForSupersededNotebookList } from './_lib/notebook-list.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 /**
@@ -113,8 +114,10 @@ test('publishes a structured Knowledge page from the desktop sidebar', async ({ 
       new URL(response.url()).pathname === '/api/app/operations/knowledge.notebook.update' &&
       response.request().method() === 'POST'
   );
+  const listed = waitForSupersededNotebookList(page);
   await page.getByRole('button', { name: 'Apply page edit', exact: true }).click();
   const supersededResponse = await superseded;
+  await listed;
   expect(supersededResponse.status()).toBe(200);
   const published = supersededResponse.request().postDataJSON() as {
     changes?: Array<{ content?: string }>;
