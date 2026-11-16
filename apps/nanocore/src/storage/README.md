@@ -1,5 +1,7 @@
 # Storage
 
+The rc.9 assessment reader reserves original `server.config.update` and Discord pairing facts carried in the existing Audit summary string. A pause-key change or administrator-at-event pairing classifies as R1; other config/pairing facts classify as R1d. The reader recomputes that decision from the original Audit and rejects changed decision, actor, cursor or recipient tuples. This reservation adds no producer, SQL field, rule enum, config key or journal. Legacy actions and summaries keep their prior classification.
+
 Runtime Security owns the closed Server `security-trigger` family in `security-trigger-native.ts`, its leaf codecs and Core0026/0027 schemas. The existing control-store worker/client remains the only physical Core writer and covering FULL acknowledgement owner; no new connection, Main writer, generic SQL/JSON mutation or Workspace automation admission is introduced. Current canonical User/administrator credential checks use the existing Identity owners. The internal facade is not a public enablement or principal/Policy admission surface.
 
 R1/R8 recipient census and each original alarm destination/mark recheck use the active canonical User and that User's own usable administrator Token grant. They do not present that Token or borrow its issuer for a live effect. The separate fixed alarm grant therefore survives loss of the enabling delegation. Monitoring and Audit delegation retain current issuer-chain checks; bearer verification and ordinary administration are unchanged.

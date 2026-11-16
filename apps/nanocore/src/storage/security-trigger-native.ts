@@ -677,7 +677,8 @@ export function enqueueE12NoticeInDb(db: CoreDb, auditEventId: string): void {
     source.actor ?? null,
     null,
     source.outcome,
-    responsibleUserId
+    responsibleUserId,
+    source.summary
   );
   appendAssessment(
     db,
@@ -699,14 +700,30 @@ export function enqueueE12NoticeInDb(db: CoreDb, auditEventId: string): void {
   if (changed.changes !== 1) recovery();
 }
 
-/** Only admitted original facts are available; resources/summaries/current records are not history. */
-function assessFacts(
+/** Recomputes the closed assessment from original source facts; live configuration and current administrator status are not history. */
+export function assessFacts(
   action: SecurityAuditAction,
   actor: ActorRef | null,
   targetUserId: string | null,
   outcome: AuditEvent['outcome'],
-  responsibleUserId: string
+  responsibleUserId: string,
+  summary: string
 ): Pick<SecurityAuditAssessment, 'status' | 'rule' | 'notify' | 'missingFields'> {
+  // These source-owned facts were committed with the original mutation; live config and current admin status are not historical proof.
+  let facts: Record<string, unknown> | null = null;
+  if (
+    action === 'server.config.update' ||
+    action === 'channel.pairing.bind' ||
+    action === 'channel.pairing.unbind'
+  ) {
+    try {
+      const parsed: unknown = JSON.parse(summary);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        facts = parsed as Record<string, unknown>;
+    } catch {
+      /* Historical human summaries supply no structured facts. */
+    }
+  }
   const missingFields: SecurityAuditMissingField[] =
     action === 'auth.bootstrap.consume'
       ? [actor === null ? 'actor' : 'bootstrap-actor-semantics']
@@ -714,10 +731,40 @@ function assessFacts(
           if (field === 'actor') return actor === null;
           if (field === 'target-user') return targetUserId === null;
           if (field === 'successful-outcome') return outcome !== 'succeeded';
+          if (field === 'changed-keys')
+            return (
+              !Array.isArray(facts?.changedKeys) ||
+              facts.changedKeys.length === 0 ||
+              !facts.changedKeys.every((key) => typeof key === 'string' && key.length > 0)
+            );
+          if (field === 'channel-kind') return facts?.channelKind !== 'discord';
+          if (field === 'binding-revision')
+            return !z.string().uuid().safeParse(facts?.bindingRevision).success;
+          if (field === 'administrator-at-event')
+            return typeof facts?.administratorAtEvent !== 'boolean';
           return true;
         });
   if (missingFields.length)
     return { status: 'unsupported', rule: null, notify: null, missingFields };
+  if (
+    action === 'server.config.update' ||
+    action === 'channel.pairing.bind' ||
+    action === 'channel.pairing.unbind'
+  ) {
+    const sensitive =
+      action === 'server.config.update'
+        ? (facts!.changedKeys as string[]).includes('security.pauseAgentWork')
+        : facts!.administratorAtEvent === true;
+    return {
+      status: 'detected',
+      rule: sensitive ? 'R1' : 'R1d',
+      notify:
+        sensitive || actor?.kind !== 'user' || actor.id !== responsibleUserId
+          ? 'immediate'
+          : 'daily',
+      missingFields,
+    };
+  }
   if (isE12Action(action) && outcome !== 'denied')
     return { status: 'unsupported', rule: null, notify: null, missingFields: ['status'] };
   if (isE12Action(action))
@@ -761,7 +808,8 @@ function readAssessment(db: CoreDb, raw: unknown): Assessment {
       value.actor,
       value.targetUserId,
       value.outcome,
-      value.responsibleUserId
+      value.responsibleUserId,
+      source.summary
     );
     if (
       decision.status !== value.status ||
@@ -1021,7 +1069,8 @@ function detectAudit(
         actor,
         targetUserId,
         source.outcome,
-        responsibleUserId
+        responsibleUserId,
+        source.summary
       );
       const recipients =
         decision.status === 'unsupported'
