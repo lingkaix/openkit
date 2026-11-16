@@ -159,7 +159,6 @@ async function fixture(
       : {}),
   };
   return {
-    app: createApp(appOptions),
     coreDb,
     dataRoot,
     store,
