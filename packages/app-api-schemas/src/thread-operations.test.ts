@@ -109,3 +109,33 @@ describe('thread operation schemas', () => {
     );
   });
 });
+
+// Contract Evolution: retained reservations do not change settled product output meaning.
+it('keeps reserved segmentation outside the current product Thread projection', () => {
+  const thread = {
+    id: threadId,
+    owner: { kind: 'workspace', workspaceId },
+    name: 'History',
+    preview: 'History',
+    status: 'active',
+    entryPath: 'conversation',
+    visibility: 'workspace',
+    createdAt: '2026-11-16T00:00:00.000Z',
+    updatedAt: '2026-11-16T00:00:00.000Z',
+  };
+  const output = THREAD_OPERATION_DEFINITIONS['thread.create'].outputSchema;
+  expect(output.parse(thread)).toEqual(thread);
+  expect(
+    output.parse({
+      ...thread,
+      segment: 0,
+      segmentation: {
+        maxObservationLines: 10_000,
+        maxBytes: 100_000_000,
+        boundaryDelayed: true,
+      },
+    })
+  ).toEqual(thread);
+  expect(output.safeParse({ ...thread, parentThreadId: threadId }).success).toBe(false);
+  expect(output.safeParse({ ...thread, visibility: 'private' }).success).toBe(false);
+});
