@@ -228,6 +228,61 @@ export class ModelCapture {
   public async request(request: unknown): Promise<void> {
     const input = record(request);
     const reasoning = record(input.reasoning);
+    const sampling = select(
+      {
+        temperature: input.temperature,
+        topP: input.top_p,
+        maxOutputTokens:
+          input.max_output_tokens !== undefined
+            ? input.max_output_tokens
+            : input.max_completion_tokens !== undefined
+              ? input.max_completion_tokens
+              : input.max_tokens,
+        reasoningEffort: reasoning.effort !== undefined ? reasoning.effort : input.reasoning_effort,
+        reasoningSummary: reasoning.summary,
+        reasoningContext: reasoning.context,
+      },
+      [
+        'temperature',
+        'topP',
+        'maxOutputTokens',
+        'reasoningEffort',
+        'reasoningSummary',
+        'reasoningContext',
+      ]
+    );
+    if (
+      containsExcludedCredential(
+        { providerRef: this.providerRef, model: input.model, sampling },
+        this.secrets
+      )
+    )
+      throw new ModelCaptureError();
+    // The configured identity is required even when originals are disabled or the Provider fails.
+    // It precedes adapter conversion and never asserts delivery or a Provider-reported snapshot.
+    try {
+      await appendWorkObservation(this.context.workspaceDb, {
+        threadId: this.context.threadId,
+        turnId: this.context.turnId,
+        observation: {
+          id: `config:${this.attemptId}`,
+          ts: new Date().toISOString(),
+          type: 'config.model',
+          obs: 'llm-gateway',
+          corr: this.context.corr,
+          ret: 'turn-evidence',
+          payload: {
+            attempt: this.context.attempt ?? 0,
+            providerRef: this.providerRef,
+            model: input.model,
+            sampling,
+          },
+        },
+        bodies: [],
+      });
+    } catch {
+      throw new ModelCaptureError();
+    }
     await this.record('request', 'request', () => admittedModelRequest(request), {
       providerRef: this.providerRef,
       model: input.model,
@@ -235,31 +290,7 @@ export class ModelCapture {
         endpoint: Array.isArray(input.messages) ? 'chat_completions' : 'responses',
         request,
       }),
-      // Absence is not a default; explicit null and zero remain requested values.
-      sampling: select(
-        {
-          temperature: input.temperature,
-          topP: input.top_p,
-          maxOutputTokens:
-            input.max_output_tokens !== undefined
-              ? input.max_output_tokens
-              : input.max_completion_tokens !== undefined
-                ? input.max_completion_tokens
-                : input.max_tokens,
-          reasoningEffort:
-            reasoning.effort !== undefined ? reasoning.effort : input.reasoning_effort,
-          reasoningSummary: reasoning.summary,
-          reasoningContext: reasoning.context,
-        },
-        [
-          'temperature',
-          'topP',
-          'maxOutputTokens',
-          'reasoningEffort',
-          'reasoningSummary',
-          'reasoningContext',
-        ]
-      ),
+      sampling,
     });
   }
 

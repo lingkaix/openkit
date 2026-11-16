@@ -18,6 +18,8 @@ import {
 
 /** Input for one deterministic Knowledge Manager context-material operation. */
 export interface PrepareKnowledgeContextInput {
+  /** Trusted current model disclosure, not a retained caller vocabulary change. */
+  modelDelivery?: boolean;
   /** File-backed NanoCore data root that owns the governed retrieval trace. */
   dataRoot: string;
   /** Operation id assigned by NanoCore. */
@@ -113,6 +115,7 @@ export async function prepareKnowledgeContext(
     dataRoot: input.dataRoot,
     workspaceId: input.workspaceId,
     caller: 'app-api',
+    modelDelivery: input.modelDelivery ?? false,
     query: input.query,
     limit: input.limit ?? 5,
     pinnedReferences: [],

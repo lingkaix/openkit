@@ -75,7 +75,7 @@ describe('Server-owned canonical history', () => {
       ]);
       expect(reopened.listThreads(workspace.id)).toEqual([workspaceThread]);
       expect(reopened.listWorkspaceItemRevisions(workspace.id)).toEqual([]);
-      expect(reopened.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'off' });
+      expect(reopened.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'on' });
       expect(() => reopened.getTurnById(turn.id)).toThrow('Turn not found');
       const retained = coreDb.sqlite
         .prepare('SELECT record_json FROM control_threads WHERE id=?')

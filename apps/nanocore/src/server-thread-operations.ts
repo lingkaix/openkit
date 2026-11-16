@@ -1,10 +1,11 @@
+import { join } from 'node:path';
 import type { SERVER_THREAD_OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import {
   DeploymentAdminRequiredError,
   requireCurrentDeploymentAdmin,
 } from './auth/operation-authorizer.js';
 import { interruptKnowledgeManagerTurn } from './internal-agents/knowledge-manager-agent.js';
-import { NotebookError } from './knowledge/notebook.js';
+import { KnowledgeNotebook, NotebookError } from './knowledge/notebook.js';
 import { readScopedNotebookPublicationFacts } from './knowledge/scoped-notebook-owner.js';
 import { runServerKnowledgeMaintenanceCommand } from './knowledge/server-knowledge-maintenance.js';
 import {
@@ -16,6 +17,11 @@ import type { OperationInvocationDependencies } from './operation-composition.js
 import { type FamilyImplementations, publicOperationActor } from './operation-contract.js';
 import { OperationError } from './operation-error.js';
 import { IdempotencyKeyConflictError } from './runtime/idempotent-command.js';
+import {
+  notebookOperationWritingContext,
+  receiveNotebookOperationDisclosure,
+} from './security/notebook-influence.js';
+import { serverKnowledgeRoot } from './storage/fs-layout.js';
 
 /** Maps only definite owner refusals; unexpected implementation faults remain visible. */
 async function serverOperation<T>(invoke: () => Promise<T> | T): Promise<T> {
@@ -68,6 +74,7 @@ export function createServerThreadOperations(
           requestId: input.requestId,
           requestActor: actor,
           actor: context.actorRef,
+          ...notebookOperationWritingContext(context),
           trigger: 'request',
           instructions: input.instruction,
           sources: input.sourceIds?.map((id) => `source:${id}`) ?? [],
@@ -84,6 +91,7 @@ export function createServerThreadOperations(
           requestId: input.requestId,
           requestActor: actor,
           actor: context.actorRef,
+          ...notebookOperationWritingContext(context),
           trigger: 'request',
           instructions:
             'Integrate this explicit request and keep the Server notebook overview current.',
@@ -140,7 +148,7 @@ export function createServerThreadOperations(
         const native = available();
         const actor = publicOperationActor(context);
         requireCurrentDeploymentAdmin(native.coreDb, actor);
-        return readServerNotebookProposalPreview(
+        const result = await readServerNotebookProposalPreview(
           {
             ...native,
             actor,
@@ -149,6 +157,15 @@ export function createServerThreadOperations(
           },
           input
         );
+        await receiveNotebookOperationDisclosure(
+          context,
+          native.store,
+          new KnowledgeNotebook({
+            repositoryPath: join(serverKnowledgeRoot(native.coreDb.dataRoot), 'notebook.git'),
+          }),
+          result
+        );
+        return result;
       }),
     'knowledge.server.proposal.decide': (input, context) =>
       serverOperation(async () => {

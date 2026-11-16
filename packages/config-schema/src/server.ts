@@ -278,7 +278,7 @@ export const OpenKitConfigSchema = z
         mediation: PolicyDocumentV1Schema.optional(),
         workDataCapture: z
           .object({
-            value: z.enum(['off', 'on']).default('off'),
+            value: z.enum(['off', 'on']).default('on'),
             nativeLogMaxBytes: NativeLogMaxBytesSchema.default(DEFAULT_NATIVE_LOG_MAX_BYTES),
           })
           .strict()

@@ -6,6 +6,7 @@ import { RETAINED_FORMAT_VERSION } from '@openkit/protocol';
 import { afterEach, describe, expect, it } from 'vitest';
 import { isScopeAdmitted, refuseScope } from '../bootstrap/readiness.js';
 import { replaceWorkspaceEffectiveMcpCatalog } from '../catalog/resource-catalog.js';
+import { FsStore } from '../lib/store.js';
 import { resolveLogicalModelCatalog } from '../llm/logical-models.js';
 import {
   getControlStoreWorkerClient,
@@ -953,7 +954,7 @@ describe('runtime config loading and reload planning', () => {
               captureCoverageBindingFromOpenKitConfig(manager.current().openKitConfig)
             ).toEqual({
               scope: 'server',
-              value: mode === 'safe' ? 'on' : 'off',
+              value: 'on',
             });
             if (mode === 'safe') {
               expect(manager.current().version).toBe(previous.version + 1);
@@ -1421,14 +1422,14 @@ it('RET-2 reload selects a checked log bound without changing a running Turn cap
     );
     expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
     expect(manager.current().openKitConfig.policy?.workDataCapture).toEqual({
-      value: 'off',
+      value: 'on',
       nativeLogMaxBytes: 97,
     });
     expect(prior.openKitConfig.policy?.workDataCapture).toEqual({
-      value: 'off',
+      value: 'on',
       nativeLogMaxBytes: 16_777_216,
     });
-    expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'off' });
+    expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'on' });
     const accepted = manager.current();
     writeConfiguredServer(
       dataRoot,
@@ -1446,4 +1447,91 @@ it('RET-2 reload selects a checked log bound without changing a running Turn cap
 // Drain and stop the native fixture owner before the next test can remove or reuse its roots.
 afterEach(async () => {
   await shutdownControlStoreWorkerClient();
+});
+
+describe('Capture Coverage scope resolution (#732)', () => {
+  it('defaults on, inherits missing overrides and prefers the exact Workspace Task', () => {
+    const server = { schemaVersion: 1 };
+    const workspace = {
+      schemaVersion: 1,
+      workspace: {
+        name: 'Coverage',
+        policy: {
+          workDataCapture: { value: 'off', tasks: { taskA: { value: 'on' } } },
+        },
+      },
+    };
+    expect(captureCoverageBindingFromOpenKitConfig(server)).toEqual({
+      scope: 'server',
+      value: 'on',
+    });
+    expect(captureCoverageBindingFromOpenKitConfig(server, workspace)).toEqual({
+      scope: 'workspace',
+      value: 'off',
+    });
+    expect(captureCoverageBindingFromOpenKitConfig(server, workspace, 'taskA')).toEqual({
+      scope: 'task',
+      value: 'on',
+    });
+    expect(captureCoverageBindingFromOpenKitConfig(server, workspace, 'taskB')).toEqual({
+      scope: 'workspace',
+      value: 'off',
+    });
+    expect(
+      captureCoverageBindingFromOpenKitConfig({
+        schemaVersion: 1,
+        policy: { workDataCapture: { value: 'off' } },
+      })
+    ).toEqual({ scope: 'server', value: 'off' });
+  });
+});
+
+it('snapshots Workspace and Task capture overrides at native admission and preserves them on reload/restart (#732)', async () => {
+  const dataRoot = createDataRoot();
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  const threadId = 'th_00000000-0000-7000-8000-000000000001';
+  const actor = { kind: 'user', id: 'usr_00000000-0000-7000-8000-000000000001' } as const;
+  try {
+    writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
+    const store = await createDemoStore({ dataRoot });
+    const path = join(dataRoot, 'workspaces', workspaceId, 'config', 'workspace.jsonc');
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    const taskThread = await store.createThread(
+      workspaceId,
+      'Scoped Task',
+      undefined,
+      'conversation',
+      { visibility: 'workspace', threadSource: 'worker' }
+    );
+    config.workspace.policy = {
+      workDataCapture: { value: 'off', tasks: { [taskThread.id]: { value: 'on' } } },
+    };
+    writeFileSync(path, JSON.stringify(config));
+    const manager = createRuntimeConfigManager({ dataRoot, captureCoverage: store });
+    const first = await store.createTurn(workspaceId, threadId, 'Workspace override', actor);
+    expect(store.getTurnCaptureCoverage(first.id)).toEqual({ scope: 'workspace', value: 'off' });
+    await store.completeTurn(first.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const task = await store.createTurn(workspaceId, taskThread.id, 'Task override', actor);
+    expect(store.getTurnCaptureCoverage(task.id)).toEqual({ scope: 'task', value: 'on' });
+    config.workspace.policy.workDataCapture.value = 'on';
+    writeFileSync(path, JSON.stringify(config));
+    expect(store.getLiveCaptureCoverage(workspaceId)).toEqual({ scope: 'workspace', value: 'off' });
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
+    expect(store.getLiveCaptureCoverage(workspaceId)).toEqual({ scope: 'workspace', value: 'on' });
+    expect(store.getTurnCaptureCoverage(first.id)).toEqual({ scope: 'workspace', value: 'off' });
+    expect(new FsStore({ dataRoot }).getTurnCaptureCoverage(first.id)).toEqual({
+      scope: 'workspace',
+      value: 'off',
+    });
+    expect(new FsStore({ dataRoot }).getTurnCaptureCoverage(task.id)).toEqual({
+      scope: 'task',
+      value: 'on',
+    });
+  } finally {
+    await shutdownControlStoreWorkerClient();
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
 });

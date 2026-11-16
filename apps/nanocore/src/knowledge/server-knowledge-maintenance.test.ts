@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { formatReferenceUri } from '@openkit/protocol';
+import { allocateEntityId, formatReferenceUri } from '@openkit/protocol';
 import { afterAll, expect, it, onTestFinished, vi } from 'vitest';
 import type { RuntimeConfigManager } from '../config/runtime-config.js';
 import type { ServerKnowledgeManagerAgentRun } from '../internal-agents/knowledge-manager-agent.js';
@@ -1477,3 +1477,83 @@ it.each(['rejected', 'deferred', 'accepted'] as const)(
   },
   60_000
 );
+
+it('propagates Server Proposal base and candidate provenance to the actual receiving model Session (#740)', async () => {
+  const f = fixture(true);
+  const workspace = await f.store.createWorkspace('Proposal reader');
+  recordWorkspaceOwnerMembership({
+    coreDb: f.coreDb,
+    workspaceId: workspace.id,
+    ownerUserId: f.requestActor.userId,
+  });
+  const thread = await f.store.createThread(workspace.id, 'Reader', undefined, 'conversation', {
+    visibility: 'private',
+    privateOwnerUserId: f.requestActor.userId,
+  });
+  const session = await f.store.createAgentSession({
+    id: allocateEntityId('as'),
+    workspaceId: workspace.id,
+    threadId: thread.id,
+    agentId: 'proposal-reader',
+    status: 'created',
+    message: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    externallyInfluenced: false,
+  });
+  const turn = await f.store.createTurn(
+    workspace.id,
+    thread.id,
+    'Inspect candidate',
+    { kind: 'user', id: f.requestActor.userId },
+    null,
+    { externallyInfluenced: false, agentId: session.agentId, agentSessionId: session.id }
+  );
+  const baseRevision = f.notebook.publishedRevision();
+  // This genuine predecessor fixture predates the influence producer; absence is not clear provenance.
+  expect(f.notebook.readRevision(baseRevision).metadata.externallyInfluenced).toBeUndefined();
+  const context = {
+    ...f.dependencies,
+    actor: f.requestActor,
+    revalidate: (files?: Readonly<Record<string, string>>) =>
+      readScopedNotebookPublicationFacts('server', f.dependencies, f.requestActor, files),
+  };
+  const proposal = await createServerNotebookProposal(
+    context,
+    {
+      requestId: randomUUID(),
+      baseRevision,
+      summary: 'Propose influenced navigation',
+      changes: [
+        {
+          path: 'index.md',
+          content: '---\nokf_version: "0.2"\n---\n# Influenced Server candidate\n',
+        },
+      ],
+    },
+    { kind: 'agent', id: 'knowledge-manager', responsibleUserId: f.requestActor.userId },
+    []
+  );
+  expect(f.notebook.readRevision(proposal.candidateRevision).metadata.externallyInfluenced).toBe(
+    true
+  );
+  const invoke = createOperationInvocation({
+    coreDb: f.coreDb,
+    store: f.store,
+    serverKnowledgeMaintenance: f.dependencies,
+  });
+  const result = await invoke(
+    'knowledge.server.proposal.read',
+    { proposalId: proposal.id, path: 'index.md', offset: 0 },
+    {
+      kind: 'public',
+      actor: f.requestActor,
+      delivery: 'model',
+      queryContext: { threadId: thread.id, turnId: turn.id },
+    }
+  );
+  expect(result.after).toContain('Influenced Server candidate');
+  const reloaded = new FsStore({ dataRoot: f.coreDb.dataRoot });
+  expect(reloaded.getTurnById(turn.id).externallyInfluenced).toBe(true);
+  expect(reloaded.getAgentSession(session.id).externallyInfluenced).toBe(true);
+});

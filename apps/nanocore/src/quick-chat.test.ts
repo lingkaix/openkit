@@ -1346,7 +1346,8 @@ describe('quick chat app API', () => {
         },
       });
       expect(JSON.stringify(observations[0])).not.toContain(EXPECTED_QUICK_CHAT_SYSTEM_PROMPT);
-      expect(observations[1]?.type).toBe('model.observed');
+      expect(observations[1]?.type).toBe('config.model');
+      expect(observations[2]?.type).toBe('model.observed');
     } finally {
       captureDb.sqlite.close();
     }

@@ -17,6 +17,7 @@ import {
   readAuthorizedWorkspaceNotebookPages,
   readCurrentWorkspaceNotebookSelection,
 } from '../retrieval-knowledge-adapter.js';
+import { notebookOperationWritingContext } from '../security/notebook-influence.js';
 import { type KnowledgeNotebook, NotebookError } from './notebook.js';
 import { humanPageBytes, publishWorkspaceNotebook } from './notebook-publication.js';
 import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
@@ -319,6 +320,7 @@ export function createNotebookHistoryOperations(
                 workspaceDb,
                 notebook: history.notebook,
                 producer: actor,
+                ...notebookOperationWritingContext(context),
                 actor,
                 inflightCommands,
                 confirmedRemovals,

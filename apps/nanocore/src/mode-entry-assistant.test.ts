@@ -444,6 +444,7 @@ describe('#144 real Assistant command wiring', () => {
 
   it('retains exact empty selection before dispatch with full model I/O off', async () => {
     const f = await assistantWiringFixture();
+    f.store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
     try {
       const response = await f.submit();
       expect(response.status, await response.clone().text()).toBe(200);

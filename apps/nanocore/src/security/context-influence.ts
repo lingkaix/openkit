@@ -1,4 +1,6 @@
 import type { ActorRef, Item } from '@openkit/protocol';
+import type { FsStore } from '../lib/store.js';
+import { StoreRecordNotFoundError } from '../lib/store-errors.js';
 
 /** Missing ancestry is unknown/influenced, not a newly established clear context. */
 export function contextIsExternallyInfluenced(context: {
@@ -43,4 +45,33 @@ export function receivedItemInfluences(
   // Ordinary model output does not independently taint a known-clear source context.
   // Core/Provider derivatives still inherit their actual source context through its owner.
   return false;
+}
+
+/** Resolves the trusted native context without treating Server Turns as Workspace history. */
+export function readContextInfluenceTurn(store: FsStore, turnId: string) {
+  try {
+    return store.getServerTurnById(turnId);
+  } catch (error) {
+    if (!(error instanceof StoreRecordNotFoundError)) throw error;
+    return store.getTurnById(turnId);
+  }
+}
+
+/** Commits inherited influence before governed source content reaches an executing context. */
+export async function receiveContextInfluence(
+  input: {
+    readonly store: FsStore;
+    readonly outputThreadId?: string | undefined;
+    readonly outputTurnId?: string | undefined;
+  },
+  metadata: { readonly externallyInfluenced?: boolean | undefined }
+): Promise<void> {
+  if (!input.outputTurnId || !contextIsExternallyInfluenced(metadata)) return;
+  const turn = readContextInfluenceTurn(input.store, input.outputTurnId);
+  if (turn.threadId !== input.outputThreadId)
+    throw new Error('Receiving context is contradictory.');
+  if (turn.externallyInfluenced === true) return;
+  if (turn.owner.kind === 'server')
+    await input.store.updateServerTurn(turn.id, { externallyInfluenced: true });
+  else await input.store.updateTurn(turn.id, { externallyInfluenced: true });
 }

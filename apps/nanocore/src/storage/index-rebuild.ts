@@ -73,6 +73,7 @@ import {
   type UserMemoryRetrievalAccess,
 } from '../retrieval-knowledge-adapter.js';
 import { getRetrievalService } from '../retrieval-service.js';
+import { receiveContextInfluence } from '../security/context-influence.js';
 import { openControlStoreProductReadHandle } from './control-store-product-records.js';
 import {
   resolveDataRootPath,
@@ -185,6 +186,8 @@ export interface WorkspaceKnowledgeDerivedIndexes {
 
 /** Input for deterministic Knowledge Store retrieval. */
 export interface RetrieveWorkspaceKnowledgeInput extends ReadWorkspaceKnowledgeDerivedIndexesInput {
+  /** Trusted operation delivery fact; never serialized into the retrieval trace. */
+  modelDelivery?: boolean;
   /** Trusted current actor and source owners, never model input. */
   access: KnowledgeRetrievalAccess;
   /** Explicit state inspection; automatic callers remain active-only. */
@@ -255,6 +258,8 @@ export interface WorkspaceKnowledgeRetrievalExclusion {
 export interface ResolvedWorkspaceKnowledgeRetrievalPage {
   /** Exact selected Notebook commit, independent of page digest. */
   notebookRevision: string;
+  /** Provenance from the selected immutable revision, never supplied by a Page or retrieval index. */
+  externallyInfluenced: boolean | undefined;
   /** Exact retained default Knowledge Base that supplied the selected bytes. */
   knowledgeBaseId: string;
   /** Qualified identity retained through citations and current-byte resolution. */
@@ -1174,6 +1179,11 @@ async function retrieveNotebookSelection(
     publishRetrievalTrace(workspaceRoot, reference, trace);
     result.retrievalTraceRef = reference;
   }
+  if ((input.caller !== 'app-api' || input.modelDelivery === true) && result.selected.length > 0)
+    await receiveContextInfluence(
+      input.access,
+      conflictNotebook.inspectRevision(notebookRevision).metadata
+    );
   return result;
 }
 
@@ -1623,6 +1633,14 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
       trace.queryContext.threadId !== context.threadId
     )
       throw knowledgeTraceUnavailable();
+    const revisionMetadata = new KnowledgeNotebook({
+      repositoryPath: join(
+        server
+          ? serverKnowledgeRoot(input.dataRoot)
+          : userMemoryRoot(input.dataRoot, input.access.actor.id),
+        'notebook.git'
+      ),
+    }).inspectRevision(notebookRevision).metadata;
     const pages: ResolvedWorkspaceKnowledgeRetrievalPage[] = [];
     for (const selected of trace.selected) {
       if (
@@ -1662,6 +1680,7 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
         throw knowledgeTraceUnavailable();
       pages.push({
         notebookRevision,
+        externallyInfluenced: revisionMetadata.externallyInfluenced,
         knowledgeBaseId,
         reference: selected.reference,
         knowledgePageId: selected.reference.objectId,
@@ -1788,6 +1807,8 @@ export function resolveWorkspaceKnowledgeRetrievalPages(input: {
 
     pages.push({
       notebookRevision,
+      externallyInfluenced:
+        selection.notebook.inspectRevision(notebookRevision).metadata.externallyInfluenced,
       knowledgeBaseId,
       reference: selected.reference,
       knowledgePageId: selected.reference.objectId,

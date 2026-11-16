@@ -856,6 +856,12 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
+  sharedStore.setWorkspaceCaptureCoverageProjection(
+    (workspaceId) =>
+      runtimeConfigManager
+        .current()
+        .workspaceConfigs.find((entry) => entry.workspaceId === workspaceId)?.config
+  );
   sharedStore.setWorkspaceResourcePolicyProjection((workspaceId) => {
     const loaded = runtimeConfigManager
       .current()

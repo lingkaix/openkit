@@ -15,6 +15,8 @@ export async function publishTestWorkspaceNotebook(input: {
   readonly store: FsStore;
   readonly userId: string;
   readonly changes: Readonly<Record<string, string | null>>;
+  /** Actual writing context for revision-provenance cases. */
+  readonly sourceTurnId?: string | null;
 }) {
   const selection = readTestWorkspaceNotebookSelection(input.dataRoot, input.workspaceId);
   const workspaceDb = createTestWorkspaceDb(input.dataRoot, input.workspaceId);
@@ -52,6 +54,7 @@ export async function publishTestWorkspaceNotebook(input: {
         workspaceDb,
         notebook: selection.notebook,
         producer: actor,
+        ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
         inflightCommands: new WeakMap(),
         confirmedRemovals,
         revalidate: () => readWorkspaceNotebookPublicationFacts(authority),

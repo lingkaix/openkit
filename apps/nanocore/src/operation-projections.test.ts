@@ -1484,10 +1484,14 @@ describe('Workspace Thread Turn projection cutover', () => {
             f.store.getWorkspaceResources('ws_00000000-0000-7000-8000-000000000001')
           );
           expect(await project('thread.create', input)).toEqual(
-            f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
+            OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+              f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
+            )
           );
           expect(await project('thread.read', child)).toEqual(
-            f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
+            OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+              f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
+            )
           );
           expect(await project('thread.items', child)).toEqual({
             items: f.store.listThreadItems('ws_00000000-0000-7000-8000-000000000001', thread.id),
@@ -1505,7 +1509,9 @@ describe('Workspace Thread Turn projection cutover', () => {
           dashboard ??= read;
           expect(read).toEqual(dashboard);
           expect(read).toMatchObject({
-            thread: f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id),
+            thread: OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+              f.store.getThread('ws_00000000-0000-7000-8000-000000000001', thread.id)
+            ),
             viewerUserId: 'usr_00000000-0000-7000-8000-000000000001',
           });
           const result = await project('turn.read', { ...child, turnId: turn.id });
@@ -1638,7 +1644,11 @@ describe('Workspace Thread Turn projection cutover', () => {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
             threadId: visible.id,
           })
-        ).toEqual(f.store.getThread('ws_00000000-0000-7000-8000-000000000001', visible.id));
+        ).toEqual(
+          OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+            f.store.getThread('ws_00000000-0000-7000-8000-000000000001', visible.id)
+          )
+        );
         await expect(
           project('turn.read', {
             workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
@@ -1729,10 +1739,18 @@ describe('Workspace Thread Turn projection cutover', () => {
         });
         expect(
           await project('thread.read', { workspaceId: other.id, threadId: foreign.id })
-        ).toEqual(f.store.getThread(other.id, foreign.id));
+        ).toEqual(
+          OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+            f.store.getThread(other.id, foreign.id)
+          )
+        );
         expect(
           await project('thread.dashboard', { workspaceId: other.id, threadId: foreign.id })
-        ).toMatchObject({ thread: f.store.getThread(other.id, foreign.id) });
+        ).toMatchObject({
+          thread: OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+            f.store.getThread(other.id, foreign.id)
+          ),
+        });
         expect(
           await project('turn.read', {
             workspaceId: other.id,
@@ -1758,7 +1776,11 @@ describe('Workspace Thread Turn projection cutover', () => {
             },
           }
         )
-      ).toEqual(f.store.getThread(other.id, foreign.id));
+      ).toEqual(
+        OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+          f.store.getThread(other.id, foreign.id)
+        )
+      );
       revokeOpenKitAccessTokenRecord(f.coreDb, issued.record.tokenId);
       await expect(
         invoke(

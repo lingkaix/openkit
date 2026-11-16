@@ -277,7 +277,9 @@ describe('native terminal recovery observations', () => {
     const second = new ModelCapture({ ...context, attempt: 1 }, [], 'provider_test');
     await first.request({ model: 'model_test', input: 'First attempt' });
     await second.request({ model: 'model_test', input: 'Second attempt' });
-    const requests = readWorkObservations(f.db, f.owner);
+    const requests = readWorkObservations(f.db, f.owner).filter(
+      (row) => row.type === 'model.observed'
+    );
     expect(requests.map((row) => row.payload.attempt)).toEqual([0, 1]);
     expect(requests[0]!.id).not.toBe(requests[1]!.id);
     await first.event({ type: 'error' });

@@ -68,6 +68,7 @@ export interface ServerKnowledgeMaintenanceDependencies {
 }
 /** Trusted Server admission, never a Worker/model scope selector. */
 export interface ServerKnowledgeMaintenanceInput {
+  readonly sourceTurnId?: string | null;
   readonly requestId: string;
   readonly requestActor?: Actor;
   readonly actor: ActorRef;
@@ -411,6 +412,7 @@ export async function prepareServerKnowledgeMaintenance(
                   store,
                   inflightCommands: dependencies.inflightCommands,
                   notebook: git,
+                  sourceTurnId: turn.id,
                   producer,
                   actor: { kind: 'user', id: actor!.userId },
                   publicationAuthority: {
@@ -445,6 +447,7 @@ export async function prepareServerKnowledgeMaintenance(
             const proposal = await createServerNotebookProposal(
               {
                 ...dependencies,
+                sourceTurnId: turn.id,
                 actor: actor!,
                 revalidate: (candidateFiles?: Readonly<Record<string, string>>) => {
                   assertCurrent();
@@ -635,7 +638,11 @@ export async function runServerKnowledgeMaintenanceCommand(
         input.tellContent === undefined
           ? undefined
           : await registerServerKnowledgeSource(
-              { ...dependencies, actor: input.requestActor },
+              {
+                ...dependencies,
+                actor: input.requestActor,
+                ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
+              },
               {
                 requestId: input.requestId,
                 kind: 'document',

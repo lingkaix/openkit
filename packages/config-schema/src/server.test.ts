@@ -199,7 +199,7 @@ describe('server config schema', () => {
     }
   });
 
-  it('RET Native Transcripts And Runtime Logs defaults the bound to 16 MiB and keeps capture off', () => {
+  it('RET Native Transcripts And Runtime Logs defaults the bound to 16 MiB and capture on (#732)', () => {
     expect(
       OpenKitConfigSchema.parse({ schemaVersion: RETAINED_FORMAT_VERSION }).policy
     ).toBeUndefined();
@@ -208,7 +208,7 @@ describe('server config schema', () => {
         schemaVersion: RETAINED_FORMAT_VERSION,
         policy: { workDataCapture: {} },
       }).policy?.workDataCapture
-    ).toEqual({ value: 'off', nativeLogMaxBytes: 16_777_216 });
+    ).toEqual({ value: 'on', nativeLogMaxBytes: 16_777_216 });
     expect(
       OpenKitConfigSchema.parse({
         schemaVersion: RETAINED_FORMAT_VERSION,
@@ -695,7 +695,7 @@ describe('RET-2 native log policy', () => {
     for (const nativeLogMaxBytes of [1, 97, Number.MAX_SAFE_INTEGER]) {
       const result = OpenKitConfigSchema.safeParse({
         schemaVersion: 1,
-        policy: { workDataCapture: { nativeLogMaxBytes } },
+        policy: { workDataCapture: { value: 'off', nativeLogMaxBytes } },
       });
       expect(result.success).toBe(true);
       expect(result.data?.policy?.workDataCapture).toEqual({ value: 'off', nativeLogMaxBytes });
@@ -704,7 +704,7 @@ describe('RET-2 native log policy', () => {
       expect(
         OpenKitConfigSchema.safeParse({
           schemaVersion: 1,
-          policy: { workDataCapture: { nativeLogMaxBytes } },
+          policy: { workDataCapture: { value: 'off', nativeLogMaxBytes } },
         }).success
       ).toBe(false);
     }

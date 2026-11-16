@@ -6,7 +6,11 @@ import {
   StartTaskModeResponseSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import { UserConfigSchema, WorkspaceConfigSchema } from '@openkit/config-schema';
+import {
+  OpenKitConfigSchema,
+  UserConfigSchema,
+  WorkspaceConfigSchema,
+} from '@openkit/config-schema';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, vi } from 'vitest';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
@@ -111,7 +115,8 @@ export async function assistantWiringFixture(
     store: FsStore;
     actorUserId: string;
     thread: ReturnType<FsStore['getThread']>;
-  }) => Promise<void>
+  }) => Promise<void>,
+  segmentation?: ReturnType<FsStore['getThread']>['segmentation']
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-entry-wiring-'));
   const coreDb = openCoreDb(dataRoot);
@@ -144,7 +149,11 @@ export async function assistantWiringFixture(
     'Selected Skill command',
     undefined,
     'conversation',
-    { visibility: 'private', privateOwnerUserId: actorUserId }
+    {
+      visibility: 'private',
+      privateOwnerUserId: actorUserId,
+      ...(segmentation ? { segmentation } : {}),
+    }
   );
   const imported = selected
     ? importWorkspaceSkill({
@@ -216,6 +225,11 @@ export async function assistantWiringFixture(
     dataRoot,
     initialSnapshot: createInMemoryRuntimeConfigSnapshot({
       dataRoot,
+      // These wiring cases exercise mandatory metadata with originals explicitly disabled.
+      openKitConfig: OpenKitConfigSchema.parse({
+        schemaVersion: 1,
+        policy: { workDataCapture: { value: 'off' } },
+      }),
       ...(agentSetup ? { agentManifests: [agentSetup.manifest] } : {}),
       userConfigs: [
         {

@@ -252,6 +252,10 @@ interface RuntimeConfigManagerOptions {
   /** Live capture-coverage sink updated on load and applied reload. */
   captureCoverage?: {
     setLiveCaptureCoverage(binding: CaptureCoverageBinding): void;
+    /** Uses only the installed configuration snapshot, including its original failed-reload behavior. */
+    setWorkspaceCaptureCoverageProjection?(
+      projection: (workspaceId: string) => WorkspaceConfig | undefined
+    ): void;
   };
 }
 
@@ -324,18 +328,36 @@ const RESTART_REQUIRED_CONFIG_PATHS = [
 ] as const;
 
 /**
- * Resolves the server-scope work-data capture pair from authored OpenKit config.
+ * Resolves authored capture intent from Server to Workspace to the exact Workspace-scoped Task.
  *
- * @param config Parsed server.jsonc OpenKit config.
- * @returns Admission-time pair; omitted policy is off.
+ * @param config Parsed server.jsonc configuration.
+ * @param workspace Optional parsed Workspace configuration; absence inherits the Server.
+ * @param taskId Trusted Task identity from the admission owner, never a Goal card id.
+ * @returns Immutable pair for admission; omitted Server policy is on.
  */
 export function captureCoverageBindingFromOpenKitConfig(
-  config: OpenKitConfig
+  config: OpenKitConfig,
+  workspace?: Pick<WorkspaceConfig, 'workspace'>,
+  taskId?: string | null
 ): CaptureCoverageBinding {
-  return {
-    scope: 'server',
-    value: config.policy?.workDataCapture?.value ?? 'off',
-  };
+  return resolveCaptureCoverageBinding(
+    { scope: 'server', value: config.policy?.workDataCapture?.value ?? 'on' },
+    workspace,
+    taskId
+  );
+}
+
+/** Resolves lower authored scopes against the installed Server pair, without allocating durable state. */
+export function resolveCaptureCoverageBinding(
+  server: CaptureCoverageBinding,
+  workspace?: Pick<WorkspaceConfig, 'workspace'>,
+  taskId?: string | null
+): CaptureCoverageBinding {
+  const override = workspace?.workspace.policy?.workDataCapture;
+  const task = taskId ? override?.tasks?.[taskId] : undefined;
+  if (task) return { scope: 'task', value: task.value };
+  if (override?.value !== undefined) return { scope: 'workspace', value: override.value };
+  return structuredClone(server);
 }
 
 /**
@@ -550,6 +572,9 @@ export function createRuntimeConfigManager(
       providerCredentialConfigured: options.providerCredentialConfigured,
     });
   assertUnknownModelContext(current);
+  options.captureCoverage?.setWorkspaceCaptureCoverageProjection?.(
+    (workspaceId) => findWorkspaceConfig(current, workspaceId)?.config
+  );
   let lastReload: RuntimeConfigReloadSummary | null = null;
   let lastFailedReload: RuntimeConfigReloadSummary | null = null;
   let pendingRestart: RuntimeConfigChange[] = [];

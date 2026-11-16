@@ -24,6 +24,7 @@ import {
 } from '../config/knowledge-base.js';
 import { IdempotencyKeyConflictError, OperationError } from '../operation-error.js';
 import type { IdempotentCommandReceipt } from '../runtime/idempotent-command.js';
+import { notebookWriteInfluence } from '../security/notebook-influence.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
 import { commandInputHash } from '../storage/control-store-input.js';
 import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
@@ -45,6 +46,8 @@ import {
 
 /** Existing scoped owners supply current authority, attribution, Audit and the command receipt boundary. */
 export interface SourcePublication {
+  /** Native invoking Turn; null means an external model context, never a payload origin. */
+  readonly sourceTurnId?: string | null;
   readonly owner: SourcePointerOwner;
   readonly database: NotebookPublicationOwner;
   readonly access: Parameters<typeof deriveManagedSourceAccess>[0]['access'];
@@ -362,6 +365,26 @@ export async function publishCapturedSource(
           instructionReference: `${input.captureChannel}:${input.requestId}`,
         },
         sourceReferences: [],
+        externallyInfluenced: notebookWriteInfluence({
+          notebook,
+          baseRevision,
+          producer: input.producer,
+          store,
+          ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
+        }),
+      };
+      const revalidateInfluence = () => {
+        if (
+          !metadata.externallyInfluenced &&
+          notebookWriteInfluence({
+            notebook,
+            baseRevision,
+            producer: input.producer,
+            store,
+            ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
+          })
+        )
+          throw new NotebookError('conflict');
       };
       const candidateRevision = await notebook.prepareSourcePointersAsync({
         baseRevision,
@@ -397,6 +420,7 @@ export async function publishCapturedSource(
           action === 'knowledge.notebook.admit'
             ? () => {
                 admit();
+                revalidateInfluence();
               }
             : undefined
         );
@@ -418,6 +442,7 @@ export async function publishCapturedSource(
       if (workspaceDb && selection && nextHead) {
         const revalidatePublication = (): void => {
           admit();
+          revalidateInfluence();
           const current = readWorkspaceNotebookSelection({
             workspaceDb,
             workspaceRoot: join(input.owner.dataRoot, 'workspaces', workspaceDb.workspaceId),
@@ -481,7 +506,10 @@ export async function publishCapturedSource(
       await notebook.publishAsync({
         baseRevision,
         candidateRevision,
-        beforePublish: () => admit(true),
+        beforePublish: () => {
+          admit(true);
+          revalidateInfluence();
+        },
       });
       await audit(input.captureChannel);
       return readSourcePointers(input.owner).get(source.id)!;

@@ -593,3 +593,91 @@ describe('governed current-self Memory search', () => {
 function memoryPageScope(f: Awaited<ReturnType<typeof fixture>>, userId: string): string {
   return `page/user/${userId}/${readDefaultKnowledgeBaseId({ dataRoot: f.dataRoot, scope: { kind: 'user', userId } })}`;
 }
+
+it.each([true, false])(
+  'carries Memory influence %s into a second AgentSession before disclosure (#740 E9)',
+  async (influenced) => {
+    const f = await fixture();
+    const sourceThread = await f.store.createThread(
+      f.workspaceId,
+      'Writing Session',
+      undefined,
+      'knowledge-manager',
+      { visibility: 'private', privateOwnerUserId: aliceId }
+    );
+    const session = (externallyInfluenced: boolean, threadId: string) =>
+      f.store.createAgentSession({
+        id: allocateEntityId('as'),
+        workspaceId: f.workspaceId,
+        threadId,
+        agentId: 'memory-reader',
+        status: 'created',
+        message: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        externallyInfluenced,
+      });
+    const firstSession = await session(influenced, sourceThread.id);
+    const source = await f.store.createTurn(
+      f.workspaceId,
+      sourceThread.id,
+      'Read external input',
+      { kind: 'user', id: aliceId },
+      null,
+      {
+        externallyInfluenced: influenced,
+        agentId: firstSession.agentId,
+        agentSessionId: firstSession.id,
+      }
+    );
+    const saved = await saveMemoryPage(
+      { ...f.alice.writer, sourceTurnId: source.id },
+      {
+        requestId: randomUUID(),
+        baseRevision: f.alice.baseRevision,
+        pageId: 'influenced',
+        summary: 'Remember the external fact',
+        content: serializeKnowledgePageFixture(
+          {
+            title: 'External fact',
+            content: marker,
+            sourceReferences: [],
+            createdAt: '2026-10-17T00:00:00.000Z',
+            updatedAt: '2026-10-17T00:00:00.000Z',
+          },
+          { kind: 'user', userId: aliceId }
+        ),
+      }
+    );
+    const notebook = new KnowledgeNotebook({
+      repositoryPath: join(f.dataRoot, 'users', aliceId, 'memory', 'notebook.git'),
+    });
+    expect(notebook.readRevision(saved.notebookRevision).metadata.externallyInfluenced).toBe(
+      influenced
+    );
+    const secondSession = await session(false, f.alice.timeline.id);
+    const second = await f.store.createTurn(
+      f.workspaceId,
+      f.alice.timeline.id,
+      'Recall',
+      { kind: 'user', id: aliceId },
+      null,
+      {
+        externallyInfluenced: false,
+        agentId: secondSession.agentId,
+        agentSessionId: secondSession.id,
+      }
+    );
+    expect(f.store.getTurnById(second.id).externallyInfluenced).toBe(false);
+    const result = await retrieveUserMemory({
+      ...f.alice.query(),
+      caller: 'assistant',
+      access: { ...f.alice.access, outputTurnId: second.id },
+    });
+    expect(result.selected.map((page) => page.reference.objectId)).toContain('influenced');
+    expect(f.store.getTurnById(second.id).externallyInfluenced).toBe(influenced);
+    const reloaded = new FsStore({ dataRoot: f.dataRoot });
+    expect(reloaded.getTurnById(second.id).externallyInfluenced).toBe(influenced);
+    expect(reloaded.getAgentSession(secondSession.id).externallyInfluenced).toBe(influenced);
+  }
+);

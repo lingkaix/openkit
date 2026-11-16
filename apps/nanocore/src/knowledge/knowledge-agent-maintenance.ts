@@ -202,7 +202,7 @@ export async function prepareKnowledgeMaintenance(
     startedAt: input.startedAt ?? new Date().toISOString(),
     trigger: input.trigger,
     instructions: input.instructions,
-    captureCoverage: store.getLiveCaptureCoverage(),
+    captureCoverage: store.getLiveCaptureCoverage(input.workspaceId),
     ...(input.receipt
       ? {
           receipt: ControlKnowledgeAdmissionInputSchema.shape.receipt.unwrap().parse(input.receipt),
@@ -464,6 +464,7 @@ export async function prepareKnowledgeMaintenance(
                 requestId: randomUUID(),
                 commandInput: { maintenanceRequestId: input.requestId, source: metadata },
                 captureChannel: 'knowledge.source.register',
+                sourceTurnId: turn.id,
                 revalidatePublication: () => {
                   // Capture advances its own SQL head before this post-ACK check. Its Source owner
                   // retains current admission; the editor snapshot is pinned afresh after capture.
@@ -787,6 +788,7 @@ export async function prepareKnowledgeMaintenance(
                       workspaceDb,
                       notebook,
                       actor,
+                      sourceTurnId: turn.id,
                       producer: {
                         kind: 'agent',
                         id: 'knowledge-manager',
@@ -833,6 +835,7 @@ export async function prepareKnowledgeMaintenance(
                 workspaceId: input.workspaceId,
                 sourceReferences: refs,
                 verifiedExternalReferences: external,
+                sourceTurnId: turn.id,
                 producer: { kind: 'agent', id: 'knowledge-manager', responsibleUserId: userId },
                 createdAt: new Date().toISOString(),
               });

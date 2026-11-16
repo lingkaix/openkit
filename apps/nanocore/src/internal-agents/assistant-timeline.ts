@@ -12,7 +12,7 @@ import type { ControlAdmission } from '../storage/control-store-admission-codecs
  * @returns The existing Timeline, including its archived state, or undefined.
  */
 export function findAssistantTimeline(store: FsStore, workspaceId: string, userId: string) {
-  return store
+  const initial = store
     .listThreads(workspaceId)
     .filter(
       (thread) =>
@@ -24,6 +24,7 @@ export function findAssistantTimeline(store: FsStore, workspaceId: string, userI
       const chronological = Date.parse(left.createdAt) - Date.parse(right.createdAt);
       return chronological || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
     })[0];
+  return initial ? store.getThreadSegmentHead(workspaceId, initial.id) : undefined;
 }
 
 /**

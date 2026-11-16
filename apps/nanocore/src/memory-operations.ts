@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync } from 'node:fs';
+import { lstat } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import {
   MEMORY_OPERATION_DEFINITIONS,
@@ -65,6 +66,11 @@ import { OperationError } from './operation-error.js';
 import { admitUserMemoryCaller, admitUserMemoryRetrieval } from './retrieval-knowledge-adapter.js';
 import { IdempotencyKeyConflictError, runIdempotentCommand } from './runtime/idempotent-command.js';
 import { PendingRequestCommandError } from './runtime/pending-request-error.js';
+import {
+  notebookOperationWritingContext,
+  notebookWritingContextInfluence,
+  receiveNotebookOperationDisclosure,
+} from './security/notebook-influence.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { userDbPath } from './storage/fs-layout.js';
 import { retrieveUserMemory } from './storage/index-rebuild.js';
@@ -129,8 +135,15 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
         dataRoot: writer.coreDb.dataRoot,
         scope: ownerScope,
       });
+      const provenance = {
+        ...writer,
+        producer: { kind: 'user' as const, id: writer.userDb.userId },
+      };
+      const externallyInfluenced = notebookWritingContextInfluence(provenance);
       const revalidate = () => {
         admitMemoryContext(writer, 'knowledge.write');
+        if (!externallyInfluenced && notebookWritingContextInfluence(provenance))
+          throw new NotebookError('conflict');
         const maintenance = writer.runtimeConfigManager
           .current()
           .userConfigs.find(({ userId }) => userId === writer.userDb.userId)
@@ -155,6 +168,7 @@ function createFreshMemory(writer: MemoryWriter, input: OperationInput<'memory.c
           initialization: {
             requestId: input.requestId,
             producer: { kind: 'user', id: writer.userDb.userId },
+            externallyInfluenced,
             instructionReference: `memory.create:${input.requestId}`,
           },
         },
@@ -238,7 +252,15 @@ export function createMemoryOperationImplementations(
     try {
       await context.recheckAdmission?.();
       resolveScopedNotebookOwner({ coreDb, actor, target });
-      const writer = { coreDb, userDb, actor, store, runtimeConfigManager, inflightCommands };
+      const writer = {
+        coreDb,
+        userDb,
+        actor,
+        store,
+        runtimeConfigManager,
+        inflightCommands,
+        ...notebookOperationWritingContext(context),
+      };
       if (initialize === 'query') {
         const owner = admitMemoryContext(writer);
         if (!lstatSync(owner.notebookRoot, { throwIfNoEntry: false })) {
@@ -266,7 +288,22 @@ export function createMemoryOperationImplementations(
         // Detect incomplete established storage before the KM query owner wraps its errors.
         pinScopedNotebook({ coreDb, actor, target: { kind: 'user' } }).read([]);
       }
-      return await run(writer);
+      const result = await run(writer);
+      if (notebookOperationWritingContext(context).sourceTurnId) {
+        const root = admitMemoryContext(writer).notebookRoot;
+        const repository = await lstat(join(root, 'notebook.git')).catch((error: unknown) => {
+          if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return null;
+          throw error;
+        });
+        if (repository)
+          await receiveNotebookOperationDisclosure(
+            context,
+            store,
+            new KnowledgeNotebook({ repositoryPath: join(root, 'notebook.git') }),
+            result
+          );
+      }
+      return result;
     } catch (error) {
       return memoryFailure(error);
     } finally {
@@ -363,6 +400,7 @@ export function createMemoryOperationImplementations(
           {
             requestId: input.requestId,
             requestActor: writer.actor!,
+            ...notebookOperationWritingContext(context),
             trigger: 'request',
             instructions:
               'content' in input
@@ -489,6 +527,7 @@ export function createMemoryOperationImplementations(
               dataRoot: writer.coreDb.dataRoot,
               workspaceId: input.workspaceId,
               caller: 'app-api',
+              modelDelivery: context.delivery === 'model',
               query: input.query,
               limit: input.limit,
               pinnedReferences: input.pinnedReferences,

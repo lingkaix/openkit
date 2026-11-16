@@ -435,6 +435,7 @@ describe('thread dashboard app API', () => {
     applyMigrations(coreDb);
     ensureLocalUser(coreDb);
     const store = await createDemoStore({ dataRoot });
+    store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
     recordWorkspaceOwnerMembership({
       coreDb,
       ownerUserId: 'usr_00000000-0000-7000-8000-000000000001',

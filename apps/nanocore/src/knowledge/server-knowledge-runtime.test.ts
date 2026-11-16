@@ -206,6 +206,7 @@ it('executes a Server request on the configured role model with its own captured
   const notebook = new KnowledgeNotebook({
     repositoryPath: join(dataRoot, 'server', 'knowledge', 'notebook.git'),
   });
+  expect(notebook.readRevision(result.notebookRevision).metadata.externallyInfluenced).toBe(true);
   expect(notebook.readRevision(result.notebookRevision).files['index.md']).toContain(
     'BLUE-HERON-7'
   );

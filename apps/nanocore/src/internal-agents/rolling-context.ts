@@ -3,6 +3,10 @@ import type { Item } from '@openkit/protocol';
 import { compareCodeUnits, deriveEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import type { FsStore } from '../lib/store.js';
 import type { PiAiFailure } from '../llm/pi-ai-failure.js';
+import {
+  contextIsExternallyInfluenced,
+  receiveContextInfluence,
+} from '../security/context-influence.js';
 import { assertInternalAgentContextFits } from './gateway-provider.js';
 import {
   type AgentMessage,
@@ -58,13 +62,21 @@ export function internalContextDigest(value: unknown): string {
 }
 
 /** Derives stable Thread history using Turn order and the canonical first-seen per-Turn Item sequence. */
-export function internalContextItems(store: Pick<FsStore, 'listThreadTurns'>, turn: Turn): Item[] {
+export function internalContextItems(
+  store: Pick<FsStore, 'listThreadTurns' | 'getThreadSegmentHistory'>,
+  turn: Turn
+): Item[] {
   return store
-    .listThreadTurns(workspaceIdForOwner(turn.owner), turn.threadId)
-    .filter((candidate) => candidate.id !== turn.id)
-    .sort(
-      (left, right) =>
-        compareCodeUnits(left.startedAt ?? '', right.startedAt ?? '') || compare(left.id, right.id)
+    .getThreadSegmentHistory(workspaceIdForOwner(turn.owner), turn.threadId)
+    .flatMap((thread) =>
+      store
+        .listThreadTurns(workspaceIdForOwner(turn.owner), thread.id)
+        .filter((candidate) => candidate.id !== turn.id)
+        .sort(
+          (left, right) =>
+            compareCodeUnits(left.startedAt ?? '', right.startedAt ?? '') ||
+            compare(left.id, right.id)
+        )
     )
     .flatMap((candidate) =>
       candidate.items.filter(
@@ -83,7 +95,7 @@ export function internalContextItems(store: Pick<FsStore, 'listThreadTurns'>, tu
  * Valid rolling proofs keep their existing interpretation. A matching compaction summary selects only its producing Turn's complete pre-summary Items. The caller still verifies the returned source digest and current audience; the summary supplies no read authority. Import may pass the strategy already retained on the summary it is verifying.
  */
 export function internalContextRange(
-  store: Pick<FsStore, 'listThreadTurns' | 'getTurnById'>,
+  store: Pick<FsStore, 'listThreadTurns' | 'getTurnById' | 'getThreadSegmentHistory'>,
   query: Turn,
   range: Pick<Summary['sourceRange'], 'firstItemId' | 'lastItemId' | 'sourceDigest'> & {
     readonly threadId: string;
@@ -282,6 +294,12 @@ export async function prepareInternalAgentContext(
     environmentFacts: input.environmentFacts,
   });
   const items = structuredClone(internalContextItems(input.store, input.turn));
+  // Summaries and later segments inherit the actual source context even when their own ingress is Core.
+  if (items.some((item) => contextIsExternallyInfluenced(input.store.getTurnById(item.turnId))))
+    await receiveContextInfluence(
+      { store: input.store, outputThreadId: input.turn.threadId, outputTurnId: input.turn.id },
+      { externallyInfluenced: true }
+    );
   const sourceDigest = (sources: readonly Item[]) =>
     internalContextSourceDigest(input.store, sources);
   const originalSourceDigest = sourceDigest(items);
@@ -336,7 +354,10 @@ export async function prepareInternalAgentContext(
     }
   };
   const allSummaries = input.store
-    .listThreadItems(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
+    .getThreadSegmentHistory(workspaceIdForOwner(input.turn.owner), input.turn.threadId)
+    .flatMap((thread) =>
+      input.store.listThreadItems(workspaceIdForOwner(input.turn.owner), thread.id)
+    )
     .filter((item): item is Summary => item.type === 'context-summary');
   const summaries = new Map(allSummaries.map((item) => [item.id, item]));
   const validSummary = (summary: Summary, seen = new Set<string>()): boolean => {

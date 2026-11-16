@@ -10,6 +10,7 @@ import { readDefaultKnowledgeBaseId } from '../config/knowledge-base.js';
 import type { OperationInvocationDependencies } from '../operation-composition.js';
 import { type OperationImplementations, publicOperationActor } from '../operation-contract.js';
 import { OperationError } from '../operation-error.js';
+import { receiveNotebookOperationDisclosure } from '../security/notebook-influence.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { NotebookError } from './notebook.js';
 import { readWorkspaceNotebookPublicationFacts } from './notebook-workspace-owner.js';
@@ -26,7 +27,7 @@ export function createKnowledgeProposalPreviewOperationImplementations(
   dependencies: Dependencies
 ): Pick<OperationImplementations, 'knowledge.proposal.read'> {
   return {
-    'knowledge.proposal.read': (input, context) => {
+    'knowledge.proposal.read': async (input, context) => {
       const { coreDb, store, runtimeConfigManager, repositoryWorkspaceDb } = dependencies;
       const dataRoot = store?.getDataRoot();
       const actor = context.actorRef;
@@ -98,7 +99,9 @@ export function createKnowledgeProposalPreviewOperationImplementations(
           candidateRevision: saved.candidateRevision,
           paths,
         };
-        return projectKnowledgeProposalPreview(tuple, before, after, input);
+        const result = projectKnowledgeProposalPreview(tuple, before, after, input);
+        await receiveNotebookOperationDisclosure(context, store, notebook, result);
+        return result;
       } catch (error) {
         if (error instanceof OperationError) throw error;
         if (error instanceof NotebookError && error.code === 'invalid_request')

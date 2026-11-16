@@ -70,6 +70,7 @@ import {
 } from './retained-work-items-v1.js';
 import { StoredTurnV1Schema, StoredWorkOwnerV1Schema } from './retained-work-metadata-v1.js';
 import { assertServerTurnEventLineage } from './server-turn-event-lineage.js';
+import { threadSegmentUsage } from './thread-segmentation.js';
 import {
   assertImmutableItemAttribution,
   assertTurnEventPayloadLineage,
@@ -208,6 +209,18 @@ function checkReplacement(
         : kind === 'turn'
           ? ['id', 'owner', 'threadId', 'triggerActor']
           : ['id', 'workspaceId', 'agentId', 'createdAt'];
+  if (
+    kind === 'thread' &&
+    (!isDeepStrictEqual(before.segmentation, after.segmentation) ||
+      !isDeepStrictEqual(before.segment, after.segment)) &&
+    !(
+      before.segmentation === undefined &&
+      (before.segment === undefined || before.segment === 0) &&
+      after.segment === 0 &&
+      after.segmentation !== undefined
+    )
+  )
+    throw new ControlProductPreconditionError();
   if (fixed.some((key) => !isDeepStrictEqual(before[key], after[key])))
     throw new ControlProductPreconditionError();
   if (
@@ -377,12 +390,25 @@ function applyProducts(
         )
           throw new ControlProductPreconditionError();
       }
+      // Once a segment successor is committed, an old addressed Thread cannot admit new execution.
+      if (
+        kind === 'turn' &&
+        !previous &&
+        ['pending', 'running'].includes(String(record.status)) &&
+        sqlite
+          .prepare(
+            "SELECT 1 FROM control_threads WHERE json_extract(record_json,'$.parentThreadId')=? AND json_extract(record_json,'$.segment')>0 LIMIT 1"
+          )
+          .get(record.threadId as string)
+      )
+        throw new ControlProductPreconditionError();
       if (
         kind === 'thread' &&
         !previous &&
         owner.kind === 'workspace' &&
         record.visibility === 'private' &&
         record.entryPath === 'conversation' &&
+        !(typeof record.segment === 'number' && record.segment > 0) &&
         sqlite
           .prepare(
             "SELECT 1 FROM control_threads WHERE json_extract(record_json,'$.visibility')='private' AND json_extract(record_json,'$.entryPath')='conversation' AND json_extract(record_json,'$.privateOwnerUserId')=? LIMIT 1"
@@ -390,6 +416,61 @@ function applyProducts(
           .get(record.privateOwnerUserId as string)
       )
         throw new ControlProductPreconditionError();
+      if (
+        kind === 'thread' &&
+        previous &&
+        previous.record.segmentation === undefined &&
+        record.segmentation !== undefined &&
+        (record.segment !== 0 ||
+          previous.record.status !== 'active' ||
+          previous.record.entryPath !== 'conversation' ||
+          previous.record.threadSource === 'worker' ||
+          sqlite
+            .prepare(
+              "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN ('pending','running') LIMIT 1"
+            )
+            .get(id))
+      )
+        throw new ControlProductPreconditionError();
+      if (
+        kind === 'thread' &&
+        !previous &&
+        typeof record.segment === 'number' &&
+        record.segment > 0
+      ) {
+        const parent =
+          typeof record.parentThreadId === 'string'
+            ? readProduct(sqlite, owner, 'thread', record.parentThreadId)
+            : undefined;
+        if (
+          !parent ||
+          parent.record.status !== 'active' ||
+          !parent.record.segmentation ||
+          typeof parent.record.segment !== 'number' ||
+          parent.record.entryPath !== 'conversation' ||
+          parent.record.threadSource === 'worker' ||
+          record.segment !== parent.record.segment + 1 ||
+          !isDeepStrictEqual(parent.record.segmentation, record.segmentation) ||
+          ['visibility', 'privateOwnerUserId', 'entryPath', 'threadSource'].some(
+            (field) => !isDeepStrictEqual(parent.record[field], record[field])
+          ) ||
+          sqlite
+            .prepare(
+              "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN ('pending','running') LIMIT 1"
+            )
+            .get(parent?.record.id as string) ||
+          sqlite
+            .prepare(
+              "SELECT 1 FROM control_threads WHERE json_extract(record_json,'$.parentThreadId')=? AND json_extract(record_json,'$.segment')=? AND id<>? LIMIT 1"
+            )
+            .get(parent?.record.id as string, record.segment, id)
+        )
+          throw new ControlProductPreconditionError();
+        const cap = parent.record.segmentation as { maxObservationLines: number; maxBytes: number };
+        const usage = threadSegmentUsage(sqlite, parent.record.id as string);
+        if (usage.lines <= cap.maxObservationLines && usage.bytes <= cap.maxBytes)
+          throw new ControlProductPreconditionError();
+      }
       if (
         kind === 'thread' &&
         Object.hasOwn(input.record, 'login') &&

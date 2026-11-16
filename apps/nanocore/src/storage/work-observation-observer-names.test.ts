@@ -290,6 +290,7 @@ describe('retained observer names', () => {
     const rows = nativeRows(f.db, f.turn.id);
     expect(rows.map((row) => [row.type, row.obs])).toEqual([
       ['env.bound', 'nanocore'],
+      ['config.model', 'llm-gateway'],
       ['model.observed', 'llm-gateway'],
       ['content.published', 'llm-gateway'],
       ['runtime.observed', 'worker-shim'],
@@ -297,7 +298,7 @@ describe('retained observer names', () => {
       ['turn.reap', 'nanocore'],
     ]);
     expect(rows.every((row) => row.v === 1)).toBe(true);
-    expect(rows.map((row) => row.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(rows.map((row) => row.seq)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(readWorkObservationTurnBinding(f.db, f.owner).turn.requiredFeatures).toEqual([
       'openkit.work-observations.v1',
     ]);
@@ -333,8 +334,12 @@ describe('retained observer names', () => {
   it('RET Capture Publication: "Same identity and same content replay is idempotent" — canonical v1 rows replay without append or rewrite', async () => {
     const f = await fixture();
     await captureModel(f);
-    const [metadata, publication] = nativeRows(f.db, f.turn.id);
+    const configured = nativeRows(f.db, f.turn.id).find((row) => row.type === 'config.model')!;
+    const [metadata, publication] = nativeRows(f.db, f.turn.id).filter(
+      (row) => row.type !== 'config.model'
+    );
     await retainFixtureRows(f, [
+      configured,
       { ...metadata!, obs: 'llm-gateway' },
       { ...publication!, obs: 'llm-gateway' },
     ]);
@@ -366,6 +371,7 @@ describe('retained observer names', () => {
     expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
     expect((await appendWorkObservation(reopened, input)).disposition).toBe('duplicate');
     expect(readWorkObservations(reopened, f.owner).map((row) => row.obs)).toEqual([
+      'llm-gateway',
       'llm-gateway',
       'llm-gateway',
     ]);
@@ -442,16 +448,16 @@ describe('retained observer names', () => {
       .trimEnd()
       .split('\n')
       .map((line) => JSON.parse(line));
-    expect(rows).toHaveLength(2);
-    expect(rows[1]!.parent).toBe(rows[0]!.id);
-    expect(rows[0]!.corr).toBe('call-one');
+    expect(rows).toHaveLength(3);
+    expect(rows[2]!.parent).toBe(rows[1]!.id);
+    expect(rows[1]!.corr).toBe('call-one');
     expect(rows.map((row) => row.ext)).toEqual(retained.map((row) => row.ext));
-    const sourceRef = retained[1]!.refs![0]!;
-    expect(rows[1]!.refs![0]!).toEqual(sourceRef);
+    const sourceRef = retained[2]!.refs![0]!;
+    expect(rows[2]!.refs![0]!).toEqual(sourceRef);
     const sourceBody = readWorkObservationBody(f.db, {
       ...f.owner,
       bundleId: sourceRef.locator,
-      createdAt: retained[1]!.ts,
+      createdAt: retained[2]!.ts,
       sha256: sourceRef.digest!,
     });
     expect(sourceBody).not.toBeNull();
@@ -550,7 +556,7 @@ describe('retained observer names', () => {
       (row) => row.type !== 'content.published'
     )) {
       const expected =
-        row.type === 'model.observed'
+        row.type === 'model.observed' || row.type === 'config.model'
           ? 'llm-gateway'
           : row.type === 'runtime.observed'
             ? 'worker-shim'

@@ -389,12 +389,26 @@ export function applyControlAdmission(
           throw new ControlProductPreconditionError();
         for (const product of input.products)
           decodeControlProduct(product.kind, product.record, owner);
-        const selected = sqlite
+        let selected = sqlite
           .prepare(
             "SELECT id FROM control_threads WHERE json_extract(record_json,'$.visibility')='private' AND json_extract(record_json,'$.entryPath')='conversation' AND json_extract(record_json,'$.privateOwnerUserId')=? ORDER BY julianday(json_extract(record_json,'$.createdAt')),id LIMIT 1"
           )
           .get(candidate.privateOwnerUserId) as { id: string } | undefined;
         if (selected) {
+          const visited = new Set<string>();
+          for (;;) {
+            if (visited.has(selected.id)) throw new ControlProductPreconditionError();
+            visited.add(selected.id);
+            const current = readProduct(sqlite, owner, 'thread', selected.id)!;
+            const successors = sqlite
+              .prepare(
+                "SELECT id FROM control_threads WHERE json_extract(record_json,'$.parentThreadId')=? AND json_extract(record_json,'$.segment')=?"
+              )
+              .all(selected.id, Number(current.record.segment ?? 0) + 1) as { id: string }[];
+            if (successors.length > 1) throw new ControlProductPreconditionError();
+            if (!successors[0]) break;
+            selected = successors[0];
+          }
           // Selection is native and preserves existing, including archived, history even when fresh commands race.
           const existing = readProduct(sqlite, owner, 'thread', selected.id);
           if (!existing) throw new ControlProductPreconditionError();

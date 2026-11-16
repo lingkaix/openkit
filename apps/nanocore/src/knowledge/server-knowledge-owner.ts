@@ -41,6 +41,7 @@ export type ServerKnowledgeSource = z.infer<typeof SourceMetadataSchema> & {
 export type RegisterServerKnowledgeSourceInput = z.infer<typeof RequestSchema>;
 /** Native current actor plus the existing Core command owner. */
 export interface ServerKnowledgeSourceWriter extends ServerKnowledgeContext {
+  readonly sourceTurnId?: string | null;
   readonly store: FsStore;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
 }
@@ -174,6 +175,7 @@ export async function registerServerKnowledgeSource(
             requestActor: input.actor,
           },
           producer: { kind: 'user', id: input.actor!.userId },
+          ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
           requestId: command.requestId,
           commandInput: { ownerScope: scope.ownerScope, ...command },
           captureChannel: OPERATION,

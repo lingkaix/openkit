@@ -2,6 +2,8 @@
 
 This directory implements the bounded detection parts of [Runtime Security](../../../../docs/specs/20261109-runtime_security.md). Authorization, credentials, physical storage connections, scheduling and delivery retain their existing owners. The closed Server security record family uses the existing native Core control worker.
 
+`notebook-influence.ts` derives the reserved Notebook revision provenance from the exact inherited revision and trusted writing Turn and AgentSession. Model operation JSON cannot supply the writing context. A remote model write without a local Turn stays influenced, and remote reads do not fabricate a local execution. Unknown ancestry stays influenced; a later human edit or Review cannot clear it. `receiveContextInfluence` joins the existing Turn writer before governed Knowledge or Memory content reaches an executing context; the native owner carries that restriction into the bound AgentSession. Historical browsing does not mutate an old execution.
+
 ## Inventory
 
 `buildInventory` admits exact package identities from build metadata and CycloneDX SBOMs. Official Worker and NanoHost attachments require an exact filename and SHA-256 match in their release checksums. It preserves package ecosystem, version, qualifiers and subpath. Missing or unverified SBOMs are unavailable, never successful empty coverage. Malformed package rows make coverage incomplete. Derived artifacts and independently supplied extensions are explicitly outside release coverage.

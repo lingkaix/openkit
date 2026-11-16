@@ -92,6 +92,7 @@ import {
   knowledgeSourceAudienceReadable,
   readAuthorizedServerNotebookPages,
   readAuthorizedWorkspaceNotebookPages,
+  readCurrentWorkspaceNotebookSelection,
   threadReadable,
 } from './retrieval-knowledge-adapter.js';
 import {
@@ -99,6 +100,10 @@ import {
   IdempotencyKeyConflictError,
   runIdempotentCommand,
 } from './runtime/idempotent-command.js';
+import {
+  notebookOperationWritingContext,
+  receiveNotebookOperationDisclosure,
+} from './security/notebook-influence.js';
 import {
   prepareWorkspaceKnowledgeProposal,
   prepareWorkspaceKnowledgeSelection,
@@ -428,6 +433,7 @@ export function createKnowledgeOperationImplementations(
         workspaceDb,
         notebook,
         producer: actor,
+        ...notebookOperationWritingContext(context),
         actor,
         inflightCommands,
         revalidate: (preparedSelection) => {
@@ -578,7 +584,7 @@ export function createKnowledgeOperationImplementations(
     });
   };
 
-  return {
+  const handlers = {
     ...agentOperations,
     ...createNotebookHistoryOperations(dependencies, notebookCommandFailure),
     'knowledge.schema.preview': (input, context) =>
@@ -721,6 +727,7 @@ export function createKnowledgeOperationImplementations(
             workspaceDb,
             notebook,
             producer: actor,
+            ...notebookOperationWritingContext(context),
             inflightCommands,
             revalidate: (preparedSelection) => {
               if (preparedSelection) prepared = preparedSelection;
@@ -942,6 +949,7 @@ export function createKnowledgeOperationImplementations(
                   database: { kind: 'workspace', workspaceDb },
                   access: current.access,
                   producer: actor.kind === 'user' ? actor : { ...actor, kind: 'agent' },
+                  ...notebookOperationWritingContext(context),
                   requestId: commandInput.requestId,
                   commandInput: { ...commandInput, workspaceId },
                   captureChannel: 'knowledge.source.register',
@@ -1112,6 +1120,7 @@ export function createKnowledgeOperationImplementations(
             dataRoot,
             workspaceId,
             caller: 'app-api',
+            modelDelivery: context.delivery === 'model',
             query: commandInput.query,
             limit: commandInput.limit,
             cursor: commandInput.cursor,
@@ -1165,6 +1174,7 @@ export function createKnowledgeOperationImplementations(
           operationId: `km_context_${randomUUID()}`,
           workspaceId,
           caller: 'app-api',
+          modelDelivery: context.delivery === 'model',
           query: commandInput.query,
           limit: commandInput.limit,
           beforeDisclosure: (response) =>
@@ -1274,6 +1284,9 @@ export function createKnowledgeOperationImplementations(
                       ...commandInput,
                       workspaceId,
                       producer,
+                      ...(owner.sourceTurnId !== undefined
+                        ? { sourceTurnId: owner.sourceTurnId }
+                        : {}),
                       createdAt: new Date().toISOString(),
                       verifiedExternalReferences: executionVerification.verifiedExternalReferences,
                     });
@@ -1879,6 +1892,42 @@ export function createKnowledgeOperationImplementations(
       };
     },
   } satisfies KnowledgeImplementations;
+  // These operations disclose one Workspace Notebook, including exact historical and unpublished candidate revisions.
+  const disclosures = [
+    'knowledge.notebook.list',
+    'knowledge.notebook.history',
+    'knowledge.notebook.diff',
+    'knowledge.source.list',
+    'knowledge.source.read',
+    'knowledge.repair.suggest',
+    'knowledge.health.check',
+  ] as const;
+  for (const id of disclosures) {
+    if (!(id in handlers)) continue;
+    const table = handlers as unknown as Record<
+      string,
+      (input: { workspaceId: string }, context: AdmittedOperationContext) => Promise<unknown>
+    >;
+    const original = table[id]!;
+    table[id] = async (input, context) => {
+      const result = await original(input, context);
+      if (notebookOperationWritingContext(context).sourceTurnId && coreDb && store.getDataRoot()) {
+        const workspaceDb = repositoryWorkspaceDb(input.workspaceId);
+        try {
+          const selected = readCurrentWorkspaceNotebookSelection({
+            workspaceDb,
+            dataRoot: coreDb.dataRoot,
+            workspaceId: input.workspaceId,
+          });
+          await receiveNotebookOperationDisclosure(context, store, selected.notebook, result);
+        } finally {
+          workspaceDb.sqlite.close();
+        }
+      }
+      return result;
+    };
+  }
+  return handlers;
 }
 
 /** Knowledge-owned private Task entry shares public preparation's parsing, knowledge.read admission and retrieval owner. */

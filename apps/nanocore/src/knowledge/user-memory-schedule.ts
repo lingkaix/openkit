@@ -136,7 +136,7 @@ export async function scanUserMemoryMaintenance(input: {
           startedAt,
           instructions: 'Scheduled User Memory maintenance was skipped.',
           trigger: 'schedule',
-          captureCoverage: store.getLiveCaptureCoverage(),
+          captureCoverage: store.getLiveCaptureCoverage(workspaceId),
         });
         if (admitted.replayed) return null;
         const thread = store.getThread(workspaceId, admitted.threadId);

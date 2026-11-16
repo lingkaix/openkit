@@ -386,7 +386,15 @@ function replayConversationCommand(
   if (!record.response.conversationMetadata) {
     // A failed provider attempt has no successful result kind or result Item to replay.
     try {
-      const turn = store.getTurn(workspaceId, threadId, record.response.id);
+      const turn = store.getTurnById(record.response.id);
+      const receivingThreadId = turn.threadId;
+      if (
+        workspaceIdForOwner(turn.owner) !== workspaceId ||
+        !store
+          .getThreadSegmentHistory(workspaceId, receivingThreadId)
+          .some((segment) => segment.id === threadId)
+      )
+        throw new Error('Interrupted Chat segment lineage is contradictory.');
       const userItemId = deriveEntityId('it', ['chat-user', turn.id]);
       const firstUserItem = store
         .listWorkspaceItemRevisions(workspaceId)
@@ -406,7 +414,7 @@ function replayConversationCommand(
         !firstUserItem.completedAt ||
         canonicalIdentifierName(firstUserItem.actor) !== canonicalIdentifierName(triggerActor) ||
         workspaceIdForOwner(firstUserItem.owner) !== workspaceId ||
-        firstUserItem.threadId !== threadId ||
+        firstUserItem.threadId !== receivingThreadId ||
         firstUserItem.turnId !== turn.id ||
         firstUserItem.createdAt !== turn.startedAt ||
         userItem?.type !== 'user-message' ||
@@ -587,6 +595,16 @@ function replayConversationCommand(
         resultKind: metadata.resultKind,
         status: metadata.status,
       };
+    }
+    // The receipt keeps the original command scope; Items belong to its explicit receiving segment.
+    if (currentTurn.threadId !== threadId) {
+      if (
+        !store
+          .getThreadSegmentHistory(workspaceId, currentTurn.threadId)
+          .some((segment) => segment.id === threadId)
+      )
+        throw new Error('Conversation receiving segment is contradictory.');
+      threadId = currentTurn.threadId;
     }
     const userItemId = deriveEntityId('it', ['chat-user', currentTurn.id]);
     let resultItemId: string;
@@ -2890,6 +2908,8 @@ export function createConversationService({
       threadId: string,
       commandReceipt: IdempotentCommandReceipt
     ): Promise<ConversationCommandResult> {
+      // The request keeps its original command identity while continuation selects the linked storage segment.
+      const requestedThreadId = threadId;
       // A missing receipt cannot make an existing provider attempt fresh through changed routing.
       const providerTurnId = providerChatTurnId(
         triggerActor,
@@ -2904,6 +2924,17 @@ export function createConversationService({
           409
         );
       }
+      if (chatInput.targetRef === 'internal-role:assistant')
+        threadId = store.getThreadSegmentHead(workspaceId, threadId).id;
+      if (
+        threadId !== requestedThreadId &&
+        store.listThreadTurns(workspaceId, threadId).some((turn) => turn.id === providerTurnId)
+      )
+        throw new TurnStartValidationError(
+          'recovery_required',
+          'The Chat provider attempt is missing its command receipt.',
+          409
+        );
       const sourceThread = store.getThread(workspaceId, threadId);
       if (
         sourceThread.entryPath === 'conversation' &&
@@ -3070,6 +3101,8 @@ export function createConversationService({
             );
         }
       }
+      if (acceptedTarget.kind === 'assistant')
+        threadId = (await store.continueThreadSegment(workspaceId, threadId)).id;
       const conversationPrompt = [
         chatInput.input,
         ...(chatInput.fileInputs?.length
@@ -4030,9 +4063,9 @@ export function createConversationService({
             !currentWorkspaceAuthority(coreDb, workspaceId, triggerActor, 'turn.run', true, actor)
           )
             throw new TurnStartValidationError(
-              'workspace_access_denied',
-              'Workspace access denied.',
-              403
+              WORKSPACE_ACCESS_DENIED.code,
+              WORKSPACE_ACCESS_DENIED.message,
+              WORKSPACE_ACCESS_DENIED.status
             );
           assembly.assertCurrent({ actor, workspaceId, threadId, turnId: turn.id });
           result.assertContextCurrent?.();

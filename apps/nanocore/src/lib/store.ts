@@ -5,6 +5,7 @@ import {
   contextIsExternallyInfluenced,
   receivedItemInfluences,
 } from '../security/context-influence.js';
+import { notebookWriteInfluence } from '../security/notebook-influence.js';
 import { commandRequestOwner } from '../storage/command-request-codecs.js';
 import {
   type CommandReceipt,
@@ -20,6 +21,12 @@ import {
   type TaskSteerDisposition,
 } from '../storage/retained-work-items-v1.js';
 import { ControlScopedNotebookSqlInputSchema } from '../storage/scoped-notebook-sql-codecs.js';
+import {
+  DEFAULT_THREAD_SEGMENTATION,
+  threadSegmentHead,
+  threadSegmentHistory,
+  threadSegmentUsage,
+} from '../storage/thread-segmentation.js';
 import { resolvePersonalWorkspaceIdInDb } from '../storage/workspace-owner-records.js';
 import { StoreRecordNotFoundError } from './store-errors.js';
 
@@ -84,7 +91,7 @@ import {
   SubmitKnowledgeProposalDecisionRequestSchema,
   SubmitKnowledgeProposalDecisionResponseSchema,
 } from '@openkit/app-api-schemas';
-import { WorkspaceConfigSchema } from '@openkit/config-schema';
+import { type WorkspaceConfig, WorkspaceConfigSchema } from '@openkit/config-schema';
 import type {
   ActorRef,
   AuditEvent,
@@ -138,7 +145,10 @@ import {
   readDefaultKnowledgeBaseId,
 } from '../config/knowledge-base.js';
 import { loadOpenKitConfig } from '../config/openkit-config.js';
-import { captureCoverageBindingFromOpenKitConfig } from '../config/runtime-config.js';
+import {
+  captureCoverageBindingFromOpenKitConfig,
+  resolveCaptureCoverageBinding,
+} from '../config/runtime-config.js';
 import { uuidv5 } from '../generative-kernel/uuid.js';
 import { unresolvedNotebookSubjects } from '../knowledge/conflicts.js';
 import { KnowledgeNotebook, validateNotebookFiles } from '../knowledge/notebook.js';
@@ -723,6 +733,8 @@ export type KnowledgeProposalReviewRecord = KnowledgeProposalReview;
 
 /** Input used to create one deterministic immutable Knowledge Proposal. */
 export interface CreateKnowledgeProposalInput extends KnowledgeManagerDraftProposalRequest {
+  /** Trusted writing Turn; never retained in the Proposal record. */
+  sourceTurnId?: string | null;
   /** Workspace that owns the proposal. */
   workspaceId: string;
   /** Exact external-owner references already verified by the calling authority. */
@@ -735,6 +747,8 @@ export interface CreateKnowledgeProposalInput extends KnowledgeManagerDraftPropo
 
 /** Native exact multi-page candidate; caller supplies current Source and scope admission. */
 export interface CreateNotebookProposalInput extends NotebookEdit {
+  /** Trusted writing Turn; never retained in the Proposal record. */
+  sourceTurnId?: string | null;
   workspaceId: string;
   sourceReferences: readonly string[];
   verifiedExternalReferences: readonly string[];
@@ -796,10 +810,10 @@ interface TurnStreamState {
   listeners: Set<EventListener>;
 }
 
-/** Default admission-time capture pair when no authored switch is on. */
+/** Default admission-time capture intent; explicit authored off remains available. */
 export const DEFAULT_CAPTURE_COVERAGE_BINDING: CaptureCoverageBinding = {
   scope: 'server',
-  value: 'off',
+  value: 'on',
 };
 
 interface CreateTurnOptions {
@@ -1151,6 +1165,7 @@ export class FsStore {
     SseEventEnvelope | ServerTurnEventEnvelope
   >();
   private liveCaptureCoverage: CaptureCoverageBinding = DEFAULT_CAPTURE_COVERAGE_BINDING;
+  private workspaceCaptureCoverageProjection?: (workspaceId: string) => WorkspaceConfig | undefined;
   private turnCaptureCoverage = new Map<string, CaptureCoverageBinding>();
   private turnExecutors = new Map<string, 'worker' | 'assistant' | 'coordinator' | 'person'>();
   private pendingRequestServices: PendingAdmissionDependencies | null = null;
@@ -1695,7 +1710,10 @@ export class FsStore {
           workspaceRoot: stagingRoot,
           workspaceId,
           workspaceDb: initialWorkspaceDb!,
-          initialization: notebookInitialization,
+          initialization: {
+            ...notebookInitialization,
+            ...(records.workspace.importedFrom ? { externallyInfluenced: true } : {}),
+          },
           files: initialNotebookFiles ?? {},
           ...(fileWriteAdmission ? { fileWriteAdmission } : {}),
           ...(initialNotebookSources === undefined
@@ -4947,6 +4965,9 @@ export class FsStore {
       privateOwnerUserId?: string;
       threadSource?: Thread['threadSource'];
       parentThreadId?: string;
+      /** Reserved retained segmentation, supplied only by the native continuation owner. */
+      segment?: number;
+      segmentation?: Thread['segmentation'];
     },
     admission?: Pick<ControlAdmission, 'receipt' | 'audit'>
   ): Promise<Thread> {
@@ -4980,6 +5001,9 @@ export class FsStore {
         status: 'active',
         entryPath,
         threadSource: 'conversation',
+        ...(entryPath === 'conversation' && audience.threadSource !== 'worker'
+          ? { segment: 0, segmentation: DEFAULT_THREAD_SEGMENTATION }
+          : {}),
         ...audience,
         owner: { kind: 'workspace', workspaceId },
         createdAt: now(),
@@ -5017,6 +5041,96 @@ export class FsStore {
       return thread;
     } finally {
       release();
+    }
+  }
+
+  /** Returns the explicitly linked head without granting access to an unresolved historical parent. */
+  public getThreadSegmentHead(workspaceId: string, threadId: string): Thread {
+    return threadSegmentHead(this.listThreads(workspaceId), this.getThread(workspaceId, threadId));
+  }
+
+  /** Reads the existing continuous context through its exact retained segment ancestry. Missing lineage refuses execution only. */
+  public getThreadSegmentHistory(workspaceId: string, threadId: string): Thread[] {
+    return threadSegmentHistory(
+      (id) => this.getThread(workspaceId, id),
+      this.getThread(workspaceId, threadId)
+    );
+  }
+
+  /**
+   * Creates at most one continuation at a sealed Turn boundary through ordinary Thread creation.
+   * An exact restart reads its existing successor; a different successor fails in the native transaction.
+   */
+  public async continueThreadSegment(workspaceId: string, threadId: string): Promise<Thread> {
+    let current = this.getThreadSegmentHead(workspaceId, threadId);
+    if (
+      current.status !== 'active' ||
+      current.threadSource === 'worker' ||
+      current.entryPath !== 'conversation'
+    )
+      return current;
+    const scope = this.dataRoot ? this.nativeScope({ kind: 'workspace', workspaceId }) : undefined;
+    if (!scope) return current;
+    const reader = openControlStoreProductReadHandle(scope.path, scope.owner);
+    let exceeded: boolean;
+    let binding: { revision: number; record: Record<string, unknown> } | undefined;
+    try {
+      if (
+        reader.sqlite
+          .prepare(
+            "SELECT 1 FROM control_turns WHERE thread_id=? AND status IN ('pending','running') LIMIT 1"
+          )
+          .get(current.id)
+      )
+        return current;
+      if (!current.segmentation) {
+        const previous = readNativeProduct(scope, 'thread', current.id)!;
+        binding = { revision: previous.revision, record: previous.record };
+      }
+      const cap = current.segmentation ?? DEFAULT_THREAD_SEGMENTATION;
+      const usage = threadSegmentUsage(reader.sqlite, current.id);
+      exceeded = usage.lines > cap.maxObservationLines || usage.bytes > cap.maxBytes;
+    } finally {
+      reader.close();
+    }
+    if (binding) {
+      // This is a new operational declaration at an admitted boundary; old events and Turn bindings stay unchanged.
+      await this.writeNativeProducts(scope, [
+        {
+          kind: 'thread',
+          expectedRevision: binding.revision,
+          record: writeRetainedV1({
+            ...binding.record,
+            segment: binding.record.segment ?? 0,
+            segmentation: DEFAULT_THREAD_SEGMENTATION,
+          }),
+        },
+      ]);
+      current = this.getThread(workspaceId, current.id);
+    }
+    if (!exceeded) return current;
+    // Ordinary Thread allocation owns identity; the native transaction publishes its complete edge atomically.
+    // A restart resolves the already committed head above before considering another allocation.
+    const id = allocateEntityId('th');
+    try {
+      return await this.createThread(
+        workspaceId,
+        current.name ?? current.preview,
+        id,
+        current.entryPath,
+        {
+          visibility: current.visibility,
+          ...(current.privateOwnerUserId ? { privateOwnerUserId: current.privateOwnerUserId } : {}),
+          ...(current.threadSource ? { threadSource: current.threadSource } : {}),
+          parentThreadId: current.id,
+          segment: (current.segment ?? 0) + 1,
+          segmentation: current.segmentation,
+        }
+      );
+    } catch (error) {
+      const head = this.getThreadSegmentHead(workspaceId, current.id);
+      if (head.id === id) return head;
+      throw error;
     }
   }
 
@@ -5159,6 +5273,12 @@ export class FsStore {
     configVersion: number | null = null,
     options: CreateTurnOptions = {}
   ): Promise<Turn> {
+    const thread = this.getThread(workspaceId, threadId);
+    // Task Mode addresses its receiving Thread; checkpoints deliberately retain no Task record id.
+    const taskId =
+      thread.threadSource === 'worker' || options.executorKind === 'worker' ? threadId : undefined;
+    const captureCoverage =
+      options.captureCoverage ?? this.getLiveCaptureCoverage(workspaceId, taskId);
     const timestamp = options.startedAt ?? now();
     const turnId = options.turnId ?? allocateEntityId('tu');
 
@@ -5170,7 +5290,6 @@ export class FsStore {
       throw new Error(`Turn already exists: ${turnId}`);
     }
 
-    const thread = this.getThread(workspaceId, threadId);
     const turn = TurnSchema.parse({
       id: turnId,
       owner: { kind: 'workspace', workspaceId },
@@ -5271,7 +5390,7 @@ export class FsStore {
         await this.createNativeTerminalTurn(
           scope,
           turn,
-          options.captureCoverage ?? this.liveCaptureCoverage,
+          captureCoverage,
           [
             {
               kind: 'thread',
@@ -5306,7 +5425,7 @@ export class FsStore {
             record: writeRetainedV1({
               ...turn,
               items: [],
-              captureCoverage: options.captureCoverage ?? this.liveCaptureCoverage,
+              captureCoverage: captureCoverage,
             }),
           },
         ],
@@ -5331,7 +5450,7 @@ export class FsStore {
       events: [],
       listeners: new Set(),
     });
-    this.turnCaptureCoverage.set(turn.id, options.captureCoverage ?? this.liveCaptureCoverage);
+    this.turnCaptureCoverage.set(turn.id, captureCoverage);
     return this.getTurnById(turn.id);
   }
 
@@ -5366,8 +5485,29 @@ export class FsStore {
    *
    * @returns Current live pair.
    */
-  public getLiveCaptureCoverage(): CaptureCoverageBinding {
-    return structuredClone(this.liveCaptureCoverage);
+  public getLiveCaptureCoverage(
+    workspaceId?: string,
+    taskId?: string | null
+  ): CaptureCoverageBinding {
+    if (!workspaceId || !this.dataRoot) return structuredClone(this.liveCaptureCoverage);
+    this.getWorkspace(workspaceId);
+    const workspace = this.workspaceCaptureCoverageProjection
+      ? this.workspaceCaptureCoverageProjection(workspaceId)
+      : WorkspaceConfigSchema.parse(
+          parseJsonc(
+            readCanonicalTextFile(
+              join(this.workspaceRootPath(workspaceId), 'config', 'workspace.jsonc')
+            )
+          )
+        );
+    return resolveCaptureCoverageBinding(this.liveCaptureCoverage, workspace, taskId);
+  }
+
+  /** Installs the existing runtime snapshot projection; saving an authored file alone cannot activate capture policy. */
+  public setWorkspaceCaptureCoverageProjection(
+    projection: (workspaceId: string) => WorkspaceConfig | undefined
+  ): void {
+    this.workspaceCaptureCoverageProjection = projection;
   }
 
   /**
@@ -8288,11 +8428,34 @@ export class FsStore {
         producer: input.producer,
         authority: { kind: 'proposal', proposalId: id },
         sourceReferences: request.sourceReferences,
+        externallyInfluenced: notebookWriteInfluence({
+          notebook,
+          store: this,
+          producer: input.producer,
+          baseRevision: request.baseRevision,
+          ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
+        }),
       },
     });
     proposal.candidateRevision = candidateRevision;
     await notebook.preloadRevisionAsync(candidateRevision);
-    await notebook.retainCandidateAsync({ proposalId: id, candidateRevision });
+    await notebook.retainCandidateAsync({
+      proposalId: id,
+      candidateRevision,
+      beforeRetain: () => {
+        if (
+          !notebook.inspectRevision(candidateRevision).metadata.externallyInfluenced &&
+          notebookWriteInfluence({
+            notebook,
+            store: this,
+            producer: input.producer,
+            baseRevision: request.baseRevision,
+            ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
+          })
+        )
+          throw knowledgeProposalAuthorityError('conflict');
+      },
+    });
 
     return proposal;
   }

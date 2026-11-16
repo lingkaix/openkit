@@ -23,6 +23,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { notebookWriteInfluence } from '../security/notebook-influence.js';
 import { prepareWorkspaceKnowledgeSelection } from '../storage/control-store-knowledge.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import type { KnowledgeNotebook, NotebookCommitMetadata } from './notebook.js';
@@ -86,6 +87,8 @@ export interface NotebookPublicationDependencies {
   readonly workspaceDb: WorkspaceDb;
   readonly notebook: KnowledgeNotebook;
   readonly producer: ActorRef;
+  /** Native writing context, never populated from Notebook content or model Tool arguments. */
+  readonly sourceTurnId?: string | null;
   /** Actual current human command actor, separate from the immutable candidate producer. */
   readonly actor?: Extract<ActorRef, { kind: 'user' }>;
   /** Trusted current instruction/delegation facts; never supplied by a model or page. */
@@ -259,6 +262,8 @@ export async function readNotebookProposalCandidateMaterial(
 /** Retains the exact already-validated Proposal candidate without changing the published head. */
 export async function retainNotebookProposalCandidate(input: {
   readonly notebook: KnowledgeNotebook;
+  readonly store?: FsStore;
+  readonly sourceTurnId?: string | null;
   readonly edit: NotebookEdit;
   readonly changes: NotebookEdit['changes'];
   readonly producer: ActorRef & { kind: 'agent' };
@@ -279,6 +284,7 @@ export async function retainNotebookProposalCandidate(input: {
       producer,
       authority: { kind: 'proposal', proposalId: id },
       sourceReferences: [...sourceReferences],
+      externallyInfluenced: notebookWriteInfluence({ ...input, baseRevision: edit.baseRevision }),
     },
   });
   const current = await git.publishedRevisionAsync();
@@ -286,7 +292,14 @@ export async function retainNotebookProposalCandidate(input: {
   await git.retainCandidateAsync({
     proposalId: id,
     candidateRevision,
-    beforeRetain: input.revalidate,
+    beforeRetain: () => {
+      input.revalidate();
+      if (
+        !git.inspectRevision(candidateRevision).metadata.externallyInfluenced &&
+        notebookWriteInfluence({ ...input, baseRevision: edit.baseRevision })
+      )
+        throw new NotebookError('conflict');
+    },
   });
   return candidateRevision;
 }
@@ -847,6 +860,9 @@ async function publishAdmittedNotebook(
             producer: dependencies.producer,
             authority,
             sourceReferences: [...validated.sourceReferences],
+            externallyInfluenced:
+              operation === 'knowledge.package.import' ||
+              notebookWriteInfluence({ ...dependencies, baseRevision: request.baseRevision }),
           },
         }));
       await dependencies.notebook.preloadRevisionAsync(candidateRevision);
@@ -870,6 +886,12 @@ async function publishAdmittedNotebook(
       // Immutable preparation finishes before this check; Store repeats it after native opening.
       // Both observed SQL identities remain predicates of the worker's deciding savepoint.
       const revalidatePublication = (): void => {
+        if (
+          !dependencies.reviewedCandidate &&
+          !dependencies.notebook.inspectRevision(candidateRevision).metadata.externallyInfluenced &&
+          notebookWriteInfluence({ ...dependencies, baseRevision: request.baseRevision })
+        )
+          throw new NotebookError('conflict');
         const finalAdmission = dependencies.revalidate();
         if (workspaceDb && workspaceSelection) {
           const current = readWorkspaceNotebookSelection({

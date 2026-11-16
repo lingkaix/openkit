@@ -39,7 +39,7 @@ const RequestSchema = RegisterKnowledgeSourceRequestSchema.pick({
 /** Trusted self and existing User command owner; no caller selects another scope. */
 export type UserKnowledgeSourceWriter = Pick<
   MemoryWriter,
-  'coreDb' | 'userDb' | 'actor' | 'store' | 'inflightCommands'
+  'coreDb' | 'userDb' | 'actor' | 'store' | 'inflightCommands' | 'sourceTurnId'
 >;
 /** Explicit literal document capture through the existing command. */
 export type RegisterUserKnowledgeSourceInput = z.infer<typeof RequestSchema>;
@@ -296,6 +296,7 @@ export async function registerUserKnowledgeSource(
               requestActor: input.actor,
             },
             producer: { kind: 'user', id: input.actor!.userId },
+            ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
             requestId: command.requestId,
             commandInput: { ownerScope: scope.ownerScope, ...command },
             captureChannel: OPERATION,

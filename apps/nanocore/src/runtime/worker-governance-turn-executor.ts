@@ -83,6 +83,7 @@ import {
   findSchedulerAdmissionForTurn,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
+import { receiveContextInfluence } from '../security/context-influence.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -865,6 +866,21 @@ export async function prepareWorkerTurnContextPackage(
       });
     }
   }
+  if (
+    knowledgeCandidates.some(
+      (page) =>
+        page.externallyInfluenced !== false &&
+        knowledgeSelections.some(
+          (selected) =>
+            selected.knowledgePageId === page.knowledgePageId &&
+            selected.notebookRevision === page.notebookRevision
+        )
+    )
+  )
+    await receiveContextInfluence(
+      { store, outputThreadId: input.threadId, outputTurnId: input.turnId },
+      { externallyInfluenced: true }
+    );
   const includedItemIds = [workerRequestItemId, ...includedPriorItems.map((item) => item.id)];
   const packageFiles = createWorkerContextPackageFiles({
     sourceFiles,

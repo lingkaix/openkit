@@ -761,7 +761,9 @@ describe('Gateway model retention', () => {
     const retainedBytes = observationBytes(f);
     expect(readWorkObservations(f.workspaceDb, f)[0]?.payload.sampling).toEqual(sampling);
     await new ModelCapture(f, [], provider.id).request({ model: 'capture-model', input: 'hello' });
-    const rows = readWorkObservations(f.workspaceDb, f);
+    const allRows = readWorkObservations(f.workspaceDb, f);
+    expect(allRows.filter((row) => row.type === 'config.model')).toHaveLength(1);
+    const rows = allRows.filter((row) => row.type === 'model.observed');
     expect(rows).toHaveLength(2);
     expect(rows[0]?.payload.sampling).toEqual(sampling);
     expect(rows[1]?.payload.sampling).toEqual({});
@@ -955,6 +957,18 @@ describe('Gateway model retention', () => {
         if (result instanceof ReadableStream) await new Response(result).text();
         expect(faux.state.callCount).toBe(1);
         const rows = readWorkObservations(f.workspaceDb, f);
+        expect(rows.filter((row) => row.type === 'config.model')).toMatchObject([
+          {
+            obs: 'llm-gateway',
+            corr: 'logical-one',
+            payload: {
+              attempt: 0,
+              providerRef: provider.id,
+              model: 'capture-model',
+              sampling: {},
+            },
+          },
+        ]);
         expect(rows.filter((row) => row.type === 'model.observed').map((row) => row.corr)).toEqual(
           expect.arrayContaining(['logical-one'])
         );
@@ -1025,7 +1039,12 @@ describe('Gateway model retention', () => {
     const rows = readWorkObservations(f.workspaceDb, f);
     expect(new Set(rows.map((row) => row.corr)).size).toBe(2);
     for (const corr of new Set(rows.map((row) => row.corr))) {
-      const group = rows.filter((row) => row.corr === corr);
+      expect(
+        rows
+          .filter((row) => row.corr === corr && row.type === 'config.model')
+          .map((row) => row.payload.attempt)
+      ).toEqual([0, 1]);
+      const group = rows.filter((row) => row.corr === corr && row.type === 'model.observed');
       expect(group.map((row) => row.payload.attempt)).toEqual([0, 0, 1, 1]);
       expect(group[1]?.parent).toBe(group[0]?.id);
       expect(group[3]?.parent).toBe(group[2]?.id);
@@ -1099,7 +1118,11 @@ describe('Gateway model retention', () => {
       await capture.request({ model: 'capture-model', input: `prefix ${secret} suffix` });
       await capture.event({ type: 'toolcall_delta', delta: JSON.stringify({ value: secret }) });
       expect(bodies(f)).toEqual([]);
-      expect(readWorkObservations(f.workspaceDb, f).map((row) => row.payload.content)).toEqual([
+      expect(
+        readWorkObservations(f.workspaceDb, f)
+          .filter((row) => row.type === 'model.observed')
+          .map((row) => row.payload.content)
+      ).toEqual([
         { state: 'unavailable', reason: 'credential-excluded' },
         { state: 'unavailable', reason: 'credential-excluded' },
       ]);

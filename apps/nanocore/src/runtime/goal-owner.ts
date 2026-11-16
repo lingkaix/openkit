@@ -1878,7 +1878,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       externalEvidence,
       proposalTurnId,
       ...(pendingAdmission ? { pendingAdmission } : {}),
-      captureCoverage: store.getLiveCaptureCoverage(),
+      captureCoverage: store.getLiveCaptureCoverage(input.workspaceId),
       pendingItem,
     });
     const outcome: ControlGoalCommandResult = await client.goal(database, nativeInput);

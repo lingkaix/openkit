@@ -49,6 +49,7 @@ it('binds the actual Administration prompt and ordered tools before model access
       workspaceIds: [],
     });
     const store = await createDemoStore({ dataRoot });
+    store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
     const workspaceId = quickChatWorkspaceIdForUser('usr_00000000-0000-7000-8000-000000000001');
     const thread = await store.createThread(
       workspaceId,
@@ -74,6 +75,7 @@ it('binds the actual Administration prompt and ordered tools before model access
     };
     const snapshot = createInMemoryRuntimeConfigSnapshot({
       dataRoot,
+      openKitConfig: { policy: { workDataCapture: { value: 'off' } } },
       gatewayConfig: {
         schemaVersion: 1,
         enabled: true,

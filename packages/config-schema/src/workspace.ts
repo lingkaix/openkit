@@ -108,7 +108,22 @@ export const WorkspaceConfigWorkspaceSchema = z
     defaultKnowledgeBaseId: KnowledgeBaseIdSchema.optional(),
     knowledgeMounts: KnowledgeMountsSchema.optional(),
 
-    policy: z.object({ mediation: WorkspacePolicyDocumentSchema }).strict().optional(),
+    policy: z
+      .object({
+        mediation: WorkspacePolicyDocumentSchema.optional(),
+        /** Authored capture overrides move with their Workspace; absence inherits the upper scope. */
+        workDataCapture: z
+          .object({
+            value: z.enum(['off', 'on']).optional(),
+            tasks: z
+              .record(z.string().min(1), z.object({ value: z.enum(['off', 'on']) }).strict())
+              .optional(),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
     knowledgeMaintenance: KnowledgeMaintenanceSchema.optional(),
     defaultAgentId: z.string().min(1).nullable().optional(),
     agents: z.array(WorkspaceAgentBindingSchema).default([]),
@@ -169,7 +184,7 @@ export const WorkspaceConfigSchema = z
   .superRefine((value, ctx) => {
     validateKnowledgeMountBinding(value.workspace, ctx, ['workspace']);
     if (
-      value.workspace.policy?.mediation.statements.length &&
+      value.workspace.policy?.mediation?.statements.length &&
       !value.requiredFeatures?.includes(WORKSPACE_RESOURCE_POLICY_FEATURE)
     ) {
       ctx.addIssue({

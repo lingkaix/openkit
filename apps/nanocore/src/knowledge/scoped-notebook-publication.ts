@@ -63,6 +63,8 @@ function scopeSchema(notebookRoot: string): string {
 export async function publishScopedNotebook(
   input: WritableScopedNotebook & {
     readonly store: FsStore;
+    /** Native writing Turn, absent for direct person edits. */
+    readonly sourceTurnId?: string | null;
     readonly runtimeConfigManager: RuntimeConfigManager;
     readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
     readonly command?: NotebookPublicationDependencies['command'];
@@ -107,6 +109,7 @@ export async function publishScopedNotebook(
       inflightCommands: input.inflightCommands,
       notebook,
       producer,
+      ...(input.sourceTurnId !== undefined ? { sourceTurnId: input.sourceTurnId } : {}),
       command: {
         name: input.command?.name ?? 'knowledge.notebook.update',
         input: input.command

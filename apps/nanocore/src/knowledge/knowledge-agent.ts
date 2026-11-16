@@ -34,6 +34,7 @@ import {
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
+import { receiveContextInfluence } from '../security/context-influence.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveUserMemory, retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
 import { AuthorizedHistory } from './notebook-history.js';
@@ -196,6 +197,11 @@ export async function askKnowledgeAgent(
     const primaryNotebook = memory
       ? readAuthorizedUserMemoryPages({ ...bound, pageIds: [] })
       : readAuthorizedWorkspaceNotebookPages({ ...bound, pageIds: [] });
+    const receivingContext = { store, outputThreadId: thread.id, outputTurnId: turn.id };
+    const receive = async (metadata: { externallyInfluenced?: boolean | undefined }) => {
+      await receiveContextInfluence(receivingContext, metadata);
+      if (input.caller !== 'app-api') await receiveContextInfluence(access, metadata);
+    };
     const baseRevision = primaryNotebook.notebookRevision;
     const primaryScopeId = memory
       ? `page/user/${userId}/${primaryNotebook.knowledgeBaseId}`
@@ -217,6 +223,7 @@ export async function askKnowledgeAgent(
       : readAuthorizedWorkspaceNotebookPages({ ...pinned, pageIds: ['index'], notebookRead })
           .pages[0];
     if (!memory && !overviewPage) throw new Error('Knowledge overview is unavailable.');
+    if (overviewPage) await receive(primaryNotebook);
     const candidates = new Map<string, KnowledgeRetrievalCandidate>();
     const navigation = parseOkfDocument({ path: 'index.md', content: overviewPage?.content ?? '' });
     const workspaceIndexId = formatReferenceUri({ scopeId: primaryScopeId, objectId: 'index' });
@@ -253,6 +260,7 @@ export async function askKnowledgeAgent(
       try {
         const page = readAuthorizedUserMemoryPages({ ...pinned, pageIds: ['index'] }).pages[0];
         if (!page) throw new Error('Memory overview is unavailable.');
+        await receive(primaryNotebook);
         const pageId = formatReferenceUri({ scopeId: primaryScopeId, objectId: 'index' });
         overviews.push({ source: 'memory', ...overviewProjection(page, pageId, baseRevision) });
         candidates.set(pageId, {
@@ -272,6 +280,7 @@ export async function askKnowledgeAgent(
         const server = readAuthorizedServerNotebookPages({ ...bound, pageIds: ['index'] });
         const page = server.pages[0];
         if (!page) throw new Error('Server overview is unavailable.');
+        await receive(server);
         serverRevision = server.notebookRevision;
         const serverScopeId = `page/server/${server.knowledgeBaseId}`;
         const pageId = formatReferenceUri({ scopeId: serverScopeId, objectId: 'index' });
@@ -504,6 +513,17 @@ export async function askKnowledgeAgent(
               ],
             };
           const page = currentPages([candidate])[0];
+          const selected = {
+            ...bound,
+            notebookRevision: candidate.revision,
+            pageIds: [candidate.reference.objectId],
+          };
+          const sourceMetadata = memory
+            ? readAuthorizedUserMemoryPages(selected)
+            : parseReferenceScope(candidate.reference.scopeId)?.kind === 'server'
+              ? readAuthorizedServerNotebookPages(selected)
+              : readAuthorizedWorkspaceNotebookPages({ ...selected, notebookRead });
+          await receive(sourceMetadata);
           if (!page || page.contentDigest !== candidate.contentDigest)
             throw new Error('Selected page changed.');
           read.set(pageId, { candidate, content: page.content });

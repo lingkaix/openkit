@@ -1,5 +1,7 @@
 # Knowledge Format
 
+Notebook publication writes the reserved `externallyInfluenced` provenance member from the trusted writing Turn and inherited revision. Agent candidates with unknown ancestry remain influenced. Human Review keeps the exact candidate bit; imports with unknown source context remain influenced. Fresh native owner input and the empty service seed begin clear. Governed Knowledge and Memory reads, overview delivery and Worker context preparation commit inherited influence to the actual receiving Turn and bound AgentSession before disclosure. Page frontmatter and rebuildable indexes cannot supply or clear this fact.
+
 Captured Memory Source rechecks belong to `scoped-knowledge-sources.ts`, through `admitUserMemorySources`. The confirmation owner parses its exact retained intent before requesting those facts. The Source owner uses only the existing read-only, query-only User connection after the current self-only authority checks and closes it on every exit; source-free confirmations do not open a database.
 
 Notebook initialization, Memory forget and Source publication import receipt input hashing from `../storage/control-store-input.ts`. Source publication imports the canonical conflict class from `../operation-error.ts`; its receipt type import from Main idempotent orchestration is erased.

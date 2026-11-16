@@ -183,7 +183,7 @@ describe('Turn capture coverage binding', () => {
     }
   );
 
-  it('records the off pair at admission by default', async () => {
+  it('records the on pair at admission by default', async () => {
     const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-capture-pair-'));
     onTestFinished(async () => {
       await shutdownControlStoreWorkerClient();
@@ -193,17 +193,17 @@ describe('Turn capture coverage binding', () => {
     const store = await createDemoStore({ dataRoot });
     const thread = await store.createThread(
       'ws_00000000-0000-7000-8000-000000000001',
-      'Capture off'
+      'Capture default on'
     );
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
-      'Default off',
+      'Default on',
       LOCAL_ACTOR
     );
 
     expect(store.getTurnCaptureCoverage(turn.id)).toEqual(DEFAULT_CAPTURE_COVERAGE_BINDING);
-    expect(store.getLiveCaptureCoverage()).toEqual({ scope: 'server', value: 'off' });
+    expect(store.getLiveCaptureCoverage()).toEqual({ scope: 'server', value: 'on' });
   });
 
   it('records the on pair when the live switch is on at admission', async () => {
@@ -246,6 +246,7 @@ describe('Turn capture coverage binding', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       'Capture after switch'
     );
+    store.setLiveCaptureCoverage({ scope: 'server', value: 'off' });
     const turn = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       thread.id,
@@ -255,7 +256,7 @@ describe('Turn capture coverage binding', () => {
     store.setLiveCaptureCoverage({ scope: 'server', value: 'on' });
 
     expect(store.getTurnById(turn.id).status).toBe('running');
-    expect(store.getTurnCaptureCoverage(turn.id)).toEqual(DEFAULT_CAPTURE_COVERAGE_BINDING);
+    expect(store.getTurnCaptureCoverage(turn.id)).toEqual({ scope: 'server', value: 'off' });
     const next = await store.createTurn(
       'ws_00000000-0000-7000-8000-000000000001',
       nextThread.id,

@@ -1,4 +1,5 @@
 // openkit-test-platform: posix
+
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -15,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../app.js';
@@ -1060,7 +1062,11 @@ it('fences every published Main scope handle at the real index listener after ge
     ).toBe(false);
   }
   const cold = new FsStore({ dataRoot });
-  expect(cold.getThread(workspace.id, created!.id)).toEqual(created);
+  expect(
+    OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(
+      cold.getThread(workspace.id, created!.id)
+    )
+  ).toEqual(created);
 
   // Reliability/reachability guards precede the deciding policy assertion. No hook miss is OLD proof.
   expect(report.schemaVersion).toBe(1);

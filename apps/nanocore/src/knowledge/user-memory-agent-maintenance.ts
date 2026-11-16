@@ -57,6 +57,7 @@ import { createUserMemoryProposal } from './user-memory-proposals.js';
 
 /** Trusted self invocation; instructions cannot select an owner, audience or publication authority. */
 export interface UserMemoryMaintenanceInput {
+  readonly sourceTurnId?: string | null;
   readonly requestId: string;
   readonly requestActor: Actor;
   readonly startedAt?: string;
@@ -148,7 +149,7 @@ export async function prepareUserMemoryMaintenance(
     startedAt: input.startedAt ?? new Date().toISOString(),
     trigger: input.trigger,
     instructions: input.instructions,
-    captureCoverage: store.getLiveCaptureCoverage(),
+    captureCoverage: store.getLiveCaptureCoverage(workspaceId),
   });
   if (admitted.replayed) throw new NotebookError('recovery_required');
   const thread = store.getThread(workspaceId, admitted.threadId);
@@ -273,7 +274,14 @@ export async function prepareUserMemoryMaintenance(
             input.tellContent === undefined
               ? undefined
               : await registerUserKnowledgeSource(
-                  { ...context, store, inflightCommands: dependencies.inflightCommands },
+                  {
+                    ...context,
+                    store,
+                    inflightCommands: dependencies.inflightCommands,
+                    ...(input.sourceTurnId !== undefined
+                      ? { sourceTurnId: input.sourceTurnId }
+                      : {}),
+                  },
                   {
                     requestId: input.requestId,
                     kind: 'document',
@@ -547,6 +555,7 @@ export async function prepareUserMemoryMaintenance(
                         store,
                         inflightCommands: dependencies.inflightCommands,
                         notebook,
+                        sourceTurnId: turn.id,
                         producer,
                         actor,
                         publicationAuthority: {
@@ -574,6 +583,7 @@ export async function prepareUserMemoryMaintenance(
                 const proposal = await createUserMemoryProposal(
                   {
                     ...context,
+                    sourceTurnId: turn.id,
                     store,
                     inflightCommands: dependencies.inflightCommands,
                     revalidate,

@@ -667,3 +667,36 @@ Exact retained candidate.\r\n`;
     }
   );
 });
+
+it.each([true, false, undefined])(
+  'retains writing context influence %s in a Notebook revision (#740)',
+  async (externallyInfluenced) => {
+    const f = await fixture();
+    const thread = await f.store.createThread(workspaceId, 'Writing context');
+    const turn = await f.store.createTurn(
+      workspaceId,
+      thread.id,
+      'Write',
+      producer,
+      null,
+      externallyInfluenced === undefined ? {} : { externallyInfluenced }
+    );
+    const publication = await publishWorkspaceNotebook(
+      {
+        ...f,
+        sourceTurnId: turn.id,
+        producer: { kind: 'agent', id: 'knowledge-manager', responsibleUserId: producer.id },
+        actor: producer,
+        publicationAuthority: {
+          kind: 'delegated',
+          settingReference: 'test:delegation',
+          settingDigest: `sha256:${'a'.repeat(64)}`,
+        },
+      },
+      f.request
+    );
+    expect(
+      f.notebook.readRevision(publication.notebookRevision).metadata.externallyInfluenced
+    ).toBe(externallyInfluenced !== false);
+  }
+);

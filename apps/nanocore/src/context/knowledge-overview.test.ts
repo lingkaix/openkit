@@ -13,6 +13,7 @@ import { createApp } from '../test-support/app.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { operationRequest } from '../test-support/operation-request.js';
 import { readTestWorkspaceNotebookSelection } from '../test-support/workspace-notebook.js';
+import { publishTestWorkspaceNotebook } from '../test-support/workspace-notebook-publication.js';
 import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
 import {
   assertPortableKnowledgeOverview,
@@ -170,4 +171,29 @@ it('admits only known portable overview scopes and value-free Server-unavailable
     expect(() => assertPortableKnowledgeOverview(value)).toThrow(
       'Knowledge overview is not portable'
     );
+});
+
+it('propagates influenced Knowledge through governed overview delivery into another context (#740)', async () => {
+  const f = await fixture();
+  const written = await publishTestWorkspaceNotebook({
+    dataRoot: f.coreDb.dataRoot,
+    workspaceId: f.workspaceId,
+    coreDb: f.coreDb,
+    store: f.store,
+    userId: f.userId,
+    sourceTurnId: f.turnId,
+    changes: { 'index.md': '---\nokf_version: "0.2"\n---\n# Influenced navigation\n' },
+  });
+  const source = readTestWorkspaceNotebookSelection(f.coreDb.dataRoot, f.workspaceId).notebook;
+  expect(source.inspectRevision(written.notebookRevision).metadata.externallyInfluenced).toBe(true);
+  const thread = await f.store.createThread(f.workspaceId, 'Second context');
+  const turn = await f.store.createTurn(f.workspaceId, thread.id, 'Use navigation', f.actor, null, {
+    externallyInfluenced: false,
+  });
+  const overview = await prepareKnowledgeOverview({ ...f, threadId: thread.id, turnId: turn.id });
+  expect(overview.text).toContain('Influenced navigation');
+  expect(f.store.getTurnById(turn.id).externallyInfluenced).toBe(true);
+  // A later person edit is a derivative of the existing influenced revision.
+  const later = await publishIndex(f, '---\nokf_version: "0.2"\n---\n# Edited navigation\n');
+  expect(source.inspectRevision(later).metadata.externallyInfluenced).toBe(true);
 });

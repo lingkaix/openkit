@@ -1,10 +1,12 @@
 // openkit-test-platform: posix
+
 /** Actual App User/Workspace readers must reject SQL writes while native owners retain publication. */
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
+import { OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { allocateEntityId } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { expect, it, onTestFinished, vi } from 'vitest';
@@ -304,7 +306,9 @@ it.each(['established', 'absent'] as const)(
     const published = await created.json();
     const retainedThread = store.getThread(workspace.id, published.id);
     expect(retainedThread.name).toBe('F1 native publication');
-    expect(published).toEqual(retainedThread);
+    expect(published).toEqual(
+      OPERATION_DEFINITIONS['thread.read'].outputSchema.parse(retainedThread)
+    );
     expect(new Set([...handles.values()].map(({ scope }) => scope))).toEqual(
       new Set(['user', 'workspace'])
     );

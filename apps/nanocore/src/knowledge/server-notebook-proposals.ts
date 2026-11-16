@@ -59,6 +59,8 @@ const ReviewFileReader = z
 export interface ServerNotebookProposalContext {
   readonly coreDb: CoreDb;
   readonly store: FsStore;
+  /** Native writing context for candidate provenance. */
+  readonly sourceTurnId?: string | null;
   readonly actor: Actor;
   readonly runtimeConfigManager: RuntimeConfigManager;
   readonly inflightCommands: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
@@ -111,6 +113,8 @@ export async function createServerNotebookProposal(
   const { changes } = prepared;
   const candidateRevision = await retainNotebookProposalCandidate({
     notebook: prepared.notebook,
+    store: context.store,
+    ...(context.sourceTurnId !== undefined ? { sourceTurnId: context.sourceTurnId } : {}),
     edit,
     changes,
     producer,

@@ -244,6 +244,7 @@ export function readAuthorizedServerNotebookPages(input: Target) {
   return {
     knowledgeBaseId,
     notebookRevision,
+    externallyInfluenced: notebook.inspectRevision(notebookRevision).metadata.externallyInfluenced,
     pages,
     scopeSchemaText,
     registeredSources,
@@ -484,6 +485,8 @@ export function readAuthorizedUserMemoryPages(input: Target) {
     return {
       knowledgeBaseId,
       notebookRevision,
+      externallyInfluenced:
+        notebook.inspectRevision(notebookRevision).metadata.externallyInfluenced,
       pages,
       scopeSchemaText,
       registeredSources,
@@ -1094,6 +1097,7 @@ export interface AuthorizedWorkspaceNotebookPage {
 export function readAuthorizedWorkspaceNotebookPages(input: Target): {
   readonly knowledgeBaseId: string;
   readonly notebookRevision: string;
+  readonly externallyInfluenced: boolean | undefined;
   readonly pages: readonly AuthorizedWorkspaceNotebookPage[];
   readonly referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
   readonly scopeSchemaText: string;
@@ -1111,6 +1115,7 @@ export function* readAuthorizedWorkspaceNotebookPagesSteps(input: Target): Gener
   {
     readonly knowledgeBaseId: string;
     readonly notebookRevision: string;
+    readonly externallyInfluenced: boolean | undefined;
     readonly pages: readonly AuthorizedWorkspaceNotebookPage[];
     readonly referenceProofs: ReadonlyMap<string, KnowledgePageReferenceProof>;
     readonly scopeSchemaText: string;
@@ -1164,6 +1169,8 @@ export function* readAuthorizedWorkspaceNotebookPagesSteps(input: Target): Gener
   return {
     knowledgeBaseId: pinned.knowledgeBaseId,
     notebookRevision: pinned.notebookRevision,
+    externallyInfluenced: pinned.notebook.inspectRevision(pinned.notebookRevision).metadata
+      .externallyInfluenced,
     pages: currentPages,
     referenceProofs: new Map([...referenceProofs].filter(([id]) => currentIds.has(id))),
     scopeSchemaText: pinned.scopeSchemaText,

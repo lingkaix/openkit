@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Item, RetrievalTraceReference } from '@openkit/protocol';
+import type { Item, RetrievalTraceReference, Thread } from '@openkit/protocol';
 import { allocateEntityId, workspaceIdForOwner } from '@openkit/protocol';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import type { Actor } from '../auth/identity.js';
@@ -47,7 +47,8 @@ interface RangeResult {
 /** Composes the real canonical record, identity, membership and query-owned trace owners. */
 async function fixture(
   texts = [`${privateText} 😀漢e\u0301`.repeat(500), 'The unresolved decision is retained.'],
-  agentId = 'quick-chat'
+  agentId = 'quick-chat',
+  segmentation?: Thread['segmentation']
 ) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'assistant-history-range-'));
   const coreDb = openCoreDb(dataRoot);
@@ -65,6 +66,7 @@ async function fixture(
     id: allocateEntityId('th'),
     owner: { kind: 'workspace' as const, workspaceId },
     name: 'Current conversation',
+    ...(segmentation ? { segment: 0, segmentation } : {}),
     preview: 'Current conversation',
     status: 'active' as const,
     entryPath: 'conversation' as const,
@@ -239,6 +241,51 @@ function expectUnavailable(envelope: AgentToolResult) {
 }
 
 describe('Assistant exact source-bound history ranges', () => {
+  it('keeps ancestor trace owners exact across a segment and still rechecks their current source (#732)', async () => {
+    const f = await fixture(['A bounded exact source.'], 'quick-chat', {
+      maxObservationLines: 10000,
+      maxBytes: 1,
+      boundaryDelayed: true,
+    });
+    const requestedRange = range(f);
+    const output = result(await execute(f, { range: requestedRange }));
+    const item = await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: { kind: 'workspace', workspaceId: f.workspace.id },
+      threadId: f.turn.threadId,
+      turnId: f.turn.id,
+      type: 'tool-call',
+      status: 'completed',
+      tool: 'thread.history.read',
+      server: null,
+      arguments: { range: requestedRange },
+      result: JSON.stringify({ content: [{ type: 'text', text: JSON.stringify(output) }] }),
+      error: null,
+      durationMs: 1,
+      createdAt: timestamp,
+      completedAt: timestamp,
+    });
+    await f.store.completeTurn(f.turn.id, { status: 'completed', completedAt: timestamp });
+    const next = await f.store.continueThreadSegment(f.workspace.id, f.turn.threadId);
+    expect(next.segment).toBe(1);
+    const receiving = await f.store.createTurn(f.workspace.id, next.id, 'Continue', {
+      kind: 'user',
+      id: LOCAL_USER_ID,
+    });
+    const evidence = { ...f.context, threadId: next.id, turnId: receiving.id, items: [item] };
+    expect(readInternalContextEvidence(evidence)).toMatch(/^sha256:/);
+    expect(
+      readRetrievalTrace(
+        join(f.dataRoot, 'workspaces', f.workspace.id),
+        output.retrievalTraceRef,
+        'conversation'
+      )?.queryContext.threadId
+    ).toBe(f.turn.threadId);
+    await f.store.completeTurn(f.sourceTurn.id, { status: 'completed', completedAt: timestamp });
+    expect(() => readInternalContextEvidence(evidence)).toThrow();
+    expect(f.store.getThread(f.workspace.id, next.id).parentThreadId).toBe(f.turn.threadId);
+  });
+
   it('reads the exact committed range of a real current-run compaction summary and keeps its trace readable after terminal status changes', async () => {
     const f = await fixture([], 'knowledge-manager');
     // Preserve real compaction pressure under the local bytes/3 estimate.

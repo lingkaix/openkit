@@ -31,6 +31,8 @@ import { decodeSourcePointer } from './source-pointers.js';
 
 /** Native User attribution or the exact service-owned empty seed; page bytes cannot supply these facts. */
 export interface NotebookInitialization {
+  /** Trusted import provenance; direct person creation and the exact empty seed have no inherited context. */
+  readonly externallyInfluenced?: boolean;
   readonly requestId: string;
   readonly producer:
     | Extract<ActorRef, { kind: 'user' }>
@@ -301,6 +303,8 @@ function prepareNotebookInitialization(input: {
       producer: input.initialization.producer,
       authority,
       sourceReferences: [...validation.sourceReferences],
+      // Fresh native owner input and the exact empty service seed have no inherited external context.
+      externallyInfluenced: input.initialization.externallyInfluenced ?? false,
     },
   });
   const revalidate = () => {

@@ -11,6 +11,7 @@ import {
   readAuthorizedServerNotebookPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
+import { receiveContextInfluence } from '../security/context-influence.js';
 import type { CoreDb } from '../storage/db.js';
 
 /** Maximum delivered UTF-8 content bytes per admitted scope; metadata is separate. */
@@ -112,6 +113,7 @@ export async function prepareKnowledgeOverview(
         )
           throw new Error('Knowledge overview is no longer available.');
       });
+      await receiveContextInfluence(target.access, selected);
       overviews.push({
         scope,
         knowledgeBaseId,

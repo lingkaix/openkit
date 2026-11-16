@@ -106,8 +106,21 @@ function contextEvidenceInventory(input: Parameters<typeof readInternalContextEv
   if (!dataRoot || dataRoot !== input.coreDb.dataRoot) throw unavailable();
   const references =
     input.strategy === 'compaction' ? internalContextEvidenceReferences(input.items) : [];
-  const runContext = { threadId: input.threadId, turnId: input.items[0]?.turnId };
-  const contexts = [runContext, ...(input.retrievalContext ? [input.retrievalContext] : [])];
+  const segmentThreads = input.store.getThreadSegmentHistory(input.workspaceId, input.threadId);
+  const sourceContexts = [
+    ...new Map(
+      input.items.map((item) => {
+        if (!segmentThreads.some((thread) => thread.id === item.threadId)) throw unavailable();
+        const source = input.store.getTurn(input.workspaceId, item.threadId, item.turnId);
+        if (source.threadId !== item.threadId) throw unavailable();
+        return [item.turnId, { threadId: item.threadId, turnId: item.turnId }];
+      })
+    ).values(),
+  ].sort((left, right) => compareCodeUnits(left.turnId, right.turnId));
+  const contexts: { threadId: string; turnId?: string | undefined }[] = [
+    ...(sourceContexts.length ? sourceContexts : [{ threadId: input.threadId }]),
+    ...(input.retrievalContext ? [input.retrievalContext] : []),
+  ];
   const scopeFor = (context: { threadId: string; turnId?: string | undefined }) =>
     context.turnId === undefined
       ? `retrieval-trace/thread/${input.workspaceId}/${context.threadId}`
@@ -126,9 +139,7 @@ function contextEvidenceInventory(input: Parameters<typeof readInternalContextEv
             contexts.findIndex((candidate) => scopeFor(candidate) === scopeFor(context)) ===
               index && references.some((reference) => reference.scopeId === scopeFor(context))
         )
-      : [...new Set(input.items.map((item) => item.turnId))]
-          .sort()
-          .map((turnId) => ({ threadId: input.threadId, turnId }));
+      : sourceContexts;
   const inventory = owners.flatMap((context) => {
     const turnId = context.turnId;
     try {
@@ -173,7 +184,7 @@ function contextEvidenceInventory(input: Parameters<typeof readInternalContextEv
         outputThreadId:
           input.strategy === 'compaction'
             ? contexts.find((context) => scopeFor(context) === reference.scopeId)!.threadId
-            : input.threadId,
+            : trace.queryContext.threadId,
         outputTurnId: trace.queryContext.turnId,
       }),
     })),
