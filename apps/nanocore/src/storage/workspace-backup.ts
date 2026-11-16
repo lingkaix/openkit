@@ -1978,7 +1978,19 @@ async function runWorkspaceCapture(
                     targetWorkspaceId
                   );
                   let admission: WorkspaceFreezeAdmission;
-                  if (live.freezeOwner) {
+                  // Scheduled selection can go stale while the capture Worker prepares. Recheck
+                  // idleness before closing admission; foreground work must finish its next step.
+                  const idle = automatic
+                    ? getControlStoreWorkerClient().tryFreezeWorkspace(
+                        live.dataRoot,
+                        targetWorkspaceId,
+                        workspaceBlockers
+                      )
+                    : undefined;
+                  if (idle?.status === 'frozen') idle.release();
+                  if (idle && idle.status !== 'frozen') {
+                    admission = idle;
+                  } else if (live.freezeOwner) {
                     const blockers = captureBlockers();
                     admission = blockers.length
                       ? { status: 'blocked', blockers }

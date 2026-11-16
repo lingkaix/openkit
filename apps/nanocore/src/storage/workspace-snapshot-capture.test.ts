@@ -2913,6 +2913,124 @@ function entrypointSnapshotMaintenance(
 }
 
 describe('C-b daily snapshot policy and retention', () => {
+  it('leaves newly admitted foreground work running when an automatic candidate becomes busy', async () => {
+    const f = await fixture();
+    const turn = await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Completed source', {
+      kind: 'user',
+      id: f.ownerId,
+    });
+    const item = await f.store.createItem({
+      id: allocateEntityId('it'),
+      owner: turn.owner,
+      threadId: turn.threadId,
+      turnId: turn.id,
+      type: 'status',
+      status: 'completed',
+      level: 'info',
+      title: 'Before foreground work',
+      summary: 'Original display',
+      createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+    });
+    await f.store.completeTurn(turn.id, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    const client = getControlStoreWorkerClient();
+    const prepareEntered = Promise.withResolvers<void>();
+    const resumePreparation = Promise.withResolvers<void>();
+    const drainEntered = Promise.withResolvers<void>();
+    const originalPublication = client.runTurnPublication.bind(client);
+    let held = false;
+    vi.spyOn(client, 'runTurnPublication').mockImplementation(
+      (opening, turns, input, prepare, ...rest) =>
+        originalPublication(
+          opening,
+          turns,
+          input,
+          async (owned) => {
+            if (turns.includes(turn.id) && !held) {
+              held = true;
+              prepareEntered.resolve();
+              await resumePreparation.promise;
+            }
+            return prepare(owned);
+          },
+          ...rest
+        )
+    );
+    const originalDrain = client.tryFreezeWorkspaceAfterDrain.bind(client);
+    const drain = vi.spyOn(client, 'tryFreezeWorkspaceAfterDrain').mockImplementation((...args) => {
+      const result = originalDrain(...args);
+      drainEntered.resolve();
+      return result;
+    });
+    let foreground:
+      | Promise<{ turn?: ReturnType<FsStore['getTurnById']>; error?: unknown }>
+      | undefined;
+    captureWorkerProbe.onPhase = (_worker, message) => {
+      if (message.phase !== 'freeze' || foreground) return false;
+      const release = client.enterWorkspaceMutation(f.dataRoot, workspaceId);
+      if (!release) throw new Error('Foreground work must enter after idle candidate selection.');
+      foreground = (async () => {
+        try {
+          await f.store.refreshDisplayProjectionItem(item.id, { title: 'Foreground publication' });
+          return {
+            turn: await f.store.createTurn(workspaceId, DEMO_THREAD_ID, 'Next admitted step', {
+              kind: 'user',
+              id: f.ownerId,
+            }),
+          };
+        } catch (error) {
+          return { error };
+        } finally {
+          release();
+        }
+      })();
+      return false;
+    };
+    const policy = {
+      ...f.policy,
+      source: f.source,
+      expectedSourceDeploymentId: readDataRootLayoutMarker(f.dataRoot).deploymentId,
+      now: captureDay(1),
+    };
+    const capturing = runWorkspaceSnapshotMaintenance(policy).then(
+      (result) => ({ result, error: undefined }),
+      (error: unknown) => ({ result: undefined, error })
+    );
+    try {
+      await prepareEntered.promise;
+      await Promise.race([drainEntered.promise, capturing]);
+      resumePreparation.resolve();
+      const completed = await foreground!;
+      expect(completed.error).toBeUndefined();
+      expect(completed.turn).toMatchObject({
+        owner: turn.owner,
+        threadId: DEMO_THREAD_ID,
+        status: 'running',
+      });
+      expect(drain).not.toHaveBeenCalled();
+      expect((await capturing).error).toMatchObject({ code: 'workspace_blocked' });
+      expect(client.isWorkspaceMutationClosed(f.dataRoot, workspaceId)).toBe(false);
+      expect(
+        f.store.getTurnById(turn.id).items.find((entry) => entry.id === item.id)
+      ).toMatchObject({ title: 'Foreground publication' });
+      captureWorkerProbe.onPhase = undefined;
+      await f.store.completeTurn(completed.turn!.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      const next = await runWorkspaceSnapshotMaintenance(policy);
+      expect(next?.manifest.workspaceId).toBe(workspaceId);
+    } finally {
+      resumePreparation.resolve();
+      captureWorkerProbe.onPhase = undefined;
+      await foreground;
+      await capturing;
+    }
+  });
+
   it('activates idle capture through the actual entrypoint maintenance callback', async () => {
     const f = await fixture();
     mkdirSync(join(f.workspaceRoot, 'files'), { recursive: true });
