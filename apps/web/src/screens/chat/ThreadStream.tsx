@@ -1233,11 +1233,11 @@ export function ThreadStream({
   }, [inspectedTurnId, panelHost, phone, phoneInspectId, portalNode]);
   const chromeRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (holdContent || narrativeOnly) return;
+    if (!phone || holdContent || narrativeOnly) return;
     const node = chromeRef.current;
     if (!node) return;
     return bindScrollPadding(node, 'top');
-  }, [holdContent, narrativeOnly]);
+  }, [holdContent, narrativeOnly, phone]);
 
   if (holdContent) {
     return (
@@ -1912,6 +1912,7 @@ export function ThreadStream({
               onJumpToLatest?.();
             }}
             followRequest={followRequest}
+            reserveStickyScroll={phone}
             pinDivider={windowAnchor.kind === 'catch-up' && restoredNavigation.current == null}
             pinKey={scopeKey}
           >

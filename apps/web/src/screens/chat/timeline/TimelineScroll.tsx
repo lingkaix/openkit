@@ -6,8 +6,9 @@ import { writeTimelineHistory } from './navigation-state';
 import { isFollowing, scrollCorrection, sentinelDistancePx, shouldPageEdge } from './window';
 
 /**
- * Reserves the sticky chrome's box in the timeline scroller.
+ * Reserves the sticky chrome's box in the phone timeline scroller.
  * scrollIntoView then stops short of the bar instead of landing a control underneath it.
+ * Desktop history restore compares the raw scroll offset, and this padding moves that offset.
  */
 export function bindScrollPadding(node: HTMLElement, edge: 'top' | 'bottom'): () => void {
   const scroller = node.closest<HTMLElement>('[data-timeline-scroll]');
@@ -261,6 +262,7 @@ export function TimelineScroll({
   pinKey,
   restoreTop,
   followRequest = 0,
+  reserveStickyScroll = false,
   children,
 }: {
   topEntryId: string | null;
@@ -286,6 +288,8 @@ export function TimelineScroll({
   restoreTop?: number | null;
   /** Bumps when Jump to latest or the catch-up control asks the scroller to follow. */
   followRequest?: number;
+  /** Phone only. Desktop back-navigation restores the saved scroll offset unchanged. */
+  reserveStickyScroll?: boolean;
   children: ReactNode;
 }) {
   const frame = useRef<HTMLDivElement>(null);
@@ -321,11 +325,11 @@ export function TimelineScroll({
   }
 
   useLayoutEffect(() => {
-    if (!showJump) return;
+    if (!reserveStickyScroll || !showJump) return;
     const node = jumpRef.current;
     if (!node) return;
     return bindScrollPadding(node, 'bottom');
-  }, [showJump]);
+  }, [reserveStickyScroll, showJump]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the scroll listener stays on the scroller and reads the latest follow callback through setFollow.
   useLayoutEffect(() => {
