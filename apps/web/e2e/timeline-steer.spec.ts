@@ -11,6 +11,7 @@ import {
 import { createCoreClient } from '@openkit/core-client';
 import { allocateEntityId, ItemSchema } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
+import { postWhenCaptureAllows } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 // Screenshots are evidence, not assertions. Set OPENKIT_E2E_SHOTS_DIR to keep them.
@@ -65,15 +66,19 @@ test('shows Accepted from the real simulator steer after reload and in a second 
       requestId: randomUUID(),
     });
     const startId = randomUUID();
-    const started = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
-      headers: { 'x-openkit-request-id': startId },
-      data: {
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        input: 'Keep this run on screen.',
-        requestId: startId,
-      },
-    });
+    const started = await postWhenCaptureAllows(
+      page.request,
+      `${stack.coreUrl}/api/app/operations/task.start`,
+      {
+        headers: { 'x-openkit-request-id': startId },
+        data: {
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          input: 'Keep this run on screen.',
+          requestId: startId,
+        },
+      }
+    );
     expect(started.status(), await started.text()).toBe(202);
     const requestId = randomUUID();
     const deadline = Date.now() + 45_000;
@@ -179,15 +184,19 @@ test('shows the other steer outcomes from controlled reads and keeps an unqualif
       requestId: randomUUID(),
     });
     const requestId = randomUUID();
-    const started = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
-      headers: { 'x-openkit-request-id': requestId },
-      data: {
-        workspaceId: workspace.id,
-        threadId: thread.id,
-        input: 'Keep this run on screen.',
-        requestId,
-      },
-    });
+    const started = await postWhenCaptureAllows(
+      page.request,
+      `${stack.coreUrl}/api/app/operations/task.start`,
+      {
+        headers: { 'x-openkit-request-id': requestId },
+        data: {
+          workspaceId: workspace.id,
+          threadId: thread.id,
+          input: 'Keep this run on screen.',
+          requestId,
+        },
+      }
+    );
     expect(started.status(), await started.text()).toBe(202);
     const taskUrl = `${stack.webUrl}/tasks/${workspace.id}/${thread.id}`;
     const userId = allocateEntityId('usr');

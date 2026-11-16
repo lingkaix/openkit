@@ -10,6 +10,7 @@ import {
 import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { ThreadSchema, workspaceIdForOwner } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
+import { importRetainedArtifact } from './_lib/capture-fence.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
 /**
@@ -399,7 +400,8 @@ test('routes the selected artifact version from the phone without submitting', a
     const original = '# First exact candidate\n';
     const contentDigest = `sha256:${createHash('sha256').update(original).digest('hex')}`;
     const bytes = new Blob([original]);
-    const imported = await client.artifactFiles.import(
+    const imported = await importRetainedArtifact(
+      client,
       {
         workspaceId: workspace.id,
         requestId: createRequestId(),

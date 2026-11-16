@@ -20,6 +20,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { StartTaskModeResponseSchema } from '@openkit/app-api-schemas';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
+import { postWhenCaptureAllows } from './capture-fence.js';
 import { startIsolatedWebStack } from './servers.js';
 
 const SYNTHETIC_LOCAL_EPOCH = 'a'.repeat(64);
@@ -288,15 +289,19 @@ test('preserves Material delivery and delivers a durable simulator answer on the
     });
     // Material binding is explicit to this Thread; direct Task entry executes there.
     const requestId = randomUUID();
-    const response = await request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
-      headers: { 'x-openkit-request-id': requestId },
-      data: {
-        workspaceId,
-        threadId: thread.id,
-        input: 'Create a summary from the exact first release revision.',
-        requestId,
-      },
-    });
+    const response = await postWhenCaptureAllows(
+      request,
+      `${stack.coreUrl}/api/app/operations/task.start`,
+      {
+        headers: { 'x-openkit-request-id': requestId },
+        data: {
+          workspaceId,
+          threadId: thread.id,
+          input: 'Create a summary from the exact first release revision.',
+          requestId,
+        },
+      }
+    );
     expect(response.status(), await response.text()).toBe(202);
     const submission = StartTaskModeResponseSchema.parse(await response.json());
     const taskThreadId = thread.id;

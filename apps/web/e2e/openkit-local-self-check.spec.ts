@@ -15,6 +15,7 @@ import {
   workspaceIdForOwner,
 } from '@openkit/protocol';
 import { expect, type Page, type TestInfo, test } from '@playwright/test';
+import { postWhenCaptureAllows } from './_lib/capture-fence.js';
 import { isQuestionAnswerResponse } from './_lib/question-answer-response.js';
 import { type IsolatedWebStack, startIsolatedWebStack } from './_lib/servers.js';
 
@@ -333,10 +334,14 @@ async function startTaskTurn(page: Page, threadId: string, input: string): Promi
   if (!stack) throw new Error('The isolated Web stack is not running.');
   const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
   const requestId = createRequestId();
-  const response = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
-    headers: { 'x-openkit-request-id': requestId },
-    data: { workspaceId, threadId, input, requestId },
-  });
+  const response = await postWhenCaptureAllows(
+    page.request,
+    `${stack.coreUrl}/api/app/operations/task.start`,
+    {
+      headers: { 'x-openkit-request-id': requestId },
+      data: { workspaceId, threadId, input, requestId },
+    }
+  );
   const responseBody = await response.text();
   expect(response.status(), `Task Turn start response: ${responseBody}`).toBe(202);
   const submission = StartTaskModeResponseSchema.parse(JSON.parse(responseBody));

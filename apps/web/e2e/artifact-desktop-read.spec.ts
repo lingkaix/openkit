@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { CandidateSetRecordSchema, JudgementRecordSchema } from '@openkit/app-api-schemas';
 import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
+import { importRetainedArtifact } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 /**
@@ -35,7 +36,8 @@ test('reads retained desktop Artifact versions and uses one without submitting',
     const original = '# First exact candidate\n';
     const contentDigest = `sha256:${createHash('sha256').update(original).digest('hex')}`;
     const bytes = new Blob([original]);
-    const imported = await client.artifactFiles.import(
+    const imported = await importRetainedArtifact(
+      client,
       {
         workspaceId: workspace.id,
         requestId: createRequestId(),
@@ -59,7 +61,8 @@ test('reads retained desktop Artifact versions and uses one without submitting',
     });
     const ledger = 'Ledger line\n';
     const ledgerBytes = new Blob([ledger]);
-    await client.artifactFiles.import(
+    await importRetainedArtifact(
+      client,
       {
         workspaceId: workspace.id,
         requestId: createRequestId(),

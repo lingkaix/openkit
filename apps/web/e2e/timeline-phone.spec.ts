@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCoreClient } from '@openkit/core-client';
 import { expect, type Page, test } from '@playwright/test';
+import { postWhenCaptureAllows } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 // Screenshots are evidence, not assertions. Set OPENKIT_E2E_SHOTS_DIR to keep them.
@@ -53,15 +54,19 @@ test('fits S1–S3 on a phone: bar, decision sheet, steps, inspector, composer',
       requestId: randomUUID(),
     });
     const requestId = randomUUID();
-    const started = await page.request.post(`${stack.coreUrl}/api/app/operations/task.start`, {
-      headers: { 'x-openkit-request-id': requestId },
-      data: {
-        workspaceId,
-        threadId: thread.id,
-        input: 'Create a summary from the exact first release revision.',
-        requestId,
-      },
-    });
+    const started = await postWhenCaptureAllows(
+      page.request,
+      `${stack.coreUrl}/api/app/operations/task.start`,
+      {
+        headers: { 'x-openkit-request-id': requestId },
+        data: {
+          workspaceId,
+          threadId: thread.id,
+          input: 'Create a summary from the exact first release revision.',
+          requestId,
+        },
+      }
+    );
     expect(started.status(), await started.text()).toBe(202);
     const taskUrl = `${stack.webUrl}/tasks/${workspaceId}/${thread.id}`;
     await page.goto(taskUrl);

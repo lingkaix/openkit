@@ -4,46 +4,11 @@ import {
   JudgementRecordSchema,
   SubmitConversationResponseSchema,
 } from '@openkit/app-api-schemas';
-import {
-  ApiCallError,
-  type CoreClient,
-  createCoreClient,
-  createRequestId,
-} from '@openkit/core-client';
+import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { ThreadSchema } from '@openkit/protocol';
 import { expect, test } from '@playwright/test';
+import { importRetainedArtifact } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
-
-/**
- * Resends one raw import while startup capture still refuses it.
- * The transport does not replay request streams, and this refusal is pre-effect.
- */
-async function importRetainedArtifact(
-  client: CoreClient,
-  input: Parameters<CoreClient['artifactFiles']['import']>[0],
-  bytes: Blob
-): Promise<{ artifactId: string; artifactVersion: 1 }> {
-  const deadline = performance.now() + 20_000;
-  for (;;) {
-    try {
-      return await client.artifactFiles.import(input, bytes);
-    } catch (error) {
-      const details =
-        error instanceof ApiCallError && error.status === 409 && error.code === 'workspace_frozen'
-          ? error.details
-          : undefined;
-      const retryable =
-        typeof details === 'object' &&
-        details !== null &&
-        'retryable' in details &&
-        details.retryable === true &&
-        'operation' in details &&
-        details.operation === 'capture';
-      if (!retryable || performance.now() >= deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-    }
-  }
-}
 
 /** Real UI comparison keeps an older selected version in the ordinary explicit Send command. */
 test('compares two retained versions and sends the selected older candidate explicitly', async ({

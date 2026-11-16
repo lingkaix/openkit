@@ -6,6 +6,7 @@ import { ThreadTimelineResponseSchema, type TimelineRunEntry } from '@openkit/ap
 import { createCoreClient, createRequestId } from '@openkit/core-client';
 import { allocateEntityId, ItemSchema } from '@openkit/protocol';
 import { expect, type Page, test } from '@playwright/test';
+import { importRetainedArtifact } from './_lib/capture-fence.js';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
 const shotsDir =
@@ -182,7 +183,8 @@ test('resolves an exact output, hides a private source, and toasts within the ca
       )
     );
     const bytes = new Blob([ORIGINAL]);
-    const imported = await client.artifactFiles.import(
+    const imported = await importRetainedArtifact(
+      client,
       {
         workspaceId,
         requestId: createRequestId(),
