@@ -592,6 +592,21 @@ export function newContentExceedsScreen(input: {
   return input.contentAfterPx > input.viewportPx;
 }
 
+/**
+ * Pixels of timeline entries below a catch-up divider.
+ * A divider or tail with no layout is not measurable yet.
+ * Jump controls after the entries are not part of the tail.
+ */
+export function contentAfterDividerPx(input: {
+  dividerBottom: number;
+  tailBottom: number;
+}): number | null {
+  if (input.dividerBottom <= 0 || input.tailBottom <= 0) return null;
+  const after = input.tailBottom - input.dividerBottom;
+  if (!Number.isFinite(after) || after < 0) return null;
+  return after;
+}
+
 /** Administration has no divider. Assistant shows one only for an unread answer. */
 export function showCatchUpDivider(input: {
   profile: AgentProfileId;

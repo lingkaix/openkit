@@ -19,6 +19,7 @@ import {
   admissionGaps,
   anchorFromSearch,
   anchorInput,
+  contentAfterDividerPx,
   cursorInput,
   dividerPlacement,
   earlierUnread,
@@ -339,6 +340,9 @@ describe('catch-up opening', () => {
     expect(
       newContentExceedsScreen({ continues: false, contentAfterPx: 101, viewportPx: 100 })
     ).toBe(true);
+    expect(contentAfterDividerPx({ dividerBottom: 0, tailBottom: 400 })).toBeNull();
+    expect(contentAfterDividerPx({ dividerBottom: 800, tailBottom: 200 })).toBeNull();
+    expect(contentAfterDividerPx({ dividerBottom: 900, tailBottom: 1040 })).toBe(140);
   });
 
   it('places the divider after B inside that run', () => {

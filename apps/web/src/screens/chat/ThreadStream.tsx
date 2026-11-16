@@ -112,6 +112,7 @@ import {
 } from './timeline/use-timeline-window';
 import {
   completeDetails,
+  contentAfterDividerPx,
   dividerPlacement,
   entryFromRun,
   holdItems,
@@ -616,11 +617,16 @@ export function ThreadStream({
     if (!divider) return;
     const scroller = scrollParent(divider);
     if (scroller.clientHeight <= 0) return;
-    const top =
-      divider.getBoundingClientRect().top -
-      scroller.getBoundingClientRect().top +
-      scroller.scrollTop;
-    const contentAfterPx = Math.max(0, scroller.scrollHeight - top - divider.offsetHeight);
+    const frame = divider.closest<HTMLElement>('[data-timeline-frame]');
+    const entries = frame?.querySelectorAll<HTMLElement>('[data-timeline-entry]');
+    const tail = entries?.item(entries.length - 1) ?? null;
+    if (!tail) return;
+    const contentAfterPx = contentAfterDividerPx({
+      dividerBottom: divider.getBoundingClientRect().bottom,
+      tailBottom: tail.getBoundingClientRect().bottom,
+    });
+    // A zero box makes the whole thread look like content after the divider.
+    if (contentAfterPx == null) return;
     const longer = newContentExceedsScreen({
       continues: false,
       contentAfterPx,

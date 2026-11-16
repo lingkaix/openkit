@@ -271,6 +271,8 @@ export function TimelineScroll({
   const followingRef = useRef(initiallyFollowing);
   const pinnedDivider = useRef(false);
   const pinToken = useRef(pinKey);
+  const pinRef = useRef(pinDivider);
+  pinRef.current = pinDivider;
   const restored = useRef(false);
   const earlierRef = useRef<HTMLButtonElement>(null);
   const restoreEarlierFocus = useRef(false);
@@ -307,7 +309,22 @@ export function TimelineScroll({
       tracking.current = false;
     };
     scroller.addEventListener('scroll', onScroll, { passive: true });
-    return () => scroller.removeEventListener('scroll', onScroll);
+    // A late font or row can grow the tail after the follow snap. Stay at the end while following.
+    const content = frame.current;
+    const observer =
+      content && typeof ResizeObserver !== 'undefined'
+        ? new ResizeObserver(() => {
+            if (pinRef.current || !followingRef.current) return;
+            const distance = distanceFromEnd(scroller);
+            if (distance <= 1) return;
+            scroller.scrollTop = scroller.scrollHeight;
+          })
+        : null;
+    if (content && observer) observer.observe(content);
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      observer?.disconnect();
+    };
   }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: paging callbacks stay current; rebinding the observer on each render would page twice.
@@ -439,10 +456,20 @@ export function TimelineScroll({
     if (pinnedDivider.current) return;
     const scroller = scrollParent(frame.current);
     const divider = scroller.querySelector<HTMLElement>('[data-catch-up-divider]');
-    if (!divider) return;
+    // A zero box pins the scroller at the top and then never moves again.
+    if (!divider || divider.offsetHeight <= 0 || scroller.clientHeight <= 0) return;
     const delta = divider.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-    if (Math.abs(delta) > 1) scroller.scrollTop += delta;
-    pinnedDivider.current = true;
+    if (Math.abs(delta) <= 1) {
+      pinnedDivider.current = true;
+      return;
+    }
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const next = Math.min(max, Math.max(0, scroller.scrollTop + delta));
+    if (next === scroller.scrollTop) {
+      pinnedDivider.current = true;
+      return;
+    }
+    scroller.scrollTop = next;
   });
 
   useLayoutEffect(() => {
@@ -512,6 +539,7 @@ export function TimelineScroll({
   return (
     <div
       ref={frame}
+      data-timeline-frame
       className="flex flex-col gap-3"
       onPointerDownCapture={(event) => pauseForFold(event.target)}
       onClickCapture={(event) => pauseForFold(event.target)}
