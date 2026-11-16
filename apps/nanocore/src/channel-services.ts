@@ -103,6 +103,7 @@ export function createChannelServices(input: {
     try {
       const record = currentRequest(query.actor, { ...query, requestId: query.pendingRequestId });
       if (!record) return { status: 'unavailable', code: 'request_unavailable' };
+      if (record.requesterKind === 'automation') return { status: 'app-only' };
       if (record.kind === 'approval') {
         const effect = projectApprovalEffect({ record, store, coreDb, actor: query.actor });
         if (effect.status !== 'available')
@@ -256,6 +257,9 @@ export function createChannelServices(input: {
             const result = await input.transport!.sendAttention({
               discordUserId: bound.discordUserId,
               appPath: payload.appPath,
+              automation:
+                delivery.source.kind === 'security-notice' ||
+                currentRequest(actor, delivery.source, false)?.requesterKind === 'automation',
               beforeSend: () =>
                 eligible(delivery) && discord?.binding(actor)?.revision === bound.revision,
             });

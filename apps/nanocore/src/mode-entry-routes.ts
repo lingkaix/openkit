@@ -177,6 +177,7 @@ import {
   type SchedulerWorkerStorageChoice,
   schedulerAdmissionInputHash,
 } from './scheduler-records.js';
+import { assertAgentWorkNotPaused } from './security/agent-work-pause.js';
 import {
   FileAdmissionError,
   type FileStorageAdmission,
@@ -2872,6 +2873,7 @@ export function createConversationService({
       readonly assertCurrent: () => void;
     }
   ): Promise<{ body: z.infer<typeof SubmitConversationResponseSchema>; status: 200 | 202 }> {
+    assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork);
     const { workspaceId, threadId } = chatInput;
     try {
       const thread = store.getThread(workspaceId, threadId);
@@ -4014,6 +4016,7 @@ export function createConversationService({
             messages: [{ role: 'user', content: [{ type: 'text', text: conversationPrompt }] }],
             tools: fixedTools.tools,
           });
+          assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork);
           result = await runAssistantCommand({
             assembly,
             store,
@@ -4024,6 +4027,8 @@ export function createConversationService({
             readContextEvidence: (items) =>
               readInternalContextEvidence({ store, coreDb, actor, workspaceId, threadId, items }),
             gateway: {
+              assertExecutionAvailable: () =>
+                assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork),
               logicalModel: selection.logicalModel,
               ...(selection.profile?.reasoningEffort === undefined
                 ? {}
@@ -4457,6 +4462,7 @@ export function createConversationService({
       return true;
     },
     async acceptPendingInput(store: FsStore, turnId: string) {
+      assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork);
       const turn = store.getTurnById(turnId);
       const actorId = responsibleUserIdForActor(turn.triggerActor);
       if (
@@ -4971,6 +4977,7 @@ export function createConversationService({
               queryContext: { threadId: turn.threadId, turnId: turn.id },
             }),
         });
+        assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork);
         const result = await withTurnModelCapture(
           { store, turn, environment: { systemPrompt, tools: fixedTools.tools } },
           (capture) =>
@@ -5025,6 +5032,8 @@ export function createConversationService({
                   );
               },
               gateway: {
+                assertExecutionAvailable: () =>
+                  assertAgentWorkNotPaused(runtimeConfig().openKitConfig.security?.pauseAgentWork),
                 capture,
                 logicalModel: selection.logicalModel,
                 ...(selection.profile?.reasoningEffort === undefined

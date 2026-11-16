@@ -94,6 +94,8 @@ export const OpenKitAuthSignupSchema = z
 export const OpenKitAuthConfigSchema = z
   .object({
     signup: OpenKitAuthSignupSchema.optional(),
+    /** Administrator-selected rightmost proxy hops; absence trusts only the transport peer. */
+    trustedProxyHops: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
 

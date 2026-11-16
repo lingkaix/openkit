@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { policyDigest } from '@openkit/protocol/digest';
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { RuntimeConfigFileService } from '../config/runtime-config-files.js';
@@ -45,6 +47,27 @@ const GENERATED = 'Generated title that must not stick';
 afterEach(() => closeInstallations(open));
 
 describe('local title lifecycle', () => {
+  it('does not begin a title model call while the persistent pause is set', async () => {
+    const installation = await openHeld();
+    const path = join(installation.dataRoot, 'config/server.jsonc');
+    const config = JSON.parse(readFileSync(path, 'utf8'));
+    writeFileSync(
+      path,
+      JSON.stringify({ ...config, security: { ...config.security, pauseAgentWork: true } })
+    );
+    await installation.manager.reload({ dryRun: false, mode: 'safe' });
+    await generateThreadTitle({
+      store: installation.store,
+      workspaceId: installation.workspaceId,
+      threadId: installation.threadId,
+      initialName: 'Voice note',
+      sourceText: 'Repair the schema',
+      actor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+    });
+    expect(titleCalls(installation)).toEqual([]);
+    expect(titleHits(installation)).toEqual([]);
+  });
+
   it('starts one title call for a fresh goal and none for its replay', async () => {
     const installation = await openAnswer('Fresh goal title');
     const requestId = randomUUID();

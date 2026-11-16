@@ -83,6 +83,7 @@ import {
   findSchedulerAdmissionForTurn,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { receiveContextInfluence } from '../security/context-influence.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { openControlStoreProductReadHandle } from '../storage/control-store-product-records.js';
@@ -2096,6 +2097,7 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
     input: string,
     context?: TurnStartRuntimeContext
   ): Promise<void> {
+    assertAgentWorkNotPaused(this.readRuntimeConfig?.().openKitConfig.security?.pauseAgentWork);
     const execution = this.executeTurn(store, turnId, input, context);
     this.activeTurnExecutions.set(turnId, execution);
     try {
@@ -3951,6 +3953,9 @@ export class WorkerGovernanceTurnExecutor implements TurnExecutor {
       workspaceDb = null;
       try {
         try {
+          assertAgentWorkNotPaused(
+            this.readRuntimeConfig?.().openKitConfig.security?.pauseAgentWork
+          );
           submissionInvoked = true;
           observation = await this.executionBackend.submit({
             ...schedulerExecutionCorrelation(submission),

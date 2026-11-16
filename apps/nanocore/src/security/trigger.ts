@@ -182,6 +182,14 @@ export class SecurityTriggerStore {
       },
     };
     const files = new RuntimeConfigFileService({
+      coreDb: this.db,
+      onServerConfigUpdate: async (event) => {
+        await getControlStoreWorkerClient().standaloneAudit(this.db, {
+          stage: 'server.config.update',
+          event,
+        });
+      },
+      actor: author,
       dataRoot: this.db.dataRoot,
       workspaceIds: [],
       userId: author.responsibleUserId,

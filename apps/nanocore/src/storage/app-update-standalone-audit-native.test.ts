@@ -452,6 +452,7 @@ it('keeps both original Core stages native and FULL-acknowledged before contact 
     'scheduler.admission.cancel',
     'scheduler.admission.retry',
     'security.canary',
+    'server.config.update',
     'workspace.credential-binding.update',
   ]);
 });

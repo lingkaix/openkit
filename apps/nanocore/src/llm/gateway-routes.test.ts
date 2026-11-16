@@ -1170,3 +1170,44 @@ it.each([
     }
   }
 );
+
+it.each(['/v1/chat/completions', '/v1/responses'])(
+  'refuses remote Gateway %s while agent work is paused before resolving credentials',
+  async (path) => {
+    const app = new Hono<{ Variables: AuthVariables }>();
+    app.use(
+      '*',
+      createAuthMiddleware('local', undefined, {
+        localUserId: 'usr_00000000-0000-7000-8000-000000000001',
+      })
+    );
+    const resolve = vi.fn(async () => {
+      throw new Error('Paused requests must not resolve credentials');
+    });
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      openKitConfig: { security: { pauseAgentWork: true } },
+      gatewayConfig: { enabled: true, logicalModels: [] },
+    });
+    const dispatch = { createChatCompletion: vi.fn(), createResponses: vi.fn() };
+    registerLlmGatewayRoutes({
+      app,
+      llmGatewayDispatcher: dispatch as never,
+      resolveGatewayProvider: resolve,
+      runtimeConfig: () => snapshot,
+    });
+    const response = await app.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(
+        path.endsWith('responses')
+          ? { model: 'tier', input: 'Wait' }
+          : { model: 'tier', messages: [{ role: 'user', content: 'Wait' }] }
+      ),
+    });
+    expect(response.status, await response.clone().text()).toBe(503);
+    expect(await response.json()).toMatchObject({ error: { code: 'agent_work_paused' } });
+    expect(resolve).not.toHaveBeenCalled();
+    expect(dispatch.createChatCompletion).not.toHaveBeenCalled();
+    expect(dispatch.createResponses).not.toHaveBeenCalled();
+  }
+);

@@ -223,6 +223,7 @@ function memoryDependencies(f: Awaited<ReturnType<typeof fixture>>) {
     store: f.store,
     runtimeConfigManager: {
       current: () => ({
+        openKitConfig: {},
         userConfigs: [
           {
             userId: FIXTURE_LOCAL_USER_ID,

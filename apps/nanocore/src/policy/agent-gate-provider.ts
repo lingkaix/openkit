@@ -24,6 +24,7 @@ import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { CoreDb } from '../storage/db.js';
 import { readAdmittedPolicyDocument } from './configuration.js';
 import type { AgentPolicyParticipant } from './interception.js';
@@ -59,6 +60,7 @@ export function createAgentPolicyParticipant(deps: {
     invoke: async (input) => {
       if (!deps.coreDb) throw new Error('Agent Policy storage is unavailable.');
       const snapshot = deps.runtimeConfig();
+      assertAgentWorkNotPaused(snapshot.openKitConfig.security?.pauseAgentWork);
       const document = readAdmittedPolicyDocument(
         deps.coreDb,
         snapshot.openKitConfig.policy?.mediation
@@ -134,6 +136,8 @@ export function createAgentPolicyParticipant(deps: {
       if (!logicalModel) throw new Error('Agent gate logical model is unavailable.');
       return withTurnModelCapture({ store: deps.store, turn }, (capture) => {
         const callProvider = createInternalAgentGatewayProvider({
+          assertExecutionAvailable: () =>
+            assertAgentWorkNotPaused(deps.runtimeConfig().openKitConfig.security?.pauseAgentWork),
           capture,
           logicalModel,
           resolveLogicalModel: (id) => {

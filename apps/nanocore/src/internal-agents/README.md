@@ -1,5 +1,7 @@
 # Internal Core Roles
 
+Internal Agent composition supplies `assertExecutionAvailable` to the shared Gateway provider. The live pause check runs before initial admission and again after asynchronous preparation, at final transport admission and handoff. Once execution starts, later model rounds retain that admission so pausing new work does not interrupt a running Turn.
+
 `../agent-reporting.ts` owns concise shared built-in rule subsets and the fixed versioned Worker reporting text. Human-facing prompts count that text within the existing cap; machine-only policy and summary outputs retain their contracts. Structured delegation creation stamps the Worker text, while retained parsing and serialization preserve absence in older requests. Goal Task model input excludes reporting; the Task service stamps the same guidance before native request and checkpoint digests are computed.
 
 

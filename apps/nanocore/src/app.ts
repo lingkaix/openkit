@@ -202,7 +202,9 @@ import {
   TurnStartValidationError,
 } from './runtime/orchestrator.js';
 import {
+  admitIfIdle,
   type PendingAdmissionDependencies,
+  resumeFrozenPendingDelivery,
   setPendingRequestAttentionObserver,
 } from './runtime/pending-request-flow.js';
 import { cancelOwnedQueuedAdmission, startProductTurn } from './runtime/product-turn-start.js';
@@ -913,8 +915,10 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           role: 'rejected',
         }
       : admitNanoHostSession(input);
+  let resumeAgentWork: (() => Promise<void>) | undefined;
   const reloadRuntimeConfig = runtimeConfigManager.reload.bind(runtimeConfigManager);
   runtimeConfigManager.reload = async (input) => {
+    const wasPaused = runtimeConfig().openKitConfig.security?.pauseAgentWork === true;
     const result = reloadRuntimeConfig(input);
     const response = result instanceof Promise ? await result : result;
     if (
@@ -936,6 +940,8 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
         }
       }
     }
+    if (!input.dryRun && wasPaused && !runtimeConfig().openKitConfig.security?.pauseAgentWork)
+      await resumeAgentWork?.();
     return response;
   };
   // An inferred physical root supplies file reserve policy without loading unrelated runtime settings.
@@ -1364,6 +1370,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }): Promise<z.infer<typeof TurnSchema>> {
     const snapshot = runtimeConfig();
     const handle = await startProductTurn({
+      agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
       ...setupProviderSupply,
       ...(input.commandReceipt ? { commandReceipt: input.commandReceipt } : {}),
       ...(input.commandReceiptResponse
@@ -1418,6 +1425,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     const actor = c.get('actor');
     if (!actor) throw new Error('Runtime configuration requires an authenticated canonical User.');
     return new RuntimeConfigFileService({
+      ...(options.coreDb
+        ? {
+            coreDb: options.coreDb,
+            onServerConfigUpdate: async (event) => {
+              await getControlStoreWorkerClient().standaloneAudit(options.coreDb!, {
+                stage: 'server.config.update',
+                event,
+              });
+            },
+          }
+        : {}),
+      actor: { kind: 'user', id: actor.userId },
       dataRoot,
       userId: actor.userId,
       workspaceIds: store.listWorkspaces().map((workspace) => workspace.id),
@@ -2059,7 +2078,18 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   }
 
   if (auth) {
-    app.all('/api/auth/*', (c) => auth.handler(c.req.raw));
+    app.all('/api/auth/*', (c) => {
+      const env = c.env as
+        | {
+            incoming?: { socket?: { remoteAddress?: string } };
+            server?: { incoming?: { socket?: { remoteAddress?: string } } };
+          }
+        | undefined;
+      return auth.handler(
+        c.req.raw,
+        (env?.incoming ?? env?.server?.incoming)?.socket?.remoteAddress
+      );
+    });
   }
 
   registerNanoHostTransportAdmissionRoutes({
@@ -2241,6 +2271,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     });
   }
   const goalServices = (): GoalOwnerServices => ({
+    agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
     ...(options.coreDb ? { coreDb: options.coreDb } : {}),
     ...(options.coreDb
       ? {
@@ -2458,6 +2489,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
 
       const admitted = Promise.withResolvers<void>();
       const execution = startProductTurn({
+        agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
         ...setupProviderSupply,
         input: {
           input: 'Receive pending request outcomes.',
@@ -2504,25 +2536,36 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
     },
   };
 
+  const pendingAdmission: PendingAdmissionDependencies = {
+    agentAuthority: (record) =>
+      runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
+    agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
+    workerDelivery: pendingWorkerDelivery,
+    assistantDelivery: pendingAssistantDelivery,
+    coordinatorDelivery: goalCoordinator,
+    ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
+    requesterAuthority: currentRequesterAuthority,
+    checkCommandIntent,
+    requestCommitted: goalRequestCommitted,
+    ...(options.coreDb ? { coreDb: options.coreDb } : {}),
+    openWorkspace(workspaceId) {
+      if (options.coreDb) return repositoryWorkspaceDb(workspaceId);
+      const root = sharedStore.getDataRoot();
+      if (!root) throw new Error('Pending requests have no workspace database.');
+      return openAdmittedWorkspaceReadDb(root, workspaceId);
+    },
+  };
   if (options.coreDb || sharedStore.getDataRoot())
-    sharedStore.startPendingRequestDelivery({
-      agentAuthority: (record) =>
-        runtimeConfig().agentManifests.some((manifest) => manifest.id === record.agentId),
-      workerDelivery: pendingWorkerDelivery,
-      assistantDelivery: pendingAssistantDelivery,
-      coordinatorDelivery: goalCoordinator,
-      ...(options.coreDb ? { goalTerminal: goalCoordinator.terminal } : {}),
-      requesterAuthority: currentRequesterAuthority,
-      checkCommandIntent,
-      requestCommitted: goalRequestCommitted,
-      ...(options.coreDb ? { coreDb: options.coreDb } : {}),
-      openWorkspace(workspaceId) {
-        if (options.coreDb) return repositoryWorkspaceDb(workspaceId);
-        const root = sharedStore.getDataRoot();
-        if (!root) throw new Error('Pending requests have no workspace database.');
-        return openAdmittedWorkspaceReadDb(root, workspaceId);
-      },
-    });
+    sharedStore.startPendingRequestDelivery(pendingAdmission);
+  resumeAgentWork = async () => {
+    if (!options.coreDb && !sharedStore.getDataRoot()) return;
+    resumeFrozenPendingDelivery(sharedStore, pendingAdmission);
+    for (const workspace of sharedStore.listWorkspaces())
+      for (const thread of sharedStore.listThreads(workspace.id))
+        if (thread.status !== 'archived')
+          await admitIfIdle(sharedStore, pendingAdmission, workspace.id, thread.id);
+    await goalCoordinator.resume();
+  };
   /** Uses current canonical shared supply without activating saved but unadmitted local configuration. */
   const capturedMcpCatalog = (workspaceId: string, snapshot = runtimeConfig()) => {
     const local = snapshot.workspaceMcpServerCatalogs.find(
@@ -2539,6 +2582,7 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
   const pendingRequestServices: NonNullable<
     OperationInvocationDependencies['pendingRequestServices']
   > = {
+    agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
     workerDelivery: pendingWorkerDelivery,
     assistantDelivery: pendingAssistantDelivery,
     coordinatorDelivery: goalCoordinator,

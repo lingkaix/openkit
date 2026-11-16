@@ -1,5 +1,7 @@
 # Product Policy Bridge
 
+The Policy agent participant refuses new execution while `security.pauseAgentWork` is set. Its current model boundary repeats the check immediately before the first Provider submission; ordinary interception retains its existing failure/escalation behavior.
+
 This directory owns NanoCore's product Policy projection, authored Policy admission, I16 mediation and pending-request admission.
 
 The `policy` interface domain (this directory plus the permission-decision and server-settings Storage schemas) is CLOSED for the migration and deep-module close-out. CorePolicy and the two deep-module cuts are complete; the storage-access ratchet enforces the shrink-only E/I ceilings in `scripts/storage-access-baseline.json`; importer cardinality is diagnostic.

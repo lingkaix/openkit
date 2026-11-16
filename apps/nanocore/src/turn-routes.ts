@@ -121,6 +121,7 @@ export async function startTurn(
             requestActor: actor,
             providerCredentialResolver,
             snapshot: runtimeConfig(),
+            agentWorkPaused: () => runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
             store,
             triggerActor: { kind: 'user', id: actor.userId },
             triggerSource: { kind: 'user-input', summary: 'Direct Worker input.' },

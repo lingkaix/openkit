@@ -6,13 +6,16 @@ import type { Worker as NativeWorker } from 'node:worker_threads';
 import { isRecord } from '@openkit/protocol';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { Actor } from '../auth/identity.js';
+import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
+import { createBetterAuth } from '../auth/better-auth.js';
+import { type Actor, actorFromSession } from '../auth/identity.js';
 import {
   createDiscordChannel,
   type DiscordChannelOptions,
   type DiscordPendingView,
   type DiscordReply,
 } from '../channels/discord.js';
+import { SecurityTriggerStore } from '../security/trigger.js';
 import {
   DISCORD_INBOUND_ROWS,
   DISCORD_STATE_CHANGE,
@@ -97,13 +100,49 @@ function text(reply: DiscordReply): string {
 }
 
 /** Real signed producer and SQLite owner; only current Pending projection and invocation are external dependencies. */
-async function fixture() {
+async function fixture(
+  administrator = false,
+  userKind: 'local' | 'human' = 'local',
+  mode: 'local' | 'server' = 'server'
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'discord-native-'));
   roots.push(dataRoot);
   let coreDb = openCoreDb(dataRoot);
   databases.push(coreDb);
   applyMigrations(coreDb);
   ensureLocalUser(coreDb);
+  let pairingActor: Actor = {
+    userId: FIXTURE_LOCAL_USER_ID,
+    kind: mode === 'local' ? 'local' : 'session',
+  };
+  if (userKind === 'human') {
+    const auth = createBetterAuth(coreDb, {
+      env: { BETTER_AUTH_URL: 'https://auth.example.invalid' },
+    });
+    const created = await auth.api.signUpEmail({
+      returnHeaders: true,
+      body: {
+        name: 'Pairing user',
+        email: [randomUUID(), 'example.invalid'].join('@'),
+        password: randomUUID(),
+      },
+    });
+    const cookie = created.headers
+      .getSetCookie()
+      .map((value) => value.split(';', 1)[0])
+      .join('; ');
+    const session = await auth.api.getSession({ headers: new Headers({ cookie }) });
+    expect(session).toBeTruthy();
+    pairingActor = actorFromSession(session!);
+  }
+  const actor = pairingActor;
+  if (administrator)
+    createOpenKitAccessTokenRecord(coreDb, {
+      ownerUserId: actor.userId,
+      scope: 'server-admin',
+      workspaceIds: [],
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
   let currentActor: Actor | null = actor;
   let view: DiscordPendingView = {
     status: 'available',
@@ -123,7 +162,7 @@ async function fixture() {
     return createDiscordChannel({
       sqlite: coreDb.sqlite,
       nativeCoreDb: coreDb,
-      mode: 'server',
+      mode,
       applicationId,
       publicKey,
       appBaseUrl: 'https://openkit.invalid',
@@ -188,6 +227,7 @@ async function fixture() {
   };
   return {
     dataRoot,
+    pairingActor,
     target,
     pair,
     disclose,
@@ -254,6 +294,100 @@ afterEach(async () => {
 });
 
 describe('Discord native family', () => {
+  it('rolls back unbinding when its original Audit insert fails', async () => {
+    const f = await fixture();
+    await f.pair();
+    const binding = f.channel.binding(actor);
+    f.fault(
+      "CREATE TRIGGER reject_pairing_audit BEFORE INSERT ON audit_events WHEN NEW.action = 'channel.pairing.unbind' BEGIN SELECT RAISE(ABORT, 'Audit fixture failure'); END"
+    );
+    await expect(f.channel.revoke(actor)).rejects.toThrow();
+    expect(f.channel.binding(actor)).toEqual(binding);
+    expect(
+      f.db.sqlite
+        .prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'channel.pairing.unbind'")
+        .get()
+    ).toEqual({ n: 0 });
+  });
+
+  it.each([
+    { userKind: 'human', mode: 'server', token: false, administrator: false },
+    { userKind: 'human', mode: 'server', token: true, administrator: true },
+    { userKind: 'local', mode: 'local', token: false, administrator: true },
+  ] as const)(
+    'publishes pairing bind and unbind Audit facts for $userKind in $mode (administrator=$administrator)',
+    async ({ userKind, mode, token, administrator }) => {
+      const f = await fixture(token, userKind, mode);
+      const actor = f.pairingActor;
+      if (userKind === 'local')
+        expect(
+          f.db.sqlite.prepare('SELECT COUNT(*) AS n FROM openkit_access_tokens').get()
+        ).toEqual({ n: 0 });
+      await f.pair();
+      const revision = f.channel.binding(actor)!.revision;
+      await f.channel.revoke(actor);
+      const events = f.db.sqlite
+        .prepare(
+          "SELECT action, actor_json AS actor, subject_json AS subject, resource_revision AS revision, summary FROM audit_events WHERE action IN ('channel.pairing.bind','channel.pairing.unbind') ORDER BY rowid"
+        )
+        .all() as {
+        action: string;
+        actor: string;
+        subject: string;
+        revision: number | null;
+        summary: string;
+      }[];
+      expect(events.map((e) => e.action)).toEqual([
+        'channel.pairing.bind',
+        'channel.pairing.unbind',
+      ]);
+      for (const event of events) {
+        expect(JSON.parse(event.actor)).toEqual({ kind: 'user', id: actor.userId });
+        expect(JSON.parse(event.subject)).toEqual({ kind: 'user', id: actor.userId });
+        expect(JSON.parse(event.summary)).toEqual({
+          channelKind: 'discord',
+          userId: actor.userId,
+          bindingRevision: revision,
+          administratorAtEvent: administrator,
+        });
+      }
+      await f.channel.revoke(actor);
+      expect(
+        f.db.sqlite
+          .prepare("SELECT COUNT(*) AS n FROM audit_events WHERE action = 'channel.pairing.unbind'")
+          .get()
+      ).toEqual({ n: 1 });
+      // Grant current monitoring authority only after the non-admin facts were committed.
+      if (!administrator) {
+        f.db.sqlite.pragma('query_only = OFF');
+        createOpenKitAccessTokenRecord(f.db, {
+          ownerUserId: actor.userId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: '2099-01-01T00:00:00.000Z',
+        });
+        f.db.sqlite.pragma('query_only = ON');
+      }
+      const trigger = new SecurityTriggerStore(f.db);
+      await trigger.enable(actor);
+      const received = (await trigger.readAudit()).events.filter((event) =>
+        event.action.startsWith('channel.pairing.')
+      );
+      expect(received.map((event) => event.action)).toEqual([
+        'channel.pairing.bind',
+        'channel.pairing.unbind',
+      ]);
+      await trigger.detectAudit();
+      const detections = (await trigger.readDetections()).events.filter((event) =>
+        event.action.startsWith('channel.pairing.')
+      );
+      expect(detections.map((event) => ({ rule: event.rule, notify: event.notify }))).toEqual([
+        { rule: administrator ? 'R1' : 'R1d', notify: administrator ? 'immediate' : 'daily' },
+        { rule: administrator ? 'R1' : 'R1d', notify: administrator ? 'immediate' : 'daily' },
+      ]);
+    }
+  );
+
   it('returns only the App home after binding revocation during an approve settlement ACK', async () => {
     const f = await fixture();
     await f.pair();

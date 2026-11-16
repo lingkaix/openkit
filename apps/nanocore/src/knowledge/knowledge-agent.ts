@@ -34,6 +34,7 @@ import {
   readAuthorizedUserMemoryPages,
   readAuthorizedWorkspaceNotebookPages,
 } from '../retrieval-knowledge-adapter.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { receiveContextInfluence } from '../security/context-influence.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { retrieveUserMemory, retrieveWorkspaceKnowledge } from '../storage/index-rebuild.js';
@@ -134,6 +135,7 @@ export async function askKnowledgeAgent(
   dependencies: KnowledgeAgentDependencies,
   input: KnowledgeAgentQuestion
 ) {
+  assertAgentWorkNotPaused(dependencies.runtimeConfig().openKitConfig.security?.pauseAgentWork);
   const { store } = dependencies;
   const dataRoot = store.getDataRoot();
   const userId = responsibleUserIdForActor(input.access.actor);

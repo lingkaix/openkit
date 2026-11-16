@@ -2246,7 +2246,8 @@ describe('central Workspace operation authorizer', () => {
     });
 
     expect(response.status, await response.clone().text()).toBe(200);
-    expect(fixture.administrationHandlerReads()).toBe(1);
+    // Admission and handler each read the live pause setting.
+    expect(fixture.administrationHandlerReads()).toBe(2);
     await expect(response.json()).resolves.toMatchObject({
       turn: { owner: { kind: 'workspace', workspaceId: actorQuickChatId } },
     });

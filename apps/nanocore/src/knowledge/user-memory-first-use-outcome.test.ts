@@ -79,6 +79,7 @@ it('reports native no-change through the recorded result and replay despite a mi
     store,
     runtimeConfigManager: {
       current: () => ({
+        openKitConfig: {},
         userConfigs: [
           {
             userId,

@@ -62,7 +62,8 @@ async function fixture() {
     prepare: (
       occurrence: Parameters<Parameters<typeof startRecurringScheduleService>[0]['prepare']>[0]
     ) => Promise<RecurringPreparation> = async () => structuredClone(ready),
-    prepareKnowledgeMaintenance?: (instant: string) => void | Promise<void>
+    prepareKnowledgeMaintenance?: (instant: string) => void | Promise<void>,
+    agentWorkPaused?: () => boolean
   ) => {
     const setTimer = vi.fn(() => 'timer');
     const clearTimer = vi.fn();
@@ -71,6 +72,7 @@ async function fixture() {
       schedules,
       store,
       prepare,
+      ...(agentWorkPaused ? { agentWorkPaused } : {}),
       now: clock,
       setInterval: setTimer,
       clearInterval: clearTimer,
@@ -103,6 +105,45 @@ afterEach(async () => {
 });
 
 describe('serialized recurring scanner', () => {
+  it('holds scheduled Worker and Knowledge preparation while paused and resumes on the next scan', async () => {
+    const { start, schedules, schedule } = await fixture();
+    let paused = true;
+    const prepare = vi.fn(async () => structuredClone(ready));
+    const knowledge = vi.fn();
+    const { service } = start(prepare, knowledge, () => paused);
+    await service.runOnce();
+    expect(prepare).not.toHaveBeenCalled();
+    expect(knowledge).not.toHaveBeenCalled();
+    expect(schedules.listHistory(schedule.id).items).toEqual([]);
+    paused = false;
+    await service.runOnce();
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(knowledge).toHaveBeenCalledTimes(1);
+    expect(schedules.listHistory(schedule.id).items[0]!.record.state).toBe('admission-accepted');
+  });
+
+  it('refuses native admission if pause is set during asynchronous preparation', async () => {
+    const { start, schedules, schedule, db } = await fixture();
+    let paused = false;
+    const { service } = start(
+      async () => {
+        paused = true;
+        return structuredClone(ready);
+      },
+      undefined,
+      () => paused
+    );
+    await service.runOnce();
+    expect(
+      db.sqlite.prepare('SELECT count(*) AS n FROM scheduler_admission_entries').get()
+    ).toEqual({ n: 0 });
+    expect(
+      schedules
+        .listHistory(schedule.id)
+        .items.every((item) => item.record.state !== 'admission-accepted')
+    ).toBe(true);
+  });
+
   it('commits one terminal attempt through the native owner while Main stays read-only', async () => {
     const { root, db, store, schedules, schedule, clock, start } = await fixture();
     const createTurn = vi.spyOn(store, 'createTurn');

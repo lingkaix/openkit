@@ -40,9 +40,11 @@ import {
   projectApprovalEffect,
 } from './pending-request-disclosure.js';
 import {
+  admitIfIdle,
   raiseRecordedPendingRequest,
   recoverPendingRequestsAtBoot,
   resolveCommandIntentApproval,
+  respondRecordedApproval,
 } from './pending-request-flow.js';
 import {
   answerPendingRequest,
@@ -354,6 +356,81 @@ function approvalRaise(
 }
 
 describe('pending requests', () => {
+  it('records a denial during pause and leaves its agent successor waiting until unpause', async () => {
+    const { coreDb, dataRoot, store } = await openPendingApp('agent_demo');
+    const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+    const threadId = 'th_00000000-0000-7000-8000-000000000001';
+    const userId = 'usr_00000000-0000-7000-8000-000000000001';
+    let paused = true;
+    const delivered = Promise.withResolvers<string>();
+    const startTurn = vi.fn(async (_store: FsStore, turnId: string) => {
+      delivered.resolve(turnId);
+    });
+    const dependencies = {
+      coreDb,
+      openWorkspace: (id: string) => openWorkspaceDb(dataRoot, id),
+      agentWorkPaused: () => paused,
+      workerDelivery: { startTurn },
+    };
+    store.startPendingRequestDelivery(dependencies);
+    const db = openWorkspaceDb(dataRoot, workspaceId);
+    try {
+      const previousTurnIds = new Set(
+        store.listThreadTurns(workspaceId, threadId).map((turn) => turn.id)
+      );
+      const original = await store.createTurn(
+        workspaceId,
+        threadId,
+        'Wait for decision',
+        { kind: 'user', id: userId },
+        null,
+        { agentId: 'agent_demo' }
+      );
+      const input = approvalRaise(original.id, 'ap_pause_successor', 'pause');
+      await raiseRecordedPendingRequest(store, db.sqlite, input);
+      await store.updateTurn(original.id, {
+        status: 'completed',
+        completedAt: new Date().toISOString(),
+      });
+      await respondRecordedApproval({
+        store,
+        sqlite: db.sqlite,
+        workspaceId,
+        threadId,
+        approvalRequestId: input.requestId,
+        decision: 'denied',
+        actorId: userId,
+        coreDb,
+        requestActor: { kind: 'local', userId },
+        dependencies,
+      });
+      expect(readPendingRequest(db.sqlite, input.requestId)).toMatchObject({
+        resolution: 'denied',
+        delivery: 'undelivered',
+        deliveryTurnId: null,
+      });
+      expect(
+        store
+          .listThreadTurns(workspaceId, threadId)
+          .filter((turn) => !previousTurnIds.has(turn.id))
+          .map((turn) => turn.id)
+      ).toEqual([original.id]);
+      expect(startTurn).not.toHaveBeenCalled();
+      paused = false;
+      await admitIfIdle(store, dependencies, workspaceId, threadId);
+      const turnId = await delivered.promise;
+      expect(startTurn).toHaveBeenCalledTimes(1);
+      expect(store.getTurnById(turnId)).toMatchObject({ status: 'pending', agentId: 'agent_demo' });
+      expect(readPendingRequest(db.sqlite, input.requestId)).toMatchObject({
+        delivery: 'frozen',
+        deliveryTurnId: turnId,
+      });
+    } finally {
+      db.sqlite.close();
+      coreDb.sqlite.close();
+    }
+  });
+
   it('retains historical captured argument bytes through reopen, validation and qualified replay', async () => {
     const { coreDb, store, dataRoot } = await openPendingApp();
     const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
@@ -2437,7 +2514,7 @@ describe('pending requests', () => {
               'ws_00000000-0000-7000-8000-000000000001',
               'th_00000000-0000-7000-8000-000000000001'
             )
-            .find((candidate) => candidate.id !== turn.id);
+            .find((candidate) => candidate.id === observed.turnId);
           expect(deliveredTurn?.status).toBe('completed');
           expect(
             coreDb.sqlite
@@ -2450,7 +2527,7 @@ describe('pending requests', () => {
             'ws_00000000-0000-7000-8000-000000000001',
             'th_00000000-0000-7000-8000-000000000001'
           )
-          .find((candidate) => candidate.id !== turn.id);
+          .find((candidate) => candidate.id === observed.turnId);
         expect(outcome?.id).toBe(observed.turnId);
         expect(execution).toHaveBeenCalledOnce();
         expect(outcome, outcome?.error?.message).toMatchObject({

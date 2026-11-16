@@ -166,6 +166,7 @@ async function fixture(
     coreDb,
     runtimeConfigManager: {
       current: () => ({
+        openKitConfig: {},
         workspaceConfigs: [
           {
             workspaceId: workspace.id,

@@ -76,6 +76,7 @@ export function createPendingRequestOperationImplementations({
   executeCapturedCall,
   prepareCapturedCall,
   agentAuthority,
+  agentWorkPaused,
   inflightCommands,
   repositoryWorkspaceDb,
   store,
@@ -90,6 +91,7 @@ export function createPendingRequestOperationImplementations({
   readonly coreDb: CoreDb | undefined;
   readonly evaluateCapturedCall?: CapturedPendingCallEvaluator;
   readonly executeCapturedCall?: CapturedPendingCallExecutor;
+  readonly agentWorkPaused?: PendingAdmissionDependencies['agentWorkPaused'];
   readonly agentAuthority?: (record: PendingRequestRecord) => boolean;
   readonly prepareCapturedCall?: (
     record: PendingRequestRecord,
@@ -110,6 +112,7 @@ export function createPendingRequestOperationImplementations({
   const admission = (): PendingAdmissionDependencies => ({
     ...(coreDb ? { coreDb } : {}),
     ...(agentAuthority ? { agentAuthority } : {}),
+    ...(agentWorkPaused ? { agentWorkPaused } : {}),
     openWorkspace: repositoryWorkspaceDb,
     ...(workerDelivery ? { workerDelivery } : {}),
     ...(assistantDelivery ? { assistantDelivery } : {}),

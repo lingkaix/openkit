@@ -86,7 +86,9 @@ import type {
   ProviderSubscriptionAccountManager,
   ProviderSubscriptionPairHandle,
 } from '../llm/provider-subscription-accounts.js';
+import * as subscriptionAccounts from '../llm/provider-subscription-accounts.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { createInternalAgentGatewayProvider } from './gateway-provider.js';
 import {
   type InternalAgentProviderCall,
@@ -134,6 +136,189 @@ function request(input = 'Read status.') {
 }
 
 describe('internal Agent Gateway provider', () => {
+  it.each(['before-admission', 'after-resolution', 'already-running'] as const)(
+    'checks pause before initial internal execution (%s)',
+    async (site) => {
+      const capture = await captureBinding();
+      let paused = site === 'before-admission';
+      const createResponses = vi.fn(
+        async () =>
+          ({
+            id: 'pause-response',
+            object: 'response',
+            status: 'completed',
+            output: [
+              {
+                type: 'message',
+                role: 'assistant',
+                status: 'completed',
+                content: [{ type: 'output_text', text: 'Allowed running loop.' }],
+              },
+            ],
+          }) as never
+      );
+      const resolveGatewayProvider = vi.fn(async () => {
+        if (site === 'after-resolution') paused = true;
+        return {
+          id: 'provider',
+          models: ['model'],
+          gatewayCapabilities: {},
+          modelMetadata: { model: { tool_call: true, limit: { context: 64000, output: 8000 } } },
+        } as never;
+      });
+      const provider = createInternalAgentGatewayProvider({
+        capture,
+        logicalModel,
+        resolveLogicalModel: () => logicalModel,
+        dispatcher: { createResponses },
+        resolveGatewayProvider,
+        promptCacheScope: {
+          sessionId: 'pause',
+          workspaceId: workspaceIdForOwner(capture.turn.owner),
+        },
+        usageEndpoint: 'responses',
+        assertExecutionAvailable: () => assertAgentWorkNotPaused(paused),
+      });
+      if (site === 'already-running') {
+        await provider(request());
+        paused = true;
+        await provider(request());
+        expect(createResponses).toHaveBeenCalledTimes(2);
+      } else {
+        await expect(provider(request())).rejects.toThrow();
+        expect(createResponses).not.toHaveBeenCalled();
+        if (site === 'before-admission') expect(resolveGatewayProvider).not.toHaveBeenCalled();
+      }
+    }
+  );
+
+  it.each(['initial', 'already-running'] as const)(
+    'keeps the initial payload subject to pause through stock subscription preparation (%s)',
+    async (site) => {
+      const capture = await captureBinding();
+      const models = createModels();
+      models.setProvider(xaiProvider());
+      let paused = false;
+      let arrived!: () => void;
+      let release!: () => void;
+      const preparing = new Promise<void>((resolve) => {
+        arrived = resolve;
+      });
+      const prepared = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const resolveInferenceAuth = vi.fn(async () => {
+        arrived();
+        await prepared;
+        return { auth: { apiKey: 'synthetic-secret' } };
+      });
+      vi.spyOn(subscriptionAccounts, 'subscriptionInferenceHandle').mockReturnValue({
+        resolveInferenceAuth,
+        observeInference: vi.fn(async () => {}),
+      } as unknown as ProviderSubscriptionPairHandle);
+      const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+        const item = {
+          id: 'msg_pause',
+          type: 'message',
+          role: 'assistant',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'Allowed running loop.', annotations: [] }],
+        };
+        const events = [
+          { type: 'response.output_item.added', output_index: 0, item: { ...item, content: [] } },
+          {
+            type: 'response.content_part.added',
+            output_index: 0,
+            content_index: 0,
+            part: { ...item.content[0], text: '' },
+          },
+          {
+            type: 'response.output_text.delta',
+            output_index: 0,
+            content_index: 0,
+            delta: 'Allowed running loop.',
+          },
+          { type: 'response.output_item.done', output_index: 0, item },
+          {
+            type: 'response.completed',
+            response: {
+              id: 'resp_pause',
+              object: 'response',
+              status: 'completed',
+              output: [item],
+              usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+            },
+          },
+        ];
+        return new Response(
+          events
+            .map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+            .join(''),
+          {
+            headers: { 'content-type': 'text/event-stream' },
+          }
+        );
+      });
+      const model: ResolvedLogicalModel = {
+        ...logicalModel,
+        modelFamilyId: 'grok',
+        routes: [{ ...logicalModel.routes[0]!, providerModel: 'grok-4.6' }],
+      };
+      const provider = createInternalAgentGatewayProvider({
+        capture,
+        logicalModel: model,
+        resolveLogicalModel: () => model,
+        dispatcher: new LLMGatewayProviderDispatcher({
+          piAiClient: new PiAiGatewayClient({ models }),
+        }),
+        resolveGatewayProvider: () => ({
+          id: 'provider',
+          displayName: 'Synthetic xAI',
+          vendor: 'xai',
+          adapterId: 'xai',
+          apiKey: 'synthetic-secret',
+          baseUrl: null,
+          models: ['grok-4.6'],
+          requiresApiKey: true,
+          gatewayCapabilities: { chatCompletions: 'bridged', responses: 'native' },
+          modelMetadata: {
+            'grok-4.6': { tool_call: true, limit: { context: 64000, output: 8000 } },
+          },
+        }),
+        promptCacheScope: {
+          sessionId: 'pause-stock',
+          workspaceId: workspaceIdForOwner(capture.turn.owner),
+        },
+        usageEndpoint: 'responses',
+        assertExecutionAvailable: () => assertAgentWorkNotPaused(paused),
+      });
+      const pending = provider({ ...request(), tools: [] });
+      void pending.catch(() => undefined);
+      await preparing;
+      try {
+        expect(fetch).not.toHaveBeenCalled();
+        if (site === 'initial') paused = true;
+      } finally {
+        release();
+      }
+      if (site === 'initial') {
+        await expect(pending).rejects.toThrow();
+        expect(fetch).not.toHaveBeenCalled();
+      } else {
+        await expect(pending).resolves.toHaveProperty('message.content', [
+          { type: 'text', text: 'Allowed running loop.' },
+        ]);
+        paused = true;
+        await expect(provider({ ...request(), tools: [] })).resolves.toHaveProperty(
+          'message.content',
+          [{ type: 'text', text: 'Allowed running loop.' }]
+        );
+        expect(fetch).toHaveBeenCalledTimes(2);
+        expect(resolveInferenceAuth).toHaveBeenCalledTimes(2);
+      }
+    }
+  );
+
   it.each(
     ['knowledge-manager', 'assistant', 'goal-orchestrator', 'custom-role'].flatMap((roleId) =>
       [undefined, 'low' as const].map((reasoningEffort) => ({ roleId, reasoningEffort }))

@@ -105,7 +105,10 @@ function text(reply: DiscordReply): string {
 }
 
 /** Composes real signed channel input, Core authority, native invocation and Pending storage. */
-async function fixture(kind: 'approval' | 'user-input' = 'approval') {
+async function fixture(
+  kind: 'approval' | 'user-input' = 'approval',
+  requesterKind: 'person' | 'automation' = 'person'
+) {
   const dataRoot = mkdtempSync(join(tmpdir(), 'channel-pending-seam-'));
   directories.push(dataRoot);
   let coreDb = openCoreDb(dataRoot);
@@ -132,13 +135,27 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     undefined,
     'conversation',
     {
-      visibility: 'workspace',
+      ...(requesterKind === 'automation'
+        ? {
+            visibility: 'private' as const,
+            privateOwnerUserId: actor.userId,
+            entryPath: 'administration' as const,
+          }
+        : { visibility: 'workspace' as const }),
     }
   );
-  const turn = await store.createTurn(DEMO_WORKSPACE_ID, thread.id, 'Request a decision', {
-    kind: 'user',
-    id: actor.userId,
-  });
+  const turn = await store.createTurn(
+    DEMO_WORKSPACE_ID,
+    thread.id,
+    'Request a decision',
+    requesterKind === 'automation'
+      ? { kind: 'system', id: 'nanocore-pending-request', responsibleUserId: actor.userId }
+      : { kind: 'user', id: actor.userId },
+    null,
+    requesterKind === 'automation'
+      ? { triggerSource: { kind: 'automation', summary: 'Security notice' } }
+      : {}
+  );
   const requestId = kind === 'approval' ? 'ap_channel_seam' : 'ui_channel_seam';
   const itemId = testEntityId('it', `channel-seam-${requestId}`);
   const common = {
@@ -149,7 +166,7 @@ async function fixture(kind: 'approval' | 'user-input' = 'approval') {
     now: turn.startedAt!,
     requestId,
     requestItemId: itemId,
-    requesterKind: 'person' as const,
+    requesterKind,
   };
   const workspaceDb = openWorkspaceDb(dataRoot, DEMO_WORKSPACE_ID);
   applyScopedMigrations(workspaceDb);
@@ -422,6 +439,35 @@ afterEach(async () => {
 });
 
 describe('Discord to native Pending Request seam', () => {
+  it('keeps automation inspection and answers in the App without a disclosure or native answer', async () => {
+    const f = await fixture('user-input', 'automation');
+    await f.pair();
+    const expected = `OpenKit security: action needed within 24 hours.\nOpen OpenKit: https://openkit.invalid${f.services.attentionPath(f.record())}`;
+    expect(text(await f.send('inspect', f.target))).toBe(expected);
+    expect(
+      text(
+        await f.send('answer', {
+          ...f.target,
+          disclosure: 'untrusted-token',
+          answers: '{"color":["blue"]}',
+        })
+      )
+    ).toBe(expected);
+    expect(f.coreDb.sqlite.prepare('SELECT COUNT(*) AS n FROM discord_disclosures').get()).toEqual({
+      n: 0,
+    });
+    expect(f.nativeCalls).toEqual([]);
+    expect(f.record().state).toBe('pending');
+    expect(
+      f.services.inspectPending({
+        actor,
+        workspaceId: DEMO_WORKSPACE_ID,
+        threadId: f.target.thread,
+        pendingRequestId: f.target.request,
+      })
+    ).toMatchObject({ status: 'app-only' });
+  });
+
   it('does not enqueue or send after the responsible recipient loses current membership', async () => {
     const f = await fixture();
     await f.pair();

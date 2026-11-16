@@ -43,6 +43,7 @@ import { commandRequestKey, type FsStore, quickChatWorkspaceIdForUser } from '..
 import { scheduleThreadTitle } from '../llm/thread-title-schedule.js';
 import { type GoalDomainPolicyService, goalDomainSupportError } from '../policy/goal-domains.js';
 import { evaluatePolicyKernel } from '../policy/workspace-access.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import {
   mapCommandRequestRow,
   readCommandRequestRecordsFromSqlite,
@@ -140,6 +141,8 @@ export interface GoalOwnerContext {
 }
 /** Process and current authority owners; optional callbacks are supplied by app assembly. */
 export interface GoalOwnerServices {
+  /** Current containment gate for person- or Assistant-initiated Goal creation. */
+  readonly agentWorkPaused?: () => boolean;
   readonly coreDb?: CoreDb;
   readonly inflightCommands?: WeakMap<FsStore, Map<string, InflightIdempotentCommand>>;
   readonly wake?: (workspaceId: string, goalId: string) => void | Promise<void>;
@@ -1577,6 +1580,7 @@ export async function executeGoalOperation<K extends GoalOperationId>(
         : 'Invalid Goal operation input.',
       400
     );
+  if (id === 'goal.create') assertAgentWorkNotPaused(services.agentWorkPaused?.());
   const input = parsed.data as GoalArguments;
   const goalId =
     typeof input.goalId === 'string'

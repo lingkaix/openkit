@@ -10,6 +10,29 @@ import {
 } from './index.js';
 
 describe('server config schema', () => {
+  it('admits optional pause and trusted-hop settings without adding defaults to historical config', () => {
+    expect(OpenKitConfigSchema.parse({ schemaVersion: 1 })).toEqual({ schemaVersion: 1 });
+    expect(
+      OpenKitConfigSchema.parse({
+        schemaVersion: 1,
+        security: { pauseAgentWork: true },
+        auth: { trustedProxyHops: 2 },
+      })
+    ).toMatchObject({ security: { pauseAgentWork: true }, auth: { trustedProxyHops: 2 } });
+    for (const trustedProxyHops of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, '1'])
+      expect(
+        OpenKitConfigSchema.safeParse({ schemaVersion: 1, auth: { trustedProxyHops } }).success
+      ).toBe(false);
+    expect(
+      OpenKitConfigSchema.safeParse({ schemaVersion: 1, security: { pauseAgentWork: 'true' } })
+        .success
+    ).toBe(false);
+    expect(
+      OpenKitConfigSchema.safeParse({ schemaVersion: 1, security: { unknownAuthority: true } })
+        .success
+    ).toBe(false);
+  });
+
   it('admits authored Server format v1 with descriptive additions', () => {
     expect(
       OpenKitConfigSchema.parse({

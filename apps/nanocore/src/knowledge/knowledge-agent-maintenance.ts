@@ -30,6 +30,7 @@ import {
   type IdempotentCommandReceipt,
   type InflightIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import {
   type ControlKnowledgeAdmissionInput,
   ControlKnowledgeAdmissionInputSchema,
@@ -144,6 +145,9 @@ export async function prepareKnowledgeMaintenance(
   dependencies: KnowledgeMaintenanceDependencies,
   input: KnowledgeMaintenanceInput
 ) {
+  assertAgentWorkNotPaused(
+    dependencies.runtimeConfigManager.current().openKitConfig.security?.pauseAgentWork
+  );
   const { store } = dependencies;
   const userId = responsibleUserIdForActor(input.actor);
   if (!userId || (!input.requestActor && !input.currentAdmission))

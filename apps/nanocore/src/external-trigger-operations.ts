@@ -51,6 +51,8 @@ export function createExternalTriggerOperationImplementations(
           schedules,
           store: dependencies.store,
           snapshot: services.runtimeConfig(),
+          agentWorkPaused: () =>
+            services.runtimeConfig().openKitConfig.security?.pauseAgentWork === true,
           turnExecutor: services.turnExecutor,
           providerCredentialResolver: services.providerCredentialResolver,
           ...(services.providerCredentialConfigured

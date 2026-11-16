@@ -470,6 +470,7 @@ describe('native Knowledge maintenance admission', () => {
       store,
       runtimeConfigManager: {
         current: () => ({
+          openKitConfig: {},
           userConfigs: [
             {
               userId,

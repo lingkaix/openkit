@@ -1,5 +1,6 @@
 import { allocateEntityId, readRetainedV1, writeRetainedV1 } from '@openkit/protocol';
 import { z } from 'zod';
+import { recordServerAuditEvent } from '../audit-events.js';
 import {
   type ControlAccessTokenIssuerRef,
   ControlAccessTokenIssuerRefSchema,
@@ -288,19 +289,36 @@ export function recordVerifiedOpenKitAccessTokenUse(
     .get(input.tokenId) as OpenKitAccessTokenRow | undefined;
   if (!row || row.token_hash !== input.expectedHash) return null;
   return readRetainedV1(row, () => {
-    if (!isCanonicalUserActive(coreDb, row.owner_user_id)) return null;
     const now = input.now ? new Date(input.now) : new Date();
-    if (
-      !evaluateOpenKitAccessTokenUsability(
-        {
-          expiresAt: row.expires_at,
-          rotatedGraceExpiresAt: row.rotated_grace_expires_at,
-          status: row.status,
-        },
-        now
-      ).usable
-    )
+    const usability = evaluateOpenKitAccessTokenUsability(
+      {
+        expiresAt: row.expires_at,
+        rotatedGraceExpiresAt: row.rotated_grace_expires_at,
+        status: row.status,
+      },
+      now
+    );
+    if (!usability.usable) {
+      // Hash proof was checked against this native row. Guessed Token ids cannot publish incidents.
+      recordServerAuditEvent({
+        coreDb,
+        action: 'auth.revoked-credential-presented',
+        actor: null,
+        authentication: { credentialKind: 'token', credentialId: row.token_id },
+        resource: `access-token:${row.token_id}`,
+        outcome: 'denied',
+        severity: 'warning',
+        now,
+        summary: JSON.stringify({
+          tokenId: row.token_id,
+          scope: row.scope,
+          status: usability.reason,
+          source: input.source ?? 'unknown',
+        }),
+      });
       return null;
+    }
+    if (!isCanonicalUserActive(coreDb, row.owner_user_id)) return null;
     const record = readOpenKitAccessTokenRecord(row);
     if (record.runSubject) {
       observeRunBoundAccessTokenInDb(coreDb, record);

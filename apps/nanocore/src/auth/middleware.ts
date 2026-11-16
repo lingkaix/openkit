@@ -31,7 +31,7 @@ export interface BetterAuthServer {
     getSession: (context: { headers: Headers }) => Promise<AuthSessionIdentity | null>;
   };
   /** Better Auth route handler for /api/auth/*. */
-  handler: (request: Request) => Promise<Response>;
+  handler: (request: Request, peerAddress?: string) => Promise<Response>;
 }
 
 /**

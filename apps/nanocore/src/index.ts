@@ -515,6 +515,8 @@ const bootResult = await runBootPhases({
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
           coreDb: recoveryCoreDb,
+          agentWorkPaused: () =>
+            runtimeConfigSnapshot!.openKitConfig.security?.pauseAgentWork === true,
           agentAuthority: (record: import('./runtime/pending-requests.js').PendingRequestRecord) =>
             runtimeConfigSnapshot!.agentManifests.some(
               (manifest) => manifest.id === record.agentId
@@ -872,6 +874,8 @@ schedulerDispatchRetry = startSchedulerDispatchRetryService({
   },
 });
 recurringSchedules = startRecurringScheduleService({
+  agentWorkPaused: () =>
+    runtimeConfigManager.current().openKitConfig.security?.pauseAgentWork === true,
   prepareKnowledgeMaintenance: (instant) => prepareKnowledgeMaintenance?.(instant),
   schedules: automationStore,
   store,

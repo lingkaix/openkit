@@ -1094,6 +1094,19 @@ export function diffRuntimeConfig(
       )
     );
   }
+  if (
+    (previous.openKitConfig.security?.pauseAgentWork ?? false) !==
+    (next.openKitConfig.security?.pauseAgentWork ?? false)
+  ) {
+    applied.push(
+      change(
+        'security.pauseAgentWork',
+        'hot-swappable',
+        'applied',
+        'Agent work pause changed for admission and dispatch.'
+      )
+    );
+  }
   if (!equalSemantic(previous.openKitConfig.defaults ?? {}, next.openKitConfig.defaults ?? {})) {
     applied.push(change('defaults', 'hot-swappable', 'applied', 'Runtime defaults changed.'));
   }

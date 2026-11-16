@@ -463,6 +463,101 @@ async function admitTestProductTurn(
 }
 
 describe('route B durable intent before effects', () => {
+  it('refuses paused product admission before publishing a queue entry or executing an agent', async () => {
+    const coreDb = createMigratedCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const executor = await RecordingTurnExecutor.create(coreDb);
+    const snapshot = createInMemoryRuntimeConfigSnapshot({
+      agentManifests: [agentManifest()],
+      dataRoot: null,
+      gatewayConfig: createTestGatewayConfig(),
+      providerRegistry: localProviderRegistry(),
+      openKitConfig: { security: { pauseAgentWork: true } },
+    });
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Paused admission');
+    try {
+      await expect(
+        admitTestProductTurn({
+          coreDb,
+          store,
+          snapshot,
+          turnExecutor: executor,
+          providerCredentialResolver: () => 'fake-key',
+          triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+          input: {
+            workspaceId: DEMO_WORKSPACE_ID,
+            threadId: thread.id,
+            requestId: fixtureRequestId('paused'),
+            agentId: agentManifest().id,
+            input: 'Must wait',
+          },
+        })
+      ).rejects.toMatchObject({ code: 'agent_work_paused' });
+      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([]);
+      expect(store.listThreadTurns(DEMO_WORKSPACE_ID, thread.id)).toEqual([]);
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('holds already queued undispatched work while the live pause is set', async () => {
+    const coreDb = createMigratedCoreDb(false);
+    const store = await createDemoStore({ dataRoot: coreDb.dataRoot });
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      ownerUserId: FIXTURE_LOCAL_USER_ID,
+      workspaceId: DEMO_WORKSPACE_ID,
+    });
+    const executor = await RecordingTurnExecutor.create(coreDb);
+    const thread = await store.createThread(DEMO_WORKSPACE_ID, 'Paused dispatch');
+    const entry = createSchedulerAdmissionEntry(coreDb, {
+      backendId: executor.executionBackend.id,
+      queueEntryId: fixtureRequestId('paused-queue'),
+      requestId: fixtureRequestId('paused-dispatch'),
+      workspaceId: DEMO_WORKSPACE_ID,
+      threadId: thread.id,
+      turnId: testEntityId('tu', 'paused-dispatch'),
+      requestedAgentId: agentManifest().id,
+      triggerActor: { kind: 'user', id: FIXTURE_LOCAL_USER_ID },
+      turnInput: 'Already admitted',
+      profileRef: 'default',
+      modelId: 'openai/gpt-5.2',
+    });
+    await publishTestAdmission(store, entry);
+    try {
+      const result = await runSchedulerDispatchLoop({
+        coreDb,
+        store,
+        turnExecutor: executor,
+        executionBackend: executor.executionBackend,
+        agentManifests: [agentManifest()],
+        gatewayConfig: createTestGatewayConfig(),
+        providerRegistry: localProviderRegistry(),
+        agentWorkPaused: () => true,
+      });
+      expect(result).toMatchObject({
+        startedTurns: [],
+        terminalResult: { status: 'queued', reason: 'agent-work-paused' },
+      });
+      expect(listQueuedSchedulerAdmissionEntries(coreDb)).toEqual([entry]);
+      expect(executor.prepareCalls).toEqual([]);
+      expect(executor.calls).toEqual([]);
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      coreDb.sqlite.close();
+      rmSync(coreDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it('prepares the accepted immutable admission once without imposing static helper order', async () => {
     const coreDb = createMigratedCoreDb(false);
     const store = await createDemoStore({ dataRoot: coreDb.dataRoot });

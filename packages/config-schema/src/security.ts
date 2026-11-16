@@ -34,6 +34,8 @@ export const SecurityFeedConfigSchema = z
 export const SecurityConfigSchema = z
   .object({
     feeds: z.array(SecurityFeedConfigSchema).optional(),
+    /** Persistent containment control; absence leaves agent work enabled. */
+    pauseAgentWork: z.boolean().optional(),
   })
   .strict()
   .superRefine((security, context) => {

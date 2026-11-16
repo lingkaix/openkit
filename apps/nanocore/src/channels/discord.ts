@@ -7,6 +7,8 @@ import {
 } from '@openkit/protocol';
 import type Database from 'better-sqlite3';
 import { z } from 'zod';
+import { prepareAuditEvent, prepareAuditEventStatement } from '../audit-events.js';
+import { resolveSessionDeploymentAdminTokenId } from '../auth/access-token-store.js';
 import { type Actor, getLocalUserId } from '../auth/identity.js';
 import { evaluateOwnedUserOperation } from '../auth/operation-authorizer.js';
 import { isCanonicalUserActive } from '../auth/user-lifecycle.js';
@@ -23,6 +25,7 @@ import {
   settleDiscordInboundCommand,
 } from '../storage/discord-inbound-commands.js';
 import type { ControlDiscordChannelInput, ControlDiscordChannelResult } from './discord-codecs.js';
+import { DISCORD_AUTOMATION_NOTICE } from './discord-rest.js';
 
 /** Discord inline response. Protected replies are private and disable mentions. */
 export type DiscordReply =
@@ -50,6 +53,7 @@ export type DiscordPendingView =
       /** False for secret questions, unsupported decision strength, or incomplete disclosure. */
       readonly responseAllowed: boolean;
     }
+  | { readonly status: 'app-only' }
   | { readonly status: 'unavailable'; readonly code: string };
 
 /** Current identity, Pending owner and native invocation dependencies supplied by Core composition. */
@@ -232,10 +236,14 @@ export function readDiscordAccountBinding(
 function revokeDiscordAccountBindingInDb(
   sqlite: Database.Database,
   userId: string,
-  now = Date.now()
+  now = Date.now(),
+  administratorAtEvent = false
 ): void {
   sqlite
     .transaction(() => {
+      const previous = readDiscordAccountBinding(sqlite, userId);
+      if (previous)
+        recordPairingAudit(sqlite, 'channel.pairing.unbind', previous, administratorAtEvent, now);
       sqlite
         .prepare(
           'UPDATE discord_account_bindings SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL'
@@ -250,11 +258,40 @@ function revokeDiscordAccountBindingInDb(
     .immediate();
 }
 
+/** Retains the exact binding mutation facts inside its owning SQLite transaction. */
+function recordPairingAudit(
+  sqlite: Database.Database,
+  action: 'channel.pairing.bind' | 'channel.pairing.unbind',
+  binding: DiscordAccountBinding,
+  administratorAtEvent: boolean,
+  now: number
+): void {
+  const statement = prepareAuditEventStatement(
+    prepareAuditEvent({
+      workspaceId: null,
+      action,
+      actor: { kind: 'user', id: binding.userId },
+      subject: { kind: 'user', id: binding.userId },
+      resource: `channel:discord:${binding.userId}`,
+      outcome: 'succeeded',
+      now: new Date(now),
+      summary: JSON.stringify({
+        channelKind: 'discord',
+        userId: binding.userId,
+        bindingRevision: binding.revision,
+        administratorAtEvent,
+      }),
+    })
+  );
+  sqlite.prepare(statement.sql).run(...statement.parameters);
+}
+
 /** Original stage dependencies stay local to their SQL owner, never on the native wire. */
 interface DiscordSqlContext {
   readonly now: () => number;
   readonly newRequestId: () => string;
   readonly resolveActor: (userId: string) => Actor | null;
+  readonly administratorAtEvent: (userId: string) => boolean;
 }
 
 /** Shares each original complete SQL stage without joining its separate effect boundaries. */
@@ -270,7 +307,12 @@ function applyDiscordStageInDb(
         changes: reconcileDiscordInboundCommands(sqlite),
       };
     case 'revoke-binding':
-      revokeDiscordAccountBindingInDb(sqlite, input.userId, context.now());
+      revokeDiscordAccountBindingInDb(
+        sqlite,
+        input.userId,
+        context.now(),
+        context.administratorAtEvent(input.userId)
+      );
       return { stage: input.stage };
     case 'issue-challenge':
       sqlite
@@ -313,15 +355,19 @@ function applyDiscordStageInDb(
               'UPDATE discord_pairing_challenges SET consumed_at = ? WHERE digest = ? AND consumed_at IS NULL'
             )
             .run(context.now(), input.digest);
+          const revision = RequestIdSchema.parse(context.newRequestId());
+          const pairedAt = context.now();
           sqlite
             .prepare(`INSERT INTO discord_account_bindings(discord_user_id,user_id,revision,paired_at,revoked_at) VALUES(?,?,?,?,NULL)
           ON CONFLICT(discord_user_id) DO UPDATE SET user_id = excluded.user_id,revision = excluded.revision,paired_at = excluded.paired_at,revoked_at = NULL`)
-            .run(
-              input.discordUserId,
-              row.userId,
-              RequestIdSchema.parse(context.newRequestId()),
-              context.now()
-            );
+            .run(input.discordUserId, row.userId, revision, pairedAt);
+          recordPairingAudit(
+            sqlite,
+            'channel.pairing.bind',
+            { discordUserId: input.discordUserId, userId: row.userId, revision, pairedAt },
+            context.administratorAtEvent(row.userId),
+            pairedAt
+          );
           return 'Discord account paired. Current Core authority is checked for each response.' as const;
         })
         .immediate();
@@ -435,6 +481,16 @@ export function applyControlDiscordChannel(
     now: Date.now,
     newRequestId: randomUUID,
     resolveActor,
+    administratorAtEvent: (userId) => {
+      if (!isCanonicalUserActive(coreDb, userId)) return false;
+      const user = coreDb.sqlite.prepare('SELECT kind FROM users WHERE id=?').get(userId) as {
+        kind: string;
+      };
+      // The canonical local administrator has no required bearer-token grant.
+      return user.kind === 'local'
+        ? getLocalUserId(coreDb) === userId
+        : user.kind === 'human' && resolveSessionDeploymentAdminTokenId(coreDb, userId) !== null;
+    },
   });
 }
 
@@ -498,6 +554,7 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
           now,
           newRequestId: options.newRequestId,
           resolveActor: options.resolveActor,
+          administratorAtEvent: () => false,
         });
     if (result.stage !== input.stage)
       throw new ControlStoreWorkerError('invalid-request', 'unknown');
@@ -677,6 +734,17 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
               : null;
           return reply(text, link ?? appUrl.origin);
         }
+        if (options.inspectPending({ actor, ...target }).status === 'app-only') {
+          await settleReceipt('settled');
+          // Repeat current source and binding admission after the acknowledgement gap.
+          const link =
+            options.resolveActor(actor.userId)?.userId === actor.userId &&
+            binding(actor)?.revision === row.revision &&
+            options.inspectPending({ actor, ...target }).status === 'app-only'
+              ? options.requestLink({ actor, ...target })
+              : null;
+          return reply(DISCORD_AUTOMATION_NOTICE, link ?? appUrl.origin);
+        }
         if (subcommand.name !== 'inspect') {
           const readCurrentDisclosure = () =>
             sqlite
@@ -836,7 +904,11 @@ export function createDiscordChannel(options: DiscordChannelOptions) {
   ) {
     const view = options.inspectPending({ actor, ...target });
     if (view.status !== 'available')
-      throw new OperationError(view.code, 'The request is unavailable.', 409);
+      throw new OperationError(
+        view.status === 'app-only' ? 'channel_response_not_admitted' : view.code,
+        'The request is unavailable.',
+        409
+      );
     if (!view.responseAllowed)
       throw new OperationError('channel_response_not_admitted', 'Use the request in OpenKit.', 403);
     if (

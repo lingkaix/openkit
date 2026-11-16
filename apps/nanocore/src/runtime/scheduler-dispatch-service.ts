@@ -66,6 +66,8 @@ export function startSchedulerDispatchRetryService(
       const snapshot = input.runtimeConfigSnapshot();
       return await runSchedulerDispatchLoop({
         ...input,
+        agentWorkPaused: () =>
+          input.runtimeConfigSnapshot().openKitConfig.security?.pauseAgentWork === true,
         agentManifests: snapshot.agentManifests,
         configVersion: snapshot.version,
         gatewayConfig: snapshot.gatewayConfig,

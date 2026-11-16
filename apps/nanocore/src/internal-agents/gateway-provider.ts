@@ -29,6 +29,7 @@ import { GatewayUnsupportedFeatureError } from '../llm/pi-ai-client.js';
 import type { PiAiFailure, PiAiFailureKind } from '../llm/pi-ai-failure.js';
 import type { LLMGatewayProviderDispatcher } from '../llm/provider-dispatcher.js';
 import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import { TurnStartValidationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import { openAdmittedWorkspaceReadDb, openCoreReadDb } from '../storage/db.js';
 import type {
@@ -53,6 +54,8 @@ type InternalGatewayFailurePhase =
 
 /** Dependencies that bind the shared internal Agent loop to the existing logical Gateway. */
 export interface InternalAgentGatewayProviderOptions {
+  /** Live containment check before the first Provider submission; running loops keep their admission. */
+  readonly assertExecutionAvailable?: () => void;
   /** Exact entry-admitted Turn; internal Agents never use public metadata as authority. */
   readonly capture: Omit<ModelCaptureContext, 'corr'>;
   /** Entry-admitted model retained for pinned identity, capabilities and known physical limits. */
@@ -94,7 +97,9 @@ export interface InternalAgentGatewayProviderOptions {
 export function createInternalAgentGatewayProvider(
   options: InternalAgentGatewayProviderOptions
 ): InternalAgentProviderCall {
+  let executionStarted = false;
   return async (request) => {
+    if (!executionStarted) options.assertExecutionAvailable?.();
     if (!options.capture) throw new ModelCaptureError();
     if (request.model.logicalModelId !== options.logicalModel.id) {
       throw new Error('Internal Agent logical model changed after admission.');
@@ -206,9 +211,11 @@ export function createInternalAgentGatewayProvider(
             | InternalAgentProviderError
             | GatewayAttemptFailure
             | OpenAICompatibleProviderError
+            | TurnStartValidationError
             | undefined;
           // A late callback from a settled member cannot replace a later attempt's diagnostics.
           let observedHttpRejection: number | undefined;
+          if (!executionStarted) options.assertExecutionAvailable?.();
           const response = await options.dispatcher
             .createResponses(
               provider,
@@ -259,12 +266,16 @@ export function createInternalAgentGatewayProvider(
                         final.codexTurnState
                       );
                       await execution.assertAuthority?.();
+                      if (!executionStarted) options.assertExecutionAvailable?.();
+                      // Stock handoff precedes asynchronous auth; only this final boundary admits the first request.
+                      executionStarted = true;
                     } catch (error) {
                       // Stock can flatten hook errors; preserve this trusted refusal for loop closeout.
                       if (
                         error instanceof InternalAgentProviderError ||
                         error instanceof GatewayAttemptFailure ||
-                        error instanceof OpenAICompatibleProviderError
+                        error instanceof OpenAICompatibleProviderError ||
+                        error instanceof TurnStartValidationError
                       )
                         admissionFailure = error;
                       throw error;
@@ -276,9 +287,10 @@ export function createInternalAgentGatewayProvider(
                     // Stock completion precedes adapter output conversion, which can still reject Tool output.
                     if (event.type === 'done') failurePhase = 'output-projection';
                   },
-                  onProviderHandoff: () => {
+                  onProviderHandoff: async () => {
+                    await execution.onProviderHandoff?.();
+                    if (!executionStarted) options.assertExecutionAvailable?.();
                     failurePhase = 'transport';
-                    return execution.onProviderHandoff?.();
                   },
                   onProviderHttpRejection: (status) => {
                     if (Number.isInteger(status) && status >= 400 && status <= 599)
@@ -317,6 +329,7 @@ export function createInternalAgentGatewayProvider(
               }
               throw error;
             });
+          executionStarted = true;
           failurePhase = 'output-projection';
           const message = fromResponses(response, aliasToCanonical, canonicalToAlias);
           if (call)

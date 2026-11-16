@@ -12,6 +12,29 @@ function dm() {
 }
 
 describe('Discord REST private attention transport', () => {
+  it('delivers only the fixed automation deadline text and exact App link', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(dm())
+      .mockResolvedValueOnce(Response.json({ id: '423456789012345678', channel_id: channelId }));
+    const transport = createDiscordRestTransport({
+      publicBaseUrl: 'https://openkit.example',
+      resolveBotToken: async () => 'fake-token',
+      fetch,
+    });
+    await transport.sendAttention({
+      discordUserId,
+      appPath,
+      automation: true,
+      beforeSend: () => true,
+    });
+    expect(JSON.parse(fetch.mock.calls[1]![1]!.body as string)).toEqual({
+      content: `OpenKit security: action needed within 24 hours.\nOpen OpenKit: https://openkit.example${appPath}`,
+      allowed_mentions: { parse: [] },
+      flags: 4,
+    });
+  });
+
   it('prepares a verified private DM and rechecks authority immediately before its link-only send', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

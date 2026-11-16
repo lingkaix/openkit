@@ -21,6 +21,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { CoreDb, UserDb, WorkspaceDb } from '../storage/db.js';
 import { ensureUserQuickChatWorkspace } from '../workspace-membership.js';
 import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
@@ -90,6 +91,9 @@ export async function prepareUserMemoryMaintenance(
   dependencies: UserMemoryMaintenanceDependencies,
   input: UserMemoryMaintenanceInput
 ) {
+  assertAgentWorkNotPaused(
+    dependencies.runtimeConfigManager.current().openKitConfig.security?.pauseAgentWork
+  );
   const { store, coreDb, userDb } = dependencies;
   const context = {
     coreDb,

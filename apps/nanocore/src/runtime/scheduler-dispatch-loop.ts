@@ -34,6 +34,7 @@ import {
   listQueuedSchedulerAdmissionEntries,
   requireSchedulerAdmissionEntry,
 } from '../scheduler-records.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import {
@@ -78,6 +79,8 @@ export interface RunSchedulerDispatchLoopInput
     AgentSetupResolverDependencies,
     'providerCredentialConfigured' | 'subscriptionAccounts'
   > {
+  /** Current persistent containment setting, independent of captured Turn configuration. */
+  agentWorkPaused?: () => boolean;
   agentManifests: AgentManifest[];
   coreDb: CoreDb;
   callerQueueEntryId?: string;
@@ -123,6 +126,7 @@ export interface SchedulerDispatchLoopResult {
     | {
         status: 'queued';
         reason:
+          | 'agent-work-paused'
           | 'no-queued-entry'
           | 'thread-busy'
           | 'backend-busy'
@@ -151,6 +155,8 @@ export function getSchedulerPreparationClaims(coreDb: CoreDb): SchedulerPreparat
 export async function runSchedulerDispatchLoop(
   input: RunSchedulerDispatchLoopInput
 ): Promise<SchedulerDispatchLoopResult> {
+  if (input.agentWorkPaused?.())
+    return { startedTurns: [], terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
   const claims = getSchedulerPreparationClaims(input.coreDb);
   const joined = input.callerQueueEntryId ? claims.get(input.callerQueueEntryId) : undefined;
   if (joined) return joined;
@@ -169,6 +175,8 @@ export async function runSchedulerDispatchLoop(
   const unpublishedQueueEntryIds = new Set<string>();
   let sourceRecoveryRequired = false;
   for (let count = 0; count < (input.maxDispatches ?? 1); count++) {
+    if (input.agentWorkPaused?.())
+      return { startedTurns, terminalResult: { status: 'queued', reason: 'agent-work-paused' } };
     const entry = findNextDispatchableSchedulerAdmissionEntry(
       input.coreDb,
       unpublishedQueueEntryIds
@@ -506,6 +514,7 @@ async function dispatchSchedulerAdmission(
       403
     );
     // Attempt creation awaited the native owner; policy may have changed before Host work.
+    assertAgentWorkNotPaused(input.agentWorkPaused?.());
     if (!currentSchedulerDispatchAuthority(input, entry)) throw authorityDenial;
     const prepared = await input.turnExecutor.prepareAgentSessionForTurn(input.store, preparation);
     await bindSchedulerExecutionAttemptSession(input.coreDb, {
@@ -524,10 +533,12 @@ async function dispatchSchedulerAdmission(
       ? applyPreparedHarnessLoginSelection(setup, prepared.harnessLoginSelection)
       : setup;
     const current = requireSchedulerAdmissionEntry(input.coreDb, entry.queueEntryId);
+    assertAgentWorkNotPaused(input.agentWorkPaused?.());
     if (!currentSchedulerDispatchAuthority(input, current)) throw authorityDenial;
     const admittedDb = openAdmittedWorkspaceReadDb(input.coreDb.dataRoot, entry.workspaceId);
     admittedDb.sqlite.close();
     const handle = await startTurn({
+      assertAgentWorkAvailable: () => assertAgentWorkNotPaused(input.agentWorkPaused?.()),
       onSubmissionSettled: () => {
         const settled = requireSchedulerExecutionAttempt(input.coreDb, attempt.attemptId);
         // Preparation effects can also be accepted; only submit fixes the absolute deadline.

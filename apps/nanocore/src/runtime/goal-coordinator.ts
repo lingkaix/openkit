@@ -47,6 +47,7 @@ import {
 import { OperationError, projectOperationError } from '../operation-error.js';
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import {
   ControlStoreWorkerShutdownError,
   getControlStoreWorkerClient,
@@ -599,8 +600,15 @@ export function createGoalTools(input: {
 export function createGoalCoordinator(options: GoalCoordinatorOptions) {
   const client = getControlStoreWorkerClient();
   const active = new Set<string>();
+  // Only known pre-execution pause refusals may resume; retained running history grants no replay.
+  const pausedBeforeExecution = new Set<string>();
   /** Binds detached execution and its terminal publication to the existing writer shutdown owner. */
   function startTurn(store: FsStore, turnId: string): Promise<void> {
+    if (options.runtimeConfig().openKitConfig.security?.pauseAgentWork) {
+      pausedBeforeExecution.add(turnId);
+      return Promise.resolve();
+    }
+    pausedBeforeExecution.delete(turnId);
     return client.runOperation(async () => {
       const turn = await executeTurn(store, turnId);
       const event = turn && store.getTurnEvents(turnId).find((e) => e.event === 'turn.completed');
@@ -638,6 +646,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       await recordGoalConsideredRevision(db, goal, turnId, assertAuthorized);
       assertAuthorized();
       const snapshot = options.runtimeConfig();
+      assertAgentWorkNotPaused(snapshot.openKitConfig.security?.pauseAgentWork);
       const workspaceConfig = findWorkspaceConfig(snapshot, goal.workspaceId)?.config;
       const userConfig = snapshot.userConfigs.find(
         (entry) => entry.userId === goal.responsibleUserId
@@ -686,6 +695,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
         }),
         options.taskTool(goal.goalId, turnId),
       ];
+      assertAgentWorkNotPaused(options.runtimeConfig().openKitConfig.security?.pauseAgentWork);
       await withTurnModelCapture(
         { store, turn, workspaceDb: db, environment: { systemPrompt, tools } },
         async (capture) => {
@@ -699,6 +709,10 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
           });
           assertAuthorized();
           const provider = createInternalAgentGatewayProvider({
+            assertExecutionAvailable: () =>
+              assertAgentWorkNotPaused(
+                options.runtimeConfig().openKitConfig.security?.pauseAgentWork
+              ),
             capture,
             logicalModel: selection.logicalModel,
             ...(selection.profile?.reasoningEffort === undefined
@@ -918,11 +932,13 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
     }
   }
   async function wake(workspaceId: string, goalId: string): Promise<void> {
+    if (options.runtimeConfig().openKitConfig.security?.pauseAgentWork) return;
     const db = options.openWorkspace(workspaceId);
     try {
       const turn = await considerGoal(options.store, db, goalId, (actor) =>
         Boolean(
-          options.coreDb &&
+          !options.runtimeConfig().openKitConfig.security?.pauseAgentWork &&
+            options.coreDb &&
             authorizeWorkspace(options.coreDb, actor, workspaceId, {
               policyOperation: 'workspace.write',
               mutating: true,
@@ -946,6 +962,29 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
       for (const goalId of new Set(goalIds)) await wake(workspaceIdForOwner(turn.owner), goalId);
     } finally {
       db.sqlite.close();
+    }
+  }
+  async function resume(): Promise<void> {
+    if (options.runtimeConfig().openKitConfig.security?.pauseAgentWork) return;
+    for (const turnId of pausedBeforeExecution)
+      if (!isSealedTurnTerminal(options.store.getTurnById(turnId).status))
+        void startTurn(options.store, turnId).catch(reportBackgroundFailure);
+    for (const workspace of options.store.listWorkspaces()) {
+      const db = options.openWorkspace(workspace.id);
+      try {
+        const goals = (
+          db.sqlite
+            .prepare('SELECT schema_version AS schemaVersion,payload_json FROM goals')
+            .all() as { schemaVersion: unknown; payload_json: string }[]
+        ).map((row) =>
+          readRetainedV1(row, () => StoredGoalV1Schema.parse(JSON.parse(row.payload_json)))
+        );
+        for (const goal of goals) {
+          await wake(workspace.id, goal.goalId);
+        }
+      } finally {
+        db.sqlite.close();
+      }
     }
   }
   async function boot(): Promise<void> {
@@ -995,6 +1034,7 @@ export function createGoalCoordinator(options: GoalCoordinatorOptions) {
     terminal: (turn: ReturnType<FsStore['getTurnById']>) =>
       client.runOperation(() => terminal(turn)).catch(reportBackgroundFailure),
     boot: () => client.runOperation(boot).catch(reportBackgroundFailure),
+    resume: () => client.runOperation(resume),
     startTurn,
   };
 }

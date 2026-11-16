@@ -36,6 +36,7 @@ export interface ExternalTriggerServiceInput
     Parameters<typeof startProductTurn>[0],
     | 'store'
     | 'snapshot'
+    | 'agentWorkPaused'
     | 'turnExecutor'
     | 'providerCredentialResolver'
     | 'providerCredentialConfigured'
@@ -99,6 +100,7 @@ export async function admitExternalTriggerEvent(
         coreDb,
         store: input.store,
         snapshot: input.snapshot,
+        ...(input.agentWorkPaused ? { agentWorkPaused: input.agentWorkPaused } : {}),
         turnExecutor: input.turnExecutor,
         providerCredentialResolver: input.providerCredentialResolver,
         providerCredentialConfigured: input.providerCredentialConfigured,

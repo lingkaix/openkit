@@ -45,6 +45,8 @@ export interface StartTurnInput
     AgentSetupResolverDependencies,
     'providerCredentialConfigured' | 'subscriptionAccounts'
   > {
+  /** Repeats live containment immediately before native submission after publication awaits. */
+  assertAgentWorkAvailable?: () => void;
   /** Exact transient selection from the Scheduler preparation owner. */
   harnessLoginSelection?: PreparedHarnessLoginSelection;
   /** Original initiating command facts when this call creates the native Turn. */
@@ -394,6 +396,7 @@ export async function startTurn(input: StartTurnInput): Promise<TurnHandle> {
   }
 
   await input.onTurnCreated?.(input.store.getTurnById(turn.id));
+  input.assertAgentWorkAvailable?.();
   await input.turnExecutor.startTurn(input.store, turn.id, input.input, {
     ...(input.onSubmissionSettled ? { onSubmissionSettled: input.onSubmissionSettled } : {}),
     ...(input.attemptId ? { attemptId: input.attemptId } : {}),

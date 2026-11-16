@@ -156,6 +156,8 @@ export interface PendingWorkerDelivery {
 
 /** Dependencies for admission and boot. */
 export interface PendingAdmissionDependencies extends PendingRequestDatabase {
+  /** A paused server retains ready agent outcomes without admitting a successor Turn. */
+  agentWorkPaused?: () => boolean;
   /** Core authority used while re-evaluating a grant. */
   coreDb?: CoreDb;
   /** Current configured Agent authority, independent of historical Turns. */
@@ -315,6 +317,7 @@ export function resumeFrozenPendingDelivery(
   store: FsStore,
   dependencies: PendingAdmissionDependencies
 ): void {
+  if (dependencies.agentWorkPaused?.()) return;
   if (dependencies.workerDelivery) {
     const pendingTurns = new Set<string>();
     let workspaces: ReturnType<FsStore['listWorkspaces']>;
@@ -1191,6 +1194,7 @@ async function admitNextOutcome(
   withWorkspace(dependencies, workspaceId, (sqlite) => {
     const ready = listThreadPendingRequests(sqlite, workspaceId, threadId)
       .filter((record) => isReadyOutcome(record) && canonicalRecordIsUsable(store, sqlite, record))
+      .filter((record) => !dependencies.agentWorkPaused?.() || record.requesterKind === 'person')
       .sort(compareReadiness);
     const worker = ready.find((record) => record.requesterKind === 'worker');
     const assistant = ready.find((record) => record.requesterKind === 'assistant');
@@ -1222,6 +1226,7 @@ async function admitNextOutcome(
     readonly actorId: string;
     readonly agentId: string | null;
   } = selected;
+  if (dependencies.agentWorkPaused?.() && choice.executor !== 'person') return;
   const turnId = allocateEntityId('tu');
   if (storeHasTurn(store, turnId)) throw associationGap();
   outcomeCauses.set(turnId, 'outcome');
@@ -1332,6 +1337,12 @@ async function deliverWorkerOutcome(
     try {
       const turn = store.getTurnById(turnId);
       try {
+        if (dependencies.agentWorkPaused?.())
+          throw new TurnStartValidationError(
+            'agent_work_paused',
+            'Agent work is paused by a server administrator.',
+            503
+          );
         const executor = store.getTurnExecutor(turnId) ?? executorKindForTurn(turn);
         const delivery =
           executor === 'coordinator'

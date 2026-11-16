@@ -36,10 +36,15 @@ import type {
   InternalOperationDefinition,
   OperationInvocationContext,
 } from './operation-contract.js';
-import { OperationError, WorkspaceCaptureAdmissionError } from './operation-error.js';
+import {
+  OperationError,
+  TurnStartValidationError,
+  WorkspaceCaptureAdmissionError,
+} from './operation-error.js';
 import { readPendingOperationLineage } from './pending-request-operations.js';
 import { PolicyInterception } from './policy/interception.js';
 import { readRecoveryOperationLineage } from './runtime/worker-recovery.js';
+import { assertAgentWorkNotPaused } from './security/agent-work-pause.js';
 import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import type { CoreDb, WorkspaceDb } from './storage/db.js';
 import { readTurnOperationLineage } from './turn-operation-implementations.js';
@@ -63,6 +68,25 @@ export interface OperationAdmissionDependencies {
     'current'
   >;
 }
+
+/** E1 covers new Agent execution; reads, response recording, cancellation and Core-local administration stay available. */
+const agentExecutionEntries: ReadonlySet<OperationDefinition> = new Set([
+  OPERATION_DEFINITIONS['turn.start'],
+  OPERATION_DEFINITIONS['task.start'],
+  OPERATION_DEFINITIONS['conversation.submit'],
+  OPERATION_DEFINITIONS['goal.create'],
+  OPERATION_DEFINITIONS['administration.conversation-submit'],
+  OPERATION_DEFINITIONS['automation.event-admit'],
+  OPERATION_DEFINITIONS['knowledge.ask'],
+  OPERATION_DEFINITIONS['knowledge.tell'],
+  OPERATION_DEFINITIONS['knowledge.maintain'],
+  OPERATION_DEFINITIONS['memory.ask'],
+  OPERATION_DEFINITIONS['memory.tell'],
+  OPERATION_DEFINITIONS['memory.maintain'],
+  OPERATION_DEFINITIONS['knowledge.server.tell'],
+  OPERATION_DEFINITIONS['knowledge.server.maintain'],
+  OPERATION_DEFINITIONS['scheduler.retry'],
+]);
 
 /** Uniform scope refusal reveals neither child content nor credential details. */
 function denied(cause?: unknown): OperationError {
@@ -521,6 +545,19 @@ export async function admitOperation(
       dependencies,
       entry
     );
+  const assertExecutionAvailable = () => {
+    if (!agentExecutionEntries.has(definition)) return;
+    try {
+      assertAgentWorkNotPaused(
+        dependencies.runtimeConfigManager?.current().openKitConfig.security?.pauseAgentWork
+      );
+    } catch (error) {
+      if (error instanceof TurnStartValidationError)
+        throw new OperationError(error.code, error.message, error.status, { cause: error });
+      throw error;
+    }
+  };
+  assertExecutionAvailable();
   let release: (() => void) | undefined;
   if (mutationWorkspaceId) {
     const mutationRoot = coreDb?.dataRoot;
@@ -562,7 +599,15 @@ export async function admitOperation(
       entry.observeSuccessStatus?.(status);
     },
   };
-  return { input, context, release, assertExposureAvailable };
+  return {
+    input,
+    context,
+    release,
+    assertExposureAvailable: () => {
+      assertExposureAvailable();
+      assertExecutionAvailable();
+    },
+  };
 }
 
 /** Static wiring dispatches declared target strategies, including Recovery's distinct missing-lineage outcome. */

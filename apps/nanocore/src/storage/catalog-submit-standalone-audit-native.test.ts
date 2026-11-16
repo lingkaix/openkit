@@ -480,6 +480,7 @@ it('acknowledges exact native admission before publishing the inactive candidate
     'scheduler.admission.cancel',
     'scheduler.admission.retry',
     'security.canary',
+    'server.config.update',
     'workspace.credential-binding.update',
   ]);
 });

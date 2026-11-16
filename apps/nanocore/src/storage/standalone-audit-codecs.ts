@@ -65,6 +65,7 @@ export const STANDALONE_AUDIT_STAGES = [
   'auth.token.rotate',
   'policy.write',
   'administration.configuration.apply',
+  'server.config.update',
   'mcp.server.lifecycle.degraded',
   'mcp.server.lifecycle.failed',
   'mcp.server.lifecycle.inactive',
@@ -137,6 +138,15 @@ export const ControlStandaloneAuditInputSchema = z
               event.actor.kind === 'system')
           : event.resource === `light-app-definition:${workspaceId}`)
       );
+    if (stage === 'server.config.update')
+      return (
+        workspaceId === undefined &&
+        event.workspaceId === null &&
+        event.actor !== null &&
+        event.resource === 'config:server.jsonc' &&
+        event.outcome === 'succeeded' &&
+        event.category === 'system'
+      );
     if (stage === 'auth.failure-threshold')
       return (
         workspaceId === undefined &&
@@ -161,7 +171,11 @@ export const ControlStandaloneAuditInputSchema = z
         event.category === 'system' &&
         event.outcome === 'failed' &&
         event.severity === 'warning' &&
-        event.summary === '{"kind":"bearer","keyKind":"source","window":900000,"count":100}'
+        [
+          '{"kind":"bearer","keyKind":"source","window":900000,"count":100}',
+          '{"kind":"sign-in","keyKind":"source","window":900000,"count":50}',
+          '{"kind":"sign-in","keyKind":"account","window":900000,"count":10}',
+        ].includes(event.summary)
       );
     if (stage === 'auth.bootstrap.consume')
       return (

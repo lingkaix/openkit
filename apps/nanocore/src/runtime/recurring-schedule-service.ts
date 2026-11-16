@@ -13,6 +13,8 @@ import {
 
 /** Dependencies restricted to bounded Core-local preparation and durable queue acceptance. */
 export interface RecurringScheduleServiceInput {
+  /** Current persistent containment is read before scanning and again before native admission. */
+  readonly agentWorkPaused?: () => boolean;
   readonly schedules: AutomationStore;
   readonly store: FsStore;
   /** Resolve or revalidate exact selections; never launch workers, call providers or mutate repositories. */
@@ -43,9 +45,10 @@ export function startRecurringScheduleService(
   let stopped = false;
   let running: Promise<void> | undefined;
   const scan = async () => {
+    if (input.agentWorkPaused?.()) return;
     const candidates = await input.schedules.collectScanCandidates(now(), input.onError);
     for (const occurrence of candidates) {
-      if (stopped) return;
+      if (stopped || input.agentWorkPaused?.()) return;
       const release = getControlStoreWorkerClient().enterWorkspaceMutation(
         input.schedules.coreDb.dataRoot,
         occurrence.workspaceId
@@ -70,7 +73,7 @@ export function startRecurringScheduleService(
               : { kind: 'failure', code: 'invalid_input' };
           }
         }
-        if (stopped) return;
+        if (stopped || input.agentWorkPaused?.()) return;
         // Existing queue acceptance can be reconciled, but cannot authorize another initial publication attempt.
         // The unique data-root scanner and held source admission exclude a second publisher for this occurrence.
         const queueAlreadyAccepted = db.sqlite
@@ -80,7 +83,7 @@ export function startRecurringScheduleService(
           occurrence.id,
           occurrence.definitionRevision,
           preparation,
-          () => validateCurrent(occurrence)
+          () => (input.agentWorkPaused?.() ? undefined : validateCurrent(occurrence))
         );
         if (
           !queueAlreadyAccepted &&
@@ -116,7 +119,7 @@ export function startRecurringScheduleService(
         release();
       }
     }
-    if (!stopped) await input.prepareKnowledgeMaintenance?.(now());
+    if (!stopped && !input.agentWorkPaused?.()) await input.prepareKnowledgeMaintenance?.(now());
   };
   const runOnce = (): Promise<void> => {
     if (stopped) return Promise.resolve();

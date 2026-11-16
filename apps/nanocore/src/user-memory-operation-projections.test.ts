@@ -71,6 +71,7 @@ async function fixture() {
     });
   const maintenanceConfig = {
     current: () => ({
+      openKitConfig: {},
       userConfigs: [
         {
           userId,

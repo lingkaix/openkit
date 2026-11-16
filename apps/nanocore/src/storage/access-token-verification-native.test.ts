@@ -15,6 +15,7 @@ import {
   rotateOpenKitAccessTokenRecord,
 } from '../auth/access-token-store.js';
 import { verifyOpenKitAccessTokenRecord } from '../auth/access-token-verification.js';
+import { SecurityTriggerStore } from '../security/trigger.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
 import { closeTestCoreDb, createTestCoreDb } from '../test-support/store.js';
 import {
@@ -198,6 +199,39 @@ describe('human Token verification through the native Core owner', () => {
       expect(retained?.lastUsedAt).toBeNull();
       expect(retained?.lastUsedChannel).toBeNull();
       expect(retained?.lastUsedSource).toBeNull();
+      const events = f.coreDb.sqlite
+        .prepare(
+          "SELECT summary, authentication_json AS authentication, outcome FROM audit_events WHERE action = 'auth.revoked-credential-presented'"
+        )
+        .all() as { summary: string; authentication: string; outcome: string }[];
+      if (['revoked', 'expired', 'grace-expired'].includes(fault)) {
+        expect(events).toHaveLength(1);
+        expect(JSON.parse(events[0]!.summary)).toEqual({
+          tokenId: f.issued.tokenId,
+          scope: 'server-admin',
+          status: fault === 'grace-expired' ? 'rotated' : fault,
+          source: 'loopback',
+        });
+        expect(JSON.parse(events[0]!.authentication)).toEqual({
+          credentialKind: 'token',
+          credentialId: f.issued.tokenId,
+        });
+        expect(events[0]!.outcome).toBe('denied');
+        vi.restoreAllMocks();
+        createOpenKitAccessTokenRecord(f.coreDb, {
+          ownerUserId: f.ownerUserId,
+          scope: 'server-admin',
+          workspaceIds: [],
+          expiresAt: EXPIRES_AT,
+        });
+        const trigger = new SecurityTriggerStore(f.coreDb);
+        await trigger.enable({ kind: 'local', userId: f.ownerUserId });
+        expect(
+          (await trigger.readAudit()).events.filter(
+            (event) => event.action === 'auth.revoked-credential-presented'
+          )
+        ).toHaveLength(1);
+      } else expect(events).toHaveLength(0);
       expect(f.coreDb.sqlite.inTransaction).toBe(false);
     }
   );

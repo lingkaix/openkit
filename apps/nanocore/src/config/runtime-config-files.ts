@@ -40,8 +40,10 @@ import {
   WorkspaceDataSourceCatalogSchema,
 } from '@openkit/config-schema';
 import {
+  type ActorRef,
   allocateEntityId,
   canonicalIdentifierName,
+  compareCodeUnits,
   readRetainedV1,
   writeRetainedV1,
 } from '@openkit/protocol';
@@ -57,7 +59,9 @@ import {
 import { type ParseError, parse, printParseErrorCode } from 'jsonc-parser';
 import { z } from 'zod';
 import { AuthoredAgentConfigSchema } from '../agents/manifest.js';
+import { prepareServerAuditEvent } from '../audit-events.js';
 import { writeFileAtomic } from '../storage/canonical-write-capacity.js';
+import type { CoreDb } from '../storage/db.js';
 
 import { VaultBackendError } from '../vault/vault-backend.js';
 import { parseJsoncObject } from './jsonc.js';
@@ -101,6 +105,14 @@ export interface RuntimeConfigCredentialBindingChange {
  * Runtime config file service construction input.
  */
 export interface RuntimeConfigFileServiceOptions {
+  /** Original native Server Audit owner; absent only in isolated file-service fixtures. */
+  coreDb?: CoreDb;
+  /** Original Audit writer supplied by the composition owner. */
+  onServerConfigUpdate?: (
+    event: ReturnType<typeof prepareServerAuditEvent>
+  ) => void | Promise<void>;
+  /** Actual mutation actor, including a deterministic Core containment author. */
+  actor?: ActorRef;
   /** Data root that owns DATA_ROOT/config. */
   dataRoot: string | null;
   /** Workspace ids authorized for the current request. */
@@ -164,6 +176,9 @@ export class RuntimeConfigFileServiceError extends Error {
  * Service for safe runtime config file reads, writes, validation, and schema catalog access.
  */
 export class RuntimeConfigFileService {
+  private readonly coreDb: CoreDb | undefined;
+  private readonly onServerConfigUpdate: RuntimeConfigFileServiceOptions['onServerConfigUpdate'];
+  private readonly actor: ActorRef;
   private readonly dataRoot: string;
   private readonly workspaceIds: string[];
   private readonly userId: string;
@@ -191,6 +206,9 @@ export class RuntimeConfigFileService {
       );
     }
 
+    this.coreDb = options.coreDb;
+    this.onServerConfigUpdate = options.onServerConfigUpdate;
+    this.actor = options.actor ?? { kind: 'user', id: options.userId };
     this.revokeProviderSecret = options.revokeProviderSecret;
     this.dataRoot = options.dataRoot;
     this.workspaceIds = options.workspaceIds;
@@ -358,7 +376,36 @@ export class RuntimeConfigFileService {
       currentContent,
       input.content
     );
+    const changedKeys =
+      spec.kind === 'server' ? changedServerConfigKeys(currentContent, input.content) : [];
+    if (changedKeys.length && this.coreDb && !this.onServerConfigUpdate) {
+      throw new RuntimeConfigFileServiceError(
+        'config_audit_unavailable',
+        'Configuration Audit is unavailable.',
+        503
+      );
+    }
     this.writeFileAtomically(spec, input.content);
+    if (changedKeys.length && this.coreDb) {
+      try {
+        await this.onServerConfigUpdate!(
+          prepareServerAuditEvent({
+            coreDb: this.coreDb,
+            action: 'server.config.update',
+            actor: this.actor,
+            outcome: 'succeeded',
+            resource: 'config:server.jsonc',
+            summary: JSON.stringify({ changedKeys }),
+          })
+        );
+      } catch {
+        throw new RuntimeConfigFileServiceError(
+          'config_file_saved_audit_unknown',
+          'Configuration was saved, but its Audit completion is unknown. Inspect the file and Audit before another request.',
+          503
+        );
+      }
+    }
     await this.auditCatalogAuthorityChanges(spec, currentContent, input.content, credentialChanges);
 
     return RuntimeConfigFileWriteResponseSchema.parse({
@@ -1977,4 +2024,29 @@ function titleFromId(id: string): string {
     .filter(Boolean)
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(' ');
+}
+
+/** Lists changed authored paths without carrying any configuration values into Audit. */
+function changedServerConfigKeys(previous: string | null, next: string): string[] {
+  const record = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === 'object' && !Array.isArray(value);
+  const walk = (before: unknown, after: unknown, path: string): string[] => {
+    if (canonicalIdentifierName(before ?? null) === canonicalIdentifierName(after ?? null))
+      return [];
+    if (record(before) || record(after)) {
+      const left = record(before) ? before : {};
+      const right = record(after) ? after : {};
+      const keys = [...new Set([...Object.keys(left), ...Object.keys(right)])].sort(
+        compareCodeUnits
+      );
+      if (keys.length)
+        return keys.flatMap((key) => walk(left[key], right[key], path ? `${path}.${key}` : key));
+    }
+    return path ? [path] : [];
+  };
+  return walk(
+    previous ? parseJsoncObject(previous, 'server.jsonc') : {},
+    parseJsoncObject(next, 'server.jsonc'),
+    ''
+  );
 }

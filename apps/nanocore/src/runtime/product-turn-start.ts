@@ -22,6 +22,7 @@ import {
   SchedulerAdmissionTransitionError,
   type SchedulerWorkerStorageChoice,
 } from '../scheduler-records.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { FileStorageAdmission } from '../storage/artifacts/file-admission.js';
 import { admitCoreScheduler } from '../storage/control-store-admission.js';
 import type { ExternalSourceSchema } from '../storage/control-store-admission-codecs.js';
@@ -63,6 +64,8 @@ interface StartProductTurnInput
   readonly providerCredentialResolver: ProviderCredentialResolver;
   /** Runtime config snapshot captured for this turn. */
   readonly snapshot: RuntimeConfigSnapshot;
+  /** Live containment read; queued execution must not inherit an earlier admission snapshot. */
+  readonly agentWorkPaused?: () => boolean;
   /** Actor-scoped store. */
   readonly store: FsStore;
   /** Runtime executor used to start worker turns. */
@@ -111,6 +114,9 @@ interface StartProductTurnInput
  * @throws TurnStartValidationError when repository, model, scheduler, or dispatch validation fails.
  */
 export async function startProductTurn(input: StartProductTurnInput) {
+  const paused =
+    input.agentWorkPaused ?? (() => input.snapshot.openKitConfig.security?.pauseAgentWork === true);
+  assertAgentWorkNotPaused(paused());
   if (!input.coreDb) {
     throw new TurnStartValidationError(
       'scheduler_unavailable',
@@ -297,6 +303,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
       (request) => {
         input.validateAdmissionSource?.();
         input.store.getWorkspace(input.input.workspaceId);
+        assertAgentWorkNotPaused(paused());
         requireAvailableThread();
         if (input.fileInputs?.length) input.assertFileInputAdmission?.();
         return request;
@@ -407,6 +414,7 @@ export async function startProductTurn(input: StartProductTurnInput) {
   // durably, so a crash or partial cross-store publication cannot authorize preparation effects.
   await new Promise<void>((resolve) => setImmediate(resolve));
   void runSchedulerDispatchLoop({
+    agentWorkPaused: paused,
     agentManifests: input.snapshot.agentManifests,
     coreDb: input.coreDb,
     callerQueueEntryId: queueEntryId,

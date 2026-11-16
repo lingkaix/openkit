@@ -22,6 +22,7 @@ import {
   type InflightIdempotentCommand,
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { ControlKnowledgeAdmissionInputSchema } from '../storage/control-store-admission-codecs.js';
 import type { CoreDb } from '../storage/db.js';
 import { admitControlMaintenance } from './knowledge-agent-maintenance.js';
@@ -111,6 +112,9 @@ export async function prepareServerKnowledgeMaintenance(
   dependencies: ServerKnowledgeMaintenanceDependencies,
   input: ServerKnowledgeMaintenanceInput
 ) {
+  assertAgentWorkNotPaused(
+    dependencies.runtimeConfigManager.current().openKitConfig.security?.pauseAgentWork
+  );
   const { store, coreDb } = dependencies;
   if (input.trigger === 'request')
     requireAdministratorOperation(

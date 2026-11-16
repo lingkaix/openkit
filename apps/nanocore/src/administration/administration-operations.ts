@@ -56,6 +56,7 @@ import {
   runIdempotentCommand,
 } from '../runtime/idempotent-command.js';
 import type { TurnCommandRuntimeContext } from '../runtime/types.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { readSecurityAlarmPublication } from '../security/publication.js';
 import { selectSecurityThread } from '../security/threads.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
@@ -348,6 +349,7 @@ export function createAdministrationOperationImplementations(input: Administrati
       }
     },
     'administration.conversation-submit': async (request, context) => {
+      assertAgentWorkNotPaused(input.runtimeConfig().openKitConfig.security?.pauseAgentWork);
       if (!input.coreDb)
         throw new OperationError(
           'deployment_admin_required',
@@ -534,6 +536,7 @@ export function createAdministrationOperationImplementations(input: Administrati
             let answerStarted = false;
             try {
               const snapshot = input.runtimeConfig();
+              assertAgentWorkNotPaused(snapshot.openKitConfig.security?.pauseAgentWork);
               const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
               const userConfig = snapshot.userConfigs.find(
                 (entry) => entry.userId === actor.userId
@@ -665,10 +668,17 @@ export function createAdministrationOperationImplementations(input: Administrati
                 threadId: thread.id,
                 workspaceKind: 'personal',
               });
+              assertAgentWorkNotPaused(
+                input.runtimeConfig().openKitConfig.security?.pauseAgentWork
+              );
               const loopResult = await withTurnModelCapture(
                 { store, turn, environment: { systemPrompt, tools } },
                 async (capture) => {
                   const provider = createInternalAgentGatewayProvider({
+                    assertExecutionAvailable: () =>
+                      assertAgentWorkNotPaused(
+                        input.runtimeConfig().openKitConfig.security?.pauseAgentWork
+                      ),
                     capture,
                     logicalModel: selection.logicalModel,
                     ...(selection.profile?.reasoningEffort === undefined

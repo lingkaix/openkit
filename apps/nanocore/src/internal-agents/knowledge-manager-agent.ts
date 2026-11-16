@@ -16,6 +16,7 @@ import type { ProviderSubscriptionAccountManager } from '../llm/provider-subscri
 import type { ResolvedLLMProviderConfig } from '../providers/llm-config.js';
 import type { ProviderCredentialConfigured } from '../providers/registry.js';
 import type { TurnCommandRuntimeContext } from '../runtime/types.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import type { CoreDb, WorkspaceDb } from '../storage/db.js';
 import { assembleBuiltInSystemPrompt } from './builtin-prompts.js';
 import { createCompactingInternalAgentProvider } from './compacting-context.js';
@@ -229,6 +230,7 @@ async function runBoundedKnowledgeManagerAgent(
   dependencies: KnowledgeManagerAgentDependencies,
   input: AnyKnowledgeManagerAgentRun
 ): Promise<{ readonly turnId: string; readonly text: string }> {
+  assertAgentWorkNotPaused(dependencies.runtimeConfig().openKitConfig.security?.pauseAgentWork);
   const { store } = dependencies;
   const controller = new AbortController();
   let finish!: () => void;
@@ -342,6 +344,10 @@ async function executeKnowledgeManagerAgent(
           },
       async (capture) => {
         const ordinary = createInternalAgentGatewayProvider({
+          assertExecutionAvailable: () =>
+            assertAgentWorkNotPaused(
+              dependencies.runtimeConfig().openKitConfig.security?.pauseAgentWork
+            ),
           capture,
           logicalModel,
           ...(selection.profile?.reasoningEffort === undefined

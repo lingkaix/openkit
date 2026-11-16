@@ -1328,6 +1328,11 @@ function asOpenAIGatewayError(error: unknown): Response {
     // These existing public refusals can now precede dispatch after the native evidence wait.
     // Keep their declared status and fixed messages rather than the generic request failure.
     const refusals: Record<string, { message: string; status: number; type: string }> = {
+      agent_work_paused: {
+        message: 'Agent work is paused by a server administrator.',
+        status: 503,
+        type: 'invalid_request_error',
+      },
       model_not_configured: {
         message: 'Requested logical model is not configured.',
         status: 400,
@@ -3264,12 +3269,24 @@ export function registerLlmGatewayRoutes({
     return runtimeConfig().gatewayConfig.enabled && (exposureAvailable?.() ?? true);
   }
 
+  /** Remote Gateway calls are new execution even when no Workspace metadata is supplied. */
+  function assertAgentWorkAvailable(): void {
+    if (runtimeConfig().openKitConfig.security?.pauseAgentWork)
+      throw new OpenAICompatibleProviderError({
+        code: 'agent_work_paused',
+        message: 'Agent work is paused by a server administrator.',
+        type: 'invalid_request_error',
+        status: 503,
+      });
+  }
+
   /** Rechecks current public Workspace authority at each effect or disclosure boundary. */
   function assertPublicAuthority(
     context: Context<{ Variables: AuthVariables }>,
     actor: ActorRef,
     metadata: unknown
   ): void {
+    assertAgentWorkAvailable();
     if (
       !isGatewayEnabled() ||
       publicGatewayAuthorityDenied({
@@ -3409,6 +3426,7 @@ export function registerLlmGatewayRoutes({
 
   app.post('/v1/chat/completions', async (c) => {
     try {
+      assertAgentWorkAvailable();
       const input = GatewayChatCompletionRequestSchema.parse(await c.req.json());
 
       if (!isGatewayEnabled()) {
@@ -3600,6 +3618,7 @@ export function registerLlmGatewayRoutes({
 
   app.post('/v1/responses', async (c) => {
     try {
+      assertAgentWorkAvailable();
       const input = GatewayResponsesRequestSchema.parse(await c.req.json());
 
       if (!isGatewayEnabled()) {

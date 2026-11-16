@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Fixed automation text shared by delivery, inspection and refused answers; contains no source content. */
+export const DISCORD_AUTOMATION_NOTICE = 'OpenKit security: action needed within 24 hours.';
+
 /** A transport observation only; it never changes or proves a Pending Request outcome. */
 export type DiscordSendResult =
   | { readonly status: 'sent'; readonly externalMessageId: string }
@@ -10,6 +13,8 @@ export type DiscordSendResult =
 export interface DiscordAttentionSend {
   readonly discordUserId: string;
   readonly appPath: string;
+  /** Core-selected automation classification; never caller-supplied question content. */
+  readonly automation?: boolean;
   /** Rechecks source, recipient, current actor and binding after all asynchronous preparation. */
   readonly beforeSend: () => boolean;
 }
@@ -81,7 +86,9 @@ export function createDiscordRestTransport(options: {
             method: 'POST',
             headers: { Authorization: `Bot ${token}`, 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              content: `OpenKit needs your attention: ${appUrl.href}`,
+              content: input.automation
+                ? `${DISCORD_AUTOMATION_NOTICE}\nOpen OpenKit: ${appUrl.href}`
+                : `OpenKit needs your attention: ${appUrl.href}`,
               allowed_mentions: { parse: [] },
               flags: 4,
             }),

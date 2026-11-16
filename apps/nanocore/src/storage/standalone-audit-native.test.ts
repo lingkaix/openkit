@@ -302,6 +302,7 @@ it('publishes the original Audit identity and timestamps without adding a receip
     'auth.token.rotate',
     'policy.write',
     'administration.configuration.apply',
+    'server.config.update',
     'mcp.server.lifecycle.degraded',
     'mcp.server.lifecycle.failed',
     'mcp.server.lifecycle.inactive',

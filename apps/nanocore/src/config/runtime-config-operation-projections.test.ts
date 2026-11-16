@@ -11,6 +11,7 @@ import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { computeBootReadinessSnapshot } from '../bootstrap/readiness.js';
 import { SimulatedTurnExecutor } from '../lib/simulator.js';
 import { ProviderSubscriptionAccountManager } from '../llm/provider-subscription-accounts.js';
+import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { applyMigrations } from '../storage/migrate.js';
 import { createApp } from '../test-support/app.js';
@@ -573,3 +574,55 @@ it('reaches all ten owned runtime responses with explicit local authority', asyn
   expect(await invoke('runtime.schemas', {})).toHaveProperty('schemas');
   expect(await invoke('runtime.validate', { files: [] })).toHaveProperty('valid');
 });
+
+it.each([false, true])(
+  'publishes server configuration changed keys and actor from the shared file owner (audit fault=%s)',
+  async (auditFault) => {
+    const dataRoot = mkdtempSync(join(tmpdir(), 'openkit-server-config-audit-'));
+    roots.push(dataRoot);
+    mkdirSync(join(dataRoot, 'config'), { recursive: true });
+    writeFileSync(join(dataRoot, 'config/server.jsonc'), '{"schemaVersion":1}');
+    const coreDb = createTestCoreDb(dataRoot);
+    executorCoreDbs.push(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const app = createApp({
+      dataRoot,
+      coreDb,
+      turnExecutor: new SimulatedTurnExecutor({ coreDb }),
+    });
+    const invoke = (id: string, input: unknown) =>
+      app.request(`/api/app/operations/${id}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+    const read = await (await invoke('runtime.file-read', { id: 'server.jsonc' })).json();
+    if (auditFault)
+      vi.spyOn(getControlStoreWorkerClient(), 'standaloneAudit').mockRejectedValueOnce(
+        new Error('Audit acknowledgement unavailable')
+      );
+    const response = await invoke('runtime.file-update', {
+      id: 'server.jsonc',
+      kind: 'server',
+      expectedRevision: read.file.revision,
+      content: '{"schemaVersion":1,"server":{"publicBaseUrl":"https://openkit.example"}}',
+    });
+    if (auditFault) {
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({ code: 'config_file_saved_audit_unknown' });
+      expect(
+        JSON.parse(readFileSync(join(dataRoot, 'config/server.jsonc'), 'utf8')).server.publicBaseUrl
+      ).toBe('https://openkit.example');
+      return;
+    }
+    expect(response.status).toBe(200);
+    const events = coreDb.sqlite
+      .prepare(
+        "SELECT actor_json AS actor, summary FROM audit_events WHERE action = 'server.config.update'"
+      )
+      .all() as { actor: string; summary: string }[];
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0]!.actor)).toEqual({ kind: 'user', id: userId });
+    expect(JSON.parse(events[0]!.summary)).toEqual({ changedKeys: ['server.publicBaseUrl'] });
+  }
+);

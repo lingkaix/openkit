@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { GatewayConfig } from '@openkit/config-schema';
 import type { ActorRef } from '@openkit/protocol';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
+import type { OpenKitConfig } from '../config/openkit-config.js';
 import { admitModelRequest } from '../context/model-request-admission.js';
 import type { FsStore } from '../lib/store.js';
 import { trackLocalTitleAbort } from '../local-ai/title-abort.js';
+import { assertAgentWorkNotPaused } from '../security/agent-work-pause.js';
 import { ControlStoreWorkerError } from '../storage/control-store-worker-error.js';
 import type { WorkspaceDb } from '../storage/db.js';
 import { dispatchLogicalModel } from './gateway-routes.js';
@@ -57,6 +59,7 @@ export type TitleCompletion = (
 /** Owners a fresh create uses to run one title call. */
 export interface TitleGenerationRuntime {
   runtimeConfig(): {
+    openKitConfig?: Pick<OpenKitConfig, 'security'> | undefined;
     gatewayConfig: GatewayConfig;
     providerRegistry: Parameters<typeof resolveLogicalModel>[1];
   };
@@ -122,7 +125,7 @@ export function sanitizeTitle(raw: string): string | null {
  */
 export function scheduleThreadTitle(input: FreshThreadTitle): void {
   const runtime = input.runtime ?? bound;
-  if (!runtime) return;
+  if (!runtime || runtime.runtimeConfig().openKitConfig?.security?.pauseAgentWork) return;
   if (!runtime.runtimeConfig().gatewayConfig.titleLogicalModelId) return;
   void generateThreadTitle({ ...input, runtime }).catch(() => undefined);
 }
@@ -134,7 +137,7 @@ export function scheduleThreadTitle(input: FreshThreadTitle): void {
  */
 export async function generateThreadTitle(input: FreshThreadTitle): Promise<void> {
   const runtime = input.runtime ?? bound;
-  if (!runtime) return;
+  if (!runtime || runtime.runtimeConfig().openKitConfig?.security?.pauseAgentWork) return;
   const logicalModelId = runtime.runtimeConfig().gatewayConfig.titleLogicalModelId;
   if (!logicalModelId) return;
   const capped = titleSource(input.sourceText);
@@ -148,6 +151,7 @@ export async function generateThreadTitle(input: FreshThreadTitle): Promise<void
   const workspaceDb = runtime.repositoryWorkspaceDb(input.workspaceId);
   let callId: string | undefined;
   let finished = false;
+  let executionStarted = false;
   const finish = async (status: 'succeeded' | 'failed' | 'timed-out' | 'aborted') => {
     if (!callId || finished) return;
     finished = true;
@@ -214,7 +218,22 @@ export async function generateThreadTitle(input: FreshThreadTitle): Promise<void
               })
             );
           },
-          transport: { signal },
+          transport: {
+            signal,
+            finalRequestAdmission: async () => {
+              if (!executionStarted)
+                assertAgentWorkNotPaused(
+                  runtime.runtimeConfig().openKitConfig?.security?.pauseAgentWork
+                );
+            },
+            onProviderHandoff: () => {
+              if (!executionStarted)
+                assertAgentWorkNotPaused(
+                  runtime.runtimeConfig().openKitConfig?.security?.pauseAgentWork
+                );
+              executionStarted = true;
+            },
+          },
         };
         const complete =
           input.complete ??
@@ -224,7 +243,13 @@ export async function generateThreadTitle(input: FreshThreadTitle): Promise<void
           ? trackLocalTitleAbort(provider.baseUrl, caller)
           : () => undefined;
         try {
-          return await complete(provider, request, context);
+          if (!executionStarted)
+            assertAgentWorkNotPaused(
+              runtime.runtimeConfig().openKitConfig?.security?.pauseAgentWork
+            );
+          const response = await complete(provider, request, context);
+          executionStarted = true;
+          return response;
         } finally {
           release();
         }
