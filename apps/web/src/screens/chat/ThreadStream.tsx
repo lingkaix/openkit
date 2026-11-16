@@ -808,12 +808,18 @@ export function ThreadStream({
   useLayoutEffect(() => {
     const saved = retainedView.current;
     if (!saved || following.current) return;
-    retainedView.current = null;
     const entry = document.querySelector<HTMLElement>(
       `[data-timeline-entry="${CSS.escape(saved.entryId)}"]`
     );
     if (!entry) return;
     const scroller = scrollParent(entry);
+    // Back-navigation owns scrollTop until the reader moves. This delta runs
+    // after that restore and would add the height of rows that arrived late.
+    if (scroller.hasAttribute('data-restore-lock')) {
+      retainedView.current = null;
+      return;
+    }
+    retainedView.current = null;
     const top = measureVisibleTextAnchor(scroller, saved);
     if (top == null) return;
     const delta = scrollCorrection(saved.top, top);

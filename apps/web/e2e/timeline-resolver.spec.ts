@@ -156,6 +156,10 @@ test('resolves an exact output, hides a private source, and toasts within the ca
   page,
 }) => {
   test.setTimeout(240_000);
+  await page.addInitScript(() => {
+    // An unload listener keeps back navigation from restoring a frozen scroll snapshot.
+    window.addEventListener('unload', () => {});
+  });
   const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
   const client = createCoreClient({ baseUrl: stack.coreUrl });
   const runtimeErrors: string[] = [];
@@ -348,9 +352,37 @@ test('resolves an exact output, hides a private source, and toasts within the ca
       )
       .toBeGreaterThan(40);
     await page.screenshot({ path: join(shotsDir, 'desktop-scrolled-thread.png'), fullPage: false });
+    // The first history read is only the top runs. A later read fills the thread.
+    // Restoring against the short page must not stick once the saved range exists.
+    const short = { ...tall, runs: tall.runs.slice(0, 2) };
+    let releaseTall = false;
+    await page.unroute('**/api/app/operations/thread.timeline');
+    await page.route('**/api/app/operations/thread.timeline', async (route) => {
+      await route.fulfill({ json: releaseTall ? tall : short });
+    });
     await page.goto(`${stack.webUrl}/artifacts?workspaceId=${workspaceId}`);
     await page.goBack();
     await expect(page.locator('[data-timeline-lens="full"]')).toBeVisible({ timeout: 20_000 });
+    await expect(page.locator('[data-timeline-entry]').first()).toBeVisible();
+    releaseTall = true;
+    await page.evaluate(() => {
+      const setVisibility = (state: 'hidden' | 'visible') => {
+        Object.defineProperty(document, 'visibilityState', {
+          configurable: true,
+          get: () => state,
+        });
+        Object.defineProperty(document, 'hidden', {
+          configurable: true,
+          get: () => state === 'hidden',
+        });
+        document.dispatchEvent(new Event('visibilitychange'));
+      };
+      setVisibility('hidden');
+      setVisibility('visible');
+    });
+    await expect
+      .poll(async () => page.locator('[data-timeline-entry]').count(), { timeout: 20_000 })
+      .toBeGreaterThan(10);
     await expect
       .poll(
         async () => {
@@ -363,6 +395,10 @@ test('resolves an exact output, hides a private source, and toasts within the ca
       )
       .toBeLessThanOrEqual(2);
     await page.screenshot({ path: join(shotsDir, 'desktop-back-scroll.png'), fullPage: false });
+    await page.evaluate(() => {
+      Reflect.deleteProperty(document, 'visibilityState');
+      Reflect.deleteProperty(document, 'hidden');
+    });
     await page.unroute('**/api/app/operations/thread.timeline');
     await page.setViewportSize({ width: 360, height: 740 });
     attentionRows = [thread, ...siblings].map((item, index) =>

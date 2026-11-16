@@ -5,6 +5,12 @@
   overflow-anchor: auto;
 }
 
+/* A restored offset is the raw scrollTop. Anchoring descendants would add late height. */
+[data-timeline-scroll][data-restore-lock],
+[data-timeline-scroll][data-restore-lock] * {
+  overflow-anchor: none;
+}
+
 /* The step control stays out of the first paint until the catch-up divider is frozen. */
 .ok-timeline[data-opening-layout] [data-fold-control] {
   display: none;

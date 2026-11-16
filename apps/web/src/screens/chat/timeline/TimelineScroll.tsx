@@ -306,6 +306,10 @@ export function TimelineScroll({
   const pinRef = useRef(pinDivider);
   pinRef.current = pinDivider;
   const restored = useRef(false);
+  // Late chrome, receipts, or padding must not move a restored offset. The lock
+  // holds the saved scrollTop until the reader scrolls or follows the tail.
+  const restoreLock = useRef(false);
+  const reapplyRestore = useRef<() => void>(() => {});
   const earlierRef = useRef<HTMLButtonElement>(null);
   const jumpRef = useRef<HTMLButtonElement>(null);
   const restoreEarlierFocus = useRef(false);
@@ -318,7 +322,18 @@ export function TimelineScroll({
     setRestoreSettled(restoreTop == null);
   }
 
+  function releaseRestoreLock() {
+    if (!restoreLock.current) return;
+    restoreLock.current = false;
+    restored.current = true;
+    const scroller = scrollParent(frame.current);
+    scroller.removeAttribute('data-restore-lock');
+    scroller.style.overflowAnchor = '';
+    setRestoreSettled(true);
+  }
+
   function setFollow(next: boolean) {
+    if (next) releaseRestoreLock();
     followingRef.current = next;
     setFollowing(next);
     onFollowChange(next);
@@ -334,8 +349,13 @@ export function TimelineScroll({
   // biome-ignore lint/correctness/useExhaustiveDependencies: the scroll listener stays on the scroller and reads the latest follow callback through setFollow.
   useLayoutEffect(() => {
     const scroller = scrollParent(frame.current);
-    scroller.style.overflowAnchor = 'auto';
+    if (!restoreLock.current) scroller.style.overflowAnchor = 'auto';
     const onScroll = () => {
+      if (restoreLock.current) {
+        if (!correcting.current) reapplyRestore.current();
+        writeTimelineHistory(window.history, { scrollTop: scroller.scrollTop });
+        return;
+      }
       const next = isFollowing(distanceFromEnd(scroller));
       if (next !== followingRef.current) setFollow(next);
       writeTimelineHistory(window.history, { scrollTop: scroller.scrollTop });
@@ -354,7 +374,7 @@ export function TimelineScroll({
     const observer =
       content && typeof ResizeObserver !== 'undefined'
         ? new ResizeObserver(() => {
-            if (pinRef.current || !followingRef.current) return;
+            if (pinRef.current || restoreLock.current || !followingRef.current) return;
             const distance = distanceFromEnd(scroller);
             if (distance <= 1) return;
             scroller.scrollTop = scroller.scrollHeight;
@@ -458,6 +478,7 @@ export function TimelineScroll({
   }, [followRequest]);
 
   useLayoutEffect(() => {
+    if (restoreLock.current) return;
     if (followingRef.current) {
       pending.current = null;
       held.current = null;
@@ -467,21 +488,110 @@ export function TimelineScroll({
     scroller.scrollTop = scroller.scrollHeight;
   });
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the lock reads the latest follow callback through refs and must not rebind when that callback changes.
   useLayoutEffect(() => {
     if (restoreTop == null) {
+      restoreLock.current = false;
       restored.current = false;
+      reapplyRestore.current = () => {};
       return;
     }
-    if (restored.current || !frame.current) return;
+    if (!frame.current) return;
     const scroller = scrollParent(frame.current);
-    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-    const hasEntry = scroller.querySelector('[data-timeline-entry]') != null;
-    // Wait until the runs have height. A saved offset past the mounted end clamps.
-    if (restoreTop > 0 && max < restoreTop - 2 && (!hasEntry || max === 0)) return;
-    scroller.scrollTop = Math.min(restoreTop, max);
-    restored.current = true;
-    setRestoreSettled(true);
-    if (!isFollowing(distanceFromEnd(scroller))) setFollow(false);
+    restoreLock.current = true;
+    scroller.setAttribute('data-restore-lock', '');
+    scroller.style.overflowAnchor = 'none';
+    let frameId = 0;
+    let stableFrames = 0;
+    let stableHeight = -1;
+    const apply = () => {
+      if (!restoreLock.current) return;
+      // overflow-anchor on the scroller does not opt descendants out.
+      scroller.setAttribute('data-restore-lock', '');
+      scroller.style.overflowAnchor = 'none';
+      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const hasEntry = scroller.querySelector('[data-timeline-entry]') != null;
+      // Wait until the runs have height. A saved offset past the mounted end clamps.
+      if (restoreTop > 0 && !hasEntry) return;
+      const target = Math.min(restoreTop, max);
+      if (Math.abs(scroller.scrollTop - target) > 1) {
+        correcting.current = true;
+        scroller.scrollTop = target;
+        correcting.current = false;
+      }
+    };
+    // A late row can move the offset a frame after the size change. Keep
+    // correcting until the height settles; a reader gesture is what releases.
+    const settle = () => {
+      stableFrames = 0;
+      stableHeight = -1;
+      const step = () => {
+        if (!restoreLock.current) return;
+        apply();
+        const height = scroller.scrollHeight;
+        if (height === stableHeight) stableFrames += 1;
+        else {
+          stableHeight = height;
+          stableFrames = 0;
+        }
+        // Pause once the page stops changing. A resize, mutation, or scroll starts again.
+        if (stableFrames >= 8) return;
+        frameId = requestAnimationFrame(step);
+      };
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(step);
+    };
+    reapplyRestore.current = () => {
+      apply();
+      settle();
+    };
+    settle();
+    const column = scroller.firstElementChild;
+    const observer =
+      typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(() => settle());
+    if (column instanceof HTMLElement) observer?.observe(column);
+    const mutations =
+      column instanceof HTMLElement && typeof MutationObserver !== 'undefined'
+        ? new MutationObserver(() => settle())
+        : null;
+    mutations?.observe(column as HTMLElement, { childList: true, subtree: true });
+    const release = () => {
+      if (!restoreLock.current) return;
+      restoreLock.current = false;
+      restored.current = true;
+      scroller.removeAttribute('data-restore-lock');
+      scroller.style.overflowAnchor = '';
+      setRestoreSettled(true);
+      if (!isFollowing(distanceFromEnd(scroller))) {
+        followingRef.current = false;
+        setFollowing(false);
+        onFollowChange(false);
+      }
+    };
+    scroller.addEventListener('pointerdown', release, true);
+    scroller.addEventListener('wheel', release, { passive: true });
+    scroller.addEventListener('touchstart', release, { passive: true });
+    scroller.addEventListener('keydown', release);
+    return () => {
+      cancelAnimationFrame(frameId);
+      observer?.disconnect();
+      mutations?.disconnect();
+      scroller.removeEventListener('pointerdown', release, true);
+      scroller.removeEventListener('wheel', release);
+      scroller.removeEventListener('touchstart', release);
+      scroller.removeEventListener('keydown', release);
+      reapplyRestore.current = () => {};
+      if (restoreLock.current) {
+        scroller.removeAttribute('data-restore-lock');
+        scroller.style.overflowAnchor = '';
+      }
+    };
+  }, [restoreTop]);
+
+  // Runs after the retained-view layout effect, which is the other scroll writer.
+  useEffect(() => {
+    if (!restoreLock.current) return;
+    reapplyRestore.current();
   });
 
   useLayoutEffect(() => {
@@ -489,7 +599,7 @@ export function TimelineScroll({
       pinToken.current = pinKey;
       pinnedDivider.current = false;
     }
-    if (!pinDivider) {
+    if (!pinDivider || restoreLock.current) {
       pinnedDivider.current = false;
       return;
     }
@@ -514,6 +624,10 @@ export function TimelineScroll({
 
   useLayoutEffect(() => {
     const scroller = scrollParent(frame.current);
+    if (restoreLock.current) {
+      held.current = null;
+      return;
+    }
     if (followingRef.current) {
       held.current = null;
       return;
@@ -539,6 +653,23 @@ export function TimelineScroll({
       held.current = trackVisibleAnchor(scroller, held.current);
     } finally {
       tracking.current = false;
+    }
+  });
+
+  // Last layout pass. A late row can move the offset after the other scroll effects.
+  useLayoutEffect(() => {
+    if (restoreTop == null || !restoreLock.current || !frame.current) return;
+    const scroller = scrollParent(frame.current);
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    const hasEntry = scroller.querySelector('[data-timeline-entry]') != null;
+    if (restoreTop > 0 && !hasEntry) return;
+    scroller.setAttribute('data-restore-lock', '');
+    scroller.style.overflowAnchor = 'none';
+    const target = Math.min(restoreTop, max);
+    if (Math.abs(scroller.scrollTop - target) > 1) {
+      correcting.current = true;
+      scroller.scrollTop = target;
+      correcting.current = false;
     }
   });
 
