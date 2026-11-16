@@ -4,7 +4,6 @@ import {
   ItemIdSchema,
   ItemSchema,
   ListThreadItemsResponseSchema,
-  ListThreadsResponseSchema,
   ThreadIdSchema,
   TurnIdSchema,
   UpdateThreadRequestSchema,
@@ -27,6 +26,12 @@ const publicCredentials = [
 const workspaceSelector = { workspaceId: WorkspaceIdSchema };
 
 const threadSelector = { ...workspaceSelector, threadId: ThreadIdSchema };
+
+/** Public list view excludes retained segmentation reservations from Thread items. */
+export const ProductListThreadsResponseSchema = z.object({
+  items: z.array(ProductThreadSchema),
+  nextCursor: z.string().min(1).nullable().optional(),
+});
 
 /** Current User membership for the required bounded selection; never a complete Thread read. */
 export const ThreadReadStateResponseSchema = z.object({
@@ -53,7 +58,7 @@ export const THREAD_OPERATION_DEFINITIONS = {
     successStatus: 200,
     description: 'List visible Threads in one Workspace.',
     inputSchema: z.object(workspaceSelector).strict(),
-    outputSchema: ListThreadsResponseSchema,
+    outputSchema: ProductListThreadsResponseSchema,
     credentials: publicCredentials,
     scope: { kind: 'body-workspace', field: 'workspaceId' },
     target: { kind: 'workspace' },

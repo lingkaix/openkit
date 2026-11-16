@@ -1,4 +1,4 @@
-import { allocateEntityId } from '@openkit/protocol';
+import { allocateEntityId, ListThreadsResponseSchema } from '@openkit/protocol';
 import { describe, expect, it } from 'vitest';
 import { THREAD_OPERATION_DEFINITIONS } from './index.js';
 
@@ -138,4 +138,36 @@ it('keeps reserved segmentation outside the current product Thread projection', 
   ).toEqual(thread);
   expect(output.safeParse({ ...thread, parentThreadId: threadId }).success).toBe(false);
   expect(output.safeParse({ ...thread, visibility: 'private' }).success).toBe(false);
+});
+
+it('strips retained segmentation from thread.list while preserving its cursor contract', () => {
+  const thread = {
+    id: threadId,
+    owner: { kind: 'workspace', workspaceId },
+    name: 'History',
+    preview: 'History',
+    status: 'active',
+    entryPath: 'conversation',
+    visibility: 'workspace',
+    createdAt: '2026-11-16T00:00:00.000Z',
+    updatedAt: '2026-11-16T00:00:00.000Z',
+  };
+  const retainedThread = {
+    ...thread,
+    segment: 1,
+    segmentation: {
+      maxObservationLines: 10_000,
+      maxBytes: 100_000_000,
+      boundaryDelayed: true,
+    },
+  };
+  const output = THREAD_OPERATION_DEFINITIONS['thread.list'].outputSchema;
+  for (const cursor of [{}, { nextCursor: null }, { nextCursor: 'next' }]) {
+    const previous = { items: [thread], ...cursor };
+    const retained = { items: [retainedThread], ...cursor };
+    expect(ListThreadsResponseSchema.parse(retained)).toEqual(retained);
+    expect(output.parse(retained)).toEqual(previous);
+    expect(output.parse(previous)).toEqual(previous);
+  }
+  expect(output.safeParse({ items: [thread], nextCursor: '' }).success).toBe(false);
 });
