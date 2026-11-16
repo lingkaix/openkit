@@ -328,7 +328,7 @@ Round 2 status of this list, at the round-2 base:
 
 ## Root AGENTS.md Reading
 
-Round 2 read the root `AGENTS.md` at the round-2 base without editing it. It has the six owned top-level sections, 2,142 words against the 2,200-word ceiling, and seven completion questions, each with a clause ID and an expected answer (AUTHORITY-002). The two Chinese meta-instructions are the ones LANG-001 permits. The audit found three proposals; each is a question for the engineer, because only the engineer may change this file.
+Round 2 read the root `AGENTS.md` at the round-2 base without editing it. It has the six owned top-level sections, 2,145 words against the 2,200-word ceiling, and seven completion questions, each with a clause ID and an expected answer (AUTHORITY-002). The two Chinese meta-instructions are the ones LANG-001 permits. The audit found three proposals; each is a question for the engineer, because only the engineer may change this file.
 
 ## Round 2 Deviations
 
