@@ -15,6 +15,7 @@ import {
   getControlStoreWorkerClient,
   shutdownControlStoreWorkerClient,
 } from '../storage/control-store-worker-client.js';
+import type { ControlWorkerCommand } from '../storage/control-store-worker-protocol.js';
 import { createDemoStore } from '../test-support/demo-store.js';
 import { observeTestAppRecordCount } from '../test-support/store.js';
 import type { KernelCommandContext } from './commands.js';
@@ -580,6 +581,21 @@ describe('Generative Kernel commands', () => {
     const client = getControlStoreWorkerClient();
     client.setFileStorageAdmission(context.dataRoot, admission);
     const resume = await client.pauseForDataRootBackup(database);
+    const predecessorQueued = Promise.withResolvers<void>();
+    const schemaQueued = Promise.withResolvers<void>();
+    // Both commands perform asynchronous read admission before reaching the native FIFO.
+    // Observe real Pending insertion, not an event-loop turn or an invocation count.
+    const pending: Map<number, { command: ControlWorkerCommand }> = Reflect.get(client, 'pending');
+    const setPending = pending.set.bind(pending);
+    const queued = vi.spyOn(pending, 'set').mockImplementation((id, entry) => {
+      const result = setPending(id, entry);
+      const command = entry.command;
+      if (command.operation === 'app-kernel' && command.database === database) {
+        if (command.input.kind === 'record-batch') predecessorQueued.resolve();
+        if (command.input.kind === 'schema') schemaQueued.resolve();
+      }
+      return result;
+    });
     const predecessor = batchRecords({ ...context, requestId: randomUUID() }, target.appId, {
       schemaRevision: target.schemaRevision,
       requests: Array.from({ length: 50 }, (_, index) => ({
@@ -600,37 +616,40 @@ describe('Generative Kernel commands', () => {
     });
     const collection = target.schema!.collections[0]!;
     const schemaRequestId = randomUUID();
-    const schema = updateLightAppSchema(
-      { ...context, requestId: schemaRequestId },
-      target.appId,
-      target.appRevision,
-      target.schemaRevision,
-      {
-        ...MAPPING_SCHEMA,
-        collections: [
-          {
-            ...MAPPING_SCHEMA.collections[0]!,
-            id: collection.id,
-            fields: [
-              ...MAPPING_SCHEMA.collections[0]!.fields.map((field, index) => ({
-                ...field,
-                id: collection.fields[index]!.id,
-              })),
-              {
-                name: 'forecast_note',
-                type: 'text',
-                required: false,
-                description: 'Added only when the physical snapshot is admitted.',
-              },
-            ],
-          },
-        ],
-      }
+    const schema = predecessorQueued.promise.then(() =>
+      updateLightAppSchema(
+        { ...context, requestId: schemaRequestId },
+        target.appId,
+        target.appRevision,
+        target.schemaRevision,
+        {
+          ...MAPPING_SCHEMA,
+          collections: [
+            {
+              ...MAPPING_SCHEMA.collections[0]!,
+              id: collection.id,
+              fields: [
+                ...MAPPING_SCHEMA.collections[0]!.fields.map((field, index) => ({
+                  ...field,
+                  id: collection.fields[index]!.id,
+                })),
+                {
+                  name: 'forecast_note',
+                  type: 'text',
+                  required: false,
+                  description: 'Added only when the physical snapshot is admitted.',
+                },
+              ],
+            },
+          ],
+        }
+      )
     );
     try {
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      await Promise.race([schemaQueued.promise, predecessor, schema]);
     } finally {
       resume();
+      queued.mockRestore();
     }
     const committedPredecessor = await predecessor;
     await expect(schema).rejects.toMatchObject({ code: 'no-space', commit: 'not-committed' });
