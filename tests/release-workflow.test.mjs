@@ -54,6 +54,56 @@ test('publication admission requires the complete exact-head gate including L4',
     assert.ok(candidateJobs.includes(workflow.jobs[id].name), id);
 });
 
+test('every required candidate observation matches one current workflow job after matrix expansion', () => {
+  const images = JSON.parse(readFileSync('containers/images.json', 'utf8')).images.filter(
+    (image) => image.release
+  );
+  const matrices = new Map([
+    ['candidate-images', candidateMatrix(images).include],
+    ['candidate-index', images],
+  ]);
+  assert.equal(
+    workflow.jobs['candidate-images'].strategy.matrix,
+    actionExpression('fromJSON(needs.candidate-plan.outputs.matrix)')
+  );
+  assert.equal(
+    workflow.jobs['candidate-index'].strategy.matrix,
+    actionExpression('fromJSON(needs.container-image-matrix.outputs.matrix)')
+  );
+  const names = Object.entries(workflow.jobs).flatMap(([id, job]) => {
+    if (!job.name.includes('${{')) return [job.name];
+    let rows = matrices.get(id);
+    if (!rows && typeof job.strategy?.matrix === 'object') {
+      const { include = [], exclude = [], ...axes } = job.strategy.matrix;
+      const dimensions = Object.entries(axes);
+      assert.ok(!dimensions.length || !include.length, `${id}: mixed matrix needs expansion`);
+      rows = dimensions.reduce(
+        (combinations, [key, values]) =>
+          combinations.flatMap((row) => values.map((value) => ({ ...row, [key]: value }))),
+        dimensions.length ? [{}] : []
+      );
+      rows = rows.filter(
+        (row) => !exclude.some((entry) => Object.entries(entry).every(([k, v]) => row[k] === v))
+      );
+      rows.push(...include);
+    }
+    if (!rows) return [];
+    return rows.map((row) =>
+      job.name.replace(/\$\{\{\s*matrix\.(\w+)\s*\}\}/gu, (_, key) => {
+        assert.equal(typeof row[key], 'string', `${id}: unresolved matrix.${key}`);
+        return row[key];
+      })
+    );
+  });
+  const required = [...candidateJobs, ...images.map((image) => `Candidate index (${image.id})`)];
+  assert.deepEqual(
+    required.filter((name) => names.filter((observed) => observed === name).length !== 1),
+    []
+  );
+  for (const runner of workflow.jobs['nanohost-installer'].strategy.matrix.runner)
+    assert.ok(candidateJobs.includes(`NanoHost installer fixed-path gate (${runner})`), runner);
+});
+
 test('release identity build arguments come from the exact candidate image owner', () => {
   const job = workflow.jobs['candidate-images'];
   const identity = step(job, 'Compute the exact-P intended image identity');

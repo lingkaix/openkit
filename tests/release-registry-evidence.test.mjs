@@ -3,11 +3,81 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { candidateJobs } from '../scripts/release-publication-check.mjs';
 import {
   collectRegistryEvidence,
+  producerCandidate,
   readRegistryEvidence,
   validateRegistryEvidence,
 } from '../scripts/release-registry-evidence.mjs';
+
+test('same-run dependency admission requires every exact job including both installer runners', () => {
+  const repository = 'example/openkit',
+    source = 'a'.repeat(40),
+    runId = 41,
+    attempt = 2,
+    images = [{ id: 'app' }, { id: 'worker-common' }, { id: 'worker-runtimes' }];
+  const required = [...candidateJobs, ...images.map((image) => `Candidate index (${image.id})`)];
+  const metadata = {
+    head_sha: source,
+    run_attempt: attempt,
+    path: '.github/workflows/ci.yml',
+    repository: { full_name: repository },
+    event: 'workflow_dispatch',
+    head_branch: 'main',
+    status: 'in_progress',
+  };
+  const jobs = required.map((name, i) => ({
+    id: i + 1,
+    name,
+    run_attempt: attempt,
+    status: 'completed',
+    conclusion: 'success',
+  }));
+  const invoke = (observations = jobs, run = metadata, total = observations.length) =>
+    producerCandidate(repository, source, runId, runId, attempt, images, {
+      read(endpoint, options) {
+        if (endpoint === `repos/${repository}/actions/runs/${runId}`) return run;
+        assert.equal(
+          endpoint,
+          `repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs?per_page=100`
+        );
+        assert.equal(options.paginate, true);
+        return [{ total_count: total, jobs: observations }];
+      },
+    });
+  assert.deepEqual(invoke(), { runId, attempt, jobs });
+  for (const name of required) {
+    assert.throws(
+      () => invoke(jobs.filter((job) => job.name !== name)),
+      /Complete current candidate dependencies required/,
+      `missing ${name}`
+    );
+    assert.throws(
+      () =>
+        invoke(jobs.map((job) => (job.name === name ? { ...job, conclusion: 'failure' } : job))),
+      /Complete current candidate dependencies required/,
+      `failed ${name}`
+    );
+  }
+  for (const patch of [
+    { run_attempt: 1 },
+    { status: 'in_progress', conclusion: null },
+    { conclusion: 'skipped' },
+  ])
+    assert.throws(() => invoke([{ ...jobs[0], ...patch }, ...jobs.slice(1)]));
+  assert.throws(() => invoke([...jobs, jobs[0]]));
+  assert.throws(() => invoke(jobs, metadata, jobs.length + 1));
+  for (const patch of [
+    { head_sha: 'b'.repeat(40) },
+    { run_attempt: 1 },
+    { path: '.github/workflows/other.yml' },
+    { repository: { full_name: 'outside/openkit' } },
+    { event: 'pull_request' },
+    { event: 'push', head_branch: 'other' },
+  ])
+    assert.throws(() => invoke(jobs, { ...metadata, ...patch }));
+});
 
 /** A registry read is separate from the original build, and both current attempts must agree. */
 function fixture() {

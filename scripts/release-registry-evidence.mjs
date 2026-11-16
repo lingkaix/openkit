@@ -174,11 +174,19 @@ export function readRegistryEvidence(
 }
 
 /** Observe completed candidate dependencies even while this same run is finishing its final read-only job. */
-function producerCandidate(repository, source, runId, currentRun, currentAttempt, images) {
+export function producerCandidate(
+  repository,
+  source,
+  runId,
+  currentRun,
+  currentAttempt,
+  images,
+  { read = githubJson, observe = observeRun } = {}
+) {
   const required = [...candidateJobs, ...images.map((i) => `Candidate index (${i.id})`)];
-  if (runId !== currentRun) return observeRun({ repository, sha: source, runId, required });
-  const metadata = githubJson(`repos/${repository}/actions/runs/${runId}`);
-  const pages = githubJson(
+  if (runId !== currentRun) return observe({ repository, sha: source, runId, required });
+  const metadata = read(`repos/${repository}/actions/runs/${runId}`);
+  const pages = read(
     `repos/${repository}/actions/runs/${runId}/attempts/${currentAttempt}/jobs?per_page=100`,
     { paginate: true }
   );
