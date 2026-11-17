@@ -199,9 +199,9 @@ function resolveLogicalModelCatalogForConnection(
       throw new Error(`Logical model context management is missing: ${logicalModel.id}.`);
     }
     for (const contract of authoredContracts) {
-      if (!contract) continue;
+      // Missing context withholds this member from routing; known bounds still constrain the tier.
+      if (!contract || contract.contextLimit === null) continue;
       if (
-        contract.contextLimit === null ||
         contextManagement.compactThreshold > contract.contextLimit ||
         (contract.outputLimit !== null &&
           contextManagement.compactThreshold + contract.outputLimit > contract.contextLimit)
@@ -237,7 +237,8 @@ function resolveLogicalModelCatalogForConnection(
           ? 'provider_profile_absent'
           : !profile.models.includes(route.providerModel)
             ? 'provider_model_delisted'
-            : !isProviderProfileDispatchable(profile)
+            : !isProviderProfileDispatchable(profile) ||
+                !hasKnownContext(resolveEffectiveModelMetadata(profile, route.providerModel))
               ? 'provider_not_dispatchable'
               : afterLocalSupply(localSupplyReason(profile, route.providerModel), () =>
                   credentialUnavailableReason(

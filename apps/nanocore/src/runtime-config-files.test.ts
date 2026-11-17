@@ -700,7 +700,10 @@ describe('runtime config file API', () => {
               files: [
                 {
                   id: providerFileId,
-                  content: original.replace('openai/gpt-5.1', 'openkit/no-known-context-fixture'),
+                  content: JSON.stringify({
+                    ...JSON.parse(original),
+                    modelMetadata: { 'openai/gpt-5.1': { limit: { context: 100_000 } } },
+                  }),
                 },
               ],
               mode: 'safe',
@@ -712,7 +715,7 @@ describe('runtime config file API', () => {
         valid: boolean;
         diagnostics: Array<{ severity: string }>;
       };
-      // Gateway Provider Model Metadata requires a known positive context limit.
+      // A known context below the authored compaction bound still rejects after overlay allocation.
       expect(rejected.valid).toBe(false);
       expect(rejected.diagnostics).toContainEqual(expect.objectContaining({ severity: 'error' }));
       expect(overlayRoots.length).toBeGreaterThan(successRootCount);

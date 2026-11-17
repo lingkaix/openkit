@@ -36,7 +36,9 @@ import {
   requireNanoHostExecutionAttempt,
 } from './nanohost-attempt-records.js';
 import { createNanoHostEffectRequest } from './nanohost-effect-identity.js';
+import { getNanoHostRuntimeTarget } from './nanohost-runtime-target-records.js';
 import { readPendingRequest } from './pending-requests.js';
+import { logRecoveryMaintenanceFailure } from './scheduler-attempt-maintenance-service.js';
 import type { RunSchedulerRestartRecoveryInput } from './scheduler-restart-recovery.js';
 import { projectWorkerBackendCleanup } from './worker-backend-cleanup-projection.js';
 import {
@@ -82,17 +84,19 @@ interface RecoveryWorkspace {
   readonly environmentPackage: AgentEnvironmentPackage;
 }
 
-/** Classifies native survivors before listen without delivering or replaying a backend operation. */
+/** Classifies native survivors independently before listen, retaining faults for maintenance. */
 export async function classifyNanoHostAttemptsAfterRestart(
   coreDb: CoreDb,
   input: RunNanoHostAttemptRecoveryInput
-): Promise<void> {
-  const errors: unknown[] = [];
+): Promise<{ readonly failedAttemptIds: string[] }> {
+  const failedAttemptIds: string[] = [];
   const timestamp = input.now?.() ?? new Date().toISOString();
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
     if (!attempt.operationId) continue;
     try {
+      if (attempt.backendId !== input.executionBackend.id)
+        throw new Error('Retained attempt names an unavailable backend.');
       const session = getWorkerBackendSession(coreDb, attempt.attemptId);
       if (!session) continue; // Original operation remains unknown; absence is not a fence.
       const native = requireNanoHostExecutionAttempt(coreDb, attempt.attemptId);
@@ -129,11 +133,12 @@ export async function classifyNanoHostAttemptsAfterRestart(
         const fenced = await moveSessionToCleanupPending(coreDb, session, timestamp);
         input.prepareBackendCleanup(toRestartBackendIdentity(fenced));
       }
-    } catch (error) {
-      errors.push(error);
+    } catch {
+      logRecoveryMaintenanceFailure('attempt-recovery', attempt);
+      failedAttemptIds.push(attempt.attemptId);
     }
   }
-  if (errors.length) throw new AggregateError(errors, 'Native restart classification failed.');
+  return { failedAttemptIds };
 }
 
 /** Drives exact original native cleanup after listen; product barriers remain with the executor owner. */
@@ -151,6 +156,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
   }
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
+    if (attempt.backendId !== input.executionBackend.id) continue;
     try {
       let session = getWorkerBackendSession(coreDb, attempt.attemptId);
       if (!session || !attempt.agentSessionId || !attempt.inputRef) continue;
@@ -224,7 +230,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           workspace.environmentPackage.agent.agentId !== admission.requestedAgentId
         )
           throw new Error('Native recovery package does not match its exact admission.');
-        const anyHandoffRows =
+        let anyHandoffRows =
           listBackendWorkspaceHandles(workspace.db, native.workspaceId).some(
             (handle) => handle.packageSnapshotId === native.inputRef
           ) ||
@@ -233,7 +239,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           );
         // Handoff publication does not invalidate the original proof.
         // Release failure or Core exit before attempt closure leaves this same empty package to finish next pass.
-        const materializationNotPublished =
+        let materializationNotPublished =
           !anyHandoffRows &&
           native.deadline === null &&
           ['execution-failed', 'turn-start-failed'].includes(native.terminalCause ?? '') &&
@@ -242,14 +248,41 @@ export async function runNanoHostAttemptRecoveryMaintenance(
           isInitialImagePreparation(native, session, workspace.environmentPackage);
         if (
           !materializationNotPublished &&
-          session.workspaceHandoffState === 'pending' &&
           !anyHandoffRows &&
           workspace.environmentPackage.workspace.inputs.length > 0
         ) {
-          // Empty tables do not prove no materialization.
-          // Preserve the existing inspection classification without retrying unchanged unknown cleanup on every maintenance pass.
           await markNanoHostAttemptNeedsEvidence(coreDb, native.attemptId);
-          continue;
+          // Empty tables and a Turn-local cleanup marker cannot authorize deleting surviving Workspace output.
+          // Require a different fresh Epoch before asking the existing cleanup owner to prove physical absence; that owner rechecks the exact proof.
+          const target = getNanoHostRuntimeTarget(coreDb, session.runtimeTargetId);
+          if (
+            !target ||
+            target.deploymentId !== session.deploymentId ||
+            !target.predecessorFenced ||
+            !target.ready ||
+            !target.freshEmpty ||
+            !target.physicalEpoch ||
+            !/^[0-9a-f]{64}$/.test(target.physicalEpoch) ||
+            target.physicalEpoch === session.originPhysicalEpoch
+          )
+            continue;
+          session = await cleanupPhysicalSession(coreDb, session, now, input.cleanupBackendSession);
+          // Publication can finish while cleanup awaits its native acknowledgement.
+          // New rows still belong to the existing takeover/disposition owner, never the empty-table path.
+          anyHandoffRows =
+            listBackendWorkspaceHandles(workspace.db, native.workspaceId).some(
+              (handle) => handle.packageSnapshotId === native.inputRef
+            ) ||
+            listWorkspaceMaterializationRecords(workspace.db, native.workspaceId).some(
+              (record) => record.packageSnapshotId === native.inputRef
+            );
+          // The capture guard already preserved every arrived source.
+          // The old writer is gone, publication never occurred, and retained Worker storage is kept idle.
+          // Recheck this same proof after a crash between handoff publication and release.
+          materializationNotPublished =
+            !anyHandoffRows &&
+            ['physical-cleaned', 'cleaned'].includes(session.state) &&
+            session.physicalCleanedAt !== null;
         }
         if (!materializationNotPublished) {
           if (
@@ -362,7 +395,7 @@ export async function runNanoHostAttemptRecoveryMaintenance(
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', session.workspaceId)) continue;
     try {
       const owner = requireSchedulerExecutionAttempt(coreDb, session.attemptId);
-      if (owner.phase !== 'closed') continue;
+      if (owner.backendId !== input.executionBackend.id || owner.phase !== 'closed') continue;
       if (session.state === 'cleaned') continue;
       // Exact journal ownership excludes orphan cleanup even outside the current candidate page.
       if (input.prepareBackendCleanup(toRestartBackendIdentity(session))) continue;
@@ -406,8 +439,8 @@ export async function runNanoHostAttemptRecoveryMaintenance(
       .prepare(`SELECT attempt_id AS attemptId, workspace_id AS workspaceId,
       thread_id AS threadId, turn_id AS turnId, agent_session_id AS agentSessionId
       FROM scheduler_execution_attempts WHERE phase = 'closed' AND terminal_cause = 'turn-start-failed'
-      ORDER BY rowid`)
-      .all() as Array<
+      AND backend_id = ? ORDER BY rowid`)
+      .all(input.executionBackend.id) as Array<
       Pick<
         SchedulerExecutionAttemptRecord,
         'attemptId' | 'workspaceId' | 'threadId' | 'turnId' | 'agentSessionId'

@@ -108,6 +108,47 @@ export function createTestCoreDb(dataRoot: string): CoreDb {
   }
 }
 
+/**
+ * Injects one backend-identity fault into a genuine attempt in a disposable Core fixture.
+ * Drains the native writer before corruption; callers exclude other fixture producers.
+ * This changes no lifecycle, receipt or Audit and grants no execution authority.
+ * @param coreDb Existing fixture owner containing the original attempt.
+ * @param attemptId Exact attempt to corrupt after valid owner setup.
+ * @param backendId Deliberately unavailable backend identity.
+ */
+export async function setTestExecutionAttemptBackend(
+  coreDb: CoreDb,
+  attemptId: string,
+  backendId: string
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  const changed = coreDb.sqlite
+    .prepare('UPDATE scheduler_execution_attempts SET backend_id=? WHERE attempt_id=?')
+    .run(backendId, attemptId);
+  if (changed.changes !== 1) throw new Error('Backend fault requires one existing attempt.');
+}
+
+/**
+ * Injects one contradictory Turn reference into a genuine native session in a disposable fixture.
+ * Drains the native writer before corruption; callers exclude other fixture producers.
+ * This changes no lifecycle, receipt or Audit and grants no cleanup authority.
+ * @param coreDb Existing fixture owner containing the original native session.
+ * @param attemptId Exact session owner to corrupt after valid setup.
+ * @param turnId Deliberately mismatched retained Turn reference.
+ */
+export async function setTestBackendSessionTurn(
+  coreDb: CoreDb,
+  attemptId: string,
+  turnId: string
+): Promise<void> {
+  await shutdownControlStoreWorkerClient();
+  const changed = coreDb.sqlite
+    .prepare('UPDATE worker_backend_sessions SET turn_id=? WHERE attempt_id=?')
+    .run(turnId, attemptId);
+  if (changed.changes !== 1)
+    throw new Error('Lineage fault requires one existing backend session.');
+}
+
 /** Opens only an already initialized Workspace fixture; creates no records or authority. */
 export function createTestWorkspaceDb(dataRoot: string, workspaceId: string): WorkspaceDb {
   return openWorkspaceDb(dataRoot, workspaceId);

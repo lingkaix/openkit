@@ -364,6 +364,42 @@ describe('worker backend cleanup projection', () => {
     }
   );
 
+  it('FS-CORE T2a rejects handoff rows committed after an empty-table cleanup observation', async () => {
+    const { environmentPackage, workspaceDb } = await createFixture();
+    try {
+      const handles = listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId);
+      const materializations = listWorkspaceMaterializationRecords(
+        workspaceDb,
+        workspaceDb.workspaceId
+      );
+      const evidence = listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId);
+      await expectCleanupRefusal(
+        workspaceDb,
+        {
+          ...cleanupInput(environmentPackage),
+          materializationNotPublished: true,
+        },
+        'handoff is incomplete'
+      );
+      expect(listBackendWorkspaceHandles(workspaceDb, workspaceDb.workspaceId)).toEqual(handles);
+      expect(listWorkspaceMaterializationRecords(workspaceDb, workspaceDb.workspaceId)).toEqual(
+        materializations
+      );
+      expect(listWorkspaceRuntimeEvidence(workspaceDb, workspaceDb.workspaceId)).toEqual(evidence);
+      // The same complete rows remain eligible for their ordinary acknowledged cleanup path.
+      expect(
+        await projectWorkerBackendCleanup(workspaceDb, cleanupInput(environmentPackage))
+      ).toMatchObject({
+        workspaceHandoffComplete: true,
+        handles: [expect.objectContaining({ cleanupStatus: 'cleaned' })],
+      });
+    } finally {
+      await shutdownControlStoreWorkerClient();
+      workspaceDb.sqlite.close();
+      rmSync(workspaceDb.dataRoot, { recursive: true, force: true });
+    }
+  });
+
   it.each(['pending', 'complete'] as const)(
     'rejects partial rows despite no-materialization proof with a %s handoff',
     async (workspaceHandoffState) => {

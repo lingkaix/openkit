@@ -5,7 +5,7 @@ This directory joins the administrator App update operations to the restricted h
 ## Boundaries
 
 - `app-update-operations.ts` enforces the existing model-delivery refusal, records the authorized start handoff, and projects helper observations.
-- `preflight.ts` reads content-free active-work counts. Its observation is not a product admission barrier.
+- `preflight.ts` reads content-free active-work counts. Held NanoHost closing attempts classified `needs-evidence` and their Turns do not block an update; other active owners still count. Restart recovery keeps the held attempt excluded. This observation is not a product admission barrier.
 - `host-request.ts` admits closed helper commands and projects bounded helper envelopes.
 - `host-transport.ts` invokes fixed SSH arguments with pinned host-key verification. A non-zero exit without stdout emits `app_update_helper_exit_before_envelope` in the server log with only the exit code and termination signal. It drains stderr without retaining its contents, so host paths, credentials, and arbitrary process text cannot enter that diagnostic. The public result stays `app_update_unavailable`. A written helper envelope remains the observation, including on a non-zero exit.
 

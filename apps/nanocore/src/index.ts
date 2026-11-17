@@ -56,7 +56,6 @@ import {
   createRuntimeConfigManager,
   loadRuntimeConfig,
   type RuntimeConfigSnapshot,
-  unknownModelContextFailure,
 } from './config/runtime-config.js';
 import { readReleaseIdentity } from './diagnostics/release-identity.js';
 import { NANOCORE_HTTP_SERVER_OPTIONS } from './http-server-options.js';
@@ -106,6 +105,7 @@ import {
 import {
   runSchedulerRecoveryMaintenance,
   runSchedulerRestartRecovery,
+  schedulerRestartRecoveryOutcome,
 } from './runtime/scheduler-restart-recovery.js';
 import {
   type ConfiguredWorkerLifecycleRuntime,
@@ -259,11 +259,6 @@ const bootResult = await runBootPhases({
 
         for (const diagnostic of runtimeConfigSnapshot.diagnostics) {
           console.warn(diagnostic.message);
-        }
-
-        const unknownContext = unknownModelContextFailure(runtimeConfigSnapshot);
-        if (unknownContext) {
-          return { status: 'failed', reason: unknownContext };
         }
 
         return { status: 'ok' };
@@ -509,8 +504,11 @@ const bootResult = await runBootPhases({
           prepareBackendCleanup: recoveryRuntime.prepareBackendCleanup,
           restoreBackendSession: recoveryRuntime.restoreBackendSession,
         } satisfies RunNanoHostAttemptRecoveryInput;
-        await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput);
-        await classifyNanoHostAttemptsAfterRestart(recoveryCoreDb, recoveryInput);
+        const schedulerRecovery = await runSchedulerRestartRecovery(recoveryCoreDb, recoveryInput);
+        const nativeRecovery = await classifyNanoHostAttemptsAfterRestart(
+          recoveryCoreDb,
+          recoveryInput
+        );
         const checkpointRecoveryFailures =
           await classifyWorkerCheckpointsAfterSchedulerRecovery(recoveryCoreDb);
         const pendingWorkspace = {
@@ -555,16 +553,10 @@ const bootResult = await runBootPhases({
           .all() as Array<{ readonly packageSnapshotId: string }>) {
           restartCloseoutPackageSnapshots.add(row.packageSnapshotId);
         }
-        return checkpointRecoveryFailures === 0
-          ? { status: 'ok' }
-          : {
-              status: 'degraded',
-              reason: {
-                code: 'scheduler.checkpoint_recovery_required',
-                message: `${checkpointRecoveryFailures} worker checkpoint recovery attempt(s) require inspection.`,
-                blocks: [],
-              },
-            };
+        return schedulerRestartRecoveryOutcome(
+          [...schedulerRecovery.failedAttemptIds, ...nativeRecovery.failedAttemptIds],
+          checkpointRecoveryFailures
+        );
       },
     },
   ],

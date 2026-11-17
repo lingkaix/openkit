@@ -1,4 +1,5 @@
 import { currentSchedulerAdmissionWorkspaceAuthority } from '../auth/operation-authorizer.js';
+import type { BootPhaseOutcome } from '../bootstrap/phases.js';
 import { isScopeAdmitted } from '../bootstrap/readiness.js';
 import type { FsStore } from '../lib/store.js';
 import { requireSchedulerAdmissionEntry } from '../scheduler-records.js';
@@ -36,28 +37,62 @@ export interface RunSchedulerRestartRecoveryInput {
     subject: PreAnchorRecoveryContext
   ) => Promise<{ readonly status: RecoveredTurnStatus }>;
 }
-/** Read-only Core startup classification never retries an unknown effect. */
+/** Effect-free startup classification isolates unresolved attempts for post-listen maintenance. */
 export async function runSchedulerRestartRecovery(
   coreDb: CoreDb,
   input: RunSchedulerRestartRecoveryInput
-): Promise<{ readonly preparationFailedAttemptIds: string[] }> {
+): Promise<{
+  readonly preparationFailedAttemptIds: string[];
+  readonly failedAttemptIds: string[];
+}> {
   const preparationFailedAttemptIds: string[] = [];
+  const failedAttemptIds: string[] = [];
   for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
     if (!isScopeAdmitted(coreDb.dataRoot, 'workspace', attempt.workspaceId)) continue;
-    if (attempt.backendId !== input.executionBackend.id)
-      throw new Error('Retained attempt names an unavailable backend.');
-    if (attempt.operationId !== null) continue;
-    await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
-      attemptId: attempt.attemptId,
-      noOutstandingEffects: true,
-      cause: 'restart-before-effects',
-      ...(input.now ? { now: input.now } : {}),
-    });
-    await input.projectRecoveredTurn({ ...attempt, packageSnapshotId: attempt.inputRef });
-    preparationFailedAttemptIds.push(attempt.attemptId);
+    try {
+      if (attempt.backendId !== input.executionBackend.id)
+        throw new Error('Retained attempt names an unavailable backend.');
+      if (attempt.operationId !== null) continue;
+      await closeSchedulerExecutionAttemptWithoutEffects(coreDb, {
+        attemptId: attempt.attemptId,
+        noOutstandingEffects: true,
+        cause: 'restart-before-effects',
+        ...(input.now ? { now: input.now } : {}),
+      });
+      await input.projectRecoveredTurn({ ...attempt, packageSnapshotId: attempt.inputRef });
+      preparationFailedAttemptIds.push(attempt.attemptId);
+    } catch {
+      // Proved no-effect closure remains valid if publication fails; maintenance retries it.
+      logRecoveryMaintenanceFailure('attempt-recovery', attempt);
+      failedAttemptIds.push(attempt.attemptId);
+    }
   }
-  return { preparationFailedAttemptIds };
+  return { preparationFailedAttemptIds, failedAttemptIds };
 }
+
+/** Reports held classification faults without blocking unrelated product work or duplicating an attempt. */
+export function schedulerRestartRecoveryOutcome(
+  failedAttemptIds: readonly string[],
+  checkpointRecoveryFailures: number
+): BootPhaseOutcome {
+  const failedAttemptCount = new Set(failedAttemptIds).size;
+  if (failedAttemptCount === 0 && checkpointRecoveryFailures === 0) return { status: 'ok' };
+  return {
+    status: 'degraded',
+    reason: {
+      code:
+        failedAttemptCount > 0
+          ? 'scheduler.attempt_recovery_failed'
+          : 'scheduler.checkpoint_recovery_required',
+      message:
+        failedAttemptCount > 0
+          ? `${failedAttemptCount} execution attempt(s) and ${checkpointRecoveryFailures} worker checkpoint recovery attempt(s) require inspection.`
+          : `${checkpointRecoveryFailures} worker checkpoint recovery attempt(s) require inspection.`,
+      blocks: [],
+    },
+  };
+}
+
 /** After listen, inspect the original operation and revoke expired authority without replay. */
 export async function runSchedulerRecoveryMaintenance(
   coreDb: CoreDb,
@@ -125,6 +160,7 @@ export async function runSchedulerRecoveryMaintenance(
   for (const failure of failures) {
     try {
       const attempt = requireSchedulerExecutionAttempt(coreDb, failure.attemptId);
+      if (attempt.backendId !== input.executionBackend.id) continue;
       if (input.isTurnExecutionActive?.(attempt.turnId)) continue;
       await input.projectRecoveredTurn({ ...attempt, packageSnapshotId: attempt.inputRef });
     } catch (error) {

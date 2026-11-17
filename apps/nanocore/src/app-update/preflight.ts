@@ -17,6 +17,23 @@ export function observeAppUpdatePreflight(
       503
     );
   const workspaces = store.listWorkspaces();
+  const attempts = listOpenSchedulerExecutionAttempts(coreDb);
+  const heldAttemptIds = new Set(
+    (
+      coreDb.sqlite
+        .prepare(`SELECT attempt_id AS attemptId FROM scheduler_execution_attempts
+      WHERE backend_id = 'nanohost' AND phase = 'closing' AND recovery_state = 'needs-evidence'`)
+        .all() as Array<{ readonly attemptId: string }>
+    ).map((row) => row.attemptId)
+  );
+  const heldTurnIds = new Set(
+    attempts
+      .filter((attempt) => heldAttemptIds.has(attempt.attemptId))
+      .map((attempt) => attempt.turnId)
+  );
+  // Another active owner for that Turn must still block the update.
+  for (const attempt of attempts)
+    if (!heldAttemptIds.has(attempt.attemptId)) heldTurnIds.delete(attempt.turnId);
   const counts = {
     runningTurns: 0,
     pendingTurns: 0,
@@ -28,10 +45,12 @@ export function observeAppUpdatePreflight(
   for (const workspace of workspaces)
     for (const thread of store.listThreads(workspace.id))
       for (const turn of store.listThreadTurns(workspace.id, thread.id)) {
+        if (heldTurnIds.has(turn.id)) continue;
         if (turn.status === 'running') counts.runningTurns += 1;
         if (turn.status === 'pending') counts.pendingTurns += 1;
       }
-  for (const attempt of listOpenSchedulerExecutionAttempts(coreDb)) {
+  for (const attempt of attempts) {
+    if (heldAttemptIds.has(attempt.attemptId)) continue;
     if (attempt.phase === 'open') counts.openAttempts += 1;
     if (attempt.phase === 'closing') counts.closingAttempts += 1;
   }

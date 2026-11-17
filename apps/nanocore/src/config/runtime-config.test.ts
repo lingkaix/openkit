@@ -19,7 +19,6 @@ import {
   createRuntimeConfigManager,
   diffRuntimeConfig,
   loadRuntimeConfig,
-  unknownModelContextFailure,
 } from './runtime-config.js';
 import { RuntimeConfigFileService } from './runtime-config-files.js';
 
@@ -1180,7 +1179,7 @@ describe('runtime config loading and reload planning', () => {
     expect(manager.status().lastFailedReload?.message).toMatch(/provider.duplicate_id/i);
   });
 
-  it('refuses a first composed runtime snapshot with unknown model context', () => {
+  it('loads a first runtime snapshot with unknown model context as a warning', () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'handwritten/local-flash');
     writeGatewayConfig(dataRoot, 'handwritten/local-flash');
@@ -1190,21 +1189,16 @@ describe('runtime config loading and reload planning', () => {
       expect.arrayContaining([
         expect.objectContaining({
           code: 'provider.unknown_model_context',
-          severity: 'error',
+          severity: 'warning',
         }),
       ])
     );
     expect(snapshot.diagnostics[0]?.message).toMatch(/handwritten\/local-flash/);
-    expect(unknownModelContextFailure(snapshot)).toEqual({
-      blocks: ['product_work'],
-      code: 'provider.unknown_model_context',
-      message: expect.stringMatching(/handwritten\/local-flash/),
-    });
-    expect(() => createRuntimeConfigManager({ dataRoot })).toThrow(
-      /provider\.unknown_model_context.*handwritten\/local-flash/s
+    expect(createRuntimeConfigManager({ dataRoot }).current().diagnostics).toEqual(
+      snapshot.diagnostics
     );
-    expect(() => createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot })).toThrow(
-      /provider\.unknown_model_context.*handwritten\/local-flash/s
+    expect(createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot }).current()).toBe(
+      snapshot
     );
   });
 
@@ -1213,7 +1207,6 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(catalogued, 'openai/gpt-5.1');
     writeGatewayConfig(catalogued);
     expect(loadRuntimeConfig(catalogued, { version: 1 }).diagnostics).toEqual([]);
-    expect(unknownModelContextFailure(loadRuntimeConfig(catalogued, { version: 1 }))).toBeNull();
     expect(createRuntimeConfigManager({ dataRoot: catalogued }).current().diagnostics).toEqual([]);
 
     const authored = createDataRoot();
@@ -1266,7 +1259,7 @@ describe('runtime config loading and reload planning', () => {
     expect(createRuntimeConfigManager({ dataRoot: authored }).current().diagnostics).toEqual([]);
   });
 
-  it('rejects an unrouted configured model without known context and keeps the active snapshot', async () => {
+  it('loads an unrouted model without known context with a warning', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeGatewayConfig(dataRoot);
@@ -1285,14 +1278,24 @@ describe('runtime config loading and reload planning', () => {
       })
     );
 
-    const failed = await manager.reload({ dryRun: false, mode: 'safe' });
-
-    expect(failed.status).toBe('failed');
-    expect(manager.current().version).toBe(1);
+    const loaded = await manager.reload({ dryRun: false, mode: 'safe' });
+    expect(loaded.status).toBe('applied');
+    expect(manager.current().version).toBe(2);
+    // Provider supply changes still use the existing restart-required lifecycle.
     expect(manager.current().providerRegistry.get('orca-custom')).toBeNull();
-    expect(manager.status().lastFailedReload?.message).toMatch(
-      /provider\.unknown_model_context.*handwritten\/local-flash/s
+    expect(manager.status().pendingRestart).toContainEqual(
+      expect.objectContaining({ path: 'providers' })
     );
+    expect(loadRuntimeConfig(dataRoot).providerRegistry.get('orca-custom')?.models).toEqual([
+      'handwritten/local-flash',
+    ]);
+    expect(manager.current().diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'provider.unknown_model_context',
+        severity: 'warning',
+      })
+    );
+    expect(manager.status().lastFailedReload).toBeNull();
   });
 
   it('reports a blocked delegated-refresh strategy without rejecting the Gateway config', () => {
@@ -1343,7 +1346,9 @@ describe('runtime config loading and reload planning', () => {
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeSpeechGateway(dataRoot, 'openai/gpt-5.1');
     const loaded = loadRuntimeConfig(dataRoot, { version: 1 });
-    expect(unknownModelContextFailure(loaded)).toBeNull();
+    expect(
+      loaded.diagnostics.filter((entry) => entry.code === 'provider.unknown_model_context')
+    ).toEqual([]);
     const manager = createRuntimeConfigManager({ dataRoot });
     const files = new RuntimeConfigFileService({
       dataRoot,
@@ -1368,7 +1373,7 @@ describe('runtime config loading and reload planning', () => {
     );
   });
 
-  it('still rejects a chat route that uses the transcription model without context', async () => {
+  it('keeps a chat route to a transcription model without context unavailable', async () => {
     const dataRoot = createDataRoot();
     writeConfiguredServer(dataRoot, 'openai/gpt-5.1');
     writeSpeechGateway(dataRoot, 'openai/gpt-5.1');
@@ -1409,19 +1414,24 @@ describe('runtime config loading and reload planning', () => {
       files: [{ id: 'gateway.jsonc', content: chatUsesWhisper }],
       mode: 'safe',
     });
-    expect(validation.valid).toBe(false);
-    expect(validation.diagnostics).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ code: 'provider.unknown_model_context', severity: 'error' }),
-      ])
+    expect(validation.valid).toBe(true);
+    expect(validation.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'provider.unknown_model_context',
+        severity: 'warning',
+      })
     );
     writeFileSync(join(dataRoot, 'config', 'gateway.jsonc'), chatUsesWhisper);
-    const failed = await manager.reload({ dryRun: false, mode: 'safe' });
-    expect(failed.status).toBe('failed');
-    expect(manager.current().version).toBe(1);
-    expect(manager.current().gatewayConfig.logicalModels[0]?.routes[0]?.providerModel).toBe(
-      'openai/gpt-5.1'
+    expect((await manager.reload({ dryRun: false, mode: 'safe' })).status).toBe('applied');
+    expect(manager.current().version).toBe(2);
+    const logical = resolveLogicalModelCatalog(
+      manager.current().gatewayConfig,
+      manager.current().providerRegistry
     );
+    expect(logical[0]?.routes[0]).toMatchObject({
+      available: false,
+      unavailableReason: 'provider_not_dispatchable',
+    });
   });
 
   it('admits a genuinely seeded fresh data root without activating the custom placeholder', () => {
@@ -1429,7 +1439,9 @@ describe('runtime config loading and reload planning', () => {
     ensureConfigTemplateSurface(dataRoot);
     const snapshot = loadRuntimeConfig(dataRoot, { version: 1 });
 
-    expect(unknownModelContextFailure(snapshot)).toBeNull();
+    expect(
+      snapshot.diagnostics.filter((entry) => entry.code === 'provider.unknown_model_context')
+    ).toEqual([]);
     expect(() => createRuntimeConfigManager({ dataRoot, initialSnapshot: snapshot })).not.toThrow();
     expect(
       existsSync(join(dataRoot, 'config', 'providers', 'openai-compatible-custom.provider.jsonc'))

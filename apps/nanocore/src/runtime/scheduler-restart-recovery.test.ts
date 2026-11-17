@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { inspect, isDeepStrictEqual } from 'node:util';
@@ -13,6 +13,7 @@ import {
 import { workerSessionInputPaths } from '@openkit/worker-protocol';
 import type Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { observeAppUpdatePreflight } from '../app-update/preflight.js';
 import { createOpenKitAccessTokenRecord } from '../auth/access-token-store.js';
 import { createBetterAuth } from '../auth/better-auth.js';
 import { finishCapabilityCall, startCapabilityCall } from '../capability/usage-ledger.js';
@@ -43,6 +44,7 @@ import { publishImmutableProductJson } from '../storage/immutable-content.js';
 import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { StoredEventPayloadV1Schema } from '../storage/retained-work-events-v1.js';
 import { StoredItemV1Schema } from '../storage/retained-work-items-v1.js';
+import { readBlockers } from '../storage/workspace-backup.js';
 import { nativeProductScope } from '../storage/workspace-file-records.js';
 import { verifyAndMigrateExistingScopedDatabases } from '../storage/workspace-storage-migration.js';
 import {
@@ -146,6 +148,11 @@ import {
   WorkerGovernanceTurnExecutor,
 } from './worker-governance-turn-executor.js';
 import { resolveInterruptedWorkerRetryDecision } from './worker-recovery.js';
+import {
+  activateWorkerStorageAttachment,
+  createAndReserveWorkerStorageAttachment,
+  getWorkerStorageBinding,
+} from './worker-storage-bindings.js';
 import * as workerTurnFailure from './worker-turn-failure.js';
 import {
   terminalizeGovernedWorkerTurn,
@@ -159,6 +166,10 @@ import {
   listWorkspaceReconciliationRecords,
   resolveWorkspaceReconciliationRecord,
 } from './workspace-reconciliation-records.js';
+import {
+  preserveRawWorkspaceCapture,
+  readRawWorkspaceCapture,
+} from './workspace-snapshot-chain.js';
 import {
   listBackendWorkspaceHandles,
   listWorkspaceMaterializationRecords,
@@ -950,56 +961,53 @@ describe('failed-start busy-history proof cost (#164)', () => {
     }
   });
 
-  it('checks sibling binding variants without replay', async () => {
-    const variants = [
-      ['session', 'active'],
-      ['session', 'closed'],
-      ['session', 'unknown'],
-      ['session', 'malformed'],
-      ['turn', 'active'],
-      ['turn', 'closed'],
-      ['turn', 'unknown'],
-      ['attempt', 'active'],
-      ['attempt', 'closed'],
-      ['attempt', 'unknown'],
-      ['unrelated', 'closed'],
-    ] as const;
-    for (const [match, state] of variants) {
-      const label = `sibling binding ${match} ${state}`;
-      const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
-      await terminalizeRecoveryCostFixture(f);
-      const siblingId = seedRecoveryBusyHistory(f, 3)!;
-      const baseline = recoveryProofSnapshot(f);
-      recordRecoverySiblingBinding(f, siblingId, match, state);
-      const before = recoveryProofSnapshot(f);
-      const recovery = recoveryCostInput(f);
-      const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
-      try {
-        for (let pass = 0; pass < 2; pass++) {
-          const result = runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
-          if (match === 'unrelated') await expect(result, label).resolves.toBeUndefined();
-          else await expect(result, label).rejects.toThrow();
-          expect(recoveryProofSnapshot(f), label).toEqual(before);
-          recovery.assertNoEffects(label);
-        }
-      } finally {
-        log.mockRestore();
-        recovery.restore();
+  it.each([
+    ['session', 'active'],
+    ['session', 'closed'],
+    ['session', 'unknown'],
+    ['session', 'malformed'],
+    ['turn', 'active'],
+    ['turn', 'closed'],
+    ['turn', 'unknown'],
+    ['attempt', 'active'],
+    ['attempt', 'closed'],
+    ['attempt', 'unknown'],
+    ['unrelated', 'closed'],
+  ] as const)('checks sibling binding %s %s without replay', async (match, state) => {
+    const label = `sibling binding ${match} ${state}`;
+    const f = await createFailedStartFixture(`cost_binding_${match}_${state}`);
+    await terminalizeRecoveryCostFixture(f);
+    const siblingId = seedRecoveryBusyHistory(f, 3)!;
+    const baseline = recoveryProofSnapshot(f);
+    recordRecoverySiblingBinding(f, siblingId, match, state);
+    const before = recoveryProofSnapshot(f);
+    const recovery = recoveryCostInput(f);
+    const log = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (let pass = 0; pass < 2; pass++) {
+        const result = runNanoHostAttemptRecoveryMaintenance(f.coreDb, recovery.input);
+        if (match === 'unrelated') await expect(result, label).resolves.toBeUndefined();
+        else await expect(result, label).rejects.toThrow();
+        expect(recoveryProofSnapshot(f), label).toEqual(before);
+        recovery.assertNoEffects(label);
       }
-      f.coreDb.sqlite
-        .prepare(
-          'DELETE FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
-        )
-        .run('binding_cost');
-      f.coreDb.sqlite
-        .prepare('DELETE FROM harness_instance_records WHERE harness_instance_id = ?')
-        .run('harness_cost');
-      f.coreDb.sqlite
-        .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
-        .run('sandbox_cost');
-      expect(recoveryProofSnapshot(f), label).toEqual(baseline);
-      f.coreDb.sqlite.close();
+    } finally {
+      log.mockRestore();
+      recovery.restore();
     }
+    f.coreDb.sqlite
+      .prepare(
+        'DELETE FROM agent_session_runtime_bindings WHERE agent_session_runtime_binding_id = ?'
+      )
+      .run('binding_cost');
+    f.coreDb.sqlite
+      .prepare('DELETE FROM harness_instance_records WHERE harness_instance_id = ?')
+      .run('harness_cost');
+    f.coreDb.sqlite
+      .prepare('DELETE FROM sandbox_runtime_records WHERE sandbox_runtime_id = ?')
+      .run('sandbox_cost');
+    expect(recoveryProofSnapshot(f), label).toEqual(baseline);
+    f.coreDb.sqlite.close();
   });
 
   it('refuses sibling backend association variants', async () => {
@@ -2574,8 +2582,13 @@ async function recoverTestStartup(
 ) {
   const current = testRecoveryInput(coreDb, input);
   const recovery = await runSchedulerRestartRecovery(coreDb, current);
-  await classifyNanoHostAttemptsAfterRestart(coreDb, current);
-  return recovery;
+  const nativeRecovery = await classifyNanoHostAttemptsAfterRestart(coreDb, current);
+  return {
+    ...recovery,
+    failedAttemptIds: [
+      ...new Set([...recovery.failedAttemptIds, ...nativeRecovery.failedAttemptIds]),
+    ],
+  };
 }
 
 /** Exercises Generic inspection and then the separate Native post-listener drain. */
@@ -3042,7 +3055,389 @@ class RejectRecoveredTurnExecutor implements TurnExecutor {
   public async interruptTurn(): Promise<void> {}
 }
 
+/** Seeds the crash between physical materialization and Workspace handoff publication. */
+async function createHeldHandoffFixture(suffix: string, fenced: boolean) {
+  const f = await createFailedStartFixture(suffix, false, false, true, ['source']);
+  const attemptId = testEntityId('attempt', `lease_${suffix}`);
+  f.coreDb.sqlite
+    .prepare(`UPDATE scheduler_execution_attempts
+    SET phase='open', terminal_cause=NULL, disposition='unknown',
+        operation_id=?, deadline=?, recovery_state=NULL
+    WHERE attempt_id=?`)
+    .run(`operation_${suffix}`, '2026-07-05T00:00:50.000Z', attemptId);
+  await recordBackendSession(f.coreDb, suffix, 'launching');
+  // The anchor owner requires a live attempt; inject the retained closing fault only after its FULL acknowledgement.
+  f.coreDb.sqlite
+    .prepare(`UPDATE scheduler_execution_attempts
+    SET phase='closing', terminal_cause='restart-native-recovery', recovery_state='needs-evidence'
+    WHERE attempt_id=?`)
+    .run(attemptId);
+  const reserved = await createAndReserveWorkerStorageAttachment(f.coreDb, {
+    agentSessionId: f.agentSessionId,
+    authorizeContributor: () => true,
+    deploymentId: 'deployment-test',
+    runtimeTargetId: 'runtime-target-test',
+    threadId: f.threadId,
+    workspaceId: workspaceIdForOwner(f.turn.owner),
+    purpose: 'work',
+    responsibleUserId: LOCAL_USER_ID,
+    layout: {
+      family: 'openkit-worker',
+      gid: 1000,
+      uid: 1000,
+      version: '1',
+      platform: { architecture: 'amd64', os: 'linux' },
+      targets: [{ target: '/sandbox' }, { target: '/workspace' }],
+      workingDirectory: '/tmp/openkit-bootstrap',
+    },
+  });
+  const storage = await activateWorkerStorageAttachment(f.coreDb, {
+    attachmentGeneration: reserved.attachmentGeneration,
+    expectedRevision: reserved.revision,
+    sandboxBindingRef: `lease-binding:lease_${suffix}`,
+    storageRef: reserved.storageRef,
+    targets: reserved.targets.map((target) => ({ ...target, initialized: true })),
+  });
+  await f.store.updateAgentSession(f.agentSessionId, {
+    retainedStorage: {
+      storageRef: storage.storageRef,
+      workSlotRef: storage.contributors[0]!.workSlotRef,
+      attachmentGeneration: storage.attachmentGeneration,
+    },
+  });
+  const effects: unknown[] = [];
+  const runtime = createConfiguredWorkerLifecycleRuntime({
+    releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
+    coreDb: f.coreDb,
+    store: f.store,
+    env: {},
+    workerControlGateway: new WorkerControlGateway(),
+    nanoHostSessionDispatch: {
+      async effect(request) {
+        effects.push(request);
+        throw new Error('No physical delivery is permitted.');
+      },
+      async poll() {
+        return null;
+      },
+      async result() {},
+      async route() {
+        throw new Error('No route survives the lost worker.');
+      },
+    },
+  });
+  if (fenced) {
+    const generation = await allocateNanoHostRuntimeTargetConnectionGeneration(f.coreDb, {
+      deploymentId: 'deployment-test',
+      identityId: 'identity-test',
+      observedAt: '2026-07-05T00:01:00.000Z',
+      targetId: 'runtime-target-test',
+    });
+    await upsertNanoHostRuntimeTarget(f.coreDb, {
+      ...generation,
+      freshEmpty: true,
+      predecessorFenced: true,
+      ready: true,
+      observedAt: '2026-07-05T00:01:01.000Z',
+      physicalEpoch: 'b'.repeat(64),
+    });
+  }
+  const input = testRecoveryInput(f.coreDb, {
+    store: f.store,
+    executionBackend: runtime.turnExecutor.executionBackend!,
+    cleanupBackendSession: runtime.cleanupBackendSession,
+    now: () => '2026-07-05T00:02:00.000Z',
+    projectRecoveredTurn: async (subject) => {
+      const result = await terminalizeGovernedWorkerTurn({
+        store: f.store,
+        turnId: subject.turnId,
+        agentSessionId: subject.agentSessionId,
+        requestId: fixtureRequestId(`request_${suffix}`),
+        completedAt: '2026-07-05T00:02:00.000Z',
+        outcome: 'interrupted',
+        errorCode: 'worker_governance_restart_recovery',
+        message: 'Worker execution was interrupted during scheduler recovery.',
+      });
+      if (result.status === 'pending' || result.status === 'running')
+        throw new Error('Turn remains active.');
+      return { status: result.status };
+    },
+  });
+  return { ...f, attemptId, input, effects, storage, clock: { now: input.now!() } };
+}
+
 describe('scheduler restart recovery', () => {
+  it.each(['ordinary', 'release-failure'] as const)(
+    'FS-CORE T2a settles a lost unpublished handoff after the original Epoch fence: %s',
+    async (boundary) => {
+      const f = await createHeldHandoffFixture('fs_core_lost_handoff', true);
+      try {
+        if (boundary === 'release-failure')
+          vi.spyOn(f.input.executionBackend, 'release').mockRejectedValueOnce(
+            new Error('Injected lost release acknowledgement.')
+          );
+        expect(
+          readBlockers({
+            coreDb: f.coreDb,
+            store: f.store,
+            workspaceId: workspaceIdForOwner(f.turn.owner),
+          })
+        ).toContainEqual(expect.objectContaining({ kind: 'worker-attempt' }));
+        // First cold cleanup can retain a failed inspection; the next pass consumes its Epoch proof.
+        await Promise.allSettled([runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)]);
+        if (boundary === 'release-failure') {
+          await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)).rejects.toSatisfy(
+            (error: unknown) => hasRecoveryFailure(error, 'Injected lost release acknowledgement.')
+          );
+          expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closing');
+          expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+            state: 'cleaned',
+            workspaceHandoffState: 'complete',
+          });
+        }
+        await expect(
+          runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)
+        ).resolves.toBeUndefined();
+        expect(f.store.getTurnById(f.turnId)).toMatchObject({
+          status: 'interrupted',
+          error: { code: 'worker_governance_restart_recovery' },
+        });
+        expect(
+          observeAppUpdatePreflight({
+            coreDb: f.coreDb,
+            store: f.store,
+            inflightCommands: new WeakMap(),
+          }).state
+        ).toBe('idle');
+        expect(
+          readBlockers({
+            coreDb: f.coreDb,
+            store: f.store,
+            workspaceId: workspaceIdForOwner(f.turn.owner),
+          }).filter((blocker) => blocker.kind === 'worker-attempt')
+        ).toEqual([]);
+        expect(f.effects).toEqual([]);
+        expect(
+          getWorkerStorageBinding(f.coreDb, { storageRef: f.storage.storageRef })
+        ).toMatchObject({
+          state: 'idle',
+          storageRef: f.storage.storageRef,
+          targets: f.storage.targets,
+        });
+        expect(f.store.getAgentSession(f.agentSessionId).retainedStorage).toEqual({
+          storageRef: f.storage.storageRef,
+          workSlotRef: f.storage.contributors[0]!.workSlotRef,
+          attachmentGeneration: f.storage.attachmentGeneration,
+        });
+        await assertRecoveryClosedAndNextTurnAdmitted(f);
+      } finally {
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it.each(['launching', 'physical-cleaned'] as const)(
+    'FS-CORE T2a holds an unpublished handoff with %s cleanup while the original Epoch is unfenced',
+    async (state) => {
+      const f = await createHeldHandoffFixture('fs_core_unfenced_handoff', false);
+      try {
+        if (state === 'physical-cleaned') {
+          await transitionWorkerBackendSessionState(f.coreDb, {
+            attemptId: f.attemptId,
+            fromState: 'launching',
+            toState: 'cleanup-pending',
+          });
+          await transitionWorkerBackendSessionState(f.coreDb, {
+            attemptId: f.attemptId,
+            fromState: 'cleanup-pending',
+            toState: 'physical-cleaned',
+          });
+        }
+        const cleanup = vi.spyOn(f.input, 'cleanupBackendSession');
+        await runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input);
+        expect(f.store.getTurnById(f.turnId).status).toBe('running');
+        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId)).toMatchObject({
+          phase: 'closing',
+          recoveryState: 'needs-evidence',
+        });
+        expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toMatchObject({
+          state,
+          physicalCleanedAt: state === 'physical-cleaned' ? expect.any(String) : null,
+          workspaceHandoffState: 'pending',
+        });
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(getWorkerStorageBinding(f.coreDb, { storageRef: f.storage.storageRef })).toEqual(
+          f.storage
+        );
+        expect(f.effects).toEqual([]);
+      } finally {
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
+
+  it('FS-CORE T2a leaves a different backend untouched during native maintenance after listen', async () => {
+    const f = await createHeldHandoffFixture('fs_core_other_backend', true);
+    try {
+      f.coreDb.sqlite
+        .prepare('UPDATE scheduler_execution_attempts SET backend_id=? WHERE attempt_id=?')
+        .run('unavailable-backend', f.attemptId);
+      const attempt = attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId);
+      const backend = getWorkerBackendSession(f.coreDb, f.attemptId);
+      const cleanup = vi.spyOn(f.input, 'cleanupBackendSession');
+      await expect(
+        runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)
+      ).resolves.toBeUndefined();
+      expect(attempts.requireSchedulerExecutionAttempt(f.coreDb, f.attemptId)).toEqual(attempt);
+      expect(getWorkerBackendSession(f.coreDb, f.attemptId)).toEqual(backend);
+      expect(f.store.getTurnById(f.turnId).status).toBe('running');
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(f.effects).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it('FS-CORE T2a preserves handoff rows published while cleanup acknowledgement is pending', async () => {
+    const f = await createHeldHandoffFixture('fs_core_late_handoff', true);
+    const cleanup = f.input.cleanupBackendSession;
+    let published = false;
+    const recoveryInput = {
+      ...f.input,
+      cleanupBackendSession: async (identity: Parameters<typeof cleanup>[0]) => {
+        await cleanup(identity);
+        const db = openWorkspaceDb(f.dataRoot, workspaceIdForOwner(f.turn.owner));
+        try {
+          const pkg = requireAgentEnvironmentPackageSnapshot(
+            db,
+            db.workspaceId,
+            requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).inputRef
+          ).snapshot;
+          recordCanonicalWorkspaceHandoff(db, pkg, '2026-07-05T00:01:59.000Z');
+          published = true;
+        } finally {
+          db.sqlite.close();
+        }
+      },
+    };
+    try {
+      await Promise.allSettled([runNanoHostAttemptRecoveryMaintenance(f.coreDb, recoveryInput)]);
+      await runNanoHostAttemptRecoveryMaintenance(f.coreDb, recoveryInput);
+      expect(published).toBe(true);
+      expect(f.store.getTurnById(f.turnId).status).toBe('interrupted');
+      expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closed');
+      const db = openWorkspaceDb(f.dataRoot, workspaceIdForOwner(f.turn.owner));
+      try {
+        expect(listBackendWorkspaceHandles(db, db.workspaceId)).toHaveLength(1);
+        expect(listWorkspaceMaterializationRecords(db, db.workspaceId)).toHaveLength(1);
+        expect(listWorkspaceReconciliationRecords(db, db.workspaceId)).toContainEqual(
+          expect.objectContaining({
+            stateAfter: 'requires-human',
+            retentionDecision: 'teardown-backend',
+          })
+        );
+      } finally {
+        db.sqlite.close();
+      }
+      expect(f.effects).toEqual([]);
+    } finally {
+      f.coreDb.sqlite.close();
+    }
+  });
+
+  it.each(['complete', 'partial'] as const)(
+    'FS-CORE T2a retains %s unpublished raw Workspace output after the Epoch fence',
+    async (boundary) => {
+      const f = await createHeldHandoffFixture(`fs_core_raw_capture_${boundary}`, true);
+      try {
+        const pkg = requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).inputRef;
+        const identity = {
+          workspaceId: workspaceIdForOwner(f.turn.owner),
+          threadId: f.threadId,
+          turnId: f.turnId,
+          agentSessionId: f.agentSessionId,
+          packageSnapshotId: pkg,
+          storageRef: f.storage.storageRef,
+          workSlot: f.storage.contributors[0]!.workSlotRef,
+          attachmentGeneration: f.storage.attachmentGeneration,
+          scopeDigest: f.storage.scopeDigest,
+          sandboxId: testNanoHostBackendSessionId(`fs_core_raw_capture_${boundary}`).slice(0, 19),
+          collectionId: `release-${createHash('sha256').update(pkg).digest('hex')}`,
+        };
+        const raw = join(
+          f.dataRoot,
+          'workspaces',
+          identity.workspaceId,
+          'evidence/backend/workspace-capture',
+          identity.collectionId
+        );
+        const bytes = Buffer.from('unpublished Workspace output must survive recovery');
+        if (boundary === 'complete') {
+          const stage = join(f.dataRoot, 'server/runtime/raw-staging');
+          mkdirSync(stage, { recursive: true });
+          writeFileSync(join(stage, 'complete'), bytes);
+          await preserveRawWorkspaceCapture({
+            dataRoot: f.dataRoot,
+            identity,
+            staged: { bytes, path: join(stage, 'complete') },
+            admission: new FileStorageAdmission(f.dataRoot, () => 0n),
+            result: {
+              outcome: 'candidate',
+              sha256: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+              byteLength: bytes.length,
+              head: { tree: '1'.repeat(40), manifest: '2'.repeat(40) },
+              previousHead: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+              acceptedBase: { tree: '3'.repeat(40), manifest: '4'.repeat(40) },
+              unstable: false,
+            },
+          });
+        } else {
+          mkdirSync(raw, { recursive: true });
+          writeFileSync(join(raw, 'complete'), bytes);
+        }
+        const cleanup = vi.spyOn(f.input, 'cleanupBackendSession');
+        if (boundary === 'complete') {
+          await expect(
+            runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)
+          ).resolves.toBeUndefined();
+          expect((await readRawWorkspaceCapture(f.dataRoot, identity))?.candidate).toEqual(bytes);
+          const db = openWorkspaceDb(f.dataRoot, identity.workspaceId);
+          try {
+            expect(listWorkspaceReconciliationRecords(db, identity.workspaceId)).toContainEqual(
+              expect.objectContaining({
+                stateAfter: 'requires-human',
+                retentionDecision: 'retain-backend',
+              })
+            );
+            expect(listStoredWorkspaceEvidenceBundles(db, identity.workspaceId)).toContainEqual(
+              expect.objectContaining({
+                sourceKind: 'workspace-capture-raw',
+                contentDigests: [`sha256:${createHash('sha256').update(bytes).digest('hex')}`],
+              })
+            );
+          } finally {
+            db.sqlite.close();
+          }
+        } else {
+          await expect(runNanoHostAttemptRecoveryMaintenance(f.coreDb, f.input)).rejects.toThrow(
+            'Native attempt recovery failed'
+          );
+        }
+        expect(readFileSync(join(raw, 'complete'))).toEqual(bytes);
+        expect(cleanup).not.toHaveBeenCalled();
+        expect(f.store.getTurnById(f.turnId).status).toBe('running');
+        expect(requireNanoHostExecutionAttempt(f.coreDb, f.attemptId).phase).toBe('closing');
+        expect(getWorkerBackendSession(f.coreDb, f.attemptId)?.physicalCleanedAt).toBeNull();
+        expect(getWorkerStorageBinding(f.coreDb, { storageRef: f.storage.storageRef })).toEqual(
+          f.storage
+        );
+        expect(f.effects).toEqual([]);
+      } finally {
+        f.coreDb.sqlite.close();
+      }
+    }
+  );
+
   it('retains a poll-first unknown fence while re-deriving only exact read-only expectations until fresh-ready cleanup', async () => {
     const coreDb = await createMigratedCoreDb();
     const suffix = 'result_only_unknown_fence';
@@ -3821,9 +4216,7 @@ describe('scheduler restart recovery', () => {
             throw new Error('pre-anchor product projection failed');
           },
         })
-      ).rejects.toSatisfy((error: unknown) =>
-        hasRecoveryFailure(error, 'pre-anchor product projection failed')
-      );
+      ).resolves.toMatchObject({ failedAttemptIds: [testEntityId('attempt', `lease_${suffix}`)] });
       expect(
         observeExecutionAttempts(coreDb).find(
           (attempt) => attempt.attempt_id === testEntityId('attempt', `lease_${suffix}`)
@@ -4243,9 +4636,7 @@ describe('scheduler restart recovery', () => {
           now: () => '2026-07-05T00:01:00.000Z',
           projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         })
-      ).rejects.toSatisfy((error: unknown) =>
-        hasRecoveryFailure(error, 'backend handle handoff is incomplete')
-      );
+      ).resolves.toMatchObject({ failedAttemptIds: [] });
       expect(
         getWorkerBackendSession(coreDb, testEntityId('attempt', `lease_${suffix}`))
       ).toMatchObject({
@@ -4263,6 +4654,10 @@ describe('scheduler restart recovery', () => {
         disposition: 'unknown',
         fenceRef: null,
       });
+      expect(
+        requireNanoHostExecutionAttempt(coreDb, testEntityId('attempt', `lease_${suffix}`))
+          .recoveryState
+      ).toBe('needs-evidence');
 
       recordCanonicalWorkspaceHandoff(workspaceDb, environmentPackage, '2026-07-05T00:01:01.000Z');
       await runRestartRecoveryThroughMaintenance(coreDb, {
@@ -4970,6 +5365,7 @@ describe('scheduler restart recovery', () => {
         };
         expect(await recoverTestStartup(coreDb, input)).toEqual({
           preparationFailedAttemptIds: [],
+          failedAttemptIds: [],
         });
         await drainTestRecovery(coreDb, input);
         expect(attempts.requireSchedulerExecutionAttempt(coreDb, row.attemptId)).toEqual({
@@ -5033,7 +5429,7 @@ describe('scheduler restart recovery', () => {
         now: () => '2026-07-05T00:01:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [] });
+      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
       expect(
         attempts.requireSchedulerExecutionAttempt(
           coreDb,
@@ -5069,7 +5465,7 @@ describe('scheduler restart recovery', () => {
         now: () => '2026-07-05T00:01:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [] });
+      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
       expect(
         attempts.requireSchedulerExecutionAttempt(
           coreDb,
@@ -5105,7 +5501,7 @@ describe('scheduler restart recovery', () => {
         now: () => '2026-07-05T00:06:00.000Z',
         projectRecoveredTurn: async () => ({ status: 'failed' as const }),
       });
-      expect(recovery).toEqual({ preparationFailedAttemptIds: [] });
+      expect(recovery).toEqual({ preparationFailedAttemptIds: [], failedAttemptIds: [] });
       expect(
         attempts.requireSchedulerExecutionAttempt(
           coreDb,
@@ -5290,9 +5686,9 @@ describe('scheduler restart recovery', () => {
           now: () => '2026-07-05T00:01:00.000Z',
           projectRecoveredTurn: async () => ({ status: 'failed' as const }),
         })
-      ).rejects.toSatisfy((error: unknown) =>
-        hasRecoveryFailure(error, 'does not match scheduler lineage')
-      );
+      ).resolves.toMatchObject({
+        failedAttemptIds: [testEntityId('attempt', 'lease_mismatched_package')],
+      });
 
       expect(cleanupCalls).toBe(0);
       expect(

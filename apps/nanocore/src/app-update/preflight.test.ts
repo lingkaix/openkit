@@ -112,6 +112,88 @@ describe('content-free deployment maintenance preflight', () => {
     expect(JSON.stringify(result)).not.toMatch(/Private|private|queue_|req_|turn_/);
   });
 
+  it.each([
+    {
+      phase: 'closing',
+      recoveryState: 'needs-evidence',
+      state: 'idle',
+      running: 0,
+      open: 0,
+      closing: 0,
+    },
+    { phase: 'closing', recoveryState: null, state: 'busy', running: 1, open: 0, closing: 1 },
+    {
+      phase: 'open',
+      recoveryState: 'needs-evidence',
+      state: 'busy',
+      running: 1,
+      open: 1,
+      closing: 0,
+    },
+    {
+      phase: 'open',
+      recoveryState: 'awaiting-reconnect',
+      state: 'busy',
+      running: 1,
+      open: 1,
+      closing: 0,
+    },
+  ])(
+    'FS-CORE T2a update observation for $phase/$recoveryState is $state',
+    async ({ phase, recoveryState, state, running, open, closing }) => {
+      const root = mkdtempSync(join(tmpdir(), 'openkit-preflight-held-'));
+      const coreDb = openCoreDb(root);
+      onTestFinished(async () => {
+        await shutdownControlStoreWorkerClient();
+        closeWorkspaceProductReadHandles(root);
+        if (coreDb.sqlite.open) coreDb.sqlite.close();
+        rmSync(root, { recursive: true, force: true });
+      });
+      applyMigrations(coreDb);
+      ensureLocalUser(coreDb);
+      const store = await createDemoStore({ dataRoot: root });
+      const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+      const userId = 'usr_00000000-0000-7000-8000-000000000001';
+      recordWorkspaceOwnerMembership({ coreDb, workspaceId, ownerUserId: userId });
+      const thread = await store.createThread(workspaceId, 'Held worker');
+      const turn = await store.createTurn(workspaceId, thread.id, 'Authorized work', {
+        kind: 'user',
+        id: userId,
+      });
+      const entry = createSchedulerAdmissionEntry(coreDb, {
+        backendId: 'nanohost',
+        queueEntryId: 'held-queue',
+        requestId: 'held-request',
+        triggerActor: turn.triggerActor,
+        workspaceId,
+        threadId: thread.id,
+        turnId: turn.id,
+        turnInput: 'Authorized work',
+        requestedAgentId: 'agent_codex_host',
+      });
+      const attempt = createSchedulerExecutionAttempt(coreDb, { entry, preparationInput: {} });
+      coreDb.sqlite
+        .prepare(
+          'UPDATE scheduler_execution_attempts SET phase=?, recovery_state=? WHERE attempt_id=?'
+        )
+        .run(phase, recoveryState, attempt.attemptId);
+      expect(
+        observeAppUpdatePreflight({ coreDb, store, inflightCommands: new WeakMap() })
+      ).toMatchObject({
+        state,
+        counts: {
+          runningTurns: running,
+          pendingTurns: 0,
+          queuedAdmissions: 0,
+          openAttempts: open,
+          closingAttempts: closing,
+          inFlightCommands: 0,
+        },
+      });
+      expect(store.getTurnById(turn.id).status).toBe('running');
+    }
+  );
+
   it('counts active private work and emits only the exact aggregate shape', async () => {
     const root = mkdtempSync(join(tmpdir(), 'openkit-preflight-'));
     const coreDb = openCoreDb(root);

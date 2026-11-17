@@ -25,7 +25,7 @@ export type ProjectWorkerBackendCleanupInput = Omit<
   readonly outcome: 'succeeded';
   /** Durable Core proof of whether the workspace handoff transaction was published. */
   readonly workspaceHandoffState: 'pending' | 'complete';
-  /** Exact failed preparation and successful cleanup prove no materialization was published; absence alone is insufficient. */
+  /** Exact physical cleanup and its recovery proof establish an unpublished handoff; empty tables alone are insufficient. */
   readonly materializationNotPublished?: boolean | undefined;
 };
 
@@ -93,8 +93,14 @@ export function projectWorkerBackendCleanupInDb(
     anyHandoffRows ||
     input.environmentPackage.workspace.inputs.length === 0 ||
     input.materializationNotPublished === true;
+  // Main may have observed empty tables before another native publication committed.
+  // Refuse the stale proof in this transaction; the next pass must use the existing takeover owner.
+  if (input.materializationNotPublished === true && anyHandoffRows)
+    throw new Error(
+      `Workspace backend handle handoff is incomplete for package ${input.packageSnapshotId}.`
+    );
   // Exact no-materialization proof survives the complete marker.
-  // Any published row still requires the full handoff validator, even when the caller supplies that proof.
+  // Published rows still require the full handoff validator after their takeover/disposition has been evaluated.
   if (
     anyHandoffRows ||
     (input.workspaceHandoffState === 'complete' && input.materializationNotPublished !== true)
