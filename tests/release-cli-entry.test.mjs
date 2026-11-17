@@ -158,3 +158,29 @@ test('every image-built script entry loads from exactly its copied scripts', () 
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('the SBOM CLI prints only its own fixed refusal reason', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-sbom-refusal-'));
+  const missing = join(directory, 'private-input-path');
+  const refuse = (sha) =>
+    spawnSync(
+      process.execPath,
+      [
+        join(process.cwd(), 'scripts', 'release-sbom.mjs'),
+        ...['release', '--records', missing, '--assets', missing],
+        ...['--repository', 'example/openkit', '--tag', 'v0.0.0-rc.1', '--sha', sha],
+      ],
+      { cwd: directory, encoding: 'utf8', env: { PATH: process.env.PATH, HOME: directory } }
+    );
+  try {
+    const own = refuse('not-a-commit');
+    assert.equal(own.status, 1);
+    assert.match(own.stderr, /^Reason: Release source identity refused$/mu);
+    // A filesystem error is not a fixed refusal and may name private input.
+    const foreign = refuse('0'.repeat(40));
+    assert.equal(foreign.status, 1);
+    assert.doesNotMatch(foreign.stderr, /Reason:|private-input-path/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

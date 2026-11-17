@@ -1,10 +1,14 @@
 // NEW-only supplement: native OSV package identities must survive CycloneDX projection.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const { bomFromOsv } = await import(
+const { bomFromOsv, imageInventory } = await import(
   pathToFileURL(join(process.cwd(), 'scripts/release-sbom.mjs')).href
 );
 
@@ -145,5 +149,59 @@ test('missing or empty selected-artifact inventory refuses instead of emitting a
       Error,
       'Absent selected-artifact inventory must refuse'
     );
+  }
+});
+
+test('image inventory records installed JavaScript packages beside OS packages', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-image-inventory-'));
+  try {
+    // A minimal docker-save archive: one layer with a dpkg database and one global npm package.
+    const root = join(directory, 'root');
+    const files = {
+      'etc/os-release': 'ID=debian\nVERSION_ID="12"\nVERSION_CODENAME=bookworm\n',
+      'var/lib/dpkg/status':
+        'Package: adduser\nStatus: install ok installed\nArchitecture: all\nVersion: 3.134\n\n',
+      'usr/local/lib/node_modules/left-pad/package.json': '{"name":"left-pad","version":"1.3.0"}\n',
+    };
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(join(root, path, '..'), { recursive: true });
+      writeFileSync(join(root, path), content);
+    }
+    const image = join(directory, 'image');
+    mkdirSync(image);
+    const tar = (args) => assert.equal(spawnSync('tar', args).status, 0, 'fixture archive');
+    tar(['-C', root, '-cf', join(image, 'layer.tar'), '.']);
+    const layer = createHash('sha256')
+      .update(readFileSync(join(image, 'layer.tar')))
+      .digest('hex');
+    writeFileSync(
+      join(image, 'config.json'),
+      JSON.stringify({
+        architecture: 'amd64',
+        os: 'linux',
+        rootfs: { type: 'layers', diff_ids: [`sha256:${layer}`] },
+        config: {},
+      })
+    );
+    writeFileSync(
+      join(image, 'manifest.json'),
+      JSON.stringify([{ Config: 'config.json', RepoTags: [], Layers: ['layer.tar'] }])
+    );
+    const archive = join(directory, 'image.tar');
+    tar(['-C', image, '-cf', archive, 'manifest.json', 'config.json', 'layer.tar']);
+
+    const purls = bomFromOsv(imageInventory(['--archive', archive])).components.map(
+      (entry) => entry.purl
+    );
+    assert.ok(
+      purls.some((purl) => purl.startsWith('pkg:npm/left-pad@1.3.0')),
+      'npm inventory'
+    );
+    assert.ok(
+      purls.some((purl) => purl.startsWith('pkg:deb/debian/adduser@3.134')),
+      'OS inventory'
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });

@@ -20,20 +20,23 @@ import pins from './security-tools.json' with { type: 'json' };
 
 export { releaseImages, sbomAssetNames, sbomName };
 
+/** Fixed refusal text from this module carries no input, so the CLI may print it. */
+class SbomRefusal extends Error {}
+
 /** Project exact native OSV inventory purls; never reconstruct an OS purl from an ecosystem label. */
 export function bomFromOsv(report, { stripPrefix = '' } = {}) {
-  if (!Array.isArray(report?.results)) throw Error('Native inventory missing');
+  if (!Array.isArray(report?.results)) throw new SbomRefusal('Native inventory missing');
   const components = new Map();
   for (const result of report.results) {
     if (!result.source || !Array.isArray(result.packages))
-      throw Error('Malformed native inventory source');
+      throw new SbomRefusal('Malformed native inventory source');
     const raw = result.source.path;
     if (typeof raw !== 'string' || !raw || raw.includes('\0'))
-      throw Error('Inventory location missing');
+      throw new SbomRefusal('Inventory location missing');
     let location = raw;
     if (stripPrefix) {
       if (!location.startsWith(`${stripPrefix}/`))
-        throw Error('Inventory outside selected artifact');
+        throw new SbomRefusal('Inventory outside selected artifact');
       location = location.slice(stripPrefix.length);
     }
     for (const entry of result.packages) {
@@ -47,8 +50,9 @@ export function bomFromOsv(report, { stripPrefix = '' } = {}) {
         typeof value.purl !== 'string' ||
         !/^pkg:[a-z][a-z0-9.+-]*\//u.test(value.purl)
       )
-        throw Error('Incomplete native package identity');
-      if (purlVersion(value.purl) !== value.version) throw Error('Native purl version mismatch');
+        throw new SbomRefusal('Incomplete native package identity');
+      if (purlVersion(value.purl) !== value.version)
+        throw new SbomRefusal('Native purl version mismatch');
       let component = components.get(value.purl);
       if (!component) {
         component = {
@@ -65,7 +69,7 @@ export function bomFromOsv(report, { stripPrefix = '' } = {}) {
         component.evidence.occurrences.push({ location });
     }
   }
-  if (!components.size) throw Error('Selected artifact inventory is unexpectedly empty');
+  if (!components.size) throw new SbomRefusal('Selected artifact inventory is unexpectedly empty');
   const ordered = [...components.values()].sort((a, b) => a.purl.localeCompare(b.purl));
   for (const component of ordered)
     component.evidence.occurrences.sort((a, b) => a.location.localeCompare(b.location));
@@ -75,7 +79,7 @@ export function bomFromOsv(report, { stripPrefix = '' } = {}) {
 const sha256 = /^sha256:[a-f0-9]{64}$/u;
 function purlVersion(purl) {
   if (typeof purl !== 'string' || !/^pkg:[a-z][a-z0-9.+-]*\//u.test(purl))
-    throw Error('Package URL required');
+    throw new SbomRefusal('Package URL required');
   const body = purl.split(/[?#]/u)[0];
   const at = body.lastIndexOf('@');
   const start = body.indexOf('/') + 1;
@@ -87,7 +91,7 @@ function purlVersion(purl) {
       .split('/')
       .some((segment) => !segment)
   )
-    throw Error('Versioned package URL required');
+    throw new SbomRefusal('Versioned package URL required');
   return decodeURIComponent(body.slice(at + 1));
 }
 export const APP_SBOM_PATH = '/app/security/sbom.cdx.json';
@@ -102,7 +106,8 @@ function run(command, args, env) {
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
   } catch {
-    throw Error('Release inventory operation failed');
+    // Name only the fixed program; arguments and tool output may carry private input.
+    throw new SbomRefusal(`Release inventory operation failed: ${command}`);
   }
 }
 function toolEnvironment() {
@@ -119,11 +124,12 @@ export function artifactSource(kind, id, platform) {
     !/^[a-z0-9-]+$/u.test(id) ||
     !platformPattern.test(platform)
   )
-    throw Error('Artifact source identity refused');
+    throw new SbomRefusal('Artifact source identity refused');
   return `${kind}:${id}:${platform}`;
 }
 function bindBom(bom, { kind, id, platform, sha, reference }) {
-  if (sha !== undefined && !/^[a-f0-9]{40}$/u.test(sha)) throw Error('SBOM source commit refused');
+  if (sha !== undefined && !/^[a-f0-9]{40}$/u.test(sha))
+    throw new SbomRefusal('SBOM source commit refused');
   bom.metadata = {
     ...bom.metadata,
     tools: bom.metadata?.tools ?? {
@@ -152,10 +158,10 @@ export function addOpaqueGateway(bom, { release, platform }) {
     !sha256.test(`sha256:${target?.executable?.sha256}`) ||
     !Array.isArray(bom?.components)
   )
-    throw Error('Reviewed opaque Gateway identity required');
+    throw new SbomRefusal('Reviewed opaque Gateway identity required');
   const purl = `pkg:github/nvidia/openshell@${release.version}?arch=${platform.split('/')[1]}`;
   if (bom.components.some((component) => component.purl === purl))
-    throw Error('Opaque Gateway repeated');
+    throw new SbomRefusal('Opaque Gateway repeated');
   const component = {
     type: 'application',
     name: 'openshell-gateway',
@@ -192,13 +198,13 @@ export function assertSbom(bom, { kind, id, platform, sha, reference }) {
     !Array.isArray(bom.components) ||
     !bom.components.length
   )
-    throw Error('SBOM inventory unavailable');
+    throw new SbomRefusal('SBOM inventory unavailable');
   const properties = bom.metadata?.properties;
-  if (!Array.isArray(properties)) throw Error('SBOM binding missing');
+  if (!Array.isArray(properties)) throw new SbomRefusal('SBOM binding missing');
   const value = (name) => {
     const values = properties.filter((property) => property.name === name);
     if (values.length !== 1 || typeof values[0].value !== 'string')
-      throw Error('SBOM binding repeated or missing');
+      throw new SbomRefusal('SBOM binding repeated or missing');
     return values[0].value;
   };
   if (
@@ -207,7 +213,7 @@ export function assertSbom(bom, { kind, id, platform, sha, reference }) {
     value('openkit:source-commit') !== sha ||
     (reference !== undefined && value('openkit:artifact-reference') !== reference)
   )
-    throw Error('SBOM source binding mismatch');
+    throw new SbomRefusal('SBOM source binding mismatch');
   // Standard CDX file/distro descriptors are not installed software-package coordinates.
   const packages = bom.components.filter(
     (component) => !['file', 'operating-system'].includes(component?.type)
@@ -229,7 +235,7 @@ export function assertSbom(bom, { kind, id, platform, sha, reference }) {
           ? component.version.slice(2)
           : component.version)
     )
-      throw Error('SBOM package identity refused');
+      throw new SbomRefusal('SBOM package identity refused');
     if (componentRef !== undefined) seen.add(componentRef);
   }
   if (
@@ -237,7 +243,7 @@ export function assertSbom(bom, { kind, id, platform, sha, reference }) {
     (!packages.some((component) => component.purl.startsWith('pkg:deb/')) ||
       !packages.some((component) => component.purl.startsWith('pkg:npm/')))
   )
-    throw Error('Image SBOM omitted installed Node or OS inventory');
+    throw new SbomRefusal('Image SBOM omitted installed Node or OS inventory');
   if (kind === 'archive') {
     const opaque = bom.components.filter((component) => component.name === 'openshell-gateway');
     if (
@@ -249,7 +255,7 @@ export function assertSbom(bom, { kind, id, platform, sha, reference }) {
           composition.assemblies?.includes(opaque[0]['bom-ref'])
       )
     )
-      throw Error('NanoHost SBOM omitted Rust or explicit opaque Gateway coverage');
+      throw new SbomRefusal('NanoHost SBOM omitted Rust or explicit opaque Gateway coverage');
     for (const [name, expected] of Object.entries({
       'openkit:transitive-coverage': 'unknown',
       'openkit:vulnerability-lookup': 'component-version-only',
@@ -258,7 +264,7 @@ export function assertSbom(bom, { kind, id, platform, sha, reference }) {
     })) {
       const values = opaque[0].properties?.filter((property) => property.name === name);
       if (values?.length !== 1 || values[0].value !== expected)
-        throw Error('Opaque Gateway coverage authority refused');
+        throw new SbomRefusal('Opaque Gateway coverage authority refused');
     }
   }
   return bom;
@@ -362,7 +368,7 @@ export function rootfsBom({ root, id, platform, sha }) {
   const env = { ...toolEnvironment(), SYFT_CHECK_FOR_APP_UPDATE: 'false', SYFT_PARALLELISM: '2' };
   const version = run('syft', ['version'], env);
   if (!version.split('\n').some((line) => line.trim() === `Version:       ${pins.syft.version}`))
-    throw Error('Pinned Syft version required');
+    throw new SbomRefusal('Pinned Syft version required');
   const bom = JSON.parse(
     run(
       'syft',
@@ -399,7 +405,8 @@ function embeddedAppBom(image, digest, platform) {
       '/bin/true',
       `${image}@${digest}`,
     ]);
-    if (!/^[a-f0-9]{64}$/u.test(container)) throw Error('SBOM container identity refused');
+    if (!/^[a-f0-9]{64}$/u.test(container))
+      throw new SbomRefusal('SBOM container identity refused');
     const file = join(temporary, 'sbom.cdx.json');
     run('docker', ['cp', `${container}:${APP_SBOM_PATH}`, file]);
     return readFileSync(file);
@@ -408,13 +415,26 @@ function embeddedAppBom(image, digest, platform) {
     rmSync(temporary, { recursive: true, force: true });
   }
 }
+/** The artifact preset has no installed JavaScript package extractor; add package.json inventory. */
+export function imageInventory(subject) {
+  return nativeInventory(
+    [
+      ...[
+        'scan',
+        'image',
+        '--x-no-default-plugins',
+        '--x-plugins',
+        'artifact,javascript/packagejson',
+      ],
+      ...subject,
+    ],
+    { cwd: process.cwd() }
+  );
+}
 function imageBom(image, digest, identity) {
   // A fresh publisher must resolve the exact admitted platform before offline inventory.
   run('docker', ['pull', '--platform', identity.platform, `${image}@${digest}`]);
-  const report = nativeInventory(
-    ['scan', 'image', '--x-no-default-plugins', '--x-plugins', 'artifact', `${image}@${digest}`],
-    { cwd: process.cwd() }
-  );
+  const report = imageInventory([`${image}@${digest}`]);
   return bindBom(bomFromOsv(report), {
     ...identity,
     kind: 'image',
@@ -439,7 +459,7 @@ export async function generateReleaseSboms({
     !/^[a-f0-9]{40}$/u.test(sha ?? '') ||
     !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? '')
   )
-    throw Error('Release source identity refused');
+    throw new SbomRefusal('Release source identity refused');
   const catalog = releaseImages();
   const records = readdirSync(recordsDir)
     .filter((name) => name.endsWith('.json'))
@@ -448,13 +468,13 @@ export async function generateReleaseSboms({
     records.length !== catalog.length ||
     new Set(records.map((record) => record.id)).size !== catalog.length
   )
-    throw Error('Complete released image inventory required');
+    throw new SbomRefusal('Complete released image inventory required');
   const created = run('git', ['show', '-s', '--format=%cI', sha]);
   for (const image of catalog) {
     const record = records.find((row) => row.id === image.id);
     const coordinate = imageIdentity({ repository, sha, tag, created, image }).image;
     if (!record || record.image !== coordinate || !sha256.test(record.digest ?? ''))
-      throw Error('Released image binding refused');
+      throw new SbomRefusal('Released image binding refused');
     const index = JSON.parse(
       run('docker', ['buildx', 'imagetools', 'inspect', '--raw', `${coordinate}@${record.digest}`])
     );
@@ -545,14 +565,14 @@ export function provenanceSubjects({ manifest, assetsDir }) {
     !Array.isArray(manifest.images) ||
     !Array.isArray(manifest.assets)
   )
-    throw Error('Published subject inventory required');
+    throw new SbomRefusal('Published subject inventory required');
   const names = [
     ...manifest.assets.map((asset) => asset.name),
     `openkit-release-${manifest.tag}.json`,
     'SHA256SUMS',
   ];
   if (new Set(names).size !== names.length || names.some((name) => basename(name) !== name))
-    throw Error('Controlled attachment names required');
+    throw new SbomRefusal('Controlled attachment names required');
   const rows = names.map((name) => `${hash(readFileSync(join(assetsDir, name)))}  ${name}`);
   for (const image of manifest.images) {
     if (
@@ -561,9 +581,9 @@ export function provenanceSubjects({ manifest, assetsDir }) {
       !Array.isArray(image.platforms) ||
       image.platforms.length !== 2
     )
-      throw Error('Exact OCI subject set required');
+      throw new SbomRefusal('Exact OCI subject set required');
     for (const digest of [image.digest, ...image.platforms.map((entry) => entry.digest)]) {
-      if (!sha256.test(digest)) throw Error('OCI subject digest required');
+      if (!sha256.test(digest)) throw new SbomRefusal('OCI subject digest required');
       rows.push(`${digest.slice(7)}  ${image.image}@${digest}`);
     }
   }
@@ -609,9 +629,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         sha: values.sha,
       });
       writeFileSync(values.output, provenanceSubjects({ manifest, assetsDir }), { flag: 'wx' });
-    } else throw Error('Select rootfs, release or subjects mode');
-  } catch {
+    } else throw new SbomRefusal('Select rootfs, release or subjects mode');
+  } catch (error) {
     console.error('Release SBOM generation refused; no private input was printed');
+    if (error instanceof SbomRefusal) console.error(`Reason: ${error.message}`);
     process.exitCode = 1;
   }
 }
