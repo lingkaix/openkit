@@ -1537,6 +1537,14 @@ test('manifest publication is required before notes and the existing immutable u
   );
 });
 
+test('the release verifier installs dependencies once, without lifecycle scripts', () => {
+  // The asset container mounts the same workspace; a second install with another store aborts.
+  const installs = workflow.jobs['verify-release'].steps.flatMap((entry) =>
+    [...String(entry.run ?? '').matchAll(/\bpnpm install\b[^\n]*/gu)].map((match) => match[0])
+  );
+  assert.deepEqual(installs, ['pnpm install --frozen-lockfile --ignore-scripts']);
+});
+
 test('stable rehearsal is tag-only, authority-gated, serialized and has no construction path', () => {
   const stable = parse(readFileSync('.github/workflows/release-promotion.yml', 'utf8'));
   assert.deepEqual(stable.on.push.tags, ['v*.*.*', '!v*.*.*-*']);

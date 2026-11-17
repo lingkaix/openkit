@@ -368,3 +368,42 @@ test('release notes compare mode accepts one matching body and rejects a differe
   assert.notEqual(differ.status, 0);
   assert.match(differ.stderr, /GitHub Release notes differ from the generated notes/);
 });
+
+test('publisher and verifier annotate their own records and render the same notes', () => {
+  const disclosure =
+    '- OpenShell Gateway 0.0.99 is an opaque vendor component: CycloneDX composition is unknown; vulnerability lookup is component-version-only. Its transitive coverage grants no completeness, clearance or purge authority. Upstream SBOM/provenance: https://github.com/lingkaix/openkit/issues/719.';
+  const annotate = (records) =>
+    spawnSync(
+      process.execPath,
+      [join(process.cwd(), 'scripts', 'release-record.mjs'), '--annotate-records', records],
+      { encoding: 'utf8' }
+    );
+  const render = (repoRoot, records, ...args) =>
+    runNotes([
+      ...['--checksum', 'abc123', '--records', records, '--repo-root', repoRoot],
+      ...['--run-url', 'https://github.com/example/openkit/actions/runs/1'],
+      ...['--sha', 'd'.repeat(40), '--tag', tag, '--visibility', 'public', ...args],
+    ]);
+  // Publish job: annotate its downloaded image records, then render.
+  const publisher = fixtureRoot();
+  writeInput(publisher, validInput);
+  const publishedRecords = writeRecords(publisher, 'false');
+  assert.equal(annotate(publishedRecords).status, 0);
+  const body = join(publisher, 'release-notes.md');
+  const published = render(publisher, publishedRecords, '--output', body);
+  assert.equal(published.status, 0, published.stderr);
+  assert.equal(readFileSync(body, 'utf8').split(disclosure).length, 2, 'published exactly once');
+
+  // Verify job: a fresh download of the same records, annotated the same way, compares equal.
+  const verifier = fixtureRoot();
+  writeInput(verifier, validInput);
+  const verifiedRecords = writeRecords(verifier, 'false');
+  assert.equal(annotate(verifiedRecords).status, 0);
+  const compared = render(verifier, verifiedRecords, '--compare-body', body);
+  assert.equal(compared.status, 0, compared.stderr);
+
+  // A second annotation of the same records refuses instead of publishing the line twice.
+  const twice = annotate(verifiedRecords);
+  assert.equal(twice.status, 1);
+  assert.match(twice.stderr, /^Release records are already annotated\.$/mu);
+});

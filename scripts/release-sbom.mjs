@@ -1,15 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  appendFileSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -545,11 +537,6 @@ export async function generateReleaseSboms({
       rmSync(temporary, { recursive: true, force: true });
     }
   }
-  // Reuse the existing image-record Markdown input; do not rewrite the reviewed notes renderer.
-  appendFileSync(
-    join(recordsDir, 'app.md'),
-    '\n- OpenShell Gateway 0.0.99 is an opaque vendor component: CycloneDX composition is unknown; vulnerability lookup is component-version-only. Its transitive coverage grants no completeness, clearance or purge authority. Upstream SBOM/provenance: https://github.com/lingkaix/openkit/issues/719.\n'
-  );
   const sumFile = join(assetsDir, 'SHA256SUMS');
   const existing = readFileSync(sumFile, 'utf8').trimEnd();
   const entries = sbomAssetNames(tag).map(

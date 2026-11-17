@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 /** Offline manifest, reviewed draft and private closeout projections of existing release evidence. */
-import { lstatSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
@@ -344,11 +351,25 @@ export function createReleaseRecord(input) {
     qualification: input.qualification,
   })}\n`;
 }
+const OPAQUE_GATEWAY_DISCLOSURE =
+  '\n- OpenShell Gateway 0.0.99 is an opaque vendor component: CycloneDX composition is unknown; vulnerability lookup is component-version-only. Its transitive coverage grants no completeness, clearance or purge authority. Upstream SBOM/provenance: https://github.com/lingkaix/openkit/issues/719.\n';
+/**
+ * Add the opaque Gateway disclosure to the App image-record Markdown, reusing the reviewed notes
+ * renderer unchanged. Publisher and verifier each run it on their own downloaded records.
+ */
+export function annotateReleaseRecords(recordsDir) {
+  const file = join(recordsDir, 'app.md');
+  if (readFileSync(file, 'utf8').includes(OPAQUE_GATEWAY_DISCLOSURE.trim()))
+    throw Error('Release records are already annotated.');
+  appendFileSync(file, OPAQUE_GATEWAY_DISCLOSURE);
+}
+
 /** Run only record, draft and manifest branches; publication continues to invoke release-notes.mjs. */
 function main() {
   const { values: args } = parseArgs({
     options: Object.fromEntries(
       [
+        'annotate-records',
         'publication-assets',
         'verify-publication-assets',
         'repo-root',
@@ -370,6 +391,10 @@ function main() {
       ].map((name) => [name, { type: 'string' }])
     ),
   });
+  if (args['annotate-records']) {
+    annotateReleaseRecords(args['annotate-records']);
+    return;
+  }
   const tag = args.tag ?? '';
   if (!tag) throw Error('Release record tag is required.');
   const json = (file) => JSON.parse(readFileSync(file, 'utf8'));

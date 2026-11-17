@@ -2446,6 +2446,7 @@ jobs:
           visibility=public
           if [ "${REPOSITORY_PRIVATE}" = "true" ]; then visibility=private; fi
           checksum="$(sha256sum portable-assets/SHA256SUMS | cut -d ' ' -f1)"
+          node scripts/release-record.mjs --annotate-records release-records
           node scripts/release-notes.mjs \
             --repo-root . \
             --tag "${GITHUB_REF_NAME}" \
@@ -2588,6 +2589,7 @@ jobs:
             --repo-root . --tag "${GITHUB_REF_NAME}" --sha "${GITHUB_SHA}" \
             --repository "${GITHUB_REPOSITORY}" --records release-records \
             --verify-publication-assets release-download
+          node scripts/release-record.mjs --annotate-records release-records
           node scripts/release-notes.mjs \
             --repo-root . \
             --tag "${GITHUB_REF_NAME}" \
@@ -2598,12 +2600,13 @@ jobs:
             --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --compare-body release-body.md
           # Docker and gh stay on the host; deterministic asset checks use the authoritative image.
+          # They reuse the mounted host install: a second install with another store would purge it,
+          # which pnpm refuses without a TTY.
           docker run --rm --init --interactive \
             --volume "${GITHUB_WORKSPACE}:/workspace" \
             --workdir /workspace \
             --env GITHUB_REF_NAME \
             "${TEST_IMAGE}" bash -euo pipefail <<'VERIFY_ASSETS'
-          pnpm install --frozen-lockfile
           (cd release-download && sha256sum -c SHA256SUMS)
           ops_archive="release-download/openkit-ops-skill-${GITHUB_REF_NAME}.tar.gz"
           ops_prefix="openkit-ops-skill-${GITHUB_REF_NAME}"
