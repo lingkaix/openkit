@@ -14,8 +14,11 @@ import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { platformPattern, releaseImages, sbomAssetNames, sbomName } from './release-sbom-names.mjs';
 import { runOsv } from './security-scan.mjs';
 import pins from './security-tools.json' with { type: 'json' };
+
+export { releaseImages, sbomAssetNames, sbomName };
 
 /** Project exact native OSV inventory purls; never reconstruct an OS purl from an ecosystem label. */
 export function bomFromOsv(report, { stripPrefix = '' } = {}) {
@@ -70,7 +73,6 @@ export function bomFromOsv(report, { stripPrefix = '' } = {}) {
 }
 
 const sha256 = /^sha256:[a-f0-9]{64}$/u;
-const platformPattern = /^linux\/(?:amd64|arm64)$/u;
 function purlVersion(purl) {
   if (typeof purl !== 'string' || !/^pkg:[a-z][a-z0-9.+-]*\//u.test(purl))
     throw Error('Package URL required');
@@ -110,29 +112,6 @@ function toolEnvironment() {
     TMPDIR: process.env.TMPDIR,
     DOCKER_CONFIG: process.env.DOCKER_CONFIG,
   };
-}
-export function releaseImages() {
-  return JSON.parse(
-    readFileSync(new URL('../containers/images.json', import.meta.url), 'utf8')
-  ).images.filter((image) => image.release === true);
-}
-export function sbomName(id, platform, tag) {
-  if (
-    !/^[a-z0-9-]+$/u.test(id) ||
-    !platformPattern.test(platform) ||
-    !/^v\d+\.\d+\.\d+(?:-[a-z0-9.-]+)?$/u.test(tag)
-  )
-    throw Error('SBOM filename identity refused');
-  return `openkit-sbom-${id}-${platform.replace('/', '-')}-${tag}.cdx.json`;
-}
-/** Existing catalog/platform subjects plus the two existing NanoHost archive targets. */
-export function sbomAssetNames(tag) {
-  return [
-    ...releaseImages().flatMap((image) =>
-      image.platforms.map((platform) => sbomName(image.id, platform, tag))
-    ),
-    ...['linux/amd64', 'linux/arm64'].map((platform) => sbomName('nanohost', platform, tag)),
-  ].sort();
 }
 export function artifactSource(kind, id, platform) {
   if (

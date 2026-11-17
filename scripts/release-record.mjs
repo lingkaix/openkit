@@ -12,7 +12,7 @@ import {
   readReleaseAssessment,
 } from './release-preflight.mjs';
 import { noSecrets } from './release-safety.mjs';
-import { sbomAssetNames } from './release-sbom.mjs';
+import { sbomAssetNames } from './release-sbom-names.mjs';
 
 const SHA256 = /^sha256:[a-f0-9]{64}$/u;
 /** Generate the narrow release asset from existing image JSON, checksums and reviewed assessments. */
