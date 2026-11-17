@@ -4,6 +4,7 @@ implementation: Partial
 kind: process
 date: 2026-08-29
 updated: "2026-10-16"
+aspect: process
 ---
 # Release Management
 

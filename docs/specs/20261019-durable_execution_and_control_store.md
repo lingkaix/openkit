@@ -3,6 +3,7 @@ status: Draft
 implementation: Partial
 kind: mechanism
 date: "2026-10-19"
+aspect: fault-tolerance
 ---
 # Durable Execution And Control Store
 

@@ -4,10 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { parseFrontmatter, validateFields } from './lib/doc-fields.mjs';
 
-// Governance stays a filename enumeration for its third member and no further.
-// `docs/documentation-model.md` Type Induction treats the enumeration as a
-// defect to retire, and names a fourth member as the event that promotes this
-// type to a `docs/governance/` directory instead of another validator edit.
+// Governance documents are a filename enumeration.
 const GOVERNANCE_FILES = new Set([
   'docs/documentation-model.md',
   'docs/change-execution.md',
@@ -83,6 +80,7 @@ const REFERENCE_DEFINITION_PATTERN =
 const REFERENCE_LINK_PATTERN = /!?\[([^\]\n]+)\]\[([^\]\n]*)\]/gu;
 const SHORTCUT_REFERENCE_LINK_PATTERN = /!?\[([^\]\n]+)\](?![[(:])/gu;
 const CODE_DOC_PATH_PATTERN = /`(docs\/[^`\n]*?(?:\.md(?:#[^`\n]*)?|\/))`/gu;
+const CODE_PATH_PATTERN = /`([^`\n]+)`/gu;
 const CHANGE_BUNDLE_TARGET_PATTERN = /^docs\/changes\/\d{18}-[a-z0-9_]+\/?$/u;
 // A scheme needs at least two characters, so a single letter before the colon stays a repository
 // path candidate and is resolved and containment-checked rather than ignored as an external URI.
@@ -112,6 +110,15 @@ export function classifyDocuments(repoRoot) {
       toRepositoryPath(repoRoot, absolute)
     )) {
       documents.push({ path, type: classifyPath(path) });
+    }
+  }
+
+  const seen = new Set(documents.map((document) => document.path));
+  for (const root of ['apps', 'packages', 'skills']) {
+    for (const absolute of listMarkdownFiles(join(repoRoot, root))) {
+      if (!absolute.endsWith('/README.md')) continue;
+      const path = toRepositoryPath(repoRoot, absolute);
+      if (!seen.has(path)) documents.push({ path, type: 'local-guide' });
     }
   }
 
@@ -232,11 +239,13 @@ export function validateDocModel(repoRoot) {
     }
 
     const content = readFileSync(join(repoRoot, path), 'utf8');
-    const links = resolveRepositoryDocLinks(repoRoot, path, content);
+    const guidePaths = /^(?:apps|packages|skills)\/(?:.*\/)?README\.md$/u.test(path);
+    const links = resolveRepositoryDocLinks(repoRoot, path, content, guidePaths);
 
-    validateDocumentationLinkExistence(repoRoot, path, type, links, errors);
+    validateDocumentationLinkExistence(repoRoot, path, type, links, errors, guidePaths);
 
     if (type === 'spec' || type === 'spec-terminal') {
+      if (type === 'spec') validateImplementationPaths(repoRoot, path, content, errors);
       validateSpecificationCoreReferences(repoRoot, path, content, errors);
       validateAuthorityChangeRecordLinks(path, links, errors);
       continue;
@@ -565,7 +574,14 @@ function validateAuthorityChangeRecordLinks(path, links, errors) {
  * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
-function validateDocumentationLinkExistence(repoRoot, path, type, links, errors) {
+function validateDocumentationLinkExistence(
+  repoRoot,
+  path,
+  type,
+  links,
+  errors,
+  allowDirectories = false
+) {
   for (const resolvedPath of links) {
     if (resolvedPath.startsWith('../')) {
       errors.push(
@@ -575,9 +591,11 @@ function validateDocumentationLinkExistence(repoRoot, path, type, links, errors)
     }
 
     const target = lstatSync(join(repoRoot, resolvedPath), { throwIfNoEntry: false });
-    const validTarget = CHANGE_BUNDLE_TARGET_PATTERN.test(resolvedPath)
-      ? target?.isDirectory()
-      : target?.isFile();
+    const validTarget = allowDirectories
+      ? target?.isFile() || target?.isDirectory()
+      : CHANGE_BUNDLE_TARGET_PATTERN.test(resolvedPath)
+        ? target?.isDirectory()
+        : target?.isFile();
 
     const name = resolvedPath.split('/').at(-1);
     const archivedTarget =
@@ -606,11 +624,39 @@ function validateDocumentationLinkExistence(repoRoot, path, type, links, errors)
 }
 
 /**
+ * Checks concrete code and directory pointers in a spec's Implementation section.
+ *
+ * @param {string} repoRoot Repository root.
+ * @param {string} path Repository-relative spec path.
+ * @param {string} content Full specification content.
+ * @param {string[]} errors Mutable validation errors.
+ */
+function validateImplementationPaths(repoRoot, path, content, errors) {
+  const { headings, maskedContent } = scanSecondLevelHeadings(content, true);
+  const definitions = [...maskedContent.matchAll(REFERENCE_DEFINITION_PATTERN)]
+    .map((match) => match[0])
+    .join('\n');
+  for (const [index, heading] of headings.entries()) {
+    if (heading.name !== 'Implementation') continue;
+    const section = maskedContent.slice(heading.index + heading.length, headings[index + 1]?.index);
+    const links = resolveRepositoryDocLinks(
+      repoRoot,
+      path,
+      `${section.replace(REFERENCE_DEFINITION_PATTERN, '')}\n${definitions}`,
+      true,
+      true
+    );
+    validateDocumentationLinkExistence(repoRoot, path, 'spec', links, errors, true);
+  }
+}
+
+/**
  * Rejects platform-reference links from a specification's exact Core References sections.
  *
  * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative specification path.
  * @param {string} content Markdown document content.
+ * @param {boolean} [allPaths] Preserve concrete code-path citations as well as docs paths.
  * @param {string[]} errors Mutable validation error list.
  */
 function validateSpecificationCoreReferences(repoRoot, path, content, errors) {
@@ -642,10 +688,11 @@ function validateSpecificationCoreReferences(repoRoot, path, content, errors) {
  * @param {string} content Markdown document content.
  * @returns {{
  *   headings: {index: number, length: number, name: string}[],
- *   maskedContent: string
+ *   maskedContent: string,
+ *   sectionContent: string
  * }} Headings and same-length content with code and comments replaced by spaces.
  */
-function scanSecondLevelHeadings(content) {
+export function scanSecondLevelHeadings(content, allPaths = false) {
   const headings = [];
   const maskedLines = [];
   let fenceCharacter = null;
@@ -739,19 +786,18 @@ function scanSecondLevelHeadings(content) {
     offset += rawLine.length + 1;
   }
 
-  const maskedContent = maskedLines
-    .join('\n')
-    .replace(/(`+)([^`\n]*?)\1/gu, (span, _ticks, body) => {
-      const target = body.split(/[?#]/u, 1)[0];
-      const repositoryPath =
-        body.startsWith('docs/') &&
-        isConcreteRepositoryTarget(target) &&
-        (target.endsWith('.md') || CHANGE_BUNDLE_TARGET_PATTERN.test(target));
+  const sectionContent = maskedLines.join('\n');
+  const maskedContent = sectionContent.replace(/(`+)([^`\n]*?)\1/gu, (span, _ticks, body) => {
+    const target = body.split(/[?#]/u, 1)[0];
+    const repositoryPath =
+      body.startsWith('docs/') &&
+      isConcreteRepositoryTarget(target) &&
+      (target.endsWith('.md') || CHANGE_BUNDLE_TARGET_PATTERN.test(target));
 
-      return repositoryPath ? span : ' '.repeat(span.length);
-    });
+    return repositoryPath || (allPaths && isCodePath(target)) ? span : ' '.repeat(span.length);
+  });
 
-  return { headings, maskedContent };
+  return { headings, maskedContent, sectionContent };
 }
 
 /**
@@ -760,17 +806,21 @@ function scanSecondLevelHeadings(content) {
  * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative path of the document containing the links.
  * @param {string} content Markdown content whose repository-document links should be resolved.
+ * @param {boolean} [allPaths] Include linked code files and directories.
+ * @param {boolean} [codePaths] Include inline code pointers in Implementation sections.
  * @returns {string[]} Repository-relative document paths in source order.
  */
-function resolveRepositoryDocLinks(repoRoot, path, content) {
-  const { maskedContent } = scanSecondLevelHeadings(content);
+function resolveRepositoryDocLinks(repoRoot, path, content, allPaths = false, codePaths = false) {
+  const { maskedContent } = scanSecondLevelHeadings(content, codePaths);
   const targets = [];
   const definitions = new Map();
 
   targets.push(...readInlineLinkTargets(maskedContent));
 
-  for (const match of maskedContent.matchAll(CODE_DOC_PATH_PATTERN)) {
-    targets.push(match[1]);
+  for (const match of maskedContent.matchAll(
+    codePaths ? CODE_PATH_PATTERN : CODE_DOC_PATH_PATTERN
+  )) {
+    if (!codePaths || isCodePath(match[1])) targets.push(match[1]);
   }
 
   for (const match of maskedContent.matchAll(REFERENCE_DEFINITION_PATTERN)) {
@@ -807,19 +857,48 @@ function resolveRepositoryDocLinks(repoRoot, path, content) {
       return [];
     }
 
+    let destination = withoutFragment;
+    try {
+      destination = decodeURIComponent(withoutFragment);
+    } catch {
+      // Invalid escapes remain literal path text and still undergo existence checks.
+    }
+
     const resolvedPath = toRepositoryPath(
       repoRoot,
-      withoutFragment.startsWith('docs/')
-        ? resolve(repoRoot, withoutFragment)
-        : resolve(repoRoot, dirname(path), withoutFragment)
+      /^(?:docs|apps|packages|skills)\//u.test(destination) ||
+        (codePaths && /^(?:scripts|tests|containers)\//u.test(destination))
+        ? resolve(repoRoot, destination)
+        : resolve(repoRoot, dirname(path), destination)
     );
 
-    if (!resolvedPath.endsWith('.md') && !CHANGE_BUNDLE_TARGET_PATTERN.test(resolvedPath)) {
+    if (
+      !allPaths &&
+      !resolvedPath.endsWith('.md') &&
+      !CHANGE_BUNDLE_TARGET_PATTERN.test(resolvedPath)
+    ) {
       return [];
     }
 
     return [resolvedPath.replace(/\/$/u, '')];
   });
+}
+
+/**
+ * Distinguishes inline code-path citations from commands, identifiers and wire names.
+ *
+ * @param {string} target Inline-code text without a query or fragment.
+ * @returns {boolean} Whether the span names a concrete repository path.
+ */
+function isCodePath(target) {
+  return (
+    isConcreteRepositoryTarget(target) &&
+    !/[\s`]/u.test(target) &&
+    !target.startsWith('/') &&
+    /^(?:\.{1,2}\/|[\w.-]+\/|[\w.-]+\.(?:md|mjs|cjs|js|jsx|ts|tsx|json|jsonc|yaml|yml|toml|rs|sh|css|html|svg|png|ico|sql)$)/u.test(
+      target
+    )
+  );
 }
 
 /**
@@ -1130,6 +1209,7 @@ function listMarkdownFiles(directory) {
   const paths = [];
 
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === '.git') continue;
     const path = join(directory, entry.name);
 
     if (entry.isDirectory()) {

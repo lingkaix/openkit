@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 updated: 2026-09-30
+aspect: vault
 ---
 # Worker Credential Access Declarations
 

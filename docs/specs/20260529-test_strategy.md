@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: process
+aspect: process
 ---
 # OpenKit Test Strategy
 

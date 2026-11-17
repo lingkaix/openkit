@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: "2026-09-30"
+aspect: runtime-model
 ---
 # Worker Runtime Sub-Agent Provenance And Inference Identity
 

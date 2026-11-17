@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 updated: 2026-10-27
+aspect: storage
 ---
 # Workspace Backup, Export, Import, And Data-Root Migration
 Workspace export format: V3

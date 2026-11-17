@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
+aspect: architecture
 ---
 # Web Product Surface Projection
 

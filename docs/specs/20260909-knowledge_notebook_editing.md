@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 date: 2026-09-09
+aspect: knowledge
 ---
 # Knowledge Notebook Editing And Publication
 

@@ -8,7 +8,7 @@ This non-authorizing record holds the process group of the [independent document
 ## Scope And Base
 
 - Group base SHA: `d818256def07ecebfc0bcc9c85270fde5047341a` (`main` on 2026-10-25). Issue #440 had no comments and held no group in this scope.
-- Specifications (all `kind: process`): `20260529-test_strategy.md` (TST), `20260529-l6_story_acceptance.md` (L6), `20260719-verification_calibration.md` (VCA), `20260711-evaluation_harness_design.md` (EVH, Draft), `20260811-execution_residue_measurement.md` (ERM), `20260729-documentation_field_contract.md` (DFC), `20260829-release_management.md` (REL), and `20260909-persistent_deployment_acceptance.md` (PDA).
+- Specifications (all `kind: process`): `20260529-test_strategy.md` (TST), `20260529-l6_story_acceptance.md` (L6), `20260719-verification_calibration.md` (VCA), `20260711-evaluation_harness_design.md` (EVH, Draft), `20260811-execution_residue_measurement.md` (ERM), `docs/documentation-model.md#fields` (DFC), `20260829-release_management.md` (REL), and `20260909-persistent_deployment_acceptance.md` (PDA).
 - The specifications guide `docs/specs/README.md`, and an audit-only reading of `docs/specs/AGENTS.md`.
 - No Core document owns these processes. G2 compares them with `docs/core/doctrine.md`, `docs/core/contract-evolution.md`, `docs/verification-instruments.md`, `docs/documentation-model.md`, `docs/toolchain.md`, and root `AGENTS.md`.
 - G3 inspection: three read-only inspector contexts (PR-TST, PR-VCA, PR-REL). They read code only and ran no tests. The auditor verified each kept finding against the code, and read GitHub releases and tags through the GitHub API.

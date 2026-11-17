@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 date: "2026-10-14"
+aspect: knowledge
 ---
 # OpenKit Retrieval Kernel
 

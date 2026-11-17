@@ -3,7 +3,7 @@ date: "2026-09-30"
 ---
 # Delayed User Input Terminal Archive
 
-This non-authorizing repository audit records the terminal supersession of the Delayed User Input Draft on 2026-09-30. Its generating rule is [Terminal Archive Audit And Archive Immutability](../documentation-model.md#terminal-archive-audit-and-archive-immutability), applied with the [specification lifecycle guide](../specs/README.md#lifecycle-evidence), [superseded-directory guide](../specs/superseded/README.md), and [Auditor contract](../roles/auditor.md). It records an existing decision, not a new design approval or independent acceptance of the auditor's own output.
+This non-authorizing repository audit records the terminal supersession of the Delayed User Input Draft on 2026-09-30. Its generating rule is [Documentation Model](../documentation-model.md#specifications) (historical archive rule superseded by [DOC-FINAL Information Architecture](../decisions/20261116-doc_final_information_architecture.md)), applied with the [specification lifecycle guide](../specs/README.md#skeleton), [superseded-directory guide](../specs/superseded/README.md), and [Auditor contract](../roles/auditor.md). It records an existing decision, not a new design approval or independent acceptance of the auditor's own output.
 
 ## Paths And Final Identity
 

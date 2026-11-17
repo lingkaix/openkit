@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Not Started
 kind: process
+aspect: process
 ---
 # Verification Calibration Program
 

@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: topology
 updated: 2026-10-06
+aspect: runtime-model
 ---
 # Durable Scheduler Design
 

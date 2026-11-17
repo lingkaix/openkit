@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 updated: "2026-10-13"
+aspect: process
 ---
 # L6 Story Acceptance Testing
 

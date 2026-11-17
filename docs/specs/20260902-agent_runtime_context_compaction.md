@@ -4,6 +4,7 @@ implementation: Partial
 kind: mechanism
 date: 2026-09-02
 updated: "2026-10-17"
+aspect: work-model
 ---
 # Agent Runtime Context Management And Compaction
 

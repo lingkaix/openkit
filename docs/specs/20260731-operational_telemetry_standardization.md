@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 date: "2026-07-31"
+aspect: evidence
 ---
 # Operational Telemetry Standardization
 

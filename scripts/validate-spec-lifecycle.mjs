@@ -3,6 +3,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseFrontmatter, validateFields } from './lib/doc-fields.mjs';
+import { scanSecondLevelHeadings } from './validate-doc-model.mjs';
 
 const ROOT_STATUS_VALUES = new Set(['Draft', 'Accepted', 'Deprecated']);
 const TERMINAL_STATUS_VALUES = new Set(['Superseded', 'Retired', 'Rejected']);
@@ -27,14 +28,15 @@ const PLACEHOLDER_PATTERN = /^(?:none|pending|tbd|todo|unknown|n\/a)$/i;
  * Validates every specification lifecycle document.
  *
  * @param {string} repoRoot Repository root.
+ * @param {{reportUnconverted?: (path: string) => void}} [options] Optional report for specs without Gaps.
  * @returns {string[]} Stable repository-relative validation errors.
  */
-export function validateSpecLifecycle(repoRoot) {
+export function validateSpecLifecycle(repoRoot, options = {}) {
   const errors = [];
   const evidenceGraph = new Map();
 
   for (const relativePath of listSpecPaths(repoRoot)) {
-    validateSpec(repoRoot, relativePath, errors, evidenceGraph);
+    validateSpec(repoRoot, relativePath, errors, evidenceGraph, options);
   }
 
   validateDecisionEvidenceCycles(evidenceGraph, errors);
@@ -91,8 +93,9 @@ function listSpecPaths(repoRoot) {
  * @param {string} relativePath Repository-relative spec path.
  * @param {string[]} errors Mutable validation error list.
  * @param {Map<string, string[]>} evidenceGraph Terminal-spec decision-evidence edges.
+ * @param {{reportUnconverted?: (path: string) => void}} options Optional conversion report.
  */
-function validateSpec(repoRoot, relativePath, errors, evidenceGraph) {
+function validateSpec(repoRoot, relativePath, errors, evidenceGraph, options) {
   const content = readFileSync(join(repoRoot, relativePath), 'utf8');
   const metadata = parseFrontmatter(content);
   const fields = metadata.fields;
@@ -106,6 +109,14 @@ function validateSpec(repoRoot, relativePath, errors, evidenceGraph) {
 
   for (const message of fieldErrors) {
     errors.push(`${relativePath}: ${message}`);
+  }
+
+  if (relativePath.split('/').length === 3) {
+    validateImplementationGaps(relativePath, content, implementation, errors, options);
+  }
+
+  if (transitional && relativePath.split('/').length === 3 && fields.aspect === undefined) {
+    errors.push(`${relativePath}: \`aspect\` is required.`);
   }
 
   const decisionEvidence =
@@ -143,6 +154,53 @@ function validateSpec(repoRoot, relativePath, errors, evidenceGraph) {
       evidenceGraph
     );
     validateReasonSection(relativePath, content, 'Retention Reason', errors);
+  }
+}
+
+/**
+ * Checks implementation alignment only after a spec adopts the Gaps section.
+ *
+ * @param {string} path Repository-relative spec path.
+ * @param {string} content Full specification content.
+ * @param {string|null} implementation Parsed implementation value.
+ * @param {string[]} errors Mutable validation errors.
+ * @param {{reportUnconverted?: (path: string) => void}} options Optional conversion report.
+ */
+function validateImplementationGaps(path, content, implementation, errors, options) {
+  const { headings, sectionContent } = scanSecondLevelHeadings(content);
+  const gaps = headings.filter((heading) => heading.name === 'Implementation Gaps');
+  if (gaps.length === 0) {
+    options.reportUnconverted?.(path);
+    return;
+  }
+  if (gaps.length > 1) {
+    errors.push(`${path}: Implementation Gaps must appear exactly once.`);
+  }
+  for (const heading of gaps) {
+    const index = headings.indexOf(heading);
+    const body = sectionContent
+      .slice(heading.index + heading.length, headings[index + 1]?.index)
+      .trim();
+    if ((implementation === 'Implemented') !== (body === 'None.')) {
+      errors.push(
+        `${path}: implementation must be Implemented if and only if Implementation Gaps is None.`
+      );
+    }
+    if (body === 'None.') continue;
+    const lines = body
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length === 0) {
+      errors.push(
+        `${path}: Implementation Gaps must contain None. or gap lines with issue numbers.`
+      );
+    }
+    for (const line of lines) {
+      if (!/(?:^|[^\w#])#[1-9]\d*\b/u.test(line)) {
+        errors.push(`${path}: every Implementation Gaps line must carry #<number>: ${line}`);
+      }
+    }
   }
 }
 
@@ -478,7 +536,11 @@ function toRepositoryPath(repoRoot, path) {
 const scriptPath = fileURLToPath(import.meta.url);
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {
   const repoRoot = resolve(dirname(scriptPath), '..');
-  const errors = validateSpecLifecycle(repoRoot);
+  const errors = validateSpecLifecycle(repoRoot, {
+    reportUnconverted: process.argv.includes('--report-unconverted')
+      ? (path) => console.warn(`${path}: Implementation Gaps not yet converted (report only).`)
+      : undefined,
+  });
 
   if (errors.length > 0) {
     console.error(errors.join('\n'));

@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
+aspect: contract-evolution
 ---
 # Schema Evolution And Record Envelope
 

@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 updated: 2026-10-18
+aspect: policy
 ---
 # Policy Enforcement Mapping
 

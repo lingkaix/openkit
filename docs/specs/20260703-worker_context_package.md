@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
+aspect: knowledge
 ---
 # Worker Context Package
 

@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
+aspect: evidence
 ---
 # Capability Usage Gateway Foundation
 

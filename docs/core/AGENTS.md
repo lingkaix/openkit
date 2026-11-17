@@ -1,13 +1,13 @@
 # Core Docs
 
-Read `README.md` first. This file contains only local agent execution rules for core docs. Core retirement and archive immutability are owned by [Documentation Model](../documentation-model.md#terminal-archive-audit-and-archive-immutability). The [2026-10-31 rulings](../decisions/20261031-reserved_audit_question_rulings.md) record this editorial boundary.
+Read `README.md` first. This file contains only local agent execution rules for core docs. Core document rules and specification lifecycle rules are owned by [Documentation Model](../documentation-model.md#core) and [Specifications](../documentation-model.md#specifications). The [2026-10-31 rulings](../decisions/20261031-reserved_audit_question_rulings.md) and [DOC-FINAL Information Architecture](../decisions/20261116-doc_final_information_architecture.md) record this editorial boundary.
 
 ## Local Agent Rules
 
 - Keep one aspect per document.
 - Write in English.
 - Keep these docs conceptual and implementation-neutral.
-- Treat `docs/core/` as the canonical promoted model. Do not use archived `Superseded`, `Retired`, or `Rejected` specs as active decision logs.
+- Treat `docs/core/` as the canonical promoted model.
 - Before editing a core document, identify which aspect owns the terms being changed by checking the README term index.
 - Define each canonical concept in exactly one owner document. Other core documents may project that concept into their aspect, but they must not redefine it.
 - Replace duplicated concept definitions with cross-references to the canonical owner and keep only the aspect-specific projection.

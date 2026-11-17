@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+aspect: sandbox
 ---
 # Worker Sandbox Freedom Policy
 

@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: topology
+aspect: architecture
 ---
 # NanoCore Bootstrap, Readiness, And Recovery
 

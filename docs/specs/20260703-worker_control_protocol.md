@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: "2026-10-08"
+aspect: communication
 ---
 # Worker Control Protocol
 

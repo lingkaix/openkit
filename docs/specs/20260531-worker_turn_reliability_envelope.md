@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 updated: "2026-10-15"
+aspect: runtime-model
 ---
 # Worker Turn Reliability Envelope
 

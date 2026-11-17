@@ -4,6 +4,7 @@ implementation: Partial
 kind: boundary
 date: "2026-09-30"
 updated: "2026-10-09"
+aspect: agent-session
 ---
 # DeepSeek Worker Adapter
 

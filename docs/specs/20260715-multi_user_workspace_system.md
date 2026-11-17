@@ -4,6 +4,7 @@ implementation: Partial
 kind: concept
 date: 2026-07-15
 updated: "2026-10-06"
+aspect: identity
 ---
 # Single-Deployment Multi-User Workspace System
 

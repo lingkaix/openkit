@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: 2026-09-09
+aspect: agent-supply
 ---
 # Agent Plugin Packaging And Worker Supply
 

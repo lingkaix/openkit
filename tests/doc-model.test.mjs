@@ -52,7 +52,7 @@ function createFixture(root = mkdtempSync(join(tmpdir(), 'doc-model-'))) {
   );
   writeFileSync(
     join(root, 'docs/specs/20260101-sample_design.md'),
-    '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+    '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
       '## Owns\n\nOne design decision. And more.\n'
   );
   writeFileSync(
@@ -668,7 +668,7 @@ describe('documentation model validator', () => {
     const root = createFixture();
     writeFileSync(
       join(root, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Core References\n\n- `docs/deployment.md`\n'
     );
@@ -718,7 +718,7 @@ describe('documentation model validator', () => {
     const root = createFixture();
     writeFileSync(
       join(root, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Core References\n\n- `docs/core/model.md`\n\n' +
         '## Details\n\nOne implementation-facing detail.\n\n' +
@@ -744,7 +744,7 @@ describe('documentation model validator', () => {
     const root = createFixture();
     writeFileSync(
       join(root, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Core References\n\n```markdown\n## Example Heading\n```\n\n' +
         '- `docs/deployment.md`\n'
@@ -769,7 +769,7 @@ describe('documentation model validator', () => {
     const root = createFixture();
     writeFileSync(
       join(root, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Details\n\n```markdown\n## Core References\n\n- `docs/deployment.md`\n```\n'
     );
@@ -793,7 +793,7 @@ describe('documentation model validator', () => {
     const root = createFixture();
     writeFileSync(
       join(root, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Core References ##\n\n- `docs/deployment.md`\n'
     );
@@ -817,7 +817,7 @@ describe('documentation model validator', () => {
     const root = createFixture();
     writeFileSync(
       join(root, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Core References\n\n```markdown\n- `docs/deployment.md`\n```\n'
     );
@@ -841,7 +841,7 @@ describe('documentation model validator', () => {
     const terminatingRoot = createFixture();
     writeFileSync(
       join(terminatingRoot, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Core References\n\n~~~markdown\n## Example Heading\n~~~\n\n' +
         '- `docs/deployment.md`\n'
@@ -863,7 +863,7 @@ describe('documentation model validator', () => {
     const creatingRoot = createFixture();
     writeFileSync(
       join(creatingRoot, 'docs/specs/20260101-sample_design.md'),
-      '---\nstatus: Accepted\nimplementation: Implemented\n---\n# Sample Design\n\n' +
+      '---\nstatus: Accepted\nimplementation: Implemented\naspect: process\n---\n# Sample Design\n\n' +
         '## Owns\n\nOne design decision. And more.\n\n' +
         '## Details\n\n~~~markdown\n## Core References\n\n- `docs/deployment.md`\n~~~\n'
     );
@@ -1567,7 +1567,119 @@ describe('change record bundles', () => {
   });
 });
 
+describe('guide and Implementation path validation', () => {
+  for (const family of ['apps', 'packages', 'skills']) {
+    it(`checks README links under ${family}, including nested guides and source files`, () => {
+      const root = createFixture();
+      const directory = join(root, family, 'sample', 'nested');
+      mkdirSync(directory, { recursive: true });
+      const path = `${family}/sample/nested/README.md`;
+      writeFileSync(
+        join(root, path),
+        '# Guide\n\n[Missing source](./missing.ts)\n[Missing directory](./missing/)\n[Missing document][doc]\n\n[doc]: ./missing.md\n'
+      );
+      const errors = validateDocModel(root).filter((error) => error.startsWith(`${path}:`));
+      assert.equal(new Set(errors).size, 3, errors.join(' | '));
+      for (const target of ['missing.ts', 'missing', 'missing.md']) {
+        assert.ok(errors.some((error) => error.includes(target)));
+      }
+      writeFileSync(join(directory, 'missing.ts'), '// Source\n');
+      writeFileSync(join(directory, 'missing.md'), '# Document\n');
+      mkdirSync(join(directory, 'missing'));
+      assert.deepEqual(validateDocModel(root), []);
+      assert.ok(!generateDocIndex(root).includes(path));
+    });
+  }
+
+  it('retains docs path citations and ignores examples, runtime names, and dependencies in guides', () => {
+    const root = createFixture();
+    mkdirSync(join(root, 'apps/sample/node_modules/dependency'), { recursive: true });
+    writeFileSync(
+      join(root, 'apps/sample/README.md'),
+      '# Guide\n\n`docs/specs/missing.md`\n\n[external](https://example.com/file.ts)\n`state.json`\n`./install.sh --check`\n```md\n[example](missing.ts)\n```\n<!-- [hidden](missing.ts) -->\n'
+    );
+    writeFileSync(
+      join(root, 'apps/sample/node_modules/dependency/README.md'),
+      '[dependency](missing.md)\n'
+    );
+    const errors = validateDocModel(root);
+    assert.equal(errors.length, 1, errors.join(' | '));
+    assert.ok(errors[0].includes('docs/specs/missing.md'));
+  });
+
+  it('checks repository-root code citations and relative directory pointers only inside Implementation', () => {
+    const root = createFixture();
+    const path = 'docs/specs/20260101-sample_design.md';
+    const header =
+      '---\nstatus: Accepted\nkind: concept\nimplementation: Partial\naspect: security\n---\n# Spec\n\n';
+    writeFileSync(
+      join(root, path),
+      header +
+        '## Rules\n\n`apps/not-a-pointer.ts`\n\n## Implementation\n\n`apps/sample/src`\n`packages/sample/index.ts`\n`scripts/check.mjs`\n`../../skills/sample/`\n\n## Decisions\n\n`apps/outside.ts`\n'
+    );
+    let errors = validateDocModel(root);
+    assert.equal(errors.length, 4, errors.join(' | '));
+    for (const directory of ['apps/sample/src', 'packages/sample', 'scripts', 'skills/sample']) {
+      mkdirSync(join(root, directory), { recursive: true });
+    }
+    writeFileSync(join(root, 'packages/sample/index.ts'), '// Source\n');
+    writeFileSync(join(root, 'scripts/check.mjs'), '// Check\n');
+    errors = validateDocModel(root);
+    assert.deepEqual(errors, []);
+  });
+
+  it('uses real section boundaries and global reference definitions for Implementation links', () => {
+    const root = createFixture();
+    const path = 'docs/specs/20260101-sample_design.md';
+    writeFileSync(
+      join(root, path),
+      '# Spec\n\n```md\n## Implementation\n`apps/example.ts`\n```\n\n## Implementation ##\n\n[Source][code]\n\n~~~md\n## Example\n~~~\n\n`apps/missing.ts`\n\n## Decisions\n\n[code]: ../../packages/missing.ts\n`apps/outside.ts`\n'
+    );
+    const errors = validateDocModel(root);
+    assert.equal(new Set(errors).size, 2, errors.join(' | '));
+    assert.ok(errors.some((error) => error.includes('packages/missing.ts')));
+    assert.ok(errors.some((error) => error.includes('apps/missing.ts')));
+  });
+
+  it('rejects source-link containment escapes and ignores non-concrete Implementation examples', () => {
+    const root = createFixture();
+    mkdirSync(join(root, 'packages/sample'), { recursive: true });
+    writeFileSync(
+      join(root, 'packages/sample/README.md'),
+      '# Guide\n\n[Escape](../../../outside.ts)\n'
+    );
+    const path = 'docs/specs/20260101-sample_design.md';
+    writeFileSync(
+      join(root, path),
+      '# Spec\n\n## Implementation\n\n`apps/<name>/`\n`packages/*/src`\n`pnpm build`\n\n[external](https://example.com/src.ts)\n'
+    );
+    const errors = validateDocModel(root);
+    assert.equal(errors.length, 1, errors.join(' | '));
+    assert.ok(errors[0].includes('outside repository'));
+  });
+});
+
 describe('documentation index generator', () => {
+  it('groups active specifications by aspect in stable path order', () => {
+    const root = createFixture();
+    for (const [name, aspect] of [
+      ['20260103-z.md', 'security'],
+      ['20260102-a.md', 'security'],
+      ['20260104-b.md', 'architecture'],
+    ]) {
+      writeFileSync(
+        join(root, 'docs/specs', name),
+        `---\nstatus: Accepted\nimplementation: Partial\nkind: concept\naspect: ${aspect}\n---\n# Title\n\nSummary.\n`
+      );
+    }
+    const index = generateDocIndex(root);
+    assert.ok(index.indexOf('### architecture') < index.indexOf('### process'));
+    assert.ok(index.indexOf('### process') < index.indexOf('### security'));
+    const security = index.split('### security\n')[1].split('\n## ')[0];
+    assert.ok(security.indexOf('20260102-a.md') < security.indexOf('20260103-z.md'));
+    assert.ok(!security.includes('20260104-b.md'));
+  });
+
   it('generates deterministic output', () => {
     const root = createFixture();
 

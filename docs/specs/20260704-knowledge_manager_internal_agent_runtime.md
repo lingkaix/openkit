@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
+aspect: knowledge
 ---
 # Knowledge Manager Agent
 

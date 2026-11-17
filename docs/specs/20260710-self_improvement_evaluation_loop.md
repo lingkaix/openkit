@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+aspect: knowledge
 ---
 # Explicit Work Reflection And Knowledge Improvement
 

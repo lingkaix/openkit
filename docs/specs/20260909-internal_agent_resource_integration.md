@@ -4,6 +4,7 @@ implementation: Partial
 kind: boundary
 date: 2026-09-09
 updated: 2026-09-30
+aspect: architecture
 ---
 # Internal Agent Resource Integration
 

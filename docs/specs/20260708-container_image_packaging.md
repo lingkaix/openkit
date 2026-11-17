@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: topology
 updated: 2026-11-08
+aspect: architecture
 ---
 # Container Image Packaging And Release Publishing
 

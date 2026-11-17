@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 date: "2026-10-18"
+aspect: storage
 ---
 # File Storage And Knowledge Packages
 

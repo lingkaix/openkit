@@ -4,6 +4,7 @@ implementation: Partial
 kind: topology
 date: 2026-08-02
 updated: "2026-10-15"
+aspect: runtime-model
 ---
 # NanoHost Runtime And Transport
 

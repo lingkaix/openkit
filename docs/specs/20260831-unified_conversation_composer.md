@@ -4,6 +4,7 @@ implementation: Partial
 kind: boundary
 date: 2026-08-31
 updated: "2026-10-08"
+aspect: work-model
 ---
 # Unified Conversation Composer
 

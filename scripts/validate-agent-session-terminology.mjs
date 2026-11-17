@@ -175,9 +175,15 @@ function terminologyFindings(path, text) {
   const markdown = extname(path) === '.md';
   const prose = markdown ? lines.map(() => []) : sourceProse(lines, extname(path));
   let fenced = false;
+  // YAML frontmatter holds identifiers (for example the `aspect` slug), not prose.
+  let frontmatter = markdown && lines[0] === '---';
   const findings = [];
 
   for (const [lineIndex, line] of lines.entries()) {
+    if (frontmatter) {
+      if (lineIndex > 0 && line === '---') frontmatter = false;
+      continue;
+    }
     if (spacedTerm.test(line)) findings.push({ line: lineIndex + 1, term: 'spaced' });
     if (markdown) {
       if (/^\s*```/u.test(line)) {
@@ -192,6 +198,17 @@ function terminologyFindings(path, text) {
   }
   return findings;
 }
+
+test('skips YAML frontmatter identifiers in Markdown', () => {
+  const hyphenated = `${AGENT}-${SESSION}`;
+  assert.deepEqual(
+    terminologyFindings('spec.md', `---\naspect: ${hyphenated}\n---\n# Title\n`),
+    []
+  );
+  assert.deepEqual(terminologyFindings('spec.md', `---\naspect: x\n---\nOne ${hyphenated}.\n`), [
+    { line: 4, term: 'hyphenated-prose' },
+  ]);
+});
 
 test('classifies canonical names and encoded identifiers without false positives', () => {
   const allowed = [

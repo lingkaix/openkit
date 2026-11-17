@@ -3,274 +3,129 @@ status: Accepted
 ---
 # Documentation Model
 
-This document owns the OpenKit documentation type system: the closed set of document types, each type's scope, authority, lifecycle, naming, and location, the precedence rules between types, the reading protocol agents follow to load context, and the generated documentation index contract.
-
-This document also owns the metadata field contract: which fields exist, which each type requires, and each field's canonical values. The validation modules are its executable projection and hold no authority of their own; a field present in a module but not stated here is a defect in the module.
-
-This document does not own the content rules inside the body of any single type: material change execution and change-record content rules stay in `docs/change-execution.md`, story artifacts stay with `docs/specs/20260529-l6_story_acceptance.md`, and product doctrine stays in `docs/core/doctrine.md`. It does not own how the field contract is expressed, parsed, or enforced, which is `docs/specs/20260729-documentation_field_contract.md`.
-
-## Purpose
-
-Engineers own current user intent. Documentation durably records interpreted intent and accepted decisions; it does not prove that the interpretation matches its source. Preserve consequential source statements and decision provenance, distinguish agent inference from engineer acceptance, and compare affected authority with those sources during work. Decision records under Decision Records below keep the reason, decider, and rejected alternatives of a durable decision outside the owner that states the rule. Code and running systems establish implementation facts, not permission to redefine intent. Rationale lives in `docs/engineering-doctrine.md`.
-
-## Admitted Rebuild Corpus
-
-The rebuild test uses accepted documents plus admitted contract artifacts. Explicitly owned declarative boundary schemas and standalone conformance fixtures are contract material. Existing generated boundary schemas are eligible under the same explicit ownership requirement. DDL and retained fixtures count only where needed to read supported saved data. Generators, whole packages, and implementation source are not admitted; this ruling introduces no retained-format generator. Accepted prose continues to own authority, lifecycle, failure, and recovery semantics; code drift cannot silently rewrite them. [Documents Pass When A System Can Be Rebuilt From Them](decisions/20260923-documentation_rebuild_test.md) states the test. [Reserved Audit Question Rulings](decisions/20261031-reserved_audit_question_rulings.md) amends the corpus.
-
-## Document Types
-
-The following types are the complete set at any moment, and a file under `docs/` or the packaged operator-reference directory that does not fit one of them is a validation error. Complete is not the same as final: the set is closed against silent additions, not against growth. How it grows is defined under Type Induction.
-
-### Intent Documents
-
-`docs/product-vision.md`, `docs/engineering-doctrine.md`, `docs/change-execution-rationale.md`, and `docs/roadmap.md`. They own purpose, premises, and direction. They govern what the system and the engineering process are for; they do not define behavioral contracts, and no implementation choice may cite them as its sole authority.
-
-`docs/change-execution-rationale.md` preserves observations, recorded costs, and rejected alternatives behind `docs/change-execution.md`. Rules remain in the owner and reasons remain in the intent document; obsolete rationale is pruned when it no longer explains a current direction.
-
-### Governance Documents
-
-`docs/documentation-model.md` (this document), `docs/change-execution.md`, and `docs/verification-instruments.md`. This document owns types and precedence, change execution owns adaptive coordination and change-record content, and verification instruments owns whether a deciding observation can be believed. Amending the type system means amending this document first.
-
-The third member was extracted after oracle and effect-domain rules had been scattered among workflow and testing documents; a fourth member is the event that promotes it to a `docs/governance/` directory rather than another filename exception. Role contracts, the engineering glossary, and the writing and harness references below are separate types and do not count as governance members. The decision and its reason are recorded in [a decision record](decisions/20260924-role_contracts_and_glossary_types.md). This type system governs Markdown documents; opaque legacy machine-readable evidence is not a documentation type.
-
-### Role Contracts
-
-Files under `docs/roles/`, one per role. One harness-neutral operating contract per registered agent role: the question the role answers, what it reads, what it may write, its independence limits, and what it cannot accept. `docs/change-execution.md` owns which roles exist, when they are composed, and the position and function model; each role contract owns only its role-specific operation and ranks below the governance documents it applies, so a conflict is corrected in the role contract. The directory README indexes the roles. Roles are dispatched by a prompt that names the contract, and no harness keeps its own copy or adapter of a role; `docs/agent-harnesses.md` owns the dispatch template and the model bound to each tier.
-
-### Core Model Documents
-
-`docs/core/*.md`. Stable normative model and cross-aspect doctrine. Highest behavioral authority; short, normative, and slow-moving. Owned concepts follow the five decision classes defined in the root `AGENTS.md`.
-
-An active Core document uses `status: Accepted`. When an accepted retirement decision requires retaining the old Core document as evidence, an auditor moves its final form under `docs/core/retired/` with `status: Retired` and the lifecycle fields and reasons defined below. No archived Core document exists today, so the first such retirement also adds the smallest executable type projection required for that directory; neither the directory nor its validator branch is created speculatively.
-
-### Specifications
-
-`docs/specs/YYYYMMDD-short_name.md`. Precise, narrow design decisions with a validated lifecycle, whose values and per-type field requirements are stated under Field Contract below. A `Draft` specification proposes a design contract; it is distinct from an optional change-bundle `proposal.md`, which records a work scheme's rationale without design authority. Exploration that has not converged stays in uncommitted working space. `scripts/validate-spec-lifecycle.mjs` enforces header and lifecycle rules.
-
-Every active specification declares one `kind`, which names the role its decisions play and decides where a statement belongs:
-
-- concept: what a product thing is, with its definition, lifecycle, invariants, and failure semantics.
-- boundary: an agreement between components, such as a protocol, wire format, or API.
-- mechanism: a cross-cutting mechanism that every member concept must answer to, such as portability, storage layout, or schema evolution.
-- topology: how the system is deployed, hosted, or run as processes.
-- process: an engineering, verification, evaluation, or documentation method.
-
-Concept-specific semantics belong in the concept's specification. A mechanism specification owns the questions every member answers and a registry of its members, not each member's semantics, so a new concept adds its answers to its own specification and one registry line per mechanism. A Draft may be organized by feature or problem; the division into kinds happens when it is promoted to Accepted, and that promotion receives an independent check that every criterion still exists under DOC-015. The specifications README owns the writing guidance that applies these rules. The decision and its reason are recorded in [a decision record](decisions/20260923-specification_kinds_and_promotion.md).
-
-### Change Records
-
-`docs/changes/[datetime]-short_name.md`, or for a new change-plan `docs/changes/[datetime]-short_name/`, with types `change-plan`, `pr-summary`, `standalone-change`, and `release-summary`. They own delegation and execution context: plans before significant work, curated checkpoints during it, implementation summaries after it. Execution history never becomes design or governance authority, and a durable rule is incomplete while any authoritative document depends on a specific change record to supply it. Content rules live in `docs/change-execution.md`.
-
-A change record takes one of two forms. A change-plan is a directory `docs/changes/[datetime]-short_name/` containing required `plan.md`, optional `proposal.md`, optional `findings.md`, optional `route-log.md`, and, only for programs that used the retired controller, optional legacy `state.json`. The directory carries the identity. Raw transcripts, checkpoints, and intermediate evidence stay uncommitted under `temp/`; other record types remain flat files.
-
-Optional members are evidence, not authority. A legacy state file is retained unchanged and interpreted only under the historical framework that produced it; no active owner requires or appends to it. A findings report records observations, their current dispositions, and one follow-up index under the body contract in `docs/change-execution.md`; each finding remains non-authorizing until user intent or an accepted owner admits the work. A proposal records the scheme's reasons, alternatives, assumptions, evidence, and material objections; a route log records route history. Both follow `docs/change-execution.md` and share the findings type's optional field contract and non-authorizing status; only `findings.md` receives the findings body validator. No new proposal type or lifecycle is introduced, and no optional member is an audit record.
-
-### Audit Records
-
-`docs/audits/YYYYMMDD-short_name.md`. Dated observation records for durable cross-task integrity audits, calibration, load-bearing maps, detection trends, Core retirement, and specification terminal archives. Incremental Auditor findings and case-local assurance rulings use the current task context, retained in a change record when one exists or the context independently needs to survive under `docs/change-execution.md`; invoking the role alone requires neither record. Records carry no authority; any permitted ruling derives from existing governance, never from its report. Each dated audit links its owning rule. Past records are never edited; a new observation is a new record.
-
-### Decision Records
-
-Files under `docs/decisions/` named by decision date and a short name. One file per durable decision: every engineer ruling, every approved agent-initiated change to governing design, and every design decision whose rejected alternatives are likely to be proposed again. The test is whether someone may later want to reverse it; ordinary implementation choices are not recorded. A record states who decided, when, what was decided, why, which alternatives were rejected and why, what observation would justify revisiting it, and which owners it affects. It has the authority of an intent document: it records why and by whom a decision was made, it is not a behavioral contract, and no implementation choice may cite it as its sole authority. The rule itself lives in its owning document, which links the record beside the rule it supports instead of writing an inline ruling marker. The decision and its reason are recorded in [a decision record](decisions/20260923-decision_records.md).
-
-Record a new decision in the same change that lands its rule. Past decisions are backfilled when needed: an agent about to change a rule whose reason is not recorded asks the engineer and records the answer before changing it. Keep the engineer's wording close to its source and state when it is translated. An owner statement that accepts a Safety Kernel limitation or residual risk links the decision record that accepted it; an unlinked one is a finding.
-
-A record is not edited after acceptance except for an editorial correction that changes no decision, reason, alternative, or trigger, and except to set its status to Superseded with `superseded-by` when a later record replaces it; the replacing record names it in `supersedes`. Decision records are self-contained: they may name their source change record as plain text but never link it, because change records are removable. The body uses exactly these level-two headings in this order: Decision, Reason, Rejected Alternatives, Revisit When, and Affected Owners. `scripts/validate-doc-model.mjs` checks the fields and headings only; it does not judge whether a reason is true or sufficient.
-
-### Terminal Archive Audit And Archive Immutability
-
-Only an auditor may execute the final transition of a specification into its `Superseded`, `Retired`, or `Rejected` archive, or of a Core document into its `Retired` archive. The auditor does not decide the transition: an engineer-approved decision or accepted surviving authority must already state the disposition, and the auditor returns the operation when ownership, receiver, lifecycle, or retention evidence is incomplete.
-
-The terminal-archive change produces one dated non-authorizing audit record and performs the final metadata update and archive move together. The record names every exact source and final archive path, the accepted transition decision, the disposition of every authority-bearing criterion, every inbound current-guidance link disposition, each final archived-file SHA-256, and the evidence supporting the lifecycle and retention reasons. Each criterion is preserved, moved to named current authority, or ended by the accepted decision; each inbound current-guidance link is repointed to current authority, retained only as an explicitly historical link, or removed. One audit may cover multiple documents only when one transition decision and one criterion inventory govern all of them.
-
-A retired Core document requires `status: Retired`, `status-changed`, `current-guidance`, and `decision-evidence`, and may carry `date` and `updated`; the first such retirement adds that row to the per-type table below together with its schema. It uses `current-guidance: None`, because its authority ended rather than continuing under a replacement. Its `decision-evidence` names the repository-relative path of the same-change terminal-archive audit. It contains a substantive `Lifecycle Reason` that explains the accepted decision or condition that ended its authority and how its authority-bearing criteria were disposed, plus a distinct substantive `Retention Reason` that identifies the historical constraints, alternatives, migration detail, or audit evidence worth preserving. Renewed authority is a new active Core document with `status: Accepted` and a different repository-relative path; it does not reactivate or replace the archived identity in place.
-
-The first transition that needs an archive path or governance-generated audit-record projection not already recognized adds the smallest executable projection in the same change. No speculative `docs/specs/rejected/` or `docs/core/retired/` directory or validator branch is added before its first real use.
-
-The terminal-archive commit is the archived document's freeze boundary. After it lands, an archived Core document or terminal specification MUST NOT be edited, renamed, moved again, or deleted. A later observation is written as a new audit record; renewed authority is written in current guidance or in a new active Core document or specification with a new document identity. Neither correction path mutates the archive, and renewed work links the terminal-archive audit only when that audit exists.
-
-This rule is prospective. Documents already under a terminal specification archive before adoption require no audit backfill or separate migration. The bytes committed by the rule-adoption change, including its authorized evidence corrections, become their freeze baseline.
-
-### Platform References
-
-Enumerated root documents: `docs/deployment.md`, `docs/app-api.md`, `docs/toolchain.md`, `docs/glossary.md`, `docs/writing.md`, and `docs/agent-harnesses.md`. Each takes one angle on the system — where Core and agents run, where an App API contract lives, which tools are default, which words the engineering process uses, how repository documents are written, which harnesses and models realize the roles — and states the principles and shape of that angle while summarizing the contracts that already own its details. They live at the repository documentation root so that an agent or a human finds them without searching.
-
-They own no behavioral contract. Stable design belongs to core documents, technical detail belongs to specifications, and executable fact belongs to code and configuration. Every platform reference has exactly one `## Owns` section and one `## Does Not Own` section, including when `## Owns` states that the guide owns no decision. A platform reference may own narrow repository-operation decisions that no Core document or specification owns, such as the default toolchain and the setup and dependency procedure that realizes it in `docs/toolchain.md`; each owned decision MUST be stated inside that document's `## Owns` section, and the exception does not authorize product behavior, architecture, or a broader guide authority. A repository-operation decision that root `AGENTS.md` routes to a platform reference is owned there and MUST NOT also be stated in root, so the route and the owner never disagree. A platform reference is otherwise a slice and projection across those owners, plus the judgments described below.
-
-#### Why They Exist
-
-Authority here is deliberately fragmented: each core document owns one aspect, each specification owns one narrow decision. That is what makes ownership unambiguous, and it is also what makes a cross-cutting question expensive to answer, because the answer is distributed across documents that must first be located. As the corpus and the code grow, the cost of locating grows with them.
-
-A platform reference pays that cost once, so entering from one angle reaches the owning documents in one hop instead of searching. Deleting them to keep authority pure would trade a real cost — context an agent fails to load — for a purity gain, and missed context produces worse drift than a stale summary does.
-
-Their defining risk is the mirror of their purpose: a hand-written summary of something owned elsewhere diverges from it over time. That has already happened here repeatedly. The rules below bound the risk rather than pretend it is absent.
-
-#### No Authority Inversion
-
-A specification, core document, or implementation must never take a contract fact from a platform reference. It resolves that fact at the owner: the core document, the specification, the schema, or the configuration file that holds it. A reference that becomes the cited source of a contract has inverted the authority order, and that inversion is a defect in both documents.
-
-The mechanism of the inversion is ordinary and worth naming: a reference summarizes a sentence, a specification copies the summary, and later no reader can tell which copy is the source. Its correction is mechanical rather than discretionary — a platform reference path may not appear in a specification's `Core References` section, because that section names contract dependencies.
-
-When a platform reference disagrees with a core document, a specification, or running code, the reference is stale. Fix the reference. It never wins, and a conflict is never evidence that the owner is wrong.
-
-#### Judgments
-
-Besides the narrow repository-operation decisions it marks under `## Owns`, the one thing a platform reference may hold is a judgment: a calibrated premise about scope, priority, or optimization target, formed from experience, team shape, and external conditions rather than derived from a contract. The current deployment baseline is one — that the product is optimized for a team typically under ten people is a design and verification profile, not a limit anything enforces.
-
-Such a judgment is high-value and hard to pin in a core document or a specification, because core owns product-independent semantics and a specification owns a narrow falsifiable design decision. A judgment is neither. It is the same species as the delegation premise in `docs/engineering-doctrine.md`, applied at a narrower scope.
-
-Judgments live in one `## Judgments` section placed before any projection, so a reader meets the authority boundary before the summaries. With `## Owns` they are the only citable content in the document, and they follow the rules Intent Documents already follow: they are not behavioral contracts, no implementation choice may cite one as its sole authority, and on any behavioral question a core document or specification decides. Citing a judgment as a premise is therefore not the inversion described above.
-
-Two constraints keep the section from becoming a place where everything accumulates:
-
-- A judgment is a premise about scope, priority, or optimization target. The moment it constrains system behavior with must or must not, it belongs to a core document or a specification instead.
-- A judgment states what it rests on and what observation would overturn it. A judgment that cannot be falsified is a decree, and `docs/engineering-doctrine.md` already requires this of the delegation premise for the same reason.
-
-#### Three Rules For The Rest
-
-**Mark authority by section.** `## Judgments` holds the citable premises, `## Owns` holds any narrow repository-operation decisions the document owns, and `## Does Not Own` states its explicit exclusions; every other section is projection, so the authority of a sentence is never inferred from its tone. Every platform reference has exactly one `## Owns` and one `## Does Not Own`. Language asserting the document's own authority belongs only in `## Judgments` and `## Owns`. Writing that this document does not own something or that another document owns it is attribution, not assertion, and belongs anywhere.
-
-**Generate a projection rather than write one.** A projection a script regenerates cannot rot; one maintained by discipline will. Where the projected facts are derivable — package exports, schema membership, configured tool versions, which document owns which surface — the projection belongs to Generated Projections below, with a `--check` mode that fails on drift as `docs/INDEX.md` already does. A section that could be generated and is not is a known debt, and naming it as such beats restating it confidently.
-
-**Link the residue; never restate it.** Narrative that cannot be generated stays hand-written, and names and links its owner instead of reproducing what the owner says. A restated copy carries no authority, so it adds nothing while it agrees and misleads once it drifts. A platform reference is measured by how fast it gets a reader to the right owner, not by how much it explains without them.
-
-#### Usage And Drift Detection
-
-An agent loads a platform reference when its task enters from that angle, then follows the links to the owning documents the change actually touches.
-
-Each reference names the owners it projects, so its staleness is answerable rather than invisible: whether any named owner changed since the reference was last updated is a question git can settle. Zero authority plus no mechanical check would let this material rot silently, which is the failure `docs/engineering-doctrine.md` warns about; naming owners is what makes the check possible.
-
-These documents remain enumerated rather than directory-classified, which costs a validator edit per member. Treat that as a defect to retire as members cluster, not as a model to copy.
+This document owns OpenKit's documentation rules: the closed set of families and types, each type's scope, authority, lifecycle, naming, and location, precedence, the reading protocol, the metadata field contract, the specification skeleton and gap rules, cross-references, and the generated index ([DOC-FINAL Information Architecture](decisions/20261116-doc_final_information_architecture.md)).
+
+## Families And Their Question
+
+Every document exists for a reader who builds, operates, verifies, or changes the system; text that no reader or check acts on is deleted. Each sentence belongs to the family whose question it answers; otherwise move or delete it. Every Markdown file under `docs/` and `skills/openkit-ops/references/` must fit one of the closed types below; adding or changing a type amends this document first. Opaque legacy machine-readable files are not documentation types.
+
+| Family | Path | Question | Authority and shape |
+| --- | --- | --- | --- |
+| Intent | `docs/product-vision.md` (protected), `docs/engineering-doctrine.md`, `docs/change-execution-rationale.md`, `docs/roadmap.md` | Why, and in which direction? | Direction/premises only; no behavioral contract or sole implementation authority. |
+| Governance | root `AGENTS.md` (protected), `docs/documentation-model.md`, `docs/change-execution.md`, `docs/verification-instruments.md` | How do we work? | One owner per rule: document rules here, coordination/change records in `docs/change-execution.md`, instrument trust in `docs/verification-instruments.md`. |
+| Role contract | `docs/roles/[a-z][a-z-]*.md` (`docs/roles/README.md` index) | What is one role's operating contract? | Lowercase ASCII letters/hyphens; one harness-neutral contract per role (question, reads, writes, independence, non-acceptance); ranks below governance ([decision](decisions/20260924-role_contracts_and_glossary_types.md)). |
+| Core | `docs/core/<aspect>.md` (21 aspects plus `README.md`, `AGENTS.md`) | What always holds: terms, authority, invariants? | 10–40 KB; highest behavioral authority. |
+| Specification | `docs/specs/YYYYMMDD-short_name.md` (flat; `20YYMMDD-` plus `[a-z0-9_]+`) | What must one concept, boundary, mechanism, topology, or process do? | Concrete contract using the single specification skeleton. |
+| Decision record | `docs/decisions/YYYYMMDD-short_name.md` | Why was a rule chosen? | Append-only rationale; same filename grammar as specs ([decision](decisions/20260923-decision_records.md)). |
+| Evidence | `docs/changes/`, `docs/audits/YYYYMMDD-short_name.md` | What happened in open work or a cross-task audit? | Working/observation evidence; no design or governance authority. |
+| Platform reference | `docs/deployment.md`, `docs/app-api.md`, `docs/toolchain.md`, `docs/glossary.md`, `docs/writing.md`, `docs/agent-harnesses.md` | Where do cross-cutting reference facts live? | Enumerated at `docs/` root; each has one `## Owns` and one `## Does Not Own`, stating explicitly when it owns no decision. |
+| External snapshot | `docs/okf-spec-v0.1-snapshot.md`, `docs/okf-spec-v0.2-snapshot.md` | What upstream text was pinned verbatim? | Provenance and capture date only; no OpenKit authority. |
+| Cookbook | `docs/cookbooks/*.md` | How do I do one task? | Procedural recipes following accepted specs/tooling; no normative authority. |
+| Local guide | `README.md` and optional `AGENTS.md` (`docs/`, `apps/`, `packages/`, `skills/`, `tests/`) | What is in this directory, and how to run/test it? | `README.md` owns local purpose/workflow; `AGENTS.md` holds local agent rules only; no behavioral contract or restated counts/constants; omitted from `docs/INDEX.md`. |
+| Generated index | `docs/INDEX.md` | Where is the owner? | Generated projection grouped by type and specifications by `aspect`. |
+
+Role contracts, the glossary, and the writing and harness references are separate types.
 
 ### User Manuals
 
-`skills/openkit-ops/references/*.<lang>.md`. Operator- and end-user-facing instructions packaged for Agents operating the built product: how to deploy, configure, run, and verify it. They carry no authority. The independently distributable Skill is owned by `docs/specs/20260910-agent_operator_skill.md`; `docs/manual/README.md` is a discovery pointer, not a second instruction corpus. A localized discovery pointer may remain under `docs/manual/` only where a frozen historical link still needs that path; it contains no duplicated procedure and points to the single maintained reference. Other Skill references retain their local-guide classification.
+`skills/openkit-ops/references/*.<lang>.md` holds operator/end-user instructions for the built product (`docs/specs/20260910-agent_operator_skill.md` owns distribution; `docs/manual/README.md` is a pointer only), carrying no behavioral authority or duplicated procedures. Every page requires `.en.md` or `.zh.md`, `.en.md` is canonical, and a translation requires its `.en.md` regular-file sibling; adding a language extends the suffix set in `scripts/validate-doc-model.mjs` rather than adding a type. Every other type is English-only and unsuffixed, except protected `docs/product-vision.md` ([decision](decisions/20261015-product_vision_language_exception.md)).
 
-Manuals are the one localized type, because their readers are not required to read English. Every page states its language in a mandatory `.en.md` or `.zh.md` suffix, a page without one is a validation error, and `.en.md` is canonical: a translation may not exist without the English page it projects. Adding a language means extending the suffix set in `scripts/validate-doc-model.mjs`, not inventing a per-language type. Every other documentation type remains English-only and unsuffixed under root `AGENTS.md`, except the protected Product Vision's [accepted Chinese text](decisions/20261015-product_vision_language_exception.md). This exception applies only to that document and does not create another localized type.
+### Type Induction
 
-The type is distinguished by audience: a manual addresses whoever runs a release artifact, while every other type addresses whoever changes the repository. Change records, audit records, and snapshots are also written after the fact, so lagging behind implementation is not unique to manuals. What is unique is the consequence: a change record that disagrees with current behavior is historical evidence and stays as written, while a manual that disagrees is a live defect and must be corrected. A manual therefore never wins a conflict — against an accepted specification it is presumed stale — and its drift check runs against running behavior rather than against a design document.
+Induce a new type only when repeated behavior already exists across at least two committed documents covered by one definition; one document or predicted future members never justify a type, and file count alone is not the test. Split a type when its definition stops matching its members' audience or authority rather than widening it. Keep an uninduced document under the closest admitted type until its split lands; never commit a placeholder type, unclassified file, or unconverged material with unsettled authority. Filename enumeration is temporary debt; prefer directory classification when members cluster.
 
-A translated page is a projection of its canonical English page, never an independent source. Where the two disagree, the English page wins and the translation is the defect. The two retired `.zh.md` tombstones under the `docs/` root, which announced that localization had stopped, are deleted: localization now lives in this type with a validated canonical sibling rather than as loose root files.
+## Ownership
 
-### External Snapshots
+One fact has one owner; other documents link to it instead of restating it. Documents speak in the present while Git holds history, and paths stay stable unless renaming yields a clear reader gain. Body rules stay with their owners: `docs/change-execution.md` owns execution, change-record content, role existence, and position/function composition; `docs/specs/20260529-l6_story_acceptance.md` owns story artifacts; `docs/core/doctrine.md` owns product doctrine; and `docs/writing.md` owns skeleton text and sweep rules ([DOC-FINAL Question Rulings](decisions/20261116-doc_final_question_rulings.md)). `docs/change-execution-rationale.md` retains observations, costs, and rejected alternatives behind `docs/change-execution.md`, pruning obsolete rationale. Roles are prompt-dispatched by naming their `docs/roles/` contract without harness copies or adapters; `docs/agent-harnesses.md` owns dispatch templates and tier-to-model bindings.
 
-Verbatim pinned captures of upstream material, currently `docs/okf-spec-v0.1-snapshot.md` and `docs/okf-spec-v0.2-snapshot.md`. They record provenance and capture date and carry no OpenKit authority.
+Engineers own user intent: preserve source wording and provenance, distinguish inference from acceptance, and compare affected authority with source intent; code establishes implementation facts, never permission to redefine intent. Every committed document has settled authority, and behavioral contracts live only in `docs/core/` and `docs/specs/`. Write or update a specification for meaningful alternatives, lasting consequences, migration/removal, or protocol, API, data-layout, or workflow impact; never use one for Vision/philosophy, Core redefinitions, peer-owned rules, task/release logs, raw research, or walkthroughs.
 
-### Cookbooks
+Precedence is Core, then Accepted specifications, then platform references, manuals, cookbooks, and projections. On one surface, a later Accepted specification supersedes the document it names; evidence never outranks any owner. Intent and decision records supply direction, premises, and reasons rather than behavioral precedence; role contracts rank below governance. Report any conflict in the task context (and change record when context must survive): correct a clear lower projection, and route a same-concern authority conflict or ambiguous intent to the engineer; an Auditor cannot amend design, waive a requirement, or settle a governing conflict through a report.
 
-`docs/cookbooks/*.md`. Reusable setup and operational recipes. Procedural, not normative; they follow accepted specs and tooling.
+Platform references own no product behavior or architecture. A narrow repository-operation decision owned by no Core or specification (such as toolchain setup in `docs/toolchain.md`) may live in `## Owns` and MUST NOT be duplicated in root `AGENTS.md`. Calibrated premises on scope, priority, or optimization targets live in one `## Judgments` section before projections, each stating its basis and overturning observation; `must`/`must not` behavioral rules belong in Core or specifications. Authority is marked strictly by section (`## Judgments` and `## Owns` only, never tone); non-ownership attribution is allowed anywhere, other sections link owners without restating rules, and each reference names its projected owners so Git reveals owner changes. Neither Core, specifications, nor code takes contract facts from a platform reference; fix the reference when it drifts. Manuals address release operators: disagreement with running behavior or an Accepted specification is a live manual defect checked against running behavior; English wins translation disagreements, and loose root `.zh.md` tombstones are prohibited.
 
-### Local Guides
+First-party release-coupled surfaces (names, layouts, routes, commands, schema defaults, runtime selectors) use direct replacement, removal, same-change migration, or repair tooling rather than permanent compatibility shims, aliases, or fallback readers. Canonical retained data and authored configuration carry continuity from `v0.1.0` via additive evolution, an accepted one-way migration, or an explicit operator reset under [`docs/core/contract-evolution.md`](core/contract-evolution.md#retained-data-continuity) and [Pre-Stable Data Continuity](decisions/20261014-pre_stable_data_continuity.md); completed pre-stable cutovers stand. Truth is code on `main` plus accepted rules (**G12**): add omitted code-level contract facts (wire, closed set, refusal, retained field) to the document; update the document to follow code when a first-party wire/UI shape differs without retained data or a decision record; keep the rule, add an `Implementation Gaps` line, and file an `IMPL-FIX` issue when code violates a decision- or Core-backed rule; escalate retained-data, security, authorization, or scope differences to the decider/engineer (marking `FORMAT` if a migration is needed); and leave below-contract internals undocumented (`DOC-002`).
 
-`README.md` and optional `AGENTS.md` in each important directory, repository-wide. The README is the directory-level source of truth for local purpose, boundaries, and workflow; `AGENTS.md` holds only local agent execution rules. They are authoritative for directory-local workflow and nothing else. Local guides are discovered locally and are not listed in the documentation index.
+At task start, load root `AGENTS.md`, `docs/change-execution.md` (for material work or change records), and `docs/INDEX.md` to locate the owner; load `docs/verification-instruments.md` only when an instrument decides acceptance or a harness must be admitted; then read the owning specification, its Core references, and local guides for modified directories. Delegated roles read their `docs/roles/` contract; documentation work loads `docs/glossary.md` and `docs/writing.md`; changing a rule loads any linked decision record. Primary, Consultant, Auditor, and Reviewer load the judgment documents their work needs; a fast-tier delegate loads only root `AGENTS.md`, its role contract, and the primary's bounded task contract (inputs, writable paths, completion check, prohibitions, return shape) and is never assigned work requiring the full governance corpus. An independent context receives the question, source intent/decisions, relevant owners, artifact/evidence pointers, and unresolved objections to form its own judgment; neither a proposal nor a change plan replaces an accepted owner, and routine work or incremental fidelity scrutiny needs no new document type or full-corpus read.
 
-### Generated Projections
+### Admitted Rebuild Corpus
 
-`docs/INDEX.md`, produced by `scripts/generate-doc-index.mjs`. Generated projections are never edited by hand and never authoritative; the repository check regenerates and diffs them so drift fails loudly. A machine-readable declaration of the field contract belongs to this type if one is ever needed, generated from the owning module rather than maintained by hand.
+The rebuild test ([decision](decisions/20260923-documentation_rebuild_test.md); [rulings](decisions/20261031-reserved_audit_question_rulings.md)) admits accepted prose plus explicitly owned declarative boundary schemas and standalone conformance fixtures (including generated boundary schemas with explicit ownership, and DDL/retained fixtures only where needed to read supported saved data). Generators, whole packages, and implementation source are excluded, no retained-format generator is introduced, and accepted prose retains authority over lifecycle, failure, and recovery.
 
-## Field Contract
+## Core
 
-Metadata is a YAML frontmatter block between `---` delimiters at the top of the file. Values are restricted to strings and arrays of strings: no nested mappings, anchors, aliases, or multi-document streams. Every value is a string even when it looks like a number or a date, so a numeric-looking value is quoted; an implicitly typed value is a validation error rather than a silent conversion. `docs/specs/20260729-documentation_field_contract.md` owns the syntax, parse, and enforcement design, and one module owns the executable rules.
+`docs/core/*.md` holds the stable normative model and cross-aspect doctrine at highest behavioral authority, covering the five decision classes in root `AGENTS.md`. Each Core aspect is 10–40 KB, states no concrete wire schema, endpoint, file path, release staging label, or non-contract number, never links downward to `docs/specs/` or `docs/changes/`, and uses `status: Accepted` without `updated` (**G3**).
 
-The vocabulary is closed. A field not listed here is a validation error.
+## Specifications
+
+Active specifications live flat at `docs/specs/YYYYMMDD-short_name.md`. A `Draft` proposes a design contract and is distinct from an optional change-bundle `proposal.md`; unconverged exploration stays in `temp/`. Under **G1**, deletion replaces the terminal archive: a replaced or ended specification is deleted in the change that lands its replacement or removal, with inbound links repointed or unlinked. No `superseded/`, `retired/`, or `rejected/` directories, statuses `Deprecated`, `Superseded`, `Retired`, or `Rejected`, terminal-archive audits, or byte-freeze rules apply; Git and [DOC-FINAL Information Architecture](decisions/20261116-doc_final_information_architecture.md) retain history.
+
+### Fields
+
+Metadata uses three layers in `scripts/lib/doc-fields.mjs`: (1) **Syntax**: top-of-file YAML 1.2 core frontmatter between `---` delimiters parsed by `yaml` (no regex/hand-written parsers; duplicate keys fail; legacy `Field: value` body lines are prose; frontmatter is required when a type has required fields or declares optional fields, and optional when metadata-free); (2) **Schema**: flat strings and string arrays only (nested mappings, arrays of mappings, nested sequences, anchors, aliases, and multi-document streams fail naming the construct; string-array allowance authorizes no new field without amending this document); (3) **Parse**: YAML 1.2 core scalar typing stays visible (`2026-05-31` and `no` remain strings while unquoted `1.10` or `0123` coerce to numbers), and every field validates as `z.string()` or `z.array(z.string())` so coerced non-strings fail naming file, field, received type, and quoting guidance.
+
+`scripts/lib/doc-fields.mjs` is the sole metadata reader and exports `parseFrontmatter(content)` (mapping + body offset, or explicit `absent`/`invalid`), `validateFields(type, fields)` (unknown/forbidden fields, missing required fields, non-canonical values, wrong shapes, non-string coercions), and `fieldSchemas` (data-only mirror without plugins, custom field validators, classification, or index formatting). Every specification separates authority (`status`) from implementation (`implementation`) with exact canonical spelling. Under **G2** and **G3**, specification `status` is `Draft` or `Accepted`, `implementation` is `Implemented`, `Partial`, or `Not Started`, and specification frontmatter is `status`, `kind`, `implementation`, and `aspect` (removing `date`, `updated`, `status-changed`, `current-guidance`, and `decision-evidence` from specifications and `updated` from Core), with `kind` in `concept`, `boundary`, `mechanism`, `topology`, or `process` ([decision](decisions/20260923-specification_kinds_and_promotion.md)) and `aspect` as a Core aspect basename (excluding `README`/`AGENTS`) or `process`.
 
 | Field | Shape | Canonical values |
 | --- | --- | --- |
-| `status` | string | Per type. Specifications: `Draft`, `Accepted`, `Deprecated` in the root; `Superseded`, `Retired`, `Rejected` in their matching subdirectories. Active Core documents: `Accepted`; archived Core documents under `docs/core/retired/`: `Retired`. Change records: `planned`, `in-progress`, `blocked`, `implemented`, `verified`, `superseded`. Decision records: `Accepted`, `Superseded`. Governance, role contracts, intent, platform references, and manuals: `Accepted`. |
-| `kind` | string | concept, boundary, mechanism, topology, process. |
-| `decider` | string | Free text naming who made the decision. |
-| `supersedes` | string | Repository-relative path of the decision record this one replaces. |
-| `superseded-by` | string | Repository-relative path of the decision record that replaced this one. |
-| `implementation` | string | `Not Started`, `In Progress`, `Partial`, `Implemented`, `Diverged`, `N/A`. |
+| `status` | string | Specifications: `Draft`, `Accepted`. Core, governance, roles, intent, platform references, manuals: `Accepted`. Change records: `planned`, `in-progress`, `blocked`, `implemented`, `verified`, `superseded`. Decisions: `Accepted`, `Superseded`. |
+| `aspect` | string | Core aspect basename (excluding `README`, `AGENTS`), or `process`. |
+| `kind` | string | `concept`, `boundary`, `mechanism`, `topology`, `process`. |
+| `implementation` | string | `Not Started`, `Partial`, `Implemented`. |
+| `decider` | string | Non-empty text naming who made the decision. |
+| `supersedes` | string | Repository-relative path of the replaced decision record. |
+| `superseded-by` | string | Repository-relative path of the replacing decision record. |
 | `type` | string | `change-plan`, `pr-summary`, `standalone-change`, `release-summary`. |
 | `date` | string | `YYYY-MM-DD`. |
 | `updated` | string | `YYYY-MM-DD`. |
 | `started` | string | `YYYY-MM-DD`. |
 | `completed` | string | `YYYY-MM-DD`. |
 | `branch` | string | Free text. |
-| `status-changed` | string | `YYYY-MM-DD`. |
-| `current-guidance` | string | Free text. |
-| `decision-evidence` | string | Free text. |
-
-Per-type requirements:
 
 | Type | Required | Optional |
 | --- | --- | --- |
-| Specification, active | `status`, `implementation`, `kind` | `date`, `updated` |
-| Specification, Deprecated-or-terminal | `status`, `implementation`, `status-changed`, `current-guidance`, `decision-evidence` | `date`, `kind`, `updated` |
+| Specification, active | `status`, `kind`, `implementation`, `aspect` | none |
 | Change record | `type`, `status` | `date`, `started`, `completed`, `branch` |
-| Decision record | `status`, `date`, `decider` | `supersedes`; `superseded-by`, which a Superseded record requires and no other record carries |
-| Core model, active; governance; role contract; intent; platform reference; manual | `status` | `date`, `updated` |
+| Decision record | `status`, `date`, `decider` | `supersedes`; `superseded-by` (required on `Superseded` only) |
+| Core model, active | `status` | `date` |
+| Governance; role contract; intent; platform reference; manual | `status` | `date`, `updated` |
 | Audit record, change-bundle evidence, cookbook, external snapshot, local guide | none | `status`, `date` |
 | Generated projection | none | none |
 
-A field is optional only where its absence changes no decision. Adding a field, changing a canonical value set, or moving a field between required and optional is an amendment to this document, made before the module changes.
+A field is optional only where its absence changes no decision; vocabulary, value, or requiredness changes amend this document before `scripts/lib/doc-fields.mjs`.
 
-## Authority And Precedence
+### Skeleton
 
-Authority is inversely proportional to change rate. When documents conflict, precedence is: core model documents, then accepted specifications, then platform references, manuals, cookbooks, and other projections. On one owned surface, a later accepted specification supersedes the document it names. Change records and audit records never outrank any of the above regardless of recency.
+Under **G4**, every specification follows one skeleton: frontmatter (`status`, `kind`, `implementation`, `aspect`), `# Title`, one opening ownership paragraph, `## Scope` (`Owns`, `Does not own` in at most 5 lines naming each owner, and `Core` links), subject contract sections (`MUST`/`SHOULD`/`MAY` rules, one behavior per rule, examples subordinate, and closed-set tables covering state, lifecycle, interfaces, wire/storage shapes, permissions, interoperability, security, audit/metering, and recovery; a specification governing a live removal, migration, or rollout SHOULD state its current transition conditions in the relevant contract section, while completed rollout and migration history ends; compatibility language appears only for external interoperability, temporary operator migration evidence, or retained data continuity), optional `## Acceptance` (criteria no contract sentence carries, such as real-environment proof or verification level; no test filenames), `## Implementation` (at most 10 lines of directory pointers; no behavior text or `file:line`), `## Implementation Gaps`, and `## Decisions` (decision links only).
 
-Intent documents and decision records do not compete in this ordering: they govern direction, premises, and reasons, and a behavioral question must resolve to a core document or specification. Role contracts rank below the governance documents they apply. The `## Judgments` section of a platform reference holds premises under the same terms, so citing one is not a claim of contract authority. Its `## Owns` section is different: a narrow repository-operation decision marked there is authoritative for that decision, outranked by no document because none other owns it, and it never reaches product behavior or architecture.
+Default contract headings by `kind` for rewrites (omit empty headings; add a heading only for content fitting none; edited specs keep their subject headings): `concept` (`Definitions`; `Authority And Ownership`; `Lifecycle`; `Rules`; `Failure And Recovery`: what a product thing is and how it behaves across mechanisms); `boundary` (`Parties`; `Operations` or `Wire Contract`; `Invariants`; `Errors And Failure`; `Compatibility`: two-sided preconditions, postconditions, and invariants, with conformance fixtures as executable spec); `mechanism` (`Inputs And Outputs`; `Rules`; `Retained Data`; `Failure And Recovery`: common questions answered once plus one-line member registry links without repeating member semantics); `topology` (`Components`; `Placement And Lifecycle`; `Interfaces`; `Failure Scope`: deployment/process placement and technology-choice reasons); `process` (`Roles`; `Steps And Gates`; `Evidence`: engineering, verification, evaluation, or documentation method).
 
-A conflict between documents is a defect: report it in the current task context and retain it under `docs/change-execution.md` when the context must survive. Correct a lower-authority projection when the accepted decision is clear; a same-concern authority conflict or ambiguous governing intent goes to the engineer under root `AGENTS.md`. An Auditor may adjudicate assurance within existing discretion, but cannot amend design, waive a requirement, or settle that governing conflict through a report.
+Promoting a `Draft` to `Accepted` divides content into `kind` owners, mechanism registry rows, decision records, and `Implementation` / `Implementation Gaps`, with independent review checking criterion preservation (`DOC-015`). Across all specifications, ceremony and projection sections (`Summary`, `Goals`, `Non-goals`, `Background`, `Alternatives Considered`, `Consequences`, `Risks`, completed `Rollout / Migration`, `Resolved Decisions`, `Open Questions`, `Deferred / Future Work`, `Links / Related Docs`, `Current Implementation Projection`, `Testing` lists) end after moving every criterion sentence (`MUST`, closed set, number, retained field, refusal, owner assignment) into a kept section (`DOC-015`), keeping at most one `"because"` clause where a reason is not obvious.
 
-## Reading Protocol
+### Gaps
 
-At task start an agent loads root `AGENTS.md`, then `docs/change-execution.md` for material coordination or a change record, and `docs/INDEX.md` to locate the owner. It loads `docs/verification-instruments.md` only when an instrument will decide acceptance or a harness must be admitted. It then reads the owning specification, its Core References, and local guides for modified directories. A delegated role reads its contract under `docs/roles/`. Wider loading occurs only when an owner, documentation-governance task, or conflict investigation requires it. Writing or reviewing governance or specification text also loads `docs/glossary.md` and `docs/writing.md`; a decision record is read when a rule it supports is about to change.
+`## Implementation Gaps` is the sole statement of implementation state (**G4**): `implementation: Implemented` holds if and only if `## Implementation Gaps` is `None.`; `implementation: Partial` lists one line per unmet rule (`<rule> - <gap> - #<issue>`); `implementation: Not Started` means nothing exists on `main` and states so with one issue (`#<issue>`). Reconciling a specification keeps `status: Accepted` and sets `implementation` and `Implementation Gaps` truthfully; opening or closing a gap updates both in the same change. Under **G10**, deferrals and open design questions become GitHub issues, `Accepted` specifications have no `Open Questions` or `Deferred / Future Work` sections, and unresolved blocking scope stays `Draft` or is narrowed out.
 
-Reading is tiered by capability. The primary, Consultant, Auditor, and Reviewer read the judgment documents their work needs. A fast-tier delegate reads root `AGENTS.md`, its role contract, and the bounded task contract the primary writes for it, which states its inputs, writable paths, completion check, prohibitions, and return shape; it is not expected to apply the full governance corpus, and the primary does not delegate work to it that needs that corpus.
+## Decision Records
 
-An independent context receives the question, source intent and decisions, relevant owners, artifact and evidence references, and unresolved objections. It loads the material needed to form its own judgment rather than inheriting the producer's full implementation narrative. A proposal explains the candidate route; a change plan records execution; neither replaces an accepted owner. Routine work and incremental fidelity checks do not require a new document type or a full-corpus reading.
+`docs/decisions/YYYYMMDD-short_name.md` records one durable decision per file for every engineer ruling, approved governing-design challenge, or decision whose rejected alternatives are likely to recur; ordinary implementation choices require no record ([decision](decisions/20260923-decision_records.md)). Record a new decision in the same change as its rule; do not backfill or consolidate historical decisions (**G7**). Each record states decider, date, decision, reason, rejected alternatives, revisit trigger, and affected owners under five exact ordered H2 headings (`Decision`, `Reason`, `Rejected Alternatives`, `Revisit When`, `Affected Owners`); only a `Superseded` record carries `superseded-by` (required), while a replacing record names `supersedes`. Keep engineer wording close to source and note translations. Decision records carry rationale authority only; the owning document states the rule and links the record beside it (including any accepted Safety Kernel limitation or residual risk, which is a finding if unlinked) without revision sections. Each decision record is self-contained: it states the complete ruling it records without relying on external chat or audit-question numbers, and may name a source change record as plain text, never as a link. Under **G7**, decision text is immutable after acceptance; only supersession metadata and mechanical link-target repair (repointing to the replacement or unlinking to plain text) are permitted.
 
-## Cross-Reference Rules
+## Evidence Records
 
-Documentation dependency direction is a hard rule. Authority flows one way; change records are removable evidence under Change Records And Retention in `docs/change-execution.md`, not stable link targets.
+Change records (`docs/changes/`) and audit records (`docs/audits/`) hold working and observation evidence only; they never supply design or governance authority, and no durable rule may depend on a change record for interpretation. A change record uses `docs/changes/[datetime18]-short_name.md` or bundle `docs/changes/[datetime18]-short_name/` with `type` and `status` under `docs/change-execution.md`. Every `change-plan` uses the bundle form, which carries the record identity and requires `plan.md` (with non-empty closeout summary and verification sections when `status: verified`), admitting only optional `proposal.md`, optional `findings.md`, optional `route-log.md`, and opaque historical `state.json`; other types remain flat files. Raw transcripts, checkpoints, and intermediate data stay uncommitted in `temp/`, and legacy `state.json` files stay unchanged under their historical framework. In a bundle, a findings report (`findings.md`) records non-authorizing observations, dispositions, and one follow-up index validated structurally by `scripts/validate-doc-model.mjs` while requiring user intent or an accepted owner to admit work; `proposal.md` and `route-log.md` share the optional evidence metadata contract without findings-body validation or audit standing.
 
-| From → To | Core | Specification | Decision record | Change record |
-| --- | --- | --- | --- | --- |
-| **Core** | allowed | **forbidden** | allowed | **forbidden** |
-| **Specification** | allowed | allowed | allowed | **forbidden** |
-| **Decision record** | allowed | allowed | allowed | **forbidden** |
-| **Change record** | required | required | allowed | n/a |
+### Audit Records
 
-Neither a Core document, a specification, nor a decision record may link to a change record in prose or metadata. Change records link the owning core, product, and specification documents for their change; authority never links back. Audit records link the specification or governance document whose rule produced them and the documents or surfaces they observed. Platform references and manuals link the contracts they project and do not restate rules another document owns: under Authority And Precedence a restated copy carries no authority, so it adds nothing while it agrees and misleads once it drifts. A platform reference path may not appear in a specification's `Core References` section, because that section names contract dependencies and a reference owns no behavioral contract; naming one in prose or Related Docs as a premise remains allowed. Specifications name their core dependencies in a Core References section and their peers in Related Docs. Repository documents use repository-relative links so they are mechanically checkable; every resolved link must name a file that exists. Packaged operator references use sibling links for required installed material and may cite optional source authority through its public repository URL. An executable procedure cannot require an unresolved checkout-relative link; source-build procedures explicitly acquire the selected checkout before using its files.
+`docs/audits/YYYYMMDD-short_name.md` holds dated cross-task integrity, calibration, load-bearing map, and residue observations; each links its generating specification or governance owner. Incremental Auditor scrutiny uses the task context or change record when needed rather than a dated audit record. Past audit records are never edited; a new observation is a new record. Under **G5**, a change bundle or audit record is deleted at closeout (at the latest in the next release change) when its status is terminal, each open or deferred finding is a GitHub issue, and its results are in the owners; the merge commit and pull request hold the summary. The rule against modifying or deleting an `Intent Revision` applies while work is open. Keep live plans, the DOC-FINAL final audit record, and any record read by a script, test, cookbook, Skill, or acceptance step.
 
-## Index Contract
+## Cross-References
 
-`docs/INDEX.md` lists the documents used to locate owners: every document of every type above except local guides, the index itself, change records, and decision records, grouped by type, one line per document: path, the lifecycle fields the type requires under Field Contract, and a one-line summary extracted from the document itself. Change records and decision records are not enumerated. The generated index states that they live under `docs/changes/` and `docs/decisions/`; decision records are reached from the owners that link them. The generator is `scripts/generate-doc-index.mjs`; `scripts/validate-doc-model.mjs` enforces closed-set membership and per-type record rules; the repository check runs both, and an index that does not match regeneration fails the check.
+Under **G11**, three cross-reference rules apply: (1) `docs/core/` links Core documents and decision records only, never `docs/specs/`; (2) Core documents, specifications, and decision records never link to `docs/changes/` or `docs/audits/` in prose or metadata, while change records link at least one owning document and audit records link their generating specification or governance owner; (3) every repository-relative Markdown link and backticked `docs/` path citation across `docs/`, `skills/openkit-ops/references/`, and `README.md` guides under `apps/`, `packages/`, and `skills/`, plus every concrete code-path or directory pointer in a specification's `## Implementation` section, must resolve to an existing file (or existing directory for a change-plan bundle, guide target, or `## Implementation` directory pointer) in the repository. Targets starting with `docs/`, `apps/`, `packages/`, or `skills/` (and `scripts/`, `tests/`, or `containers/` in `## Implementation`) resolve from the repository root; other relative links resolve beside the document. Packaged operator references use sibling links for required installed files and public repository URLs for optional source authority; executable source-build procedures acquire the checkout before referencing checkout-relative paths.
 
-## Type Induction
+## Generated Index
 
-The type set cannot be enumerated in advance, and attempting it is the failure this section prevents. Types are induced from documents that already exist, never predicted for documents that might.
+`docs/INDEX.md` is generated by `scripts/generate-doc-index.mjs` (`--check` fails on drift), never hand-edited, and never authoritative. Under **G6**, it lists every classified document except local guides, the index itself, change records, and decision records, grouped by type and specifications by `aspect` (**T1**), with directory pointers for `docs/changes/` and `docs/decisions/`. Each entry is one deterministic line: specifications state path, `status`, `implementation`, and opening summary; manuals state path, `status`, and summary (or canonical `.en.md` sibling for `.zh.md`); audits and cookbooks state path and `# Title`; other types state path and opening summary. Other derivable projections use the same generated `--check` pattern; a machine-readable field declaration for non-Node consumers may be generated from `fieldSchemas` only when a real non-Node consumer exists and is never hand-maintained.
 
-Two things are being decided whenever a document is added, and conflating them is what makes the model feel rigid:
+## Checks
 
-**Authority level** — what wins in a conflict. This must be settled for every committed document, because Authority And Precedence has nothing to resolve otherwise. It is genuinely enumerable and stays small, because the meaningful answers to "who wins" do not multiply as documents do. Behavioral-contract authority is gated by location: a document owning a behavioral contract lives in `docs/core/` or `docs/specs/`. Governance and intent are fixed singletons named above. Everything else carries no behavioral-contract authority, whatever it is called; the narrow repository-operation decisions explicitly authorized under Platform References are not behavioral contracts. A document outside `docs/core/` or `docs/specs/` that appears to own a behavioral contract is either misplaced or restating an owner, and both are defects.
-
-**Category** — a name for a cluster of similar documents. This is organization. It is induced from members that exist, not predicted for members that might.
-
-Directories are therefore cheap and type names are expensive. Admitting a directory costs one definition here, one classification branch in `scripts/validate-doc-model.mjs`, one index group in `scripts/generate-doc-index.mjs`, and a change record — paid once, after which adding documents to it costs nothing. Naming a type additionally adds a precedence question and a lifecycle claim that every future reader carries.
-
-The bar for naming one is the bar the root `AGENTS.md` sets for extracting a shared concept in code: the behavior is **already** repeated across members that exist, and one definition describes all of them. Member count is not the test. Two existing documents whose shared behavior one definition covers clear it; a single document does not, and neither does any number of predicted future members — that is the abstraction-for-predicted-variants error the root rules prohibit for code, and documentation is not exempt.
-
-A type is also induced by splitting one whose definition has stopped describing its members. When a type accumulates documents that differ in audience or authority, the honest repair is to split it, not to widen the definition until it covers everything.
-
-A document whose type is not yet induced lives under the closest existing type, and is reclassified when the split happens; it never gets a placeholder type, because the validator must be able to classify every committed file. Material with no settled authority level at all is not admitted: unconverged design stays in uncommitted working space, as under Specifications above, because a committed document whose authority is undefined cannot be resolved against anything.
-
-A type defined by enumerating filenames is a type that has not finished being induced: it charges a validator edit per member, which is the cost directory classification exists to remove. Prefer a directory.
-
-## Amendment Procedure
-
-Adding, removing, or redefining a documentation type is a change to this document, with a change record tracking the amendment and the validator updated in the same slice. A new type is admitted with a directory and a classification branch rather than a filename list, so the amendment is paid once instead of once per member.
-
-No file may be created under a type that does not yet exist. When a type is induced by splitting an over-broad one, its future members are already committed under the type being split, and the amendment and their reclassification land in the same slice; nothing sits unclassified in between.
-
-The removed long-run archive type predates this model; its durable functions were absorbed into change records, and noisy run files now remain in uncommitted working space. The retired translation type is recorded the same way: repository documentation is English-only, and its two localized files were tombstones pointing at their English originals.
-
-## Related Docs
-
-- `docs/engineering-doctrine.md`
-- `docs/change-execution.md`
-- `docs/core/doctrine.md`
-- `docs/specs/20260529-l6_story_acceptance.md`
-- `docs/specs/20260729-documentation_field_contract.md`
+All validator and generator metadata reads route through `scripts/lib/doc-fields.mjs` with no independent header regex, and `fieldSchemas` mirrors `### Fields`; an extra field in the module is a defect, never authority. `scripts/validate-doc-model.mjs` checks closed-set classification, non-spec frontmatter, decision headings and supersession fields, change-bundle membership and `findings.md` structure, manual suffixes and `.en.md` siblings, audit owner links, cross-reference direction, and link/path existence across `docs/`, `apps/`, `packages/`, `skills/` guides, and specification `## Implementation` sections (**T4**). `scripts/validate-spec-lifecycle.mjs` checks specification frontmatter and `## Implementation Gaps` alignment (`--report-unconverted` during conversion) (**T1**, **T3**); merging the two validators into one entrypoint beside `generate-doc-index.mjs` is tracked by `#519`. Until **T2** lands with the archive deletion, the validators retain transitional enum and `spec-terminal` branches so document clusters can land using currently admitted values; **T2** shrinks the enums and removes terminal branches, archive directories, and retired archive tests under `GOV-016`. Under **G8**, size is a signal, never a gate or validator cap (typical specification `15–60 KB`; `>80 KB` post-trim, excluding registers, gets a fact-sheet duplication report for decider disposition). Every `REWRITE` or `MERGE` uses a criterion inventory (`implemented`, `gap`, `draft-only`, where `draft-only` becomes an issue) and independent verification that every ID appears once with no uninventoried normative text. Adding, removing, or redefining a documentation type amends this document, `validate-doc-model.mjs`, and `generate-doc-index.mjs` together in one slice using directory classification, tracked by a change record that is deleted at closeout under **G5**.

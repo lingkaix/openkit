@@ -3,7 +3,7 @@ date: "2026-11-12"
 ---
 # Frozen Archive Navigation
 
-This non-authorizing record states where a reader goes for six frozen superseded specifications whose guidance metadata still names historical paths. Its generating rule is [Terminal Archive Audit And Archive Immutability](../documentation-model.md#terminal-archive-audit-and-archive-immutability). It records an observation. It does not authorize a design and it does not amend an archive.
+This non-authorizing record states where a reader goes for six frozen superseded specifications whose guidance metadata still names historical paths. Its generating rule is [Documentation Model](../documentation-model.md#specifications) (historical archive rule superseded by [DOC-FINAL Information Architecture](../decisions/20261116-doc_final_information_architecture.md)). It records an observation. It does not authorize a design and it does not amend an archive.
 
 ## Observation
 

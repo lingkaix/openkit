@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: "2026-10-06"
+aspect: sandbox
 ---
 # Workspace Synchronization
 

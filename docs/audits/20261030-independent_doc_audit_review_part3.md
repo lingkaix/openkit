@@ -21,7 +21,7 @@ The amendment corrects an implementation observation. It adds no requirement and
 
 - [Generative Kernel Data Operations](../specs/20260908-generative_kernel_data_operations.md#current-implementation-projection): replace `As of 2026-10-16, NanoCore implements` with `NanoCore implements`. The expanded inventory includes operations first added in commit `883bde287` on 2026-10-17. Removing the earlier date makes the projection accurate.
 
-The 11 rename-only hunks contain 12 exact `Permissions` to `Policy` substitutions. Their link targets and other text are unchanged. The specifications guide adds 19 existing targets, joins eight whitespace-only hunks, and corrects three lifecycle-field hunks under the [Field Contract](../documentation-model.md#field-contract).
+The 11 rename-only hunks contain 12 exact `Permissions` to `Policy` substitutions. Their link targets and other text are unchanged. The specifications guide adds 19 existing targets, joins eight whitespace-only hunks, and corrects three lifecycle-field hunks under the [Field Contract](../documentation-model.md#fields).
 
 ## Stale Record Claims
 

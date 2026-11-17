@@ -3,6 +3,7 @@ status: Accepted
 implementation: In Progress
 kind: concept
 date: "2026-10-17"
+aspect: work-model
 ---
 # Evaluation Foundation
 

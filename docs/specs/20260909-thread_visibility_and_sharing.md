@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+aspect: policy
 ---
 # Thread Visibility And Explicit Sharing
 

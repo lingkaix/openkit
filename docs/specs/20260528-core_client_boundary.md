@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
+aspect: communication
 ---
 # Core Client Boundary
 

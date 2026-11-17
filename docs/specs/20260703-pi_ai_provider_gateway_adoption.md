@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
+aspect: mediation
 ---
 # Pi AI Provider Gateway Adoption
 

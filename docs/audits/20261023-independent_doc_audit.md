@@ -144,7 +144,7 @@ The ledger lists every Core document and every active specification with its hom
 | `docs/specs/20260529-test_strategy.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260529-l6_story_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260719-verification_calibration.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
-| `docs/specs/20260729-documentation_field_contract.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
+| `docs/documentation-model.md#fields` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260811-execution_residue_measurement.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260829-release_management.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |
 | `docs/specs/20260909-persistent_deployment_acceptance.md` | process | audited | [process](20261025-independent_doc_audit_process.md) |

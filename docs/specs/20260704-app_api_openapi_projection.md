@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Implemented
 kind: boundary
+aspect: protocol
 ---
 # App API OpenAPI Projection
 

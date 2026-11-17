@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
+aspect: vault
 ---
 # Vault And Secret Injection
 

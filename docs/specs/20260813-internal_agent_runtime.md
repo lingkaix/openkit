@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: topology
 date: 2026-08-13
+aspect: architecture
 ---
 # Internal Agent Runtime
 

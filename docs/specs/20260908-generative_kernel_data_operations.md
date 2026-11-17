@@ -4,6 +4,7 @@ implementation: Partial
 kind: concept
 date: 2026-09-08
 updated: "2026-10-31"
+aspect: generative-apps
 ---
 # Generative Kernel Data And Operations
 

@@ -4,6 +4,7 @@ implementation: Partial
 kind: boundary
 date: 2026-08-01
 updated: 2026-09-30
+aspect: storage
 ---
 # NanoHost Workspace Data Boundary
 

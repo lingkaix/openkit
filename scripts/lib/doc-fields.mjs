@@ -4,12 +4,12 @@ import { z } from 'zod';
 /**
  * Documentation metadata field contract.
  *
- * This module is the executable projection of the Field Contract section of
- * `docs/documentation-model.md`, which owns the vocabulary, the per-type
+ * This module is the executable projection of the Fields section of
+ * `docs/documentation-model.md#fields`, which owns the vocabulary, the per-type
  * required and optional sets, and every canonical value set below. A field
  * present here and absent there is a defect in this module.
  *
- * `docs/specs/20260729-documentation_field_contract.md` owns the three-layer
+ * `docs/documentation-model.md#fields` also owns the three-layer
  * design: YAML frontmatter as the syntax layer, a flat subset of strings and
  * string arrays as the schema layer, and loud validation as the parse layer.
  * This module is the single reader of documentation metadata in the repository,
@@ -45,6 +45,31 @@ const IMPLEMENTATION_VALUES = [
   'Implemented',
   'Diverged',
   'N/A',
+];
+
+const SPEC_ASPECT_VALUES = [
+  'agent-session',
+  'agent-supply',
+  'architecture',
+  'communication',
+  'contract-evolution',
+  'core-concepts',
+  'doctrine',
+  'evidence',
+  'fault-tolerance',
+  'generative-apps',
+  'identity',
+  'knowledge',
+  'mediation',
+  'policy',
+  'protocol',
+  'runtime-model',
+  'sandbox',
+  'security',
+  'storage',
+  'vault',
+  'work-model',
+  'process',
 ];
 
 const freeText = z.string();
@@ -108,6 +133,7 @@ export const fieldSchemas = {
   manual: acceptedStatusFields,
   snapshot: optionalStatusFields,
   spec: z.strictObject({
+    aspect: z.string().pipe(z.enum(SPEC_ASPECT_VALUES)),
     date: dateText.optional(),
     implementation: implementationValue,
     kind: specKindValue,
@@ -115,6 +141,7 @@ export const fieldSchemas = {
     updated: dateText.optional(),
   }),
   'spec-terminal': z.strictObject({
+    aspect: z.string().pipe(z.enum(SPEC_ASPECT_VALUES)).optional(),
     'current-guidance': nonEmptyText,
     date: dateText.optional(),
     'decision-evidence': nonEmptyText,
@@ -178,7 +205,10 @@ export function parseFrontmatter(content) {
     };
   }
 
-  const { errors, fields } = readFrontmatterBlock(lines.slice(1, closing).join('\n'));
+  // Preserve the final line ending so YAML receives a complete LF or CRLF block.
+  const blockStart = offsetAfterLine(lines, 0);
+  const blockEnd = offsetAfterLine(lines, closing - 1);
+  const { errors, fields } = readFrontmatterBlock(content.slice(blockStart, blockEnd));
 
   if (errors.length > 0) {
     return { bodyOffset: 0, errors, fields: {}, kind: 'invalid' };

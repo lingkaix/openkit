@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: "2026-10-09"
+aspect: agent-session
 ---
 # Pi Worker Adapter
 

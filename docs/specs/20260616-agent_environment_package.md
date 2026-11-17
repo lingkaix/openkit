@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: 2026-09-21
+aspect: agent-supply
 ---
 # Agent Environment Package And Worker Governance Backends
 

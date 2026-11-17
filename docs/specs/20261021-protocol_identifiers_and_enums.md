@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 date: 2026-10-21
+aspect: protocol
 ---
 # Protocol Identifiers And Enums
 

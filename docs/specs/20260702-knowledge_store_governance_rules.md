@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+aspect: knowledge
 ---
 # Knowledge Store Governance Rules
 

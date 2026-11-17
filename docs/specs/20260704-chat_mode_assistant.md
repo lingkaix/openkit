@@ -3,6 +3,7 @@ status: Accepted
 updated: "2026-10-15"
 implementation: Partial
 kind: concept
+aspect: work-model
 ---
 # Chat Mode And Core Assistant
 

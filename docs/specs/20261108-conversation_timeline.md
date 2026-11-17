@@ -3,6 +3,7 @@ status: Accepted
 implementation: In Progress
 kind: boundary
 date: "2026-11-08"
+aspect: work-model
 ---
 # Conversation Timeline
 

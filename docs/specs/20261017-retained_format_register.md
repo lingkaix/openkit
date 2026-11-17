@@ -3,6 +3,7 @@ status: Accepted
 implementation: Implemented
 kind: mechanism
 updated: 2026-11-14
+aspect: contract-evolution
 ---
 # Retained Format Register
 

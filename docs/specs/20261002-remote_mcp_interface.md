@@ -4,6 +4,7 @@ implementation: Partial
 kind: boundary
 date: "2026-10-02"
 updated: "2026-10-02"
+aspect: communication
 ---
 # Remote MCP Interface
 

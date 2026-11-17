@@ -12,12 +12,12 @@ const repoRoot = resolve(import.meta.dirname, '..');
 // table row cannot be silently absorbed into an existing schema.
 const SCHEMA_KEYS_BY_TABLE_ROW = new Map([
   ['Specification, active', ['spec']],
-  ['Specification, Deprecated-or-terminal', ['spec-terminal']],
+  ['Core model, active', ['core']],
   ['Change record', ['change']],
   ['Decision record', ['decision']],
   [
-    'Core model, active; governance; role contract; intent; platform reference; manual',
-    ['core', 'governance', 'role', 'intent', 'platform-reference', 'manual'],
+    'Governance; role contract; intent; platform reference; manual',
+    ['governance', 'role', 'intent', 'platform-reference', 'manual'],
   ],
   [
     'Audit record, change-bundle evidence, cookbook, external snapshot, local guide',
@@ -27,13 +27,13 @@ const SCHEMA_KEYS_BY_TABLE_ROW = new Map([
 ]);
 
 /**
- * Reads the Markdown tables of the Field Contract section as raw cells.
+ * Reads the Markdown tables of the Fields section as raw cells.
  *
  * @returns {{header: string[], rows: string[][]}[]} Tables in document order.
  */
 function readFieldContractTables() {
   const content = readFileSync(join(repoRoot, 'docs/documentation-model.md'), 'utf8');
-  const section = content.split(/^## Field Contract\s*$/mu)[1].split(/^## /mu)[0];
+  const section = content.split(/^### Fields\s*$/mu)[1].split(/^#{2,3} /mu)[0];
   /** @type {{header: string[], rows: string[][]}[]} */
   const tables = [];
   /** @type {{header: string[], rows: string[][]}|null} */
@@ -254,9 +254,47 @@ describe('doc frontmatter parsing', () => {
 });
 
 describe('documentation field validation', () => {
+  it('requires an aspect and admits only Core basenames or process', () => {
+    const fields = { implementation: 'Partial', kind: 'concept', status: 'Accepted' };
+    assert.deepEqual(validateFields('spec', fields), ['`aspect` is required.']);
+    const aspects = [
+      'agent-session',
+      'agent-supply',
+      'architecture',
+      'communication',
+      'contract-evolution',
+      'core-concepts',
+      'doctrine',
+      'evidence',
+      'fault-tolerance',
+      'generative-apps',
+      'identity',
+      'knowledge',
+      'mediation',
+      'policy',
+      'protocol',
+      'runtime-model',
+      'sandbox',
+      'security',
+      'storage',
+      'vault',
+      'work-model',
+      'process',
+    ];
+    for (const aspect of aspects) {
+      assert.deepEqual(validateFields('spec', { ...fields, aspect }), [], aspect);
+    }
+    for (const aspect of ['README', 'AGENTS', 'model', '', 'Security', 12, ['security']]) {
+      assert.ok(
+        validateFields('spec', { ...fields, aspect }).some((error) => error.includes('`aspect`'))
+      );
+    }
+  });
+
   it('accepts a canonical specification field set', () => {
     assert.deepEqual(
       validateFields('spec', {
+        aspect: 'process',
         date: '2026-07-29',
         implementation: 'Partial',
         kind: 'concept',
@@ -300,6 +338,7 @@ describe('documentation field validation', () => {
 
   it('reports an unknown field', () => {
     const errors = validateFields('spec', {
+      aspect: 'process',
       'applies-when': 'never',
       implementation: 'Partial',
       status: 'Accepted',
@@ -313,6 +352,7 @@ describe('documentation field validation', () => {
 
   it('reports a vocabulary field that its type does not permit', () => {
     const errors = validateFields('spec', {
+      aspect: 'process',
       branch: '`codex/example`',
       implementation: 'Partial',
       status: 'Accepted',
@@ -325,16 +365,22 @@ describe('documentation field validation', () => {
   });
 
   it('reports a missing required field', () => {
-    const errors = validateFields('spec', { kind: 'concept', status: 'Accepted' });
+    const errors = validateFields('spec', {
+      aspect: 'process',
+      kind: 'concept',
+      status: 'Accepted',
+    });
 
     assert.deepEqual(errors, ['`implementation` is required.']);
   });
 
   it('requires an active specification to declare one kind from the closed set', () => {
-    assert.deepEqual(validateFields('spec', { implementation: 'Partial', status: 'Accepted' }), [
-      '`kind` is required.',
-    ]);
+    assert.deepEqual(
+      validateFields('spec', { aspect: 'process', implementation: 'Partial', status: 'Accepted' }),
+      ['`kind` is required.']
+    );
     const errors = validateFields('spec', {
+      aspect: 'process',
       implementation: 'Partial',
       kind: 'feature',
       status: 'Accepted',
@@ -363,6 +409,7 @@ describe('documentation field validation', () => {
 
   it('reports a value outside a canonical set', () => {
     const errors = validateFields('spec', {
+      aspect: 'process',
       implementation: 'Not started',
       kind: 'concept',
       status: 'Accepted',
@@ -394,6 +441,7 @@ describe('documentation field validation', () => {
 
   it('reports an array value for a string-shaped field', () => {
     const errors = validateFields('spec', {
+      aspect: 'process',
       implementation: 'Partial',
       status: ['Accepted', 'Draft'],
     });
@@ -434,14 +482,19 @@ describe('field contract mirror', () => {
     const declared = [
       ...new Set(Object.values(fieldSchemas).flatMap((schema) => Object.keys(schema.shape))),
     ].sort();
+    const expected =
+      'spec-terminal' in fieldSchemas
+        ? [...documented, 'current-guidance', 'decision-evidence', 'status-changed'].sort()
+        : documented;
 
     assert.equal(vocabularyTable.header[0], 'Field');
-    assert.deepEqual(declared, documented);
+    assert.deepEqual(declared, expected);
   });
 
   it('mirrors the per-type required and optional tables in docs/documentation-model.md', () => {
     const [, perTypeTable] = readFieldContractTables();
     const covered = new Set();
+    const transitional = 'spec-terminal' in fieldSchemas;
 
     assert.equal(perTypeTable.header[0], 'Type');
 
@@ -452,12 +505,35 @@ describe('field contract mirror', () => {
 
       for (const key of schemaKeys) {
         covered.add(key);
+        const stagedOptional =
+          transitional && key === 'spec'
+            ? ['date', 'updated']
+            : transitional && key === 'core'
+              ? ['updated']
+              : [];
         assert.deepEqual(
           schemaFieldNames(fieldSchemas[key]),
-          { optional: documentedFieldNames(optional), required: documentedFieldNames(required) },
+          {
+            optional: [...documentedFieldNames(optional), ...stagedOptional].sort(),
+            required: documentedFieldNames(required),
+          },
           `${key} does not mirror documentation-model.md row "${label}"`
         );
       }
+    }
+
+    if (transitional) {
+      covered.add('spec-terminal');
+      assert.deepEqual(schemaFieldNames(fieldSchemas['spec-terminal']), {
+        optional: ['aspect', 'date', 'kind', 'updated'],
+        required: [
+          'current-guidance',
+          'decision-evidence',
+          'implementation',
+          'status',
+          'status-changed',
+        ],
+      });
     }
 
     assert.deepEqual([...covered].sort(), Object.keys(fieldSchemas).sort());

@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+aspect: mediation
 ---
 # Provider Subscription Accounts
 

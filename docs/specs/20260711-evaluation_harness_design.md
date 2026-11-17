@@ -2,6 +2,7 @@
 status: Draft
 implementation: Not Started
 kind: process
+aspect: process
 ---
 # Evaluation Harness Design
 

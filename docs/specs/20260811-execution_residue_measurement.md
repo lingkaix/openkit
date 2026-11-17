@@ -4,6 +4,7 @@ implementation: Not Started
 kind: process
 date: 2026-08-11
 updated: 2026-08-20
+aspect: process
 ---
 # Execution Residue Measurement
 

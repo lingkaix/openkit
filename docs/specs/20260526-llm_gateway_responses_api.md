@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: boundary
+aspect: mediation
 ---
 # LLM Gateway Responses API
 

@@ -3,7 +3,7 @@ date: "2026-10-03"
 ---
 # Git Write Workflow Terminal Archive
 
-This non-authorizing repository audit records the terminal retirement of Git Write Workflow on 2026-10-03. Its generating rule is [Terminal Archive Audit And Archive Immutability](../documentation-model.md#terminal-archive-audit-and-archive-immutability), applied with the [specification lifecycle guide](../specs/README.md#lifecycle-evidence), [Active And Archived Specs](../specs/README.md#active-and-archived-specs), [retired-directory guide](../specs/retired/README.md), and [Auditor contract](../roles/auditor.md). It records an accepted decision and source observations, not a new design decision or independent acceptance of the auditor's own archive.
+This non-authorizing repository audit records the terminal retirement of Git Write Workflow on 2026-10-03. Its generating rule is [Documentation Model](../documentation-model.md#specifications) (historical archive rule superseded by [DOC-FINAL Information Architecture](../decisions/20261116-doc_final_information_architecture.md)), applied with the [specification lifecycle guide](../specs/README.md#skeleton), [Active And Archived Specs](../specs/README.md#skeleton), [retired-directory guide](../specs/retired/README.md), and [Auditor contract](../roles/auditor.md). It records an accepted decision and source observations, not a new design decision or independent acceptance of the auditor's own archive.
 
 ## Paths And Final Identity
 

@@ -4,6 +4,7 @@ implementation: Partial
 kind: concept
 date: 2026-09-10
 updated: 2026-10-08
+aspect: sandbox
 ---
 # Persistent Worker Volumes And Environment Replacement
 

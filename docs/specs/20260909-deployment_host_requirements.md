@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: topology
 date: 2026-09-09
+aspect: architecture
 ---
 # Deployment Host Requirements
 

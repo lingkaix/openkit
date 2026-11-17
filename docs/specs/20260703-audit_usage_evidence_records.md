@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 updated: "2026-10-19"
+aspect: evidence
 ---
 # Audit, Usage, And Evidence Records
 

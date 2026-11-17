@@ -134,6 +134,6 @@ None. Q-198 is DOC: the absent operations are additive and follow v0.1.0 under [
 [L6]: ../specs/20260529-l6_story_acceptance.md
 [VCA]: ../specs/20260719-verification_calibration.md
 [ERM]: ../specs/20260811-execution_residue_measurement.md
-[DFC]: ../specs/20260729-documentation_field_contract.md
+[DFC]: ../documentation-model.md#fields
 [REL]: ../specs/20260829-release_management.md
 [PDA]: ../specs/20260909-persistent_deployment_acceptance.md

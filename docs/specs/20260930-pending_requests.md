@@ -4,6 +4,7 @@ implementation: Partial
 kind: concept
 date: "2026-09-30"
 updated: "2026-10-16"
+aspect: policy
 ---
 # Pending Requests
 

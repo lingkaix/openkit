@@ -69,6 +69,30 @@ export function generateDocIndex(repoRoot) {
 
     lines.push('', `## ${section.title}`, '');
 
+    if (section.types.includes('spec')) {
+      const groups = new Map();
+      for (const entry of entries) {
+        const metadata = parseFrontmatter(readFileSync(join(repoRoot, entry.path), 'utf8'));
+        if (metadata.kind === 'invalid') {
+          throw new Error(`${entry.path}: ${metadata.errors.join(' ')}`);
+        }
+        const aspect = metadata.fields.aspect;
+        if (typeof aspect !== 'string' || !aspect) {
+          throw new Error(`${entry.path}: aspect is required for index grouping.`);
+        }
+        if (!groups.has(aspect)) groups.set(aspect, []);
+        groups.get(aspect).push(entry);
+      }
+      for (const aspect of [...groups.keys()].sort()) {
+        lines.push(`### ${aspect}`, '');
+        for (const entry of groups.get(aspect)) {
+          lines.push(formatEntry(repoRoot, entry));
+        }
+        lines.push('');
+      }
+      continue;
+    }
+
     for (const entry of entries) {
       lines.push(formatEntry(repoRoot, entry));
     }

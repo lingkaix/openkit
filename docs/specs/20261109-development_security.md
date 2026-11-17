@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: process
 date: "2026-11-09"
+aspect: security
 ---
 # Development Security
 

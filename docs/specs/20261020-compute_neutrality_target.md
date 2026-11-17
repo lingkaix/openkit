@@ -4,6 +4,7 @@ implementation: Not Started
 kind: boundary
 date: "2026-10-20"
 updated: "2026-10-21"
+aspect: architecture
 ---
 # Compute Neutrality Target
 

@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 updated: "2026-10-08"
+aspect: work-model
 ---
 # Human Attention And Intervention Model
 

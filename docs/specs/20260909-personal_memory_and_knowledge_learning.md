@@ -2,6 +2,7 @@
 status: Accepted
 implementation: Partial
 kind: concept
+aspect: knowledge
 ---
 # Personal Memory And Scoped Knowledge Learning
 

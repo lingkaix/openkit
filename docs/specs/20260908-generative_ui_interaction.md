@@ -4,6 +4,7 @@ implementation: Partial
 kind: concept
 date: 2026-09-08
 updated: 2026-09-09
+aspect: generative-apps
 ---
 # Generative UI Interaction
 

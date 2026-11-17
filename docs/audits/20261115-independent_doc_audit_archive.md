@@ -3,7 +3,7 @@ date: "2026-11-15"
 ---
 # Independent Documentation Audit: Archive Check
 
-This non-authorizing record holds the archive check of round 2 of the [independent documentation audit](20261023-independent_doc_audit.md). Its owning rule is [Change Execution Governance](../change-execution.md). It records observations only. It does not authorize design, and it changes no archived file: archived bytes are frozen under [Terminal Archive Audit And Archive Immutability](../documentation-model.md#terminal-archive-audit-and-archive-immutability).
+This non-authorizing record holds the archive check of round 2 of the [independent documentation audit](20261023-independent_doc_audit.md). Its owning rule is [Change Execution Governance](../change-execution.md). It records observations only. It does not authorize design, and it changes no archived file: archived bytes were frozen under [Documentation Model](../documentation-model.md#specifications) (historical archive rule superseded by [DOC-FINAL Information Architecture](../decisions/20261116-doc_final_information_architecture.md)).
 
 ## Scope And Base
 

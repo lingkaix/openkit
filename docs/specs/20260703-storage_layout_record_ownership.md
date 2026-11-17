@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: mechanism
 updated: "2026-10-02"
+aspect: storage
 ---
 # Storage Layout And Record Ownership
 

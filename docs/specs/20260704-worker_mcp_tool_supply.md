@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: boundary
 updated: "2026-10-17"
+aspect: mediation
 ---
 # Worker MCP Tool Supply
 

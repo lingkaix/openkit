@@ -481,14 +481,7 @@ test('keeps both sides of every ownership boundary stated', () => {
     ['This decision reaches as far as the image and no further.', CONTRACT_PATH],
     TOOLCHAIN_PATH
   );
-  assertRetains(
-    documentationModel,
-    [
-      CONTRACT_PATH,
-      'a fourth member is the event that promotes it to a `docs/governance/` directory',
-    ],
-    'the type amendment'
-  );
+  assertRetains(documentationModel, [CONTRACT_PATH], 'the type amendment');
 });
 
 test('keeps the qualifiers an independent review has already caught once', () => {

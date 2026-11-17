@@ -3,6 +3,7 @@ status: Accepted
 implementation: Partial
 kind: concept
 date: 2026-09-22
+aspect: sandbox
 ---
 # Delegated Worker Policy Maintenance
 

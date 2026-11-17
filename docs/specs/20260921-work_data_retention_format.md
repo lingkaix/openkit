@@ -4,6 +4,7 @@ implementation: Partial
 kind: concept
 date: "2026-09-21"
 updated: "2026-10-19"
+aspect: storage
 ---
 # Work Data Retention Format
 
