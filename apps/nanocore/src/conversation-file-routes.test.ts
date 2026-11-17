@@ -27,7 +27,11 @@ import { turnFilePayloadPath } from './storage/workspace-file-records.js';
 import { createTestAgentSetup } from './test-support/agent-environment.js';
 import { createApp } from './test-support/app.js';
 import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
-import { createDemoStore, DEMO_WORKSPACE_ID } from './test-support/demo-store.js';
+import {
+  createDemoStore,
+  DEMO_WORKSPACE_ID,
+  retainSharedAssistantTurn,
+} from './test-support/demo-store.js';
 import { testEntityId } from './test-support/entity-ids.js';
 import {
   ensureLocalUser,
@@ -100,6 +104,7 @@ async function fixture(availableBytes?: () => bigint) {
   const thread = await store.createThread(workspaceId, 'File input', undefined, 'conversation', {
     visibility: 'workspace',
   });
+  await retainSharedAssistantTurn(store, workspaceId, thread.id, LOCAL_USER_ID);
   const provider = { createResponses: vi.fn(async () => assistantAnswer()) };
   const app = createApp(
     await confirmContextDefaultsForApp({
@@ -379,7 +384,9 @@ describe('Turn-owned conversation originals', () => {
     expect(available).toBe(999_999n);
     expect(response.status, await response.clone().text()).toBe(507);
     expect((await response.json()).code).toBe('storage_capacity_unavailable');
-    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toMatchObject([
+      { agentId: 'quick-chat', status: 'completed' },
+    ]);
     expect(state.store.listArtifacts(state.workspaceId)).toHaveLength(artifactsBefore);
     expect(state.provider.createResponses).not.toHaveBeenCalled();
     expect(
@@ -444,7 +451,9 @@ describe('Turn-owned conversation originals', () => {
       });
     const failed = await submit();
     expect(failed.status).toBe(500);
-    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toMatchObject([
+      { agentId: 'quick-chat', status: 'completed' },
+    ]);
     expect(state.store.getThread(state.workspaceId, state.thread.id)).toEqual(before);
     expect(
       state.store.listCommandRequests().some((receipt) => receipt.requestId === input.requestId)
@@ -811,7 +820,9 @@ describe('Turn-owned conversation originals', () => {
       duplex: 'half',
     } as RequestInit);
     expect(response.status, await response.clone().text()).toBe(499);
-    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toMatchObject([
+      { agentId: 'quick-chat', status: 'completed' },
+    ]);
     expect(
       readdirSync(join(state.dataRoot, 'workspaces', '.staging')).filter((name) =>
         name.startsWith('artifact-')
@@ -992,7 +1003,9 @@ describe('Turn-owned conversation originals', () => {
         body: frame(input, [body]),
       });
       expect(response.status, await response.clone().text()).toBe(400);
-      expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+      expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toMatchObject([
+        { agentId: 'quick-chat', status: 'completed' },
+      ]);
       expect(
         existsSync(
           join(
@@ -1028,6 +1041,8 @@ describe('Turn-owned conversation originals', () => {
     });
     expect(response.status).toBe(400);
     expect((await response.json()).code).toBe('file_input_bytes_required');
-    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toHaveLength(0);
+    expect(state.store.listThreadTurns(state.workspaceId, state.thread.id)).toMatchObject([
+      { agentId: 'quick-chat', status: 'completed' },
+    ]);
   });
 });

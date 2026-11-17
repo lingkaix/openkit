@@ -789,4 +789,55 @@ describe('native Goal command deciding body', () => {
       db.sqlite.close();
     }
   });
+
+  it('refuses a Coordinator intent revision inside the native command before history is written', async () => {
+    const f = await fixture();
+    const created = await f.send(
+      'apply',
+      command(f.workspaceId, 'goal.create', { intent: 'Keep this intent' })
+    );
+    const goal = created.view.goal!;
+    const proposal = command(f.workspaceId, 'goal.plan.propose', {
+      goalId: goal.goalId,
+      threadId: goal.threadId,
+      expectedRevision: goal.changeRevision,
+      goalDomain: testGoalDomainProposal(f.workspaceId, goal.goalId),
+      commitment: {
+        intentBasis: { revision: 0, intent: goal.intent },
+        cards: [],
+        permittedAdjustments: 'Refine only',
+        completionEvidence: ['Reviewed design'],
+        boundaries: 'No deployment',
+      },
+    });
+    proposal.captureCoverage = DEFAULT_CAPTURE_COVERAGE_BINDING;
+    proposal.proposalTurnId = allocateEntityId('tu');
+    proposal.pendingItem = await pendingItem(f, proposal, goal.threadId, proposal.proposalTurnId);
+    await f.send('apply', proposal);
+    const revision = command(f.workspaceId, 'goal.intent.revise', {
+      goalId: goal.goalId,
+      threadId: goal.threadId,
+      expectedRevision: 0,
+      intent: 'Coordinator must not replace this',
+    });
+    revision.context = { ...revision.context, coordinatorTurnId: proposal.proposalTurnId };
+    await expect(f.send('apply', revision)).rejects.toMatchObject({
+      code: 'coordinator_authority_denied',
+      message: 'Only a person may revise Goal intent.',
+      status: 403,
+    });
+    const kept = await f.send(
+      'apply',
+      command(f.workspaceId, 'goal.intent.revise', {
+        goalId: goal.goalId,
+        threadId: goal.threadId,
+        expectedRevision: 0,
+        intent: 'The person revised this',
+      })
+    );
+    expect(kept.view.goal?.intent).toBe('The person revised this');
+    expect(JSON.stringify(kept.view.goal?.intentHistory)).not.toContain(
+      'Coordinator must not replace this'
+    );
+  }, 30000);
 });

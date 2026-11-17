@@ -7292,7 +7292,7 @@ describe('nanocore server', () => {
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
         )
-      ).toHaveLength(0);
+      ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
       expect(store.listCommandRequests()).toHaveLength(0);
       expect(
         coreDb.sqlite.prepare('SELECT COUNT(*) AS count FROM scheduler_admission_entries').get()

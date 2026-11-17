@@ -209,4 +209,8 @@ describe('ordinary Assistant fixed Tools', () => {
     expect(JSON.stringify(result)).not.toContain('private diagnostic');
     expect(run.invoke).not.toHaveBeenCalled();
   });
+
+  it('keeps Goal intent revision available to the Assistant', () => {
+    expect(fixture().tools.map((tool) => tool.name)).toContain('goal.intent.revise');
+  });
 });

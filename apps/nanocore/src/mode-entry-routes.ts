@@ -231,6 +231,28 @@ type ConversationCommandResult = {
   readonly status: 200 | 202;
 };
 
+/** An existing shared conversation has a completed Assistant reply. A Worker handoff stamps the same agent and records a Task Mode handoff status instead. */
+function existingSharedConversation(
+  store: FsStore,
+  workspaceId: string,
+  thread: { id: string; visibility: string; entryPath: string }
+): boolean {
+  if (
+    thread.visibility !== 'workspace' ||
+    thread.entryPath !== 'conversation' ||
+    store.getWorkspace(workspaceId).kind === 'personal'
+  )
+    return false;
+  return store.listThreadTurns(workspaceId, thread.id).some((turn) => {
+    if (turn.agentId !== QUICK_CHAT_AGENT_ID) return false;
+    if (turn.items.some((item) => item.type === 'assistant-message' && item.status === 'completed'))
+      return true;
+    // A completed quick-chat Turn with no Items is an already retained conversation.
+    // A Worker handoff always records its status Item and does not qualify.
+    return turn.status === 'completed' && turn.items.length === 0;
+  });
+}
+
 /**
  * Projects the selected-Worker conversation status Item from the durable Turn outcome.
  *
@@ -2572,10 +2594,12 @@ export function createConversationService({
     const workspaceConfig = findWorkspaceConfig(snapshot, workspaceId)?.config;
     const userConfig = snapshot.userConfigs.find((entry) => entry.userId === userId)?.config;
     const assistant = quickChatSelection(userId, workspaceId);
-    const personalWorkThread =
-      requestedThreadId !== null &&
-      store.getWorkspace(workspaceId).kind === 'personal' &&
-      store.getThread(workspaceId, requestedThreadId).visibility === 'workspace';
+    const addressedThread =
+      requestedThreadId !== null ? store.getThread(workspaceId, requestedThreadId) : null;
+    const assistantOnUnsharedWorkspaceThread =
+      addressedThread !== null &&
+      addressedThread.visibility === 'workspace' &&
+      !existingSharedConversation(store, workspaceId, addressedThread);
     const knowledgeManager = internalRoleSelection('knowledge-manager', userId, workspaceId);
     const targets: Array<z.infer<typeof ConversationTargetCatalogSchema>['targets'][number]> = [
       {
@@ -2583,8 +2607,9 @@ export function createConversationService({
         kind: 'assistant',
         label: 'Assistant',
         description: 'OpenKit Core Assistant.',
-        availability: assistant && !personalWorkThread ? 'available' : 'unavailable',
-        unavailableReason: personalWorkThread
+        availability:
+          assistant && !assistantOnUnsharedWorkspaceThread ? 'available' : 'unavailable',
+        unavailableReason: assistantOnUnsharedWorkspaceThread
           ? 'Use your private Timeline for the Personal Assistant.'
           : assistant
             ? null
@@ -2884,9 +2909,9 @@ export function createConversationService({
         sourceThread.entryPath === 'conversation' &&
         ((sourceThread.visibility === 'private' &&
           findAssistantTimeline(store, workspaceId, actorId)?.id !== threadId) ||
-          (store.getWorkspace(workspaceId).kind === 'personal' &&
-            sourceThread.visibility === 'workspace' &&
-            chatInput.targetRef === 'internal-role:assistant'))
+          (sourceThread.visibility === 'workspace' &&
+            chatInput.targetRef === 'internal-role:assistant' &&
+            !existingSharedConversation(store, workspaceId, sourceThread)))
       ) {
         throw new TurnStartValidationError(
           'assistant_timeline_required',

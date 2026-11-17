@@ -284,6 +284,7 @@ export const GOAL_OPERATION_DEFINITIONS = {
     returnsOneTimeSecret: false,
     successStatus: 200,
     ...write,
+    credentials: publicCredentials.filter((credential) => credential !== 'coordinator'),
     description: 'Revise current intent, preserving its history and approved commitment.',
     inputSchema: z.object({ ...command, expectedRevision: revision, intent: text }).strict(),
   },

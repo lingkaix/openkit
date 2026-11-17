@@ -9,12 +9,14 @@ type KnowledgeNotebookPage = z.infer<typeof KnowledgeNotebookPageSchema>;
 
 import {
   allocateEntityId,
+  deriveEntityId,
   type KnowledgeNotebookPageSchema,
   type ThreadSchema,
   type TurnSchema,
   type WorkspaceRecordSchema,
 } from '@openkit/protocol';
 import { FsStore, type FsStoreOptions } from '../lib/store.js';
+import { QUICK_CHAT_AGENT_ID } from '../quick-chat-agent.js';
 import { shutdownControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
 import { openCoreDb } from '../storage/db.js';
 import { coreDbPath } from '../storage/fs-layout.js';
@@ -163,7 +165,81 @@ export async function createDemoStore(
   const store = new FsStore(storeOptions);
   await store.ensureQuickChatWorkspace(fixtureUserId);
   await seedDemoWorkspace(store, fixtureUserId, knowledge);
+  await retainDemoSharedConversation(store, fixtureUserId);
   return store;
+}
+
+/** Records one completed Assistant reply, the durable mark of an existing shared conversation. */
+export async function retainSharedAssistantTurn(
+  store: FsStore,
+  workspaceId: string,
+  threadId: string,
+  userId: string,
+  text = 'Retained shared conversation'
+): Promise<void> {
+  if (
+    store
+      .listThreadTurns(workspaceId, threadId)
+      .some(
+        (turn) =>
+          turn.agentId === QUICK_CHAT_AGENT_ID &&
+          turn.items.some(
+            (item) => item.type === 'assistant-message' && item.status === 'completed'
+          )
+      )
+  )
+    return;
+  const turn = await store.createTurn(
+    workspaceId,
+    threadId,
+    text,
+    { kind: 'user', id: userId },
+    undefined,
+    { agentId: QUICK_CHAT_AGENT_ID }
+  );
+  const at = turn.startedAt ?? new Date().toISOString();
+  await store.completeTurn(
+    turn.id,
+    { status: 'completed', completedAt: at },
+    {
+      items: [
+        {
+          id: deriveEntityId('it', ['chat-answer', turn.id]),
+          owner: { kind: 'workspace', workspaceId },
+          threadId,
+          turnId: turn.id,
+          type: 'assistant-message',
+          status: 'completed',
+          text,
+          createdAt: at,
+          completedAt: at,
+        },
+      ],
+    }
+  );
+}
+
+/** Marks the Demo conversation as an existing shared conversation so later Assistant writes stay admitted. */
+async function retainDemoSharedConversation(store: FsStore, userId: string): Promise<void> {
+  const demo = createDemoWorkspaceForUser(userId);
+  if (
+    store
+      .listThreadTurns(demo.workspace.id, demo.thread.id)
+      .some((turn) => turn.agentId === QUICK_CHAT_AGENT_ID)
+  )
+    return;
+  const turn = await store.createTurn(
+    demo.workspace.id,
+    demo.thread.id,
+    'Retained shared conversation',
+    { kind: 'user', id: userId },
+    undefined,
+    { agentId: QUICK_CHAT_AGENT_ID }
+  );
+  await store.completeTurn(turn.id, {
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+  });
 }
 
 /**

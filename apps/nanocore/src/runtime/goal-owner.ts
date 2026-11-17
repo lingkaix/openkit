@@ -1097,6 +1097,12 @@ function applyNativeGoalMutation(
   } else {
     goal = requireOpen(readRecord(db, 'goals', 'goal_id', goalId, StoredGoalV1Schema));
     if (id === 'goal.intent.revise' && 'intent' in input && 'expectedRevision' in input) {
+      if (context.coordinatorTurnId)
+        throw new GoalCommandError(
+          'coordinator_authority_denied',
+          'Only a person may revise Goal intent.',
+          403
+        );
       checkRevision(goal.intentRevision, input.expectedRevision);
       const at = now();
       goal = {
@@ -1598,10 +1604,15 @@ export async function executeGoalOperation<K extends GoalOperationId>(
       'Current write authority is unavailable.',
       403
     );
-  if (context.coordinatorTurnId && (id === 'goal.cancel' || id === 'goal.create'))
+  if (
+    context.coordinatorTurnId &&
+    (id === 'goal.cancel' || id === 'goal.create' || id === 'goal.intent.revise')
+  )
     throw new GoalCommandError(
       'coordinator_authority_denied',
-      'Only a person may create or cancel a Goal.',
+      id === 'goal.intent.revise'
+        ? 'Only a person may revise Goal intent.'
+        : 'Only a person may create or cancel a Goal.',
       403
     );
   if (goal) coordinatorTurn(context, db, goal);

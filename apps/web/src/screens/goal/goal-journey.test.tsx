@@ -283,6 +283,26 @@ it('accepts only the exact captured completion request and sends revision-bound 
     )
   );
 });
+it('keeps intent revision available on the Goal screen', async () => {
+  const operations = mount();
+  const user = userEvent.setup();
+  await user.type(
+    await screen.findByRole('textbox', { name: 'Revised intent' }),
+    'The person revised this'
+  );
+  await user.click(screen.getByRole('button', { name: 'Save intent' }));
+  await waitFor(() =>
+    expect(operations['goal.intent.revise']).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws_00000000-0000-7b10-9af8-12fd37a880e0',
+        threadId: 'th_00000000-0000-70a0-9cde-4561f64881c6',
+        goalId: 'g1',
+        expectedRevision: 0,
+        intent: 'The person revised this',
+      })
+    )
+  );
+});
 it('creates one Goal with the origin Thread and retries the same command identity after an uncertain response', async () => {
   const operations = mount({
     ...view(),

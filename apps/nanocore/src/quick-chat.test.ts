@@ -47,7 +47,7 @@ import {
   createAppWithWorkspaceAuthority,
 } from './test-support/app.js';
 import { confirmContextDefaultsForApp } from './test-support/context-defaults.js';
-import { createDemoStore } from './test-support/demo-store.js';
+import { createDemoStore, retainSharedAssistantTurn } from './test-support/demo-store.js';
 import { knowledgeOperationRequest } from './test-support/knowledge-operation.js';
 import { serializeKnowledgePageFixture } from './test-support/knowledge-page.js';
 import { ensureLocalUser } from './test-support/local-user.js';
@@ -458,10 +458,12 @@ describe('quick chat app API', () => {
         );
       const pending = submit('00000000-0000-4000-8000-000000144000');
       const signal = await admitted.promise;
-      const turn = store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )[0]!;
+      const turn = store
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .at(-1)!;
       expect(turn.status).toBe('running');
       const interrupt = (threadId = 'th_00000000-0000-7000-8000-000000000001') =>
         app.request(
@@ -688,10 +690,12 @@ describe('quick chat app API', () => {
     );
     const signal = await admitted.promise;
     transport.abort(new Error('private transport reason'));
-    const remainedRunning = store.listThreadTurns(
-      'ws_00000000-0000-7000-8000-000000000001',
-      'th_00000000-0000-7000-8000-000000000001'
-    )[0]!.status;
+    const remainedRunning = store
+      .listThreadTurns(
+        'ws_00000000-0000-7000-8000-000000000001',
+        'th_00000000-0000-7000-8000-000000000001'
+      )
+      .at(-1)!.status;
     const aborted = signal.aborted;
     provider.resolve({
       id: 'chatcmpl_disconnect',
@@ -712,10 +716,12 @@ describe('quick chat app API', () => {
     expect(aborted).toBe(false);
     expect(response.status).toBe(200);
     expect(
-      store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )[0]!.status
+      store
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .at(-1)!.status
     ).toBe('completed');
   });
 
@@ -776,10 +782,12 @@ describe('quick chat app API', () => {
         );
       const pending = submit();
       const signal = await admitted.promise;
-      const turn = store.listThreadTurns(
-        'ws_00000000-0000-7000-8000-000000000001',
-        'th_00000000-0000-7000-8000-000000000001'
-      )[0]!;
+      const turn = store
+        .listThreadTurns(
+          'ws_00000000-0000-7000-8000-000000000001',
+          'th_00000000-0000-7000-8000-000000000001'
+        )
+        .at(-1)!;
       const { getControlStoreWorkerClient } = await import(
         './storage/control-store-worker-client.js'
       );
@@ -1108,7 +1116,7 @@ describe('quick chat app API', () => {
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
       )
-    ).toEqual([]);
+    ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
     expect(
       store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', threads[0]!.id)
     ).toEqual([]);
@@ -1378,6 +1386,12 @@ describe('quick chat app API', () => {
       'ws_00000000-0000-7000-8000-000000000001',
       'Unrelated conversation'
     );
+    await retainSharedAssistantTurn(
+      store,
+      'ws_00000000-0000-7000-8000-000000000001',
+      otherThread.id,
+      'usr_00000000-0000-7000-8000-000000000001'
+    );
     const initialInput = 'Explain why the sky is blue in two sentences.';
     const otherInput = 'Explain why leaves are green.';
     const currentInput = 'Shorten your previous answer to one sentence.';
@@ -1644,6 +1658,12 @@ describe('quick chat app API', () => {
       const store = await createDemoStore({ dataRoot });
       const workspace = await store.createWorkspace('Chat usage lineage');
       const thread = await store.createThread(workspace.id, 'Chat usage lineage');
+      await retainSharedAssistantTurn(
+        store,
+        workspace.id,
+        thread.id,
+        'usr_00000000-0000-7000-8000-000000000001'
+      );
       const requestId = '11111111-1111-4111-8111-111111111111';
       const app = createAppWithWorkspaceAuthority(
         await confirmContextDefaultsForApp({

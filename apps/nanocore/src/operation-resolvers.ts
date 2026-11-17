@@ -201,6 +201,12 @@ export async function admitOperation(
         )
       : undefined;
   if (!(definition.credentials as readonly string[]).includes(credential) && !confirmedQuarantine) {
+    if (entry.kind === 'coordinator' && definition === OPERATION_DEFINITIONS['goal.intent.revise'])
+      throw new OperationError(
+        'coordinator_authority_denied',
+        'Only a person may revise Goal intent.',
+        403
+      );
     if (definition.scope.kind === 'server')
       throw new OperationError(
         'deployment_admin_required',

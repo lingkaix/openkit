@@ -579,8 +579,11 @@ describe('conversation.submit worker storage choice', () => {
       });
       expect(store.listThreads('ws_00000000-0000-7000-8000-000000000001')).toEqual(threadsBefore);
       for (const thread of threadsBefore) {
-        expect(store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id)).toEqual(
-          []
+        const turns = store.listThreadTurns('ws_00000000-0000-7000-8000-000000000001', thread.id);
+        expect(turns).toEqual(
+          thread.id === 'th_00000000-0000-7000-8000-000000000001'
+            ? [expect.objectContaining({ agentId: 'quick-chat', status: 'completed' })]
+            : []
         );
       }
       expect(
@@ -685,12 +688,17 @@ describe('conversation.submit worker storage choice', () => {
       turnExecutor: await CompletingTurnExecutor.create(),
     });
 
+    const home = store.listWorkspaces().find((workspace) => workspace.kind === 'personal')!;
+    const timeline = await store.createThread(home.id, 'Timeline', undefined, 'conversation', {
+      visibility: 'private',
+      privateOwnerUserId: 'usr_00000000-0000-7000-8000-000000000001',
+    });
     const assistantRes = await app.request(
       ...operationRequest(
         'conversation.submit',
         {
-          workspaceId: 'ws_00000000-0000-7000-8000-000000000001',
-          threadId: 'th_00000000-0000-7000-8000-000000000001',
+          workspaceId: home.id,
+          threadId: timeline.id,
         },
         {
           body: conversationBody({
@@ -713,7 +721,7 @@ describe('conversation.submit worker storage choice', () => {
         'ws_00000000-0000-7000-8000-000000000001',
         'th_00000000-0000-7000-8000-000000000001'
       )
-    ).toEqual([]);
+    ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
     expect(store.listCommandRequests()).toEqual([]);
 
     const runningRes = await app.request(
@@ -1916,7 +1924,7 @@ describe('Task durable admission response', () => {
           'ws_00000000-0000-7000-8000-000000000001',
           'th_00000000-0000-7000-8000-000000000001'
         )
-      ).toHaveLength(0);
+      ).toMatchObject([{ agentId: 'quick-chat', status: 'completed' }]);
       expect(store.listCommandRequests()).toHaveLength(0);
       expect(
         listSchedulerAdmissionEntriesForWorkspace(coreDb, {

@@ -1,8 +1,11 @@
-import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { GOAL_OPERATION_DEFINITIONS, OPERATION_DEFINITIONS } from '@openkit/app-api-schemas';
 import { describe, expect, it, onTestFinished } from 'vitest';
 import { FsStore } from '../lib/store.js';
+import { createOperationInvocation } from '../operation-composition.js';
+import { admitOperation } from '../operation-resolvers.js';
 import { createPendingRequestOperationImplementations } from '../pending-request-operations.js';
 import { applyControlAdmission } from '../storage/control-store-admission.js';
 import { getControlStoreWorkerClient } from '../storage/control-store-worker-client.js';
@@ -11,7 +14,8 @@ import { applyMigrations, applyScopedMigrations } from '../storage/migrate.js';
 import { testEntityId } from '../test-support/entity-ids.js';
 import { testGoalDomainProposal } from '../test-support/goal-domain.js';
 import { ensureLocalUser } from '../test-support/local-user.js';
-import { considerGoal } from './goal-coordinator.js';
+import { recordWorkspaceOwnerMembership } from '../workspace-membership.js';
+import { considerGoal, createGoalTools } from './goal-coordinator.js';
 import {
   advanceGoalRevision,
   checkGoalCommandIntent,
@@ -1445,5 +1449,260 @@ describe('Public Goal command publication', () => {
     } finally {
       db.sqlite.close();
     }
+  });
+});
+
+describe('Coordinator intent authority', () => {
+  it('refuses goal.intent.revise for the Coordinator and keeps the person as the recorded actor', async () => {
+    expect(GOAL_OPERATION_DEFINITIONS['goal.intent.revise'].credentials).not.toContain(
+      'coordinator'
+    );
+    const root = mkdtempSync(join(tmpdir(), 'goal-coordinator-intent-'));
+    const store = createPersistentStore(root);
+    const workspace = await store.createWorkspace('Coordinator intent');
+    const db = openWorkspaceDb(root, workspace.id);
+    applyScopedMigrations(db);
+    const person = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
+    const created = await executeGoalOperation(
+      'goal.create',
+      {
+        workspaceId: workspace.id,
+        requestId: '11111111-1111-4111-8111-111111111111',
+        intent: 'Keep this intent',
+      },
+      person,
+      store,
+      db
+    );
+    const goal = created.goal!;
+    const turn = await store.createTurn(
+      workspace.id,
+      goal.threadId,
+      'Coordinate',
+      { kind: 'user', id: person.actor.userId },
+      undefined,
+      { executorKind: 'coordinator', agentId: 'goal-coordinator' }
+    );
+    const before = structuredClone(goal.intentHistory);
+    await expect(
+      executeGoalOperation(
+        'goal.intent.revise',
+        {
+          workspaceId: workspace.id,
+          threadId: goal.threadId,
+          goalId: goal.goalId,
+          requestId: '22222222-2222-4222-8222-222222222222',
+          expectedRevision: 0,
+          intent: 'Coordinator must not replace this',
+        },
+        { ...person, coordinatorTurnId: turn.id },
+        store,
+        db
+      )
+    ).rejects.toMatchObject({ code: 'coordinator_authority_denied', status: 403 });
+    const current = await executeGoalOperation(
+      'goal.read',
+      { workspaceId: workspace.id, threadId: goal.threadId, goalId: goal.goalId },
+      person,
+      store,
+      db
+    );
+    expect(current.goal?.intent).toBe('Keep this intent');
+    expect(current.goal?.intentHistory).toEqual(before);
+    const revised = await executeGoalOperation(
+      'goal.intent.revise',
+      {
+        workspaceId: workspace.id,
+        threadId: goal.threadId,
+        goalId: goal.goalId,
+        requestId: '33333333-3333-4333-8333-333333333333',
+        expectedRevision: 0,
+        intent: 'The person revised this',
+      },
+      person,
+      store,
+      db
+    );
+    expect(revised.goal?.intentHistory.at(-1)).toMatchObject({
+      actorId: person.actor.userId,
+      intent: 'The person revised this',
+    });
+    db.sqlite.close();
+  });
+
+  it('returns coordinator_authority_denied when the Coordinator invokes goal.intent.revise', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'goal-coordinator-admission-'));
+    const store = createPersistentStore(root);
+    const workspace = await store.createWorkspace('Coordinator admission');
+    const db = openWorkspaceDb(root, workspace.id);
+    applyScopedMigrations(db);
+    const person = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
+    const created = await executeGoalOperation(
+      'goal.create',
+      {
+        workspaceId: workspace.id,
+        requestId: '44444444-4444-4444-8444-444444444444',
+        intent: 'Keep this intent',
+      },
+      person,
+      store,
+      db
+    );
+    const goal = created.goal!;
+    const coreDb = openCoreDb(root);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: person.actor.userId,
+    });
+    const requestId = '55555555-5555-4555-8555-555555555555';
+    const invoke = createOperationInvocation({
+      coreDb,
+      store,
+      inflightCommands: new WeakMap(),
+      repositoryWorkspaceDb: (workspaceId) => {
+        const opened = openWorkspaceDb(root, workspaceId);
+        applyScopedMigrations(opened);
+        return opened;
+      },
+    });
+    const coordinator = {
+      kind: 'coordinator' as const,
+      actor: person.actor,
+      workspaceId: workspace.id,
+      threadId: goal.threadId,
+      goalId: goal.goalId,
+      turnId: 'tu_00000000-0000-7000-8000-0000000000aa',
+      requestId,
+    };
+    await expect(
+      invoke(
+        'goal.intent.revise',
+        {
+          workspaceId: workspace.id,
+          threadId: goal.threadId,
+          goalId: goal.goalId,
+          requestId,
+          expectedRevision: 0,
+          intent: 'Coordinator must not replace this',
+        },
+        coordinator
+      )
+    ).rejects.toMatchObject({ code: 'coordinator_authority_denied', status: 403 });
+    await expect(
+      admitOperation(
+        OPERATION_DEFINITIONS['goal.intent.revise'],
+        {
+          workspaceId: workspace.id,
+          threadId: goal.threadId,
+          goalId: goal.goalId,
+          requestId: '77777777-7777-4777-8777-777777777777',
+          expectedRevision: 0,
+          intent: 'Coordinator must not replace this',
+        },
+        {
+          kind: 'coordinator',
+          actor: person.actor,
+          workspaceId: workspace.id,
+          threadId: goal.threadId,
+          goalId: goal.goalId,
+          turnId: 'tu_00000000-0000-7000-8000-0000000000aa',
+          requestId: '77777777-7777-4777-8777-777777777777',
+        },
+        { coreDb, store }
+      )
+    ).rejects.toMatchObject({
+      code: 'coordinator_authority_denied',
+      message: 'Only a person may revise Goal intent.',
+      status: 403,
+    });
+    const unchanged = await executeGoalOperation(
+      'goal.read',
+      { workspaceId: workspace.id, threadId: goal.threadId, goalId: goal.goalId },
+      person,
+      store,
+      db
+    );
+    expect(unchanged.goal?.intent).toBe('Keep this intent');
+    db.sqlite.close();
+  });
+
+  it('keeps public HTTP and the person mode-entry revision, and omits the Coordinator tool', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'goal-person-revise-'));
+    const store = createPersistentStore(root);
+    const workspace = await store.createWorkspace('Person revision');
+    const db = openWorkspaceDb(root, workspace.id);
+    applyScopedMigrations(db);
+    const person = {
+      actor: { kind: 'local' as const, userId: 'usr_00000000-0000-7000-8000-000000000001' },
+    };
+    const created = await executeGoalOperation(
+      'goal.create',
+      {
+        workspaceId: workspace.id,
+        requestId: '99999999-9999-4999-8999-999999999999',
+        intent: 'Keep this intent',
+      },
+      person,
+      store,
+      db
+    );
+    const goal = created.goal!;
+    const tools = createGoalTools({
+      store,
+      db,
+      actor: person.actor,
+      goalId: goal.goalId,
+      turnId: 'tu_00000000-0000-7000-8000-0000000000bb',
+      services: {},
+      invoke: (async () => {
+        throw new Error('Coordinator tools must not revise intent.');
+      }) as never,
+    });
+    expect(tools.map((tool) => tool.name)).not.toContain('goal.intent.revise');
+    const modeEntry = readFileSync(new URL('../mode-entry-routes.ts', import.meta.url), 'utf8');
+    const reviseAt = modeEntry.indexOf("'goal.intent.revise'");
+    const call = modeEntry.slice(reviseAt, reviseAt + 450);
+    expect(call).toContain('{ actor: actor }');
+    expect(call).not.toMatch(/coordinatorTurnId/);
+    const coreDb = openCoreDb(root);
+    onTestFinished(() => coreDb.sqlite.close());
+    recordWorkspaceOwnerMembership({
+      coreDb,
+      workspaceId: workspace.id,
+      ownerUserId: person.actor.userId,
+    });
+    const invoke = createOperationInvocation({
+      coreDb,
+      store,
+      inflightCommands: new WeakMap(),
+      repositoryWorkspaceDb: (workspaceId) => {
+        const opened = openWorkspaceDb(root, workspaceId);
+        applyScopedMigrations(opened);
+        return opened;
+      },
+    });
+    const revised = await invoke(
+      'goal.intent.revise',
+      {
+        workspaceId: workspace.id,
+        threadId: goal.threadId,
+        goalId: goal.goalId,
+        requestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        expectedRevision: 0,
+        intent: 'The person revised this',
+      },
+      { kind: 'public', actor: person.actor }
+    );
+    expect(revised.goal?.intentHistory.at(-1)).toMatchObject({
+      actorId: person.actor.userId,
+      intent: 'The person revised this',
+    });
+    db.sqlite.close();
   });
 });
