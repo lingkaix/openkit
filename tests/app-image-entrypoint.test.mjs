@@ -122,6 +122,41 @@ test('routes container signals through the supervising entrypoint exactly once',
   assert.doesNotMatch(source, /ENTRYPOINT \["tini", "-g"/u);
 });
 
+test('image healthcheck requires both the Web root and healthy API through the configured port', async () => {
+  const source = await readFile(dockerfile, 'utf8');
+  const command = JSON.parse(source.match(/^HEALTHCHECK .* CMD (\[.*\])$/mu)?.[1] ?? 'null');
+  assert.ok(Array.isArray(command), 'Image healthcheck must provide an executable command');
+  let scenario = 'healthy';
+  const server = createServer((req, res) => {
+    const api = req.url === '/api/health';
+    if (scenario === (api ? 'api-down' : 'web-down')) res.statusCode = 503;
+    res.end(
+      api
+        ? JSON.stringify({ status: scenario === 'api-bad' ? 'failed' : 'ok' })
+        : scenario === 'web-bad'
+          ? 'missing Web app'
+          : '<div id="root">Starting OpenKit...</div>'
+    );
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    for (scenario of ['healthy', 'api-down', 'web-down', 'api-bad', 'web-bad']) {
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, command.slice(1), {
+          env: { ...process.env, CADDY_HTTP_PORT: String(server.address().port) },
+          stdio: 'ignore',
+        });
+        child.on('error', reject);
+        child.on('exit', (code) => resolve(code));
+      });
+      assert.equal(result, scenario === 'healthy' ? 0 : 1, scenario);
+    }
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('starts the App image in server mode with a public frontend when no mode is selected', async () => {
   const image = await readFile(dockerfile, 'utf8');
   const imageMode = image.match(/^ENV\s+OPENKIT_CORE_MODE=["']?([^"'\s]+)/mu)?.[1];
@@ -237,6 +272,11 @@ async function runEntrypoint({
     writeExecutable(
       join(binRoot, 'node'),
       `#!/bin/sh
+# Route the moved readiness command to the same readiness fault fixture.
+if [ "$1" = '-e' ]; then
+  shift 2
+  exec "$(dirname "$0")/curl" "$@"
+fi
 printf '%s\n' "$OPENKIT_CORE_MODE" > "$OPENKIT_TEST_CORE_MODE_RECORD"
 trap 'printf "stopped\\n" > "$OPENKIT_TEST_NODE_STOP_RECORD"; exit 0' TERM INT
 printf 'ready\n' > "$OPENKIT_TEST_NODE_READY_RECORD"

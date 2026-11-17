@@ -10,9 +10,11 @@ Release and candidate builds pass `OPENKIT_RELEASE_TAG` and `OPENKIT_SOURCE_COMM
 
 The local `scripts/docker/run-app.sh` seed helper authors an explicit 8,000-token compaction threshold for its default logical model. This is a context-management policy, not model capacity metadata; normal provider model/context admission still applies, and existing configuration files are preserved.
 
-After readiness and Caddy startup, the entrypoint waits for either NanoCore or Caddy to exit, then exits nonzero and stops the surviving process through its EXIT trap. Tini therefore exits and the container restart policy can restart the App. Deployment health requires both the Web page and NanoCore `/api/health` through Caddy, using the image's curl and grep.
+After readiness and Caddy startup, the entrypoint waits for either NanoCore or Caddy to exit, then exits nonzero and stops the surviving process through its EXIT trap. Tini therefore exits and the container restart policy can restart the App. The image healthcheck requires both the Web page and NanoCore `/api/health` through Caddy. Readiness, smoke and healthcheck use Node's bounded HTTP requests; the runtime does not install the curl CLI. The Caddy archive is fetched with Node and checked against its architecture-specific SHA-256.
 
 The entrypoint probes NanoCore's loopback App HTTP/1.1 health endpoint before starting Caddy. Caddy uses that listener for public app routes, including exact `/mcp` before the Web catch-all, and does not publish or connect to the separate private NanoHost HTTP/2 listener.
+
+An operator-defined container healthcheck overrides the image default. Replace any curl-based override with a Node check before updating to this curl-free image.
 
 The public proxy rejects `/v1` and `/v1/*`, bare `/api` and `/internal`, and unsupported `/mcp/*` children with HTTP 404 JSON. Existing App API and exact MCP routes keep their upstream routing. The accepted #209 reachability ruling keeps the Gateway outside the public App origin. The Web fallback serves only GET and HEAD. Other methods receive HTTP 405 JSON with `Allow: GET, HEAD`. The App image smoke checks these responses, query strings, and the Web fallback through packaged Caddy.
 

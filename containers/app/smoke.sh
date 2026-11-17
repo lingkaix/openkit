@@ -12,6 +12,10 @@ print_required_version() {
 print_required_version "node" node --version
 print_required_version "pnpm" pnpm --version
 print_required_version "caddy" caddy version
+if command -v curl >/dev/null 2>&1; then
+  echo "App runtime must not include the curl CLI." >&2
+  exit 1
+fi
 # The offline inventory covers this exact platform, including installed OS and native binaries.
 node --input-type=module <<'SBOM'
 import assert from 'node:assert/strict';
@@ -146,7 +150,7 @@ app_pid="$!"
 ready=0
 startup_deadline=$((SECONDS + 60))
 while ((SECONDS < startup_deadline)); do
-  if curl -fsS --max-time 1 "http://127.0.0.1:${CADDY_HTTP_PORT:-8080}/api/health" >"${smoke_root}/health.json" 2>/dev/null; then
+  if node -e 'fetch(process.argv[1], {signal: AbortSignal.timeout(1000)}).then(async r => {if (!r.ok) throw Error(); process.stdout.write(await r.text())}).catch(() => process.exit(1))' "http://127.0.0.1:${CADDY_HTTP_PORT:-8080}/api/health" >"${smoke_root}/health.json" 2>/dev/null; then
     ready=1
     break
   fi

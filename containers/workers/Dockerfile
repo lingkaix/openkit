@@ -22,7 +22,7 @@ RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} f
   && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
   && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
+  && corepack prepare pnpm@10.34.9+sha512.f49b5a8ea0fdedb44bb3c0c1d6575092a53c2950d95b7ad15df11f17974877a2de3a01c07e934e9b28ce716e51c09a94962c7306d09be2e1e4b18a8c8762fd32 --activate \
   && pnpm --version
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
@@ -129,7 +129,7 @@ RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} f
   && rm -rf /tmp/corepack-npm-cache \
   && rm /tmp/corepack.tgz \
   && corepack enable \
-  && COREPACK_HOME=/opt/corepack corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
+  && COREPACK_HOME=/opt/corepack corepack prepare pnpm@10.34.9+sha512.f49b5a8ea0fdedb44bb3c0c1d6575092a53c2950d95b7ad15df11f17974877a2de3a01c07e934e9b28ce716e51c09a94962c7306d09be2e1e4b18a8c8762fd32 --activate \
   && for command in corepack pnpm pnpx; do \
     rm "/usr/local/bin/${command}"; \
     printf '#!/bin/sh\nexport COREPACK_HOME="${COREPACK_HOME:-/opt/corepack}"\nexec node /usr/local/lib/node_modules/corepack/dist/%s.js "$@"\n' "${command}" > "/usr/local/bin/${command}"; \

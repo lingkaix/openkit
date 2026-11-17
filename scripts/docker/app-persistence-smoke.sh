@@ -233,7 +233,7 @@ wait_for_url() {
   local url="$1"
 
   for attempt in $(seq 1 60); do
-    if docker exec "${CONTAINER_NAME}" curl -fsS "${url}" >/dev/null 2>&1; then
+    if app_request "${url}" >/dev/null 2>&1; then
       return 0
     fi
 
@@ -253,6 +253,11 @@ wait_for_url() {
   done
 }
 
+# Send requests from container loopback, including when the App runs in local mode.
+app_request() {
+  docker exec "${CONTAINER_NAME}" node -e 'const [url,body,requestId]=process.argv.slice(1); fetch(url,{signal:AbortSignal.timeout(5000),...(body===undefined?{}:{method:"POST",headers:{"content-type":"application/json",...(requestId?{"x-openkit-request-id":requestId}:{})},body})}).then(async r=>{if(!r.ok) throw Error(); process.stdout.write(await r.text())}).catch(()=>process.exit(1))' "$@"
+}
+
 create_workspace() {
   local payload
 
@@ -261,12 +266,8 @@ create_workspace() {
       'process.stdout.write(JSON.stringify({ name: process.env.WORKSPACE_NAME }));'
   )"
 
-  docker exec "${CONTAINER_NAME}" curl -fsS \
-    --request POST \
-    --header 'content-type: application/json' \
-    --header "x-openkit-request-id: $(node -e 'process.stdout.write(crypto.randomUUID())')" \
-    --data "${payload}" \
-    "${BASE_URL}/api/app/operations/workspace.create"
+  app_request "${BASE_URL}/api/app/operations/workspace.create" "${payload}" \
+    "$(node -e 'process.stdout.write(crypto.randomUUID())')"
 }
 
 read_workspace_id() {
@@ -286,7 +287,6 @@ fi
 trap cleanup EXIT
 
 require_command docker
-require_command curl
 require_command node
 
 docker image inspect "${IMAGE}" >/dev/null
@@ -295,7 +295,7 @@ seed_server_config "${DATA_ROOT}"
 start_container
 wait_for_url "${BASE_URL}/api/health"
 
-root_html="$(docker exec "${CONTAINER_NAME}" curl -fsS "${BASE_URL}/")"
+root_html="$(app_request "${BASE_URL}/")"
 if [[ "${root_html}" != *"<html"* ]]; then
   record_failure "http spa root" "expected HTML from ${BASE_URL}/"
 else
@@ -315,7 +315,7 @@ docker rm -f "${CONTAINER_NAME}" >/dev/null
 start_container
 wait_for_url "${BASE_URL}/api/health"
 
-workspace_list="$(docker exec "${CONTAINER_NAME}" curl -fsS --request POST --header 'content-type: application/json' --data '{}' "${BASE_URL}/api/app/operations/workspace.list")"
+workspace_list="$(app_request "${BASE_URL}/api/app/operations/workspace.list" '{}')"
 if assert_workspace_exists "${workspace_list}" "${workspace_id}"; then
   record_pass "api workspace persisted"
 else

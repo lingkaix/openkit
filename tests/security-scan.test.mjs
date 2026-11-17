@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 
-const { kevIds, findingsFromOsvSource, newSevereFindings } = await import(
+const { kevIds, findingsFromOsvSource, newSevereFindings, scanImage } = await import(
   pathToFileURL(join(process.cwd(), 'scripts/security-scan.mjs')).href
 );
+const { assertReleaseFindingGate } = await import(
+  pathToFileURL(join(process.cwd(), 'scripts/security-findings.mjs')).href
+);
+const pins = JSON.parse(readFileSync(join(process.cwd(), 'scripts/security-tools.json'), 'utf8'));
 const artifact = `sha256:${'a'.repeat(64)}`;
 const location = 'synthetic/pnpm-lock.yaml';
 const cve = 'CVE-2026-12345';
@@ -182,4 +188,74 @@ test('lock-file gate blocks new severe matches, not unchanged artifact rebinding
   assert.deepEqual(newSevereFindings([], [low]), [], 'New routine-class match must not block');
   assert.deepEqual(newSevereFindings([low], [high]), [high], 'A newly severe match must block');
   assert.deepEqual(newSevereFindings([high], []), [], 'Removed match must not block');
+});
+
+test('image admission includes installed npm findings with exact bindings and fails closed', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'openkit-image-admission-'));
+  try {
+    const executable = join(directory, 'osv-scanner');
+    // Substitute only the external scanner observation. Admission and register predicates stay real.
+    writeFileSync(
+      executable,
+      `#!${process.execPath}
+import fs from 'node:fs';
+if (process.argv[2] === '--version') {
+  console.log('osv-scanner version: ${pins['osv-scanner'].version}');
+} else {
+  fs.writeFileSync(process.env.OBSERVED_ARGS, JSON.stringify(process.argv.slice(2)));
+  process.stdout.write(fs.readFileSync(process.env.OBSERVATION, 'utf8'));
+  process.exitCode = 1;
+}
+`
+    );
+    chmodSync(executable, 0o755);
+    const observation = join(directory, 'report.json');
+    const argsFile = join(directory, 'args.json');
+    const config = join(directory, 'scanner.toml');
+    writeFileSync(config, '');
+    const npmPath = '/usr/local/lib/node_modules/security-fixture/package.json';
+    const os = { source: { type: 'os', path: '/var/lib/dpkg/status' }, packages: [] };
+    for (const platform of ['linux/amd64', 'linux/arm64']) {
+      for (const options of [
+        { score: '9.8', fixed: true },
+        { aliases: [cve], fixed: true },
+      ]) {
+        const report = {
+          results: [os, { ...source(options), source: { type: 'unknown', path: npmPath } }],
+        };
+        writeFileSync(observation, JSON.stringify(report));
+        const context = {
+          image: `registry.example/synthetic@${artifact}`,
+          platform,
+          knownCves,
+          cwd: directory,
+          config,
+          env: { PATH: directory, OBSERVATION: observation, OBSERVED_ARGS: argsFile },
+        };
+        const findings = scanImage(context);
+        const args = JSON.parse(readFileSync(argsFile, 'utf8'));
+        assert.equal(args[args.indexOf('--x-plugins') + 1], 'javascript/packagejson');
+        assert.ok(args.includes('--all-packages'));
+        assert.deepEqual(
+          findings,
+          normalize(options, { location: `${platform}:${npmPath.slice(1)}` })
+        );
+        assert.throws(() => assertReleaseFindingGate({ findings, now: Date.now() }));
+
+        for (const path of ['/usr/local/../package.json', 'relative/package.json', '/bad\0path']) {
+          report.results[1].source.path = path;
+          writeFileSync(observation, JSON.stringify(report));
+          assert.throws(() => scanImage(context));
+        }
+        report.results[1].source = { type: 'unsupported', path: npmPath };
+        writeFileSync(observation, JSON.stringify(report));
+        assert.throws(() => scanImage(context));
+        report.results = [{ ...source(options), source: { type: 'unknown', path: npmPath } }];
+        writeFileSync(observation, JSON.stringify(report));
+        assert.throws(() => scanImage(context), /operating-system inventory/u);
+      }
+    }
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

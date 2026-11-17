@@ -61,7 +61,7 @@ RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} f
   && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
   && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
+  && corepack prepare pnpm@10.34.9+sha512.f49b5a8ea0fdedb44bb3c0c1d6575092a53c2950d95b7ad15df11f17974877a2de3a01c07e934e9b28ce716e51c09a94962c7306d09be2e1e4b18a8c8762fd32 --activate \
   && pnpm --version
 
 COPY . .
@@ -97,7 +97,6 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
-    curl \
     ffmpeg \
     git \
     libsqlite3-0 \
@@ -111,9 +110,8 @@ RUN case "${TARGETARCH}" in \
       arm64) caddy_sha256=5e377cff994fc9362a6fcf695c53f226cfca3a3ef85bd3a3687cf252d6310165 ;; \
       *) echo "Unsupported Caddy architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-  && curl --proto '=https' --tlsv1.2 -fsSL \
+  && node -e 'fetch(process.argv[1], {signal: AbortSignal.timeout(120000)}).then(async r => {if (!r.ok) throw Error("Caddy download failed"); require("node:fs").writeFileSync("/tmp/caddy.tar.gz", Buffer.from(await r.arrayBuffer()))}).catch(() => process.exit(1))' \
     "https://github.com/caddyserver/caddy/releases/download/v2.11.9/caddy_2.11.9_linux_${TARGETARCH}.tar.gz" \
-    -o /tmp/caddy.tar.gz \
   && echo "${caddy_sha256}  /tmp/caddy.tar.gz" | sha256sum -c - \
   && tar -xzf /tmp/caddy.tar.gz -C /usr/bin caddy \
   && mkdir -p /usr/share/licenses/caddy \
@@ -124,7 +122,7 @@ RUN node --input-type=module -e 'import fs from "node:fs"; import {createHash} f
   && npm install -g --offline --ignore-scripts --no-audit --no-fund /tmp/corepack.tgz \
   && rm /tmp/corepack.tgz \
   && corepack enable \
-  && corepack prepare pnpm@10.33.3+sha512.a19744364a7e248b92657a4ca5973f9354d21caf982579674b1c539f32c7420c47138ad8b1254df07aba9bc782d9b3029e3db34d5dbff974326eb74dac8ff489 --activate \
+  && corepack prepare pnpm@10.34.9+sha512.f49b5a8ea0fdedb44bb3c0c1d6575092a53c2950d95b7ad15df11f17974877a2de3a01c07e934e9b28ce716e51c09a94962c7306d09be2e1e4b18a8c8762fd32 --activate \
   && pnpm --version
 
 COPY --from=retrieval-builder /out/retrieval-kernel /usr/local/bin/retrieval-kernel
@@ -149,6 +147,9 @@ ARG OPENKIT_SOURCE_COMMIT
 RUN node -e 'const fs=require("node:fs"); const releaseTag=process.env.OPENKIT_RELEASE_TAG||null; const sourceCommit=process.env.OPENKIT_SOURCE_COMMIT||null; if(releaseTag===null&&sourceCommit===null) process.exit(0); fs.mkdirSync("/usr/local/lib/openkit",{recursive:true}); fs.writeFileSync("/usr/local/lib/openkit/release-identity.json", JSON.stringify({releaseTag,sourceCommit})+"\n");'
 
 EXPOSE 8080
+
+# Probe both public surfaces through Caddy; Node supplies HTTP without a curl runtime dependency.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 CMD ["node", "-e", "Promise.all(['/','/api/health'].map(async path => {const r=await fetch('http://127.0.0.1:'+(process.env.CADDY_HTTP_PORT||8080)+path,{signal:AbortSignal.timeout(4000)}); if(!r.ok) throw Error(); const body=await r.text(); if(path==='/'&&!body.includes('<div id=\"root\">')) throw Error(); if(path==='/api/health'&&JSON.parse(body).status!=='ok') throw Error()})).catch(()=>process.exit(1))"]
 
 ENTRYPOINT ["tini", "--", "/usr/local/bin/openkit-app-entrypoint"]
 

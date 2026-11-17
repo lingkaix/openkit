@@ -150,12 +150,23 @@ export function runOsv(args, { cwd, env }) {
   return report;
 }
 
-/** Scan a platform manifest, never a mutable image tag, including its operating-system packages. */
+/** Scan a platform manifest, including installed JavaScript and operating-system packages. */
 export function scanImage({ image, platform, knownCves, cwd, env, config }) {
   if (!/^[^@\s]+@sha256:[a-f0-9]{64}$/u.test(image) || !/^linux\/(?:amd64|arm64)$/u.test(platform))
     refuse();
   const report = runOsv(
-    ['scan', 'image', image, '--format', 'json', '--all-packages', '--config', config],
+    [
+      'scan',
+      'image',
+      image,
+      '--format',
+      'json',
+      '--all-packages',
+      '--config',
+      config,
+      '--x-plugins',
+      'javascript/packagejson',
+    ],
     { cwd, env }
   );
   const findings = [];
@@ -165,7 +176,7 @@ export function scanImage({ image, platform, knownCves, cwd, env, config }) {
     object(source.source);
     const path = text(source.source.path);
     if (
-      !['artifact', 'os'].includes(source.source.type) ||
+      !['artifact', 'os', 'unknown'].includes(source.source.type) ||
       !path.startsWith('/') ||
       posix.normalize(path) !== path ||
       path.includes('\0')

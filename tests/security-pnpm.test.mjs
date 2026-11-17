@@ -35,7 +35,7 @@ function resolvePnpm() {
       join(cwd, 'package.json'),
       JSON.stringify({
         private: true,
-        packageManager: 'pnpm@10.33.3',
+        packageManager: 'pnpm@10.34.9',
         scripts: { entry: 'node -p process.env.npm_execpath' },
       })
     );
@@ -186,7 +186,7 @@ test('native pnpm enforces release age and explicit build review', async () => {
       };
       const identity = await run(['--version'], cwd, env);
       assert.ok(
-        identity.code === 0 && identity.output.trim() === '10.33.3',
+        identity.code === 0 && identity.output.trim() === '10.34.9',
         'Pinned pnpm required'
       );
       writeFileSync(

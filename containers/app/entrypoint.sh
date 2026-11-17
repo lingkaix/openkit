@@ -51,7 +51,7 @@ node /app/nanocore/dist/index.js &
 nanocore_pid="$!"
 
 for attempt in $(seq 1 120); do
-  if curl -fsS "http://127.0.0.1:${OPENKIT_HTTP_PORT}/api/health" >/dev/null; then
+  if node -e 'fetch(process.argv[1], {signal: AbortSignal.timeout(1000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))' "http://127.0.0.1:${OPENKIT_HTTP_PORT}/api/health"; then
     break
   fi
 

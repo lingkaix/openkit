@@ -175,7 +175,7 @@ test('keeps native build failures with the outer owner, not source compilation',
     JSON.stringify({
       name: 'source-build-caller-fixture',
       private: true,
-      packageManager: 'pnpm@10.33.3',
+      packageManager: 'pnpm@10.34.9',
     })
   );
   writeFileSync(join(f.repo, 'pnpm-workspace.yaml'), 'packages:\n  - apps/*\n  - packages/*\n');

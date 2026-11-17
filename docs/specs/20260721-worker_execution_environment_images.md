@@ -103,7 +103,7 @@ The current image baseline is below. Version pins in this table are current defa
 | OS and Node.js | `node:26.13.0-bookworm-slim@sha256:add5c17c14752c54d2f3d519ec46a3815684d41c33f198bcb09fb998f7dcbf68` | Official multi-architecture Node.js image |
 | npm | Version bundled with the pinned Node.js image | Official Node.js image |
 | Corepack | `0.36.0` (current default) | Independent install of the pinned Corepack. The Node image does not supply it. |
-| pnpm | `10.33.3` | Corepack, aligned with the repository `packageManager` field |
+| pnpm | `10.34.9` | Corepack, aligned with the repository `packageManager` field |
 | Python | CPython `3.14.6` | Installed by pinned uv into an immutable image path |
 | uv and uvx | `0.11.30`, source image `ghcr.io/astral-sh/uv:0.11.30@sha256:93b61e21202b1dab861092748e46bbd6e0e41dd84f59b9174efd2353186e1b47` | Official uv multi-architecture image |
 | GitHub CLI | `2.96.0` | Official release archive with architecture-specific SHA-256 verification |
