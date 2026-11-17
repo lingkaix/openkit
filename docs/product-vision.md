@@ -193,11 +193,13 @@ Kernel 持有核心客户数据，用户通过 `Generative UI` 查询和管理�
 
 ## 7. Knowledge 愿景
 
-Knowledge 是 OpenKit 长期价值的重要来源。路线是先检索，再综合。阶段安排由 [路线图](./roadmap.md) 所有。
+Knowledge 是 OpenKit 长期价值的重要来源，但不应该在 `v1` 阶段做成过于激进、自动推断过多的复杂子系统。
+
+更稳妥的路线是分阶段推进，先把 knowledge 当作 `retrieval problem`，再逐步扩展成 `synthesis problem`。
 
 ### 7.1 先检索
 
-Core 先把 Knowledge 当作检索与治理问题。这一阶段不应成为过于激进、自动推断过多的复杂子系统；应优先准确保存已有事实与明确知识，在任务需要时取回相关 context，避免注入过多无关或低可信度的信息。在检索优先阶段，应尽量避免自动生成大量长期偏好、把一次性行为推断为稳定习惯、对 user personality 和 working style 作高自信的自动总结，以及在证据不足时覆盖或改写已有 knowledge。[Knowledge](./core/knowledge.md) 拥有这条边界。
+Core 先把 Knowledge 当作检索与治理问题。应优先准确保存已有事实与明确知识，在任务需要时取回相关 context，避免注入过多无关或低可信度的信息。在检索优先阶段，应尽量避免自动生成大量长期偏好、把一次性行为推断为稳定习惯、对 user personality 和 working style 作高自信的自动总结，以及在证据不足时覆盖或改写已有 knowledge。[Knowledge](./core/knowledge.md) 拥有这条边界。
 
 ### 7.2 再综合
 
