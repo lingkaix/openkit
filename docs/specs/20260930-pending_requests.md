@@ -285,7 +285,6 @@ Each supported worker runtime, under its existing runtime owner, exercises `work
 
 ## Implementation Gaps
 
-- Discord automation delivery, inspect, and answer use fixed deadline-and-App-link text - On main, Discord shows the question text - #739
 - A security trigger raises at most one open renotice per item and recipient - On main, no producer raises that renotice request - #785
 
 ## Decisions

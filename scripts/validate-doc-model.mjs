@@ -35,15 +35,6 @@ const SNAPSHOT_FILES = new Set([
   'docs/okf-spec-v0.2-snapshot.md',
 ]);
 const INDEX_FILE = 'docs/INDEX.md';
-const TERMINAL_SPEC_DIRECTORIES = new Set(['superseded', 'retired', 'rejected']);
-const HISTORICAL_CORE_RENAMES = new Map([
-  ['docs/core/agent-capability.md', 'docs/core/mediation.md'],
-  ['docs/core/agent-workflow.md', 'docs/core/work-model.md'],
-  ['docs/core/audit.md', 'docs/core/evidence.md'],
-  ['docs/core/foundation.md', 'docs/core/doctrine.md'],
-  ['docs/core/metering.md', 'docs/core/evidence.md'],
-  ['docs/core/permissions.md', 'docs/core/policy.md'],
-]);
 const MANUAL_FILE_PATTERN = /^.+\.(?:en|zh)\.md$/u;
 const MANUAL_CANONICAL_LANGUAGE = 'en';
 const SPEC_FILE_PATTERN = /^20\d{6}-[a-z0-9_]+\.md$/;
@@ -170,14 +161,6 @@ function classifyPath(path) {
   if (segments[1] === 'specs' && segments.length === 3 && SPEC_FILE_PATTERN.test(name)) {
     return 'spec';
   }
-  if (
-    segments[1] === 'specs' &&
-    segments.length > 3 &&
-    TERMINAL_SPEC_DIRECTORIES.has(segments[2]) &&
-    SPEC_FILE_PATTERN.test(name)
-  ) {
-    return 'spec-terminal';
-  }
   // Change records take two forms. A flat file is the original form and stays
   // valid; a bundle may retain a proposal, findings, a route log, and opaque
   // legacy state. JSON evidence is admitted by bundle membership below.
@@ -242,10 +225,10 @@ export function validateDocModel(repoRoot) {
     const guidePaths = /^(?:apps|packages|skills)\/(?:.*\/)?README\.md$/u.test(path);
     const links = resolveRepositoryDocLinks(repoRoot, path, content, guidePaths);
 
-    validateDocumentationLinkExistence(repoRoot, path, type, links, errors, guidePaths);
+    validateDocumentationLinkExistence(repoRoot, path, links, errors, guidePaths);
 
-    if (type === 'spec' || type === 'spec-terminal') {
-      if (type === 'spec') validateImplementationPaths(repoRoot, path, content, errors);
+    if (type === 'spec') {
+      validateImplementationPaths(repoRoot, path, content, errors);
       validateSpecificationCoreReferences(repoRoot, path, content, errors);
       validateAuthorityChangeRecordLinks(path, links, errors);
       continue;
@@ -566,18 +549,14 @@ function validateAuthorityChangeRecordLinks(path, links, errors) {
 /**
  * Rejects documentation links whose targets escape or are absent from the repository.
  *
- * Frozen terminal specifications cannot be repointed, so only their missing active-root specification links may resolve to a same-name file in a terminal specification directory.
- *
  * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative documentation path.
- * @param {string} type Classified documentation type.
  * @param {string[]} links Resolved whole-document links in source order, including repeats.
  * @param {string[]} errors Mutable validation error list.
  */
 function validateDocumentationLinkExistence(
   repoRoot,
   path,
-  type,
   links,
   errors,
   allowDirectories = false
@@ -597,27 +576,7 @@ function validateDocumentationLinkExistence(
         ? target?.isDirectory()
         : target?.isFile();
 
-    const name = resolvedPath.split('/').at(-1);
-    const archivedTarget =
-      !target &&
-      type === 'spec-terminal' &&
-      resolvedPath.startsWith('docs/specs/') &&
-      resolvedPath.split('/').length === 3 &&
-      SPEC_FILE_PATTERN.test(name) &&
-      [...TERMINAL_SPEC_DIRECTORIES].some((directory) =>
-        lstatSync(join(repoRoot, 'docs/specs', directory, name), {
-          throwIfNoEntry: false,
-        })?.isFile()
-      );
-    const renamedCoreTarget =
-      !target &&
-      (type === 'spec-terminal' || type === 'audit') &&
-      HISTORICAL_CORE_RENAMES.has(resolvedPath) &&
-      lstatSync(join(repoRoot, HISTORICAL_CORE_RENAMES.get(resolvedPath)), {
-        throwIfNoEntry: false,
-      })?.isFile();
-
-    if (!validTarget && !archivedTarget && !renamedCoreTarget) {
+    if (!validTarget) {
       errors.push(`${path}: ${MISSING_LINK_TARGET_ERROR}: \`${resolvedPath}\`.`);
     }
   }
@@ -646,7 +605,7 @@ function validateImplementationPaths(repoRoot, path, content, errors) {
       true,
       true
     );
-    validateDocumentationLinkExistence(repoRoot, path, 'spec', links, errors, true);
+    validateDocumentationLinkExistence(repoRoot, path, links, errors, true);
   }
 }
 
@@ -656,7 +615,6 @@ function validateImplementationPaths(repoRoot, path, content, errors) {
  * @param {string} repoRoot Repository root.
  * @param {string} path Repository-relative specification path.
  * @param {string} content Markdown document content.
- * @param {boolean} [allPaths] Preserve concrete code-path citations as well as docs paths.
  * @param {string[]} errors Mutable validation error list.
  */
 function validateSpecificationCoreReferences(repoRoot, path, content, errors) {
@@ -686,6 +644,7 @@ function validateSpecificationCoreReferences(repoRoot, path, content, errors) {
  * Scans exact second-level headings and masks Markdown non-link contexts without moving offsets.
  *
  * @param {string} content Markdown document content.
+ * @param {boolean} [allPaths] Preserve concrete code-path citations as well as docs paths.
  * @returns {{
  *   headings: {index: number, length: number, name: string}[],
  *   maskedContent: string,
@@ -1184,7 +1143,7 @@ function validateAuditRecord(path, links, errors) {
 
   const hasOwnerLink = links.some((resolvedPath) => {
     const type = classifyPath(resolvedPath);
-    return type === 'spec' || type === 'spec-terminal' || GOVERNANCE_FILES.has(resolvedPath);
+    return type === 'spec' || GOVERNANCE_FILES.has(resolvedPath);
   });
 
   if (!hasOwnerLink) {

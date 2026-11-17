@@ -102,9 +102,9 @@ Workspace export is administrator-only at creation and download through the comm
 
 ## Implementation Gaps
 
-- Shared conversation Thread creation is gated off in `v0.1.0` - `CreateThreadRequestSchema` and the public Thread creation route accept `visibility: "workspace"` and create a workspace-visible `conversation` Thread - #752
 - Explicit private-Thread snapshot sharing (`thread.share`) and destination publication barrier - `thread.share` is not implemented - #297
 - Post-`v0.1.0` shared conversation Threads in team Workspaces - Deferred beyond `v0.1.0` - #247
+- Creation of Workspace-shared conversation Threads is gated off - New Assistant admission on an unestablished shared conversation refuses, but public `thread.create` still persists `entryPath: "conversation"` with `visibility: "workspace"` - #752
 
 ## Decisions
 

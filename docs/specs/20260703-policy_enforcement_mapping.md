@@ -297,7 +297,7 @@ Map product subject/action/resource/context vocabulary into NGAC required rights
 
 MCP permission selector is exact Workspace/server/Tool resource; no parallel Tool-name grant kind; finite maintenance exception stays bounded.
 
-`vault.delegate-refresh` maps to `ar:vault-delegate-refresh` for the deeper effect check when `backend-provider` delivery hands refresh-family material to a Gateway placement. Ordinary Workspace membership never supplies it. Delivery requires the current human-authored allowance for every evaluated human, including administrators, beside `vault.use`.
+`vault.delegate-refresh` maps to `ar:vault-delegate-refresh` for the deeper effect check when `backend-provider` delivery hands refresh-family material to a Gateway placement. Evaluate it beside `vault.use` under the [refresh-delegation allowance](#scope-owned-statement-format-f3).
 
 Vault effects use vault.use, inspection vault.admin; Worker package/session/Thread and Coordinator Goal/Task scope remain actual native bounds; revoked metadata inspectable without material.
 

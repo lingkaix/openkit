@@ -254,6 +254,61 @@ describe('doc frontmatter parsing', () => {
 });
 
 describe('documentation field validation', () => {
+  it('limits specification enums to current authority and implementation states', () => {
+    const fields = {
+      aspect: 'security',
+      kind: 'concept',
+      status: 'Accepted',
+      implementation: 'Partial',
+    };
+    for (const status of ['Draft', 'Accepted']) {
+      for (const implementation of ['Implemented', 'Partial', 'Not Started']) {
+        assert.deepEqual(validateFields('spec', { ...fields, status, implementation }), []);
+      }
+    }
+    for (const status of ['Deprecated', 'Superseded', 'Retired', 'Rejected']) {
+      assert.ok(
+        validateFields('spec', { ...fields, status }).some((error) => error.includes('`status`'))
+      );
+    }
+    for (const implementation of ['In Progress', 'Diverged', 'N/A']) {
+      assert.ok(
+        validateFields('spec', { ...fields, implementation }).some((error) =>
+          error.includes('`implementation`')
+        )
+      );
+    }
+  });
+
+  it('admits exactly the four spec fields and removes transition metadata and Core updated', () => {
+    const fields = {
+      aspect: 'security',
+      kind: 'concept',
+      status: 'Accepted',
+      implementation: 'Partial',
+    };
+    for (const key of [
+      'date',
+      'updated',
+      'status-changed',
+      'current-guidance',
+      'decision-evidence',
+    ]) {
+      assert.ok(
+        validateFields('spec', { ...fields, [key]: '2026-11-16' }).some((error) =>
+          error.includes(`\`${key}\``)
+        )
+      );
+    }
+    assert.ok(
+      validateFields('core', { status: 'Accepted', updated: '2026-11-16' }).some((error) =>
+        error.includes('`updated`')
+      )
+    );
+    assert.deepEqual(validateFields('core', { status: 'Accepted', date: '2026-11-16' }), []);
+    assert.throws(() => validateFields('spec-terminal', {}), /unknown documentation type/u);
+  });
+
   it('requires an aspect and admits only Core basenames or process', () => {
     const fields = { implementation: 'Partial', kind: 'concept', status: 'Accepted' };
     assert.deepEqual(validateFields('spec', fields), ['`aspect` is required.']);
@@ -295,44 +350,11 @@ describe('documentation field validation', () => {
     assert.deepEqual(
       validateFields('spec', {
         aspect: 'process',
-        date: '2026-07-29',
         implementation: 'Partial',
         kind: 'concept',
         status: 'Accepted',
       }),
       []
-    );
-  });
-
-  it('accepts a canonical terminal specification field set', () => {
-    assert.deepEqual(
-      validateFields('spec-terminal', {
-        'current-guidance': '`docs/core/protocol.md`',
-        'decision-evidence': '`docs/changes/202607111650190001-spec_lifecycle_governance.md`',
-        implementation: 'N/A',
-        status: 'Superseded',
-        'status-changed': '2026-06-28',
-      }),
-      []
-    );
-  });
-
-  it('requires non-empty terminal guidance and decision evidence', () => {
-    const errors = validateFields('spec-terminal', {
-      'current-guidance': '',
-      'decision-evidence': '   ',
-      implementation: 'N/A',
-      status: 'Retired',
-      'status-changed': '2026-07-11',
-    });
-
-    assert.ok(
-      errors.some((error) => error.includes('current-guidance')),
-      errors.join(' | ')
-    );
-    assert.ok(
-      errors.some((error) => error.includes('decision-evidence')),
-      errors.join(' | ')
     );
   });
 
@@ -453,13 +475,9 @@ describe('documentation field validation', () => {
   });
 
   it('accepts YYYY-MM-DD across centuries while rejecting a malformed date', () => {
-    const errors = validateFields('spec-terminal', {
-      'current-guidance': 'None',
-      'decision-evidence': '`docs/changes/202607111650190001-spec_lifecycle_governance.md`',
+    const errors = validateFields('governance', {
       date: '2100-01-01',
-      implementation: 'N/A',
-      status: 'Retired',
-      'status-changed': '1999-12-31',
+      status: 'Accepted',
       updated: '2100-1-01',
     });
 

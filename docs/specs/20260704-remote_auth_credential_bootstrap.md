@@ -2,7 +2,6 @@
 status: Accepted
 implementation: Partial
 kind: boundary
-updated: "2026-10-02"
 aspect: identity
 ---
 
@@ -200,8 +199,6 @@ An L5 packaged-build smoke MUST prove that a server-mode boot on a clean Data Ro
 
 ## Implementation Gaps
 
-- Sign-in MUST use per-source and per-account limiting with backoff, and forwarded headers count only after an administrator sets the trusted proxy hop count - On main, the stock library limiter applies to address and path, forwarded-header handling stays at the library default, and no sign-in failure event is written - #736
-- A revoked-credential signal MUST require the presented secret to verify against a stored revoked, expired or rotated Token - On main, that signal has no producer - #737
 - Browser OAuth uses the authorization code grant with PKCE S256 - On main, that grant is not served - #667
 - The one-way migration retires only an unreferenced revoked `workspace-readwrite` row - On main, the fresh Core baseline rejects predecessor ledger identities and that migration is not present - #759
 - Doctor reports the credential-storage backend in use without revealing credential material - Doctor reports the selection source but not the storage backend - #759

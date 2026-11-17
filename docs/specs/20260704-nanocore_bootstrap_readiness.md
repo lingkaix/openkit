@@ -133,6 +133,8 @@ The L5 packaged-build check completes phase 8, binds each configured listener on
 
 The L6 case restarts mid-work with a locked vault. NanoCore boots in the degraded state. Vault-dependent work fails with the typed vault error. Unlock restores readiness. The audit trail explains that sequence.
 
+Boot loads the persistent agent-work pause before scheduling. New execution and delayed dispatch recheck the installed setting; existing execution retains its admission.
+
 ## Implementation
 
 - `apps/nanocore/src/bootstrap/`
@@ -145,7 +147,6 @@ The L6 case restarts mid-work with a locked vault. NanoCore boots in the degrade
 - The control-store engine replaces the boot-only execution classifier - On main, phase 8 classification and the maintenance path still run beside the native execution pieces - #755
 - A later failed derived-index rebuild does not erase earlier completed rebuild observations - On main, a degraded or failed outcome replaces that subsystem's reason list and can omit an earlier informational rebuild - #755
 - A boot that fails before storage is writable is reconstructed on the next successful boot - On main, audit is best effort after Core storage is writable, and the next boot does not reconstruct that earlier failure - #755
-- Boot reads the persisted pause-agent-work setting before scheduling - On main, boot does not read that setting - #738
 
 ## Decisions
 

@@ -1,9 +1,7 @@
 ---
 status: Draft
-implementation: Not Started
+implementation: Implemented
 kind: boundary
-date: "2026-10-20"
-updated: "2026-10-21"
 aspect: architecture
 ---
 # Compute Neutrality Target
@@ -99,7 +97,7 @@ Use the existing owner tests and fake backend. Add no test harness. Real remote 
 
 ## Implementation Gaps
 
-- Executor replacement preserves the external native session, and withheld native transcript fails closed - those two proofs are on unmerged origin/cn-fake and are not on main - #750
+None.
 
 ## Decisions
 

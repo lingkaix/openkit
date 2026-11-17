@@ -130,7 +130,6 @@ This section owns the explicit completed-Workspace-work reflection composition:
 
 ## Implementation Gaps
 
-- Memory written from an influenced context retains the external-influence bit, and reading it marks the receiving context - Reader reservation landed (optional boolean `externallyInfluenced`), but Memory revision producers and read propagation are not implemented - #740
 - User Memory capture of selected completed conversation Items and recent private Thread ranges - User Source intake admits literal documents (`kind: document`) and User maintenance records an empty historical `sourceRange` rather than extracting recent private conversation Items - #259
 - Administrator inspection of another User's Memory Sources - Public administrator Source inspection across Users is not joined - #792
 - Explicit forget suppression-removal operation and User Memory / Server Knowledge export and import - Not implemented - #564, #385

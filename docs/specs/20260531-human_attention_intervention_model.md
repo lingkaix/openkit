@@ -463,6 +463,7 @@ Web owns product rendering:
 
 - A budget threshold recomputes one request-scoped constraint for the next Coordinator decision - On main, no attention producer builds that path - #784
 - A visible secret question states the future Vault reason and stays disabled - On main, the row uses a shorter disabled reason - #733
+- Action Center row kinds and members are exactly those a producer emits - On main, the schemas still declare kinds and members that no producer emits - #795
 
 ## Decisions
 

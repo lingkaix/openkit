@@ -140,6 +140,8 @@ See [Storage](../core/storage.md#retention-classes) and [Agent Data Retention An
 - **L3 process-level attribution, interruption, and producer proof**: verify a public `turn.interrupt` by a Workspace member distinct from the Turn initiator (proving recorded interrupter `actor`, preserved `Turn.triggerActor`, replay idempotency, and private-Thread audience isolation) and representative `pi-ai` LLM and stub-MCP tool calls producing linked `CapabilityCall`, `UsageRecord`, and `AuditEvent` rows.
 - **L6 story acceptance**: verify one Worker task that uses both LLM inference and one MCP tool and exposes attributable usage for both under the same Workspace.
 
+Native Audit producers record semantic Server configuration changes, channel pairing bind/unbind, verified presentation of a revoked, expired or rotated Token, and bounded sign-in source/account threshold crossings. A Token incident requires the presented secret to verify against its native retained row. A post-file-publication Audit failure leaves an explicit unknown outcome for inspection.
+
 ## Implementation
 
 - `packages/protocol/src/models/`
@@ -150,8 +152,6 @@ See [Storage](../core/storage.md#retention-classes) and [Agent Data Retention An
 
 ## Implementation Gaps
 
-- `server.config.update`, `channel.pairing.bind`, `channel.pairing.unbind`, and `auth.revoked-credential-presented` have producers - On main, these four events have no producer - #737
-- Sign-in failure thresholds produce bounded Audit signals - On main, only the bearer/source crossing produces `auth.failure-threshold`; no sign-in source/account event is written - #736
 - Five scheduler recovery boundaries (recovery armed, exact adoption, recovery timeout, cleanup CAS fence, and terminal capacity release) emit Core `AuditEvent` rows - On main, the scheduler restart-recovery, execution-attempt, and NanoHost attempt-recovery owners emit none of these five events - #768
 - Execution-substrate epoch invalidation and capacity-restoring readiness emit `runtime.epoch.invalidate` and `runtime.epoch.ready` Core `AuditEvent` rows - On main, the two recorders in `apps/nanocore/src/runtime/nanohost-epoch-audit.ts` have no production callers - #741
 - Automatic `EvidenceBundle` promotion and `RuntimeEvidence` normalization cover richer OpenShell launch, capability-negotiation, policy-apply, provider-attach, worker-shim startup, heartbeat/control-relay, file-transfer, Artifact/workspace-change collection, and backend-error summaries - On main, `RuntimeEvidence` producers cover terminal worker checkpoints, materialization readiness, transcript collection, and backend cleanup teardown only - #410

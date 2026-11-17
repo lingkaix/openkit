@@ -145,7 +145,7 @@ L1 and L2 cover the predicates in Exact Reconnect Contract, Later-Turn Reuse And
 
 ## Implementation Gaps
 
-- The Sandbox compatibility key includes the declared Harness set, the Integration version, and the sensitivity class, and a missing required input rejects co-residency - On main, the key lacks those members and does not refuse when they are absent - #735
+- The Sandbox compatibility key includes the complete declared Harness set, Integration version, trust class and sensitivity class - Current packages cannot prove those inputs, so the partial digest confines placement to one Thread and the native binding owner requires proved closure before another AgentSession binds; general co-residency remains unavailable - #735
 - A declared Harness set is admitted before shared placement - On main, that admission is not established - #641
 - Real-runner, restart, interrupt, cleanup, and shared-Sandbox fault acceptance is proved - On main, that physical qualification is not established - #156
 

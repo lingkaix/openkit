@@ -156,7 +156,7 @@ Rules:
 
 ## Implementation Gaps
 
-- Dynamic in-place replacement of an already attached static `sandbox-provider` (`backend-provider`) credential, Gateway-delegated generic HTTP bearer refresh (`oauth2_refresh_token`, `oauth2_client_credentials`, `google_service_account_jwt`), refresh-status/log collection, and real-OpenShell L6 qualification - Initial static Provider delivery and effective-policy verification are wired, while static in-place `replace` refuses and delegated refresh adapters and collection remain dormant - #604
+- Static Provider in-place replacement, delegated refresh runtime projection/collection and real-OpenShell qualification - Native writer ownership and human-authored delegation authority are implemented, but static `replace` refuses, `oauth2_refresh_token` remains blocked without whole-family recovery, and production refresh projection/collection and real-OpenShell qualification remain incomplete - #604
 - Fine-grained NGAC `PermissionDecision` row compilation for every individual OpenShell policy fragment - Launch binds to NanoCore policy snapshot lineage and durable gateway/vault/worker `PermissionDecision` rows, without a separate decision row per derived policy fragment - #373
 - Explicit OpenShell release identity field on each native static Provider protection proof object - Native proof records mapping version, `profile_digest`, and effective-policy digest while the OpenShell release pin is enforced at the runtime boundary (`apps/nanohost/openshell/release.json`) - #809
 

@@ -311,6 +311,8 @@ observability.captureCoverage is the required immutable projection of the owning
 Pure pre-admission compatibility planning may use a non-dispatchable metadata projection that omits the not-yet-admitted capture binding. It must not pass as a complete dispatchable AEP, persist a historical binding, or start governed work. Actual AEP construction requires the durable Turn binding. Per-Turn capture values do not partition the existing SessionCompatibilityKey.
 
 
+Capture Coverage resolves installed Server, Workspace and Task overrides with a Server default of on. Admission fixes the selected pair in the package; later reload, retry and restart preserve it.
+
 ## Implementation
 
 - `apps/nanocore/src/runtime/`
@@ -321,9 +323,8 @@ Pure pre-admission compatibility planning may use a non-dispatchable metadata pr
 
 ## Implementation Gaps
 
-- Effective capture defaults to on, and Workspace and Task scopes can override it - the producer returns server scope only and falls back to off; an admitted pair and an explicit off stay valid; the reader reserves segmentation and `config.model` and no producer writes them - #732
 - The package projects the logical model's resolved context-management policy - version 4 has no such field - #413
-- Default App activation of harness Logins, Codex host-managed replacement, on-demand helpers, generic HTTP bearer attachment, and delegated refresh - declaration admission and dormant primitives exist; those paths are not activated - #604
+- Production harness Login activation, Codex host-managed replacement, generic HTTP bearer delegated refresh and real-native qualification - Writer transitions and refresh-delegation Policy authority are implemented; the default App Login handler and delegated refresh runtime projection/collection remain inactive, and real-native qualification is incomplete - #604
 - Plugin membership expands before setup resolution - authored setup has no consumed plugins field that performs that expansion - #487
 - Verified derived native component materialization uses the existing inventory and adapter path - the package records Skill inventory and an effective catalog digest, and that derived materialization is not verified - #487
 - The MCP record stores explicit component-version, binding-revision, and original Plugin-member lineage - the record stores the effective catalog digest only - #780

@@ -33,7 +33,7 @@ Link relevant Core and accepted specifications. Preserve accepted product decisi
 
 At closeout, record the actual implementation, commits, exact verification, external effects, cleanup, unresolved findings, and residual risk. Every unresolved finding appears unchecked in the findings `Follow-up Index`; later closure checks that line, changes the item status, retains the append-only `Next action` history, and appends the closing verdict and closure evidence together. Promote durable decisions to their owner before anything depends on them.
 
-Change records may be pruned after no current owner or active plan depends on them. Historical deletion must not make current intent or behavior ambiguous.
+A record is deleted at closeout under the evidence rule in `docs/documentation-model.md`, after each open or deferred finding is a GitHub issue. Git keeps its text.
 
 ## Local Rules
 

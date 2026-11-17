@@ -2,7 +2,6 @@
 status: Accepted
 implementation: Partial
 kind: mechanism
-date: "2026-11-09"
 aspect: security
 ---
 
@@ -424,6 +423,8 @@ That proof includes a two-Turn send after compaction.
 The proof is not evidence that the production app supplies the route.
 Before enabling A1, qualify injected calls across distinct healthy runs, repeated incidents and cumulative caps, observation-to-active approval, and review deadlines. Flood sensors and Policy/evidence/notice paths while proving administrator authentication, revocation, recovery and critical-alarm progress.
 
+Sign-in uses independent source and account limits and bounded failure-threshold Audit events. Forwarded addresses are trusted only after the administrator configures the proxy hop count. Server configuration changes, channel pairing changes and verified presentation of an unusable Token publish their native Audit events. The persistent `security.pauseAgentWork` setting is loaded before scheduling and rechecked at new admission and dispatch; already admitted work continues. Discord automation notices, inspection and refused answers use the fixed deadline text and App link without disclosing the question. Knowledge and Memory publication and governed retrieval propagate the trusted external-influence bit.
+
 ## Implementation
 
 <a id="current-implementation-projection"></a>
@@ -437,14 +438,9 @@ Before enabling A1, qualify injected calls across distinct healthy runs, repeate
 
 ## Implementation Gaps
 
-- Sign-in limiting is per source and per account, and forwarded headers count only after an administrator sets the trusted proxy hop count - On main, the stock library limiter applies to address and path, forwarded-header handling stays at the library default, and no sign-in failure event is written - #736
-- `server.config.update`, `channel.pairing.bind`, `channel.pairing.unbind`, and `auth.revoked-credential-presented` have producers - On main, these four events have no producer - #737
-- The persistent "pause agent work" setting - On main, the setting does not exist - #738
-- Discord automation delivery, inspect, and answer use fixed deadline-and-App-link text - On main, Discord shows the question text - #739
-- Knowledge and Memory written from an influenced context carry the external-influence bit, and governed retrieval sets it - On main, the optional Git revision-metadata bit is admitted and preserved, but automatic recording from an influenced context and governed-retrieval propagation remain unimplemented - #740
 - A K copy unanswered after 12 hours gets one reminder - On main, no emitter creates that reminder - #760
 - At most 8 open security requests per Thread, and overflow becomes one request - On main, that sublimit and overflow are not established - #760
-- Bearer failures notify immediately when the same source repeats the next day - On main, the 100-per-source counter does not establish that next-day detector - #760
+- R4 bearer-failure detection: 100 failures per source in 15 minutes notify daily, and immediately when the same source repeats the next day - On main, no R4 rule exists, and the bearer middleware only produces the `auth.failure-threshold` event - #760
 - On enable, the view suggests the first three feed kinds - On main, no enable view suggests those kinds - #760
 - A route is offered only after the eval floor, and the gate adds at most 1 second at p95 - On main, the production app supplies no security-review decision route and no qualification record - #760
 

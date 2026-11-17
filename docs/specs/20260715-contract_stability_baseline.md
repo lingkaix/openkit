@@ -189,7 +189,6 @@ Boundary tests must prevent private fields from leaking into protocol, App API, 
 
 - Multi-user Web browser acceptance - the remaining Web work sits outside the current projection - #160
 - While-running Workspace restore and MOVE - offline backup, restore, and MOVE exist; while-running recovery does not - #418
-- Workspace backup reserve - the accepted reserve remains open - #731
 
 ## Decisions
 

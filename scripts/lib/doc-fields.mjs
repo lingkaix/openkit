@@ -22,11 +22,8 @@ import { z } from 'zod';
 const FRONTMATTER_DELIMITER = '---';
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
 
-// `status` is the one field whose canonical set varies by type. Specifications
-// use all six lifecycle values; `docs/documentation-model.md` additionally binds
-// each value to the root or a matching subdirectory, and that placement rule
-// stays with `scripts/validate-spec-lifecycle.mjs`, which owns spec location.
-const SPEC_STATUS_VALUES = ['Draft', 'Accepted', 'Deprecated', 'Superseded', 'Retired', 'Rejected'];
+// Specifications carry only current authority; ended contracts live in Git.
+const SPEC_STATUS_VALUES = ['Draft', 'Accepted'];
 const CHANGE_STATUS_VALUES = [
   'planned',
   'in-progress',
@@ -38,14 +35,7 @@ const CHANGE_STATUS_VALUES = [
 const CHANGE_TYPE_VALUES = ['change-plan', 'pr-summary', 'standalone-change', 'release-summary'];
 const SPEC_KIND_VALUES = ['concept', 'boundary', 'mechanism', 'topology', 'process'];
 const DECISION_STATUS_VALUES = ['Accepted', 'Superseded'];
-const IMPLEMENTATION_VALUES = [
-  'Not Started',
-  'In Progress',
-  'Partial',
-  'Implemented',
-  'Diverged',
-  'N/A',
-];
+const IMPLEMENTATION_VALUES = ['Not Started', 'Partial', 'Implemented'];
 
 const SPEC_ASPECT_VALUES = [
   'agent-session',
@@ -98,8 +88,7 @@ const optionalStatusFields = z.strictObject({
 /**
  * Per-type field schemas, exported so a consumer can compose rather than
  * re-derive the contract. Keys are the documentation types of
- * `scripts/validate-doc-model.mjs`; a specification in a terminal lifecycle
- * directory uses `spec-terminal`.
+ * `scripts/validate-doc-model.mjs`.
  *
  * @type {Record<string, import('zod').ZodObject>}
  */
@@ -115,7 +104,7 @@ export const fieldSchemas = {
   }),
   'change-findings': optionalStatusFields,
   cookbook: optionalStatusFields,
-  core: acceptedStatusFields,
+  core: z.strictObject({ date: dateText.optional(), status: acceptedStatusValue }),
   // `scripts/validate-doc-model.mjs` checks that only a Superseded record names `superseded-by`.
   decision: z.strictObject({
     date: dateText,
@@ -134,23 +123,9 @@ export const fieldSchemas = {
   snapshot: optionalStatusFields,
   spec: z.strictObject({
     aspect: z.string().pipe(z.enum(SPEC_ASPECT_VALUES)),
-    date: dateText.optional(),
     implementation: implementationValue,
     kind: specKindValue,
     status: specStatusValue,
-    updated: dateText.optional(),
-  }),
-  'spec-terminal': z.strictObject({
-    aspect: z.string().pipe(z.enum(SPEC_ASPECT_VALUES)).optional(),
-    'current-guidance': nonEmptyText,
-    date: dateText.optional(),
-    'decision-evidence': nonEmptyText,
-    implementation: implementationValue,
-    // Archived specifications are frozen before kinds existed; a Deprecated one in the root keeps its kind.
-    kind: specKindValue.optional(),
-    status: specStatusValue,
-    'status-changed': dateText,
-    updated: dateText.optional(),
   }),
 };
 

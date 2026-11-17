@@ -308,7 +308,7 @@ Permit user-supplied native harness configuration within existing policy, includ
 ## Implementation Gaps
 
 - User-selected named Workspace-shared Sandboxes, administrator templates, shared-source and legacy-private admission, and equal-member operations are the accepted resource contract - Those operations are not implemented - #122
-- The Sandbox compatibility key includes the declared Harness set, Integration version, sensitivity class, and the fail-closed refusal - The current key lacks those inputs - #735
+- The Sandbox compatibility key includes the complete declared Harness set, Integration version, trust class and sensitivity class - Current packages cannot prove those inputs, so the partial digest confines placement to one Thread and the native binding owner requires proved closure before another AgentSession binds; general co-residency remains unavailable - #735
 
 ## Decisions
 

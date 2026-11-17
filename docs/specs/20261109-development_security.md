@@ -2,7 +2,6 @@
 status: Accepted
 implementation: Partial
 kind: process
-date: "2026-11-09"
 aspect: security
 ---
 
@@ -201,7 +200,6 @@ Security tools are supply-chain targets too. The March 2026 Trivy compromise ill
 
 ## Implementation Gaps
 
-- Exposure owner and switch coverage runs in `check:repo` and on pull requests - On main, that coverage does not run in `check:repo` or on pull requests - #747
 - After v0.1.0, App update `prepare` verifies the target digest attestation - On main, `prepare` does not verify an attestation - #690
 
 ## Decisions

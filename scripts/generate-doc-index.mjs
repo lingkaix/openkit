@@ -13,7 +13,6 @@ const SECTIONS = [
   { title: 'Intent', types: ['intent'] },
   { title: 'Core Model', types: ['core'] },
   { title: 'Specifications', types: ['spec'] },
-  { title: 'Terminal Specifications', types: ['spec-terminal'] },
   {
     pointer: 'Change plans are not indexed. List `docs/changes/` to see them.',
     title: 'Change Plans',
@@ -120,14 +119,10 @@ function formatEntry(repoRoot, entry) {
 
   const { bodyOffset, fields } = metadata;
 
-  if (entry.type === 'spec' || entry.type === 'spec-terminal') {
+  if (entry.type === 'spec') {
     const status = fields.status ?? 'unknown';
     const implementation = fields.implementation;
     const state = implementation ? `${status}, ${implementation}` : status;
-
-    if (entry.type === 'spec-terminal') {
-      return `- \`${entry.path}\` — ${status}`;
-    }
 
     return `- \`${entry.path}\` — ${state} — ${summarize(content, bodyOffset, true)}`;
   }
@@ -205,20 +200,25 @@ function stripMarkdown(value) {
 }
 
 /**
- * Truncates a summary to one sentence within the length budget.
+ * Truncates a summary to one sentence within the length budget, dropping a
+ * leading "This specification" framing and cutting at a word boundary.
  *
  * @param {string} value Plain summary text.
  * @returns {string} Bounded summary.
  */
 function truncate(value) {
-  const sentenceEnd = value.indexOf('. ');
-  const sentence = sentenceEnd === -1 ? value : value.slice(0, sentenceEnd + 1);
+  const unframed = value.replace(/^This (?:specification|document) (?=owns\b)/u, '');
+  const text = unframed.charAt(0).toUpperCase() + unframed.slice(1);
+  const sentenceEnd = text.indexOf('. ');
+  const sentence = sentenceEnd === -1 ? text : text.slice(0, sentenceEnd + 1);
 
   if (sentence.length <= SUMMARY_LIMIT) {
     return sentence;
   }
 
-  return `${sentence.slice(0, SUMMARY_LIMIT - 1).trimEnd()}…`;
+  const cut = sentence.slice(0, SUMMARY_LIMIT - 1);
+  const wordEnd = cut.lastIndexOf(' ');
+  return `${(wordEnd > 0 ? cut.slice(0, wordEnd) : cut).trimEnd()}…`;
 }
 
 /**

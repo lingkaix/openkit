@@ -1,6 +1,5 @@
 ---
 status: Accepted
-updated: 2026-10-30
 ---
 # Storage Model
 

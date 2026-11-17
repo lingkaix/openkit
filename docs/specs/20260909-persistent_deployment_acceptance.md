@@ -2,8 +2,6 @@
 status: Accepted
 implementation: Implemented
 kind: process
-date: "2026-09-09"
-updated: "2026-10-14"
 aspect: process
 ---
 # Persistent Deployment Acceptance

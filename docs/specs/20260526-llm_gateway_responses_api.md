@@ -6,7 +6,7 @@ aspect: mediation
 ---
 # LLM Gateway Responses API
 
-Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
+This document owns public LLM Gateway admission, logical-model routing, execution, retry boundaries, and result projection. Agent-facing IDs and model spellings follow [Operation Definition](20261002-operation_definition.md#names), including its compatibility details and limits. This document owns admission and execution, not a second naming rule.
 
 ## Scope
 

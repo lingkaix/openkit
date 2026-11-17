@@ -339,7 +339,7 @@ Before the first workflow substitution, run `node scripts/release-tests.mjs --in
 
 [The ruling](../decisions/20261014-release_cadence.md#reason) links the measured CI runs. Retain actual stage timestamps on the first eligible release. Concurrency preserves sixteen submitted Turns per release and changes no Provider-consumption budget.
 
-Issue #193 is closed as superseded by the post-tag policy. Issues #240 and #225 are required before the first stable release. Follow the release owner's [corrected priorities](../specs/20260829-release_management.md#deferred--future-work); this builder performs no GitHub issue mutation.
+Issue #193 is closed as superseded by the post-tag policy. Issues #240 and #225 are required before the first stable release. Follow the release owner's [corrected priorities](../specs/20260829-release_management.md#implementation-gaps); this builder performs no GitHub issue mutation.
 
 ### Cadence Commands
 

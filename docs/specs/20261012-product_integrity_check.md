@@ -2,7 +2,6 @@
 status: Accepted
 implementation: Not Started
 kind: concept
-date: "2026-10-12"
 aspect: contract-evolution
 ---
 

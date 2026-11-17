@@ -2,7 +2,6 @@
 status: Accepted
 kind: topology
 implementation: Partial
-date: 2026-11-16
 aspect: runtime-model
 ---
 # NanoHost OpenShell Gateway
@@ -83,7 +82,7 @@ The containment rules below enforce **security and adjudication isolation** betw
 - **Gateway, credential, and host-surface confinement**:
   - Gateway authentication material is epoch-local and discarded with the epoch generation, never entering Core, AEPs, Sandbox Integration, Workers, or cross-class credential use.
   - The stock Gateway, container-runtime sockets, Supervisor interfaces, cgroups, host roots, process IDs, and OpenShell credentials remain private to the execution host (`RelayStream` is the sole Sandbox-to-Gateway route; Sandbox Integration never authenticates to the Gateway, calls `ForwardTcp`, receives Gateway credentials, opens direct NanoCore connections, or uses operator forwards or host-network exceptions, and `RelayStream` failure is transport failure rather than proof of Turn cancellation, worker termination, Sandbox deletion, or sibling security isolation).
-  - The raw `nanohost-transport` Token stays in its one-time issuance path and execution-host sink (`0600` file mode and service/root ownership outside the Epoch; see `#725` in Implementation Gaps) over server-authenticated TLS or exact same-host loopback HTTP/2 ([NanoHost Transport](20261116-nanohost_transport.md)), and NanoHost, worker-control, inference, capability, OpenShell, provider, and Vault credentials remain distinctly bound and fail closed at their exact boundaries.
+  - The raw `nanohost-transport` Token stays in its one-time issuance path and execution-host sink (`0600` file mode and service/root ownership outside the Epoch; slot opening verifies regular-file service ownership and refuses symbolic links before reading) over server-authenticated TLS or exact same-host loopback HTTP/2 ([NanoHost Transport](20261116-nanohost_transport.md)), and NanoHost, worker-control, inference, capability, OpenShell, provider, and Vault credentials remain distinctly bound and fail closed at their exact boundaries.
   - NanoHost accepts no NanoCore-supplied shell command, unit name, root path, port, socket, binary path, environment, working directory, timeout, SSH field, or arbitrary OpenShell RPC selector: build definitions are consumed only as backend build data under backend containment (with no host mount, host network namespace, or Token/Gateway/socket/store-write access, and `{docker.io:443, ghcr.io:443}` OCI bootstrap kept separate from exact AEP `{host, port}` `RUN` grants), the Image Store remains inert and private, Epoch Invalidation Reports are secret-scanned and redacted, and normal execution exposes no SSH surface outside the pinned opaque `ExecSandboxInteractive` single-file helper relay.
 
 ## Stock Qualification
@@ -135,7 +134,6 @@ The containment rules below enforce **security and adjudication isolation** betw
 
 ## Implementation Gaps
 
-- Execution-host credential slot selection verifies service/root ownership and refuses symbolic links at the host-to-Sandbox containment boundary before reading secret and companion files - On main (`apps/nanohost/src/credential_slots.rs`), slot selection checks `0600` file mode and companion identity/deployment but follows symbolic links and does not verify file UID ownership - #725
 - Real-stock saturation and candidate upgrade qualification runs on a live execution host with the four direction-specific byte boundaries and `>= 60 s` continuous saturating inference load - On main, the fast deterministic foundation checks, `transport-assumptions.json`, and opt-in `openshell-upgrade-peer.mjs` harness exist, while fresh live-host qualification runs remain open - #156, #120
 
 ## Decisions

@@ -180,7 +180,6 @@ Knowledge and Memory revisions MUST encode the conservative external-influence b
 
 ## Implementation Gaps
 
-- Knowledge and Memory revisions carry the external-influence bit, and governed retrieval sets the reading context's bit - Reader reservation landed on `KnowledgeNotebookCommitMetadataSchema` (optional boolean `externallyInfluenced`), but revision producers and retrieval sticky-bit propagation are not implemented - #740
 - Full historical trace and archive disclosure closure across exports - Full historical trace and archive disclosure closure is not implemented - #266
 - Incompatible imported Notebook schema conversion - Rich imported Notebook schema conversion is not implemented - #404
 

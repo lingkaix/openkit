@@ -189,7 +189,7 @@ Unreadable, unsupported, or contradictory Workspace SQLite authority, missing re
 - Universal execution engine, eligible dispatch index, and server reservation table convergence - `execution-reconciler.ts` runs `core-idle-cleanup/v1` only; global scheduler queues, attempts, checkpoints, backend sessions, worker-control records, Pending scans, recurring scanners, boot recovery classifiers, and independent timeout/deadline stacks are not yet replaced by universal journal dispatch, `execution_resource_reservations`, and single-deadline propagation - #535, #767
 - Ordinary `100 ms` progress eligibility coalescer and full 8-arm load/ablation qualification - The native publication path has no `100 ms` progress eligibility coalescer, Main-stall attribution residuals remain open, and full 8-arm load, OTLP round-trip, and 27-ingress ablation qualification are incomplete - #703, #767
 - Journal-derived lifecycle stage duration sampling - The stage-duration histogram samples process-local wrappers rather than each ended journal step - #742
-- Default-on work-data capture and continuous `SOURCE-RETENTION` producer coverage - Full model I/O and native transcript capture remain default-off and continuous producer retention/cursor coverage is incomplete - #732
+- Continuous `SOURCE-RETENTION` producer coverage - Default-on capture, scoped overrides, Thread segmentation and configured-model observations are implemented, but continuous producer retention and restart cursor coverage remain incomplete - #357
 
 ## Decisions
 

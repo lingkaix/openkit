@@ -208,7 +208,6 @@ Future independent agent identities enter through the same invocation boundary. 
 
 ## Implementation Gaps
 
-- Exposure-switch coverage gate - The exposure-owner and route-group switch coverage suite in `apps/nanocore/src/policy/operation-exposure-coverage.test.ts` is not executed by `check:repo` in CI - #747
 - General per-operation Policy blocking - Invocation enforces primary operation admission and Server route-group switches, but user-configurable per-operation Policy blocking is not implemented - #153
 
 ## Decisions

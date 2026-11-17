@@ -107,7 +107,6 @@ Each Core, User, Workspace, and Light App database independently owns its Drizzl
 ## Implementation Gaps
 
 - Off-Main `DatabaseOwner` writer retirement, bounded reader pooling, and physical handle/sidecar census - Remaining unmoved Main SQLite writers, global bounded reader pooling, and the exhaustive physical-writer, Light App cold-read, and handle-retirement census are incomplete - #616, #715
-- Unified scope-local immutable byte adoption and configured file-reserve coverage - Common scope-local blob adoption across remaining file families and unified configured file-reserve enforcement across all staging, extraction, derivative, and recovery paths are incomplete - #275, #731
 - Quarantined Worker output producer and bounded retention expiry - `workspace_quarantine_records` schema and decoders exist, but no production writer or `restricted-evidence` retention-window expiry is implemented - #766
 - Release-scoped migration and storage-layout conformance qualification - Post-`v0.1.0` upgrade-corpus qualification and full end-to-end storage layout, replay, and isolation conformance qualification remain open - #619, #766
 

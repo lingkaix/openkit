@@ -200,8 +200,6 @@ Chosen numeric inputs below are calibratable defaults ([Capability Stream Ceilin
 
 ## Implementation Gaps
 
-- Execution-host credential slot selection verifies service/root ownership and refuses symbolic links before reading secret and companion files - Slot loader checks `0600` file mode and companion identity/deployment but follows symbolic links and does not check file UID ownership - #725
-- Dedicated NanoHost HTTP/2 listener admits only `/api/nanohost/transport/*` and the three nested-session route-family prefixes (`/worker-control/*`, `/inference/*`, `/capabilities/*`) - Listener also admits direct `/api/worker-capabilities/*` requests outside the declared family dispatch - #734
 - Operations requiring an authenticated transport deadline header verify that it matches or narrows the stored operation allowance and refuse missing or extended values - Authenticated native parent-deadline header carriage is not implemented on the NanoHost transport wire - #793
 - Transport qualification against the shared-Epoch premise - The required durable Epoch-invalidation and fence-to-ready Audit producer boundaries are not wired into production - #741
 - Live real-stock saturation qualification of the transport envelope and measurement-gated second worker-control byte stream - Enforced stream/window constants and opt-in qualification peer exist, but fresh candidate real-stock saturation qualification is not complete on `main` - #156

@@ -3,7 +3,7 @@ status: Accepted
 ---
 # Getting Started With OpenKit
 
-This procedure requires an authorized host, a supported container runtime for App-image deployment, persistent storage and a selected release or source revision. NanoHost additionally needs the supported OpenShell runtime. Confirm OS, architecture, available disk and current service bindings before installation. The empirical small-team starting shape is the recommendation in [Deployment](../../../docs/deployment.md). It is not an admission limit. Image builds and caches can need more.
+This procedure requires an authorized host, a supported container runtime for App-image deployment, persistent storage and a selected release or source revision. NanoHost additionally needs the supported OpenShell runtime. Confirm OS, architecture, available disk and current service bindings before installation. The empirical small-team starting shape is the recommendation in [Deployment](https://github.com/lingkaix/openkit/blob/main/docs/deployment.md). It is not an admission limit. Image builds and caches can need more.
 
 ## Choose The Installation
 
