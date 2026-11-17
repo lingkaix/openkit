@@ -154,6 +154,33 @@ Authority-bearing fields include any field that changes filesystem read or write
 - Readers advertise the feature set they support from the same registry; rejection diagnostics MUST name the unsupported identifier.
 - Feature identifiers are never removed after an externally supported release; a withdrawn feature stays listed with `withdrawn` status so older records produce a meaningful diagnostic.
 
+The table mirrors `REQUIRED_FEATURE_REGISTRY` and the package test keeps them aligned.
+
+| Feature | Status | Description |
+| --- | --- | --- |
+| `runtime.evidence.v1` | active | Runtime evidence retains execution outcomes, backend summaries, and evidence bundle linkage. |
+| `worker.runtime-provenance.v1` | active | Worker runtime provenance links admitted Agent Environment Packages to retained transcript evidence. |
+| `worker.harness-login.v1` | active | Workspace-bound Codex Login requirements and harness Login execution require explicit reader support. |
+| `evidence.bundle.v1` | active | Evidence bundles retain exact lineage, content digests, retention, sensitivity, and import disposition. |
+| `openkit.workspace-resource-policy.v1` | active | Workspace configuration carries managed resource boundaries and exact associations and prohibitions across verified export. Ordinary portable Workspace import is absent and does not carry them. |
+| `openkit.memory-suppression.v1` | active | User Memory suppression reserves forgotten page identities and requires current and historical disclosure suppression. |
+| `agent.resource-catalog.v1` | active | Workspace export includes the Skill, MCP, and Agent Plugin portable catalog projection. |
+| `audit.retention.legal-hold` | active | Audit retention is controlled by a legal-hold policy. |
+| `openkit.work-observations.v1` | active | Turn-scoped work observations, restricted content publication and exact portable reference closure. |
+| `openkit.server-threads.v1` | active | Thread, Turn and Item history has an immutable Server owner without a Workspace anchor. |
+| `openkit.thread-entry.v1` | active | Thread records preserve the immutable server-authored conversation or administration entry path. |
+| `openkit.knowledge-git-notebook.v1` | active | Notebook Git revisions own page content, exact-base publication and retained history. |
+| `openkit.knowledge-owner-scope.v1` | active | Knowledge records retain exact User, Workspace or Server ownership and source restrictions. |
+| `openkit.thread-visibility.v1` | active | Thread records require explicit private or Workspace audience and exact private ownership. |
+| `session.concurrent-turns` | active | A Harness may process active Turns concurrently only across distinct single-flight AgentSessions and Threads. |
+| `vault.injection.query-param` | active | Vault injection may place secret references into query parameters. |
+| `workspace.generative-kernel.v1` | active | Workspace export includes Light App identity, admitted definitions, native records, and app-local audit. |
+| `workspace.generative-ui.native-v1` | active | Workspace export includes immutable native Generative UI presentations and their Item references. |
+| `workspace.recurring-triggers.v1` | active | Workspace export includes inert recurring definitions and exact occurrence and expired-range history. |
+| `workspace.recurring-history.v1` | active | Workspace deletion closures retain the inert recurring definitions and exact occurrence and expired-range history. |
+| `workspace.mount.fuse` | active | Workspace input requires a FUSE-style mount implementation. |
+| `workspace.writeback.external` | active | Workspace writes are committed through an external writeback mechanism. |
+
 `requiredFeatures` is the preferred gate. `minCoreVersion` is a discouraged escape hatch: writers SHOULD express requirements as features and MAY use `minCoreVersion` only when a requirement genuinely cannot be named as a feature. Readers MUST enforce `minCoreVersion` when present; no current common-envelope writer admits a version-coupled requirement, and `RecordEnvelopeSchema` (`packages/config-schema/src/schema-evolution.ts`) fails closed by refusing any present `minCoreVersion` value rather than ignoring it as an optional descriptive key.
 
 The `worker.harness-login.v1` marker gates the closed Workspace-bound `runtime-token`/`codex-login` requirement and the corresponding current-version harness Login semantics. Retained setup evidence preserves only its visibility discriminator, requirement identity, grant identity, and fixed consumer; it carries no credential material or live declaration identifier. Unknown captured feature names remain evidence, not current launch support. Registering this marker neither enables a Worker capability nor certifies native activation.

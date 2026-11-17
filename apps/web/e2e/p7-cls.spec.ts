@@ -2,6 +2,27 @@ import { createCoreClient } from '@openkit/core-client';
 import { expect, test } from '@playwright/test';
 import { startIsolatedWebStack } from './_lib/servers.js';
 
+type Rect = { x: number; y: number; width: number; height: number };
+type ShiftSource = { node: string; previousRect: Rect; currentRect: Rect };
+type ShiftRecord = { value: number; timeMs: number; fonts: string; sources: ShiftSource[] };
+
+function formatRect(rect: Rect): string {
+  return `${rect.x},${rect.y} ${rect.width}x${rect.height}`;
+}
+
+function formatShifts(score: number, turnMarkMs: number, shifts: ShiftRecord[]): string {
+  const lines = [`cls=${score} shifts=${shifts.length} turnMarkMs=${turnMarkMs}`];
+  for (const shift of shifts) {
+    lines.push(`t=${shift.timeMs}ms value=${shift.value} fonts=${shift.fonts}`);
+    for (const source of shift.sources) {
+      lines.push(
+        `  ${source.node} previous=${formatRect(source.previousRect)} current=${formatRect(source.currentRect)}`
+      );
+    }
+  }
+  return lines.join('\n');
+}
+
 test('phone retains a stable layout through a simulator run', async ({ page }) => {
   test.setTimeout(180_000);
   const stack = await startIsolatedWebStack({ mode: 'local', useSimulator: true });
@@ -17,18 +38,75 @@ test('phone retains a stable layout through a simulator run', async ({ page }) =
     });
     const selector = { workspaceId, threadId: thread.id };
     await page.setViewportSize({ width: 360, height: 800 });
+    const cpuRate = Number(process.env.P7_CLS_CPU_RATE);
+    if (Number.isFinite(cpuRate) && cpuRate > 1) {
+      const cdp = await page.context().newCDPSession(page);
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: cpuRate });
+    }
     await page.addInitScript(() => {
-      const shifts: number[] = [];
+      const shifts: ShiftRecord[] = [];
       Object.assign(window, { p7LayoutShifts: shifts });
+      const rectOf = (rect: DOMRectReadOnly): Rect => ({
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
+      const describe = (node: Node | undefined) => {
+        if (!node) return '(no node)';
+        if (node.nodeType !== Node.ELEMENT_NODE) return node.nodeName;
+        const element = node as Element;
+        const id = element.id ? `#${element.id}` : '';
+        const className =
+          typeof element.className === 'string'
+            ? element.className
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean)
+                .slice(0, 4)
+                .map((name) => `.${name}`)
+                .join('')
+            : '';
+        const role = element.getAttribute('role');
+        const name = element.getAttribute('aria-label');
+        const testId = element.getAttribute('data-testid');
+        return [
+          element.tagName.toLowerCase(),
+          id,
+          className,
+          role ? `[role=${role}]` : '',
+          name ? `[name=${name}]` : '',
+          testId ? `[data-testid=${testId}]` : '',
+        ].join('');
+      };
       new PerformanceObserver((list) => {
         for (const entry of list.getEntries()) {
-          const shift = entry as PerformanceEntry & { value: number; hadRecentInput?: boolean };
-          if (shift.hadRecentInput !== true) shifts.push(shift.value);
+          const shift = entry as PerformanceEntry & {
+            value: number;
+            hadRecentInput?: boolean;
+            sources?: Array<{
+              node?: Node;
+              previousRect: DOMRectReadOnly;
+              currentRect: DOMRectReadOnly;
+            }>;
+          };
+          if (shift.hadRecentInput === true) continue;
+          shifts.push({
+            value: shift.value,
+            timeMs: entry.startTime,
+            fonts: document.fonts.status,
+            sources: (shift.sources ?? []).map((source) => ({
+              node: describe(source.node),
+              previousRect: rectOf(source.previousRect),
+              currentRect: rectOf(source.currentRect),
+            })),
+          });
         }
       }).observe({ type: 'layout-shift', buffered: true });
     });
     await page.goto(`${stack.webUrl}/chat/${workspaceId}/${thread.id}`);
     await expect(page.getByRole('textbox', { name: 'Message', exact: true })).toBeVisible();
+    const turnMarkMs = await page.evaluate(() => performance.now());
     const turn = await client.operations['turn.start']({
       ...selector,
       agentId: 'agent_codex_host',
@@ -71,11 +149,13 @@ test('phone retains a stable layout through a simulator run', async ({ page }) =
           requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
         })
     );
-    const score = await page.evaluate(() => {
-      const shifts = (window as unknown as { p7LayoutShifts: number[] }).p7LayoutShifts;
-      return shifts.reduce((total, value) => total + value, 0);
-    });
-    expect(score).toBeLessThanOrEqual(0.05);
+    const shifts = await page.evaluate(
+      () => (window as unknown as { p7LayoutShifts: ShiftRecord[] }).p7LayoutShifts
+    );
+    const score = shifts.reduce((total, shift) => total + shift.value, 0);
+    const attribution = formatShifts(score, turnMarkMs, shifts);
+    console.log(attribution);
+    expect(score, attribution).toBeLessThanOrEqual(0.05);
   } finally {
     await stack.stop();
   }

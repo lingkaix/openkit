@@ -147,9 +147,17 @@ export function PhoneBar({
   const nowText = now.kind === 'hidden' ? null : now.text;
   const label = phoneBarLabel(nowText, needsCount);
   const notice = <RequestUnavailableNotice unavailable={unavailable} />;
-  if (!label) return notice;
-  const live = !reducedMotion && (now.kind === 'step' || now.kind === 'thinking') && now.live;
   const className = 'ok-meta flex min-h-11 w-full items-center gap-2 text-left';
+  // Keep the row's height while Now is quiet so a later label does not push the timeline.
+  if (!label) {
+    return (
+      <>
+        {notice}
+        <div data-phone-bar="reserved" className={className} aria-hidden="true" />
+      </>
+    );
+  }
+  const live = !reducedMotion && (now.kind === 'step' || now.kind === 'thinking') && now.live;
   const body = (
     <>
       <span className="ok-now-dot" data-live={live ? 'true' : 'false'} aria-hidden="true" />

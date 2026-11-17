@@ -618,7 +618,7 @@ export function ThreadScreen({ mode }: ThreadScreenProps) {
 
           {phone ? (
             <div className="bg-layer-1 px-6">
-              <div ref={setChromeHost} className="mx-auto w-full max-w-[760px]" />
+              <div ref={setChromeHost} className="mx-auto min-h-[3.75rem] w-full max-w-[760px]" />
             </div>
           ) : null}
           <div className="min-h-0 flex-1 overflow-y-auto" data-timeline-scroll>
