@@ -52,7 +52,7 @@ test('phone retains a stable layout through a simulator run', async ({ page }) =
         width: rect.width,
         height: rect.height,
       });
-      const describe = (node: Node | undefined) => {
+      const describeNode = (node: Node | undefined) => {
         if (!node) return '(no node)';
         if (node.nodeType !== Node.ELEMENT_NODE) return node.nodeName;
         const element = node as Element;
@@ -96,7 +96,7 @@ test('phone retains a stable layout through a simulator run', async ({ page }) =
             timeMs: entry.startTime,
             fonts: document.fonts.status,
             sources: (shift.sources ?? []).map((source) => ({
-              node: describe(source.node),
+              node: describeNode(source.node),
               previousRect: rectOf(source.previousRect),
               currentRect: rectOf(source.currentRect),
             })),
