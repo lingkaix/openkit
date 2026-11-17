@@ -858,6 +858,11 @@ export function createApp(options: CreateAppOptions = {}): Hono<{ Variables: Aut
           }
         : {}),
     });
+  if (sharedStore.getDataRoot() && runtimeConfigManager.getDataRoot())
+    sharedStore.setWorkspaceConfigurationPublisher(async (workspaceId, name) => {
+      if (options.coreDb) await runtimeConfigManager.bindNativePolicyPublication(options.coreDb);
+      await runtimeConfigManager.publishWorkspaceConfiguration(workspaceId, name);
+    });
   sharedStore.setWorkspaceCaptureCoverageProjection(
     (workspaceId) =>
       runtimeConfigManager

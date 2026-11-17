@@ -299,6 +299,8 @@ export interface RuntimeConfigManager {
   current(): RuntimeConfigSnapshot;
   /** Acknowledges this manager's actual installed Policy on the canonical native Core opening. */
   bindNativePolicyPublication(coreDb: CoreDb): Promise<void>;
+  /** Publishes a committed Workspace creation or name edit without activating other saved inputs. */
+  publishWorkspaceConfiguration(workspaceId: string, name: string): Promise<void>;
   /** Validates and replaces only a restored target while its exact recovery freeze remains closed. */
   reloadRecoveredWorkspace(
     workspaceId: string,
@@ -679,6 +681,41 @@ export function createRuntimeConfigManager(
   return {
     current: () => current,
     bindNativePolicyPublication,
+    publishWorkspaceConfiguration: async (workspaceId, name) => {
+      WorkspaceIdSchema.parse(workspaceId);
+      // Concurrent Workspace commands join the existing handoff before composing their own snapshot.
+      while (installation) await installation;
+      const previous = findWorkspaceConfig(current, workspaceId);
+      if (previous?.config.workspace.name === name) {
+        // A prior activation acknowledgement may have failed after installation.
+        await installSnapshot(current);
+        return;
+      }
+      const diagnostics: RuntimeConfigDiagnostic[] = [];
+      const loaded =
+        previous ??
+        loadWorkspaceConfigs(requireDataRoot(options.dataRoot), diagnostics, workspaceId)[0];
+      if (!loaded) throw new Error('Committed Workspace configuration is unavailable.');
+      // A name edit owns only that field. Saved Policy and preference edits still require explicit reload.
+      const config = WorkspaceConfigSchema.parse({
+        ...loaded.config,
+        workspace: { ...loaded.config.workspace, name },
+      });
+      await installSnapshot(
+        createRuntimeConfigSnapshot({
+          ...current,
+          dataRoot: requireDataRoot(options.dataRoot),
+          version: current.version + 1,
+          loadedAt: new Date().toISOString(),
+          workspaceConfigs: replaceWorkspaceConfigEntries(
+            current.workspaceConfigs,
+            [{ ...loaded, config }],
+            workspaceId
+          ),
+          diagnostics: [...current.diagnostics, ...diagnostics],
+        })
+      );
+    },
     getDataRoot: () => options.dataRoot,
     reloadRecoveredWorkspace: (workspaceId, freeze) => {
       if (installation) throw new Error('Runtime Policy publication is still pending.');

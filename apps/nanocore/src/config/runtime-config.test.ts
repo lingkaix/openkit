@@ -241,6 +241,101 @@ function writeWorkspaceMcpServers(dataRoot: string, workspaceId: string, body: s
   });
 }
 
+// Config identity requires next-command publication without activating unrelated saved revisions.
+it('publishes only committed Workspace creations and name edits', async () => {
+  const dataRoot = createDataRoot();
+  const target = 'ws_00000000-0000-7000-8000-000000000001';
+  const sibling = 'ws_00000000-0000-7000-8000-000000000002';
+  try {
+    writeWorkspaceConfig(
+      dataRoot,
+      sibling,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Loaded sibling', defaultAgentId: null },
+      })
+    );
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const before = manager.current();
+    writeWorkspaceConfig(
+      dataRoot,
+      sibling,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Saved sibling', defaultAgentId: 'agent_saved' },
+      })
+    );
+    writeWorkspaceConfig(
+      dataRoot,
+      target,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: { name: 'Created', defaultAgentId: null },
+      })
+    );
+    await manager.publishWorkspaceConfiguration(target, 'Created');
+    expect(
+      manager.current().workspaceConfigs.find((entry) => entry.workspaceId === target)?.config
+        .workspace.name
+    ).toBe('Created');
+    expect(manager.current().workspaceConfigs.find((entry) => entry.workspaceId === sibling)).toBe(
+      before.workspaceConfigs[0]
+    );
+    const created = manager.current();
+    writeWorkspaceConfig(
+      dataRoot,
+      target,
+      JSON.stringify({
+        schemaVersion: 1,
+        workspace: {
+          name: 'Renamed',
+          defaultAgentId: 'agent_saved',
+          policy: { workDataCapture: { value: false } },
+        },
+      })
+    );
+    await manager.publishWorkspaceConfiguration(target, 'Renamed');
+    expect(
+      manager.current().workspaceConfigs.find((entry) => entry.workspaceId === target)?.config
+        .workspace
+    ).toEqual({
+      ...created.workspaceConfigs.find((entry) => entry.workspaceId === target)!.config.workspace,
+      name: 'Renamed',
+    });
+    expect(manager.current().openKitConfig).toBe(before.openKitConfig);
+    expect(manager.current().workspaceConfigs.find((entry) => entry.workspaceId === sibling)).toBe(
+      before.workspaceConfigs[0]
+    );
+    const renamed = manager.current();
+    await manager.publishWorkspaceConfiguration(target, 'Renamed');
+    expect(manager.current()).toBe(renamed);
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
+it('refuses missing or invalid new Workspace configuration without changing the installed snapshot', async () => {
+  const dataRoot = createDataRoot();
+  const workspaceId = 'ws_00000000-0000-7000-8000-000000000001';
+  try {
+    const manager = createRuntimeConfigManager({ dataRoot });
+    const before = manager.current();
+    await expect(manager.publishWorkspaceConfiguration(workspaceId, 'Missing')).rejects.toThrow(
+      'Committed Workspace configuration is unavailable.'
+    );
+    expect(manager.current()).toBe(before);
+    writeWorkspaceConfig(
+      dataRoot,
+      workspaceId,
+      '{"schemaVersion":999,"workspace":{"name":"Invalid"}}'
+    );
+    await expect(manager.publishWorkspaceConfiguration(workspaceId, 'Invalid')).rejects.toThrow();
+    expect(manager.current()).toBe(before);
+  } finally {
+    rmSync(dataRoot, { recursive: true, force: true });
+  }
+});
+
 describe('runtime config loading and reload planning', () => {
   // Backup §Same-Deployment Restore: target admission must preserve unrelated live authority.
   it('reloads only recovered Workspace configuration while its freeze and quarantine remain closed', async () => {

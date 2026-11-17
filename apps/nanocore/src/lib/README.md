@@ -1,5 +1,8 @@
 # Library
 
+Fresh ordinary and personal Workspace creation, personal provisioning replay, and Workspace updates await the bound runtime configuration publisher after their owned persistence. Runtime configuration owns snapshot installation and native Policy acknowledgement; the Store adds no authority cache. Recovery and MOVE retain their frozen-target publication owner.
+
+
 Store retains Core-supplied Item ingress without backfilling historical absence. Later revisions cannot rewrite that receiving fact. Turn and AgentSession influence is monotonic: unknown/true cannot become false and retained true cannot be erased. Existing native product publication derives received-result influence and the exact bound session restriction in its current transaction before FULL acknowledgement, using the same product writer/CAS and no new SQL owner or serving map. Sessionless Workspace and Server Turns retain the same fact. Owner-only input and an ordinary model reply do not independently taint a known-clear source; Tool arguments are not a received result. Actual API stamping, source-context inheritance, compaction and Knowledge/Memory provenance remain with their receiving/continuity owners; a retained bit is not their acceptance proof or a permission grant.
 
 Approval refusal fixtures await the native Workspace permission-decision acknowledgement before closing its handle or exposing dependent reads. Their public recovery refusal and exact retained decision remain the deciding assertions.

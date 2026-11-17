@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
@@ -50,7 +50,7 @@ import {
   createTestAgentSetup,
   createTestGatewayConfig,
 } from '../test-support/agent-environment.js';
-import { createApp } from '../test-support/app.js';
+import { createApp, prepareTestAppOptions } from '../test-support/app.js';
 import { confirmContextDefaults } from '../test-support/context-defaults.js';
 import { ensureLocalUser, FIXTURE_LOCAL_USER_ID } from '../test-support/local-user.js';
 import { createMcpHttpStub } from '../test-support/mcp-http-stub.js';
@@ -75,7 +75,18 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
   vaultUnlockState.unlock({ masterKey: Buffer.alloc(32, 19) });
   const store = new FsStore({ dataRoot });
   const agentManifests = [createTestAgentSetup().manifest];
-  const app = createApp({ coreDb, dataRoot, vaultUnlockState, store, agentManifests });
+  const options = prepareTestAppOptions({
+    coreDb,
+    dataRoot,
+    vaultUnlockState,
+    store,
+    agentManifests,
+  });
+  const manager = createRuntimeConfigManager({
+    dataRoot,
+    initialSnapshot: createInMemoryRuntimeConfigSnapshot({ ...options, dataRoot }),
+  });
+  const app = createApp({ ...options, runtimeConfigManager: manager });
   let server: ReturnType<typeof createApp> | undefined;
   let sessionServer: ReturnType<typeof createApp> | undefined;
   let sessionCookie: string | undefined;
@@ -83,6 +94,7 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
     coreDb,
     dataRoot,
     store,
+    manager,
     sessionSend: async (id: string, body: Record<string, unknown>) => {
       if (!sessionServer) {
         // The retained canonical User signs in through the original SDK, including its native Session.
@@ -112,6 +124,7 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
           vaultUnlockState,
           store,
           agentManifests,
+          runtimeConfigManager: manager,
           mode: 'server',
           auth,
         });
@@ -135,6 +148,7 @@ function fixture(sessionUserId = FIXTURE_LOCAL_USER_ID) {
         vaultUnlockState,
         store,
         agentManifests,
+        runtimeConfigManager: manager,
         mode: 'server',
         auth: { api: { getSession: async () => null }, handler: async () => Response.json({}) },
       });
@@ -885,10 +899,7 @@ it.each(['workspace', 'server', 'revoked-agent'] as const)(
           },
         ],
       });
-      const runtimeConfigManager = createRuntimeConfigManager({
-        dataRoot: null,
-        initialSnapshot: snapshot,
-      });
+      const runtimeConfigManager = f.manager;
       vi.spyOn(runtimeConfigManager, 'current').mockImplementation(() => snapshot);
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
         readRuntimeConfig: () => snapshot,
@@ -1598,6 +1609,7 @@ it.each(['workspace', 'server'] as const)(
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
         readRuntimeConfig: () => snapshot,
       });
+      vi.spyOn(f.manager, 'current').mockReturnValue(snapshot);
       const app = createApp({
         coreDb: f.coreDb,
         store: f.store,
@@ -1606,10 +1618,7 @@ it.each(['workspace', 'server'] as const)(
         fileAdmission: native.fileAdmission,
         turnExecutor: native.executor,
         workerControlGateway: native.workerControlGateway,
-        runtimeConfigManager: createRuntimeConfigManager({
-          dataRoot: null,
-          initialSnapshot: snapshot,
-        }),
+        runtimeConfigManager: f.manager,
       });
       const started = await app.request(
         ...operationRequest(
@@ -1896,7 +1905,6 @@ it.each(['workspace', 'server'] as const)(
 /** Establishes ordinary Users and a real active User Login before any request feature is called. */
 async function loginShareFixture(quarantined = false) {
   const f = fixture();
-  const { mkdirSync, writeFileSync } = await import('node:fs');
   const { PolicyInterception } = await import('../policy/interception.js');
   const { createVaultReference, getVaultReference } = await import('./vault-references.js');
   const auth = createBetterAuth(f.coreDb, { env: {} });
@@ -1930,7 +1938,8 @@ async function loginShareFixture(quarantined = false) {
   const workspaceId = (await created.json()).id as string;
   mkdirSync(join(f.dataRoot, 'config'), { recursive: true });
   writeFileSync(join(f.dataRoot, 'config/server.jsonc'), JSON.stringify({ schemaVersion: 1 }));
-  const manager = createRuntimeConfigManager({ dataRoot: f.dataRoot });
+  const manager = f.manager;
+  await manager.reload({ mode: 'safe', dryRun: false });
   const participant = vi.fn(
     async (
       _input: Parameters<
@@ -2643,11 +2652,25 @@ it.each(['live', 'revoked-agent'] as const)(
             .manifest,
         ],
       });
-      let runtimeConfigManager = createRuntimeConfigManager({
-        dataRoot: f.dataRoot,
-        initialSnapshot: snapshot,
-      });
-      runtimeConfigManager = await confirmContextDefaults(f.coreDb, f.store, runtimeConfigManager);
+      // Keep the fixture's publisher while reload retains the same explicit transport inputs.
+      for (const directory of ['agents', 'providers'])
+        mkdirSync(join(f.dataRoot, 'config', directory), { recursive: true });
+      writeFileSync(
+        join(f.dataRoot, 'config/gateway.jsonc'),
+        JSON.stringify(snapshot.gatewayConfig)
+      );
+      for (const profile of snapshot.providerRegistry.list())
+        writeFileSync(
+          join(f.dataRoot, `config/providers/${profile.id}.provider.jsonc`),
+          JSON.stringify({ schemaVersion: 1, ...profile })
+        );
+      for (const manifest of snapshot.agentManifests)
+        writeFileSync(
+          join(f.dataRoot, `config/agents/${manifest.id}.agent.jsonc`),
+          JSON.stringify(manifest)
+        );
+      const runtimeConfigManager = f.manager;
+      await confirmContextDefaults(f.coreDb, f.store, runtimeConfigManager);
       native = await createNativeTaskAdmissionFixture(f.coreDb, f.store, {
         readRuntimeConfig: () => runtimeConfigManager.current(),
       });

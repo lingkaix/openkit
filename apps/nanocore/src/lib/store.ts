@@ -1130,6 +1130,7 @@ export class FsStore {
   private readonly unacknowledgedWorkspaces = new Set<string>();
   private workspaces = new Map<string, WorkspaceRecord>();
   private workspaceResources = new Map<string, WorkspaceResources>();
+  private workspaceConfigurationPublisher?: (workspaceId: string, name: string) => Promise<void>;
   private workspaceResourcePolicyProjection:
     | ((workspaceId: string) => PolicyDocumentV1 | null)
     | null = null;
@@ -2560,6 +2561,7 @@ export class FsStore {
           contentMount: native.contentMount,
         });
       }
+      await this.workspaceConfigurationPublisher?.(existing.id, existing.name);
       return existing;
     }
 
@@ -2589,6 +2591,7 @@ export class FsStore {
     );
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, createWorkspaceResources());
+    await this.workspaceConfigurationPublisher?.(workspace.id, workspace.name);
     return workspace;
   }
 
@@ -2624,6 +2627,7 @@ export class FsStore {
     );
     this.workspaces.set(workspace.id, workspace);
     this.workspaceResources.set(workspace.id, resources);
+    await this.workspaceConfigurationPublisher?.(workspace.id, workspace.name);
     return workspace;
   }
 
@@ -3078,6 +3082,13 @@ export class FsStore {
     this.workspaceAgentCatalogProjection = projection;
   }
 
+  /** Joins committed Workspace configuration writes to the runtime owner's acknowledged snapshot publication. */
+  public setWorkspaceConfigurationPublisher(
+    publish: (workspaceId: string, name: string) => Promise<void>
+  ): void {
+    this.workspaceConfigurationPublisher = publish;
+  }
+
   /** Binds current loaded Workspace Policy without copying its durable authority into the store. */
   public setWorkspaceResourcePolicyProjection(
     projection: (workspaceId: string) => PolicyDocumentV1 | null
@@ -3166,6 +3177,7 @@ export class FsStore {
         writeWorkspaceConfiguration(this.workspaceRootPath(workspaceId), updated, true);
     }
     this.workspaces.set(workspaceId, updated);
+    await this.workspaceConfigurationPublisher?.(workspaceId, updated.name);
     return this.getWorkspace(workspaceId);
   }
 

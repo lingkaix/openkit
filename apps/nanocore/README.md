@@ -1,5 +1,8 @@
 # nanocore
 
+Workspace creation and name updates publish their configuration through the existing runtime snapshot and native Policy handoff before the next command. New personal Workspaces use the same publication. Current membership and deletion state remain native Core authority. See the [configuration guide](src/config/README.md).
+
+
 Workspace export supports long canonical Knowledge paths through standard PAX path records; short paths retain their USTAR bytes. Scoped restore and MOVE use the configured server file reserve. See the [storage guide](src/storage/README.md).
 
 Capture Coverage resolves installed Server, Workspace and Task overrides before Turn admission, and retains that exact pair across reload and retry. New continuous Assistant conversations declare boundary-delayed caps and use linked Thread segments without splitting a Turn or minting another attempt. Notebook publications and governed retrieval carry the reserved E9 revision influence bit into the next executing context. See the configuration, storage and Knowledge guides under `src/`.

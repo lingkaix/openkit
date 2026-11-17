@@ -20511,6 +20511,207 @@ releaseIdentity: TEST_WORKER_RELEASE_IDENTITY,
     }
   });
 
+  it.each(['owner', 'new member', 'removed member', 'deleting'] as const)(
+    'checks the first Worker Turn against post-load Workspace mutations: %s',
+    async (member) => {
+      const coreDb = createFactoryCoreDb();
+      const ownerUserId = ensureLocalUser(coreDb);
+      const inviteeId = testEntityId('usr', 'fresh_workspace_member');
+      if (member === 'new member' || member === 'removed member')
+        insertFactoryUser(coreDb, inviteeId);
+      const store = new FsStore({ dataRoot: coreDb.dataRoot });
+      const previousWorkspace =
+        member === 'removed member' || member === 'deleting'
+          ? await store.createWorkspace('Loaded before revocation')
+          : undefined;
+      if (previousWorkspace)
+        recordWorkspaceOwnerMembership({ coreDb, ownerUserId, workspaceId: previousWorkspace.id });
+      const manifest = createTestAgentSetup({
+        imageRef: `sha256:${'a'.repeat(64)}`,
+        requiredCapabilities: ['trusted-worker-inference-relay'],
+      }).manifest;
+      admitTestNativeEnvironment(coreDb, manifest);
+      const manager = createRuntimeConfigManager({
+        dataRoot: coreDb.dataRoot,
+        initialSnapshot: createInMemoryRuntimeConfigSnapshot({
+          ...loadRuntimeConfig(coreDb.dataRoot),
+          openKitConfig: { defaults: { defaultAgentId: manifest.id } },
+          agentManifests: [manifest],
+          gatewayConfig: createTestGatewayConfig(),
+          providerRegistry: new ProviderRegistry([
+            {
+              id: 'agent-openrouter',
+              displayName: 'Fresh Workspace admission',
+              kind: 'local',
+              models: ['openai/gpt-5.2'],
+            },
+          ]),
+        }),
+      });
+      await manager.bindNativePolicyPublication(coreDb);
+      let viewerUserId = ownerUserId;
+      const native = await createNativeTaskAdmissionFixture(coreDb, store, {
+        readRuntimeConfig: () => manager.current(),
+      });
+      const app = createAppWithWorkspaceAuthority({
+        coreDb,
+        store,
+        mode: 'server',
+        auth: {
+          api: { getSession: async () => ({ user: { id: viewerUserId } }) },
+          handler: async () => new Response(null, { status: 404 }),
+        },
+        runtimeConfigManager: manager,
+        turnExecutor: native.executor,
+        fileAdmission: native.fileAdmission,
+        workerControlGateway: native.workerControlGateway,
+      });
+      let admitted: Awaited<ReturnType<typeof native.admitTurn>> | undefined;
+      try {
+        const created = previousWorkspace
+          ? undefined
+          : await app.request(
+              ...operationRequest(
+                'workspace.create',
+                { name: 'Created after load' },
+                {
+                  headers: { 'x-openkit-request-id': randomUUID() },
+                }
+              )
+            );
+        if (created) expect(created.status, await created.clone().text()).toBe(201);
+        const workspace = previousWorkspace ?? ((await created!.json()) as { id: string });
+        const threadResponse = await app.request(
+          ...operationRequest(
+            'thread.create',
+            {
+              workspaceId: workspace.id,
+              name: 'First Worker Turn',
+              visibility: 'workspace',
+            },
+            { headers: { 'x-openkit-request-id': randomUUID() } }
+          )
+        );
+        expect(threadResponse.status, await threadResponse.clone().text()).toBe(200);
+        const thread = (await threadResponse.json()) as { id: string };
+        if (member === 'new member' || member === 'removed member') {
+          const invitationResponse = await app.request(
+            ...operationRequest(
+              'workspace.invitation-create',
+              {
+                workspaceId: workspace.id,
+                inviteeEmail: `${inviteeId}@worker-fixture.openkit.invalid`,
+              },
+              { headers: { 'x-openkit-request-id': randomUUID() } }
+            )
+          );
+          expect(invitationResponse.status, await invitationResponse.clone().text()).toBe(201);
+          const { invitation } = (await invitationResponse.json()) as {
+            invitation: { invitationId: string; revision: number };
+          };
+          viewerUserId = inviteeId;
+          const accepted = await app.request(
+            ...operationRequest(
+              'workspace.my-invitation-accept',
+              {
+                invitationId: invitation.invitationId,
+                expectedRevision: invitation.revision,
+              },
+              { headers: { 'x-openkit-request-id': randomUUID() } }
+            )
+          );
+          expect(accepted.status, await accepted.clone().text()).toBe(200);
+          if (member === 'removed member') {
+            viewerUserId = ownerUserId;
+            const removed = await app.request(
+              ...operationRequest(
+                'workspace.member-remove',
+                {
+                  workspaceId: workspace.id,
+                  targetUserId: inviteeId,
+                  expectedRevision: 1,
+                },
+                { headers: { 'x-openkit-request-id': randomUUID() } }
+              )
+            );
+            expect(removed.status, await removed.clone().text()).toBe(200);
+            viewerUserId = inviteeId;
+          }
+        }
+        if (member === 'deleting') {
+          const client = getControlStoreWorkerClient();
+          const freeze = client.tryFreezeWorkspace(coreDb.dataRoot, workspace.id, () => []);
+          if (freeze.status !== 'frozen') throw new Error('Idle test Workspace must freeze.');
+          await client.workspaceDeletion(
+            `core:${coreDb.sqlite.name}`,
+            {
+              stage: 'begin',
+              actor: { kind: 'session', userId: ownerUserId },
+              workspaceId: workspace.id,
+              originalOwnerUserId: ownerUserId,
+              expectedRegistryRevision: 1,
+            },
+            freeze
+          );
+        }
+        if (member === 'removed member' || member === 'deleting') {
+          // The snapshot already contains this Workspace. Live Core revocation alone must refuse the next command.
+          expect(
+            manager.current().workspaceConfigs.some((entry) => entry.workspaceId === workspace.id)
+          ).toBe(true);
+          const refused = await app.request(
+            ...operationRequest(
+              'turn.start',
+              {
+                workspaceId: workspace.id,
+                threadId: thread.id,
+                agentId: manifest.id,
+                input: 'Do not admit a revoked Workspace or member.',
+              },
+              { headers: { 'x-openkit-request-id': randomUUID() } }
+            )
+          );
+          expect(refused.status, await refused.clone().text()).toBe(403);
+          expect(await refused.json()).toMatchObject({ code: 'workspace_access_denied' });
+          expect(native.effects.some((effect) => effect.kind === 'sandbox.create')).toBe(false);
+          return;
+        }
+        const started = await app.request(
+          ...operationRequest(
+            'turn.start',
+            {
+              workspaceId: workspace.id,
+              threadId: thread.id,
+              input: 'Run the first default Worker Turn in this new Workspace.',
+            },
+            { headers: { 'x-openkit-request-id': randomUUID() } }
+          )
+        );
+        expect(started.status, await started.clone().text()).toBe(202);
+        const turn = (await started.json()) as { id: string };
+        const entry = attemptActionOwners
+          .listQueuedSchedulerAdmissionEntries(coreDb)
+          .find((entry) => entry.turnId === turn.id);
+        expect(entry).toBeDefined();
+        expect(entry!.requestedAgentId).toBe(manifest.id);
+        const agentSessionId = testEntityId('as', 'fresh_workspace_snapshot');
+        admitted = await native.admitTurn(entry!, {
+          attemptId: testEntityId('attempt', 'fresh_workspace_snapshot'),
+          agentSessionId,
+          candidateAgentSessionId: agentSessionId,
+        });
+        expect((await admitted.complete()).startedTurns).toHaveLength(1);
+        expect(native.effects.some((effect) => effect.kind === 'sandbox.create')).toBe(true);
+        expect(store.getTurnById(turn.id).status).toBe('completed');
+      } finally {
+        await admitted?.cleanup();
+        await native.restore();
+        await shutdownControlStoreWorkerClient();
+        coreDb.sqlite.close();
+      }
+    }
+  );
+
   it('admits canonical shared Thread storage without opening unrelated Knowledge', async () => {
     const coreDb = createFactoryCoreDb();
     const ownerUserId = ensureLocalUser(coreDb);

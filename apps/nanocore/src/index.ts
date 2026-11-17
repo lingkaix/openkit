@@ -664,6 +664,11 @@ const runtimeConfigManager = createRuntimeConfigManager({
   subscriptionAccounts: providerSubscriptionAccountManager,
   providerCredentialConfigured,
 });
+await runtimeConfigManager.bindNativePolicyPublication(activeCoreDb);
+requireBootValue(
+  sharedStore,
+  'Shared Workspace store was not initialized.'
+).setWorkspaceConfigurationPublisher(runtimeConfigManager.publishWorkspaceConfiguration);
 
 if (mode === 'local') {
   // A quarantined Personal scope must not prevent the server or healthy siblings from booting.

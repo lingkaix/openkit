@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -6,8 +7,11 @@ import {
   WorkspaceReadResponseSchema,
 } from '@openkit/app-api-schemas';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { createRuntimeConfigManager } from './config/runtime-config.js';
+import { getControlStoreWorkerClient } from './storage/control-store-worker-client.js';
 import { openCoreDb } from './storage/db.js';
 import { applyMigrations } from './storage/migrate.js';
+import { runtimePolicyIdentityForSnapshot } from './storage/runtime-policy-publication.js';
 import { createApp } from './test-support/app.js';
 import { ensureLocalUser } from './test-support/local-user.js';
 import { operationRequest } from './test-support/operation-request.js';
@@ -33,6 +37,102 @@ const HIDDEN_PRIVATE_TITLE = 'SECRET_OTHER_PRIVATE_THREAD';
  * @returns Hono app serving workspace list and direct read.
  */
 describe('workspace routes', () => {
+  it('publishes concurrent creations, name updates and lazy personal provisioning through the runtime owner', async () => {
+    const store = createTestStore({
+      dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-publication-')),
+    });
+    const coreDb = openCoreDb(store.getDataRoot()!);
+    ownedDatabases.push(coreDb);
+    applyMigrations(coreDb);
+    const userId = ensureLocalUser(coreDb);
+    const manager = createRuntimeConfigManager({ dataRoot: store.getDataRoot() });
+    const app = createApp({ coreDb, store, runtimeConfigManager: manager });
+    const created = await Promise.all(
+      ['First', 'Second'].map(async (name) => {
+        const response = await app.request(
+          ...operationRequest(
+            'workspace.create',
+            { name },
+            {
+              headers: { 'x-openkit-request-id': randomUUID() },
+            }
+          )
+        );
+        expect(response.status, await response.clone().text()).toBe(201);
+        return (await response.json()) as { id: string; name: string };
+      })
+    );
+    for (const workspace of created) {
+      expect(
+        manager.current().workspaceConfigs.find((entry) => entry.workspaceId === workspace.id)
+          ?.config.workspace.name
+      ).toBe(workspace.name);
+    }
+    const updated = await app.request(
+      ...operationRequest(
+        'workspace.update',
+        { workspaceId: created[0]!.id, name: 'Renamed' },
+        {
+          headers: { 'x-openkit-request-id': randomUUID() },
+        }
+      )
+    );
+    expect(updated.status, await updated.clone().text()).toBe(200);
+    expect(
+      manager.current().workspaceConfigs.find((entry) => entry.workspaceId === created[0]!.id)
+        ?.config.workspace.name
+    ).toBe('Renamed');
+    await ensureUserQuickChatWorkspace({ coreDb, store, userId });
+    expect(manager.current().workspaceConfigs).toHaveLength(3);
+    await ensureUserQuickChatWorkspace({ coreDb, store, userId });
+    expect(manager.current().workspaceConfigs).toHaveLength(3);
+    const publication = await getControlStoreWorkerClient().runtimePolicyPublication(coreDb, {
+      kind: 'inspect',
+    });
+    expect(publication).toMatchObject({
+      state: 'active',
+      identity: runtimePolicyIdentityForSnapshot(manager.current()),
+    });
+  });
+
+  it('reacknowledges the installed Workspace after an activation acknowledgement fails', async () => {
+    const store = createTestStore({
+      dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-publication-retry-')),
+    });
+    const coreDb = openCoreDb(store.getDataRoot()!);
+    ownedDatabases.push(coreDb);
+    applyMigrations(coreDb);
+    ensureLocalUser(coreDb);
+    const manager = createRuntimeConfigManager({ dataRoot: store.getDataRoot() });
+    await manager.bindNativePolicyPublication(coreDb);
+    const workspace = await store.createWorkspace('Committed before acknowledgement');
+    const client = getControlStoreWorkerClient();
+    const publish = client.runtimePolicyPublication.bind(client);
+    const fault = vi
+      .spyOn(client, 'runtimePolicyPublication')
+      .mockImplementation(async (...args) => {
+        if (args[1].kind === 'activate')
+          throw new Error('Controlled activation acknowledgement failure.');
+        return publish(...args);
+      });
+    try {
+      await expect(
+        manager.publishWorkspaceConfiguration(workspace.id, workspace.name)
+      ).rejects.toThrow('Controlled activation acknowledgement failure.');
+      expect(
+        manager.current().workspaceConfigs.some((entry) => entry.workspaceId === workspace.id)
+      ).toBe(true);
+      expect(await publish(coreDb, { kind: 'inspect' })).toMatchObject({ state: 'closed' });
+    } finally {
+      fault.mockRestore();
+    }
+    await manager.publishWorkspaceConfiguration(workspace.id, workspace.name);
+    expect(await publish(coreDb, { kind: 'inspect' })).toMatchObject({
+      state: 'active',
+      identity: runtimePolicyIdentityForSnapshot(manager.current()),
+    });
+  });
+
   it('lists only authorized Workspace ids without physical discovery', async () => {
     const store = createTestStore({
       dataRoot: mkdtempSync(join(tmpdir(), 'openkit-workspace-routes-authorized-')),
