@@ -2487,6 +2487,7 @@ describe('governed User Login Workspace sharing', () => {
           await revokeVaultReference(f.coreDb, { referenceId: f.reference.referenceId });
         if (reason === 'material-version-mismatch')
           await advanceActiveVaultReferenceVersion(f.coreDb, {
+            expectedWriterGeneration: 0,
             referenceId: f.reference.referenceId,
             currentVersion: 2,
           });
@@ -2523,6 +2524,7 @@ describe('governed User Login Workspace sharing', () => {
           );
           if (change === 'version')
             await advanceActiveVaultReferenceVersion(f.coreDb, {
+              expectedWriterGeneration: 0,
               referenceId: f.reference.referenceId,
               currentVersion: 2,
             });
@@ -3038,6 +3040,7 @@ describe('reviewed grant issue mediated producer migration', () => {
             if (referenceOwner === 'user') {
               const { advanceActiveVaultReferenceVersion } = await import('./vault-references.js');
               await advanceActiveVaultReferenceVersion(f.coreDb, {
+                expectedWriterGeneration: 0,
                 referenceId: f.reference.referenceId,
                 currentVersion: 2,
               });

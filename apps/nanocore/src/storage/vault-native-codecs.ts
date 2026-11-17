@@ -150,6 +150,8 @@ export interface AdvanceActiveVaultReferenceVersionInput {
   readonly referenceId: string;
   /** Exact stored or next material version reported by the backend. */
   readonly currentVersion: number;
+  /** Writer generation read before the backend rotation; checked again by the native owner. */
+  readonly expectedWriterGeneration: number;
   /** Optional deterministic clock. */
   readonly now?: () => string;
 }
@@ -2110,7 +2112,15 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('binding-revoke-receipts-complete'),
-      record: z.object({ planId: z.string() }).strict(),
+      record: z
+        .object({
+          planId: z.string(),
+          receiptId: z.string().min(1).optional(),
+          expectedVersion: z.number().int().positive().safe().optional(),
+          expectedWriterGeneration: z.number().int().nonnegative().safe().optional(),
+          removal: z.enum(['proven', 'fenced']),
+        })
+        .strict(),
     })
     .strict(),
   z
@@ -2199,11 +2209,32 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
+      kind: z.literal('reference-writer'),
+      record: z
+        .object({
+          action: z.enum(['delegate', 'abandon']),
+          referenceId: z.string().min(1),
+          receiptId: z.string().min(1),
+          expectedVersion: z.number().int().positive().safe(),
+          expectedGeneration: z.number().int().nonnegative().safe(),
+          // Core supplies this only for the same delivery refused before dispatch.
+          neverSent: z
+            .object({ receiptId: z.string().min(1) })
+            .strict()
+            .optional(),
+          now: clock,
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
       kind: z.literal('reference-advance'),
       record: z
         .object({
           referenceId: z.string(),
           currentVersion: z.number(),
+          expectedWriterGeneration: z.number().int().nonnegative().safe(),
           now: clock,
           serverMcp: serverMcpAuthority.optional(),
           publicMutation: publicMutationAuthority.optional(),
@@ -2319,6 +2350,8 @@ export const ControlVaultInputSchema = z.discriminatedUnion('kind', [
       record: z
         .object({
           ...receiptFields,
+          expectedVersion: z.number().int().positive().safe().optional(),
+          expectedWriterGeneration: z.number().int().nonnegative().safe().optional(),
           loginBinding: loginBindingAuthority.optional(),
           workerAuthority: z
             .object({
@@ -2376,6 +2409,7 @@ export const ControlVaultResultSchema = z.discriminatedUnion('kind', [
       value: z.object({ inserted: z.boolean(), reference: VaultReferenceRecordSchema }).strict(),
     })
     .strict(),
+  z.object({ kind: z.literal('reference-writer'), value: VaultReferenceRecordSchema }).strict(),
   z.object({ kind: z.literal('reference-advance'), value: VaultReferenceRecordSchema }).strict(),
   z.object({ kind: z.literal('reference-revoke'), value: VaultReferenceRecordSchema }).strict(),
   z
@@ -2418,6 +2452,7 @@ export interface ControlVaultResultMap {
   'admin-event-insert': null;
   'audit-insert': VaultAuditEvent;
   'reference-create': CreateVaultReferenceResult;
+  'reference-writer': VaultReferenceRecord;
   'reference-advance': VaultReferenceRecord;
   'reference-revoke': VaultReferenceRecord;
   'reference-login-state': VaultReferenceRecord;
@@ -2482,6 +2517,9 @@ export interface ControlVaultMainInputMap {
   'reference-create': CreateVaultReferenceInput &
     ServerMcpAuthorityInput &
     PublicMutationAuthorityInput;
+  'reference-writer': MainVaultClock<
+    Extract<ControlVaultInput, { kind: 'reference-writer' }>['record']
+  >;
   'reference-advance': AdvanceActiveVaultReferenceVersionInput &
     ServerMcpAuthorityInput &
     PublicMutationAuthorityInput & {
@@ -2505,6 +2543,8 @@ export interface ControlVaultMainInputMap {
   'use-create': CreateVaultUseRecordInput;
   'plan-create': CreateVaultInjectionPlanInput;
   'receipt-create': CreateVaultInjectionReceiptInput & {
+    readonly expectedVersion?: number;
+    readonly expectedWriterGeneration?: number;
     readonly loginBinding?: z.infer<typeof loginBindingAuthority>;
     readonly workerAuthority?: {
       readonly materialVersion?: number;
@@ -2571,8 +2611,9 @@ const vaultRecordRefusalPatterns = [
   '^Workspace vault reference is not unbound: [a-zA-Z0-9_-]+$',
 ].map((pattern) => new RegExp(pattern, 'u'));
 
-/** Only existing Server-MCP public refusal constants may cross the private domain boundary. */
+/** Finite, redacted native Vault refusals may cross the private domain boundary. */
 const serverMcpRefusals = [
+  ['credential_family_busy', 'Credential family is busy.', 409],
   ['vault_reference_not_found', 'Server MCP reference not found.', 404],
   ['vault_grant_not_found', 'Server MCP grant not found.', 404],
   ['invalid_request', 'Grant expiry must be in the future.', 400],

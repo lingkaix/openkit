@@ -68,6 +68,7 @@ import type {
 import {
   getWithdrawableUserVaultGrant,
   VaultBindingPolicyProofSchema,
+  vaultCredentialWriterOf,
 } from '../storage/vault-native-codecs.js';
 import {
   getVaultInjectionPlan,
@@ -1986,6 +1987,7 @@ export function createVaultOperationImplementations(
         {
           referenceId,
           currentVersion: rotated.currentVersion,
+          expectedWriterGeneration: vaultCredentialWriterOf(reference).generation,
         },
         c,
         reference
@@ -2271,6 +2273,7 @@ export function createVaultOperationImplementations(
               'reference-advance',
               {
                 currentVersion: inventory.currentVersion,
+                expectedWriterGeneration: vaultCredentialWriterOf(reference).generation,
                 referenceId,
               },
               c,
@@ -2291,6 +2294,7 @@ export function createVaultOperationImplementations(
             'reference-advance',
             {
               currentVersion: rotated.currentVersion,
+              expectedWriterGeneration: vaultCredentialWriterOf(reference).generation,
               referenceId,
             },
             c,

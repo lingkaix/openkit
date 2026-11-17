@@ -2924,6 +2924,7 @@ it('joins real final credential authority before stock HTTP and refuses a replac
       // The selection completed. Replace through both actual owners before the stock final lookup.
       const rotated = backend.rotate({ referenceId, material: randomBytes(24).toString('hex') });
       await advanceActiveVaultReferenceVersion(coreDb, {
+        expectedWriterGeneration: 0,
         referenceId,
         currentVersion: rotated.currentVersion,
       });

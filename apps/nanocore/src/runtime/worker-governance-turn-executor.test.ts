@@ -14367,6 +14367,7 @@ describe('credential carrier neutral placement acceptance', () => {
               .backend()
               .rotate({ referenceId, material: randomUUID() + randomUUID() });
             await advanceActiveVaultReferenceVersion(fixture.coreDb, {
+              expectedWriterGeneration: 0,
               referenceId,
               currentVersion: rotated.currentVersion,
               now: () => timestamp,
@@ -15654,6 +15655,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
             });
             const rotated = vault.backend().rotate({ referenceId, material: replacement });
             await advanceActiveVaultReferenceVersion(fixture.coreDb, {
+              expectedWriterGeneration: 0,
               referenceId,
               currentVersion: rotated.currentVersion,
               now: () => timestamp,
@@ -15770,6 +15772,7 @@ describe('credential carrier unified Vault operation acceptance', () => {
         ).toBe(true);
         const rotated = vault.backend().rotate({ referenceId, material: replacement });
         await advanceActiveVaultReferenceVersion(fixture.coreDb, {
+          expectedWriterGeneration: 0,
           referenceId,
           currentVersion: rotated.currentVersion,
           now: () => timestamp,
@@ -17494,6 +17497,7 @@ describe('reviewed Login access through the neutral credential effect', () => {
                     .rotate({ referenceId, material: unrelatedMaterial });
                   expect(rotated.currentVersion).toBe(inputGeneration + 2);
                   predecessor = advanceActiveVaultReferenceVersion(fixture.coreDb, {
+                    expectedWriterGeneration: 0,
                     referenceId,
                     currentVersion: rotated.currentVersion,
                   });
@@ -19187,6 +19191,7 @@ describe('reviewed Login access through the neutral credential effect', () => {
           const rotated = vault.backend().rotate({ referenceId, material: unrelatedMaterial });
           expect(rotated.currentVersion).toBe(inputGeneration + 2);
           await advanceActiveVaultReferenceVersion(fixture.coreDb, {
+            expectedWriterGeneration: 0,
             referenceId,
             currentVersion: rotated.currentVersion,
           });
@@ -21171,6 +21176,7 @@ describe('Login publication under the original Goal Task decision', () => {
             const unrelated = vault.backend().rotate({ referenceId, material: randomUUID() });
             expect(unrelated.currentVersion).toBe(generation + 1);
             await advanceActiveVaultReferenceVersion(coreDb, {
+              expectedWriterGeneration: 0,
               referenceId,
               currentVersion: unrelated.currentVersion,
             });

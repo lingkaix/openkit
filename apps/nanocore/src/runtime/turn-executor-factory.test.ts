@@ -3888,6 +3888,7 @@ describe('createConfiguredTurnExecutor', () => {
           if (mode !== 'ordinary') {
             const rotated = vault!.backend().rotate({ referenceId, material: successorMaterial });
             await advanceActiveVaultReferenceVersion(core, {
+              expectedWriterGeneration: 0,
               referenceId,
               currentVersion: rotated.currentVersion,
             });
@@ -7541,6 +7542,7 @@ describe('createConfiguredTurnExecutor', () => {
             else
               await nativeClient.vault(coreDb, 'binding-revoke-receipts-complete', {
                 planId: originalPlan.planId,
+                removal: 'fenced',
               });
             expect(getVaultGrant(coreDb, grantId)?.status).toBe('active');
             expect(getVaultReference(coreDb, referenceId)?.status).toBe('active');
@@ -7648,7 +7650,7 @@ describe('createConfiguredTurnExecutor', () => {
       backendLocator: 'synthetic-collection-reference',
     });
     for (let version = 2; version <= 7; version++)
-      await advanceActiveVaultReferenceVersion(coreDb, { referenceId, currentVersion: version });
+      await advanceActiveVaultReferenceVersion(coreDb, { expectedWriterGeneration: 0, referenceId, currentVersion: version });
     await createVaultGrant(coreDb, {
       grantId,
       vaultReferenceId: referenceId,
@@ -7782,7 +7784,7 @@ describe('createConfiguredTurnExecutor', () => {
       // The shared native owner publishes the actual terminal tuple before another Turn is admitted.
       await original.complete();
       expect(store.getTurnById(original.pkg.scope.turnId)).toMatchObject({ status: 'completed' });
-      await advanceActiveVaultReferenceVersion(f.coreDb, { referenceId, currentVersion: 8 });
+      await advanceActiveVaultReferenceVersion(f.coreDb, { expectedWriterGeneration: 0, referenceId, currentVersion: 8 });
       currentVersion = 8;
       // Losing live material requires an audited reread of the exact original version.
       const originalUseDb = workspaceDb;

@@ -35,9 +35,10 @@ export function importUnboundWorkspaceVaultReference(
         backend_locator,
         status,
         current_version,
+        credential_writer_json,
         created_at,
         updated_at
-      ) VALUES (?, 'workspace', ?, NULL, ?, ?, ?, NULL, 'unbound', 0, ?, ?)`
+      ) VALUES (?, 'workspace', ?, NULL, ?, ?, ?, NULL, 'unbound', 0, NULL, ?, ?)`
     )
     .run(
       input.referenceId,

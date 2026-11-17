@@ -689,7 +689,12 @@ async function fixture() {
       reference = await client.vault(
         core,
         'reference-advance',
-        { referenceId, currentVersion: rotated.currentVersion, loginBinding: binding() },
+        {
+          expectedWriterGeneration: 0,
+          referenceId,
+          currentVersion: rotated.currentVersion,
+          loginBinding: binding(),
+        },
         recheck
       );
       await recheck(reference);
